@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Security;
@@ -18,7 +19,8 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 [ExcludeFromCodeCoverage] // Reason: executes external spell scripts via AIFunction; covered via ArcanumSpellScriptToolMultiRootTests and spell integration paths.
 public sealed class ArcanumSpellScriptTool : AIFunction
 {
-    public const string ToolName = "run_spell_script";
+    public const string ToolName =
+        ArcanumBuiltInToolNames.RunSpellScript;
 
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 

@@ -2047,6 +2047,34 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
+    public void Validate_WorkspacePatchRollbackReserveRelation_ReturnsFocusedFailure()
+    {
+        ArcanumSettings settings = new()
+        {
+            CodingTools = new CodingToolsSettings
+            {
+                Patch = new WorkspacePatchSettings
+                {
+                    MaxElapsedMilliseconds = 100,
+                    RollbackReserveMilliseconds = 100,
+                },
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static error =>
+                error.Pointer
+                    == "codingTools.patch.rollbackReserveMilliseconds"
+                && error.Detail.Contains(
+                    "must be less than MaxElapsedMilliseconds",
+                    StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Validate_WorkspaceCheckDeadlineRelation_AppliesOnlyWhenCurrentlyAdvertisable()
     {
         ArcanumSettings settings = new()

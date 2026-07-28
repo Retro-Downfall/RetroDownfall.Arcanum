@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -22,22 +23,42 @@ public sealed class ModelCallExecutor : IModelCallExecutor
 
     private readonly bool _allowUnaccountedCompatibilityCalls;
 
+    private readonly ILogger? _logger;
+
     public ModelCallExecutor(IModelTokenEstimator tokenEstimator)
-        : this(tokenEstimator, settings: null)
+        : this(tokenEstimator, settings: null, logger: (ILogger?)null)
     {
     }
 
     public ModelCallExecutor(
         IModelTokenEstimator tokenEstimator,
         IOptionsMonitor<ArcanumSettings>? settings)
+        : this(tokenEstimator, settings, logger: (ILogger?)null)
+    {
+    }
+
+    public ModelCallExecutor(
+        IModelTokenEstimator tokenEstimator,
+        IOptionsMonitor<ArcanumSettings>? settings,
+        ILogger<ModelCallExecutor> logger)
+        : this(tokenEstimator, settings, (ILogger?)logger)
+    {
+    }
+
+    internal ModelCallExecutor(
+        IModelTokenEstimator tokenEstimator,
+        IOptionsMonitor<ArcanumSettings>? settings,
+        ILogger? logger)
     {
         _tokenEstimator = tokenEstimator ?? throw new ArgumentNullException(nameof(tokenEstimator));
         _settings = settings;
+        _logger = logger;
     }
 
-    internal ModelCallExecutor()
+    internal ModelCallExecutor(ILogger? logger = null)
     {
         _allowUnaccountedCompatibilityCalls = true;
+        _logger = logger;
     }
 
     public bool TryBeginModelCall(ITurnBudget budget) => budget.TryConsumeModelCall();
@@ -133,10 +154,18 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         }
         catch (Exception ex)
         {
+            _logger?.LogError(
+                "Model call {ModelCallId} failed for purpose {Purpose}; exception type {ExceptionType}.",
+                modelCallId,
+                purpose,
+                ex.GetType().FullName);
+
             return ModelCallOutcome.Failed(new ModelCallFailure(
                 purpose,
                 modelCallId,
-                new Error(ErrorCodes.Hub.Error, ex.Message),
+                new Error(
+                    ErrorCodes.Hub.Error,
+                    PublicInferenceErrorMessages.NativeGenericFailure),
                 ex));
         }
     }

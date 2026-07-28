@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
@@ -814,6 +815,37 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task StreamPromptAsync_UnattendedWardDenial_PreservesStructuredOutcome()
+    {
+        ScriptingChatClient chat = new();
+        chat.EnqueueStreamToolCall("execute_command");
+        chat.EnqueueStreamTokens("done");
+
+        FakeWard ward = new();
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(CreateMcpTool("execute_command"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, ward: ward, mcp: mcp);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "run",
+                SkipSpellRouting = true,
+                UnattendedMode = true,
+            });
+
+        IntelligenceEvent toolResult = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.ToolResult);
+
+        Assert.True(toolResult.ToolDenied);
+        Assert.Equal("execute_command", toolResult.Message);
+        Assert.Equal(0, ward.WardCallCount);
+    }
+
+    [Fact]
     public async Task StreamPromptAsync_ForbiddenArt_YieldsWarded_BeforeWardResolves()
     {
         ScriptingChatClient chat = new();
@@ -1038,6 +1070,88 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Contains("beta_tool", toolNames);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Attunement_NonEmptyDeclaredToolsWithoutBrowseWeb_OmitsBrowseWeb(
+        bool disableMcpTools)
+    {
+        await CreateSpellWithDeclaredToolsAsync("browse-restricted", ["allowed_tool"]);
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("attuned");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("allowed_tool"));
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            WebBrowsing = new WebBrowsingSettings { Enabled = true },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "cast",
+                WorkingDirectory = _workspace.Root,
+                OverrideSpellName = "browse-restricted",
+                DisableMcpTools = disableMcpTools,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
+
+        Assert.DoesNotContain(ArcanumBrowseWebTool.ToolName, toolNames);
+        Assert.Contains(ArcanumLocalTimeTool.ToolName, toolNames);
+        Assert.Contains(ArcanumSystemInfoTool.ToolName, toolNames);
+        Assert.Equal(!disableMcpTools, toolNames.Contains("allowed_tool"));
+    }
+
+    [Theory]
+    [InlineData("browse-declared", true)]
+    [InlineData("browse-open", false)]
+    public async Task Attunement_DeclaredOrUnrestrictedBrowseWeb_AdvertisesBrowseWeb(
+        string folderName,
+        bool declareBrowseWeb)
+    {
+        await CreateSpellWithDeclaredToolsAsync(
+            folderName,
+            declareBrowseWeb ? [ArcanumBrowseWebTool.ToolName] : []);
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("browse");
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            WebBrowsing = new WebBrowsingSettings { Enabled = true },
+        };
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+                Prompt = "cast",
+                WorkingDirectory = _workspace.Root,
+                OverrideSpellName = folderName,
+                DisableMcpTools = true,
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
+
+        Assert.Contains(ArcanumBrowseWebTool.ToolName, toolNames);
+    }
+
     [Fact]
     public async Task Scenario14_SpellDependencyResolution_PlumbsResonanceIntoPrompt()
     {
@@ -1072,9 +1186,12 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     [Fact]
     public async Task Scenario15_ModelNotFound_ReturnsHubModelError()
     {
+        const string canary = "CANARY_MODEL_RESOLUTION_CREDENTIAL";
+        TestCapturingLogger<WizardIntelligenceProvider> logger = new();
         WizardIntelligenceProvider wizard = CreateWizard(
             new ScriptingChatClient(),
-            factory: new ThrowingChatClientFactory());
+            factory: new ThrowingChatClientFactory { FailureMessage = canary },
+            logger: logger);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest() with { Prompt = "hello", Model = "missing", SkipSpellRouting = true },
@@ -1083,6 +1200,19 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Hub.Model", result.Error.Code);
+
+        Assert.Equal(
+            "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.",
+            result.Error.Message);
+
+        TestLogEntry log = Assert.Single(
+            logger.Entries,
+            static entry => entry.Message.Contains(
+                "model resolution",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Null(log.Exception);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(InvalidOperationException), log.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1976,6 +2106,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     public async Task Scenario37_StreamToolExecutionFailure_EmitsToolResultWithFailureMessage()
     {
 
+        const string canary = "CANARY_TOOL_SECRET_FILE_CONTENT";
         ScriptingChatClient chat = new();
 
         chat.EnqueueStreamToolCall("failing_tool");
@@ -1984,9 +2115,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         FakeMcpConnectionManager mcp = new();
 
-        mcp.Tools.Add(CreateThrowingMcpTool("failing_tool"));
+        mcp.Tools.Add(CreateThrowingMcpTool("failing_tool", canary));
 
-        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+        TestCapturingLogger<ToolExecutionPipeline> toolLogger = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            mcp: mcp,
+            toolLogger: toolLogger);
 
         List<IntelligenceEvent> events = await CollectStreamAsync(
             wizard,
@@ -2010,6 +2145,19 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 && e.Data!.Contains(
                     "[Tool error: failing_tool failed with an internal error. The operator has been notified.]",
                     StringComparison.Ordinal));
+
+        string serialized = string.Join(
+            '\n',
+            events.Select(static frame => JsonSerializer.Serialize(
+                frame,
+                ArcanumJsonContext.Default.IntelligenceEvent)));
+        Assert.DoesNotContain(canary, serialized, StringComparison.Ordinal);
+
+        TestLogEntry log = Assert.Single(toolLogger.Entries);
+        Assert.Null(log.Exception);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(InvalidOperationException), log.Message, StringComparison.Ordinal);
+        Assert.Contains("failing_tool", log.Message, StringComparison.Ordinal);
 
     }
 
@@ -6806,7 +6954,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         GuardrailsPipeline? guardrailsPipeline = null,
         BudgetMonitor? budgetMonitor = null,
         ITurnRunWriter? turnRunWriter = null,
-        IBudgetReservationService? budgetReservationService = null)
+        IBudgetReservationService? budgetReservationService = null,
+        ILogger<WizardIntelligenceProvider>? logger = null,
+        ILogger<ToolExecutionPipeline>? toolLogger = null)
     {
         settings ??= DefaultSettings();
 
@@ -6868,7 +7018,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         return new WizardIntelligenceProvider(
             factory,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
-            NullLogger<WizardIntelligenceProvider>.Instance,
+            logger ?? NullLogger<WizardIntelligenceProvider>.Instance,
             new FakeHttpClientFactory(),
             grimoire,
             mcp,
@@ -6878,7 +7028,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 ward,
                 sanctumGuard,
                 new NoOpSessionAttachmentStore(),
-                NullLogger<ToolExecutionPipeline>.Instance,
+                toolLogger ?? NullLogger<ToolExecutionPipeline>.Instance,
                 grimoireTurnWriter: grimoireTurnWriter),
             grimoireTurnWriter,
             CreateInferenceContextBuilder(grimoire, settings),
@@ -7323,11 +7473,16 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             McpRequestDispatchState.DispatchedOrUnknown);
     }
 
-    private static AIFunction CreateThrowingMcpTool(string name) =>
-        AIFunctionFactory.Create(ThrowingToolDelegate, name, "throws");
+    private static AIFunction CreateThrowingMcpTool(
+        string name,
+        string message = "tool boom") =>
+        AIFunctionFactory.Create(
+            () => ThrowingToolDelegate(message),
+            name,
+            "throws");
 
-    private static string ThrowingToolDelegate() =>
-        throw new InvalidOperationException("tool boom");
+    private static string ThrowingToolDelegate(string message) =>
+        throw new InvalidOperationException(message);
 
     private static HashSet<string> ToolNames(ChatOptions? options) =>
         options?.Tools?
@@ -7728,12 +7883,14 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     private sealed class ThrowingChatClientFactory : IChatClientFactory
     {
+        public string FailureMessage { get; init; } =
+            "No AI model could be resolved.";
 
         public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("No AI model could be resolved.");
+            throw new InvalidOperationException(FailureMessage);
 
         public Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("No AI model could be resolved.");
+            throw new InvalidOperationException(FailureMessage);
 
     }
 
@@ -8138,8 +8295,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new ListPageResult<Campaign>([], false));
 
-        public Task<Campaign> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+        public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             Task.FromResult(campaign);

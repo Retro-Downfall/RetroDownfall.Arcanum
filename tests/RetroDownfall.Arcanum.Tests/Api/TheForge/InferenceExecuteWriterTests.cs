@@ -1,10 +1,16 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
+using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using Serilog.Core;
+using Serilog.Events;
 
 namespace RetroDownfall.Arcanum.Tests.Api.TheForge;
 
@@ -84,6 +90,82 @@ public sealed class InferenceExecuteWriterTests
     }
 
     [Fact]
+    public async Task WriteStreamAsync_ContinueThenReplay_IgnoresRequestAbortAndFinishesTerminally()
+    {
+        ServiceCollection services = new();
+        services.AddLogging();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+        MemoryStream body = new();
+        DefaultHttpContext httpContext = new();
+        httpContext.RequestServices = provider;
+        httpContext.Response.Body = body;
+        httpContext.Request.Headers.Append("Idempotency-Key", "continue-after-disconnect");
+
+        using CancellationTokenSource requestAborted = new();
+        httpContext.RequestAborted = requestAborted.Token;
+        requestAborted.Cancel();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = "completed-after-disconnect",
+        };
+
+        PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
+
+        await InferenceExecuteWriter.WriteStreamAsync(
+            httpContext,
+            intelligence,
+            request,
+            requestAborted.Token);
+
+        string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
+
+        Assert.Contains("completed-after-disconnect", output, StringComparison.Ordinal);
+        Assert.True(TurnContextGuards.IsIdempotencyTerminal(httpContext));
+        Assert.False(intelligence.StreamCancellationObserved);
+    }
+
+    [Fact]
+    public async Task WriteStreamAsync_OwnershipLoss_CancelsContinueThenReplayWithoutTerminalSuccess()
+    {
+        ServiceCollection services = new();
+        services.AddLogging();
+
+        ServiceProvider provider = services.BuildServiceProvider();
+        MemoryStream body = new();
+        DefaultHttpContext httpContext = new();
+        httpContext.RequestServices = provider;
+        httpContext.Response.Body = body;
+        httpContext.Request.Headers.Append("Idempotency-Key", "ownership-loss");
+
+        using CancellationTokenSource ownershipLost = new();
+        BlockingStreamIntelligenceProvider intelligence = new();
+
+        try
+        {
+            TurnIdempotencyAmbient.Publish(true, ownershipLost.Token);
+
+            Task write = InferenceExecuteWriter.WriteStreamAsync(
+                httpContext,
+                intelligence,
+                new PingRequest(Prompt: string.Empty, WorkingDirectory: string.Empty),
+                CancellationToken.None);
+
+            await intelligence.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            ownershipLost.Cancel();
+            await write.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            TurnIdempotencyAmbient.Clear();
+        }
+
+        Assert.True(intelligence.CancellationObserved);
+        Assert.False(TurnContextGuards.IsIdempotencyTerminal(httpContext));
+    }
+
+    [Fact]
     public async Task WriteStreamAsync_InferenceTimeoutOce_WritesTimeoutFrame()
     {
         ServiceCollection services = new();
@@ -160,11 +242,13 @@ public sealed class InferenceExecuteWriterTests
     }
 
     [Fact]
-    public async Task WriteStreamAsync_NonOperationCanceledException_WritesSanitizedErrorFrameAndLogsException()
+    public async Task WriteStreamAsync_NonOperationCanceledException_WritesSanitizedErrorFrameAndLogsSafeMetadata()
     {
+        const string canary = "CANARY_PROVIDER_CREDENTIAL_RESPONSE_BODY";
         ServiceCollection services = new();
 
         RecordingLoggerProvider recording = new();
+        RecordingSerilogSink globalRecording = new();
         services.AddLogging(builder =>
         {
             builder.ClearProviders();
@@ -188,22 +272,52 @@ public sealed class InferenceExecuteWriterTests
 
         FakeIntelligenceProvider intelligence = new();
 
-        intelligence.NextStreamException = new InvalidOperationException("stream boom");
+        intelligence.NextStreamException = new InvalidOperationException(canary);
 
         PingRequest request = new(Prompt: string.Empty, WorkingDirectory: string.Empty);
+        Serilog.ILogger previousLogger = Serilog.Log.Logger;
+        using Logger testLogger = new Serilog.LoggerConfiguration()
+            .MinimumLevel.Verbose()
+            .WriteTo.Sink(globalRecording)
+            .CreateLogger();
+        Serilog.Log.Logger = testLogger;
 
-        await InferenceExecuteWriter.WriteStreamAsync(httpContext, intelligence, request, cts.Token);
+        try
+        {
+            await InferenceExecuteWriter.WriteStreamAsync(httpContext, intelligence, request, cts.Token);
+        }
+        finally
+        {
+            Serilog.Log.Logger = previousLogger;
+        }
 
         string output = System.Text.Encoding.UTF8.GetString(body.ToArray());
+        List<IntelligenceEvent> frames = output
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(static line => JsonSerializer.Deserialize(
+                line,
+                ArcanumJsonContext.Default.IntelligenceEvent))
+            .OfType<IntelligenceEvent>()
+            .ToList();
 
-        Assert.Contains("error", output, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("stream boom", output, StringComparison.Ordinal);
-        Assert.Contains(InferenceExecuteWriter.PublicStreamFailureMessage, output, StringComparison.Ordinal);
+        IntelligenceEvent error = Assert.Single(
+            frames,
+            static frame => frame.Type == IntelligenceEventType.Error);
+        Assert.Equal(InferenceExecuteWriter.PublicStreamFailureMessage, error.Message);
+        Assert.DoesNotContain(canary, output, StringComparison.Ordinal);
 
-        Assert.Contains(
-            recording.Entries,
-            e => e.Exception is InvalidOperationException { Message: "stream boom" }
-                && e.Level >= LogLevel.Error);
+        List<string> allFailureLogs =
+        [
+            .. recording.Entries
+                .Where(static entry => entry.Level >= LogLevel.Error)
+                .Select(static entry => entry.Message + entry.Exception),
+            .. globalRecording.Events
+                .Where(static entry => entry.Level >= LogEventLevel.Error)
+                .Select(static entry => entry.RenderMessage() + entry.Exception),
+        ];
+        string failureLog = Assert.Single(allFailureLogs);
+        Assert.Contains(nameof(InvalidOperationException), failureLog, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, failureLog, StringComparison.Ordinal);
     }
 
     // W3.4 Group A (S10): a client disconnect mid-stream must (a) cancel the linked inference
@@ -348,6 +462,40 @@ public sealed class InferenceExecuteWriterTests
 
     }
 
+    private sealed class BlockingStreamIntelligenceProvider : IArcanumIntelligenceProvider
+    {
+        public TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool CancellationObserved { get; private set; }
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null)
+        {
+            Entered.SetResult();
+
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                CancellationObserved = true;
+                throw;
+            }
+
+            yield break;
+        }
+    }
+
     private sealed class ThrowingStream : Stream
     {
 
@@ -451,6 +599,13 @@ public sealed class InferenceExecuteWriterTests
                 entries.Add((logLevel, exception, formatter(state, exception)));
             }
         }
+    }
+
+    private sealed class RecordingSerilogSink : ILogEventSink
+    {
+        public List<LogEvent> Events { get; } = [];
+
+        public void Emit(LogEvent logEvent) => Events.Add(logEvent);
     }
 
 }

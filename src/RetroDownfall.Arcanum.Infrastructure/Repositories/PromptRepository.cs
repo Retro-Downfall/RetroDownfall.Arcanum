@@ -18,6 +18,8 @@ public sealed class PromptRepository : IPromptRepository
 
     private readonly ILogger<PromptRepository> _logger;
 
+    internal Func<int, Exception, CancellationToken, ValueTask>? RetryingForTesting { get; set; }
+
     public PromptRepository(ArcanumDbContext db, ILogger<PromptRepository> logger)
     {
         _db = db;
@@ -117,7 +119,9 @@ public sealed class PromptRepository : IPromptRepository
     {
         _db.Prompts.Add(prompt);
 
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        _ = await EfSaveChangesRetry
+            .ExecuteAsync(_db, cancellationToken, RetryingForTesting)
+            .ConfigureAwait(false);
 
         return prompt;
     }
@@ -126,7 +130,9 @@ public sealed class PromptRepository : IPromptRepository
     {
         _db.Prompts.Update(prompt);
 
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        _ = await EfSaveChangesRetry
+            .ExecuteAsync(_db, cancellationToken, RetryingForTesting)
+            .ConfigureAwait(false);
 
         return prompt;
     }

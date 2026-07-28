@@ -21,16 +21,29 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
 
     private readonly ILogger<ArcanumBrowseWebTool>? _browseWebLogger;
 
+    private readonly ILogger<BuiltInToolRegistry>? _logger;
+
     public BuiltInToolRegistry(
         IHttpClientFactory httpClientFactory,
         IOptionsSnapshot<ArcanumSettings> settings,
         ILogger<ArcanumBrowseWebTool>? browseWebLogger = null)
+        : this(httpClientFactory, settings, browseWebLogger, logger: null)
+    {
+    }
+
+    public BuiltInToolRegistry(
+        IHttpClientFactory httpClientFactory,
+        IOptionsSnapshot<ArcanumSettings> settings,
+        ILogger<ArcanumBrowseWebTool>? browseWebLogger,
+        ILogger<BuiltInToolRegistry>? logger)
     {
         _httpClientFactory = httpClientFactory;
 
         _settings = settings;
 
         _browseWebLogger = browseWebLogger;
+
+        _logger = logger;
     }
 
     public IReadOnlyList<string> GetToolNames()
@@ -97,7 +110,14 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
         }
         catch (Exception ex)
         {
-            return Result<JsonElement>.Failure(new Error(ErrorCodes.Hub.Error, $"Tool invocation failed: {ex.Message}"));
+            _logger?.LogError(
+                "Built-in tool {ToolName} invocation failed; exception type {ExceptionType}.",
+                toolName,
+                ex.GetType().FullName);
+
+            return Result<JsonElement>.Failure(new Error(
+                ErrorCodes.Hub.Error,
+                ToolExecutionPipeline.PublicToolFailureMessage(toolName)));
         }
     }
 

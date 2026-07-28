@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
@@ -9,6 +10,76 @@ public sealed class McpSecurityLimitsTests
 {
 
     private const int DefaultMaxJsonRpcLineBytes = 2_097_152;
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(int.MaxValue)]
+    public async Task Bounded_file_reader_rejects_invalid_caps(int maxBytes)
+    {
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => SecureFileReader.ReadBytesAsync(
+                "unused",
+                maxBytes,
+                CancellationToken.None));
+
+    }
+
+    [Fact]
+    public async Task Bounded_file_reader_does_not_rent_the_maximum_for_a_small_file()
+    {
+
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-bounded-reader-{Guid.NewGuid():N}.json");
+
+        try
+        {
+            await File.WriteAllTextAsync(path, "{}");
+
+            SecureFileReadResult result =
+                await SecureFileReader.ReadBytesAsync(
+                    path,
+                    McpSecurityLimits.MaxMcpConfigBytes,
+                    CancellationToken.None);
+
+            Assert.Equal(SecureFileReadStatus.Success, result.Status);
+            Assert.Equal("{}", Encoding.UTF8.GetString(result.Bytes.Span));
+            Assert.True(result.BufferCapacity < McpSecurityLimits.MaxMcpConfigBytes);
+
+            result.Dispose();
+
+            Assert.True(result.Bytes.IsEmpty);
+            Assert.Equal(0, result.BufferCapacity);
+
+            result.Dispose();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+
+    }
+
+    [Fact]
+    public async Task Bounded_file_reader_reports_missing_parent_directory()
+    {
+
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-missing-parent-{Guid.NewGuid():N}",
+            "mcp.json");
+
+        using SecureFileReadResult result =
+            await SecureFileReader.ReadBytesAsync(
+                path,
+                maxBytes: 1,
+                CancellationToken.None);
+
+        Assert.Equal(SecureFileReadStatus.NotFound, result.Status);
+        Assert.True(result.Bytes.IsEmpty);
+
+    }
 
     [Fact]
     public void ExceedsMaxLineUtf8Bytes_detects_oversized_lines()

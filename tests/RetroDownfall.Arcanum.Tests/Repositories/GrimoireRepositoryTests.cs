@@ -308,6 +308,421 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task GetSessionsNeedingSummarizationAsync_returns_all_candidates_in_updated_order()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const int candidateCount = 101;
+
+        DateTimeOffset baseline = new(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+
+        Guid[] expected = new Guid[candidateCount];
+
+        for (int i = candidateCount - 1; i >= 0; i--)
+        {
+
+            Guid id = Guid.NewGuid();
+
+            expected[i] = id;
+
+            DateTimeOffset timestamp = baseline.AddMinutes(i);
+
+            _db!.Sessions.Add(new Session
+            {
+                Id = id,
+                Title = $"candidate-{i}",
+                Status = "active",
+                CreatedAt = timestamp,
+                UpdatedAt = timestamp,
+                UnsummarizedEntryCount = 26,
+            });
+
+        }
+
+        await _db!.SaveChangesAsync(CancellationToken.None);
+
+        GrimoireRepository repository = CreateRepository();
+
+        List<Guid> result = await repository.GetSessionsNeedingSummarizationAsync(
+            threshold: 25,
+            idleCutoff: baseline.AddDays(-1).UtcDateTime,
+            CancellationToken.None);
+
+        Assert.Equal(candidateCount, result.Count);
+
+        Assert.Equal(expected, result);
+
+    }
+
+    [SkippableFact]
+    public async Task GetUnsummarizedEntriesAsync_widens_target_to_every_actual_row()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTime watermark = new(2026, 7, 2, 0, 0, 0, DateTimeKind.Utc);
+
+        Guid sessionId = Guid.NewGuid();
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            Title = "wide unsummarized window",
+            Status = "active",
+            CreatedAt = new DateTimeOffset(watermark, TimeSpan.Zero),
+            UpdatedAt = new DateTimeOffset(watermark.AddMinutes(60), TimeSpan.Zero),
+            LastSummarizedMessageAt = watermark,
+            UnsummarizedEntryCount = 60,
+        });
+
+        for (int i = 1; i <= 60; i++)
+        {
+
+            _db.Entries.Add(new Entry
+            {
+                Id = EntryId(i),
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = $"entry-{i}",
+                ModelUsed = "test-model",
+                CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
+            });
+
+        }
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        GrimoireRepository repository = CreateRepository();
+
+        List<Entry> result = await repository.GetUnsummarizedEntriesAsync(
+            sessionId,
+            watermark,
+            batchSize: 50,
+            CancellationToken.None);
+
+        Assert.Equal(60, result.Count);
+
+        Assert.Equal(
+            Enumerable.Range(1, 60).Select(EntryId),
+            result.Select(entry => entry.Id));
+
+    }
+
+    [SkippableFact]
+    public async Task GetUnsummarizedEntriesAsync_keeps_tied_tool_pair_and_rollup_count_correct()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTime watermark = new(2026, 7, 3, 0, 0, 0, DateTimeKind.Utc);
+
+        Guid sessionId = Guid.NewGuid();
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            Title = "tied tool pair",
+            Status = "active",
+            CreatedAt = new DateTimeOffset(watermark, TimeSpan.Zero),
+            UpdatedAt = new DateTimeOffset(watermark.AddMinutes(25), TimeSpan.Zero),
+            LastSummarizedMessageAt = watermark,
+            UnsummarizedEntryCount = 26,
+        });
+
+        for (int i = 1; i <= 24; i++)
+        {
+
+            _db.Entries.Add(new Entry
+            {
+                Id = EntryId(i),
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = $"entry-{i}",
+                ModelUsed = "test-model",
+                CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
+            });
+
+        }
+
+        DateTimeOffset tiedTimestamp =
+            new(watermark.AddMinutes(25), TimeSpan.Zero);
+
+        Guid toolCallId = EntryId(25);
+
+        Guid toolResultId = EntryId(26);
+
+        _db.Entries.Add(new Entry
+        {
+            Id = toolCallId,
+            SessionId = sessionId,
+            Role = MessageRole.Assistant,
+            Content = "[ToolCall: inspect({})]",
+            ModelUsed = "test-model",
+            CreatedAt = tiedTimestamp,
+            ToolCallId = "call-25",
+            ToolName = "inspect",
+            ToolArguments = "{}",
+        });
+
+        _db.Entries.Add(new Entry
+        {
+            Id = toolResultId,
+            SessionId = sessionId,
+            Role = MessageRole.Tool,
+            Content = "[ToolResult: ok]",
+            ModelUsed = "test-model",
+            CreatedAt = tiedTimestamp,
+            ToolCallId = "call-25",
+        });
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        GrimoireRepository repository = CreateRepository();
+
+        List<Entry> result = await repository.GetUnsummarizedEntriesAsync(
+            sessionId,
+            watermark,
+            batchSize: 25,
+            CancellationToken.None);
+
+        Assert.Equal(26, result.Count);
+
+        Assert.Equal(toolCallId, result[^2].Id);
+
+        Assert.Equal(toolResultId, result[^1].Id);
+
+        await repository.UpdateSessionCampaignRollupAsync(
+            sessionId,
+            "summary through complete tool pair",
+            tiedTimestamp.UtcDateTime,
+            CancellationToken.None);
+
+        Session updated = await _db.Sessions
+            .AsNoTracking()
+            .SingleAsync(session => session.Id == sessionId, CancellationToken.None);
+
+        Assert.Equal(0, updated.UnsummarizedEntryCount);
+
+        Assert.Equal(tiedTimestamp.UtcDateTime, updated.LastSummarizedMessageAt);
+
+    }
+
+    [SkippableFact]
+    public async Task GetUnsummarizedEntriesAsync_returns_exact_session_entry_ceiling()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const int entryCeiling = 100;
+
+        DateTime watermark = new(2026, 7, 4, 0, 0, 0, DateTimeKind.Utc);
+
+        Guid sessionId = await SeedUnsummarizedWindowAsync(
+            "exact entry ceiling",
+            watermark,
+            entryCeiling);
+
+        GrimoireRepository repository = CreateRepository(maxEntriesPerSession: entryCeiling);
+
+        List<Entry> result = await repository.GetUnsummarizedEntriesAsync(
+            sessionId,
+            watermark,
+            batchSize: 25,
+            CancellationToken.None);
+
+        Assert.Equal(entryCeiling, result.Count);
+
+        Assert.Equal(
+            Enumerable.Range(1, entryCeiling).Select(EntryId),
+            result.Select(entry => entry.Id));
+
+    }
+
+    [SkippableFact]
+    public async Task GetUnsummarizedEntriesAsync_legacy_overflow_fails_without_advancing_watermark()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const int entryCeiling = 100;
+
+        DateTime watermark = new(2026, 7, 5, 0, 0, 0, DateTimeKind.Utc);
+
+        Guid sessionId = await SeedUnsummarizedWindowAsync(
+            "legacy overflow",
+            watermark,
+            entryCeiling + 1);
+
+        GrimoireRepository repository = CreateRepository(maxEntriesPerSession: entryCeiling);
+
+        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repository.GetUnsummarizedEntriesAsync(
+                sessionId,
+                watermark,
+                batchSize: 25,
+                CancellationToken.None));
+
+        Assert.Contains(sessionId.ToString(), failure.Message, StringComparison.Ordinal);
+
+        Assert.Contains(
+            $"101 entries, exceeding the configured session ceiling of {entryCeiling}",
+            failure.Message,
+            StringComparison.Ordinal);
+
+        Session unchanged = await _db!.Sessions
+            .AsNoTracking()
+            .SingleAsync(session => session.Id == sessionId, CancellationToken.None);
+
+        Assert.Equal(watermark, unchanged.LastSummarizedMessageAt);
+        Assert.Equal(entryCeiling + 1, unchanged.UnsummarizedEntryCount);
+
+    }
+
+    [SkippableFact]
+    public async Task GetSessionsNeedingSummarizationAsync_legacy_backfill_recomputes_under_session_write_lock()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTime watermark = new(2026, 7, 6, 0, 0, 0, DateTimeKind.Utc);
+
+        Guid sessionId = await SeedUnsummarizedWindowAsync(
+            "legacy counter backfill",
+            watermark,
+            entryCount: 3,
+            unsummarizedEntryCount: -1);
+
+        GrimoireRepository repository = CreateRepository();
+
+        bool lockWasHeld = false;
+
+        repository.AfterLegacyBackfillCountedForTesting = (observedSessionId, _) =>
+        {
+            if (observedSessionId == sessionId)
+            {
+                lockWasHeld = SessionWriteLock.IsHeldForTesting(sessionId);
+            }
+
+            return ValueTask.CompletedTask;
+        };
+
+        List<Guid> candidates = await repository.GetSessionsNeedingSummarizationAsync(
+            threshold: 2,
+            idleCutoff: watermark.AddDays(-1),
+            CancellationToken.None);
+
+        Session updated = await _db!.Sessions
+            .AsNoTracking()
+            .SingleAsync(session => session.Id == sessionId, CancellationToken.None);
+
+        Assert.True(lockWasHeld);
+        Assert.Equal(3, updated.UnsummarizedEntryCount);
+        Assert.Contains(sessionId, candidates);
+
+    }
+
+    [SkippableFact]
+    public async Task UpdateSessionCampaignRollupAsync_serializes_concurrent_append_and_preserves_remaining_count()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTime watermark = new(2026, 7, 7, 0, 0, 0, DateTimeKind.Utc);
+
+        Guid sessionId = await SeedUnsummarizedWindowAsync(
+            "concurrent rollup append",
+            watermark,
+            entryCount: 1);
+
+        GrimoireRepository rollupRepository = CreateRepository();
+
+        await using ArcanumDbContext appendDb = _fixture.CreateContext(_dbPath);
+
+        GrimoireRepository appendRepository = CreateRepository(appendDb);
+
+        TaskCompletionSource rollupCounted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource releaseRollup = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        bool lockWasHeld = false;
+
+        rollupRepository.AfterRollupRemainingCountedForTesting = async (observedSessionId, _) =>
+        {
+            if (observedSessionId != sessionId)
+            {
+                return;
+            }
+
+            lockWasHeld = SessionWriteLock.IsHeldForTesting(sessionId);
+
+            rollupCounted.SetResult();
+
+            await releaseRollup.Task.ConfigureAwait(false);
+        };
+
+        Task rollupTask = rollupRepository.UpdateSessionCampaignRollupAsync(
+            sessionId,
+            "summary through initial entry",
+            watermark.AddMinutes(1),
+            CancellationToken.None);
+
+        await rollupCounted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        TaskCompletionSource appendAttemptedLock =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SessionWriteLock.BeforeAcquireForTesting = observedSessionId =>
+        {
+            if (observedSessionId == sessionId)
+            {
+                appendAttemptedLock.SetResult();
+            }
+        };
+
+        try
+        {
+            Task appendTask = appendRepository.AppendToolInteractionAsync(
+                sessionId,
+                "inspect",
+                "{}",
+                "ok",
+                "test-model",
+                CancellationToken.None);
+
+            await appendAttemptedLock.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            releaseRollup.SetResult();
+
+            await Task.WhenAll(rollupTask, appendTask);
+        }
+        finally
+        {
+            SessionWriteLock.BeforeAcquireForTesting = null;
+
+            releaseRollup.TrySetResult();
+        }
+
+        await using ArcanumDbContext verificationDb = _fixture.CreateContext(_dbPath);
+
+        Session updated = await verificationDb.Sessions
+            .AsNoTracking()
+            .SingleAsync(session => session.Id == sessionId, CancellationToken.None);
+
+        int actualRemaining = await EntryTemporalQueries
+            .CountAfter(
+                verificationDb,
+                sessionId,
+                new DateTimeOffset(watermark.AddMinutes(1), TimeSpan.Zero))
+            .FirstAsync(CancellationToken.None);
+
+        Assert.True(lockWasHeld);
+        Assert.Equal(2, actualRemaining);
+        Assert.Equal(actualRemaining, updated.UnsummarizedEntryCount);
+
+    }
+
+    [SkippableFact]
     public async Task GetSessionHeaderAsync_returns_session_without_entries()
     {
 
@@ -652,7 +1067,9 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(second.CreatedAt, latest.CreatedAt);
     }
 
-    private GrimoireRepository CreateRepository()
+    private GrimoireRepository CreateRepository(
+        ArcanumDbContext? db = null,
+        int maxEntriesPerSession = 10_000)
     {
 
         ArcanumSettings settings = new()
@@ -666,14 +1083,60 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             {
                 ArchiveSearchMaxQueryLength = 256,
             },
+            Sessions = new SessionSettings
+            {
+                MaxEntriesPerSession = maxEntriesPerSession,
+            },
         };
 
         return new GrimoireRepository(
-            _db!,
+            db ?? _db!,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(settings));
 
     }
+
+    private async Task<Guid> SeedUnsummarizedWindowAsync(
+        string title,
+        DateTime watermark,
+        int entryCount,
+        int? unsummarizedEntryCount = null)
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        _db!.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            Title = title,
+            Status = "active",
+            CreatedAt = new DateTimeOffset(watermark, TimeSpan.Zero),
+            UpdatedAt = new DateTimeOffset(watermark.AddMinutes(entryCount), TimeSpan.Zero),
+            LastSummarizedMessageAt = watermark,
+            UnsummarizedEntryCount = unsummarizedEntryCount ?? entryCount,
+        });
+
+        for (int i = 1; i <= entryCount; i++)
+        {
+            _db.Entries.Add(new Entry
+            {
+                Id = EntryId(i),
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = $"entry-{i}",
+                ModelUsed = "test-model",
+                CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
+            });
+        }
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        return sessionId;
+
+    }
+
+    private static Guid EntryId(int ordinal) =>
+        Guid.Parse($"00000000-0000-0000-0000-{ordinal:000000000000}");
 
 }

@@ -47,6 +47,53 @@ public sealed class BudgetReservationEstimateTests
     }
 
     [Fact]
+    public void TurnEstimate_WithMaterializedInput_StillTreatsReasoningAsOutputSubset()
+    {
+        ModelPricingEntry pricing = new()
+        {
+            InputPer1M = 10m,
+            OutputPer1M = 20m,
+            ReasoningPer1M = 80m,
+        };
+
+        decimal estimate = BudgetReservationService.EstimateWorstCaseTurnUsd(
+            pricing,
+            maxOutputTokens: 1_000,
+            reasoningBudgetTokens: 600,
+            estimatedInputTokens: 5_000);
+
+        decimal expectedPerCall =
+            (5_000m * 10m / 1_000_000m)
+            + (400m * 20m / 1_000_000m)
+            + (600m * 80m / 1_000_000m);
+
+        Assert.Equal(expectedPerCall * TurnLimitsDefaults.MaxModelCalls, estimate);
+    }
+
+    [Fact]
+    public void TurnEstimate_WithMaterializedInput_UsesLargerReasoningHeadroom()
+    {
+        ModelPricingEntry pricing = new()
+        {
+            InputPer1M = 10m,
+            OutputPer1M = 20m,
+            ReasoningPer1M = 80m,
+        };
+
+        decimal estimate = BudgetReservationService.EstimateWorstCaseTurnUsd(
+            pricing,
+            maxOutputTokens: 1_000,
+            reasoningBudgetTokens: 2_000,
+            estimatedInputTokens: 5_000);
+
+        decimal expectedPerCall =
+            (5_000m * 10m / 1_000_000m)
+            + (2_000m * 80m / 1_000_000m);
+
+        Assert.Equal(expectedPerCall * TurnLimitsDefaults.MaxModelCalls, estimate);
+    }
+
+    [Fact]
     public void TurnEstimate_WhenReasoningIsCheaper_ReservesAtHigherOutputRate()
     {
         ModelPricingEntry pricing = new()

@@ -173,8 +173,8 @@ internal sealed class Loremaster(
 
                     DateTime watermark = session.LastSummarizedMessageAt ?? DateTime.MinValue;
 
-                    int batchSize = ArcanumSettingClamps.CampaignLogThreshold(
-                        options.CurrentValue.Intelligence.CampaignLogThreshold);
+                    int batchSize = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
+                        options.CurrentValue.Grimoire.MaxMessagesPerConversationLoad);
 
                     List<Entry> batch = await grimoire
                         .GetUnsummarizedEntriesAsync(sessionId, watermark, batchSize, stoppingToken)
@@ -204,6 +204,8 @@ internal sealed class Loremaster(
 
                     foreach (Entry m in batch)
                     {
+                        stoppingToken.ThrowIfCancellationRequested();
+
                         _ = userPayload.Append('[');
 
                         _ = userPayload.Append(m.Role.ToString());

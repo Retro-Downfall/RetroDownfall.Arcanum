@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
+[Collection("ProcessEnvironment")]
 public sealed class ListenAnySecurityPolicyTests : IDisposable
 {
 
@@ -11,12 +12,36 @@ public sealed class ListenAnySecurityPolicyTests : IDisposable
 
     private readonly string? _originalHostAny;
 
+    private readonly string? _originalDotnetEnvironment;
+
+    private readonly string? _originalAspNetCoreEnvironment;
+
+    private readonly string? _originalTestHome;
+
+    private readonly string _testHome;
+
   public ListenAnySecurityPolicyTests()
   {
+
+    _testHome = Path.Combine(Path.GetTempPath(), "arcanum-listen-any-tests", Guid.NewGuid().ToString("N"));
+
+    Directory.CreateDirectory(_testHome);
 
     _originalAck = global::System.Environment.GetEnvironmentVariable(ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable);
 
     _originalHostAny = global::System.Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY");
+
+    _originalDotnetEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+    _originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
+    _originalTestHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+    global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+    global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+    global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _testHome);
 
     global::System.Environment.SetEnvironmentVariable(ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable, null);
 
@@ -37,6 +62,19 @@ public sealed class ListenAnySecurityPolicyTests : IDisposable
     {
 
       File.Delete(marker);
+
+    }
+
+    global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", _originalDotnetEnvironment);
+
+    global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", _originalAspNetCoreEnvironment);
+
+    global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _originalTestHome);
+
+    if (Directory.Exists(_testHome))
+    {
+
+      Directory.Delete(_testHome, recursive: true);
 
     }
 
@@ -77,6 +115,11 @@ public sealed class ListenAnySecurityPolicyTests : IDisposable
   {
 
     ListenAnySecurityPolicy.PersistAcknowledgement();
+
+    Assert.StartsWith(
+      Path.GetFullPath(_testHome),
+      Path.GetFullPath(ArcanumPaths.GrimoireDirectory),
+      StringComparison.Ordinal);
 
     Assert.True(ListenAnySecurityPolicy.IsListenAnyAcknowledged());
 

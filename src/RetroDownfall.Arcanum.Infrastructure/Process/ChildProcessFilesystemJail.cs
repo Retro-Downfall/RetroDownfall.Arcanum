@@ -34,8 +34,12 @@ internal sealed class ChildProcessSandboxApplyResult
 
     internal ChildProcessSandboxApplyStatus Status { get; init; }
 
-    /// <summary>Owner-only temp files (profile/config/invocation TMPDIR) to delete after the child exits.</summary>
-    internal IReadOnlyList<string> TempPathsToCleanup { get; init; } = [];
+    /// <summary>
+    /// Owner-only temp artifacts whose no-follow identities were captured at creation.
+    /// </summary>
+    internal IReadOnlyList<IdentityOwnedFileSystemArtifact>
+        OwnedArtifactsToCleanup
+    { get; init; } = [];
 
     internal string? Detail { get; init; }
 
@@ -92,60 +96,42 @@ internal static class ChildProcessFilesystemJail
 
     }
 
-    internal static void CleanupTempPaths(IReadOnlyList<string>? paths)
+    internal static bool CleanupTempPaths(
+        IReadOnlyList<IdentityOwnedFileSystemArtifact>? artifacts)
     {
 
-        if (paths is null || paths.Count == 0)
+        if (artifacts is null || artifacts.Count == 0)
         {
 
-            return;
+            return true;
 
         }
 
-        foreach (string path in paths)
+        bool complete = true;
+
+        foreach (IdentityOwnedFileSystemArtifact artifact in artifacts)
         {
 
-            if (string.IsNullOrWhiteSpace(path))
+            if (!IdentityOwnedFileSystemCleanup.TryDelete(artifact))
             {
 
-                continue;
-
-            }
-
-            try
-            {
-
-                if (File.Exists(path))
-                {
-
-                    File.Delete(path);
-
-                }
-                else if (Directory.Exists(path))
-                {
-
-                    Directory.Delete(path, recursive: true);
-
-                }
-
-            }
-            catch (Exception)
-            {
-
-                // Best-effort cleanup of owner-only temp profile/config/TMPDIR.
+                complete = false;
 
             }
 
         }
+
+        return complete;
 
     }
 
     internal static async Task<bool> CleanupTempPathsAsync(
-        IReadOnlyList<string>? paths,
+        IReadOnlyList<IdentityOwnedFileSystemArtifact>? artifacts,
         TimeSpan remaining,
-        Action<IReadOnlyList<string>?>? cleanupAction = null)
+        Func<IReadOnlyList<IdentityOwnedFileSystemArtifact>?, bool>?
+            cleanupAction = null)
     {
-        if (paths is null || paths.Count == 0)
+        if (artifacts is null || artifacts.Count == 0)
         {
             return true;
         }
@@ -155,15 +141,14 @@ internal static class ChildProcessFilesystemJail
             return false;
         }
 
-        Task cleanup = Task.Run(
-            () => (cleanupAction ?? CleanupTempPaths)(paths));
+        Task<bool> cleanup = Task.Run(
+            () => (cleanupAction ?? CleanupTempPaths)(artifacts));
 
         try
         {
-            await cleanup
+            return await cleanup
                 .WaitAsync(remaining)
                 .ConfigureAwait(false);
-            return true;
         }
         catch (TimeoutException)
         {
@@ -173,6 +158,10 @@ internal static class ChildProcessFilesystemJail
                 TaskContinuationOptions.OnlyOnFaulted
                 | TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
+            return false;
+        }
+        catch (Exception)
+        {
             return false;
         }
     }
@@ -242,9 +231,9 @@ internal static class ChildProcessFilesystemJail
 
         }
 
-        string? invocationTempDir = null;
+        IdentityOwnedFileSystemArtifact? invocationTempArtifact = null;
 
-        string? profilePath = null;
+        IdentityOwnedFileSystemArtifact? profileArtifact = null;
 
         try
         {
@@ -290,7 +279,11 @@ internal static class ChildProcessFilesystemJail
 
             }
 
-            invocationTempDir = CreateOwnerOnlyTempDirectory("arcanum-child-tmp-");
+            invocationTempArtifact =
+                CreateOwnerOnlyTempDirectory("arcanum-child-tmp-");
+
+            string invocationTempDir =
+                invocationTempArtifact.Value.Path;
 
             startInfo.Environment["TMPDIR"] = invocationTempDir;
 
@@ -304,7 +297,12 @@ internal static class ChildProcessFilesystemJail
                 invocationTempDir,
                 readOnlyRoots);
 
-            profilePath = WriteOwnerOnlyTempFile("arcanum-sb-", ".sb", profile);
+            profileArtifact = WriteOwnerOnlyTempFile(
+                "arcanum-sb-",
+                ".sb",
+                profile);
+
+            string profilePath = profileArtifact.Value.Path;
 
             WrapWithSandboxExec(startInfo, sandboxExecPath, profilePath);
 
@@ -313,7 +311,11 @@ internal static class ChildProcessFilesystemJail
 
                 Status = ChildProcessSandboxApplyStatus.Applied,
 
-                TempPathsToCleanup = [profilePath, invocationTempDir],
+                OwnedArtifactsToCleanup =
+                [
+                    profileArtifact.Value,
+                    invocationTempArtifact.Value,
+                ],
 
             };
 
@@ -321,19 +323,19 @@ internal static class ChildProcessFilesystemJail
         catch (Exception ex)
         {
 
-            List<string> cleanup = [];
+            List<IdentityOwnedFileSystemArtifact> cleanup = [];
 
-            if (profilePath is not null)
+            if (profileArtifact is not null)
             {
 
-                cleanup.Add(profilePath);
+                cleanup.Add(profileArtifact.Value);
 
             }
 
-            if (invocationTempDir is not null)
+            if (invocationTempArtifact is not null)
             {
 
-                cleanup.Add(invocationTempDir);
+                cleanup.Add(invocationTempArtifact.Value);
 
             }
 
@@ -468,7 +470,9 @@ internal static class ChildProcessFilesystemJail
 
     }
 
-    private static string CreateOwnerOnlyTempDirectory(string prefix)
+    private static IdentityOwnedFileSystemArtifact
+        CreateOwnerOnlyTempDirectory(
+            string prefix)
     {
 
         // Unix-domain socket paths are length-bounded on macOS. dotnet format's MSBuild build host
@@ -488,37 +492,89 @@ internal static class ChildProcessFilesystemJail
 
         Directory.CreateDirectory(path);
 
-        SecureFilePermissions.ApplyOwnerOnlyDirectory(path);
+        if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                path,
+                FileSystemObjectKind.Directory,
+                out IdentityOwnedFileSystemArtifact artifact))
+        {
+            throw new IOException(
+                "Could not capture child temp-directory identity.");
+        }
 
-        return path;
+        try
+        {
+            SecureFilePermissions.ApplyOwnerOnlyDirectory(path);
+
+            return artifact;
+        }
+        catch
+        {
+            _ = IdentityOwnedFileSystemCleanup.TryDelete(artifact);
+
+            throw;
+        }
 
     }
 
-    private static string WriteOwnerOnlyTempFile(string prefix, string extension, string contents)
+    private static IdentityOwnedFileSystemArtifact
+        WriteOwnerOnlyTempFile(
+            string prefix,
+            string extension,
+            string contents)
     {
 
         string path = Path.Combine(Path.GetTempPath(), prefix + Guid.NewGuid().ToString("N") + extension);
 
         byte[] bytes = Encoding.UTF8.GetBytes(contents);
 
-        using (FileStream stream = new(
-                   path,
-                   FileMode.CreateNew,
-                   FileAccess.Write,
-                   FileShare.None,
-                   bufferSize: 4096,
-                   FileOptions.None))
+        IdentityOwnedFileSystemArtifact artifact = default;
+
+        bool captured = false;
+
+        try
         {
+            using (FileStream stream = new(
+                       path,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 4096,
+                       FileOptions.None))
+            {
+                if (!IdentityOwnedFileSystemCleanup.TryCaptureOpenFile(
+                        path,
+                        stream.SafeFileHandle,
+                        out artifact))
+                {
+                    throw new IOException(
+                        "Could not capture child sandbox-profile identity.");
+                }
 
-            stream.Write(bytes, 0, bytes.Length);
+                captured = true;
 
-            stream.Flush(flushToDisk: true);
+                stream.Write(bytes, 0, bytes.Length);
 
+                stream.Flush(flushToDisk: true);
+            }
+
+            SecureFilePermissions.ApplyOwnerOnlyFile(path);
+
+            return artifact;
         }
+        catch
+        {
+            if (captured)
+            {
+                _ = IdentityOwnedFileSystemCleanup.TryDelete(
+                    artifact);
+            }
 
-        SecureFilePermissions.ApplyOwnerOnlyFile(path);
-
-        return path;
+            throw;
+        }
+        finally
+        {
+            Array.Clear(bytes);
+        }
 
     }
 

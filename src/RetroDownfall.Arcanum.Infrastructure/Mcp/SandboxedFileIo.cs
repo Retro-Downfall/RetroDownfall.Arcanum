@@ -45,7 +45,11 @@ internal static class SandboxedFileIo
 
         string identityPath = Path.GetFullPath(resolvedFinalPath ?? absolutePath);
 
-        if (!FileHandleIdentityInterop.TryGetPathIdentity(identityPath, out FileHandleIdentity expectedIdentity))
+        if (!FileHandleIdentityInterop.TryGetPathMetadata(
+                identityPath,
+                out FileHandleMetadata expectedMetadata)
+            || expectedMetadata.Kind != FileSystemObjectKind.RegularFile
+            || expectedMetadata.HardLinkCount != 1)
         {
 
             error = ToolError(PathEscapesSandboxMessage);
@@ -54,61 +58,40 @@ internal static class SandboxedFileIo
 
         }
 
-        try
-        {
-
-            stream = new FileStream(
+        SecureFileOpenStatus openStatus =
+            SecureFileReader.TryOpenRegularFile(
                 absolutePath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                bufferSize: 4096,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
+                expectedMetadata.Identity,
+                out stream,
+                out _);
 
-        }
-        catch (FileNotFoundException)
+        if (openStatus is not SecureFileOpenStatus.Success)
         {
 
-            error = ToolError("The specified file was not found.");
-
-            return false;
-
-        }
-        catch (DirectoryNotFoundException)
-        {
-
-            error = ToolError("The specified directory was not found.");
-
-            return false;
-
-        }
-        catch (UnauthorizedAccessException)
-        {
-
-            error = ToolError("Access denied.");
-
-            return false;
-
-        }
-        catch (IOException)
-        {
-
-            error = ToolError("An I/O error occurred. See server logs.");
+            error = OpenError(openStatus);
 
             return false;
 
         }
 
-        if (!TryRevalidateOpenedHandle(workspaceRoot, stream, expectedIdentity, out error))
+        FileStream openedStream = stream!;
+
+        if (!TryRevalidateOpenedHandle(
+                workspaceRoot,
+                openedStream,
+                expectedMetadata.Identity,
+                out error))
         {
 
-            stream.Dispose();
+            openedStream.Dispose();
 
             stream = null;
 
             return false;
 
         }
+
+        stream = openedStream;
 
         return true;
 
@@ -242,6 +225,7 @@ internal static class SandboxedFileIo
     internal static async Task<(string? Content, McpToolsCallResultWire? Error)> TryReadAllTextAsync(
         string workspaceRoot,
         string absolutePath,
+        int maxBytes,
         CancellationToken cancellationToken)
     {
 
@@ -252,14 +236,32 @@ internal static class SandboxedFileIo
 
         }
 
-        await using (stream)
+        await using (FileStream openedStream = stream!)
         {
 
-            using StreamReader reader = new(stream);
+            SecureUtf8FileReadResult readResult =
+                await SecureFileReader.ReadUtf8TextAsync(
+                        openedStream,
+                        maxBytes,
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
-            string content = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+            if (readResult.Status is not SecureFileReadStatus.Success
+                || readResult.Text is null)
+            {
+                return (null, ReadError(readResult.Status));
+            }
 
-            return (content, null);
+            if (!TryRevalidateOpenedHandle(
+                    workspaceRoot,
+                    openedStream,
+                    readResult.Metadata.Identity,
+                    out McpToolsCallResultWire? revalidationError))
+            {
+                return (null, revalidationError);
+            }
+
+            return (readResult.Text, null);
 
         }
 
@@ -311,16 +313,10 @@ internal static class SandboxedFileIo
 
         }
 
-        if (!FileHandleIdentityInterop.TryGetHandleIdentity(stream.SafeFileHandle, out FileHandleIdentity actualIdentity))
-        {
-
-            error = ToolError(PathEscapesSandboxMessage);
-
-            return false;
-
-        }
-
-        if (!FileHandleIdentity.IdentitiesMatch(expectedIdentity, actualIdentity))
+        if (!SecureFileReader.TryValidateRegularFileHandle(
+                stream.SafeFileHandle,
+                expectedIdentity,
+                out _))
         {
 
             error = ToolError(PathEscapesSandboxMessage);
@@ -389,6 +385,34 @@ internal static class SandboxedFileIo
 
     private const string PathEscapesSandboxMessage =
         "That path would leave the workspace sandbox, so the operation was not performed. Please use a path relative to the workspace root.";
+
+    private static readonly string[] OpenErrorMessages =
+    [
+        PathEscapesSandboxMessage,
+        "The specified file was not found.",
+        PathEscapesSandboxMessage,
+        "Access denied.",
+        "An I/O error occurred. See server logs.",
+    ];
+
+    private static readonly string[] ReadErrorMessages =
+    [
+        PathEscapesSandboxMessage,
+        "The specified file was not found.",
+        PathEscapesSandboxMessage,
+        "Access denied.",
+        "An I/O error occurred. See server logs.",
+        "The file exceeds the maximum read size limit.",
+        "The file is not valid UTF-8 text.",
+    ];
+
+    private static McpToolsCallResultWire OpenError(
+        SecureFileOpenStatus status) =>
+        ToolError(OpenErrorMessages[(int)status]);
+
+    private static McpToolsCallResultWire ReadError(
+        SecureFileReadStatus status) =>
+        ToolError(ReadErrorMessages[(int)status]);
 
     private static McpToolsCallResultWire ToolError(string text) =>
         new()

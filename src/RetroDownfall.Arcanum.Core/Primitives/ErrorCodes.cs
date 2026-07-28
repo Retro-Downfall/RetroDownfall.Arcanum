@@ -345,6 +345,9 @@ public static class ErrorCodes
         /// <summary>Same idempotency key reused with a different request fingerprint.</summary>
         public const string IdempotencyConflict = "Security.IdempotencyConflict";
 
+        /// <summary>Another process currently owns a live claim for this idempotency key.</summary>
+        public const string IdempotencyInProgress = "Security.IdempotencyInProgress";
+
     }
 
     /// <summary>Files — OpenAI-compatible <c>/v1/files</c> upload storage.</summary>

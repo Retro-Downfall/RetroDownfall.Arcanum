@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
@@ -417,7 +418,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             foreach (string tool in detail.DeclaredTools)
             {
-                if (!known.Contains(tool))
+                if (!known.Contains(tool)
+                    && !ArcanumBuiltInToolNames.IsKnown(tool))
                 {
                     warnings.Add($"Declared tool '{tool}' was not found in configured MCP servers.");
                 }

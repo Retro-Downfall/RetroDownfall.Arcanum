@@ -5,11 +5,14 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class SessionAttachmentTurnServiceTests
 {
+    private const string PersistFailureCanary =
+        "CANARY_ATTACHMENT_PATH_AND_FILE_CONTENT";
 
     [Fact]
     public async Task PrepareAsync_WhenDisabled_ReturnsEmptyWithoutTouchingStore()
@@ -127,26 +130,40 @@ public sealed class SessionAttachmentTurnServiceTests
     }
 
     [Fact]
-    public async Task PrepareAsync_PersistFailure_SetsErrorMessage()
+    public async Task PrepareAsync_PersistFailure_ReturnsSanitizedErrorMessage()
     {
 
+        Guid sessionId = Guid.NewGuid();
         FakeSessionAttachmentStore store = new() { PersistThrows = true };
+        TestCapturingLogger<SessionAttachmentTurnServiceTests> logger = new();
         PingRequest request = new(
             "hi",
-            SessionId: Guid.NewGuid(),
+            SessionId: sessionId,
             AttachedFiles: [new AttachedFileDto("a.txt", "x")]);
 
         SessionAttachmentTurnPreparation prep = await SessionAttachmentTurnService.PrepareAsync(
             request,
             store,
             new ArcanumSettings(),
-            turnSessionId: Guid.NewGuid(),
+            turnSessionId: sessionId,
             turnEntryId: null,
-            pendingTurnId: null);
+            pendingTurnId: null,
+            cancellationToken: CancellationToken.None,
+            logger: logger);
 
-        Assert.NotNull(prep.ErrorMessage);
-        Assert.Contains("persist failed", prep.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("Session attachment persistence failed.", prep.ErrorMessage);
+        Assert.DoesNotContain(
+            PersistFailureCanary,
+            prep.ErrorMessage,
+            StringComparison.Ordinal);
         Assert.Empty(prep.RehydratedContents);
+
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.DoesNotContain(PersistFailureCanary, log.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(InvalidOperationException), log.Message, StringComparison.Ordinal);
+        Assert.Contains(sessionId.ToString("D"), log.Message, StringComparison.Ordinal);
+        Assert.Contains("persist", log.Message, StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -173,6 +190,105 @@ public sealed class SessionAttachmentTurnServiceTests
                 pendingTurnId: null,
                 cts.Token));
 
+    }
+
+    [Fact]
+    public async Task PrepareAsync_NoncancelledOce_ReturnsSanitizedFailure()
+    {
+        FakeSessionAttachmentStore store = new() { PersistThrowsCanceled = true };
+        TestCapturingLogger<SessionAttachmentTurnServiceTests> logger = new();
+        PingRequest request = new(
+            "hi",
+            SessionId: Guid.NewGuid(),
+            AttachedFiles: [new AttachedFileDto("a.txt", "x")]);
+
+        SessionAttachmentTurnPreparation prep = await SessionAttachmentTurnService.PrepareAsync(
+            request,
+            store,
+            new ArcanumSettings(),
+            turnSessionId: request.SessionId,
+            turnEntryId: null,
+            pendingTurnId: null,
+            cancellationToken: CancellationToken.None,
+            logger: logger);
+
+        Assert.Equal("Session attachment persistence failed.", prep.ErrorMessage);
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.Contains(nameof(OperationCanceledException), log.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PromotePendingAsync_Failure_ReturnsSanitizedErrorAndLogsSafeMetadata()
+    {
+        const string canary = "CANARY_PENDING_ATTACHMENT_PATH_AND_CONTENT";
+        Guid sessionId = Guid.NewGuid();
+        FakeSessionAttachmentStore store = new()
+        {
+            PromoteFailure = new InvalidOperationException(canary),
+        };
+        TestCapturingLogger<SessionAttachmentTurnServiceTests> logger = new();
+
+        string? error = await SessionAttachmentTurnService.PromotePendingAsync(
+            store,
+            "pending-turn",
+            sessionId,
+            entryId: null,
+            logger: logger);
+
+        Assert.Equal("Session attachment promotion failed.", error);
+        Assert.DoesNotContain(canary, error, StringComparison.Ordinal);
+
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(InvalidOperationException), log.Message, StringComparison.Ordinal);
+        Assert.Contains(sessionId.ToString("D"), log.Message, StringComparison.Ordinal);
+        Assert.Contains("promote", log.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task PromotePendingAsync_NoncancelledOce_ReturnsSanitizedFailure()
+    {
+        const string canary = "CANARY_PROMOTION_CANCELLATION_BODY";
+        FakeSessionAttachmentStore store = new()
+        {
+            PromoteFailure = new OperationCanceledException(canary),
+        };
+        TestCapturingLogger<SessionAttachmentTurnServiceTests> logger = new();
+
+        string? error = await SessionAttachmentTurnService.PromotePendingAsync(
+            store,
+            "pending-turn",
+            Guid.NewGuid(),
+            entryId: null,
+            logger: logger);
+
+        Assert.Equal("Session attachment promotion failed.", error);
+        Assert.DoesNotContain(canary, error, StringComparison.Ordinal);
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.Contains(nameof(OperationCanceledException), log.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PromotePendingAsync_CancelledOwnedToken_Propagates()
+    {
+        FakeSessionAttachmentStore store = new()
+        {
+            PromoteFailure = new OperationCanceledException("promotion cancelled"),
+        };
+        using CancellationTokenSource cts = new();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            SessionAttachmentTurnService.PromotePendingAsync(
+                store,
+                "pending-turn",
+                Guid.NewGuid(),
+                entryId: null,
+                cancellationToken: cts.Token));
     }
 
     [Fact]
@@ -319,6 +435,8 @@ public sealed class SessionAttachmentTurnServiceTests
 
         public bool PersistThrowsCanceled { get; init; }
 
+        public Exception? PromoteFailure { get; init; }
+
         public Guid? IndexSessionId { get; init; }
 
         public Dictionary<Guid, SessionAttachmentRecord> Records { get; } = new();
@@ -355,7 +473,7 @@ public sealed class SessionAttachmentTurnServiceTests
 
             if (PersistThrows)
             {
-                throw new InvalidOperationException("persist failed");
+                throw new InvalidOperationException(PersistFailureCanary);
             }
 
             Guid id = Guid.NewGuid();
@@ -382,8 +500,15 @@ public sealed class SessionAttachmentTurnServiceTests
             string pendingTurnId,
             Guid sessionId,
             Guid? entryId,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+            CancellationToken cancellationToken = default)
+        {
+            if (PromoteFailure is not null)
+            {
+                return Task.FromException(PromoteFailure);
+            }
+
+            return Task.CompletedTask;
+        }
 
         public Task<SessionAttachmentRecord?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(Records.TryGetValue(id, out SessionAttachmentRecord? record) ? record : null);

@@ -60,12 +60,28 @@ public sealed partial class McpConnectionManager
             await trustedMcpWorkspaces.TrustAsync(normalized, cancellationToken).ConfigureAwait(false);
 
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (FileNotFoundException)
+        {
+            return new Error("Mcp.MissingConfig", "Workspace mcp.json was not found.");
+        }
+        catch (TrustedMcpWorkspaceStoreException ex)
+        {
+            logger.LogWarning(ex, "Failed to trust workspace MCP config at {Workspace}.", normalized);
+
+            return new Error("Mcp.TrustFailed", ex.Message);
+        }
         catch (Exception ex)
         {
 
             logger.LogWarning(ex, "Failed to trust workspace MCP config at {Workspace}.", normalized);
 
-            return new Error("Mcp.TrustFailed", "Could not record workspace MCP approval.");
+            return new Error(
+                "Mcp.TrustFailed",
+                "Could not record workspace MCP approval. Verify storage permissions and retry.");
 
         }
 
@@ -78,13 +94,50 @@ public sealed partial class McpConnectionManager
         ManagedMcpServerEntry entry,
         CancellationToken cancellationToken)
     {
+        if (!IsCurrentRegistryEntry(entry))
+        {
+            return false;
+        }
+
         if (entry.ScopeWorkingDirectory is null)
         {
             return true;
         }
 
-        return await trustedMcpWorkspaces
-            .IsTrustedAsync(entry.ScopeWorkingDirectory, cancellationToken)
+        if (entry.SourceDigest is null)
+        {
+            return false;
+        }
+
+        TrustedMcpWorkspaceSnapshot snapshot = await trustedMcpWorkspaces
+            .GetSnapshotAsync(
+                entry.ScopeWorkingDirectory,
+                cancellationToken)
             .ConfigureAwait(false);
+
+        return snapshot.Authorizes(entry.SourceDigest)
+            && IsCurrentRegistryEntry(entry);
     }
+
+    private bool IsCurrentRegistryEntry(ManagedMcpServerEntry entry)
+    {
+        if (entry.IsRetired)
+        {
+            return false;
+        }
+
+        return _registry.TryGetValue(
+                   (entry.Name, entry.ScopeWorkingDirectory),
+                   out ManagedMcpServerEntry? current)
+            && ReferenceEquals(current, entry);
+    }
+
+    private static Error WorkspaceNotTrustedError() =>
+        new(
+            ErrorCodes.Mcp.WorkspaceNotTrusted,
+            "Workspace-local MCP servers require operator approval. "
+            + "POST /api/mcp/trust-workspace for this workspace before starting.");
+
+    private static Error EntryNotFoundError(ManagedMcpServerEntry entry) =>
+        new("Mcp.NotFound", $"MCP server '{entry.Name}' was not found.");
 }

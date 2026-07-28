@@ -87,7 +87,8 @@ public sealed class WizardIntelligenceProvider(
             modelTokenEstimator,
             modelCallExecutor,
             tokenizerResolver,
-            settings);
+            settings,
+            logger);
 
     private IModelTokenEstimator ModelTokenEstimator => _tokenAccounting.Estimator;
 
@@ -96,13 +97,13 @@ public sealed class WizardIntelligenceProvider(
     private readonly Lazy<ITurnExecutionFacade>? _turnCoordinator = turnCoordinator;
 
     private const string PublicInferenceFailureMessage =
-        "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.";
+        PublicInferenceErrorMessages.NativeGenericFailure;
 
     private const string PublicModelResolutionFailureMessage =
-        "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.";
+        PublicInferenceErrorMessages.ModelNotConfigured;
 
     private const string PublicInferenceTimeoutMessage =
-        "Inference timed out. Increase Arcanum:Intelligence:InferenceTimeoutSeconds or retry with a shorter prompt.";
+        PublicInferenceErrorMessages.NativeTimeout;
 
     private const string AskHumanUnavailableMessage =
         "ask_human is only available during attended streaming turns with a live human-response channel.";
@@ -384,7 +385,7 @@ public sealed class WizardIntelligenceProvider(
                         frame.ToolCall?.ArgumentsJson ?? string.Empty,
                         frame.Data ?? frame.Message,
                         Failed: failed,
-                        Denied: false,
+                        Denied: frame.ToolDenied,
                         ToleratedFailure: failed,
                         PublicErrorText: publicError,
                         Duration: TimeSpan.Zero,
@@ -598,7 +599,9 @@ public sealed class WizardIntelligenceProvider(
             }
             catch (InvalidOperationException ex)
             {
-                logger.LogWarning(ex, "Hub model resolution failed for requested model {RequestedModel}.", request.Model);
+                logger.LogWarning(
+                    "Hub model resolution failed; exception type {ExceptionType}.",
+                    ex.GetType().FullName);
 
                 return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
             }
@@ -703,11 +706,11 @@ public sealed class WizardIntelligenceProvider(
                 }
 
                 logger.LogWarning(
-                    ex,
-                    "Provider {ProviderName} unavailable while resolving client (fallback attempt {Attempt}/{MaxAttempts}).",
+                    "Provider {ProviderName} unavailable while resolving client (fallback attempt {Attempt}/{MaxAttempts}); exception type {ExceptionType}.",
                     provider.Name,
                     attemptIndex + 1,
-                    maxAttempts);
+                    maxAttempts,
+                    ex.GetType().FullName);
 
                 lastFailure = Result<PromptTurnResult>.Failure(new Error(
                     ErrorCodes.Hub.Error,
@@ -923,7 +926,9 @@ public sealed class WizardIntelligenceProvider(
 
             if (resolveFailure is not null)
             {
-                logger.LogWarning(resolveFailure, "Hub model resolution failed for requested model {RequestedModel}.", request.Model);
+                logger.LogWarning(
+                    "Hub model resolution failed; exception type {ExceptionType}.",
+                    resolveFailure.GetType().FullName);
 
                 yield return new IntelligenceEvent(IntelligenceEventType.Error, PublicModelResolutionFailureMessage);
 
@@ -1002,9 +1007,8 @@ public sealed class WizardIntelligenceProvider(
             if (singleMoveFailure is not null)
             {
                 logger.LogError(
-                    singleMoveFailure,
-                    "Streaming inference threw after start for model {RequestedModel}.",
-                    request.Model);
+                    "Streaming inference threw after start; exception type {ExceptionType}.",
+                    singleMoveFailure.GetType().FullName);
 
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.Error,
@@ -1083,11 +1087,11 @@ public sealed class WizardIntelligenceProvider(
                 bool retryableBuildFailure = buildFailureIsConnectivity && !isLastAttempt;
 
                 logger.LogWarning(
-                    leaseBuildFailure,
-                    "Provider {ProviderName} unavailable while resolving streaming client (fallback attempt {Attempt}/{MaxAttempts}).",
+                    "Provider {ProviderName} unavailable while resolving streaming client (fallback attempt {Attempt}/{MaxAttempts}); exception type {ExceptionType}.",
                     candidateProvider.Name,
                     attemptIndex + 1,
-                    streamMaxAttempts);
+                    streamMaxAttempts,
+                    leaseBuildFailure.GetType().FullName);
 
                 if (retryableBuildFailure)
                 {
@@ -1142,11 +1146,11 @@ public sealed class WizardIntelligenceProvider(
                 bool retryableMoveFailure = moveFailureIsConnectivity && !isLastAttempt;
 
                 logger.LogWarning(
-                    moveNextFailure,
-                    "Provider {ProviderName} failed to start streaming (fallback attempt {Attempt}/{MaxAttempts}).",
+                    "Provider {ProviderName} failed to start streaming (fallback attempt {Attempt}/{MaxAttempts}); exception type {ExceptionType}.",
                     candidateProvider.Name,
                     attemptIndex + 1,
-                    streamMaxAttempts);
+                    streamMaxAttempts,
+                    moveNextFailure.GetType().FullName);
 
                 await enumerator.DisposeAsync().ConfigureAwait(false);
 
@@ -1229,11 +1233,11 @@ public sealed class WizardIntelligenceProvider(
                 bool retryableMoveFailure = moveFailureIsConnectivity && !isLastAttempt && !classification.ProviderCommitted;
 
                 logger.LogWarning(
-                    moveNextFailure,
-                    "Provider {ProviderName} failed during pre-commit streaming (fallback attempt {Attempt}/{MaxAttempts}).",
+                    "Provider {ProviderName} failed during pre-commit streaming (fallback attempt {Attempt}/{MaxAttempts}); exception type {ExceptionType}.",
                     candidateProvider.Name,
                     attemptIndex + 1,
-                    streamMaxAttempts);
+                    streamMaxAttempts,
+                    moveNextFailure.GetType().FullName);
 
                 await enumerator.DisposeAsync().ConfigureAwait(false);
 
@@ -1343,10 +1347,9 @@ public sealed class WizardIntelligenceProvider(
                 }
 
                 logger.LogError(
-                    midStreamFailure,
-                    "Streaming inference threw mid-stream for provider {ProviderName} model {RequestedModel}.",
+                    "Streaming inference threw mid-stream for provider {ProviderName}; exception type {ExceptionType}.",
                     candidateProvider.Name,
-                    request.Model);
+                    midStreamFailure.GetType().FullName);
 
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.Error,
@@ -1479,7 +1482,8 @@ public sealed class WizardIntelligenceProvider(
                 grimoireTurn.SessionId,
                 grimoireTurn.AssistantEntryId,
                 streamPendingTurnId,
-                inferenceToken)
+                inferenceToken,
+                logger)
             .ConfigureAwait(false);
 
         if (streamAttachmentPrep.ErrorMessage is not null)
@@ -1497,12 +1501,9 @@ public sealed class WizardIntelligenceProvider(
                     streamAttachmentPrep.ErrorMessage);
             }
 
-            if (!grimoireTurn.IsFinalized)
-            {
-                await grimoireTurnWriter
-                    .ResolveInterruptedAsync(grimoireTurn, null, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
+            await grimoireTurnWriter
+                .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                .ConfigureAwait(false);
 
             yield break;
         }
@@ -1555,12 +1556,9 @@ public sealed class WizardIntelligenceProvider(
                     streamAccountingBegin.Error.Message);
             }
 
-            if (!grimoireTurn.IsFinalized)
-            {
-                await grimoireTurnWriter
-                    .ResolveInterruptedAsync(grimoireTurn, null, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
+            await grimoireTurnWriter
+                .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                .ConfigureAwait(false);
 
             yield break;
         }
@@ -1611,12 +1609,12 @@ public sealed class WizardIntelligenceProvider(
             {
                 if (!streaming)
                 {
-                    if (!grimoireTurn.IsFinalized)
-                    {
-                        await grimoireTurnWriter
-                            .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
-                            .ConfigureAwait(false);
-                    }
+                    await grimoireTurnWriter
+                        .ResolveInterruptedAndMarkFinalizedAsync(
+                            grimoireTurn,
+                            null,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
 
                     classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamRoutedSpell.Error);
                 }
@@ -1701,26 +1699,15 @@ public sealed class WizardIntelligenceProvider(
 
             if (streamAttachmentPrep.PendingTurnId is not null)
             {
-                string? promoteError = null;
-
-                try
-                {
-                    await sessionAttachmentStore
-                        .PromotePendingAsync(
-                            streamAttachmentPrep.PendingTurnId,
-                            bcid,
-                            grimoireTurn.AssistantEntryId,
-                            inferenceToken)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Failed to promote pending session attachments for session {SessionId}.", bcid);
-
-                    promoteError = string.IsNullOrWhiteSpace(ex.Message)
-                        ? "Session attachment promotion failed."
-                        : ex.Message;
-                }
+                string? promoteError = await SessionAttachmentTurnService
+                    .PromotePendingAsync(
+                        sessionAttachmentStore,
+                        streamAttachmentPrep.PendingTurnId,
+                        bcid,
+                        grimoireTurn.AssistantEntryId,
+                        inferenceToken,
+                        logger)
+                    .ConfigureAwait(false);
 
                 if (promoteError is not null)
                 {
@@ -1737,12 +1724,12 @@ public sealed class WizardIntelligenceProvider(
                             promoteError);
                     }
 
-                    if (!grimoireTurn.IsFinalized)
-                    {
-                        await grimoireTurnWriter
-                            .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
-                            .ConfigureAwait(false);
-                    }
+                    await grimoireTurnWriter
+                        .ResolveInterruptedAndMarkFinalizedAsync(
+                            grimoireTurn,
+                            null,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
 
                     yield break;
                 }
@@ -1985,12 +1972,12 @@ public sealed class WizardIntelligenceProvider(
 
                         if (!streaming)
                         {
-                            if (!grimoireTurn.IsFinalized)
-                            {
-                                await grimoireTurnWriter
-                                    .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
-                                    .ConfigureAwait(false);
-                            }
+                            await grimoireTurnWriter
+                                .ResolveInterruptedAndMarkFinalizedAsync(
+                                    grimoireTurn,
+                                    null,
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
 
                             classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamContextGate.Error);
                         }
@@ -2030,11 +2017,16 @@ public sealed class WizardIntelligenceProvider(
                                         streamPromptCachePlan))
                                 .ConfigureAwait(false);
                         }
-                        catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
+                        catch (OperationCanceledException) when (
+                            !callerToken.IsCancellationRequested
+                            && inferenceToken.IsCancellationRequested)
                         {
                             logger.LogWarning("Inference wall-clock timeout exceeded for model {ModelName}.", targetModel);
 
                             inferenceError = PublicInferenceTimeoutMessage;
+                            inferenceTypedError = new Error(
+                                ErrorCodes.Hub.Timeout,
+                                PublicInferenceTimeoutMessage);
 
                             classification.IsConnectivityFailure = true;
 
@@ -2050,12 +2042,12 @@ public sealed class WizardIntelligenceProvider(
                         {
                             if (modelCall.Error.Code == ErrorCodes.Hub.TurnBudgetExceeded)
                             {
-                                if (!grimoireTurn.IsFinalized)
-                                {
-                                    await grimoireTurnWriter
-                                        .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
-                                        .ConfigureAwait(false);
-                                }
+                                await grimoireTurnWriter
+                                    .ResolveInterruptedAndMarkFinalizedAsync(
+                                        grimoireTurn,
+                                        null,
+                                        CancellationToken.None)
+                                    .ConfigureAwait(false);
 
                                 streamAccountingStatus = InferenceRunStatus.Failed;
 
@@ -2157,12 +2149,17 @@ public sealed class WizardIntelligenceProvider(
                         {
                             hasNext = await streamEnumerator.MoveNextAsync().ConfigureAwait(false);
                         }
-                        catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
+                        catch (OperationCanceledException) when (
+                            !callerToken.IsCancellationRequested
+                            && inferenceToken.IsCancellationRequested)
                         {
 
                             logger.LogWarning("Inference wall-clock timeout exceeded for model {ModelName}.", targetModel);
 
                             inferenceError = PublicInferenceTimeoutMessage;
+                            inferenceTypedError = new Error(
+                                ErrorCodes.Hub.Timeout,
+                                PublicInferenceTimeoutMessage);
 
                             classification.IsConnectivityFailure = true;
 
@@ -2179,7 +2176,9 @@ public sealed class WizardIntelligenceProvider(
                         {
                             streamingMoveNextFailure = ex;
 
-                            logger.LogError(ex, "Streaming read failed for model {ModelName}.", targetModel);
+                            logger.LogError(
+                                "Streaming read failed; exception type {ExceptionType}.",
+                                ex.GetType().FullName);
 
                             inferenceError = BuildInferenceFailureMessage(lease, ex);
 
@@ -2300,9 +2299,8 @@ public sealed class WizardIntelligenceProvider(
                     if (allowNoToolsRestart)
                     {
                         logger.LogInformation(
-                            streamingMoveNextFailure,
-                            "Model {ModelName} does not support tools; retrying without local tools.",
-                            targetModel);
+                            "Model does not support tools; retrying without local tools (exception type {ExceptionType}).",
+                            streamingMoveNextFailure!.GetType().FullName);
 
                         if (streaming)
                         {
@@ -2326,16 +2324,15 @@ public sealed class WizardIntelligenceProvider(
                     else if (!streaming && streamingMoveNextFailure is not null)
                     {
                         logger.LogError(
-                            streamingMoveNextFailure,
-                            "Hub inference failed for model {ModelName}.",
-                            targetModel);
+                            "Hub inference failed; exception type {ExceptionType}.",
+                            streamingMoveNextFailure.GetType().FullName);
 
-                        if (!grimoireTurn.IsFinalized)
-                        {
-                            await grimoireTurnWriter
-                                .ResolveInterruptedAsync(grimoireTurn, null, CancellationToken.None)
-                                .ConfigureAwait(false);
-                        }
+                        await grimoireTurnWriter
+                            .ResolveInterruptedAndMarkFinalizedAsync(
+                                grimoireTurn,
+                                null,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
 
                         classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
                             new Error(
@@ -2436,12 +2433,12 @@ public sealed class WizardIntelligenceProvider(
 
                     if (!streaming)
                     {
-                        if (!grimoireTurn.IsFinalized)
-                        {
-                            await grimoireTurnWriter
-                                .ResolveInterruptedAsync(grimoireTurn, null, inferenceToken)
-                                .ConfigureAwait(false);
-                        }
+                        await grimoireTurnWriter
+                            .ResolveInterruptedAndMarkFinalizedAsync(
+                                grimoireTurn,
+                                null,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
 
                         classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
                             new Error(ErrorCodes.Hub.ToolLoop, "Tool invocation limit reached."));
@@ -2692,7 +2689,8 @@ public sealed class WizardIntelligenceProvider(
                                 processed.ToolName,
                                 processed.ResultText,
                                 null,
-                                new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex));
+                                new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex),
+                                ToolDenied: processed.Denied);
 
                             toolCallIndex++;
                         }
@@ -2744,16 +2742,13 @@ public sealed class WizardIntelligenceProvider(
                     }
                 }
 
-                if (!grimoireTurn.IsFinalized)
-                {
-                    // W3.5: cleanup must use CancellationToken.None, not the (often already-cancelled)
-                    // inferenceToken — otherwise ResolveInterruptedAssistantEntryAsync rethrows OCE here
-                    // and the terminal Error event below is never emitted to the client.
-                    await grimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync(
-                        grimoireTurn,
-                        streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
-                        CancellationToken.None).ConfigureAwait(false);
-                }
+                // W3.5: cleanup must use CancellationToken.None, not the (often already-cancelled)
+                // inferenceToken — otherwise ResolveInterruptedAssistantEntryAsync rethrows OCE here
+                // and the terminal Error event below is never emitted to the client.
+                await grimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync(
+                    grimoireTurn,
+                    streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
+                    CancellationToken.None).ConfigureAwait(false);
 
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.Error,
@@ -3035,12 +3030,9 @@ public sealed class WizardIntelligenceProvider(
                 classification.BufferedTerminal = Result<PromptTurnResult>.Failure(guardrailsStreamOutput.Error);
             }
 
-            if (!grimoireTurn.IsFinalized)
-            {
-                await grimoireTurnWriter
-                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
+            await grimoireTurnWriter
+                .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                .ConfigureAwait(false);
 
             yield return new IntelligenceEvent(
                 IntelligenceEventType.Error,
@@ -3176,7 +3168,10 @@ public sealed class WizardIntelligenceProvider(
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "Failed to complete turn accounting for streamed inference.");
+                    logger.LogWarning(
+                        "Failed to complete turn accounting for streamed inference; exception type {ExceptionType}, session {SessionId}.",
+                        ex.GetType().FullName,
+                        grimoireTurn.SessionId);
                 }
             }
 
@@ -3811,7 +3806,9 @@ public sealed class WizardIntelligenceProvider(
                 ex is not OperationCanceledException
                 && TurnAccountingAmbient.Current?.AccountingFailed != true)
             {
-                logger.LogWarning(ex, "Lexicon entity extraction failed; continuing without Lexicon context.");
+                logger.LogWarning(
+                    "Lexicon entity extraction failed; continuing without Lexicon context (exception type {ExceptionType}).",
+                    ex.GetType().FullName);
 
                 return null;
             }
@@ -3930,7 +3927,9 @@ public sealed class WizardIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "RAG query embedding threw; semantic retrieval for this turn will be skipped.");
+            logger.LogDebug(
+                "RAG query embedding threw; semantic retrieval for this turn will be skipped (exception type {ExceptionType}).",
+                ex.GetType().FullName);
 
             return null;
         }
@@ -3976,7 +3975,9 @@ public sealed class WizardIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "Failed to register workspace {WorkingDirectory} for background indexing.", request.WorkingDirectory);
+            logger.LogDebug(
+                "Failed to register workspace for background indexing; exception type {ExceptionType}.",
+                ex.GetType().FullName);
         }
 
         if (queryEmbedding is not { } embedding)
@@ -4030,7 +4031,9 @@ public sealed class WizardIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "Semantic context retrieval failed; continuing without it.");
+            logger.LogDebug(
+                "Semantic context retrieval failed; continuing without it (exception type {ExceptionType}).",
+                ex.GetType().FullName);
 
             return null;
         }
@@ -4108,7 +4111,9 @@ public sealed class WizardIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "Saga memory retrieval failed; continuing without it.");
+            logger.LogDebug(
+                "Saga memory retrieval failed; continuing without it (exception type {ExceptionType}).",
+                ex.GetType().FullName);
 
             return null;
         }
@@ -4367,7 +4372,12 @@ public sealed class WizardIntelligenceProvider(
                 settings.Value.Security.AllowUnsandboxedToolChildren));
         }
 
-        if (settings.Value.WebBrowsing.Enabled)
+        IReadOnlyList<string>? declaredTools = activeSpell?.SkillMetadata?.DeclaredTools;
+
+        bool browseWebAttuned = declaredTools is not { Count: > 0 }
+            || declaredTools.Contains(ArcanumBrowseWebTool.ToolName, StringComparer.OrdinalIgnoreCase);
+
+        if (settings.Value.WebBrowsing.Enabled && browseWebAttuned)
         {
             tools.Add(new ArcanumBrowseWebTool(httpClientFactory, settings, logger));
         }
@@ -4383,7 +4393,7 @@ public sealed class WizardIntelligenceProvider(
 
         AttunementResult attunement = ArtifactAttunement.ApplyAttunement(
             mcpTools,
-            activeSpell?.SkillMetadata?.DeclaredTools);
+            declaredTools);
 
         if (attunement.Excluded.Count > 0)
         {
@@ -5268,7 +5278,9 @@ public sealed class WizardIntelligenceProvider(
 
             // Defense-in-depth: IInferenceAuditLogger.LogAsync itself promises never to throw, but a
             // failure while building the record (should not happen) must still never fail the turn.
-            logger.LogWarning(ex, "Failed to write inference audit record; continuing without it.");
+            logger.LogWarning(
+                "Failed to write inference audit record; continuing without it (exception type {ExceptionType}).",
+                ex.GetType().FullName);
 
         }
 
@@ -5415,7 +5427,10 @@ public sealed class WizardIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Grimoire could not increment token totals for session {SessionId}.", sessionId);
+            logger.LogWarning(
+                "Grimoire could not increment token totals for session {SessionId}; exception type {ExceptionType}.",
+                sessionId,
+                ex.GetType().FullName);
         }
     }
 
@@ -5445,7 +5460,10 @@ public sealed class WizardIntelligenceProvider(
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "Failed to enqueue Saga extraction for session {SessionId}.", sessionId);
+            logger.LogDebug(
+                "Failed to enqueue Saga extraction for session {SessionId}; exception type {ExceptionType}.",
+                sessionId,
+                ex.GetType().FullName);
         }
     }
 
@@ -5779,13 +5797,17 @@ public sealed class WizardIntelligenceProvider(
             IModelTokenEstimator? estimator,
             IModelCallExecutor? executor,
             InferenceTokenizerResolver tokenizerResolver,
-            IOptionsSnapshot<ArcanumSettings> settings)
+            IOptionsSnapshot<ArcanumSettings> settings,
+            ILogger logger)
         {
             IModelTokenEstimator resolvedEstimator =
                 estimator ?? new ModelTokenEstimator(tokenizerResolver, settings);
             return new TokenAccountingDependencies(
                 resolvedEstimator,
-                executor ?? new ModelCallExecutor(resolvedEstimator));
+                executor ?? new ModelCallExecutor(
+                    resolvedEstimator,
+                    settings: null,
+                    logger: logger));
         }
     }
 

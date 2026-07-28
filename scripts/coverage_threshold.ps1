@@ -16,9 +16,11 @@ $securityTypes = [System.Collections.Generic.HashSet[string]]::new(
         "DataProtectionSecretStore",
         "GrimoireKeyDerivation",
         "McpSecurityLimits",
+        "TrustedMcpWorkspaceStore",
         "SandboxedFileIo",
+        "SecureFileReader",
+        "IdentityOwnedFileSystemCleanup",
         "SanctumGuard",
-        "ToolHelpers",
         "OutboundUrlGuard",
         "HostProcessToolPolicy",
         "IdempotencyClaimStore",
@@ -43,6 +45,9 @@ $branchRate = [double]::Parse(
 ) * 100.0
 
 $failures = [System.Collections.Generic.List[string]]::new()
+$seenSecurityTypes = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::Ordinal
+)
 
 if ($lineRate -lt $lineTarget) {
     $failures.Add(("line coverage {0:F2}% < {1:F0}%" -f $lineRate, $lineTarget))
@@ -60,6 +65,8 @@ foreach ($class in $document.SelectNodes("//class")) {
     if (-not $securityTypes.Contains($shortName)) {
         continue
     }
+
+    $null = $seenSecurityTypes.Add($shortName)
 
     $bestByLine = @{}
 
@@ -113,6 +120,14 @@ foreach ($class in $document.SelectNodes("//class")) {
                 $shortName,
                 $securityRate,
                 $securityBranchTarget)
+        )
+    }
+}
+
+foreach ($requiredType in $securityTypes) {
+    if (-not $seenSecurityTypes.Contains($requiredType)) {
+        $failures.Add(
+            "required security type $requiredType is absent from the coverage report"
         )
     }
 }

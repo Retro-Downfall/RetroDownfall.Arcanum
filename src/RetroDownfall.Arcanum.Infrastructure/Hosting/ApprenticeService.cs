@@ -25,8 +25,6 @@ internal sealed class ApprenticeService(
     ILogger<ApprenticeService> logger) : BackgroundService, IApprenticeRuntime
 {
 
-    private const string UnattendedDenySnippet = "Forbidden art denied";
-
     private readonly ConcurrentDictionary<Guid, ExecutionLease> _executionTokens = new();
 
     private readonly ConcurrentDictionary<Guid, long> _executionGenerations = new();
@@ -2874,14 +2872,14 @@ internal sealed class ApprenticeService(
                 }
 
                 if (frame.Type == IntelligenceEventType.ToolResult
-                    && frame.Message.Contains(UnattendedDenySnippet, StringComparison.OrdinalIgnoreCase))
+                    && frame.ToolDenied)
                 {
 
                     stepFailed = true;
 
                     forbiddenArtDenied = true;
 
-                    stepError = frame.Message;
+                    stepError = frame.Data;
 
                 }
 

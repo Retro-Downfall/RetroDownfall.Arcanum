@@ -56,8 +56,10 @@ internal sealed class WorkspacePatchPlanner
         WorkspacePatchPlannerOptions? options = null)
     {
 
-        _settings = settings
-            ?? throw new ArgumentNullException(nameof(settings));
+        _settings =
+            ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
+                settings
+                ?? throw new ArgumentNullException(nameof(settings)));
 
         _options = options ?? new WorkspacePatchPlannerOptions();
 

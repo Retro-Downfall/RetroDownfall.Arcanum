@@ -529,6 +529,56 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ValidateAsync_recognizes_browse_web_as_a_builtin_tool()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = Path.Combine(
+            _workspaceRoot,
+            "spells",
+            "browser");
+
+        Directory.CreateDirectory(spellDir);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.md"),
+            """
+            ---
+            name: browser
+            description: Browser spell
+            ---
+            body
+            """);
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SKILL.json"),
+            """
+            {
+              "name": "browser",
+              "version": "1.0.0",
+              "description": "Browser spell",
+              "tags": [],
+              "declaredTools": ["browse_web"],
+              "dependencies": []
+            }
+            """);
+
+        SpellRepository repository = CreateRepository(
+            mcp: new FakeMcpConnectionManager());
+
+        SpellValidationResultDto validation = await repository.ValidateAsync(
+            "browser",
+            _workspaceRoot,
+            CancellationToken.None);
+
+        Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
+        Assert.DoesNotContain(
+            validation.Warnings,
+            static warning => warning.Contains(
+                "browse_web",
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    [SkippableFact]
     public async Task ExportAsync_and_ImportAsync_round_trip_spell_payload()
     {
 

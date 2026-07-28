@@ -737,7 +737,7 @@ internal static class CappedChildProcessRunner
     {
         bool cleaned =
             await ChildProcessFilesystemJail.CleanupTempPathsAsync(
-                    sandboxResult?.TempPathsToCleanup,
+                    sandboxResult?.OwnedArtifactsToCleanup,
                     GetCleanupTimeRemaining(
                         getCleanupTimeRemaining))
                 .ConfigureAwait(false);
@@ -745,7 +745,7 @@ internal static class CappedChildProcessRunner
         if (!cleaned)
         {
             logger?.LogWarning(
-                "Timed out cleaning child-process sandbox temporary paths.");
+                "Child-process sandbox temporary-artifact cleanup was incomplete or exceeded its deadline; unmatched artifacts were retained.");
         }
     }
 

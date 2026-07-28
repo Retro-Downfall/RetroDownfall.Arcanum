@@ -36,7 +36,9 @@ public sealed record IntelligenceEvent(
     ReasoningContentSegment? Reasoning = null,
     [property: JsonPropertyName("contextBreakdown")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    ContextTokenBreakdown? ContextBreakdown = null)
+    ContextTokenBreakdown? ContextBreakdown = null,
+    [property: JsonIgnore]
+    bool ToolDenied = false)
 {
 
     public IReadOnlyList<string> Warnings { get; init; } = [];

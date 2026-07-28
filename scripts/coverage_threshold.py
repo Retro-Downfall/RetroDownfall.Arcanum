@@ -18,9 +18,11 @@ SECURITY_TYPES = {
     "DataProtectionSecretStore",
     "GrimoireKeyDerivation",
     "McpSecurityLimits",
+    "TrustedMcpWorkspaceStore",
     "SandboxedFileIo",
+    "SecureFileReader",
+    "IdentityOwnedFileSystemCleanup",
     "SanctumGuard",
-    "ToolHelpers",
     "OutboundUrlGuard",
     "HostProcessToolPolicy",
     "IdempotencyClaimStore",
@@ -49,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     branch_rate = float(root.attrib.get("branch-rate", "0")) * 100.0
 
     failures: list[str] = []
+    seen_security_types: set[str] = set()
 
     if line_rate < LINE_TARGET:
         failures.append(f"line coverage {line_rate:.2f}% < {LINE_TARGET:.0f}%")
@@ -63,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if short not in SECURITY_TYPES:
             continue
+
+        seen_security_types.add(short)
 
         # Cobertura class branch-rate is a fraction; use lines with condition-coverage when present.
         lines = cls.findall(".//line")
@@ -120,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
             failures.append(
                 f"security type {short}: branch coverage {rate:.2f}% < {SECURITY_BRANCH_TARGET:.0f}%"
             )
+
+    for missing in sorted(SECURITY_TYPES - seen_security_types):
+        failures.append(
+            f"required security type {missing} is absent from the coverage report"
+        )
 
     print(f"Overall line coverage:   {line_rate:.2f}% (target >= {LINE_TARGET:.0f}%)")
 

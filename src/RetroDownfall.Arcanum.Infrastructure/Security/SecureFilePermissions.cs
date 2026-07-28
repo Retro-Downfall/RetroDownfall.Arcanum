@@ -18,6 +18,12 @@ public static class SecureFilePermissions
     private static readonly UnixFileMode OwnerOnlyDirectoryMode =
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
 
+    internal static Func<string, bool, bool?>? StrictOwnerOnlyVerificationForTests { get; set; }
+
+    internal static Action<string, bool, bool, bool, bool>?
+        WindowsOwnerOnlyDirectoryCreateForTests
+    { get; set; }
+
     /// <summary>
     /// Creates <paramref name="directoryPath"/> when missing and restricts it to the current user.
     /// </summary>
@@ -79,6 +85,202 @@ public static class SecureFilePermissions
             TryApplyWindowsOwnerOnlyDirectoryAcl(path);
 
         }
+
+    }
+
+    internal static void CreateOwnerOnlyDirectoryAtPath(
+        string path)
+    {
+        const bool protectFromInheritance = true;
+        const bool grantFullControl = true;
+        const bool inheritToContainers = true;
+        const bool inheritToObjects = true;
+
+        if (WindowsOwnerOnlyDirectoryCreateForTests is { } testCreate)
+        {
+            testCreate(
+                path,
+                protectFromInheritance,
+                grantFullControl,
+                inheritToContainers,
+                inheritToObjects);
+
+            return;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            CreateWindowsOwnerOnlyDirectoryAtPath(path);
+
+            return;
+        }
+
+        Directory.CreateDirectory(
+            path,
+            OwnerOnlyDirectoryMode);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void CreateWindowsOwnerOnlyDirectoryAtPath(
+        string path)
+    {
+        SecurityIdentifier? currentUser =
+            WindowsIdentity.GetCurrent().User;
+
+        if (currentUser is null)
+        {
+            throw new UnauthorizedAccessException(
+                "The current Windows user has no security identifier.");
+        }
+
+        DirectorySecurity security = new();
+
+        security.SetOwner(currentUser);
+        security.SetAccessRuleProtection(
+            isProtected: true,
+            preserveInheritance: false);
+        security.AddAccessRule(
+            new FileSystemAccessRule(
+                currentUser,
+                FileSystemRights.FullControl,
+                InheritanceFlags.ContainerInherit
+                | InheritanceFlags.ObjectInherit,
+                PropagationFlags.None,
+                AccessControlType.Allow));
+
+        new DirectoryInfo(path).Create(security);
+    }
+
+    internal static bool TryEnsureOwnerOnlyDirectoryExistsStrict(string directoryPath)
+    {
+
+        try
+        {
+            Directory.CreateDirectory(directoryPath);
+
+            if (OperatingSystem.IsWindows())
+            {
+                TryApplyWindowsOwnerOnlyDirectoryAcl(directoryPath);
+            }
+            else
+            {
+                File.SetUnixFileMode(directoryPath, OwnerOnlyDirectoryMode);
+            }
+
+            return VerifyOwnerOnly(directoryPath, isDirectory: true);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(
+                ex,
+                "Failed to strictly apply owner-only permissions to {Path}.",
+                directoryPath);
+
+            return false;
+        }
+
+    }
+
+    internal static bool TryApplyOwnerOnlyFileStrict(string path)
+    {
+
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            if (OperatingSystem.IsWindows())
+            {
+                TryApplyWindowsOwnerOnlyFileAcl(path);
+            }
+            else
+            {
+                File.SetUnixFileMode(path, OwnerOnlyFileMode);
+            }
+
+            return VerifyOwnerOnly(path, isDirectory: false);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(
+                ex,
+                "Failed to strictly apply owner-only permissions to {Path}.",
+                path);
+
+            return false;
+        }
+
+    }
+
+    private static bool VerifyOwnerOnly(string path, bool isDirectory)
+    {
+
+        bool? testResult = StrictOwnerOnlyVerificationForTests?.Invoke(path, isDirectory);
+
+        if (testResult.HasValue)
+        {
+            return testResult.Value;
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            UnixFileMode expected = isDirectory
+                ? OwnerOnlyDirectoryMode
+                : OwnerOnlyFileMode;
+
+            return File.GetUnixFileMode(path) == expected;
+        }
+
+        return VerifyWindowsOwnerOnly(path, isDirectory);
+
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static bool VerifyWindowsOwnerOnly(string path, bool isDirectory)
+    {
+
+        SecurityIdentifier? currentUser = WindowsIdentity.GetCurrent().User;
+
+        if (currentUser is null)
+        {
+            return false;
+        }
+
+        FileSystemSecurity security = isDirectory
+            ? new DirectoryInfo(path).GetAccessControl()
+            : new FileInfo(path).GetAccessControl();
+
+        if (!security.AreAccessRulesProtected
+            || security.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier owner
+            || !owner.Equals(currentUser))
+        {
+            return false;
+        }
+
+        bool currentUserAllowed = false;
+
+        foreach (FileSystemAccessRule rule in security.GetAccessRules(
+                     includeExplicit: true,
+                     includeInherited: false,
+                     targetType: typeof(SecurityIdentifier)))
+        {
+            if (rule.AccessControlType is not AccessControlType.Allow)
+            {
+                continue;
+            }
+
+            if (rule.IdentityReference is not SecurityIdentifier sid
+                || !sid.Equals(currentUser))
+            {
+                return false;
+            }
+
+            currentUserAllowed = true;
+        }
+
+        return currentUserAllowed;
 
     }
 

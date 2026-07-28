@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -13,23 +14,39 @@ public sealed class CliSessionManagerTests : IDisposable
 
     private readonly string _sessionPath;
 
-    private readonly string? _backupContents;
+    private readonly string _testHome;
 
-    private readonly bool _hadBackup;
+    private readonly string? _originalDotnetEnvironment;
+
+    private readonly string? _originalAspNetCoreEnvironment;
+
+    private readonly string? _originalTestHome;
 
     public CliSessionManagerTests()
     {
 
+        _testHome = Path.Combine(Path.GetTempPath(), "arcanum-cli-session-tests", Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(_testHome);
+
+        _originalDotnetEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+        _originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
+        _originalTestHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _testHome);
+
         _sessionPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-session.txt");
 
-        _hadBackup = File.Exists(_sessionPath);
-
-        _backupContents = _hadBackup ? File.ReadAllText(_sessionPath) : null;
-
-        if (File.Exists(_sessionPath))
-        {
-            File.Delete(_sessionPath);
-        }
+        Assert.StartsWith(
+            Path.GetFullPath(_testHome),
+            Path.GetFullPath(_sessionPath),
+            StringComparison.Ordinal);
 
     }
 
@@ -41,11 +58,17 @@ public sealed class CliSessionManagerTests : IDisposable
             File.Delete(_sessionPath);
         }
 
-        if (_hadBackup && _backupContents is not null)
-        {
-            Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", _originalDotnetEnvironment);
 
-            File.WriteAllText(_sessionPath, _backupContents);
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", _originalAspNetCoreEnvironment);
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _originalTestHome);
+
+        if (Directory.Exists(_testHome))
+        {
+
+            Directory.Delete(_testHome, recursive: true);
+
         }
 
     }
@@ -98,9 +121,10 @@ public sealed class CliSessionManagerTests : IDisposable
     public void GetLastSessionId_warns_once_on_corrupt_file()
     {
 
+        const string canary = "CANARY_CORRUPT_FILE_SECRET_CONTENT";
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
-        File.WriteAllText(_sessionPath, "not-a-guid");
+        File.WriteAllText(_sessionPath, canary);
 
         TestConsole console = new();
 
@@ -119,6 +143,12 @@ public sealed class CliSessionManagerTests : IDisposable
             Assert.Contains("cli-session.txt", console.Output);
 
             Assert.Contains("valid session id", console.Output);
+
+            Assert.DoesNotContain(canary, console.Output, StringComparison.Ordinal);
+
+            Assert.Equal(
+                1,
+                CountOccurrences(console.Output, "valid session id"));
         }
         finally
         {
@@ -130,21 +160,35 @@ public sealed class CliSessionManagerTests : IDisposable
     [Fact]
     public void GetLastSessionId_quiet_does_not_write_spectre_on_corrupt_file()
     {
+        const string canary = "CANARY_QUIET_CORRUPT_FILE_SECRET_CONTENT";
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
-        File.WriteAllText(_sessionPath, "not-a-guid");
+        File.WriteAllText(_sessionPath, canary);
 
         TestConsole console = new();
+
+        CapturingLogger logger = new();
+
         IAnsiConsole prior = AnsiConsole.Console;
         AnsiConsole.Console = console;
 
         try
         {
-            CliSessionManager manager = CreateManager();
+            CliSessionManager manager = CreateManager(logger);
 
             Assert.Null(manager.GetLastSessionId(quiet: true));
             Assert.Null(manager.GetLastSessionId(quiet: true));
 
             Assert.True(string.IsNullOrEmpty(console.Output), $"Expected no Spectre output, got: {console.Output}");
+
+            LogEntry entry = Assert.Single(logger.Entries);
+
+            Assert.Equal(LogLevel.Debug, entry.Level);
+
+            Assert.Null(entry.Exception);
+
+            Assert.DoesNotContain(canary, entry.Message, StringComparison.Ordinal);
+
+            Assert.Contains("valid session id", entry.Message, StringComparison.Ordinal);
         }
         finally
         {
@@ -178,7 +222,8 @@ public sealed class CliSessionManagerTests : IDisposable
         }
     }
 
-    private static CliSessionManager CreateManager()
+    private static CliSessionManager CreateManager(
+        ILogger<CliSessionManager>? logger = null)
     {
 
         ThemeSemanticColors semantic = new();
@@ -187,8 +232,46 @@ public sealed class CliSessionManagerTests : IDisposable
 
         ConfiguredThemePalette palette = new(semantic, fallback);
 
-        return new CliSessionManager(palette);
+        return new CliSessionManager(palette, logger);
 
     }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        int count = 0;
+        int index = 0;
+
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
+    }
+
+    private sealed class CapturingLogger : ILogger<CliSessionManager>
+    {
+        public List<LogEntry> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull =>
+            null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            Entries.Add(new LogEntry(logLevel, formatter(state, exception), exception));
+    }
+
+    private sealed record LogEntry(
+        LogLevel Level,
+        string Message,
+        Exception? Exception);
 
 }

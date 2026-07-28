@@ -4,15 +4,18 @@ This document describes the **chat loop** — the end-to-end flow Arcanum runs f
 
 ## Overview (TurnEngine + projections)
 
-Phase 1 collapses the duplicated buffered/streaming orchestration into one logical-run owner:
+Phase 1 adds one bounded semantic shell and projection path without duplicating the existing model/tool loop. Full extraction of preflight/context/fallback/loop/finalization out of Wizard remains deferred:
 
 ```text
-WizardIntelligenceProvider          thin IArcanumIntelligenceProvider facade
+WizardIntelligenceProvider          public IArcanumIntelligenceProvider facade
         ↓
 TurnExecutionCoordinator            sole semantic consumer; one projection per request
         ↓
-TurnEngine (producer)               logical run lifecycle (preflight, fallback, context,
-                                    model/tool loop, validation, finalization)
+TurnEngine (producer)               bounded semantic channel + terminal/cancellation shell
+        ↓
+WizardIntelligenceProvider          ITurnPipelineRunner; existing preflight, fallback,
+                                    context, one mode-parameterized model/tool loop,
+                                    validation, and finalization
         ↓
 TurnEventEmitter                    ordered Channel<TurnEvent> (semantic, internal)
         ↓
@@ -28,7 +31,7 @@ Semantic helper/characterization path (not the production /v1 instance):
   OpenAiSseProjection → Channel<OpenAiChatChunk>
 ```
 
-`WizardIntelligenceProvider.ExecutePromptAsync` / `StreamPromptAsync` build a `TurnExecutionRequest` (including `HasIdempotencyKey` from `TurnIdempotencyAmbient`, never from the public `PingRequest` body) and delegate to `TurnExecutionCoordinator`. The coordinator consumes semantic `TurnEvent`s and applies exactly one projection; it does **not** serialize HTTP. Production `/v1` currently receives native `IntelligenceEvent` frames and reshapes them in the authoritative compatibility mapper in `OpenAiV1Endpoints`; it does not use the available `OpenAiSseProjection` instance path. The helper shares reasoning-field and typed-error rules only, while production endpoint tests own terminal usage and tool-fragmentation behavior. Keep-alives remain transport-only.
+`WizardIntelligenceProvider.ExecutePromptAsync` / `StreamPromptAsync` build a `TurnExecutionRequest` (including `HasIdempotencyKey` from `TurnIdempotencyAmbient`, never from the public `PingRequest` body) and delegate to `TurnExecutionCoordinator`. The coordinator consumes semantic `TurnEvent`s and applies exactly one projection; it does **not** serialize HTTP. TurnEngine calls back into Wizard through `ITurnPipelineRunner`, so the semantic shell does not own a second chat loop. Production `/v1` receives native `IntelligenceEvent` frames and reshapes them in the authoritative compatibility mapper in `OpenAiV1Endpoints`; it does not use the available `OpenAiSseProjection` instance path. The helper shares reasoning-field and typed-error rules only, while production endpoint tests own terminal usage and tool-fragmentation behavior. Keep-alives remain transport-only.
 
 All turn-pipeline chat provider calls go through Core `IModelCallExecutor` (`ExecuteBufferedAsync` / `ExecuteStreamingAsync`), including main inference, tool continuation, structured-output retries, spell routing, and Lexicon extraction. Mode policy for tool failures is preserved: buffered uses `Arcanum:Intelligence:TolerateToolFailures`; streaming always suppresses invocation failures (ADR 0004).
 
@@ -54,8 +57,9 @@ flowchart TD
     Exec --> Coord
     Stream --> Coord
 
-    Coord["TurnExecutionCoordinator"] --> TE["TurnEngine"]
-    TE --> Gates
+    Coord["TurnExecutionCoordinator"] --> TE["TurnEngine<br/>bounded semantic shell"]
+    TE --> Runner["Wizard ITurnPipelineRunner<br/>one existing mode-parameterized loop"]
+    Runner --> Gates
 
     subgraph Gates["Pre-flight gates (shared)"]
         G1["Guardrails input filter"]
@@ -137,11 +141,11 @@ Seven listed HTTP route variants all funnel into the same `IArcanumIntelligenceP
 
 | Surface | Method | Path | Calls |
 |---|---|---|---|
-| Buffered ping | `Intelligence/IntelligenceEndpoints.cs` `PostIntelligencePing` | `POST /intelligence/ping` | `ExecutePromptAsync` |
-| Streaming ping | `Intelligence/IntelligenceEndpoints.cs` `PostIntelligencePingStream` | `POST /intelligence/ping-stream` | `InferenceExecuteWriter.WriteStreamAsync` (NDJSON) |
-| Spell execute | `TheForge/SpellExecutionEndpoints.cs` `Spell_Execute` | `POST /spells/{name}/execute` | `ExecutePromptAsync` |
-| Spell execute-stream | `TheForge/SpellExecutionEndpoints.cs` `Spell_ExecuteStream` | `POST /spells/{name}/execute-stream` | `InferenceExecuteWriter.WriteStreamAsync` |
-| Prompt execute | `TheForge/PromptEndpoints.cs` | `POST /prompts/{id}/execute(-stream)` | both |
+| Buffered ping | `Intelligence/IntelligenceEndpoints.cs` `PostIntelligencePing` | `POST /api/intelligence/ping` | `ExecutePromptAsync` |
+| Streaming ping | `Intelligence/IntelligenceEndpoints.cs` `PostIntelligencePingStream` | `POST /api/intelligence/ping-stream` | `InferenceExecuteWriter.WriteStreamAsync` (NDJSON) |
+| Spell execute | `TheForge/SpellExecutionEndpoints.cs` `Spell_Execute` | `POST /api/spells/{name}/execute` | `ExecutePromptAsync` |
+| Spell execute-stream | `TheForge/SpellExecutionEndpoints.cs` `Spell_ExecuteStream` | `POST /api/spells/{name}/execute-stream` | `InferenceExecuteWriter.WriteStreamAsync` |
+| Prompt execute | `TheForge/PromptEndpoints.cs` | `POST /api/prompts/{id}/execute(-stream)` | both |
 | OpenAI v1 chat (buffered) | `OpenAiV1Endpoints.cs` `HandleBufferedAsync` | `POST /v1/chat/completions` (non-stream) | `ExecutePromptAsync` |
 | OpenAI v1 chat (streaming) | `OpenAiV1Endpoints.cs` `HandleStreamingAsync` | `POST /v1/chat/completions` (`stream:true`) | `StreamPromptAsync` → TurnExecutionCoordinator / TurnEngine (writer re-shapes to OpenAI SSE + keep-alives) |
 
@@ -172,7 +176,7 @@ After the gates, a linked `CancellationTokenSource` is built for the inference w
 
 The `ChatClientLease` owns the turn's `IChatClient`; `Dispose()` releases it. Prompt caching remains provider-managed and never bypasses model I/O. By default Arcanum injects nothing. A nullable provider/model `PromptCaching` profile may opt into the golden-tested root `prompt_cache_key` / `prompt_cache_retention` contract; enabling it is an operator assertion that the selected endpoint/model accepts those fields. Explicit content breakpoints are reserved and rejected in this build.
 
-When `Arcanum:Resilience:Enabled` is true and an `IProviderHealthTracker` is configured, the buffered path enters `ExecutePromptWithFallbackAsync` — a **per-provider retry loop** (distinct from the tool loop). Only a **connectivity-classified** failure (`HttpRequestException`, `SocketException`, timeout-cancellation, etc.) falls back to the next healthy candidate. Model/auth/400/429/5xx errors do **not** fall back — they are surfaced immediately. The streaming analog retries only while the attempt is still **pre-commit** (`ProviderAttemptCommitTracker` / `classification.ProviderCommitted`): Status/SessionBound alone do not commit; the first provider text delta (including guardrail-buffered), actionable tool proposal, or empty successful round does. After commit, fallback is abandoned so a client never sees a mid-stream provider swap (ADR 0004).
+When `Arcanum:Resilience:Enabled` is true and an `IProviderHealthTracker` is configured, the buffered path enters `ExecutePromptWithFallbackAsync` — a **per-provider retry loop** (distinct from the tool loop). Only a **connectivity-classified** failure (`HttpRequestException`, `SocketException`, timeout-cancellation, etc.) falls back to the next healthy candidate. Model/auth/400/429/5xx errors do **not** fall back — they are surfaced immediately. The streaming analog retries only while the attempt is still **pre-commit** (`ProviderAttemptCommitTracker` / `classification.ProviderCommitted`): Status/SessionBound alone do not commit; a non-empty answer delta, non-empty visible reasoning, protected-only reasoning (`ProtectedData`), actionable tool proposal, or empty successful round does. An empty reasoning update with no `ProtectedData` is a no-op. After commit, fallback is abandoned so a client never sees a mid-stream provider swap (ADR 0004).
 
 ---
 
@@ -197,7 +201,7 @@ Both modes of `RunInferenceAttemptAsync` (buffered and streaming) perform the sa
 
 This is the core of the workflow. `RunInferenceAttemptAsync` (shared by buffered and streaming via `TurnResponseMode`) contains **two nested `while (true)` loops**:
 
-- **Outer loop** — normally runs once. It may `continue` once if the model rejects tools, but only while the provider attempt is uncommitted. Any answer content, visible or protected-only reasoning, complete actionable tool proposal, or successful empty round commits the attempt and prohibits this no-tools restart.
+- **Outer loop** — normally runs once. It may `continue` once if the model rejects tools, but only while the provider attempt is uncommitted. Non-empty answer content, non-empty visible reasoning, protected-only reasoning, a complete actionable tool proposal, or a successful empty round commits the attempt and prohibits this no-tools restart. Empty reasoning text with no `ProtectedData` does not commit.
 - **Inner loop — the chat loop** — the bounded tool-call loop. Each iteration is one inference round:
 
 Each iteration of the inner loop:
@@ -210,7 +214,7 @@ Each iteration of the inner loop:
 6. **No tool calls → break** — the model produced a final text answer; exit the loop and proceed to finalization.
 7. **Forward-client-tools branch** — when `ForwardClientTools=true`, the Wizard **does not execute** the calls server-side: it records them as `PromptToolCall`s, sets `finishReason=tool_calls`, and breaks so the OpenAI v1 layer can echo them back to the client for client-side execution.
 8. **Tool round budget check** — increment `toolRoundsExecuted`; if it exceeds `MaxToolInferenceRounds`, return `ErrorCodes.Hub.ToolLoop`.
-9. **Execute each tool call** — `toolExecutionPipeline.ProcessSingleToolCallAsync(...)` runs the Ward + Sanctum gate sequence (see §7) and invokes the `AIFunction`. Results are token-budget materialized for the model. The result is appended to `observedToolCalls` and the audit context. `search_workspace` is direct, exact, line-scoped filesystem search (literal or bounded runtime regex), not a Weave query. `workspace_check` executes workspace-authored MSBuild/tasks/generators/analyzers/tests under its separate macOS-only fail-closed capability and host-bound deadline.
+9. **Execute each tool call** — `toolExecutionPipeline.ProcessSingleToolCallAsync(...)` runs the Ward + Sanctum gate sequence (see §7) and invokes the `AIFunction`. Results are token/UTF-8-byte materialized for the model with shared surrogate-safe helpers; retained content and the truncation marker both fit the final bounds. The result is appended to `observedToolCalls` and the audit context. A Ward/Sanctum denial also carries a structured internal `Denied` bit; it is not inferred from result wording. `search_workspace` is direct, exact, line-scoped filesystem search (literal or bounded runtime regex), not a Weave query. `workspace_check` executes workspace-authored MSBuild/tasks/generators/analyzers/tests under its separate macOS-only fail-closed capability and host-bound deadline.
 10. **Append tool exchange to messages** — `ToolExecutionPipeline.AppendToolExchangeToMessages` adds an assistant message containing the `FunctionCallContent` (with normalized call id), any raw `TextReasoningContent` from that provider round, and a tool message containing `FunctionResultContent(callId, resultText)`. This is the feedback that feeds the next inference round. Raw reasoning never crosses to a fallback provider and exists only for this same-provider continuation.
 11. **Persist tool interaction to Grimoire** — normally `grimoireTurnWriter.TryAppendToolInteractionAsync` persists the assistant `ToolCall` and system `ToolResult` Entries for a stateful turn and publishes them to `SessionEventHub`; this includes normal `search_workspace` and `workspace_check` calls. Raw or client-safe reasoning is never written to Grimoire. `SessionEventHub` is only a process-local live fan-out: each subscriber has a bounded `DropOldest` channel, so a slow subscriber may miss published Entries (with a warning), and subscriptions do not survive restart. `apply_patch` is the deliberate exception: it requires the already-persisted session/assistant-turn binding, commits a still-reversible per-call filesystem transaction, and durably appends deterministic assistant `ToolCall` then system `ToolResult` rows containing the exact argument snapshot and exact bounded result **inside the invocation, before that result can continue toward the model**. `ProcessedToolCall.ReceiptHandled` then suppresses this generic second append.
 12. **Loop back to step 2** — the updated `chatMessages` (now including the assistant tool call + tool result) gets a new breakdown and admission decision; the initial count is never reused. The model either produces more tool calls (loop continues) or a final text answer (loop breaks at step 6). Step 10 is what makes this a loop rather than a single call.
@@ -293,7 +297,7 @@ Sanctum is an additional campaign-conditional policy. `WorkspacePathPolicy` cont
 
 Finally `InvokeToolCallAsync` resolves the `AIFunction` from `chatOptions.Tools` by name and calls `func.InvokeAsync(args, ct)`. The result is stringified.
 
-**Failure handling:** when `suppressInvocationFailures` is true (the streaming path always passes `true`; the buffered path passes `Arcanum:Intelligence:TolerateToolFailures`), an exception is caught, logged, and a synthetic `PublicToolFailureMessage(toolName)` result is returned to the model so the turn continues. When false, the exception is rethrown and fails the whole buffered turn.
+**Failure handling:** when `suppressInvocationFailures` is true (the streaming path always passes `true`; the buffered path passes `Arcanum:Intelligence:TolerateToolFailures`), an exception is caught, logged with safe tool/call metadata and exception type (not raw exception text), and a synthetic `PublicToolFailureMessage(toolName)` result is returned to the model so the turn continues. When false, the exception is rethrown and fails the whole buffered turn.
 
 ---
 
@@ -303,11 +307,13 @@ The streaming branch of `RunInferenceAttemptAsync` uses `IAsyncEnumerable<Intell
 
 - **Outer `while (true)`** — the "model doesn't support tools" restart; normally runs once.
 - **Middle `while (true)`** — the streaming tool-call loop; each iteration is one streaming inference round (analogous to the buffered inner loop).
-- **Inner `while (true)`** — the chunk pump. Consumes `IModelCallExecutor.ExecuteStreamingAsync(...)` semantic updates. `ModelCallTextDelta` appends only to `streamAccumulator` and may yield `Token`; `ModelCallReasoningUpdate` appends only to the ephemeral reasoning accumulator and may yield the typed `Reasoning` frame. Raw response updates (tool calls, usage, finish reason, and provider-protected reasoning needed for continuation) are collected into `roundUpdates`. The first explicit reasoning update commits the provider before any projection, including protected-only reasoning or reasoning withheld from the client.
+- **Inner `while (true)`** — the chunk pump. Consumes `IModelCallExecutor.ExecuteStreamingAsync(...)` semantic updates. `ModelCallTextDelta` appends only to `streamAccumulator` and may yield `Token`; `ModelCallReasoningUpdate` appends only to the ephemeral reasoning accumulator and may yield the typed `Reasoning` frame. Raw response updates (tool calls, usage, finish reason, and provider-protected reasoning needed for continuation) are collected into `roundUpdates`. Before projection, a reasoning update commits only when its visible text is non-empty or it carries provider `ProtectedData`; an empty/no-protected update is ignored for commitment.
 
 Per streaming round: stream chunks → combine `roundUpdates.ToChatResponse()` → accumulate usage → collect tool calls → (no calls → break with finish reason; forward-client-tools → yield `ToolCall` events and break; else increment `streamToolRoundCount`, and for each call yield a `ToolCall` event, run `ProcessSingleToolCallAsync` with `suppressInvocationFailures: true`, yield any `Warded`/`WardResolved` events, yield `ToolError` if the tool failed, yield `ToolResult`, append the exchange to `chatMessages`, persist to Grimoire) → loop back to a fresh `IModelCallExecutor.ExecuteStreamingAsync`.
 
 **Streaming guardrails/strict modes** — `Guardrails.StreamingMode` defaults to **`buffered`** (`GuardrailsStreamingMode.Buffered`); explicit **`passthrough`** is honored with a configuration warning (ADR 0001). Buffered guardrails and strict JSON-schema output set `bufferTokens=true`, withholding both answer and reasoning frames while preserving their relative runs. Safety inspection scans the final answer plus projectable reasoning. On success the buffered runs are released in order; on rejection none are released. Provider commitment still occurs on the raw answer/reasoning update, before this visibility decision. Passthrough can expose content before the post-hoc filter and retains the explicit leakage warning.
+
+**Cancellation and unexpected OCE:** when the caller token is cancelled, TurnEngine uses an independent token to emit/drain the abandoned terminal event and finish producer cleanup, then propagates the caller's `OperationCanceledException`. An `OperationCanceledException` while the caller token is not cancelled is a provider failure instead: it is logged without raw exception details and projects one sanitized generic terminal failure. No second terminal event is emitted if the runner already completed the semantic stream.
 
 ---
 
@@ -360,7 +366,7 @@ The **session live-stream** (`/sessions/{id}/stream`) is a **separate, independe
 | # | Loop | Location | Purpose | Termination |
 |---|---|---|---|---|
 | 1 | Provider fallback | `WizardIntelligenceProvider.ExecutePromptWithFallbackAsync` (buffered) and the streaming analog | Retry the next healthy provider on a **pre-commit** connectivity failure | First provider commitment, success, non-connectivity error, or `MaxFallbackAttempts` exhausted |
-| 2 | Outer "no tools" restart | `RunInferenceAttemptAsync` outer `while (true)` | Retry inference without tools only if the model rejects them **before commitment** | Runs at most once; any answer/reasoning/tool/empty-success commitment prohibits restart |
+| 2 | Outer "no tools" restart | `RunInferenceAttemptAsync` outer `while (true)` | Retry inference without tools only if the model rejects them **before commitment** | Runs at most once; non-empty answer, non-empty visible or protected-only reasoning, actionable tool, or empty-success commitment prohibits restart |
 | 3 | **Tool-call loop** | `RunInferenceAttemptAsync` inner `while (true)` | Model → tool calls → execute → append → re-inference (mode branches for buffered vs streaming I/O and events) | `calls.Count==0` (final answer), `MaxToolInferenceRounds` exceeded, or client-tool-forward break |
 | 4 | Chunk pump (streaming) | `RunInferenceAttemptAsync` streaming branch innermost `while (true)` | Consume `IModelCallExecutor.ExecuteStreamingAsync` updates | `!hasNext` or read error |
 | 5 | _(removed)_ | — | Streaming tool loop is the same as #3 (`TurnResponseMode`) | — |

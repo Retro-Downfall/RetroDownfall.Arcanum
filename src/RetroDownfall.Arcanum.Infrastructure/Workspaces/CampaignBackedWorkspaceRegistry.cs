@@ -130,13 +130,20 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
             UpdatedAt = now,
         };
 
-        try
+        Result<Campaign> addResult = await repo
+            .AddAsync(campaign, ct)
+            .ConfigureAwait(false);
+
+        if (addResult.IsFailure)
         {
-            await repo.AddAsync(campaign, ct).ConfigureAwait(false);
-        }
-        catch (InvalidOperationException ex) when (ex.Message == ErrorCodes.Campaign.MaxReached)
-        {
-            return new Error(ErrorCodes.Campaign.MaxReached, "The maximum number of campaigns has been reached.");
+            return string.Equals(
+                addResult.Error.Code,
+                ErrorCodes.Campaign.MaxReached,
+                StringComparison.Ordinal)
+                    ? new Error(
+                        ErrorCodes.Campaign.MaxReached,
+                        "The maximum number of campaigns has been reached.")
+                    : addResult.Error;
         }
 
         Directory.CreateDirectory(Path.Combine(normalizedPath, ".arcanum"));

@@ -402,9 +402,7 @@ internal sealed class BudgetReservationService(
         long inputPerCall = estimatedInputTokens is > 0
             ? estimatedInputTokens.Value
             : maxPerCall;
-        long outputPerCall = estimatedInputTokens is > 0
-            ? SaturatingAdd(requestedOutput, requestedReasoning)
-            : maxPerCall;
+        long outputPerCall = maxPerCall;
         decimal outputRate = Math.Max(0m, pricing.OutputPer1M);
         decimal reasoningRate = Math.Max(0m, pricing.ReasoningPer1M ?? outputRate);
         long conservativelyPricedReasoning =
@@ -417,9 +415,6 @@ internal sealed class BudgetReservationService(
             reasoningTokens: SaturatingMultiply(conservativelyPricedReasoning, callCount),
             pricing);
     }
-
-    private static long SaturatingAdd(long left, long right) =>
-        long.CreateSaturating((Int128)left + right);
 
     private static long SaturatingMultiply(long value, int multiplier) =>
         long.CreateSaturating((Int128)value * multiplier);

@@ -343,7 +343,8 @@ public sealed class SanctumBreachRepositoryTests : IAsyncLifetime
             UpdatedAt = now,
         };
 
-        Campaign saved = await campaignRepository.AddAsync(campaign, CancellationToken.None);
+        Campaign saved = (await campaignRepository
+            .AddAsync(campaign, CancellationToken.None)).Value;
 
         return saved.Id.ToString();
 

@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
 
@@ -35,7 +36,7 @@ public sealed class ChildProcessBoundaryBehaviorTests
     }
 
     [Fact]
-    public void CleanupTempPaths_deletes_file_and_directory_and_ignores_blank_or_missing_paths()
+    public void CleanupTempPaths_deletes_matching_file_and_directory_and_accepts_missing_owned_artifact()
     {
 
         string root = Directory.CreateDirectory(
@@ -55,15 +56,43 @@ public sealed class ChildProcessBoundaryBehaviorTests
 
         try
         {
+            Assert.True(
+                IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    file,
+                    FileSystemObjectKind.RegularFile,
+                    out IdentityOwnedFileSystemArtifact fileArtifact));
 
-            ChildProcessFilesystemJail.CleanupTempPaths(
-                [string.Empty, "   ", missing, file, directory]);
+            Assert.True(
+                IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    directory,
+                    FileSystemObjectKind.Directory,
+                    out IdentityOwnedFileSystemArtifact directoryArtifact));
+
+            File.WriteAllText(missing, "already gone");
+
+            Assert.True(
+                IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    missing,
+                    FileSystemObjectKind.RegularFile,
+                    out IdentityOwnedFileSystemArtifact missingArtifact));
+
+            File.Delete(missing);
+
+            bool cleaned =
+                ChildProcessFilesystemJail.CleanupTempPaths(
+                    [
+                        missingArtifact,
+                        fileArtifact,
+                        directoryArtifact,
+                    ]);
 
             Assert.False(File.Exists(file));
 
             Assert.False(Directory.Exists(directory));
 
             Assert.True(Directory.Exists(root));
+
+            Assert.True(cleaned);
 
         }
         finally
@@ -78,6 +107,144 @@ public sealed class ChildProcessBoundaryBehaviorTests
 
         }
 
+    }
+
+    [Fact]
+    public void CleanupTempPaths_retains_file_replacement_with_different_identity()
+    {
+        string root = Directory.CreateDirectory(
+            Path.Combine(
+                Path.GetTempPath(),
+                "arcanum-cleanup-file-swap-"
+                + Guid.NewGuid().ToString("N"))).FullName;
+
+        string file = Path.Combine(root, "profile.sb");
+
+        File.WriteAllText(file, "owned");
+
+        try
+        {
+            Assert.True(
+                IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    file,
+                    FileSystemObjectKind.RegularFile,
+                    out IdentityOwnedFileSystemArtifact artifact));
+
+            File.Delete(file);
+
+            File.WriteAllText(file, "external replacement");
+
+            bool cleaned =
+                ChildProcessFilesystemJail.CleanupTempPaths(
+                    [artifact]);
+
+            Assert.False(cleaned);
+
+            Assert.Equal(
+                "external replacement",
+                File.ReadAllText(file));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CleanupTempPaths_retains_directory_replacement_with_different_identity()
+    {
+        string root = Directory.CreateDirectory(
+            Path.Combine(
+                Path.GetTempPath(),
+                "arcanum-cleanup-directory-swap-"
+                + Guid.NewGuid().ToString("N"))).FullName;
+
+        string directory = Directory.CreateDirectory(
+            Path.Combine(root, "invocation-temp")).FullName;
+
+        try
+        {
+            Assert.True(
+                IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    directory,
+                    FileSystemObjectKind.Directory,
+                    out IdentityOwnedFileSystemArtifact artifact));
+
+            Directory.Delete(directory);
+
+            Directory.CreateDirectory(directory);
+
+            File.WriteAllText(
+                Path.Combine(directory, "external.txt"),
+                "external replacement");
+
+            bool cleaned =
+                ChildProcessFilesystemJail.CleanupTempPaths(
+                    [artifact]);
+
+            Assert.False(cleaned);
+
+            Assert.Equal(
+                "external replacement",
+                File.ReadAllText(
+                    Path.Combine(
+                        directory,
+                        "external.txt")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public void CleanupTempPaths_retains_symlink_replacement()
+    {
+        Skip.IfNot(
+            OperatingSystem.IsMacOS()
+            || OperatingSystem.IsLinux(),
+            "Symlink replacement semantics are Unix-only.");
+
+        string root = Directory.CreateDirectory(
+            Path.Combine(
+                Path.GetTempPath(),
+                "arcanum-cleanup-symlink-swap-"
+                + Guid.NewGuid().ToString("N"))).FullName;
+
+        string file = Path.Combine(root, "profile.sb");
+
+        string target = Path.Combine(root, "external.txt");
+
+        File.WriteAllText(file, "owned");
+
+        File.WriteAllText(target, "external");
+
+        try
+        {
+            Assert.True(
+                IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    file,
+                    FileSystemObjectKind.RegularFile,
+                    out IdentityOwnedFileSystemArtifact artifact));
+
+            File.Delete(file);
+
+            File.CreateSymbolicLink(file, target);
+
+            bool cleaned =
+                ChildProcessFilesystemJail.CleanupTempPaths(
+                    [artifact]);
+
+            Assert.False(cleaned);
+
+            Assert.NotNull(File.ResolveLinkTarget(file, false));
+
+            Assert.Equal("external", File.ReadAllText(target));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
@@ -96,9 +263,15 @@ public sealed class ChildProcessBoundaryBehaviorTests
 
         try
         {
+            Assert.True(
+                IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    directory,
+                    FileSystemObjectKind.Directory,
+                    out IdentityOwnedFileSystemArtifact artifact));
+
             bool cleaned =
                 await ChildProcessFilesystemJail.CleanupTempPathsAsync(
-                    [directory],
+                    [artifact],
                     TimeSpan.Zero);
 
             Assert.False(cleaned);
@@ -120,9 +293,14 @@ public sealed class ChildProcessBoundaryBehaviorTests
         {
             bool cleaned =
                 await ChildProcessFilesystemJail.CleanupTempPathsAsync(
-                    ["blocked"],
+                    [default],
                     TimeSpan.FromMilliseconds(100),
-                    _ => releaseCleanup.Wait());
+                    _ =>
+                    {
+                        releaseCleanup.Wait();
+
+                        return true;
+                    });
 
             stopwatch.Stop();
             Assert.False(cleaned);
@@ -157,6 +335,17 @@ public sealed class ChildProcessBoundaryBehaviorTests
 
         try
         {
+            Assert.True(
+                IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    lockedPath,
+                    FileSystemObjectKind.RegularFile,
+                    out IdentityOwnedFileSystemArtifact lockedArtifact));
+
+            Assert.True(
+                IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    removablePath,
+                    FileSystemObjectKind.RegularFile,
+                    out IdentityOwnedFileSystemArtifact removableArtifact));
 
             using (FileStream locked = new(
                        lockedPath,
@@ -165,15 +354,24 @@ public sealed class ChildProcessBoundaryBehaviorTests
                        FileShare.None))
             {
 
-                ChildProcessFilesystemJail.CleanupTempPaths([lockedPath, removablePath]);
+                bool cleaned =
+                    ChildProcessFilesystemJail.CleanupTempPaths(
+                        [
+                            lockedArtifact,
+                            removableArtifact,
+                        ]);
 
                 Assert.True(File.Exists(lockedPath));
 
                 Assert.False(File.Exists(removablePath));
 
+                Assert.False(cleaned);
+
             }
 
-            ChildProcessFilesystemJail.CleanupTempPaths([lockedPath]);
+            Assert.True(
+                ChildProcessFilesystemJail.CleanupTempPaths(
+                    [lockedArtifact]));
 
             Assert.False(File.Exists(lockedPath));
 
