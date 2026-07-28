@@ -18,7 +18,7 @@ public interface ICampaignRepository
         int offset = 0,
         CancellationToken cancellationToken = default);
 
-    Task<Campaign> AddAsync(Campaign campaign, CancellationToken cancellationToken = default);
+    Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default);
 
     Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default);
 

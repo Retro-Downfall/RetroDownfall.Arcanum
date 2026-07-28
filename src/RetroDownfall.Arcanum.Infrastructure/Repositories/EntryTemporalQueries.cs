@@ -104,6 +104,91 @@ internal static class EntryTemporalQueries
             $"""SELECT COUNT(*) AS "Value" FROM "Entries" WHERE "SessionId" = {sessionId} AND "CreatedAt" > {afterExclusive}""");
 
     /// <summary>
+    /// Loads an ascending watermark window through the timestamp group containing the
+    /// <paramref name="targetLimit"/>th row. The boundary CTE keeps rows sharing a
+    /// <c>CreatedAt</c> value together so advancing a timestamp-only watermark cannot skip the
+    /// other half of a tool call/result pair.
+    /// </summary>
+    public static IQueryable<Entry> LoadAfterWatermarkThroughTimestampGroup(
+        ArcanumDbContext db,
+        Guid sessionId,
+        DateTimeOffset afterExclusive,
+        int targetLimit,
+        int maxRows)
+    {
+
+        DateTimeOffset afterUtc = afterExclusive.ToUniversalTime();
+
+        int boundaryOffset = Math.Max(0, targetLimit - 1);
+
+        return db.Entries.FromSql(
+            $"""
+            WITH "Boundary" AS
+            (
+                SELECT "CreatedAt"
+                FROM "Entries"
+                WHERE "SessionId" = {sessionId}
+                  AND "CreatedAt" > {afterUtc}
+                ORDER BY "CreatedAt", "Id"
+                LIMIT 1 OFFSET {boundaryOffset}
+            ),
+            "Selected" AS
+            (
+                SELECT e.*
+                FROM "Entries" AS e
+                WHERE e."SessionId" = {sessionId}
+                  AND e."CreatedAt" > {afterUtc}
+                  AND
+                  (
+                      NOT EXISTS (SELECT 1 FROM "Boundary")
+                      OR e."CreatedAt" <= (SELECT "CreatedAt" FROM "Boundary")
+                  )
+            )
+            SELECT s.*
+            FROM "Selected" AS s
+            WHERE (SELECT COUNT(*) FROM "Selected") <= {maxRows}
+            ORDER BY s."CreatedAt", s."Id"
+            LIMIT {maxRows}
+            """);
+
+    }
+
+    public static IQueryable<int> CountAfterWatermarkThroughTimestampGroup(
+        ArcanumDbContext db,
+        Guid sessionId,
+        DateTimeOffset afterExclusive,
+        int targetLimit)
+    {
+
+        DateTimeOffset afterUtc = afterExclusive.ToUniversalTime();
+
+        int boundaryOffset = Math.Max(0, targetLimit - 1);
+
+        return db.Database.SqlQuery<int>(
+            $"""
+            WITH "Boundary" AS
+            (
+                SELECT "CreatedAt"
+                FROM "Entries"
+                WHERE "SessionId" = {sessionId}
+                  AND "CreatedAt" > {afterUtc}
+                ORDER BY "CreatedAt", "Id"
+                LIMIT 1 OFFSET {boundaryOffset}
+            )
+            SELECT COUNT(*) AS "Value"
+            FROM "Entries" AS e
+            WHERE e."SessionId" = {sessionId}
+              AND e."CreatedAt" > {afterUtc}
+              AND
+              (
+                  NOT EXISTS (SELECT 1 FROM "Boundary")
+                  OR e."CreatedAt" <= (SELECT "CreatedAt" FROM "Boundary")
+              )
+            """);
+
+    }
+
+    /// <summary>
     /// Count entries at or before an inclusive <c>(CreatedAt, Id)</c> cursor — used by session
     /// fork's "up to and including this entry" cutoff to pre-check the code-owned per-session entry
     /// limit before copying anything.

@@ -4,12 +4,13 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
 internal static class OpenAiStreamErrorMapper
 {
-    private const string GenericFailureMessage = "Inference failed. See server logs for details.";
+    private const string GenericFailureMessage =
+        PublicInferenceErrorMessages.OpenAiGenericFailure;
 
     private static readonly HashSet<string> AllowedMessages =
     [
         GenericFailureMessage,
-        "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.",
+        PublicInferenceErrorMessages.ModelNotConfigured,
         "Prompt is required.",
         "Attached file validation failed.",
     ];
@@ -52,7 +53,7 @@ internal static class OpenAiStreamErrorMapper
                     Code: "invalid_schema"),
 
             _ => new OpenAiErrorDetail(
-                SanitizeMessage(error?.Message),
+                ResolveMessage(error),
                 "api_error",
                 Param: null,
                 Code: "inference_failed"),
@@ -61,6 +62,16 @@ internal static class OpenAiStreamErrorMapper
 
     public static bool IsReasoningValidationCode(string? internalCode) =>
         MapReasoningValidationCode(internalCode) is not null;
+
+    private static string ResolveMessage(Error? error) =>
+        error?.Code switch
+        {
+            ErrorCodes.Hub.Model =>
+                PublicInferenceErrorMessages.ModelNotConfigured,
+            ErrorCodes.Validation.InvalidPrompt => "Prompt is required.",
+            ErrorCodes.Validation.AttachedFiles => "Attached file validation failed.",
+            _ => SanitizeMessage(error?.Message),
+        };
 
     private static string SanitizeMessage(string? message) =>
         !string.IsNullOrWhiteSpace(message) && AllowedMessages.Contains(message)

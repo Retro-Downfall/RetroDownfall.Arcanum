@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -24,7 +25,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 public sealed class ArcanumBrowseWebTool : AIFunction
 {
 
-    public const string ToolName = "browse_web";
+    public const string ToolName = ArcanumBuiltInToolNames.BrowseWeb;
 
     /// <summary>
     /// Model-facing prefix wrapped around fetched page text only. Warns that the body is untrusted
@@ -95,7 +96,9 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
         if (validation.IsFailure)
         {
-            _logger?.LogWarning("browse_web SSRF guard blocked {Url}: {Reason}", url, validation.Error.Message);
+            _logger?.LogWarning(
+                "browse_web SSRF guard blocked a request ({ErrorCode}).",
+                validation.Error.Code);
 
             return JsonSerializer.Serialize(
                 new BrowseWebResult
@@ -148,7 +151,8 @@ public sealed class ArcanumBrowseWebTool : AIFunction
                 if (!mt.Contains("html", StringComparison.OrdinalIgnoreCase)
                     && !mt.Contains("text", StringComparison.OrdinalIgnoreCase))
                 {
-                    _logger?.LogWarning("browse_web fetched non-HTML content type {ContentType} for {Url}; attempting to parse as text.", mt, url);
+                    _logger?.LogWarning(
+                        "browse_web fetched a non-HTML content type; attempting to parse as text.");
                 }
             }
 
@@ -192,13 +196,15 @@ public sealed class ArcanumBrowseWebTool : AIFunction
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "browse_web failed for {Url}.", url);
+            _logger?.LogError(
+                "browse_web failed; exception type {ExceptionType}.",
+                ex.GetType().FullName);
 
             return JsonSerializer.Serialize(
                 new BrowseWebResult
                 {
                     Title = string.Empty,
-                    Content = $"[Tool error: browse_web failed with an internal error. The operator has been notified.]",
+                    Content = ToolExecutionPipeline.PublicToolFailureMessage(ToolName),
                     Links = [],
                 },
                 ArcanumJsonContext.Default.BrowseWebResult);

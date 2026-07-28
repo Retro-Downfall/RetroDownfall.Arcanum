@@ -367,6 +367,23 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         public Task<bool> IsTrustedAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.FromResult(true);
 
+        public Task<bool> IsTrustedAsync(
+            string workspaceRootPath,
+            string sourceDigest,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<bool> IsApprovedDigestAsync(
+            string workspaceRootPath,
+            string sourceDigest,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<TrustedMcpWorkspaceSnapshot> GetSnapshotAsync(
+            string workspaceRootPath,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new TrustedMcpWorkspaceSnapshot(null, IsApproved: true));
+
         public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 

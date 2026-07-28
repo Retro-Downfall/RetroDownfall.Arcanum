@@ -34,7 +34,7 @@ public sealed class CliSessionManager(IThemePalette palette, ILogger<CliSessionM
                 return id;
             }
 
-            WarnOnceSessionCorruption(text, quiet);
+            WarnOnceSessionCorruption(quiet);
 
             return null;
         }
@@ -124,27 +124,26 @@ public sealed class CliSessionManager(IThemePalette palette, ILogger<CliSessionM
     {
         if (quiet)
         {
-            logger?.LogDebug(ex, "Could not save/load CLI session state (quiet).");
+            logger?.LogDebug(
+                "Could not save/load CLI session state (quiet); exception type {ExceptionType}.",
+                ex.GetType().FullName);
             return;
         }
 
         AnsiConsole.MarkupLine(palette.MutedMarkup(Markup.Escape("Warning: Could not save/load session state.")));
     }
 
-    private void WarnOnceSessionCorruption(string actual, bool quiet)
+    private void WarnOnceSessionCorruption(bool quiet)
     {
         if (Interlocked.Exchange(ref _corruptionWarned, 1) != 0)
         {
             return;
         }
 
-        string preview = actual.Length > 40 ? actual[..40] + "\u2026" : actual;
-
         if (quiet)
         {
             logger?.LogDebug(
-                "cli-session.txt does not contain a valid session id (got: '{Preview}'). Quiet path; no Spectre output.",
-                preview);
+                "cli-session.txt does not contain a valid session id. Quiet path; no Spectre output.");
             return;
         }
 
@@ -152,6 +151,6 @@ public sealed class CliSessionManager(IThemePalette palette, ILogger<CliSessionM
             palette.ErrorLabelMarkup(
                 Markup.Escape("Warning:"),
                 Markup.Escape(
-                    $"cli-session.txt does not contain a valid session id (got: '{preview}'). The file will be replaced on the next /resume or new turn.")));
+                    "cli-session.txt does not contain a valid session id. The file will be replaced on the next /resume or new turn.")));
     }
 }

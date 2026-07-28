@@ -121,8 +121,8 @@ public sealed class ExecuteWorkspaceResolverTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new Core.Primitives.ListPageResult<Campaign>([], false));
 
-        public Task<Campaign> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+        public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             Task.FromResult(campaign);
@@ -229,8 +229,8 @@ public sealed class PingRequestResolverTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new ListPageResult<Campaign>([], false));
 
-        public Task<Campaign> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+        public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             Task.FromResult(campaign);

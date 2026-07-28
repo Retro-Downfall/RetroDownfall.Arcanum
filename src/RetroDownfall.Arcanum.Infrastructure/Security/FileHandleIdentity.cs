@@ -67,6 +67,13 @@ internal static partial class FileHandleIdentityInterop
     internal static Func<string, FileHandleMetadata?>? TryGetPathMetadataForTests { get; set; }
 
     /// <summary>
+    /// Test seam for no-follow path metadata branches.
+    /// </summary>
+    internal static Func<string, FileHandleMetadata?>?
+        TryGetPathMetadataNoFollowForTests
+    { get; set; }
+
+    /// <summary>
     /// Test seam for handle identity and hard-link metadata branches.
     /// </summary>
     internal static Func<SafeFileHandle, FileHandleMetadata?>? TryGetHandleMetadataForTests { get; set; }
@@ -274,6 +281,21 @@ internal static partial class FileHandleIdentityInterop
     {
         metadata = default;
 
+        if (TryGetPathMetadataNoFollowForTests is not null)
+        {
+            FileHandleMetadata? testMetadata =
+                TryGetPathMetadataNoFollowForTests(path);
+
+            if (testMetadata is null)
+            {
+                return false;
+            }
+
+            metadata = testMetadata.Value;
+
+            return true;
+        }
+
         if (OperatingSystem.IsWindows())
         {
             return TryGetWindowsPathMetadataNoFollow(
@@ -367,7 +389,7 @@ internal static partial class FileHandleIdentityInterop
                 int flags = OperatingSystem.IsMacOS()
                     ? MacOsOpenDirectory | MacOsOpenNoFollow | MacOsOpenCloseOnExec
                     : LinuxOpenDirectory | LinuxOpenNoFollow | LinuxOpenCloseOnExec;
-                int fileDescriptor = open(path, flags);
+                int fileDescriptor = OpenUnix(path, flags, mode: 0);
                 if (fileDescriptor < 0)
                 {
                     return false;
@@ -406,6 +428,97 @@ internal static partial class FileHandleIdentityInterop
             metadata = default;
             return false;
         }
+    }
+
+    internal static SecureFileOpenStatus TryOpenReadOnlyNoFollow(
+        string path,
+        out SafeFileHandle? handle)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            handle = CreateFile(
+                path,
+                GenericRead,
+                FileShare.Read,
+                IntPtr.Zero,
+                OpenExisting,
+                FileFlagOpenReparsePoint
+                    | FileFlagOverlapped
+                    | FileFlagSequentialScan
+                    | FileFlagBackupSemantics,
+                IntPtr.Zero);
+
+            if (!handle.IsInvalid)
+            {
+                return SecureFileOpenStatus.Success;
+            }
+
+            int error = Marshal.GetLastPInvokeError();
+
+            handle.Dispose();
+
+            handle = null;
+
+            return error switch
+            {
+                ErrorFileNotFound or ErrorPathNotFound =>
+                    SecureFileOpenStatus.NotFound,
+                ErrorAccessDenied =>
+                    SecureFileOpenStatus.AccessDenied,
+                _ => SecureFileOpenStatus.IoError,
+            };
+        }
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            bool isMacOS = OperatingSystem.IsMacOS();
+
+            int flags = isMacOS
+                ? MacOsOpenNoFollow
+                    | MacOsOpenNonBlocking
+                    | MacOsOpenCloseOnExec
+                : LinuxOpenNoFollow
+                    | LinuxOpenNonBlocking
+                    | LinuxOpenCloseOnExec;
+
+            int fileDescriptor = OpenUnix(
+                path,
+                flags,
+                mode: 0);
+
+            if (fileDescriptor >= 0)
+            {
+                handle = new SafeFileHandle(
+                    new IntPtr(fileDescriptor),
+                    ownsHandle: true);
+
+                return SecureFileOpenStatus.Success;
+            }
+
+            handle = null;
+
+            int error = Marshal.GetLastPInvokeError();
+
+            return error switch
+            {
+                UnixErrorNoEntry or UnixErrorNotDirectory =>
+                    SecureFileOpenStatus.NotFound,
+                UnixErrorPermissionDenied
+                    or UnixErrorOperationNotPermitted =>
+                    SecureFileOpenStatus.AccessDenied,
+                LinuxErrorTooManySymbolicLinks
+                    when !isMacOS =>
+                    SecureFileOpenStatus.Rejected,
+                MacOsErrorTooManySymbolicLinks
+                    when isMacOS =>
+                    SecureFileOpenStatus.Rejected,
+                _ => SecureFileOpenStatus.IoError,
+            };
+        }
+
+        handle = null;
+
+        return SecureFileOpenStatus.Rejected;
     }
 
     private static bool TryGetWindowsPathMetadata(
@@ -715,23 +828,51 @@ internal static partial class FileHandleIdentityInterop
 
     private const uint FileReadAttributes = 0x0080;
 
+    private const uint GenericRead = 0x80000000;
+
     private const uint OpenExisting = 3;
 
     private const uint FileFlagBackupSemantics = 0x02000000;
 
     private const uint FileFlagOpenReparsePoint = 0x00200000;
 
+    private const uint FileFlagSequentialScan = 0x08000000;
+
+    private const uint FileFlagOverlapped = 0x40000000;
+
+    private const int ErrorFileNotFound = 2;
+
+    private const int ErrorPathNotFound = 3;
+
+    private const int ErrorAccessDenied = 5;
+
     private const int LinuxOpenDirectory = 0x00010000;
 
-    private const int LinuxOpenNoFollow = 0x00020000;
+    private const int LinuxOpenNonBlocking = 0x00000800;
 
     private const int LinuxOpenCloseOnExec = 0x00080000;
 
+    private const int LinuxOpenNoFollow = 0x00020000;
+
     private const int MacOsOpenDirectory = 0x00100000;
+
+    private const int MacOsOpenNonBlocking = 0x00000004;
+
+    private const int MacOsOpenCloseOnExec = 0x01000000;
 
     private const int MacOsOpenNoFollow = 0x00000100;
 
-    private const int MacOsOpenCloseOnExec = 0x01000000;
+    private const int UnixErrorOperationNotPermitted = 1;
+
+    private const int UnixErrorNoEntry = 2;
+
+    private const int UnixErrorPermissionDenied = 13;
+
+    private const int UnixErrorNotDirectory = 20;
+
+    private const int LinuxErrorTooManySymbolicLinks = 40;
+
+    private const int MacOsErrorTooManySymbolicLinks = 62;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeFileTime
@@ -798,7 +939,14 @@ internal static partial class FileHandleIdentityInterop
     [LibraryImport("libc", SetLastError = true)]
     private static unsafe partial int fstat(int fd, byte* buf);
 
-    [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
-    private static partial int open(string path, int flags);
+    [LibraryImport(
+        "libc",
+        EntryPoint = "open",
+        SetLastError = true,
+        StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int OpenUnix(
+        string path,
+        int flags,
+        uint mode);
 
 }

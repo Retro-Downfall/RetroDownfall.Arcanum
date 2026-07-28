@@ -21,10 +21,10 @@ internal static class InferenceExecuteWriter
 
     /// <summary>
     /// Client-visible NDJSON Error text for caught streaming exceptions (not intentional
-    /// provider Error events). Keep in sync with WizardIntelligenceProvider.PublicInferenceFailureMessage.
+    /// provider Error events). Uses the centralized native inference-failure contract.
     /// </summary>
     internal const string PublicStreamFailureMessage =
-        "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.";
+        PublicInferenceErrorMessages.NativeGenericFailure;
 
     private static readonly byte[] NewlineBytes = "\n"u8.ToArray();
 
@@ -88,10 +88,14 @@ internal static class InferenceExecuteWriter
             ?? DisconnectPolicy.Auto;
 
         bool continueThenReplay = TurnContextGuards.ResolveContinueThenReplay(httpContext, disconnectPolicy);
+        CancellationToken ownershipLost = TurnIdempotencyAmbient.OwnershipLostToken;
 
         using CancellationTokenSource streamCts = continueThenReplay
-            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-            : CancellationTokenSource.CreateLinkedTokenSource(httpContext.RequestAborted, cancellationToken);
+            ? CancellationTokenSource.CreateLinkedTokenSource(ownershipLost)
+            : CancellationTokenSource.CreateLinkedTokenSource(
+                httpContext.RequestAborted,
+                cancellationToken,
+                ownershipLost);
 
         CancellationToken ct = streamCts.Token;
 
@@ -163,6 +167,11 @@ internal static class InferenceExecuteWriter
         }
         catch (OperationCanceledException)
         {
+            if (ownershipLost.IsCancellationRequested)
+            {
+                return;
+            }
+
             if (httpContext.RequestAborted.IsCancellationRequested && !continueThenReplay)
             {
                 return;
@@ -203,16 +212,10 @@ internal static class InferenceExecuteWriter
         catch (Exception ex)
         {
             logger.LogError(
-                ex,
-                "Stream inference failed (responseStarted={ResponseStarted}, model={Model}).",
+                "Stream inference failed with exception type {ExceptionType} (responseStarted={ResponseStarted}, trace={TraceId}).",
+                ex.GetType().FullName,
                 responseStarted,
-                request.Model);
-
-            Serilog.Log.Error(
-                ex,
-                "Stream inference failed (responseStarted={ResponseStarted}, model={Model}).",
-                responseStarted,
-                request.Model);
+                httpContext.TraceIdentifier);
 
             IntelligenceEvent errorEvent = new(
                 IntelligenceEventType.Error,
@@ -239,7 +242,10 @@ internal static class InferenceExecuteWriter
             }
             catch (Exception writeEx)
             {
-                logger.LogWarning(writeEx, "Failed to write stream error frame after inference failure.");
+                logger.LogWarning(
+                    "Failed to write stream error frame after inference failure; exception type {ExceptionType}, trace {TraceId}.",
+                    writeEx.GetType().FullName,
+                    httpContext.TraceIdentifier);
             }
 
         }

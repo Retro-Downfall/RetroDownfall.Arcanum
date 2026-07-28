@@ -27,6 +27,18 @@ public sealed partial class McpConnectionManager
     // unsupported. Both transports converge on FinishStartAsync (initialize + tools/list + wiring).
     private async Task<Result> StartManagedServerCoreAsync(ManagedMcpServerEntry entry, CancellationToken cancellationToken)
     {
+        if (entry.DetachedClientDisposal is { } detachedDisposal)
+        {
+            if (!detachedDisposal.IsCompleted)
+            {
+                return new Error(
+                    "Mcp.ClientDisposalIncomplete",
+                    "The previous MCP client is still shutting down.");
+            }
+
+            entry.DetachedClientDisposal = null;
+        }
+
         McpServerConfig cfg = entry.Config;
 
         return entry.Transport switch
@@ -248,7 +260,8 @@ public sealed partial class McpConnectionManager
         }
     }
 
-    private async Task StopManagedServerCoreAsync(ManagedMcpServerEntry entry, CancellationToken cancellationToken)
+    private async Task<bool> StopManagedServerCoreAsync(
+        ManagedMcpServerEntry entry)
     {
         IMcpClient? client = entry.Client;
 
@@ -256,27 +269,74 @@ public sealed partial class McpConnectionManager
 
         entry.LoadedTools.Clear();
 
-        if (client is not null)
+        Task? disposal = entry.DetachedClientDisposal;
+
+        try
         {
-            try
+            if (client is not null)
             {
-                await client.DisposeAsync().ConfigureAwait(false);
+                disposal = null;
+                disposal = client.DisposeAsync()
+                    .AsTask();
+
+                entry.DetachedClientDisposal = disposal;
+                TrackPendingWorkspaceRetirement(disposal);
+
+                using CancellationTokenSource cleanupDeadline =
+                    new(WorkspaceRetirementCleanupTimeout);
+
+                await disposal
+                    .WaitAsync(cleanupDeadline.Token)
+                    .ConfigureAwait(false);
             }
-            catch (Exception ex)
+            else if (disposal is not null)
             {
-                logger.LogWarning(ex, "Error disposing MCP client for server {ServerName}.", entry.Name);
+                if (!disposal.IsCompletedSuccessfully)
+                {
+                    _ = disposal.Exception;
+
+                    return false;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+            when (disposal is { IsCompleted: false })
+        {
+            logger.LogWarning(
+                "Timed out disposing a detached MCP client for server {ServerName}.",
+                entry.Name);
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            entry.DetachedClientDisposal =
+                disposal
+                ?? Task.FromException(ex);
+
+            logger.LogWarning(ex, "Error disposing MCP client for server {ServerName}.", entry.Name);
+
+            return false;
+        }
+        finally
+        {
+            string partitionKey = entry.ScopeWorkingDirectory is null
+                ? GlobalPartitionKey
+                : entry.ScopeWorkingDirectory;
+
+            if (client is not null
+                && _partitionClients.TryGetValue(
+                    partitionKey,
+                    out Lazy<McpPartitionClients>? partitionLazy)
+                && partitionLazy.IsValueCreated)
+            {
+                partitionLazy.Value.Clients.Remove(client);
             }
         }
 
-        string partitionKey = entry.ScopeWorkingDirectory is null ? GlobalPartitionKey : entry.ScopeWorkingDirectory;
+        entry.DetachedClientDisposal = null;
 
-        if (client is not null
-            && _partitionClients.TryGetValue(partitionKey, out Lazy<McpPartitionClients>? partitionLazy)
-            && partitionLazy.IsValueCreated
-            && partitionLazy.Value.Clients.Contains(client))
-        {
-            partitionLazy.Value.Clients.Remove(client);
-        }
+        return true;
     }
 
     private void RemoveClientFromPartition(ManagedMcpServerEntry entry, IMcpClient client)

@@ -1,8 +1,10 @@
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Api.ProvingGrounds;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -10,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -59,6 +62,73 @@ public sealed class DiWiringSmokeTests
         Assert.NotNull(services.GetRequiredService<IMcpConnectionManager>());
 
         Assert.NotNull(services.GetRequiredService<ISanctumBreachRepository>());
+
+    }
+
+    [SkippableFact]
+    public async Task Host_ModelCallExecutorProviderFailure_UsesDiLoggerSafely()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const string canary = "CANARY_DI_PROVIDER_RESPONSE_BODY";
+        TestCapturingLogger<ModelCallExecutor> logger = new();
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+                services.AddSingleton<Microsoft.Extensions.Logging.ILogger<ModelCallExecutor>>(logger),
+        };
+
+        using IServiceScope scope = factory.Services.CreateScope();
+        IModelCallExecutor executor = scope.ServiceProvider.GetRequiredService<IModelCallExecutor>();
+        ProviderSettings provider = new()
+        {
+            Name = "test",
+            Type = AiProviderKind.OpenAICompatible,
+            Models = ["mistral:latest"],
+        };
+
+        ModelCallOutcome outcome = await executor.ExecuteBufferedAsync(
+            new ThrowingChatClient(canary),
+            [new ChatMessage(ChatRole.User, "ping")],
+            new ChatOptions(),
+            new TurnBudget(),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None,
+            new ModelCallContext(
+                provider,
+                "mistral:latest",
+                ReservedAnswerTokens: 32,
+                ReservedReasoningTokens: 0));
+
+        Assert.True(outcome.IsFailure);
+        TestLogEntry entry = Assert.Single(logger.Entries);
+        Assert.Null(entry.Exception);
+        Assert.Contains(nameof(InvalidOperationException), entry.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, entry.Message, StringComparison.Ordinal);
+
+    }
+
+    private sealed class ThrowingChatClient(string canary) : IChatClient
+    {
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> chatMessages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            Task.FromException<ChatResponse>(new InvalidOperationException(canary));
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> chatMessages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
 
     }
 

@@ -15,6 +15,31 @@ public sealed class InternalCodingToolSettingsFingerprintTests
     }
 
     [Fact]
+    public void Fingerprint_uses_normalized_workspace_patch_deadline_relation()
+    {
+        CodingToolsSettings first = new()
+        {
+            Patch = new WorkspacePatchSettings
+            {
+                MaxElapsedMilliseconds = 100,
+                RollbackReserveMilliseconds = 50_000,
+            },
+        };
+        CodingToolsSettings second = new()
+        {
+            Patch = new WorkspacePatchSettings
+            {
+                MaxElapsedMilliseconds = 100,
+                RollbackReserveMilliseconds = 60_000,
+            },
+        };
+
+        Assert.Equal(
+            InternalCodingToolSettingsFingerprint.Build(first),
+            InternalCodingToolSettingsFingerprint.Build(second));
+    }
+
+    [Fact]
     public void Fingerprint_tracks_nested_check_profiles_but_keeps_semantically_equivalent_objects()
     {
         CodingToolsSettings first = SettingsWithProfile(

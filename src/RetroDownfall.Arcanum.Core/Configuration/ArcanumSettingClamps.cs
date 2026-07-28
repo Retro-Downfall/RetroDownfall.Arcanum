@@ -140,6 +140,63 @@ public static class ArcanumSettingClamps
 
     public static int WorkspacePatchMaxResultItems(int value) => Math.Clamp(value, 1, 10_000);
 
+    public static WorkspacePatchSettings NormalizeWorkspacePatchSettings(
+        WorkspacePatchSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        int maxElapsedMilliseconds =
+            WorkspacePatchMaxElapsedMilliseconds(
+                settings.MaxElapsedMilliseconds);
+        int rollbackReserveMilliseconds = Math.Min(
+            WorkspacePatchRollbackReserveMilliseconds(
+                settings.RollbackReserveMilliseconds),
+            maxElapsedMilliseconds - 1);
+
+        return new WorkspacePatchSettings
+        {
+            MaxPatchBytes =
+                WorkspacePatchMaxPatchBytes(
+                    settings.MaxPatchBytes),
+            MaxInputBytesPerFile =
+                WorkspacePatchMaxInputBytesPerFile(
+                    settings.MaxInputBytesPerFile),
+            MaxTotalInputBytes =
+                WorkspacePatchMaxTotalInputBytes(
+                    settings.MaxTotalInputBytes),
+            MaxOutputBytesPerFile =
+                WorkspacePatchMaxOutputBytesPerFile(
+                    settings.MaxOutputBytesPerFile),
+            MaxTotalOutputBytes =
+                WorkspacePatchMaxTotalOutputBytes(
+                    settings.MaxTotalOutputBytes),
+            MaxStagingBytesPerFile =
+                WorkspacePatchMaxStagingBytesPerFile(
+                    settings.MaxStagingBytesPerFile),
+            MaxTotalStagingBytes =
+                WorkspacePatchMaxTotalStagingBytes(
+                    settings.MaxTotalStagingBytes),
+            MaxElapsedMilliseconds = maxElapsedMilliseconds,
+            RollbackReserveMilliseconds =
+                rollbackReserveMilliseconds,
+            MaxFiles =
+                WorkspacePatchMaxFiles(
+                    settings.MaxFiles),
+            MaxHunks =
+                WorkspacePatchMaxHunks(
+                    settings.MaxHunks),
+            MaxLinesPerHunk =
+                WorkspacePatchMaxLinesPerHunk(
+                    settings.MaxLinesPerHunk),
+            FuzzyMatchWindowLines =
+                WorkspacePatchFuzzyMatchWindowLines(
+                    settings.FuzzyMatchWindowLines),
+            MaxResultItems =
+                WorkspacePatchMaxResultItems(
+                    settings.MaxResultItems),
+        };
+    }
+
     public const int WorkspaceCheckCleanupGraceSeconds = 30;
 
     public static int WorkspaceCheckTimeoutSeconds(int value) => Math.Clamp(value, 30, 1_800);

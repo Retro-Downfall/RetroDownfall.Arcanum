@@ -109,7 +109,7 @@ public sealed class GrimoireTurnWriter(
 
     }
 
-    public async Task ResolveInterruptedAsync(
+    public async Task<bool> ResolveInterruptedAsync(
         TurnHandle handle,
         string? streamedContent,
         CancellationToken cancellationToken)
@@ -118,7 +118,7 @@ public sealed class GrimoireTurnWriter(
         if (handle.AssistantEntryId is not { } entryId)
         {
 
-            return;
+            return true;
 
         }
 
@@ -142,6 +142,8 @@ public sealed class GrimoireTurnWriter(
 
             }
 
+            return true;
+
         }
         catch (OperationCanceledException)
         {
@@ -157,11 +159,12 @@ public sealed class GrimoireTurnWriter(
                 "Grimoire could not resolve interrupted assistant entry {AssistantEntryId}.",
                 entryId);
 
-        }
+            return false;
 
+        }
     }
 
-    public async Task ResolveInterruptedAndMarkFinalizedAsync(
+    public async Task<bool> ResolveInterruptedAndMarkFinalizedAsync(
         TurnHandle handle,
         string? streamedContent,
         CancellationToken cancellationToken)
@@ -170,13 +173,21 @@ public sealed class GrimoireTurnWriter(
         if (handle.IsFinalized)
         {
 
-            return;
+            return true;
 
         }
 
-        await ResolveInterruptedAsync(handle, streamedContent, cancellationToken).ConfigureAwait(false);
+        bool resolved = await ResolveInterruptedAsync(
+            handle,
+            streamedContent,
+            cancellationToken).ConfigureAwait(false);
 
-        handle.IsFinalized = true;
+        if (resolved)
+        {
+            handle.IsFinalized = true;
+        }
+
+        return resolved;
 
     }
 
@@ -195,7 +206,10 @@ public sealed class GrimoireTurnWriter(
         try
         {
 
-            await ResolveInterruptedAsync(handle, streamedContent, CancellationToken.None).ConfigureAwait(false);
+            _ = await ResolveInterruptedAndMarkFinalizedAsync(
+                handle,
+                streamedContent,
+                CancellationToken.None).ConfigureAwait(false);
 
         }
         catch (Exception ex)

@@ -60,6 +60,8 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
     /// </summary>
     public TaskCompletionSource? ExecuteGate { get; set; }
 
+    public TaskCompletionSource? ExecuteEntered { get; set; }
+
     public Task<Result<PromptTurnResult>> ExecutePromptAsync(
         PingRequest request,
         CancellationToken cancellationToken = default,
@@ -67,6 +69,8 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
     {
 
         ExecutePromptCallCount++;
+
+        ExecuteEntered?.TrySetResult();
 
         LastPrompt = request.Prompt;
 

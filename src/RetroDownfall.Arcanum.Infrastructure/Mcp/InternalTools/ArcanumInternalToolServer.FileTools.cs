@@ -72,80 +72,57 @@ internal sealed partial class ArcanumInternalToolServer
             return revalidateErr!;
         }
 
-        McpToolsCallResultWire? sizeError = TryRejectIfFileExceedsReadLimit(absolutePath, "read_file_chunk");
-
-        if (sizeError is not null)
-        {
-            return sizeError;
-        }
-
         int take = requestedLines;
 
         List<string> selected = new(take);
 
-        if (!SandboxedFileIo.TryOpenForRead(_workspaceRoot!, absolutePath, out FileStream? stream, out McpToolsCallResultWire? openError))
+        int maxReadBytes = checked((int)
+            ArcanumSettingClamps.MaxFileReadSizeBytes(
+                _maxFileReadSizeBytes));
+
+        (string? content, McpToolsCallResultWire? readError) =
+            await SandboxedFileIo.TryReadAllTextAsync(
+                    _workspaceRoot!,
+                    absolutePath,
+                    maxReadBytes,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        if (content is null)
         {
-
-            return PrefixToolError("read_file_chunk", openError!);
-
+            return PrefixToolError("read_file_chunk", readError!);
         }
 
-        try
+        using StringReader reader = new(content);
+
+        int currentLine = 0;
+
+        while (currentLine < args.StartLine - 1)
         {
+            cancellationToken.ThrowIfCancellationRequested();
 
-            await using (stream)
+            string? skipped = reader.ReadLine();
+
+            if (skipped is null)
             {
-
-                using StreamReader reader = new(stream);
-
-                int currentLine = 0;
-
-                while (currentLine < args.StartLine - 1)
-                {
-
-                    string? skipped = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-
-                    if (skipped is null)
-                    {
-
-                        break;
-
-                    }
-
-                    currentLine++;
-
-                }
-
-                while (selected.Count < take)
-                {
-
-                    string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-
-                    if (line is null)
-                    {
-
-                        break;
-
-                    }
-
-                    selected.Add(line);
-
-                }
-
+                break;
             }
 
+            currentLine++;
         }
-        catch (UnauthorizedAccessException ex)
-        {
-            _logger?.LogError(ex, "read_file_chunk: access denied.");
 
-            return ToolError("read_file_chunk: access denied.");
-        }
-        catch (IOException ex)
+        while (selected.Count < take)
         {
-            _logger?.LogError(ex, "read_file_chunk: I/O error.");
+            cancellationToken.ThrowIfCancellationRequested();
 
-            return ToolError("read_file_chunk: an I/O error occurred. See server logs.");
+            string? line = reader.ReadLine();
+
+            if (line is null)
+            {
+                break;
+            }
+
+            selected.Add(line);
         }
 
         string joined = string.Join("\n", selected);
@@ -204,18 +181,16 @@ internal sealed partial class ArcanumInternalToolServer
             return revalidateErr!;
         }
 
-        McpToolsCallResultWire? sizeError = TryRejectIfFileExceedsReadLimit(absolutePath, "replace_text_block");
-
-        if (sizeError is not null)
-        {
-            return sizeError;
-        }
-
         ResourceLimits resourceLimits = await ResolveResourceLimitsAsync(cancellationToken).ConfigureAwait(false);
+
+        int maxReadBytes = checked((int)
+            ArcanumSettingClamps.MaxFileReadSizeBytes(
+                _maxFileReadSizeBytes));
 
         (string? content, McpToolsCallResultWire? readError) = await SandboxedFileIo.TryReadAllTextAsync(
             _workspaceRoot!,
             absolutePath,
+            maxReadBytes,
             cancellationToken).ConfigureAwait(false);
 
         if (content is null)

@@ -1,11 +1,13 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
 public sealed class ArcanumLocalTimeTool : AIFunction
 {
-    public const string ToolName = "get_local_system_time";
+    public const string ToolName =
+        ArcanumBuiltInToolNames.GetLocalSystemTime;
 
     private static readonly JsonDocument SchemaDocument = JsonDocument.Parse(
         """

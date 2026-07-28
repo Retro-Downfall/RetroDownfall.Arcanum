@@ -14,11 +14,11 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
     private TempWorkspace _workspace = null!;
 
-    private string? _backupConfigPath;
+    private string? _originalDotnetEnvironment;
 
-    private string? _originalHome;
+    private string? _originalAspNetCoreEnvironment;
 
-    private string? _originalUserProfile;
+    private string? _originalTestHome;
 
     public async Task InitializeAsync()
     {
@@ -27,50 +27,33 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
         await _workspace.InitializeAsync();
 
-        _originalHome = global::System.Environment.GetEnvironmentVariable("HOME");
+        _originalDotnetEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
 
-        _originalUserProfile = global::System.Environment.GetEnvironmentVariable("USERPROFILE");
+        _originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
 
-        global::System.Environment.SetEnvironmentVariable("HOME", _workspace.Root);
+        _originalTestHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
 
-        global::System.Environment.SetEnvironmentVariable("USERPROFILE", _workspace.Root);
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
 
-        string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
 
-        if (File.Exists(configPath))
-        {
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _workspace.Root);
 
-            _backupConfigPath = Path.Combine(_workspace.Root, "arcanum.json.bak");
-
-            File.Copy(configPath, _backupConfigPath, overwrite: true);
-
-        }
+        Assert.StartsWith(
+            Path.GetFullPath(_workspace.Root),
+            Path.GetFullPath(ArcanumPaths.GrimoireDirectory),
+            StringComparison.Ordinal);
 
     }
 
     public async Task DisposeAsync()
     {
 
-        string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", _originalDotnetEnvironment);
 
-        if (_backupConfigPath is not null && File.Exists(_backupConfigPath))
-        {
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", _originalAspNetCoreEnvironment);
 
-            File.Copy(_backupConfigPath, configPath, overwrite: true);
-
-            File.Delete(_backupConfigPath);
-
-        }
-        else if (File.Exists(configPath))
-        {
-
-            File.Delete(configPath);
-
-        }
-
-        global::System.Environment.SetEnvironmentVariable("HOME", _originalHome);
-
-        global::System.Environment.SetEnvironmentVariable("USERPROFILE", _originalUserProfile);
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _originalTestHome);
 
         await _workspace.DisposeAsync();
 

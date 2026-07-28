@@ -44,7 +44,9 @@ public sealed class SessionRepository(
 
         db.Sessions.Add(session);
 
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        _ = await EfSaveChangesRetry
+            .ExecuteAsync(db, ct)
+            .ConfigureAwait(false);
 
         return session;
     }

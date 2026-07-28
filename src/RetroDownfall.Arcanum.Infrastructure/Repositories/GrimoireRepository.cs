@@ -29,6 +29,16 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
     private readonly IOptionsSnapshot<ArcanumSettings> _arcOptions;
 
+    internal Func<Guid, CancellationToken, ValueTask>? AfterLegacyBackfillCountedForTesting { get; set; }
+
+    internal Func<Guid, CancellationToken, ValueTask>? AfterRollupRemainingCountedForTesting { get; set; }
+
+    /// <summary>
+    /// Lowers the code-owned summarization ceiling so overflow recovery can be exercised without
+    /// seeding a production-sized session.
+    /// </summary>
+    internal int? SummarizationEntryCeilingForTesting { get; set; }
+
     public GrimoireRepository(
         ArcanumDbContext db,
         ISessionAttachmentStore attachments,
@@ -892,53 +902,100 @@ public sealed class GrimoireRepository : IGrimoireRepository
         DateTime idleCutoff,
         CancellationToken cancellationToken = default)
     {
-        // EF Core's SQLite provider cannot translate DateTimeOffset in ORDER BY or comparisons
-        // (see EntryTemporalQueries and SessionRepository.QueryAsync). Project the scalars we
-        // need, materialize, and apply the temporal ordering/filter client-side.
-        var unknownRows = await _db.Sessions
-            .AsNoTracking()
-            .Where(s => s.UnsummarizedEntryCount == -1)
-            .Select(s => new { s.Id, s.UpdatedAt })
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // These scalar queries keep filtering and ordering on SQLite's sortable UTC TEXT
+        // columns. Interpolated values become parameters; no session-count cap is applied here
+        // because CampaignLoggerQueue's capacity limits pending work, not discovery.
+        List<Guid> unknownIds = await _db.Database
+            .SqlQuery<Guid>(
+                $"""
+                SELECT "Id" AS "Value"
+                FROM "Sessions"
+                WHERE "UnsummarizedEntryCount" = {-1}
+                ORDER BY "UpdatedAt", "Id"
+                LIMIT {MaxLegacyBackfillPerSweep}
+                """)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
-
-        List<Guid> unknownIds = unknownRows
-            .OrderBy(s => s.UpdatedAt)
-            .Take(MaxLegacyBackfillPerSweep)
-            .Select(s => s.Id)
-            .ToList();
 
         foreach (Guid sessionId in unknownIds)
         {
-            int count = await ComputeUnsummarizedEntryCountAsync(sessionId, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
 
-            _ = await SqliteBusyRetry.ExecuteAsync(
-                () => _db.Sessions
-                    .Where(s => s.Id == sessionId)
-                    .ExecuteUpdateAsync(
-                        s => s.SetProperty(x => x.UnsummarizedEntryCount, count),
-                        cancellationToken),
+            using IDisposable sessionLock =
+                await SessionWriteLock.AcquireAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+            await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+                    await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =
+                        await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+                    DateTime? watermark = await _db.Sessions
+                        .AsNoTracking()
+                        .Where(session => session.Id == sessionId)
+                        .Select(session => session.LastSummarizedMessageAt)
+                        .FirstOrDefaultAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                    DateTimeOffset cutoff = watermark is { } value
+                        ? new DateTimeOffset(value, TimeSpan.Zero)
+                        : DateTimeOffset.MinValue;
+
+                    int count = await CountEntriesAfterAsync(
+                        sessionId,
+                        cutoff,
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (AfterLegacyBackfillCountedForTesting is { } afterLegacyBackfillCounted)
+                    {
+                        await afterLegacyBackfillCounted(sessionId, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    _ = await _db.Sessions
+                        .Where(session => session.Id == sessionId)
+                        .ExecuteUpdateAsync(
+                            setters => setters.SetProperty(
+                                session => session.UnsummarizedEntryCount,
+                                count),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                },
                 cancellationToken).ConfigureAwait(false);
         }
 
-        DateTimeOffset idleCutoffOffset = new(idleCutoff, TimeSpan.Zero);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        // Server-side filter narrows to candidates with pending work; the temporal idle cutoff
-        // is applied client-side because it compares a DateTimeOffset column.
-        var candidates = await _db.Sessions
-            .AsNoTracking()
-            .Where(s => s.UnsummarizedEntryCount == -1 || s.UnsummarizedEntryCount > 0)
-            .Select(s => new { s.Id, s.UnsummarizedEntryCount, s.UpdatedAt })
+        DateTime idleCutoffUtc = idleCutoff.Kind switch
+        {
+            DateTimeKind.Utc => idleCutoff,
+            DateTimeKind.Local => idleCutoff.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(idleCutoff, DateTimeKind.Utc),
+        };
+
+        DateTimeOffset idleCutoffOffset = new(idleCutoffUtc);
+
+        int effectiveThreshold = Math.Max(0, threshold);
+
+        return await _db.Database
+            .SqlQuery<Guid>(
+                $"""
+                SELECT "Id" AS "Value"
+                FROM "Sessions"
+                WHERE "UnsummarizedEntryCount" = {-1}
+                   OR "UnsummarizedEntryCount" > {effectiveThreshold}
+                   OR
+                   (
+                       "UnsummarizedEntryCount" > {0}
+                       AND "UpdatedAt" < {idleCutoffOffset}
+                   )
+                ORDER BY "UpdatedAt", "Id"
+                """)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
-
-        return candidates
-            .Where(s =>
-                s.UnsummarizedEntryCount == -1
-                || s.UnsummarizedEntryCount > threshold
-                || (s.UnsummarizedEntryCount > 0 && s.UpdatedAt < idleCutoffOffset))
-            .Select(s => s.Id)
-            .ToList();
     }
 
     public async Task<List<Entry>> GetUnsummarizedEntriesAsync(
@@ -947,23 +1004,83 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int batchSize,
         CancellationToken cancellationToken = default)
     {
-        int take = Math.Max(1, batchSize);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        DateTimeOffset watermarkOffset = new(watermark, TimeSpan.Zero);
+        DateTime watermarkUtc = watermark.Kind switch
+        {
+            DateTimeKind.Utc => watermark,
+            DateTimeKind.Local => watermark.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(watermark, DateTimeKind.Utc),
+        };
 
-        // EF Core's SQLite provider cannot translate DateTimeOffset comparisons in WHERE;
-        // filter by session server-side, then apply the watermark client-side.
-        List<Entry> sessionEntries = await _db.Entries
+        DateTimeOffset watermarkOffset = new(watermarkUtc);
+
+        int unsummarizedCount = await CountEntriesAfterAsync(
+            sessionId,
+            watermarkOffset,
+            cancellationToken).ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        int entryCeiling = SummarizationEntryCeilingForTesting
+            ?? ArcanumSettingClamps.MaxEntriesPerSession(
+                GetSessionSettings().MaxEntriesPerSession);
+
+        if (unsummarizedCount > entryCeiling)
+        {
+            throw CreateSummarizationWindowOverflow(
+                sessionId,
+                unsummarizedCount,
+                entryCeiling);
+        }
+
+        int target = Math.Max(1, batchSize);
+
+        int boundedLimit = Math.Min(
+            Math.Max(target, unsummarizedCount),
+            entryCeiling);
+
+        int selectedCount = await EntryTemporalQueries
+            .CountAfterWatermarkThroughTimestampGroup(
+                _db,
+                sessionId,
+                watermarkOffset,
+                boundedLimit)
+            .FirstAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (selectedCount > entryCeiling)
+        {
+            throw CreateSummarizationWindowOverflow(
+                sessionId,
+                selectedCount,
+                entryCeiling);
+        }
+
+        List<Entry> entries = await EntryTemporalQueries
+            .LoadAfterWatermarkThroughTimestampGroup(
+                _db,
+                sessionId,
+                watermarkOffset,
+                boundedLimit,
+                entryCeiling)
             .AsNoTracking()
-            .Where(m => m.SessionId == sessionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return sessionEntries
-            .Where(m => m.CreatedAt > watermarkOffset)
-            .OrderBy(m => m.CreatedAt)
-            .Take(take)
-            .ToList();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (entries.Count != selectedCount)
+        {
+            throw new InvalidOperationException(
+                $"Campaign log consolidation for session {sessionId} changed while its bounded "
+                + $"window was being read (expected {selectedCount} entries, materialized "
+                + $"{entries.Count}). The watermark was not advanced; retry after active writes finish.");
+        }
+
+        return entries;
     }
 
     public Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
@@ -1162,47 +1279,55 @@ public sealed class GrimoireRepository : IGrimoireRepository
         DateTime lastSummarizedMessageAt,
         CancellationToken cancellationToken = default)
     {
-        bool exists = await _db.Sessions
-            .AnyAsync(c => c.Id == sessionId, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (!exists)
-        {
-            return;
-        }
-
         DateTimeOffset watermark = new(lastSummarizedMessageAt, TimeSpan.Zero);
 
-        int remaining = await CountEntriesAfterAsync(sessionId, watermark, cancellationToken).ConfigureAwait(false);
+        using IDisposable sessionLock =
+            await SessionWriteLock.AcquireAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         await SqliteBusyRetry.ExecuteAsync(
-            () => _db.Sessions
-                .Where(c => c.Id == sessionId)
-                .ExecuteUpdateAsync(
-                    s => s
-                        .SetProperty(c => c.Summary, summary)
-                        .SetProperty(c => c.LastSummarizedMessageAt, lastSummarizedMessageAt)
-                        .SetProperty(c => c.UnsummarizedEntryCount, remaining),
-                    cancellationToken),
+            async () =>
+            {
+                await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =
+                    await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+                bool exists = await _db.Sessions
+                    .AnyAsync(session => session.Id == sessionId, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!exists)
+                {
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                    return;
+                }
+
+                int remaining = await CountEntriesAfterAsync(
+                    sessionId,
+                    watermark,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (AfterRollupRemainingCountedForTesting is { } afterRollupRemainingCounted)
+                {
+                    await afterRollupRemainingCounted(sessionId, cancellationToken).ConfigureAwait(false);
+                }
+
+                _ = await _db.Sessions
+                    .Where(session => session.Id == sessionId)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(session => session.Summary, summary)
+                            .SetProperty(
+                                session => session.LastSummarizedMessageAt,
+                                lastSummarizedMessageAt)
+                            .SetProperty(
+                                session => session.UnsummarizedEntryCount,
+                                remaining),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            },
             cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<int> ComputeUnsummarizedEntryCountAsync(
-        Guid sessionId,
-        CancellationToken cancellationToken)
-    {
-        DateTime? watermark = await _db.Sessions
-            .AsNoTracking()
-            .Where(s => s.Id == sessionId)
-            .Select(s => s.LastSummarizedMessageAt)
-            .FirstOrDefaultAsync(cancellationToken)
-            .ConfigureAwait(false);
-
-        DateTimeOffset cutoff = watermark is { } w
-            ? new DateTimeOffset(w, TimeSpan.Zero)
-            : DateTimeOffset.MinValue;
-
-        return await CountEntriesAfterAsync(sessionId, cutoff, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<int> CountEntriesAfterAsync(
@@ -1220,6 +1345,15 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
     private SessionSettings GetSessionSettings() =>
         _arcOptions.Value.ResolveSessions();
+
+    private static InvalidOperationException CreateSummarizationWindowOverflow(
+        Guid sessionId,
+        int entryCount,
+        int entryCeiling) =>
+        new(
+            $"Campaign log consolidation for session {sessionId} requires {entryCount} entries, "
+            + $"exceeding the configured session ceiling of {entryCeiling}. The watermark was not "
+            + "advanced. Repair or reinstall the local database before retrying.");
 
     private static string TruncateTitle(string prompt)
     {

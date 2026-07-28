@@ -1,9 +1,11 @@
 using System.Runtime.CompilerServices;
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -273,15 +275,17 @@ public sealed class ModelCallExecutorTests
     }
 
     [Fact]
-    public async Task ExecuteBufferedAsync_PreservesTypedProviderFailure()
+    public async Task ExecuteBufferedAsync_ProviderFailure_PreservesCauseButSanitizesPublicError()
     {
-        HttpRequestException connectivityFailure = new("connection refused");
+        const string canary = "CANARY_PROVIDER_SECRET_RESPONSE_BODY";
+        HttpRequestException connectivityFailure = new(canary);
         ScriptingChatClient chat = new(text: string.Empty)
         {
             BufferedException = connectivityFailure,
         };
+        TestCapturingLogger<ModelCallExecutor> logger = new();
 
-        ModelCallOutcome outcome = await new ModelCallExecutor().ExecuteBufferedAsync(
+        ModelCallOutcome outcome = await new ModelCallExecutor(logger: logger).ExecuteBufferedAsync(
             chat,
             [new ChatMessage(ChatRole.User, "ping")],
             new ChatOptions(),
@@ -291,7 +295,74 @@ public sealed class ModelCallExecutorTests
 
         Assert.True(outcome.IsFailure);
         Assert.Same(connectivityFailure, outcome.Failure.Cause);
-        Assert.Equal("connection refused", outcome.Error.Message);
+        Assert.Equal(
+            "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.",
+            outcome.Error.Message);
+
+        string serialized = JsonSerializer.Serialize(
+            outcome.Error,
+            ArcanumJsonContext.Default.Error);
+        Assert.DoesNotContain(canary, serialized, StringComparison.Ordinal);
+
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(HttpRequestException), log.Message, StringComparison.Ordinal);
+        Assert.Contains(outcome.Failure.ModelCallId, log.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            nameof(ModelCallPurpose.MainInference),
+            log.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_NoncancelledProviderOce_ReturnsSanitizedFailure()
+    {
+        const string canary = "CANARY_PROVIDER_CANCELLATION_BODY";
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedException = new OperationCanceledException(canary),
+        };
+        TestCapturingLogger<ModelCallExecutor> logger = new();
+
+        ModelCallOutcome outcome = await new ModelCallExecutor(logger: logger).ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "ping")],
+            new ChatOptions(),
+            new TurnBudget(),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
+
+        Assert.True(outcome.IsFailure);
+        Assert.Equal(
+            "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.",
+            outcome.Failure?.Error.Message);
+        Assert.DoesNotContain(canary, outcome.Failure?.Error.Message, StringComparison.Ordinal);
+
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.Contains(nameof(OperationCanceledException), log.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_CancelledOwnedToken_Propagates()
+    {
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedException = new OperationCanceledException("provider cancelled"),
+        };
+        using CancellationTokenSource cts = new();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new ModelCallExecutor().ExecuteBufferedAsync(
+                chat,
+                [new ChatMessage(ChatRole.User, "ping")],
+                new ChatOptions(),
+                new TurnBudget(),
+                ModelCallPurpose.MainInference,
+                cts.Token));
     }
 
     [Fact]

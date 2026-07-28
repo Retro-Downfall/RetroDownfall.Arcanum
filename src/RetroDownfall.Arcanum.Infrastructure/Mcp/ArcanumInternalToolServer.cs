@@ -258,51 +258,9 @@ internal sealed partial class ArcanumInternalToolServer
         WorkspacePatchSettings configuredPatch =
             codingToolsSettings?.Patch ?? new WorkspacePatchSettings();
 
-        _workspacePatchSettings = new WorkspacePatchSettings
-        {
-            MaxPatchBytes =
-                ArcanumSettingClamps.WorkspacePatchMaxPatchBytes(
-                    configuredPatch.MaxPatchBytes),
-            MaxInputBytesPerFile =
-                ArcanumSettingClamps.WorkspacePatchMaxInputBytesPerFile(
-                    configuredPatch.MaxInputBytesPerFile),
-            MaxTotalInputBytes =
-                ArcanumSettingClamps.WorkspacePatchMaxTotalInputBytes(
-                    configuredPatch.MaxTotalInputBytes),
-            MaxOutputBytesPerFile =
-                ArcanumSettingClamps.WorkspacePatchMaxOutputBytesPerFile(
-                    configuredPatch.MaxOutputBytesPerFile),
-            MaxTotalOutputBytes =
-                ArcanumSettingClamps.WorkspacePatchMaxTotalOutputBytes(
-                    configuredPatch.MaxTotalOutputBytes),
-            MaxStagingBytesPerFile =
-                ArcanumSettingClamps.WorkspacePatchMaxStagingBytesPerFile(
-                    configuredPatch.MaxStagingBytesPerFile),
-            MaxTotalStagingBytes =
-                ArcanumSettingClamps.WorkspacePatchMaxTotalStagingBytes(
-                    configuredPatch.MaxTotalStagingBytes),
-            MaxElapsedMilliseconds =
-                ArcanumSettingClamps.WorkspacePatchMaxElapsedMilliseconds(
-                    configuredPatch.MaxElapsedMilliseconds),
-            RollbackReserveMilliseconds =
-                ArcanumSettingClamps.WorkspacePatchRollbackReserveMilliseconds(
-                    configuredPatch.RollbackReserveMilliseconds),
-            MaxFiles =
-                ArcanumSettingClamps.WorkspacePatchMaxFiles(
-                    configuredPatch.MaxFiles),
-            MaxHunks =
-                ArcanumSettingClamps.WorkspacePatchMaxHunks(
-                    configuredPatch.MaxHunks),
-            MaxLinesPerHunk =
-                ArcanumSettingClamps.WorkspacePatchMaxLinesPerHunk(
-                    configuredPatch.MaxLinesPerHunk),
-            FuzzyMatchWindowLines =
-                ArcanumSettingClamps.WorkspacePatchFuzzyMatchWindowLines(
-                    configuredPatch.FuzzyMatchWindowLines),
-            MaxResultItems =
-                ArcanumSettingClamps.WorkspacePatchMaxResultItems(
-                    configuredPatch.MaxResultItems),
-        };
+        _workspacePatchSettings =
+            ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
+                configuredPatch);
 
         _workspaceCheckSettings =
             codingToolsSettings?.WorkspaceCheck

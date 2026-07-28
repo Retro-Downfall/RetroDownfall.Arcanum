@@ -21,15 +21,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// <see cref="FakeIntelligenceProvider"/>, matching the pattern used by
 /// <c>EntryWeavingServiceTests</c>.
 /// </summary>
-/// <remarks>
-/// Writes/deletes only fresh, GUID-named files under the real <c>ArcanumPaths.FilesDirectory</c>
-/// (never a fixed/shared name), and removes every file it creates in <see cref="DisposeAsync"/> —
-/// <see cref="UploadedFileStorage.ResolvePath"/> is a hardcoded static path with no DI seam to
-/// redirect, and overriding the process-wide <c>HOME</c> environment variable here (as
-/// <c>ArcanumWebApplicationFactory</c> does) would race against concurrently-running "ApiHost"
-/// collection tests that do the same.
-/// </remarks>
-[Collection("Grimoire")]
+[Collection("ProcessEnvironment")]
 [Trait("Category", "Integration")]
 public sealed class BatchProcessingServiceTests : IAsyncLifetime
 {
@@ -46,6 +38,14 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     private IUploadedFileRepository? _files;
 
+    private string _testHome = string.Empty;
+
+    private string? _originalDotnetEnvironment;
+
+    private string? _originalAspNetCoreEnvironment;
+
+    private string? _originalTestHome;
+
     public BatchProcessingServiceTests(GrimoireFixture fixture)
     {
 
@@ -55,6 +55,30 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
+
+        _testHome = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-batch-processing-tests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(_testHome);
+
+        _originalDotnetEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+        _originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
+        _originalTestHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _testHome);
+
+        Assert.StartsWith(
+            Path.GetFullPath(_testHome),
+            Path.GetFullPath(ArcanumPaths.FilesDirectory),
+            StringComparison.Ordinal);
 
         _dbPath = _fixture.CopyDatabase();
 
@@ -104,6 +128,19 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             {
 
             }
+
+        }
+
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", _originalDotnetEnvironment);
+
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", _originalAspNetCoreEnvironment);
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _originalTestHome);
+
+        if (Directory.Exists(_testHome))
+        {
+
+            Directory.Delete(_testHome, recursive: true);
 
         }
 

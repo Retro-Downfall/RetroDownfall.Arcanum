@@ -154,6 +154,23 @@ public sealed class McpConnectionManagerTransportFactoryTests
         public Task<bool> IsTrustedAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
 
+        public Task<bool> IsTrustedAsync(
+            string workspaceRootPath,
+            string sourceDigest,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<bool> IsApprovedDigestAsync(
+            string workspaceRootPath,
+            string sourceDigest,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<TrustedMcpWorkspaceSnapshot> GetSnapshotAsync(
+            string workspaceRootPath,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(default(TrustedMcpWorkspaceSnapshot));
+
         public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 

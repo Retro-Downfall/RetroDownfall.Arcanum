@@ -1,11 +1,14 @@
 using System.Reflection;
+using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -426,6 +429,113 @@ public sealed class TurnEngineProjectionCharacterizationTests
     }
 
     [Fact]
+    public async Task TurnEngine_UnhandledFailure_EmitsSanitizedCompleteNativeOutput()
+    {
+        const string canary = "CANARY_TURN_PROVIDER_RESPONSE_BODY";
+        TestCapturingLogger<TurnEngine> logger = new();
+        TurnEngine engine = new(
+            new ThrowingTurnPipelineRunner(new InvalidOperationException(canary)),
+            logger);
+        List<TurnEvent> events = [];
+
+        await foreach (TurnEvent evt in engine.RunTurnAsync(
+            CreateTurnRequest(TurnResponseMode.Streaming),
+            CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        RunFailed failed = Assert.IsType<RunFailed>(Assert.Single(events));
+        Assert.Equal(ErrorCodes.Hub.Error, failed.Error.Code);
+        Assert.Equal(
+            "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.",
+            failed.Error.Message);
+
+        IntelligenceEvent native = Assert.Single(IntelligenceEventProjection.Map(failed));
+        string serialized = JsonSerializer.Serialize(
+            native,
+            ArcanumJsonContext.Default.IntelligenceEvent);
+        Assert.DoesNotContain(canary, serialized, StringComparison.Ordinal);
+
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(InvalidOperationException), log.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            failed.Correlation.RunId.ToString("D"),
+            log.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TurnEngine_NoncancelledProviderOce_EmitsSingleSanitizedRunFailed()
+    {
+        const string canary = "CANARY_TURN_CANCELLATION_BODY";
+        TestCapturingLogger<TurnEngine> logger = new();
+        TurnEngine engine = new(new ThrowingTurnPipelineRunner(
+            new OperationCanceledException(canary)), logger);
+        List<TurnEvent> events = [];
+
+        await foreach (TurnEvent evt in engine.RunTurnAsync(
+            CreateTurnRequest(TurnResponseMode.Buffered),
+            CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        RunFailed failed = Assert.IsType<RunFailed>(Assert.Single(events));
+        Assert.Equal(ErrorCodes.Hub.Error, failed.Error.Code);
+        Assert.Equal(
+            "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.",
+            failed.Error.Message);
+        Assert.DoesNotContain(canary, failed.Error.Message, StringComparison.Ordinal);
+
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.Contains(nameof(OperationCanceledException), log.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TurnEngine_CancelledOwnedToken_EmitsSingleRunAbandoned()
+    {
+        using CancellationTokenSource cts = new();
+        TurnEngine engine = new(new CancelingTurnPipelineRunner(cts));
+        List<TurnEvent> events = [];
+
+        await using IAsyncEnumerator<TurnEvent> enumerator = engine.RunTurnAsync(
+                CreateTurnRequest(TurnResponseMode.Streaming),
+                cts.Token)
+            .GetAsyncEnumerator();
+
+        Assert.True(await enumerator.MoveNextAsync());
+        events.Add(enumerator.Current);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => enumerator.MoveNextAsync().AsTask());
+
+        RunAbandoned abandoned = Assert.IsType<RunAbandoned>(Assert.Single(events));
+        Assert.Equal(TurnTerminationReason.Cancelled, abandoned.Reason);
+        Assert.Equal("Turn cancelled.", abandoned.Error?.Message);
+    }
+
+    [Fact]
+    public async Task TurnEngine_NoncancelledProviderOceAfterTerminal_DoesNotDuplicateOrRethrow()
+    {
+        TurnEngine engine = new(new TerminalThenThrowingTurnPipelineRunner(
+            new OperationCanceledException("provider cancelled")));
+        List<TurnEvent> events = [];
+
+        await foreach (TurnEvent evt in engine.RunTurnAsync(
+            CreateTurnRequest(TurnResponseMode.Buffered),
+            CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        Assert.IsType<RunCompleted>(Assert.Single(events));
+    }
+
+    [Fact]
     public void PingRequest_HasNoIdempotencyKeyProperty()
     {
         // Forged bodies cannot set HasIdempotencyKey — it is not on the public wire request.
@@ -440,5 +550,87 @@ public sealed class TurnEngineProjectionCharacterizationTests
         TurnEventEmitter emitter) =>
         Assert.IsAssignableFrom<IEnumerable<TurnEvent>>(
             map.Invoke(mapper, [frame, emitter]));
+
+    private static TurnExecutionRequest CreateTurnRequest(TurnResponseMode mode) =>
+        new(
+            new PingRequest("test"),
+            mode,
+            TurnPurpose.Interactive,
+            HumanInteractionAvailable: mode == TurnResponseMode.Streaming,
+            HasIdempotencyKey: false,
+            AccountingHandle: null);
+
+    private sealed class ThrowingTurnPipelineRunner(Exception failure) : ITurnPipelineRunner
+    {
+        public Task RunBufferedIntoEmitterAsync(
+            TurnExecutionRequest request,
+            TurnEventEmitter emitter,
+            InferenceAuditContext? auditContext,
+            CancellationToken cancellationToken) =>
+            Task.FromException(failure);
+
+        public Task RunStreamingIntoEmitterAsync(
+            TurnExecutionRequest request,
+            TurnEventEmitter emitter,
+            InferenceAuditContext? auditContext,
+            CancellationToken cancellationToken) =>
+            Task.FromException(failure);
+    }
+
+    private sealed class CancelingTurnPipelineRunner(CancellationTokenSource cancellation) : ITurnPipelineRunner
+    {
+        public Task RunBufferedIntoEmitterAsync(
+            TurnExecutionRequest request,
+            TurnEventEmitter emitter,
+            InferenceAuditContext? auditContext,
+            CancellationToken cancellationToken) =>
+            CancelAndThrow();
+
+        public Task RunStreamingIntoEmitterAsync(
+            TurnExecutionRequest request,
+            TurnEventEmitter emitter,
+            InferenceAuditContext? auditContext,
+            CancellationToken cancellationToken) =>
+            CancelAndThrow();
+
+        private Task CancelAndThrow()
+        {
+            cancellation.Cancel();
+            return Task.FromException(new OperationCanceledException(cancellation.Token));
+        }
+    }
+
+    private sealed class TerminalThenThrowingTurnPipelineRunner(Exception failure) : ITurnPipelineRunner
+    {
+        public Task RunBufferedIntoEmitterAsync(
+            TurnExecutionRequest request,
+            TurnEventEmitter emitter,
+            InferenceAuditContext? auditContext,
+            CancellationToken cancellationToken) =>
+            EmitThenThrowAsync(emitter);
+
+        public Task RunStreamingIntoEmitterAsync(
+            TurnExecutionRequest request,
+            TurnEventEmitter emitter,
+            InferenceAuditContext? auditContext,
+            CancellationToken cancellationToken) =>
+            EmitThenThrowAsync(emitter);
+
+        private async Task EmitThenThrowAsync(TurnEventEmitter emitter)
+        {
+            await emitter.EmitAsync(
+                new RunCompleted(
+                    emitter.NextCorrelation(),
+                    FinalText: "done",
+                    Usage: null,
+                    ToolCalls: null,
+                    FinishReason: "stop",
+                    Warnings: [],
+                    SessionId: null,
+                    StructuredOutputWarning: false),
+                CancellationToken.None);
+            throw failure;
+        }
+    }
 
 }

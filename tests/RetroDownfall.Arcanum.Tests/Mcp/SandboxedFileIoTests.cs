@@ -38,6 +38,8 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
 
+        SecureFileReader.AfterOpenForTests = null;
+
         if (File.Exists(_outsideFile))
         {
 
@@ -100,7 +102,7 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     }
 
     [Fact]
-    public void TryOpenForRead_rejects_path_that_escapes_on_second_validation()
+    public void TryOpenForRead_rejects_path_that_escapes_on_post_open_validation()
     {
 
         string target = Path.Combine(_workspace.Root, "changed-between-validations.txt");
@@ -114,7 +116,7 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
             relativePathCalls++;
 
-            return relativePathCalls == 1
+            return relativePathCalls <= 2
                 ? Path.GetRelativePath(root, candidate)
                 : "..";
 
@@ -133,7 +135,7 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
             Assert.Null(stream);
 
-            Assert.Equal(2, relativePathCalls);
+            Assert.Equal(3, relativePathCalls);
 
             AssertSandboxError(error);
 
@@ -145,6 +147,50 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         }
 
+    }
+
+    [Fact]
+    public void TryOpenForRead_rejects_path_that_escapes_on_preopen_symlink_validation()
+    {
+
+        string target = Path.Combine(
+            _workspace.Root,
+            "changed-before-open.txt");
+
+        File.WriteAllText(target, "inside");
+
+        int relativePathCalls = 0;
+
+        WorkspacePathPolicy.SetRelativePathResolverForTests(
+            (root, candidate) =>
+            {
+                relativePathCalls++;
+
+                return relativePathCalls == 1
+                    ? Path.GetRelativePath(root, candidate)
+                    : "..";
+            });
+
+        try
+        {
+            bool opened = SandboxedFileIo.TryOpenForRead(
+                _workspace.Root,
+                target,
+                out FileStream? stream,
+                out McpToolsCallResultWire? error);
+
+            Assert.False(opened);
+
+            Assert.Null(stream);
+
+            Assert.Equal(2, relativePathCalls);
+
+            AssertSandboxError(error);
+        }
+        finally
+        {
+            WorkspacePathPolicy.ResetTestSeams();
+        }
     }
 
     [Fact]
@@ -284,9 +330,11 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             _workspace.Root,
             target,
             out FileStream? stream,
-            out _);
+            out McpToolsCallResultWire? error);
 
-        Assert.True(opened);
+        Assert.True(
+            opened,
+            error?.Content?[0].Text);
 
         Assert.NotNull(stream);
 
@@ -296,6 +344,100 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             Assert.Equal("inside", new StreamReader(stream).ReadToEnd());
 
         }
+
+    }
+
+    [Fact]
+    public void TryOpenForRead_rejects_hard_linked_regular_file()
+    {
+
+        string target = Path.Combine(_workspace.Root, "linked-read.txt");
+
+        string outsideAlias = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-sandbox-read-link-{Guid.NewGuid():N}.txt");
+
+        File.WriteAllText(target, "inside");
+
+        try
+        {
+
+            Assert.True(HardLinkTestSupport.TryCreate(outsideAlias, target));
+
+            bool opened = SandboxedFileIo.TryOpenForRead(
+                _workspace.Root,
+                target,
+                out FileStream? stream,
+                out McpToolsCallResultWire? error);
+
+            Assert.False(opened);
+
+            Assert.Null(stream);
+
+            AssertSandboxError(error);
+
+        }
+        finally
+        {
+
+            File.Delete(outsideAlias);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task TryReadAllTextAsync_rejects_malformed_utf8()
+    {
+
+        string target = Path.Combine(_workspace.Root, "malformed.txt");
+
+        await File.WriteAllBytesAsync(target, [0x66, 0x80, 0x6f]);
+
+        (string? content, McpToolsCallResultWire? error) =
+            await SandboxedFileIo.TryReadAllTextAsync(
+                _workspace.Root,
+                target,
+                maxBytes: 1024,
+                CancellationToken.None);
+
+        Assert.Null(content);
+
+        Assert.NotNull(error);
+
+        Assert.True(error!.IsError);
+
+        string message = Assert.Single(error.Content!).Text!;
+
+        Assert.DoesNotContain(target, message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("f�o", message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task TryReadAllTextAsync_observes_cancellation_inside_read_loop()
+    {
+
+        string target = Path.Combine(_workspace.Root, "cancel-read.txt");
+
+        await File.WriteAllTextAsync(target, new string('x', 8192));
+
+        using CancellationTokenSource cancellation = new();
+
+        SecureFileReader.AfterOpenForTests = _ =>
+        {
+            SecureFileReader.AfterOpenForTests = null;
+
+            cancellation.Cancel();
+        };
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => SandboxedFileIo.TryReadAllTextAsync(
+                _workspace.Root,
+                target,
+                maxBytes: 8192,
+                cancellation.Token));
 
     }
 
@@ -363,7 +505,7 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
             FileAccess.Read,
             FileShare.ReadWrite | FileShare.Delete);
 
-        FileHandleIdentityInterop.TryGetHandleIdentityForTests = _ => null;
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = _ => null;
 
         try
         {
@@ -382,7 +524,7 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         finally
         {
 
-            FileHandleIdentityInterop.TryGetHandleIdentityForTests = null;
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
 
         }
 
@@ -392,9 +534,15 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
     public void TryOpenForRead_rejects_when_handle_identity_mismatches_preopen_identity()
     {
 
-        FileHandleIdentityInterop.TryGetPathIdentityForTests = _ => new FileHandleIdentity(1, 1);
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = _ =>
+            new FileHandleMetadata(
+                new FileHandleIdentity(1, 1),
+                HardLinkCount: 1);
 
-        FileHandleIdentityInterop.TryGetHandleIdentityForTests = _ => new FileHandleIdentity(1, 2);
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = _ =>
+            new FileHandleMetadata(
+                new FileHandleIdentity(1, 2),
+                HardLinkCount: 1);
 
         try
         {
@@ -419,9 +567,9 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         finally
         {
 
-            FileHandleIdentityInterop.TryGetPathIdentityForTests = null;
+            FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
 
-            FileHandleIdentityInterop.TryGetHandleIdentityForTests = null;
+            FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
 
         }
 

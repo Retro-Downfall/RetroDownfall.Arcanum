@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Serilog;
 using Serilog.Core;
 using Serilog.Events;
+using System.Reflection;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -51,6 +52,56 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
     }
 
     [Fact]
+    public void CreateOwnerOnlyDirectoryAtPath_uses_atomic_protected_acl_construction()
+    {
+        PropertyInfo? seamProperty = typeof(SecureFilePermissions)
+            .GetProperty(
+                "WindowsOwnerOnlyDirectoryCreateForTests",
+                BindingFlags.Static
+                | BindingFlags.NonPublic);
+
+        Assert.NotNull(seamProperty);
+
+        string path = Path.Combine(
+            _temp.Root,
+            "atomic-windows-directory");
+
+        bool invoked = false;
+
+        Action<string, bool, bool, bool, bool>
+            seam = (
+                actualPath,
+                protectFromInheritance,
+                grantFullControl,
+                inheritToContainers,
+                inheritToObjects) =>
+            {
+                invoked = true;
+
+                Assert.Equal(path, actualPath);
+                Assert.True(protectFromInheritance);
+                Assert.True(grantFullControl);
+                Assert.True(inheritToContainers);
+                Assert.True(inheritToObjects);
+            };
+
+        seamProperty.SetValue(null, seam);
+
+        try
+        {
+            SecureFilePermissions
+                .CreateOwnerOnlyDirectoryAtPath(path);
+        }
+        finally
+        {
+            seamProperty.SetValue(null, null);
+        }
+
+        Assert.True(invoked);
+        Assert.False(Directory.Exists(path));
+    }
+
+    [Fact]
     public void ApplyOwnerOnlyFile_restricts_new_file()
     {
 
@@ -68,6 +119,17 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
 
         }
+
+    }
+
+    [Fact]
+    public void Strict_owner_only_file_application_rejects_missing_file()
+    {
+
+        string path = Path.Combine(_temp.Root, "missing-secret.txt");
+
+        Assert.False(
+            SecureFilePermissions.TryApplyOwnerOnlyFileStrict(path));
 
     }
 

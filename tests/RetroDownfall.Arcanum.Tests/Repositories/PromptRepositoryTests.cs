@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -140,6 +142,82 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
         Assert.True(deleted);
 
         Assert.Null(await repository.GetByIdAsync(beta.Id, CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task AddAsync_retries_real_sqlite_lock_contention()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await _db!.Database.OpenConnectionAsync(CancellationToken.None);
+
+        _db.Database.SetCommandTimeout(1);
+
+        await using (System.Data.Common.DbCommand timeoutCommand =
+            _db.Database.GetDbConnection().CreateCommand())
+        {
+            timeoutCommand.CommandText = "PRAGMA busy_timeout=1;";
+
+            _ = await timeoutCommand.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        string connectionString = _db.Database.GetConnectionString()!;
+
+        await using SqliteConnection blocker = new(connectionString);
+
+        await blocker.OpenAsync(CancellationToken.None);
+
+        await using (SqliteCommand begin = blocker.CreateCommand())
+        {
+            begin.CommandText = "BEGIN IMMEDIATE;";
+
+            _ = await begin.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        PromptRepository repository = new(_db, NullLogger<PromptRepository>.Instance);
+
+        TaskCompletionSource retryObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        repository.RetryingForTesting = (_, _, _) =>
+        {
+            retryObserved.SetResult();
+
+            return ValueTask.CompletedTask;
+        };
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Task<Prompt> addTask = repository.AddAsync(
+            new Prompt
+            {
+                Id = Guid.NewGuid(),
+                Name = "retry-lock",
+                Version = "1",
+                Template = "retry",
+                CreatedAt = now,
+                UpdatedAt = now,
+            },
+            CancellationToken.None);
+
+        try
+        {
+            await retryObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await using SqliteCommand commit = blocker.CreateCommand();
+
+            commit.CommandText = "COMMIT;";
+
+            _ = await commit.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        Prompt saved = await addTask;
+
+        Assert.NotNull(
+            await repository.GetByIdAsync(saved.Id, CancellationToken.None));
 
     }
 

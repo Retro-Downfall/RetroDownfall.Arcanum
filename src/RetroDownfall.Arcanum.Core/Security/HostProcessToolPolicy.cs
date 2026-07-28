@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Core.Security;
 
@@ -14,7 +15,8 @@ public static class HostProcessToolPolicy
 
     public const string ExecuteCommandToolName = "execute_command";
 
-    public const string RunSpellScriptToolName = "run_spell_script";
+    public const string RunSpellScriptToolName =
+        ArcanumBuiltInToolNames.RunSpellScript;
 
     public const string AllowHostProcessToolsEnvVar = "ARCANUM_ALLOW_HOST_PROCESS_TOOLS";
 

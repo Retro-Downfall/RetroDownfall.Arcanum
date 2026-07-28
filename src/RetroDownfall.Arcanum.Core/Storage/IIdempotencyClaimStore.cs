@@ -10,14 +10,21 @@ public interface IIdempotencyClaimStore
     Task<IdempotencyClaim?> TryGetAsync(string claimKeyHash, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Atomically inserts a new claim in <see cref="IdempotencyClaimState.Claimed"/> / Running, or
-    /// returns the existing claim. When an existing claim has a different fingerprint, returns conflict.
+    /// Atomically inserts or reclaims a <see cref="IdempotencyClaimState.Running"/> claim, or returns
+    /// the existing claim. <see cref="IdempotencyClaimState.Claimed"/> is recoverable pre-execution
+    /// state and is never executable. A different fingerprint returns conflict.
     /// </summary>
     Task<IdempotencyClaimAcquireResult> TryAcquireAsync(
         IdempotencyClaimAcquireRequest request,
         CancellationToken cancellationToken = default);
 
-    Task HeartbeatAsync(Guid claimId, string ownerId, DateTimeOffset leaseExpiresAt, CancellationToken cancellationToken = default);
+    /// <summary>Renews a Running claim only while <paramref name="ownerId"/> still owns it.</summary>
+    /// <returns><see langword="true"/> when the claim was renewed; otherwise ownership was lost.</returns>
+    Task<bool> HeartbeatAsync(
+        Guid claimId,
+        string ownerId,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Persists a terminal Completed response. Requires <paramref name="terminalStreamValid"/>.

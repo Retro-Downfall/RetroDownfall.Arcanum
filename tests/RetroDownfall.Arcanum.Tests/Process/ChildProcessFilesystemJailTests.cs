@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
@@ -112,6 +113,70 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
                   (literal "/usr/bin/shortcuts")
                   (literal "/bin/launchctl"))
                 """));
+
+    }
+
+    [SkippableFact]
+    public void MacOsApply_carries_no_follow_owned_cleanup_artifacts()
+    {
+
+        Skip.IfNot(
+            OperatingSystem.IsMacOS(),
+            "macOS sandbox profile artifacts are platform-specific.");
+
+        Skip.IfNot(
+            File.Exists("/usr/bin/sandbox-exec"),
+            "sandbox-exec is unavailable.");
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "/bin/echo",
+            WorkingDirectory = _workspace,
+            UseShellExecute = false,
+        };
+
+        startInfo.ArgumentList.Add("owned-artifacts");
+
+        ChildProcessSandboxRequest request =
+            ChildProcessSandboxRoots.ForExecuteCommand(
+                _workspace,
+                sanctumAllowedPaths: null,
+                campaignId: null,
+                allowUnsandboxed: false,
+                windowsPathBoundaryRequired: false);
+
+        ChildProcessSandboxApplyResult result =
+            ChildProcessFilesystemJail.Apply(
+                startInfo,
+                request,
+                NullLogger.Instance);
+
+        try
+        {
+            Assert.Equal(
+                ChildProcessSandboxApplyStatus.Applied,
+                result.Status);
+
+            Assert.Equal(2, result.OwnedArtifactsToCleanup.Count);
+
+            foreach (IdentityOwnedFileSystemArtifact artifact
+                     in result.OwnedArtifactsToCleanup)
+            {
+                Assert.True(
+                    FileHandleIdentityInterop
+                        .TryGetPathMetadataNoFollow(
+                            artifact.Path,
+                            out FileHandleMetadata current));
+
+                Assert.Equal(artifact.Metadata, current);
+            }
+        }
+        finally
+        {
+            Assert.True(
+                ChildProcessFilesystemJail.CleanupTempPaths(
+                    result.OwnedArtifactsToCleanup));
+        }
 
     }
 

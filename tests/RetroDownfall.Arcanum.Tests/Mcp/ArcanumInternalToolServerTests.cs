@@ -14,11 +14,13 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
+[Collection("WorkspacePathPolicy")]
 public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 {
 
@@ -41,6 +43,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+
+        SecureFileReader.AfterOpenForTests = null;
 
         await _workspace.DisposeAsync();
 
@@ -1085,6 +1089,142 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         Assert.Contains("line replaced", updated, StringComparison.Ordinal);
 
         Assert.DoesNotContain("line two", updated, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_replace_text_block_rejects_growth_past_read_cap_after_open()
+    {
+
+        const string relativePath = "notes/growing.txt";
+
+        _workspace.WriteFile(relativePath, new string('x', 1024));
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            maxFileReadSizeBytes: 1024);
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        SecureFileReader.AfterOpenForTests = path =>
+        {
+            SecureFileReader.AfterOpenForTests = null;
+
+            File.AppendAllText(path, "y");
+        };
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ReplaceTextBlockParams
+            {
+                RelativePath = relativePath,
+                ExactSearchText = "xx",
+                ReplacementText = "zz",
+            },
+            McpJsonSerializerContext.Default.ReplaceTextBlockParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "replace_text_block",
+            arguments);
+
+        Assert.True(result.IsError);
+
+        string message = Assert.Single(result.Content!).Text!;
+
+        Assert.Contains("maximum read size", message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
+            Path.Combine(_workspace.Root, relativePath),
+            message,
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_replace_text_block_rejects_path_swap_after_open()
+    {
+
+        const string relativePath = "notes/swapped.txt";
+
+        string path = _workspace.WriteFile(
+            relativePath,
+            "replace this original");
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        SecureFileReader.AfterOpenForTests = openedPath =>
+        {
+            SecureFileReader.AfterOpenForTests = null;
+
+            File.Delete(openedPath);
+
+            File.WriteAllText(openedPath, "external replacement");
+        };
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ReplaceTextBlockParams
+            {
+                RelativePath = relativePath,
+                ExactSearchText = "original",
+                ReplacementText = "updated",
+            },
+            McpJsonSerializerContext.Default.ReplaceTextBlockParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "replace_text_block",
+            arguments);
+
+        Assert.True(result.IsError);
+
+        Assert.Equal("external replacement", await File.ReadAllTextAsync(path));
+
+        string message = Assert.Single(result.Content!).Text!;
+
+        Assert.DoesNotContain(path, message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "external replacement",
+            message,
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_replace_text_block_rejects_malformed_utf8()
+    {
+
+        const string relativePath = "notes/malformed.txt";
+
+        string path = Path.Combine(_workspace.Root, relativePath);
+
+        await File.WriteAllBytesAsync(path, [0x66, 0x80, 0x6f]);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ReplaceTextBlockParams
+            {
+                RelativePath = relativePath,
+                ExactSearchText = "f",
+                ReplacementText = "z",
+            },
+            McpJsonSerializerContext.Default.ReplaceTextBlockParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "replace_text_block",
+            arguments);
+
+        Assert.True(result.IsError);
+
+        string message = Assert.Single(result.Content!).Text!;
+
+        Assert.Contains("UTF-8", message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(path, message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("f�o", message, StringComparison.Ordinal);
 
     }
 

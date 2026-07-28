@@ -20,7 +20,8 @@ internal static class ProviderAttemptCommitTracker
 
     public static bool CommitsProviderAttempt(ModelCallUpdate update) =>
         update is ModelCallTextDelta { Text.Length: > 0 }
-            or ModelCallReasoningUpdate;
+            or ModelCallReasoningUpdate { VisibleText.Length: > 0 }
+            or ModelCallReasoningUpdate { HasProtectedData: true };
 
     public static bool CommitsProviderAttempt(ModelCallReasoningResult reasoning) =>
         reasoning.HasProviderContent;

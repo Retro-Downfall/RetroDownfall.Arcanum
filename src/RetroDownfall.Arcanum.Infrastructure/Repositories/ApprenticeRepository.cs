@@ -98,7 +98,9 @@ public sealed class ApprenticeRepository : IApprenticeRepository
     {
         _db.Apprentices.Add(apprentice);
 
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        _ = await EfSaveChangesRetry
+            .ExecuteAsync(_db, cancellationToken)
+            .ConfigureAwait(false);
 
         return apprentice;
     }
@@ -120,7 +122,9 @@ public sealed class ApprenticeRepository : IApprenticeRepository
 
         _db.Apprentices.Update(apprentice);
 
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        _ = await EfSaveChangesRetry
+            .ExecuteAsync(_db, cancellationToken)
+            .ConfigureAwait(false);
 
         return apprentice;
     }

@@ -1,11 +1,13 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Workspaces;
 
+[Collection("WorkspacePathPolicy")]
 public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 {
 
@@ -28,6 +30,12 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+
+        SecureFileReader.AfterOpenForTests = null;
+
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
 
         await _workspace.DisposeAsync();
 
@@ -230,6 +238,93 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.FileTooLarge", result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ReadAsync_rejects_file_that_grows_past_cap_after_open()
+    {
+
+        int capLength = checked(
+            (int)ArcanumSettingClamps.MaxFileReadSizeBytes(
+                ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes));
+
+        _workspace.WriteFile("growing.txt", new string('x', capLength));
+
+        PhysicalFileSystemBrowser browser = CreateBrowser();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        SecureFileReader.AfterOpenForTests = path =>
+        {
+            SecureFileReader.AfterOpenForTests = null;
+
+            File.AppendAllText(path, "y");
+        };
+
+        Result<FileReadResult> result = await browser.ReadAsync(
+            workspace,
+            "growing.txt",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.FileTooLarge", result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ReadAsync_rejects_preopen_and_handle_identity_mismatch()
+    {
+
+        _workspace.WriteFile("mismatch.txt", "secret");
+
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = _ =>
+            new FileHandleMetadata(
+                new FileHandleIdentity(7, 1),
+                HardLinkCount: 1);
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = _ =>
+            new FileHandleMetadata(
+                new FileHandleIdentity(7, 2),
+                HardLinkCount: 1);
+
+        Result<FileReadResult> result = await CreateBrowser().ReadAsync(
+            MakeWorkspace(),
+            "mismatch.txt",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.SymbolicLinkEscape", result.Error.Code);
+
+        Assert.DoesNotContain(
+            "secret",
+            result.Error.Message,
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ReadAsync_rejects_malformed_utf8()
+    {
+
+        string path = Path.Combine(_workspace.Root, "malformed.txt");
+
+        await File.WriteAllBytesAsync(path, [0x66, 0x80, 0x6f]);
+
+        Result<FileReadResult> result = await CreateBrowser().ReadAsync(
+            MakeWorkspace(),
+            "malformed.txt",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.AccessDenied", result.Error.Code);
+
+        Assert.DoesNotContain(path, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("f�o", result.Error.Message, StringComparison.Ordinal);
 
     }
 

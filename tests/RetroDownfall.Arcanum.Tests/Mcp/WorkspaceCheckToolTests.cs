@@ -8,11 +8,34 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
-public sealed class WorkspaceCheckToolTests
+[Collection("ProcessEnvironment")]
+public sealed class WorkspaceCheckToolTests : IDisposable
 {
+    private readonly string? _originalHome =
+        global::System.Environment.GetEnvironmentVariable("HOME");
+
+    private readonly string? _originalUserProfile =
+        global::System.Environment.GetEnvironmentVariable("USERPROFILE");
+
+    public WorkspaceCheckToolTests()
+    {
+        global::System.Environment.SetEnvironmentVariable(
+            "HOME",
+            TestProcessPaths.OriginalUserProfile);
+        global::System.Environment.SetEnvironmentVariable(
+            "USERPROFILE",
+            TestProcessPaths.OriginalUserProfile);
+    }
+
+    public void Dispose()
+    {
+        global::System.Environment.SetEnvironmentVariable("HOME", _originalHome);
+        global::System.Environment.SetEnvironmentVariable("USERPROFILE", _originalUserProfile);
+    }
 
     [Fact]
     public void Built_in_profiles_render_only_closed_server_owned_arguments()
@@ -2352,8 +2375,7 @@ public sealed class WorkspaceCheckToolTests
     {
 
         string path = Path.Combine(
-            global::System.Environment.GetFolderPath(
-                global::System.Environment.SpecialFolder.UserProfile),
+            TestProcessPaths.OriginalUserProfile,
             ".nuget",
             "packages");
         DirectoryInfo directory = new(path);

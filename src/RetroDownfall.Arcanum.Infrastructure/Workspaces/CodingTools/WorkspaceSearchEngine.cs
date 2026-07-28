@@ -425,7 +425,7 @@ internal sealed class WorkspaceSearchEngine
 
             if (!SandboxedFileIo.TryOpenForRead(
                     root,
-                    absolutePath,
+                    identityPath,
                     out FileStream? stream,
                     out _))
             {

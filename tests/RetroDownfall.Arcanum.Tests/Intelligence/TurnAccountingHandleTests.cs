@@ -177,12 +177,12 @@ public sealed class TurnAccountingHandleTests
 
         Assert.True(adjusted.IsSuccess);
         Assert.True(repeated.IsSuccess);
+        decimal expectedPerCall =
+            (5_000m * 10m / 1_000_000m)
+            + (400m * 20m / 1_000_000m)
+            + (600m * 80m / 1_000_000m);
         Assert.Equal(
-            BudgetReservationService.EstimateWorstCaseTurnUsd(
-                pricing.DefaultPricing,
-                maxOutputTokens: 1_000,
-                reasoningBudgetTokens: 600,
-                estimatedInputTokens: 5_000),
+            expectedPerCall,
             reservations.AdjustedUsd);
         Assert.Equal(1, reservations.AdjustCount);
     }

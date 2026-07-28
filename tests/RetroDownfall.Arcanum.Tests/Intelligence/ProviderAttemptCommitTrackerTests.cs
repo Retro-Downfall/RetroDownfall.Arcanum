@@ -29,12 +29,13 @@ public sealed class ProviderAttemptCommitTrackerTests
     }
 
     [Theory]
-    [InlineData("visible reasoning", false)]
-    [InlineData("", true)]
-    [InlineData("", false)]
-    public void CommitsProviderAttempt_OnAnyExplicitReasoningContent(
+    [InlineData("visible reasoning", false, true)]
+    [InlineData("", true, true)]
+    [InlineData("", false, false)]
+    public void CommitsProviderAttempt_RequiresVisibleOrProtectedReasoningContent(
         string visibleText,
-        bool hasProtectedData)
+        bool hasProtectedData,
+        bool expected)
     {
         ModelCallUpdate reasoning = new ModelCallReasoningUpdate(
             ModelCallPurpose.MainInference,
@@ -44,7 +45,7 @@ public sealed class ProviderAttemptCommitTrackerTests
             EffectiveOutput: ReasoningOutputMode.Summary,
             HasProtectedData: hasProtectedData);
 
-        Assert.True(ProviderAttemptCommitTracker.CommitsProviderAttempt(reasoning));
+        Assert.Equal(expected, ProviderAttemptCommitTracker.CommitsProviderAttempt(reasoning));
     }
 
     [Fact]

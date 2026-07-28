@@ -397,9 +397,7 @@ internal sealed class BudgetReservationService(
         long inputPerCall = estimatedInputTokens is > 0
             ? estimatedInputTokens.Value
             : maxPerCall;
-        long outputPerCall = estimatedInputTokens is > 0
-            ? SaturatingAdd(requestedOutput, requestedReasoning)
-            : maxPerCall;
+        long outputPerCall = maxPerCall;
         decimal outputRate = Math.Max(0m, pricing.OutputPer1M);
         decimal reasoningRate = Math.Max(0m, pricing.ReasoningPer1M ?? outputRate);
         long conservativelyPricedReasoning =
@@ -412,9 +410,6 @@ internal sealed class BudgetReservationService(
             reasoningTokens: conservativelyPricedReasoning,
             pricing);
     }
-
-    private static long SaturatingAdd(long left, long right) =>
-        long.CreateSaturating((Int128)left + right);
 
     /// <summary>
     /// Worst-case USD for an embedding batch sized by approximate input tokens.

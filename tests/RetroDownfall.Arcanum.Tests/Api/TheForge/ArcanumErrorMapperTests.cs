@@ -4,7 +4,6 @@ using RetroDownfall.Arcanum.Api.TheForge;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
-
 namespace RetroDownfall.Arcanum.Tests.Api.TheForge;
 
 public sealed class ArcanumErrorMapperTests
@@ -29,6 +28,7 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Session.TooManyEntries, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Session.EntryTooLarge, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Session.EmptyContent, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Session.RestQueueFull, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.Grimoire.LoreNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Apprentice.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Apprentice.Disabled, StatusCodes.Status400BadRequest)]
@@ -66,6 +66,8 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Connection.Timeout, StatusCodes.Status504GatewayTimeout)]
     [InlineData(ErrorCodes.Security.MissingApiKey, StatusCodes.Status401Unauthorized)]
     [InlineData(ErrorCodes.Security.BlockedOutboundUrl, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Security.IdempotencyInProgress, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Security.IdempotencyConflict, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.ProvingGrounds.InvalidTrial, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.ProvingGrounds.WorkspaceNotAllowed, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.ProvingGrounds.SpellNotFound, StatusCodes.Status404NotFound)]

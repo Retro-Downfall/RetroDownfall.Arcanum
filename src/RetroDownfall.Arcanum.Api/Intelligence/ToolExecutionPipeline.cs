@@ -130,7 +130,8 @@ public sealed class ToolExecutionPipeline(
         IReadOnlyList<IntelligenceEvent> WardEvents,
         bool Failed = false,
         IReadOnlyList<AIContent>? AdditionalContextContents = null,
-        bool ReceiptHandled = false);
+        bool ReceiptHandled = false,
+        bool Denied = false);
 
     public static List<FunctionCallContent> CollectActionableFunctionCalls(ChatResponse response)
     {
@@ -408,7 +409,11 @@ public sealed class ToolExecutionPipeline(
             catch (Exception ex)
             {
 
-                logger.LogError(ex, "Tool {ToolName} failed during inference (tolerated by mode policy).", toolName);
+                logger.LogError(
+                    "Tool {ToolName} failed during inference (tolerated by mode policy); exception type {ExceptionType}, call {ToolCallId}.",
+                    toolName,
+                    ex.GetType().FullName,
+                    callId);
 
                 wardedExecution = new WardedToolExecutionResult(PublicToolFailureMessage(toolName), [], Failed: true);
 
@@ -497,8 +502,9 @@ public sealed class ToolExecutionPipeline(
                 {
 
                     logger.LogError(
-                        ex,
-                        "attach_session_file post-process failed during inference (tolerated by mode policy).");
+                        "attach_session_file post-process failed during inference (tolerated by mode policy); exception type {ExceptionType}, call {ToolCallId}.",
+                        ex.GetType().FullName,
+                        callId);
 
                     RecordToolInvocationMetric(toolName, "error");
 
@@ -529,7 +535,8 @@ public sealed class ToolExecutionPipeline(
             wardedExecution.WardEvents,
             wardedExecution.Failed,
             additionalContext,
-            applyPatchContext?.ReceiptHandled == true);
+            applyPatchContext?.ReceiptHandled == true,
+            wardedExecution.Denied);
 
     }
 
@@ -1502,9 +1509,13 @@ public sealed class ToolExecutionPipeline(
             return false;
         }
 
+        WorkspacePatchSettings normalizedSettings =
+            ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
+                settings);
+
         UnifiedDiffParseResult parsed = UnifiedDiffParser.Parse(
             patchElement.GetString(),
-            settings,
+            normalizedSettings,
             cancellationToken);
 
         manifest = parsed.Manifest;

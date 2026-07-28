@@ -41,6 +41,9 @@ public sealed partial class McpConnectionManager(
 
     private static readonly TimeSpan AlwaysOnRestartBackoff = TimeSpan.FromSeconds(60);
 
+    private static readonly TimeSpan WorkspaceRetirementCleanupTimeout =
+        TimeSpan.FromSeconds(30);
+
     private static readonly McpServerConfig InternalMcpServerConfig = new() { Command = "arcanum-internal" };
 
     private readonly SemaphoreSlim _globalInitLock = new(1, 1);
@@ -68,6 +71,12 @@ public sealed partial class McpConnectionManager(
 
     private readonly ConcurrentDictionary<Task, byte>
         _retiredPartitionDisposals = new();
+
+    private readonly ConcurrentDictionary<Task, byte>
+        _pendingWorkspaceRetirements = new();
+
+    private readonly ConcurrentDictionary<string, WorkspaceRetirementState>
+        _workspaceRetirementStates = new(StringComparer.Ordinal);
 
     private readonly object _internalSettingsCacheGate = new();
 
@@ -142,24 +151,6 @@ public sealed partial class McpConnectionManager(
 
         ManagedMcpServerEntry entry = resolved.Value;
 
-        if (entry.ScopeWorkingDirectory is not null)
-        {
-
-            bool trusted = await trustedMcpWorkspaces
-                .IsTrustedAsync(entry.ScopeWorkingDirectory, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (!trusted)
-            {
-
-                return new Error(
-                    "Mcp.WorkspaceNotTrusted",
-                    "Workspace-local MCP servers require operator approval. POST /api/mcp/trust-workspace for this workspace before starting.");
-
-            }
-
-        }
-
         List<McpServerEvent> pendingEvents = [];
 
         Result result;
@@ -170,7 +161,17 @@ public sealed partial class McpConnectionManager(
         {
             try
             {
-                if (entry.State is McpServerState.Running or McpServerState.Starting)
+                if (!IsCurrentRegistryEntry(entry))
+                {
+                    result = EntryNotFoundError(entry);
+                }
+                else if (!await IsWorkspaceServerVisibleAsync(entry, cancellationToken).ConfigureAwait(false))
+                {
+                    result = IsCurrentRegistryEntry(entry)
+                        ? WorkspaceNotTrustedError()
+                        : EntryNotFoundError(entry);
+                }
+                else if (entry.State is McpServerState.Running or McpServerState.Starting)
                 {
                     result = Result.Success();
                 }
@@ -204,6 +205,33 @@ public sealed partial class McpConnectionManager(
                         pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
 
                         result = startResult;
+                    }
+                    else if (!await IsWorkspaceServerVisibleAsync(
+                                      entry,
+                                      cancellationToken)
+                                  .ConfigureAwait(false))
+                    {
+                        _ = await StopManagedServerCoreAsync(
+                                entry)
+                            .ConfigureAwait(false);
+
+                        Error notTrusted = IsCurrentRegistryEntry(entry)
+                            ? WorkspaceNotTrustedError()
+                            : EntryNotFoundError(entry);
+
+                        entry.State = McpServerState.Error;
+
+                        entry.Tools = [];
+
+                        entry.ErrorMessage = notTrusted.Message;
+
+                        pendingEvents.Add(BuildEvent(
+                            entry,
+                            McpServerState.Error,
+                            entry.ErrorMessage,
+                            []));
+
+                        result = notTrusted;
                     }
                     else
                     {
@@ -272,7 +300,9 @@ public sealed partial class McpConnectionManager(
             }
             else
             {
-                await StopManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
+                bool disposalCompleted =
+                    await StopManagedServerCoreAsync(entry)
+                        .ConfigureAwait(false);
 
                 entry.State = McpServerState.Stopped;
 
@@ -286,7 +316,13 @@ public sealed partial class McpConnectionManager(
 
                 RemoveServerMetadataFromPartition(entry);
 
-                result = Result.Success();
+                cancellationToken.ThrowIfCancellationRequested();
+
+                result = disposalCompleted
+                    ? Result.Success()
+                    : new Error(
+                        "Mcp.ClientDisposalIncomplete",
+                        "The MCP client is still shutting down.");
             }
         }
         finally
@@ -331,88 +367,144 @@ public sealed partial class McpConnectionManager(
         {
             try
             {
-                entry.State = McpServerState.Restarting;
-
-                pendingEvents.Add(BuildEvent(entry, McpServerState.Restarting, null, []));
-
-                await StopManagedServerCoreAsync(entry, cancellationToken).ConfigureAwait(false);
-
-                entry.State = McpServerState.Stopped;
-
-                entry.Tools = [];
-
-                entry.ErrorMessage = null;
-
-                pendingEvents.Add(BuildEvent(entry, McpServerState.Stopped, null, []));
-
-                InvalidateCachesForServer(entry);
-
-                RemoveServerMetadataFromPartition(entry);
-
-                if (entry.Transport is McpServerTransport.Sse)
+                if (!IsCurrentRegistryEntry(entry))
                 {
-                    entry.State = McpServerState.Error;
-
-                    entry.ErrorMessage = "SSE transport is not yet supported.";
-
-                    pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
-
-                    result = new Error("Mcp.SseNotSupported", entry.ErrorMessage);
-                }
-                else if (entry.ScopeWorkingDirectory is not null
-                    && !await trustedMcpWorkspaces
-                        .IsTrustedAsync(entry.ScopeWorkingDirectory, cancellationToken)
-                        .ConfigureAwait(false))
-                {
-                    const string notTrustedMessage =
-                        "Workspace-local MCP servers require operator approval. POST /api/mcp/trust-workspace for this workspace before starting.";
-
-                    entry.State = McpServerState.Error;
-
-                    entry.ErrorMessage = notTrustedMessage;
-
-                    pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
-
-                    result = new Error("Mcp.WorkspaceNotTrusted", notTrustedMessage);
+                    result = EntryNotFoundError(entry);
                 }
                 else
                 {
-                    entry.State = McpServerState.Starting;
+                    entry.State = McpServerState.Restarting;
 
-                    pendingEvents.Add(BuildEvent(entry, McpServerState.Starting, null, []));
+                    pendingEvents.Add(BuildEvent(entry, McpServerState.Restarting, null, []));
 
-                    Result startResult = await StartManagedServerWithCancellationHandlingAsync(entry, pendingEvents, cancellationToken)
-                        .ConfigureAwait(false);
+                    bool disposalCompleted =
+                        await StopManagedServerCoreAsync(entry)
+                            .ConfigureAwait(false);
 
-                    if (startResult.IsFailure)
+                    entry.State = McpServerState.Stopped;
+
+                    entry.Tools = [];
+
+                    entry.ErrorMessage = null;
+
+                    pendingEvents.Add(BuildEvent(entry, McpServerState.Stopped, null, []));
+
+                    InvalidateCachesForServer(entry);
+
+                    RemoveServerMetadataFromPartition(entry);
+
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (!disposalCompleted)
                     {
                         entry.State = McpServerState.Error;
 
-                        entry.ErrorMessage = startResult.Error.Message;
+                        entry.ErrorMessage =
+                            "The previous MCP client is still shutting down.";
 
-                        ScheduleRestartBackoff(entry);
+                        pendingEvents.Add(BuildEvent(
+                            entry,
+                            McpServerState.Error,
+                            entry.ErrorMessage,
+                            []));
+
+                        result = new Error(
+                            "Mcp.ClientDisposalIncomplete",
+                            entry.ErrorMessage);
+                    }
+                    else if (entry.Transport is McpServerTransport.Sse)
+                    {
+                        entry.State = McpServerState.Error;
+
+                        entry.ErrorMessage = "SSE transport is not yet supported.";
 
                         pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
 
-                        result = startResult;
+                        result = new Error("Mcp.SseNotSupported", entry.ErrorMessage);
+                    }
+                    else if (!await IsWorkspaceServerVisibleAsync(
+                                 entry,
+                                 cancellationToken)
+                             .ConfigureAwait(false))
+                    {
+                        Error notTrusted = IsCurrentRegistryEntry(entry)
+                            ? WorkspaceNotTrustedError()
+                            : EntryNotFoundError(entry);
+
+                        entry.State = McpServerState.Error;
+
+                        entry.ErrorMessage = notTrusted.Message;
+
+                        pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
+
+                        result = notTrusted;
                     }
                     else
                     {
-                        entry.State = McpServerState.Running;
+                        entry.State = McpServerState.Starting;
 
-                        entry.LastConnectedAt = DateTimeOffset.UtcNow;
+                        pendingEvents.Add(BuildEvent(entry, McpServerState.Starting, null, []));
 
-                        entry.ErrorMessage = null;
+                        Result startResult = await StartManagedServerWithCancellationHandlingAsync(entry, pendingEvents, cancellationToken)
+                            .ConfigureAwait(false);
 
-                        entry.RestartAfterUtc = null;
+                        if (startResult.IsFailure)
+                        {
+                            entry.State = McpServerState.Error;
 
-                        pendingEvents.Add(BuildEvent(entry, McpServerState.Running, null, entry.Tools));
+                            entry.ErrorMessage = startResult.Error.Message;
 
-                        InvalidateCachesForServer(entry);
+                            ScheduleRestartBackoff(entry);
 
-                        SyncPartitionServerMetadata(entry);
+                            pendingEvents.Add(BuildEvent(entry, McpServerState.Error, entry.ErrorMessage, []));
 
-                        result = Result.Success();
+                            result = startResult;
+                        }
+                        else if (!await IsWorkspaceServerVisibleAsync(
+                                          entry,
+                                          cancellationToken)
+                                      .ConfigureAwait(false))
+                        {
+                            _ = await StopManagedServerCoreAsync(
+                                    entry)
+                                .ConfigureAwait(false);
+
+                            Error notTrusted = IsCurrentRegistryEntry(entry)
+                                ? WorkspaceNotTrustedError()
+                                : EntryNotFoundError(entry);
+
+                            entry.State = McpServerState.Error;
+
+                            entry.Tools = [];
+
+                            entry.ErrorMessage = notTrusted.Message;
+
+                            pendingEvents.Add(BuildEvent(
+                                entry,
+                                McpServerState.Error,
+                                entry.ErrorMessage,
+                                []));
+
+                            result = notTrusted;
+                        }
+                        else
+                        {
+                            entry.State = McpServerState.Running;
+
+                            entry.LastConnectedAt = DateTimeOffset.UtcNow;
+
+                            entry.ErrorMessage = null;
+
+                            entry.RestartAfterUtc = null;
+
+                            pendingEvents.Add(BuildEvent(entry, McpServerState.Running, null, entry.Tools));
+
+                            InvalidateCachesForServer(entry);
+
+                            SyncPartitionServerMetadata(entry);
+
+                            result = Result.Success();
+                        }
                     }
                 }
             }
@@ -467,14 +559,36 @@ public sealed partial class McpConnectionManager(
         cancellationToken.ThrowIfCancellationRequested();
 
         List<McpServerInfo> statuses = [];
+        Dictionary<string, TrustedMcpWorkspaceSnapshot> snapshots =
+            new(StringComparer.Ordinal);
 
         foreach (ManagedMcpServerEntry entry in _registry.Values
                      .OrderBy(static e => e.ScopeWorkingDirectory ?? string.Empty, StringComparer.Ordinal)
                      .ThenBy(static e => e.Name, StringComparer.Ordinal))
         {
-            if (!await IsWorkspaceServerVisibleAsync(entry, cancellationToken).ConfigureAwait(false))
+            if (!IsCurrentRegistryEntry(entry))
             {
                 continue;
+            }
+
+            if (entry.ScopeWorkingDirectory is not null)
+            {
+                if (!snapshots.TryGetValue(
+                        entry.ScopeWorkingDirectory,
+                        out TrustedMcpWorkspaceSnapshot snapshot))
+                {
+                    snapshot = await trustedMcpWorkspaces
+                        .GetSnapshotAsync(
+                            entry.ScopeWorkingDirectory,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    snapshots[entry.ScopeWorkingDirectory] = snapshot;
+                }
+
+                if (!snapshot.Authorizes(entry.SourceDigest))
+                {
+                    continue;
+                }
             }
 
             statuses.Add(ToInfo(entry));
@@ -547,7 +661,12 @@ public sealed partial class McpConnectionManager(
             if (_mergedToolsByWorkspace.TryGetValue(
                     workspaceKey,
                     out CachedMcpToolSurface? cached)
-                && cached.Generation == generation)
+                && cached.Generation == generation
+                && await IsCachedSurfaceCurrentAsync(
+                        workspaceKey,
+                        cached,
+                        cancellationToken)
+                    .ConfigureAwait(false))
             {
                 return cached.Tools;
             }
@@ -577,18 +696,23 @@ public sealed partial class McpConnectionManager(
                 if (_mergedToolsByWorkspace.TryGetValue(
                         workspaceKey,
                         out cached)
-                    && cached.Generation == generation)
+                    && cached.Generation == generation
+                    && await IsCachedSurfaceCurrentAsync(
+                            workspaceKey,
+                            cached,
+                            cancellationToken)
+                        .ConfigureAwait(false))
                 {
                     return cached.Tools;
                 }
 
                 McpPartitionClients partition =
                     GetOrCreatePartition(workspaceKey);
-                IReadOnlyList<AITool> merged;
+                BuiltMcpToolSurface built;
 
                 try
                 {
-                    merged =
+                    built =
                         await BuildMergedToolsForWorkspaceAsync(
                                 partition,
                                 workspaceKey,
@@ -611,18 +735,46 @@ public sealed partial class McpConnectionManager(
                     continue;
                 }
 
-                _mergedToolsByWorkspace[workspaceKey] =
-                    new CachedMcpToolSurface(
-                        generation,
-                        merged);
+                if (built.Cacheable)
+                {
+                    _mergedToolsByWorkspace[workspaceKey] =
+                        new CachedMcpToolSurface(
+                            generation,
+                            built.SourceDigest,
+                            built.Tools);
+                }
 
-                return merged;
+                return built.Tools;
             }
             finally
             {
                 workspaceLock.Release();
             }
         }
+    }
+
+    private async Task<bool> IsCachedSurfaceCurrentAsync(
+        string workspaceKey,
+        CachedMcpToolSurface cached,
+        CancellationToken cancellationToken)
+    {
+        if (workspaceKey == NoWorkspaceKey)
+        {
+            return true;
+        }
+
+        TrustedMcpWorkspaceSnapshot snapshot = await trustedMcpWorkspaces
+            .GetSnapshotAsync(workspaceKey, cancellationToken)
+            .ConfigureAwait(false);
+
+        bool current = snapshot.Authorizes(cached.SourceDigest);
+
+        if (!current)
+        {
+            _mergedToolsByWorkspace.TryRemove(workspaceKey, out _);
+        }
+
+        return current;
     }
 
     private void InvalidateInternalToolCachesForSettingsChange()
@@ -738,6 +890,45 @@ public sealed partial class McpConnectionManager(
         }
     }
 
+    private async Task AwaitPendingWorkspaceRetirementsAsync()
+    {
+        using CancellationTokenSource cleanupDeadline =
+            new(WorkspaceRetirementCleanupTimeout);
+
+        while (true)
+        {
+            Task[] pending =
+                _pendingWorkspaceRetirements.Keys.ToArray();
+
+            if (pending.Length == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await Task.WhenAll(pending)
+                    .WaitAsync(cleanupDeadline.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (cleanupDeadline.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    "MCP shutdown left {PendingCount} bounded workspace retirement task(s) unfinished.",
+                    _pendingWorkspaceRetirements.Count);
+
+                return;
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(
+                    ex,
+                    "Failed while awaiting a retired MCP workspace server.");
+            }
+        }
+    }
+
     /// <inheritdoc />
     public async Task<List<McpServerStatusDto>> GetServerStatusesAsync(
         string workingDirectory,
@@ -759,22 +950,37 @@ public sealed partial class McpConnectionManager(
         }
 
         string workspaceKey = NormalizeWorkspaceKey(workingDirectory);
-
-        bool workspaceTrusted = workspaceKey == NoWorkspaceKey
-            || await trustedMcpWorkspaces.IsTrustedAsync(workspaceKey, cancellationToken).ConfigureAwait(false);
+        _mergedToolsByWorkspace.TryGetValue(
+            workspaceKey,
+            out CachedMcpToolSurface? currentSurface);
 
         if (_partitionClients.TryGetValue(workspaceKey, out Lazy<McpPartitionClients>? workspacePartitionLazy)
             && workspacePartitionLazy.IsValueCreated)
         {
             foreach (McpServerMetadata meta in workspacePartitionLazy.Value.Servers)
             {
-                if (!workspaceTrusted
-                    && !string.Equals(meta.ServerName, "arcanum-internal", StringComparison.Ordinal))
+                if (string.Equals(
+                        meta.ServerName,
+                        "arcanum-internal",
+                        StringComparison.Ordinal))
                 {
+                    result.Add(ToStatusDto(meta));
+
                     continue;
                 }
 
-                result.Add(ToStatusDto(meta));
+                if (_registry.TryGetValue(
+                        (meta.ServerName, workspaceKey),
+                        out ManagedMcpServerEntry? entry)
+                    && IsCurrentRegistryEntry(entry)
+                    && currentSurface is not null
+                    && string.Equals(
+                        currentSurface.SourceDigest,
+                        entry.SourceDigest,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add(ToStatusDto(meta));
+                }
             }
         }
 
@@ -799,7 +1005,8 @@ public sealed partial class McpConnectionManager(
 
                 try
                 {
-                    await StopManagedServerCoreAsync(entry, CancellationToken.None).ConfigureAwait(false);
+                    _ = await StopManagedServerCoreAsync(entry)
+                        .ConfigureAwait(false);
 
                     entry.State = McpServerState.Stopped;
 
@@ -898,6 +1105,9 @@ public sealed partial class McpConnectionManager(
                 logger.LogDebug(ex, "Error awaiting in-flight transport-ended handler(s) during shutdown.");
             }
         }
+
+        await AwaitPendingWorkspaceRetirementsAsync()
+            .ConfigureAwait(false);
 
         await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
 
