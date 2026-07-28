@@ -8,7 +8,7 @@
 #
 # Outputs:
 #   <output-dir>/arcanum-osx-arm64.zip
-#     contains folder arcanum-osx-arm64/ with arcanum (signed Mach-O) and README.md
+#     contains folder arcanum-osx-arm64/arcanum (signed Mach-O)
 #
 # The zip is submitted to notarytool. The zip is NOT stapled (Apple staples
 # .app/.dmg/.pkg, not arbitrary zip containers). After notarization, the
@@ -105,7 +105,6 @@ if [[ -f "$STAGE_DIR/$PUBLISHED_NAME" ]]; then
   mv "$STAGE_DIR/$PUBLISHED_NAME" "$STAGE_DIR/arcanum"
 fi
 chmod +x "$STAGE_DIR/arcanum"
-cp "$REPO_ROOT/docs/Arcanum.README.md" "$STAGE_DIR/README.md"
 
 if [[ "$SKIP_SIGN" -eq 0 ]]; then
   require_cmd codesign

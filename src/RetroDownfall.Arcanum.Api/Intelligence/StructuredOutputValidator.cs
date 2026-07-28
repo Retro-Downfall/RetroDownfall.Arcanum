@@ -6,23 +6,23 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
-/// Validates buffered inference responses against a JSON Schema and requests corrections while the
-/// invalid output and corrective evidence continue to change.
+/// Validates buffered inference responses against a JSON Schema and retries when validation fails.
+/// Stateless singleton — all configuration and retry state flows through method parameters.
 /// </summary>
 public sealed class StructuredOutputValidator
 {
 
     /// <summary>
     /// Validates <paramref name="initialResponse"/> against the supplied JSON Schema. If validation
-    /// fails, the provider is asked to try again with a corrective system message. Correction stops
-    /// deterministically when the same invalid output and correction state repeats. The final
-    /// behavior depends on <paramref name="strictMode"/>:
+    /// fails and retries remain, the provider is asked to try again with a corrective system message.
+    /// On exhaustion, the behavior depends on <paramref name="strictMode"/>:
     /// <see langword="false"/> returns the last response with a warning; <see langword="true"/>
     /// returns a <see cref="ErrorCodes.StructuredOutput.ValidationFailed"/> failure.
     /// </summary>
     /// <param name="initialResponse">The first provider response.</param>
     /// <param name="schema">The JSON Schema document to validate against.</param>
-    /// <param name="strictMode">When <see langword="true"/>, unresolved validation becomes a hard failure.</param>
+    /// <param name="maxRetries">Maximum retry attempts after the first failure.</param>
+    /// <param name="strictMode">When <see langword="true"/>, exhausted retries become a hard failure.</param>
     /// <param name="schemaMaxDepth">Maximum recursion depth for parsing/validation.</param>
     /// <param name="contextWindowLimit">Provider context-window limit (tokens). Used to avoid retrying when the appended error message would not fit.</param>
     /// <param name="estimateTokenCount">
@@ -42,6 +42,7 @@ public sealed class StructuredOutputValidator
     public async Task<Result<StructuredOutputResult>> ValidateAndRetryAsync(
         ChatResponse initialResponse,
         JsonDocument schema,
+        int maxRetries,
         bool strictMode,
         int schemaMaxDepth,
         int contextWindowLimit,
@@ -69,15 +70,12 @@ public sealed class StructuredOutputValidator
         int currentPromptTokens = ClampUsageToInt(currentResponse.Usage?.InputTokenCount ?? 0L);
 
         List<string> warnings = [];
-        HashSet<CorrectionState> observedInvalidStates = [];
 
-        while (true)
+        for (int attempt = 0; attempt <= maxRetries; attempt++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
 
-            string currentText = currentResponse.Text ?? string.Empty;
             ValidationResult validation = JsonSchemaHelper.Validate(
-                currentText,
+                currentResponse.Text,
                 definition,
                 schemaMaxDepth);
 
@@ -89,24 +87,21 @@ public sealed class StructuredOutputValidator
 
             }
 
+            if (attempt >= maxRetries)
+            {
+
+                break;
+
+            }
+
             string errorMessage =
                 $"Your previous response did not match the required JSON schema. " +
                 $"Errors: {string.Join("; ", validation.Errors)}. " +
                 $"Please respond with valid JSON matching this schema: {schemaRawText}.";
 
-            CorrectionState correctionState = new(
-                currentText,
-                errorMessage);
-            if (!observedInvalidStates.Add(correctionState))
-            {
-                warnings.Add(
-                    "structured-output correction stopped because the invalid output and correction state repeated.");
-                break;
-            }
-
             int estimatedErrorTokens = EstimateTokenCount(errorMessage, estimateTokenCount);
 
-            if ((long)currentPromptTokens + estimatedErrorTokens > contextWindowLimit)
+            if (currentPromptTokens + estimatedErrorTokens > contextWindowLimit)
             {
 
                 warnings.Add("context window too small for retry; skipping structured-output retry.");
@@ -119,13 +114,12 @@ public sealed class StructuredOutputValidator
 
             currentPromptTokens = ClampUsageToInt(currentResponse.Usage?.InputTokenCount ?? 0L);
 
-            warnings.Add("Structured-output correction requested after validation failure.");
+            warnings.Add($"Retry {attempt + 1} triggered by validation failure.");
 
         }
 
-        string finalText = currentResponse.Text ?? string.Empty;
         ValidationResult finalValidation = JsonSchemaHelper.Validate(
-            finalText,
+            currentResponse.Text,
             definition,
             schemaMaxDepth);
 
@@ -145,11 +139,11 @@ public sealed class StructuredOutputValidator
             return Result<StructuredOutputResult>.Failure(
                 new Error(
                     ErrorCodes.StructuredOutput.ValidationFailed,
-                    $"Response failed JSON schema validation after correction stopped: {joinedErrors}"));
+                    $"Response failed JSON schema validation after {maxRetries} retries: {joinedErrors}"));
 
         }
 
-        warnings.Add($"validation failed after correction stopped: {joinedErrors}");
+        warnings.Add($"validation failed after {maxRetries} retries: {joinedErrors}");
 
         return Result<StructuredOutputResult>.Success(
             new StructuredOutputResult(currentResponse, warnings, IsValid: false));
@@ -165,7 +159,7 @@ public sealed class StructuredOutputValidator
             try
             {
 
-                return Math.Max(1, estimateTokenCount(text));
+                return estimateTokenCount(text);
 
             }
             catch
@@ -187,10 +181,6 @@ public sealed class StructuredOutputValidator
         return value > int.MaxValue ? int.MaxValue : (int)value;
 
     }
-
-    private readonly record struct CorrectionState(
-        string InvalidOutput,
-        string CorrectionMessage);
 
 }
 

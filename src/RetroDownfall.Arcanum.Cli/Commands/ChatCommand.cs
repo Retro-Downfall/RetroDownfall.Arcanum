@@ -41,15 +41,13 @@ public sealed class ChatCommand(
 {
 
     private long MaxAttachFileSizeBytes =>
-        ArcanumSettingClamps.MaxAttachFileSizeBytes(
-            ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+        ArcanumSettingClamps.MaxAttachFileSizeBytes(arcanumSettings.Value.Cli.MaxAttachFileSizeBytes);
 
     private long MaxScryingImageBytes =>
-        ArcanumSettingClamps.ScryingMaxImageBytes(
-            arcanumSettings.Value.ResolveScrying().MaxImageBytes);
+        ArcanumSettingClamps.ScryingMaxImageBytes(arcanumSettings.Value.Scrying.MaxImageBytes);
 
     private string[] AllowedScryingMimeTypes =>
-        arcanumSettings.Value.Security.AllowedImageMimeTypes ?? [];
+        arcanumSettings.Value.Scrying.AllowedMimeTypes ?? [];
 
     private const string DefaultStagedOnlyPrompt = "Please review the attached files.";
 
@@ -97,7 +95,7 @@ public sealed class ChatCommand(
     /// <param name="model">-m, The specific model to use for this inference request.</param>
     /// <param name="new">-n, Start a new session thread, clearing the previous session at REPL startup.</param>
     /// <param name="noTools">Disable MCP-provided tools for this REPL session (built-in tools still apply).</param>
-    /// <param name="unattended">Force unattended for this run (also true when <c>Arcanum:Security:Ward:UnattendedMode</c> is set). Skips ask_human blocking and uses Ward auto-deny for Forbidden Arts.</param>
+    /// <param name="unattended">Force unattended for this run (also true when <c>Arcanum:Ward:UnattendedMode</c> is set). Skips ask_human blocking and uses Ward auto-deny for Forbidden Arts.</param>
     /// <param name="campaign">-c, Campaign GUID to resolve the workspace from (400 Campaign.NotFound if unknown).</param>
     /// <param name="temperature">Sampling temperature 0-2 (lower = more deterministic). Applies to every turn.</param>
     /// <param name="topP">--top-p, Nucleus sampling cutoff 0-1. Applies to every turn.</param>
@@ -136,9 +134,7 @@ public sealed class ChatCommand(
             return flagsExit == 0 ? 1 : flagsExit;
         }
 
-        unattended = OperatorFacingUnattendedMode.Resolve(
-            unattended,
-            arcanumSettings.Value.Security.Ward);
+        unattended = OperatorFacingUnattendedMode.Resolve(unattended, arcanumSettings.Value.Ward);
 
         Guid? campaignId = null;
 

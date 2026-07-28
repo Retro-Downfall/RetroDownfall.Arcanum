@@ -5,27 +5,153 @@
              x:Class="RetroDownfall.Compendium.Ux.Views.CliPage"
              x:DataType="vm:ConfigurationViewModel">
 
-  <ScrollViewer>
-    <StackPanel Margin="24"
-                Spacing="16">
+    <ScrollViewer>
 
-      <TextBlock Text="CLI"
-                 FontSize="{DynamicResource ForgePageTitleFontSize}"
-                 FontWeight="SemiBold" />
+        <StackPanel Orientation="Vertical"
+                    Margin="24"
+                    Spacing="16">
 
-      <controls:LabeledPicker Label="Theme"
-                              Description="CLI color theme. Built-in themes replace per-color implementation overrides."
-                              PickerTitle="Select theme"
-                              Key="cli.theme"
-                              ValidationErrors="{Binding ValidationErrorsByPointer}"
-                              ItemsSource="{Binding CliThemes}"
-                              SelectedItem="{Binding Cli.Theme, Mode=TwoWay}" />
+<TextBlock Text="CLI"
+                   FontSize="{DynamicResource ForgePageTitleFontSize}"
+                   FontWeight="SemiBold" />
 
-      <controls:LabeledToggle Label="Show mana bar"
-                              Description="Show the persistent token-budget indicator in chat."
-                              IsOn="{Binding Cli.ShowManaBar, Mode=TwoWay}" />
+            <controls:LabeledPicker Label="Theme"
+                                    Description="CLI color theme: Light, Dark, or System Default (follows the OS setting)."
+                                    PickerTitle="Select theme"
+                                    Key="cli.theme"
+                                    ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                    ItemsSource="{Binding CliThemes}"
+                                    SelectedItem="{Binding Cli.Theme, Mode=TwoWay}" />
 
-    </StackPanel>
-  </ScrollViewer>
+            <controls:LabeledToggle Label="Show mana bar"
+                                    Description="When true, the chat REPL shows a persistent mana bar (token-budget indicator)."
+                                    IsOn="{Binding Cli.ShowManaBar, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="Max attach file size (bytes)"
+                                     Description="Maximum byte size of a single file attached to an ask/chat request."
+                                     Key="cli.maxAttachFileSizeBytes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Cli.MaxAttachFileSizeBytes, Mode=TwoWay}"
+                                     Minimum="1024"
+                                     Maximum="104857600"
+                                     Increment="1024" />
+
+            <controls:LabeledStepper Label="Max attached files per request"
+                                     Description="Maximum files attached to a single ask/chat request."
+                                     Key="cli.maxAttachedFilesPerRequest"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Cli.MaxAttachedFilesPerRequest, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="256"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max attached file path chars"
+                                     Description="Maximum character length of an attached file's relative path."
+                                     Key="cli.maxAttachedFileRelativePathChars"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Cli.MaxAttachedFileRelativePathChars, Mode=TwoWay}"
+                                     Minimum="256"
+                                     Maximum="8192"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Doctor health timeout (s)"
+                                     Description="Timeout for the arcanum doctor API health probe. Increase for slow startups."
+                                     Key="cli.doctorHealthTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Cli.DoctorHealthTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="60"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="API request timeout (s)"
+                                     Description="Timeout for non-streaming CLI API calls (lore, daemon jobs, etc.). Streaming verbs stay unbounded."
+                                     Key="cli.apiRequestTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Cli.ApiRequestTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="600"
+                                     Increment="1" />
+
+            <TextBlock Text="Light theme colors"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledColorEntry Label="Light — text"
+                                        Description="Body text color for the Light CLI theme."
+                                        Key="cli.themeColors.light.text"
+                                        ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                        Text="{Binding Cli.LightText, Mode=TwoWay}"
+                                        Placeholder="#2A1545" />
+
+            <controls:LabeledColorEntry Label="Light — heading"
+                                        Description="Heading text color for the Light CLI theme."
+                                        Key="cli.themeColors.light.heading"
+                                        ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                        Text="{Binding Cli.LightHeading, Mode=TwoWay}"
+                                        Placeholder="#8B1538" />
+
+            <controls:LabeledColorEntry Label="Light — highlight"
+                                        Description="Highlight color for the Light CLI theme."
+                                        Key="cli.themeColors.light.highlight"
+                                        ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                        Text="{Binding Cli.LightHighlight, Mode=TwoWay}"
+                                        Placeholder="#008F11" />
+
+            <controls:LabeledColorEntry Label="Light — error"
+                                        Description="Error message color for the Light CLI theme."
+                                        Key="cli.themeColors.light.error"
+                                        ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                        Text="{Binding Cli.LightError, Mode=TwoWay}"
+                                        Placeholder="#C41E3A" />
+
+            <controls:LabeledColorEntry Label="Light — muted"
+                                        Description="Muted/secondary text color for the Light CLI theme."
+                                        Key="cli.themeColors.light.muted"
+                                        ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                        Text="{Binding Cli.LightMuted, Mode=TwoWay}"
+                                        Placeholder="#6B5D7A" />
+
+            <TextBlock Text="Dark theme colors"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledColorEntry Label="Dark — text"
+                                        Description="Body text color for the Dark CLI theme."
+                                        Key="cli.themeColors.dark.text"
+                                        ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                        Text="{Binding Cli.DarkText, Mode=TwoWay}"
+                                        Placeholder="#E8DCC4" />
+
+            <controls:LabeledColorEntry Label="Dark — heading"
+                                        Description="Heading text color for the Dark CLI theme."
+                                        Key="cli.themeColors.dark.heading"
+                                        ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                        Text="{Binding Cli.DarkHeading, Mode=TwoWay}"
+                                        Placeholder="#00FFD5" />
+
+            <controls:LabeledColorEntry Label="Dark — highlight"
+                                        Description="Highlight color for the Dark CLI theme."
+                                        Key="cli.themeColors.dark.highlight"
+                                        ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                        Text="{Binding Cli.DarkHighlight, Mode=TwoWay}"
+                                        Placeholder="#39FF14" />
+
+            <controls:LabeledColorEntry Label="Dark — error"
+                                        Description="Error message color for the Dark CLI theme."
+                                        Key="cli.themeColors.dark.error"
+                                        ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                        Text="{Binding Cli.DarkError, Mode=TwoWay}"
+                                        Placeholder="#FF6B6B" />
+
+            <controls:LabeledColorEntry Label="Dark — muted"
+                                        Description="Muted/secondary text color for the Dark CLI theme."
+                                        Key="cli.themeColors.dark.muted"
+                                        ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                        Text="{Binding Cli.DarkMuted, Mode=TwoWay}"
+                                        Placeholder="#7A6B90" />
+
+        </StackPanel>
+
+    </ScrollViewer>
 
 </UserControl>

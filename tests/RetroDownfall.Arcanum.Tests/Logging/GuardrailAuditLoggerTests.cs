@@ -115,29 +115,27 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
 
     }
 
-    private GuardrailAuditLogger CreateLogger(bool enabled, int retentionDays = 7)
+    private GuardrailAuditLogger CreateLogger(bool enabled, int maxSizeMb = 100, int retentionDays = 7)
     {
 
         ArcanumSettings settings = new()
         {
-            Features = new FeatureSettings { Guardrails = true },
-            Security = new SecuritySettings
+            Guardrails = new GuardrailsSettings
             {
-                Guardrails = new GuardrailsPolicySettings
+                Enabled = true,
+                AuditLog = new GuardrailsAuditLogSettings
                 {
-                    AuditLog = new GuardrailsAuditPolicySettings
-                    {
-                        Enabled = enabled,
-                        RetentionDays = retentionDays,
-                    },
+                    Enabled = enabled,
+                    FilePath = Path.Combine(_tempDirectory, "guardrails.jsonl"),
+                    MaxSizeMb = maxSizeMb,
+                    RetentionDays = retentionDays,
                 },
             },
         };
 
         return new GuardrailAuditLogger(
             new TestOptionsMonitor<ArcanumSettings>(settings),
-            NullLogger<GuardrailAuditLogger>.Instance,
-            Path.Combine(_tempDirectory, "guardrails.jsonl"));
+            NullLogger<GuardrailAuditLogger>.Instance);
 
     }
 

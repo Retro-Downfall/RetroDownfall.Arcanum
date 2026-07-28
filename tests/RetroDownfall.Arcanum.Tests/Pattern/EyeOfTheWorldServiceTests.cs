@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Pattern;
@@ -40,7 +41,7 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
     public async Task PerceivePatternAsync_empty_path_returns_unknown_domain()
     {
 
-        EyeOfTheWorldService service = new();
+        EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
         PatternSnapshot snapshot = await service.PerceivePatternAsync("  ", CancellationToken.None);
 
@@ -54,7 +55,7 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
     public async Task PerceivePatternAsync_missing_directory_returns_unknown_domain()
     {
 
-        EyeOfTheWorldService service = new();
+        EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
         string missing = Path.Combine(_workspace.Root, "missing");
 
@@ -70,7 +71,7 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
     public async Task PerceivePatternAsync_detects_software_engineering_artifacts()
     {
 
-        EyeOfTheWorldService service = new();
+        EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
         PatternSnapshot snapshot = await service.PerceivePatternAsync(_workspace.Root, CancellationToken.None);
 
@@ -101,7 +102,7 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
 
             adminWorkspace.WriteFile("memo.docx", "docx");
 
-            EyeOfTheWorldService service = new();
+            EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
             PatternSnapshot snapshot = await service.PerceivePatternAsync(adminWorkspace.Root, CancellationToken.None);
 
@@ -140,7 +141,7 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
 
             researchWorkspace.WriteFile("notes/e.txt", "E");
 
-            EyeOfTheWorldService service = new();
+            EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
             PatternSnapshot snapshot = await service.PerceivePatternAsync(researchWorkspace.Root, CancellationToken.None);
 
@@ -173,7 +174,7 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
 
             unknownWorkspace.WriteFile("beta.dat", "b");
 
-            EyeOfTheWorldService service = new();
+            EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
             PatternSnapshot snapshot = await service.PerceivePatternAsync(unknownWorkspace.Root, CancellationToken.None);
 
@@ -207,7 +208,12 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
                 truncWorkspace.WriteFile($"file{i}.dat", "x");
             }
 
-            EyeOfTheWorldService service = new(maxEnumerationSteps: 3);
+            ArcanumSettings settings = new()
+            {
+                Perception = new PerceptionSettings { MaxEnumerationSteps = 3 },
+            };
+
+            EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(settings));
 
             PatternSnapshot snapshot = await service.PerceivePatternAsync(truncWorkspace.Root, CancellationToken.None);
 
@@ -238,7 +244,7 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
 
             markerWorkspace.WriteFile("Dockerfile", "FROM scratch");
 
-            EyeOfTheWorldService service = new();
+            EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
             PatternSnapshot snapshot = await service.PerceivePatternAsync(markerWorkspace.Root, CancellationToken.None);
 
@@ -274,7 +280,7 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
                 sourceWorkspace.WriteFile($"src/File{i}.cs", $"class F{i} {{}}");
             }
 
-            EyeOfTheWorldService service = new();
+            EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
             PatternSnapshot snapshot = await service.PerceivePatternAsync(sourceWorkspace.Root, CancellationToken.None);
 
@@ -294,7 +300,7 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
     public async Task PerceivePatternAsync_cancellation_propagates()
     {
 
-        EyeOfTheWorldService service = new();
+        EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
         using CancellationTokenSource cts = new();
 
@@ -327,7 +333,13 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
 
             }
 
-            EyeOfTheWorldService service = new();
+            // Budget smaller than node_modules file count — prune-before-descend must still see App.sln.
+            ArcanumSettings settings = new()
+            {
+                Perception = new PerceptionSettings { MaxEnumerationSteps = 20 },
+            };
+
+            EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(settings));
 
             PatternSnapshot snapshot = await service.PerceivePatternAsync(pruneWorkspace.Root, CancellationToken.None);
 
@@ -380,7 +392,12 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
 
             }
 
-            EyeOfTheWorldService service = new();
+            ArcanumSettings settings = new()
+            {
+                Perception = new PerceptionSettings { MaxEnumerationSteps = 50 },
+            };
+
+            EyeOfTheWorldService service = new(new TestOptionsMonitor<ArcanumSettings>(settings));
 
             PatternSnapshot snapshot = await service.PerceivePatternAsync(cycleWorkspace.Root, CancellationToken.None);
 

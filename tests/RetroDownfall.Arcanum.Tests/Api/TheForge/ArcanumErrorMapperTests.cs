@@ -4,7 +4,6 @@ using RetroDownfall.Arcanum.Api.TheForge;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
-
 namespace RetroDownfall.Arcanum.Tests.Api.TheForge;
 
 public sealed class ArcanumErrorMapperTests
@@ -18,6 +17,8 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(
         ErrorCodes.Validation.ReasoningEffortAndBudgetMutuallyExclusive,
         StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Hub.ToolLoop, StatusCodes.Status503ServiceUnavailable)]
+    [InlineData(ErrorCodes.Hub.Timeout, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.Hub.Model, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Hub.Error, StatusCodes.Status500InternalServerError)]
     [InlineData(ErrorCodes.Campaign.NotFound, StatusCodes.Status404NotFound)]
@@ -29,6 +30,7 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Session.TooManyEntries, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Session.EntryTooLarge, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Session.EmptyContent, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Session.RestQueueFull, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.Grimoire.LoreNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Apprentice.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Apprentice.Disabled, StatusCodes.Status400BadRequest)]
@@ -44,6 +46,8 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Apprentice.InvalidGoal, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Apprentice.InvalidWorkspace, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Apprentice.ConclaveDisabled, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Apprentice.ConclaveDepthExceeded, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Apprentice.ConclaveBreadthExceeded, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.Workspace.NotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.Workspace.NameEmpty, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Workspace.PathNotAllowed, StatusCodes.Status403Forbidden)]
@@ -66,7 +70,10 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Connection.Timeout, StatusCodes.Status504GatewayTimeout)]
     [InlineData(ErrorCodes.Security.MissingApiKey, StatusCodes.Status401Unauthorized)]
     [InlineData(ErrorCodes.Security.BlockedOutboundUrl, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.Security.IdempotencyInProgress, StatusCodes.Status409Conflict)]
+    [InlineData(ErrorCodes.Security.IdempotencyConflict, StatusCodes.Status409Conflict)]
     [InlineData(ErrorCodes.ProvingGrounds.InvalidTrial, StatusCodes.Status400BadRequest)]
+    [InlineData(ErrorCodes.ProvingGrounds.TooManyInquisitors, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.ProvingGrounds.WorkspaceNotAllowed, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.ProvingGrounds.SpellNotFound, StatusCodes.Status404NotFound)]
     [InlineData(ErrorCodes.ProvingGrounds.PromptNotFound, StatusCodes.Status404NotFound)]
@@ -82,6 +89,7 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Embeddings.FeatureDisabled, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.Sending.AgentUnreachable, StatusCodes.Status502BadGateway)]
     [InlineData(ErrorCodes.Sending.AgentCardInvalid, StatusCodes.Status502BadGateway)]
+    [InlineData(ErrorCodes.Sending.TaskTimeout, StatusCodes.Status504GatewayTimeout)]
     [InlineData(ErrorCodes.Sending.TaskRejected, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Sending.Disabled, StatusCodes.Status403Forbidden)]
     [InlineData(ErrorCodes.Sending.AgentNotAllowed, StatusCodes.Status403Forbidden)]

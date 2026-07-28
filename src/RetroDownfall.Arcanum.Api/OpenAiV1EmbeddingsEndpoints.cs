@@ -16,8 +16,8 @@ using RetroDownfall.Arcanum.Core.Weave;
 namespace RetroDownfall.Arcanum.Api;
 
 /// <summary>
-/// OpenAI-compatible <c>POST /v1/embeddings</c>. Thin composition over The Weave infrastructure —
-/// <see cref="IWeaveService"/> (imprinting, chunking) and
+/// OpenAI-compatible <c>POST /v1/embeddings</c>. Thin composition over the existing RAG Phase 1
+/// infrastructure — <see cref="IWeaveService"/> (imprinting, chunking) and
 /// <see cref="InferenceTokenizerResolver"/> (usage token counting) — following the same
 /// error-envelope and validation conventions as <c>HandleChatCompletionsAsync</c>.
 /// (<see cref="ExcludeFromCodeCoverageAttribute"/> is applied once on the primary
@@ -45,7 +45,7 @@ internal static partial class OpenAiV1Endpoints
 
         ArcanumSettings arc = settings.Value;
 
-        EmbeddingSettings embeddings = arc.ResolveEmbeddings();
+        EmbeddingSettings embeddings = arc.Embeddings ?? new EmbeddingSettings();
 
         if (body is null || body.Input is null)
         {
@@ -81,7 +81,7 @@ internal static partial class OpenAiV1Endpoints
         {
 
             return JsonError(
-                "Embeddings are disabled or not fully configured on this server (Arcanum:Features:Embeddings, Arcanum:Integrations:Embeddings:Provider, and Arcanum:Integrations:Embeddings:Model).",
+                "Embeddings are disabled or not fully configured on this server (Arcanum:Embeddings:Enabled/Provider/Model).",
                 "server_error",
                 "embedding_provider_unavailable",
                 param: null,
@@ -107,8 +107,7 @@ internal static partial class OpenAiV1Endpoints
 
         ILogger logger = loggerFactory.CreateLogger(typeof(OpenAiV1Endpoints));
 
-        Tokenizer tokenizer = tokenizerResolver.ResolveTokenizer(
-            arc.ResolveIntelligence().TokenizerEncoding);
+        Tokenizer tokenizer = tokenizerResolver.ResolveTokenizer(arc.Intelligence.TokenizerEncoding);
 
         string[] inputs = ResolveInputTexts(body.Input, tokenizer);
 
@@ -139,7 +138,7 @@ internal static partial class OpenAiV1Endpoints
         {
 
             return JsonError(
-                $"Total 'input' size ({totalInputChars} chars) exceeds the internal limit ({maxInputChars} chars).",
+                $"Total 'input' size ({totalInputChars} chars) exceeds the configured limit ({maxInputChars} chars, Arcanum:Embeddings:MaxEmbeddingInputChars).",
                 "invalid_request_error",
                 "invalid_value",
                 "input",
@@ -300,8 +299,8 @@ internal static partial class OpenAiV1Endpoints
     }
 
     /// <summary>
-    /// Embeds a single input whose length exceeds the code-owned chunk size by splitting it via
-    /// <see cref="IWeaveService.ChunkAsync"/>, embedding every chunk, then
+    /// Embeds a single input whose length exceeds <c>Arcanum:Embeddings:ChunkSizeChars</c> by
+    /// splitting it via <see cref="IWeaveService.ChunkAsync"/>, embedding every chunk, then
     /// mean-pooling and L2-renormalizing the chunk vectors into a single representative vector —
     /// preserving OpenAI's one-embedding-per-input contract while still imprinting the whole
     /// document (rather than silently truncating it, which <see cref="IWeaveService.EmbedBatchAsync"/>

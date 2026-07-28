@@ -14,8 +14,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// <item>There is no existing data to migrate (net-new feature, no users yet), so the append-only,
 /// timestamped migration convention — built for evolving a live schema under existing rows — is
 /// unnecessary ceremony here.</item>
-/// <item>The vec0 table's vector column width must be interpolated from
-/// <c>Arcanum:Integrations:Embeddings:Dimensions</c> at runtime; a static embedded <c>.sql</c> file
+/// <item>The vec0 table's vector column width must be interpolated from the configured
+/// <c>Arcanum:Embeddings:Dimensions</c> at runtime; a static embedded <c>.sql</c> migration file
 /// cannot express that.</item>
 /// </list>
 ///
@@ -326,11 +326,11 @@ internal static class WeaveSchemaInitializer
 
     /// <summary>
     /// Detects a configured-dimension change against already-imprinted data and logs a warning, for
-    /// both <c>entry_embeddings</c> and <c>saga_memory_embeddings</c> — each RAG
+    /// both <c>entry_embeddings</c> (Phase 2) and <c>saga_memory_embeddings</c> (Phase 4) — each RAG
     /// feature's BLOB source-of-truth table can independently accumulate stale vectors after a
-    /// <c>Arcanum:Integrations:Embeddings:Dimensions</c> change. Deliberately does not auto-truncate: operators must
+    /// <c>Arcanum:Embeddings:Dimensions</c> change. Deliberately does not auto-truncate: operators must
     /// explicitly clear the affected table(s) (and their <c>_vec</c> counterparts, when present) and
-    /// re-index — see <c>docs/Arcanum.DESIGN.md</c> §21.
+    /// re-index — see DESIGN.md §21.
     /// </summary>
     private static async Task WarnOnDimensionMismatchAsync(
         SqliteConnection connection,

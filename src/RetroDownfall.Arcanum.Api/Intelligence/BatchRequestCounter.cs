@@ -7,7 +7,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// <summary>
 /// Computes <see cref="OpenAiBatchRequestCounts"/> for a batch by reading its input/output/error
 /// files directly off disk (there are no dedicated count columns on <c>Batches</c> — see
-/// <c>docs/Arcanum.DESIGN.md</c> §11.21). Best-effort: a missing or unreadable file contributes <c>0</c> rather than
+/// DESIGN.md §11.21). Best-effort: a missing or unreadable file contributes <c>0</c> rather than
 /// throwing, since a client polling <c>GET /v1/batches/{id}</c> mid-processing should never see an
 /// error from this alone.
 /// </summary>

@@ -314,10 +314,16 @@ public sealed class SanctumBreachRepositoryTests : IAsyncLifetime
 
     private async Task<string> SeedCampaignAsync()
     {
+
+        ArcanumSettings settings = new()
+        {
+            Campaigns = new CampaignsSettings { MaxCampaigns = 500 },
+        };
+
         CampaignRepository campaignRepository = new(
             _db!,
             NullLogger<CampaignRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(settings));
 
         string workspaceRoot = Path.Combine(Path.GetTempPath(), "arcanum-sanctum-breach-repo", Guid.NewGuid().ToString("N"));
 
@@ -337,7 +343,8 @@ public sealed class SanctumBreachRepositoryTests : IAsyncLifetime
             UpdatedAt = now,
         };
 
-        Campaign saved = await campaignRepository.AddAsync(campaign, CancellationToken.None);
+        Campaign saved = (await campaignRepository
+            .AddAsync(campaign, CancellationToken.None)).Value;
 
         return saved.Id.ToString();
 

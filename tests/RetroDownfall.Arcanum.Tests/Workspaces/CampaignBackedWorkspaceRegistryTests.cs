@@ -81,7 +81,7 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-            Security = new SecuritySettings { CampaignRoots = [_workspaceRoot] },
+            Campaigns = new CampaignsSettings { AllowedRoots = [_workspaceRoot] },
         };
 
         GrimoireDbReadiness readiness = new();
@@ -133,7 +133,7 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-            Security = new SecuritySettings { CampaignRoots = [_workspaceRoot] },
+            Campaigns = new CampaignsSettings { AllowedRoots = [_workspaceRoot] },
         };
 
         GrimoireDbReadiness readiness = new();
@@ -160,6 +160,125 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
         Assert.True(removed.IsSuccess);
 
         Assert.Null(await registry.GetAsync(registered.Value.Id, CancellationToken.None));
+
+    }
+
+    [Fact]
+    public async Task RegisterAsync_repository_failure_maps_error_code()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Campaigns = new CampaignsSettings { AllowedRoots = [_workspaceRoot] },
+        };
+
+        GrimoireDbReadiness readiness = new();
+
+        readiness.MarkReady();
+
+        CampaignBackedWorkspaceRegistry registry = new(
+            new FixedCampaignRepositoryScopeFactory(new MaxReachedCampaignRepository()),
+            readiness,
+            new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        string workspaceDir = Path.Combine(_workspaceRoot, "max-reached");
+
+        Directory.CreateDirectory(workspaceDir);
+
+        Result<WorkspaceInfo> result = await registry.RegisterAsync(
+            new CreateWorkspaceRequest("Rejected", workspaceDir, WorkspaceType.Campaign),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Campaign.MaxReached, result.Error.Code);
+
+        Assert.Equal(
+            "The maximum number of campaigns has been reached.",
+            result.Error.Message);
+
+    }
+
+    private sealed class MaxReachedCampaignRepository : ICampaignRepository
+    {
+
+        public Task<Campaign?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<Campaign?>(null);
+
+        public Task<Campaign?> GetByPathAsync(
+            string path,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<Campaign?>(null);
+
+        public Task<Campaign?> GetByNameAsync(
+            string name,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<Campaign?>(null);
+
+        public Task<ListPageResult<Campaign>> ListAsync(
+            WorkspaceType? typeFilter,
+            int? limit = null,
+            int offset = 0,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ListPageResult<Campaign>([], false));
+
+        public Task<Result<Campaign>> AddAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(
+                Result<Campaign>.Failure(
+                    new Error(
+                        ErrorCodes.Campaign.MaxReached,
+                        "Repository failure selected by code, not legacy exception text.")));
+
+        public Task<Campaign> UpdateAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(campaign);
+
+        public Task<bool> DeleteAsync(
+            Guid id,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
+
+    }
+
+    private sealed class FixedCampaignRepositoryScopeFactory(
+        ICampaignRepository repository) : IServiceScopeFactory
+    {
+
+        public IServiceScope CreateScope() => new FixedCampaignRepositoryScope(repository);
+
+    }
+
+    private sealed class FixedCampaignRepositoryScope(
+        ICampaignRepository repository) : IServiceScope
+    {
+
+        public IServiceProvider ServiceProvider { get; } =
+            new FixedCampaignRepositoryProvider(repository);
+
+        public void Dispose()
+        {
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    }
+
+    private sealed class FixedCampaignRepositoryProvider(
+        ICampaignRepository repository) : IServiceProvider
+    {
+
+        public object? GetService(Type serviceType) =>
+            serviceType == typeof(ICampaignRepository)
+                ? repository
+                : null;
 
     }
 

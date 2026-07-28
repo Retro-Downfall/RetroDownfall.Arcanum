@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Coverlet XPlat Code Coverage settings for Arcanum gates (docs/Arcanum.DESIGN.md section 13).
+  Coverlet XPlat Code Coverage settings for Arcanum gates (docs/tests.README.md, DESIGN section 13).
   Invoked by scripts/coverage.sh (dotnet test with this settings file).
 -->
 <RunSettings>

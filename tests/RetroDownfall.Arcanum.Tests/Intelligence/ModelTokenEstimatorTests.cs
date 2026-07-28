@@ -56,7 +56,7 @@ public sealed class ModelTokenEstimatorTests
     [Fact]
     public void EstimateContext_UnknownModel_UsesConservativeDocumentedFallback()
     {
-        ModelTokenEstimator estimator = CreateEstimator();
+        ModelTokenEstimator estimator = CreateEstimator(settings => settings.Intelligence.EstimatedTokenSafetyMarginPercent = 25);
         ProviderSettings provider = Provider("unknown-local-model");
 
         ContextTokenBreakdown breakdown = estimator.EstimateContext(new ModelTokenizationRequest(
@@ -107,10 +107,70 @@ public sealed class ModelTokenEstimatorTests
     }
 
     [Fact]
-    public async Task ModelCallExecutor_ValidatesUnknownModelFallbackProfile()
+    public void EstimateContext_ConfiguredModelProfile_OverridesProviderAndBuiltInResolution()
+    {
+        ModelTokenEstimator estimator = CreateEstimator();
+        ProviderSettings provider = Provider("gpt-4o");
+        provider.Tokenization = new ModelTokenizationProfile
+        {
+            Type = ModelTokenizationProfileType.CalibratedApproximation,
+            TokenizerId = "provider-default",
+            SafetyMarginPercent = 20,
+        };
+        provider.Models[0].Tokenization = new ModelTokenizationProfile
+        {
+            Type = ModelTokenizationProfileType.ExactLocalTokenizer,
+            TokenizerId = "o200k_base",
+        };
+
+        ContextTokenBreakdown breakdown = estimator.EstimateContext(new ModelTokenizationRequest(
+            provider,
+            "gpt-4o",
+            [new ChatMessage(ChatRole.User, "hello")],
+            new ChatOptions(),
+            ReservedAnswerTokens: 0,
+            ReservedReasoningTokens: 0));
+
+        Assert.Equal(ModelTokenizationProfileType.ExactLocalTokenizer, breakdown.Profile.Type);
+        Assert.Equal("model:gpt-4o", breakdown.Profile.ProfileId);
+        Assert.Equal(0, breakdown.SafetyMarginTokens);
+    }
+
+    [Fact]
+    public void EstimateContext_UnavailableExactTokenizer_DowngradesToEstimatedFallback()
     {
         ModelTokenEstimator estimator = CreateEstimator();
         ProviderSettings provider = Provider("custom-model");
+        provider.Models[0].Tokenization = new ModelTokenizationProfile
+        {
+            Type = ModelTokenizationProfileType.ExactLocalTokenizer,
+            TokenizerId = "not-a-real-encoding",
+        };
+
+        ContextTokenBreakdown breakdown = estimator.EstimateContext(new ModelTokenizationRequest(
+            provider,
+            "custom-model",
+            [new ChatMessage(ChatRole.User, "hello")],
+            new ChatOptions(),
+            ReservedAnswerTokens: 0,
+            ReservedReasoningTokens: 0));
+
+        Assert.Equal(ModelTokenizationProfileType.UnknownFallback, breakdown.Profile.Type);
+        Assert.Equal(TokenEstimateClassification.Estimated, breakdown.OverallClassification);
+        Assert.True(breakdown.SafetyMarginTokens > 0);
+        Assert.Contains("fallback", breakdown.Profile.ProfileId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ModelCallExecutor_ValidatesEffectiveFallbackProfile()
+    {
+        ModelTokenEstimator estimator = CreateEstimator();
+        ProviderSettings provider = Provider("custom-model");
+        provider.Models[0].Tokenization = new ModelTokenizationProfile
+        {
+            Type = ModelTokenizationProfileType.ExactLocalTokenizer,
+            TokenizerId = "not-a-real-encoding",
+        };
         List<ChatMessage> messages = [new(ChatRole.User, "hello")];
         ChatOptions options = new();
         ContextTokenBreakdown breakdown = estimator.EstimateContext(new ModelTokenizationRequest(
@@ -127,7 +187,7 @@ public sealed class ModelTokenEstimatorTests
                 chat,
                 messages,
                 options,
-                new TurnBudget(),
+                new TurnBudget(maxModelCalls: 1),
                 ModelCallPurpose.MainInference,
                 CancellationToken.None,
                 new ModelCallContext(provider, "custom-model", 32, 0, breakdown));
@@ -326,7 +386,7 @@ public sealed class ModelTokenEstimatorTests
             chat,
             messages,
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.ToolContinuation,
             CancellationToken.None,
             new ModelCallContext(provider, "gpt-4o", ReservedAnswerTokens: 64, ReservedReasoningTokens: 0));
@@ -357,7 +417,7 @@ public sealed class ModelTokenEstimatorTests
             chat,
             messages,
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None,
             new ModelCallContext(provider, "gpt-4o", 32, 0, breakdown));
@@ -390,7 +450,7 @@ public sealed class ModelTokenEstimatorTests
             chat,
             messages,
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None,
             new ModelCallContext(provider, "gpt-4o", 32, 0, stale));
@@ -423,7 +483,7 @@ public sealed class ModelTokenEstimatorTests
                 chat,
                 messages,
                 new ChatOptions(),
-                new TurnBudget(),
+                new TurnBudget(maxModelCalls: 1),
                 ModelCallPurpose.MainInference,
                 CancellationToken.None,
                 new ModelCallContext(provider, "gpt-4o", 32, 0, stale)))
@@ -467,10 +527,14 @@ public sealed class ModelTokenEstimatorTests
         Assert.True(huge.ProviderReportedInputValid);
     }
 
-    private static ModelTokenEstimator CreateEstimator() =>
-        new(
+    private static ModelTokenEstimator CreateEstimator(Action<ArcanumSettings>? configure = null)
+    {
+        ArcanumSettings settings = new();
+        configure?.Invoke(settings);
+        return new ModelTokenEstimator(
             new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsMonitor<ArcanumSettings>(settings));
+    }
 
     private static ProviderSettings Provider(string model, int contextWindow = 128_000) =>
         new()

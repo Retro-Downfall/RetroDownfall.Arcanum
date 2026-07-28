@@ -1,6 +1,9 @@
 using System.Net;
+using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Resilience;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Resilience;
 
@@ -9,23 +12,12 @@ namespace RetroDownfall.Arcanum.Tests.Resilience;
 /// with an <c>Authorization</c> header (previously omitted, causing 401/403 probes to wrongly mark a
 /// healthy, key-required provider as down).
 /// </summary>
-[Collection("ProcessEnvironment")]
-public sealed class ProviderHealthProbeTests : IDisposable
+public sealed class ProviderHealthProbeTests
 {
-    private const string CredentialVariable = "ARCANUM_TEST_HEALTH_PROVIDER_KEY";
-    private readonly string? _originalCredential;
-
-    public ProviderHealthProbeTests()
-    {
-        _originalCredential =
-            System.Environment.GetEnvironmentVariable(CredentialVariable);
-        System.Environment.SetEnvironmentVariable(CredentialVariable, null);
-    }
 
     [Fact]
-    public async Task ProbeAsync_AttachesEnvironmentApiKey_AsBearerAuthorizationHeader()
+    public async Task ProbeAsync_AttachesResolvedApiKey_AsBearerAuthorizationHeader()
     {
-        System.Environment.SetEnvironmentVariable(CredentialVariable, "plain-test-key");
 
         RecordingHttpHandler handler = new(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)));
 
@@ -36,7 +28,7 @@ public sealed class ProviderHealthProbeTests : IDisposable
             Name = "keyed",
             Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1",
-            CredentialEnvironmentVariable = CredentialVariable,
+            ApiKey = "plain-test-key",
         };
 
         bool healthy = await probe.ProbeAsync(provider, CancellationToken.None);
@@ -66,7 +58,7 @@ public sealed class ProviderHealthProbeTests : IDisposable
             Name = "keyless",
             Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1",
-            CredentialEnvironmentVariable = CredentialVariable,
+            ApiKey = null,
         };
 
         bool healthy = await probe.ProbeAsync(provider, CancellationToken.None);
@@ -82,7 +74,6 @@ public sealed class ProviderHealthProbeTests : IDisposable
     [Fact]
     public async Task ProbeAsync_KeyRequiredProviderWithoutHeader_WouldHaveReportedUnhealthy()
     {
-        System.Environment.SetEnvironmentVariable(CredentialVariable, "secret-key");
 
         // Regression guard for the original bug: an endpoint that 401s absent a Bearer header, but
         // 200s with the correct one, must be reported healthy once the header is attached.
@@ -98,7 +89,7 @@ public sealed class ProviderHealthProbeTests : IDisposable
             Name = "keyed",
             Type = AiProviderKind.OpenAICompatible,
             Endpoint = "https://example.test/v1",
-            CredentialEnvironmentVariable = CredentialVariable,
+            ApiKey = "secret-key",
         };
 
         bool healthy = await probe.ProbeAsync(provider, CancellationToken.None);
@@ -133,16 +124,16 @@ public sealed class ProviderHealthProbeTests : IDisposable
 
     private static ProviderHealthProbe CreateProbe(HttpMessageHandler handler)
     {
+
+        IDataProtectionProvider protection = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector secretProtector = new(protection);
+
         return new ProviderHealthProbe(
-            new FakeHttpClientFactory(handler));
+            new FakeHttpClientFactory(handler),
+            secretProtector,
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
-    }
-
-    public void Dispose()
-    {
-        System.Environment.SetEnvironmentVariable(
-            CredentialVariable,
-            _originalCredential);
     }
 
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory

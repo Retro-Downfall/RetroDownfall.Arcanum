@@ -2,7 +2,6 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-/// <summary>Code-owned server lifecycle paths; this is not a public configuration root.</summary>
 public sealed record ServerSettings
 {
 

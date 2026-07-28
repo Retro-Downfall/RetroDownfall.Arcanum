@@ -37,14 +37,26 @@ public static class OutboundUrlGuard
         ValidateUrlAsync(url, allowPrivateAndLoopback: true, cancellationToken);
 
     /// <summary>
-    /// Validates public provider endpoints referenced by <see cref="ArcanumSettings"/> before
-    /// persistence. Secret-backed targets such as CommLink are resolved and validated only at
-    /// their dispatch boundary.
+    /// Validates outbound URLs referenced by <see cref="ArcanumSettings"/> before persistence.
     /// </summary>
     public static async Task<Result> ValidateArcanumSettingsAsync(
         ArcanumSettings settings,
         CancellationToken cancellationToken = default)
     {
+
+        CommLinkSettings? commLink = settings.CommLink;
+
+        if (!string.IsNullOrWhiteSpace(commLink?.WebhookUrl))
+        {
+
+            Result webhook = await ValidateUntrustedUrlAsync(commLink.WebhookUrl, cancellationToken).ConfigureAwait(false);
+
+            if (webhook.IsFailure)
+            {
+                return Result.Failure(new Error(BlockedErrorCode, $"CommLink.WebhookUrl: {webhook.Error.Message}"));
+            }
+
+        }
 
         ProviderSettings[] providers = settings.Providers ?? [];
 

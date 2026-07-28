@@ -56,36 +56,6 @@ internal sealed partial class ArcanumInternalToolServer
             .ConfigureAwait(false);
     }
 
-    private McpToolsCallResultWire? TryRejectIfFileExceedsReadLimit(string absolutePath, string toolName)
-    {
-        long maxBytes = _maxFileReadSizeBytes;
-
-        try
-        {
-            long length = new FileInfo(absolutePath).Length;
-
-            if (length > maxBytes)
-            {
-                return ToolError(
-                    $"{toolName}: file size ({length} bytes) exceeds the maximum read limit ({maxBytes} bytes).");
-            }
-        }
-        catch (IOException ex)
-        {
-            _logger?.LogError(ex, "{ToolName}: could not inspect file size.", toolName);
-
-            return ToolError($"{toolName}: could not inspect the file size.");
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            _logger?.LogError(ex, "{ToolName}: access denied inspecting file size.", toolName);
-
-            return ToolError($"{toolName}: access denied.");
-        }
-
-        return null;
-    }
-
     private static McpToolsCallResultWire? TryRejectIfWriteExceedsLimit(
         string content,
         int maxFileWriteMb,

@@ -42,8 +42,7 @@ public static class ArcanumSettingClamps
     {
         long spell = SpellMaxFileSizeBytes(spells.MaxFileSizeBytes);
 
-        long workspace = MaxFileReadSizeBytes(
-            ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
+        long workspace = MaxFileReadSizeBytes(workspaces.MaxFileReadSizeBytes);
 
         return Math.Min(spell, workspace);
     }
@@ -52,17 +51,16 @@ public static class ArcanumSettingClamps
     {
         long codexMax = CodexMaxSizeBytes(codex.MaxSizeBytes);
 
-        long workspace = MaxFileReadSizeBytes(
-            ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
+        long workspace = MaxFileReadSizeBytes(workspaces.MaxFileReadSizeBytes);
 
         return Math.Min(codexMax, workspace);
     }
 
     public static long EffectiveSpellMaxFileSizeBytes(ArcanumSettings settings) =>
-        EffectiveSpellMaxFileSizeBytes(ArcanumRuntimeDefaults.Spells, settings.Workspaces);
+        EffectiveSpellMaxFileSizeBytes(settings.Spells, settings.Workspaces);
 
     public static long EffectiveCodexMaxSizeBytes(ArcanumSettings settings) =>
-        EffectiveCodexMaxSizeBytes(ArcanumRuntimeDefaults.Codex, settings.Workspaces);
+        EffectiveCodexMaxSizeBytes(settings.Codex, settings.Workspaces);
 
     public static int MaxApiKeyHeaderUtf16Chars(int value) => Math.Clamp(value, 128, 8192);
 
@@ -87,6 +85,8 @@ public static class ArcanumSettingClamps
     public static int ReasoningBudgetTokens(int value) => Math.Clamp(value, 1, 2_097_152);
 
     public static int ExecuteCommandTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
+
+    public static int InferenceTimeoutSeconds(int value) => Math.Clamp(value, 5, 3600);
 
     public static int WorkspaceSearchMaxPatternChars(int value) => Math.Clamp(value, 1, 16_384);
 
@@ -139,6 +139,63 @@ public static class ArcanumSettingClamps
     public static int WorkspacePatchFuzzyMatchWindowLines(int value) => Math.Clamp(value, 0, 1_000);
 
     public static int WorkspacePatchMaxResultItems(int value) => Math.Clamp(value, 1, 10_000);
+
+    public static WorkspacePatchSettings NormalizeWorkspacePatchSettings(
+        WorkspacePatchSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        int maxElapsedMilliseconds =
+            WorkspacePatchMaxElapsedMilliseconds(
+                settings.MaxElapsedMilliseconds);
+        int rollbackReserveMilliseconds = Math.Min(
+            WorkspacePatchRollbackReserveMilliseconds(
+                settings.RollbackReserveMilliseconds),
+            maxElapsedMilliseconds - 1);
+
+        return new WorkspacePatchSettings
+        {
+            MaxPatchBytes =
+                WorkspacePatchMaxPatchBytes(
+                    settings.MaxPatchBytes),
+            MaxInputBytesPerFile =
+                WorkspacePatchMaxInputBytesPerFile(
+                    settings.MaxInputBytesPerFile),
+            MaxTotalInputBytes =
+                WorkspacePatchMaxTotalInputBytes(
+                    settings.MaxTotalInputBytes),
+            MaxOutputBytesPerFile =
+                WorkspacePatchMaxOutputBytesPerFile(
+                    settings.MaxOutputBytesPerFile),
+            MaxTotalOutputBytes =
+                WorkspacePatchMaxTotalOutputBytes(
+                    settings.MaxTotalOutputBytes),
+            MaxStagingBytesPerFile =
+                WorkspacePatchMaxStagingBytesPerFile(
+                    settings.MaxStagingBytesPerFile),
+            MaxTotalStagingBytes =
+                WorkspacePatchMaxTotalStagingBytes(
+                    settings.MaxTotalStagingBytes),
+            MaxElapsedMilliseconds = maxElapsedMilliseconds,
+            RollbackReserveMilliseconds =
+                rollbackReserveMilliseconds,
+            MaxFiles =
+                WorkspacePatchMaxFiles(
+                    settings.MaxFiles),
+            MaxHunks =
+                WorkspacePatchMaxHunks(
+                    settings.MaxHunks),
+            MaxLinesPerHunk =
+                WorkspacePatchMaxLinesPerHunk(
+                    settings.MaxLinesPerHunk),
+            FuzzyMatchWindowLines =
+                WorkspacePatchFuzzyMatchWindowLines(
+                    settings.FuzzyMatchWindowLines),
+            MaxResultItems =
+                WorkspacePatchMaxResultItems(
+                    settings.MaxResultItems),
+        };
+    }
 
     public const int WorkspaceCheckCleanupGraceSeconds = 30;
 
@@ -218,6 +275,8 @@ public static class ArcanumSettingClamps
 
     public static int DaemonExecutionHistoryLimit(int value) => Math.Clamp(value, 10, 10_000);
 
+    public static int MaxToolInferenceRounds(int value) => Math.Clamp(value, 1, 100);
+
     /// <summary>Tokens reserved for model output during context preflight when MaxOutputTokens is unset.</summary>
     public static int ReservedOutputTokens(int value) => Math.Clamp(value, 0, 128_000);
 
@@ -284,13 +343,33 @@ public static class ArcanumSettingClamps
 
     public static int MaxConcurrentApprentices(int value) => Math.Clamp(value, 1, 50);
 
-    public static int MaxConcurrentApprenticeBranches(int value) => Math.Clamp(value, 1, 64);
-
-    public static int MaxConcurrentA2ATasks(int value) => Math.Clamp(value, 1, 500);
+    public static int StepTimeoutMinutes(int value) => Math.Clamp(value, 5, 120);
 
     public static int ChronicleChannelCapacity(int value) => Math.Clamp(value, 100, 10_000);
 
+    public static int MaxSimulacra(int value) => Math.Clamp(value, 1, 10);
+
+    public static int MaxRunSteps(int value) => Math.Clamp(value, 1, 500);
+
+    public static int MaxRunDurationMinutes(int value) => Math.Clamp(value, 5, 10_080);
+
+    public static int MaxReweavesPerRun(int value) => Math.Clamp(value, 0, 100);
+
     public static int MaxPendingStarts(int value) => Math.Clamp(value, 1, 1_000);
+
+    public static int MaxDelegationDepth(int value) => Math.Clamp(value, 0, 20);
+
+    public static int MaxDescendantsPerRoot(int value) => Math.Clamp(value, 1, 200);
+
+    public static int MaxExternalTasks(int value) => Math.Clamp(value, 1, 500);
+
+    public static int ExternalTaskTimeoutMinutes(int value) => Math.Clamp(value, 5, 1_440);
+
+    public static int MaxStepRetries(int value) => Math.Clamp(value, 0, 10);
+
+    public static int RetryBackoffSeconds(int value) => Math.Clamp(value, 1, 300);
+
+    public static int RetryBackoffMaxSeconds(int value) => Math.Clamp(value, 1, 3600);
 
     public static int SanctumMaxProcessMemoryMb(int value) => Math.Clamp(value, 64, 8192);
 
@@ -310,7 +389,15 @@ public static class ArcanumSettingClamps
 
     public static int JsonSchemaMaxDepth(int value) => Math.Clamp(value, 1, 50);
 
+    public static int StructuredOutputMaxValidationRetries(int value) => Math.Clamp(value, 0, 5);
+
     public static int SanctumMaxBreachCount(int value) => Math.Clamp(value, 100, 100_000);
+
+    public static int MaxInquisitorsPerTrial(int value) => Math.Clamp(value, 1, 200);
+
+    public static int SemanticJudgeMaxTokens(int value) => Math.Clamp(value, 1, 256);
+
+    public static int SemanticJudgeTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
     public static int MaxActiveWards(int value) => Math.Clamp(value, 1, 500);
 
@@ -342,6 +429,8 @@ public static class ArcanumSettingClamps
 
     public static int MaxPingPromptChars(int value) => Math.Clamp(value, 1, 262_144);
 
+    public static int MaxPlanSteps(int value) => Math.Clamp(value, 1, 200);
+
     public static int MaxDependencies(int value) => Math.Clamp(value, 0, 100);
 
     public static int MaxDeclaredTools(int value) => Math.Clamp(value, 0, 256);
@@ -357,6 +446,8 @@ public static class ArcanumSettingClamps
     public static int HealthRecoveryProbeIntervalSeconds(int value) => Math.Clamp(value, 5, 3_600);
 
     public static int HealthFailureThreshold(int value) => Math.Clamp(value, 1, 100);
+
+    public static int MaxFallbackAttempts(int value) => Math.Clamp(value, 1, 10);
 
     public static int HealthProbeTimeoutSeconds(int value) => Math.Clamp(value, 1, 30);
 

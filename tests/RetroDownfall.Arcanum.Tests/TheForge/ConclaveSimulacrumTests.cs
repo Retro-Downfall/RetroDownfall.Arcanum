@@ -10,11 +10,28 @@ namespace RetroDownfall.Arcanum.Tests.TheForge;
 public sealed class ConclaveSimulacrumTests
 {
 
-    [Fact]
-    public void Defaults_ConclaveDisabled()
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(1, 1)]
+    [InlineData(3, 3)]
+    [InlineData(10, 10)]
+    [InlineData(50, 10)]
+    public void MaxSimulacra_ClampsToOneThroughTen(int value, int expected)
     {
-        Assert.False(ArcanumRuntimeDefaults.Conclave.Enabled);
-        Assert.False(new ArcanumSettings().Features.Conclave);
+
+        Assert.Equal(expected, ArcanumSettingClamps.MaxSimulacra(value));
+
+    }
+
+    [Fact]
+    public void Defaults_ConclaveDisabled_AndMaxSimulacraThree()
+    {
+
+        Assert.False(new ConclaveSettings().Enabled);
+
+        Assert.Equal(3, new ApprenticeSettings().MaxSimulacra);
+
+        Assert.False(new ArcanumSettings().Conclave.Enabled);
 
     }
 
@@ -107,15 +124,14 @@ public sealed class ConclaveSimulacrumTests
     }
 
     [Fact]
-    public async Task CastAsync_DeepLineage_AllowsDelegation()
+    public async Task CastAsync_WhenDepthExceeded_Fails()
     {
 
         FakeApprenticeRepository repo = new();
 
         Guid root = Guid.NewGuid();
+
         Guid child = Guid.NewGuid();
-        Guid grandchild = Guid.NewGuid();
-        Guid greatGrandchild = Guid.NewGuid();
 
         repo.Items.Add(new Apprentice
         {
@@ -140,44 +156,26 @@ public sealed class ConclaveSimulacrumTests
             UpdatedAt = DateTimeOffset.UtcNow,
         });
 
-        repo.Items.Add(new Apprentice
-        {
-            Id = grandchild,
-            Name = "Grandchild",
-            Goal = "Grandchild",
-            Status = ApprenticeStatus.Running.ToString(),
-            WorkspacePath = "/tmp/ws",
-            ParentApprenticeId = child,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        });
-
-        repo.Items.Add(new Apprentice
-        {
-            Id = greatGrandchild,
-            Name = "Great-grandchild",
-            Goal = "Great-grandchild",
-            Status = ApprenticeStatus.Running.ToString(),
-            WorkspacePath = "/tmp/ws",
-            ParentApprenticeId = grandchild,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        });
-
         ConclaveArchmage archmage = new(repo, Monitor(EnabledSettings()));
 
         Result<Apprentice> result = await archmage.CastAsync(
-            new ConclaveCastRequest("Too deep", WorkspacePath: "/tmp/ws", ParentApprenticeId: greatGrandchild));
+            new ConclaveCastRequest("Too deep", WorkspacePath: "/tmp/ws", ParentApprenticeId: child));
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal(greatGrandchild, result.Value.ParentApprenticeId);
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Apprentice.ConclaveDepthExceeded", result.Error.Code);
 
     }
 
     private static ArcanumSettings EnabledSettings() =>
         new()
         {
-            Features = new FeatureSettings { Conclave = true },
+            Conclave = new ConclaveSettings
+            {
+                Enabled = true,
+                MaxDelegationDepth = 1,
+                MaxDescendantsPerRoot = 16,
+            },
         };
 
     private static IOptionsMonitor<ArcanumSettings> Monitor(ArcanumSettings settings) =>

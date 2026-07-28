@@ -5,11 +5,11 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Compendium.Ux.Services;
 
 /// <summary>
-/// Generates a self-signed <c>localhost</c> development certificate and owner-only PEM private key
-/// under <see cref="ArcanumPaths.CertificatesDirectory"/>. The certificate is a leaf (CA=false) with
-/// <c>serverAuth</c> EKU and localhost SANs, suitable for local HTTPS. It is <em>not</em> trusted by
-/// any store — browsers and clients will warn — and is intended for local development, never
-/// production.
+/// Generates a self-signed <c>localhost</c> development certificate and writes it as a
+/// password-protected PKCS#12 (PFX) bundle under <see cref="ArcanumPaths.CertificatesDirectory"/>,
+/// owner-only. The certificate is a leaf (CA=false) with <c>serverAuth</c> EKU and localhost SANs,
+/// suitable for local HTTPS. It is <em>not</em> trusted by any store — browsers and clients will warn
+/// — and is intended for local development, never production.
 /// </summary>
 public sealed class LocalCertificateGenerator
 {
@@ -61,43 +61,57 @@ public sealed class LocalCertificateGenerator
 
         using X509Certificate2 certificate = request.CreateSelfSigned(notBefore, notAfter);
 
-        string stem = $"arcanum-localhost-{now:yyyyMMddHHmmss}";
+        string password = GeneratePassword();
 
-        string certificatePath = Path.Combine(certificatesDirectory, stem + ".crt");
+        byte[] pfxBytes = certificate.Export(X509ContentType.Pkcs12, password);
 
-        string privateKeyPath = Path.Combine(certificatesDirectory, stem + ".key");
+        string fileName = $"arcanum-localhost-{now:yyyyMMddHHmmss}.pfx";
 
-        File.WriteAllText(certificatePath, certificate.ExportCertificatePem());
+        string certificatePath = Path.Combine(certificatesDirectory, fileName);
 
-        File.WriteAllText(privateKeyPath, rsa.ExportPkcs8PrivateKeyPem());
+        File.WriteAllBytes(certificatePath, pfxBytes);
+
+        CryptographicOperations.ZeroMemory(pfxBytes);
 
         SecureFilePermissions.ApplyOwnerOnlyFile(certificatePath);
 
-        SecureFilePermissions.ApplyOwnerOnlyFile(privateKeyPath);
-
         return new LocalCertificateResult(
             certificatePath,
-            privateKeyPath,
+            password,
             notAfter,
             certificate.Thumbprint,
             [
                 "This certificate is self-signed. Clients may warn until you trust it manually. It is not installed into your OS trust store.",
                 "The generated certificate is for local loopback development only (SANs: localhost, 127.0.0.1, ::1). If ListenAny is enabled and remote clients connect by hostname or IP, provide a certificate whose SAN includes that hostname or IP.",
                 $"The certificate is valid until {notAfter:yyyy-MM-dd}. Regenerate it before it expires.",
-                "The generated PEM private key is owner-only. Keep it private and do not copy it into configuration.",
+                "The generated password is stored encrypted in arcanum.json. Keep the PFX file owner-only and treat the password as a secret.",
             ]);
+
+    }
+
+    private static string GeneratePassword()
+    {
+
+        byte[] entropy = RandomNumberGenerator.GetBytes(32);
+
+        string password = Convert.ToBase64String(entropy);
+
+        CryptographicOperations.ZeroMemory(entropy);
+
+        return password;
 
     }
 
 }
 
 /// <summary>
-/// Result of local certificate generation: owner-only certificate/private-key paths, expiration,
+/// Result of a local certificate generation: the on-disk PFX path, the randomly generated PFX
+/// password (plaintext — the caller is responsible for encrypting it at rest), expiration,
 /// thumbprint, and operator warnings to surface in the UI.
 /// </summary>
 public sealed record LocalCertificateResult(
     string CertificatePath,
-    string PrivateKeyPath,
+    string Password,
     DateTimeOffset ExpiresAt,
     string Thumbprint,
     IReadOnlyList<string> Warnings);

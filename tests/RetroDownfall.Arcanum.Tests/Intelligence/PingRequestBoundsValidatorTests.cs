@@ -10,10 +10,13 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_RejectsOversizedPrompt()
     {
-        ArcanumSettings settings = new();
-        int maxPromptChars = ArcanumSettingClamps.MaxPingPromptChars(
-            ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars);
-        PingRequest request = new(Prompt: new string('x', maxPromptChars + 1));
+
+        ArcanumSettings settings = new()
+        {
+            Intelligence = new IntelligenceSettings { MaxPingPromptChars = 8 },
+        };
+
+        PingRequest request = new(Prompt: new string('x', 9));
 
         Result result = PingRequestBoundsValidator.Validate(request, settings);
 
@@ -26,14 +29,19 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_RejectsTooManyStatelessMessages()
     {
-        ArcanumSettings settings = new();
-        int maxMessages = ArcanumSettingClamps.MaxStatelessMessages(
-            ArcanumRuntimeDefaults.Intelligence.MaxStatelessMessages);
+
+        ArcanumSettings settings = new()
+        {
+            Intelligence = new IntelligenceSettings { MaxStatelessMessages = 1 },
+        };
+
         PingRequest request = new(
             Prompt: string.Empty,
-            StatelessMessages: Enumerable.Range(0, maxMessages + 1)
-                .Select(static index => new CoreChatMessage("user", index.ToString()))
-                .ToList());
+            StatelessMessages:
+            [
+                new CoreChatMessage("user", "one"),
+                new CoreChatMessage("user", "two"),
+            ]);
 
         Result result = PingRequestBoundsValidator.Validate(request, settings);
 
@@ -46,12 +54,15 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_RejectsOversizedStatelessMessageContent()
     {
-        ArcanumSettings settings = new();
-        int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
-            ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
+
+        ArcanumSettings settings = new()
+        {
+            Sessions = new SessionSettings { MaxEntryContentBytes = 1024 },
+        };
+
         PingRequest request = new(
             Prompt: string.Empty,
-            StatelessMessages: [new CoreChatMessage("user", new string('x', maxEntryBytes + 1))]);
+            StatelessMessages: [new CoreChatMessage("user", new string('x', 1025))]);
 
         Result result = PingRequestBoundsValidator.Validate(request, settings);
 
@@ -64,12 +75,13 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void ValidateOpenApiMessageCount_RejectsExcessMessages()
     {
-        ArcanumSettings settings = new();
-        int maxMessages = ArcanumSettingClamps.MaxOpenApiMessages(
-            ArcanumRuntimeDefaults.Intelligence.MaxOpenApiMessages);
-        Result result = PingRequestBoundsValidator.ValidateOpenApiMessageCount(
-            maxMessages + 1,
-            settings);
+
+        ArcanumSettings settings = new()
+        {
+            Intelligence = new IntelligenceSettings { MaxOpenApiMessages = 2 },
+        };
+
+        Result result = PingRequestBoundsValidator.ValidateOpenApiMessageCount(3, settings);
 
         Assert.True(result.IsFailure);
 
@@ -80,13 +92,18 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_StatelessContent_MeasuredInUtf8BytesNotChars()
     {
-        ArcanumSettings settings = new();
-        int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
-            ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
-        int characterCount = (maxEntryBytes / 2) + 1;
+
+        // MaxEntryContentBytes clamps to a 1024 floor, so size the payload around that.
+        ArcanumSettings settings = new()
+        {
+            Sessions = new SessionSettings { MaxEntryContentBytes = 1024 },
+        };
+
+        // 600 'é' = 600 UTF-16 chars (the old char check, 600 <= 1024, passed) but 1200 UTF-8 bytes
+        // (the new byte check, 1200 > 1024, must reject).
         PingRequest request = new(
             Prompt: string.Empty,
-            StatelessMessages: [new CoreChatMessage("user", new string('\u00e9', characterCount))]);
+            StatelessMessages: [new CoreChatMessage("user", new string('\u00e9', 600))]);
 
         Result result = PingRequestBoundsValidator.Validate(request, settings);
 
@@ -99,9 +116,15 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_ToolCallArguments_CountTowardEntryBudget()
     {
-        ArcanumSettings settings = new();
-        int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
-            ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
+
+        ArcanumSettings settings = new()
+        {
+            Sessions = new SessionSettings { MaxEntryContentBytes = 1024 },
+        };
+
+        // Empty Content but a large tool-call ArgumentsJson payload (> the 1024 floor): the old
+        // check (Content.Length == 0) bypassed the cap; the byte budget must now include tool-call
+        // arguments.
         PingRequest request = new(
             Prompt: string.Empty,
             StatelessMessages:
@@ -109,13 +132,7 @@ public sealed class PingRequestBoundsValidatorTests
                 new CoreChatMessage(
                     "assistant",
                     string.Empty,
-                    ToolCalls:
-                    [
-                        new CoreToolCall(
-                            "call-1",
-                            "fn",
-                            new string('x', maxEntryBytes + 1)),
-                    ]),
+                    ToolCalls: [new CoreToolCall("call-1", "fn", new string('x', 2000))]),
             ]);
 
         Result result = PingRequestBoundsValidator.Validate(request, settings);
@@ -129,12 +146,13 @@ public sealed class PingRequestBoundsValidatorTests
     [Fact]
     public void Validate_RejectsOversizedAdditionalSystemPrompt()
     {
-        ArcanumSettings settings = new();
-        int maxPromptChars = ArcanumSettingClamps.MaxPingPromptChars(
-            ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars);
-        PingRequest request = new(
-            Prompt: "hi",
-            AdditionalSystemPrompt: new string('x', maxPromptChars + 1));
+
+        ArcanumSettings settings = new()
+        {
+            Intelligence = new IntelligenceSettings { MaxPingPromptChars = 8 },
+        };
+
+        PingRequest request = new(Prompt: "hi", AdditionalSystemPrompt: new string('x', 9));
 
         Result result = PingRequestBoundsValidator.Validate(request, settings);
 
@@ -150,9 +168,10 @@ public sealed class PingRequestBoundsValidatorTests
 
         // W6.5: the per-message content-part cap (previously only enforced on /v1) now also bounds
         // the native stateless path.
-        ArcanumSettings settings = new();
-        int maxContentParts = ArcanumSettingClamps.MaxContentPartsPerMessage(
-            ArcanumRuntimeDefaults.Intelligence.MaxContentPartsPerMessage);
+        ArcanumSettings settings = new()
+        {
+            Intelligence = new IntelligenceSettings { MaxContentPartsPerMessage = 2 },
+        };
 
         PingRequest request = new(
             Prompt: string.Empty,
@@ -161,10 +180,12 @@ public sealed class PingRequestBoundsValidatorTests
                 new CoreChatMessage(
                     "user",
                     string.Empty,
-                    ContentParts: Enumerable.Range(0, maxContentParts + 1)
-                        .Select(static index =>
-                            new CoreContentPart("text", index.ToString(), null, null))
-                        .ToList()),
+                    ContentParts:
+                    [
+                        new CoreContentPart("text", "a", null, null),
+                        new CoreContentPart("text", "b", null, null),
+                        new CoreContentPart("text", "c", null, null),
+                    ]),
             ]);
 
         Result result = PingRequestBoundsValidator.Validate(request, settings);
@@ -176,10 +197,10 @@ public sealed class PingRequestBoundsValidatorTests
     }
 
     [Fact]
-    public void ValidateOpenApiMessageCount_NullFeatures_DoesNotThrow()
+    public void ValidateOpenApiMessageCount_NullIntelligence_DoesNotThrow()
     {
 
-        ArcanumSettings settings = new() { Features = null! };
+        ArcanumSettings settings = new() { Intelligence = null! };
 
         Result result = PingRequestBoundsValidator.ValidateOpenApiMessageCount(1, settings);
 

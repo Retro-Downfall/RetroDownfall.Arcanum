@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
@@ -10,6 +11,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// <summary>
 /// Fan-out hub for session entry events, one bounded channel per subscriber per session.
 /// </summary>
+/// <remarks>
+/// Per-session hub capacity is read from <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> each
+/// time a hub is first created. Existing hubs retain their original capacity; a config reload affects only
+/// sessions whose event hub has not been created yet. To pick up a new
+/// <c>Apprentices.ChronicleChannelCapacity</c> for an existing session, a restart is required.
+/// </remarks>
 public sealed class SessionEventHub
 {
 
@@ -17,10 +24,14 @@ public sealed class SessionEventHub
 
     private readonly Lock _lifecycleLock = new();
 
+    private readonly IOptionsMonitor<ArcanumSettings> _options;
+
     private readonly ILogger<SessionEventHub> _logger;
 
-    public SessionEventHub(ILogger<SessionEventHub> logger)
+    public SessionEventHub(IOptionsMonitor<ArcanumSettings> options, ILogger<SessionEventHub> logger)
     {
+        _options = options;
+
         _logger = logger;
     }
 
@@ -82,7 +93,7 @@ public sealed class SessionEventHub
     private PerSessionHub GetOrCreateHub(Guid sessionId)
     {
         int capacity = ArcanumSettingClamps.ChronicleChannelCapacity(
-            ArcanumRuntimeDefaults.Apprentices.ChronicleChannelCapacity);
+            _options.CurrentValue.Apprentices?.ChronicleChannelCapacity ?? new ApprenticeSettings().ChronicleChannelCapacity);
 
         return _hubs.GetOrAdd(sessionId, _ => new PerSessionHub(capacity));
     }

@@ -33,7 +33,10 @@ public sealed class SessionMemoryManagementEndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                Features = settings.Features with { MemoryManagement = false },
+                Sessions = (settings.Sessions ?? new SessionSettings()) with
+                {
+                    AllowMemoryManagement = false,
+                },
             },
         };
 
@@ -66,7 +69,10 @@ public sealed class SessionMemoryManagementEndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                Features = settings.Features with { MemoryManagement = false },
+                Sessions = (settings.Sessions ?? new SessionSettings()) with
+                {
+                    AllowMemoryManagement = false,
+                },
             },
         };
 
@@ -100,7 +106,10 @@ public sealed class SessionMemoryManagementEndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                Features = settings.Features with { MemoryManagement = false },
+                Sessions = (settings.Sessions ?? new SessionSettings()) with
+                {
+                    AllowMemoryManagement = false,
+                },
             },
         };
 
@@ -166,6 +175,53 @@ public sealed class SessionMemoryManagementEndpointTests
     }
 
     [SkippableFact]
+    public async Task PinSessionEntry_returns_409_when_max_pinned_exceeded()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory limitedFactory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                Sessions = (settings.Sessions ?? new SessionSettings()) with
+                {
+                    AllowMemoryManagement = true,
+                    MaxPinnedEntries = 1,
+                },
+            },
+        };
+
+        HttpClient client = limitedFactory.CreateAuthenticatedClient();
+
+        (Guid sessionId, Guid entryId1) = await CreateSessionAndAppendEntryAsync(client);
+        Guid entryId2 = await AppendEntryAsync(client, sessionId);
+
+        HttpResponseMessage firstPin = await client.PostAsync(
+            $"/api/sessions/{sessionId:D}/entries/{entryId1:D}/pin",
+            null);
+
+        Assert.Equal(HttpStatusCode.OK, firstPin.StatusCode);
+
+        HttpResponseMessage secondPin = await client.PostAsync(
+            $"/api/sessions/{sessionId:D}/entries/{entryId2:D}/pin",
+            null);
+
+        Assert.Equal(HttpStatusCode.Conflict, secondPin.StatusCode);
+
+        string json = await secondPin.Content.ReadAsStringAsync();
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+
+        Assert.False(body!.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Session.TooManyPinned, body.Error?.Code);
+
+    }
+
+    [SkippableFact]
     public async Task DeleteSessionEntry_removes_entry()
     {
 
@@ -218,14 +274,18 @@ public sealed class SessionMemoryManagementEndpointTests
 
     }
 
-    private static ArcanumWebApplicationFactory CreateEnabledFactory()
+    private static ArcanumWebApplicationFactory CreateEnabledFactory(int maxPinnedEntries = 5)
     {
 
         return new ArcanumWebApplicationFactory
         {
             SettingsOverride = settings => settings with
             {
-                Features = settings.Features with { MemoryManagement = true },
+                Sessions = (settings.Sessions ?? new SessionSettings()) with
+                {
+                    AllowMemoryManagement = true,
+                    MaxPinnedEntries = maxPinnedEntries,
+                },
             },
         };
 

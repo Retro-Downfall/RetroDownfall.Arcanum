@@ -2,10 +2,10 @@ using Avalonia.Controls;
 
 namespace RetroDownfall.Compendium.Ux.Views;
 
-public partial class DaemonPage : UserControl
+public partial class ScryingPage : UserControl
 {
 
-    public DaemonPage()
+    public ScryingPage()
     {
 
         InitializeComponent();

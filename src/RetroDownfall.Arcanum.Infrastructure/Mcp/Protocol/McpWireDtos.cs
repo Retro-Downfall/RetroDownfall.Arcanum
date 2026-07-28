@@ -313,8 +313,9 @@ public sealed record AdjustInitiativeArgs
 
 /// <summary>
 /// Arguments accepted by the in-process <c>send_commlink_alert</c> tool (Comm Link alerts).
+/// Legacy tools/call alias <c>use_commlink</c> accepts the same shape.
 /// </summary>
-public sealed record SendCommLinkAlertParams
+public sealed record UseCommlinkParams
 {
 
     [JsonPropertyName("title")]

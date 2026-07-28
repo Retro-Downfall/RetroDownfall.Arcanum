@@ -7,8 +7,7 @@ public interface IHostWorkspaceContext
 {
 
     /// <summary>
-    /// Normalized absolute workspace path from <c>Arcanum:Workspaces:DefaultRoot</c>, or
-    /// <c>null</c> when unset.
+    /// Normalized absolute workspace path from <c>Arcanum:Host:Workspace</c>, or <c>null</c> when unset.
     /// </summary>
     string? WorkspacePath { get; }
 

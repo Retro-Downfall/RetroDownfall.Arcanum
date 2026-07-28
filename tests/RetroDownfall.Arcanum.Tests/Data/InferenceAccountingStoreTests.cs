@@ -128,10 +128,7 @@ public sealed class InferenceAccountingStoreTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-            Cost = new CostSettings
-            {
-                Budget = new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 1m },
-            },
+            Budget = new BudgetSettings { Enabled = true, DailyLimitUsd = 1m },
         };
 
         BudgetReservationService reservations = new(
@@ -225,10 +222,7 @@ public sealed class InferenceAccountingStoreTests : IAsyncLifetime
             _db!,
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
             {
-                Cost = new CostSettings
-                {
-                    Budget = new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 100m },
-                },
+                Budget = new BudgetSettings { Enabled = true, DailyLimitUsd = 100m },
             }));
 
         decimal committed = await reservations.GetTodayCommittedSpendAsync();

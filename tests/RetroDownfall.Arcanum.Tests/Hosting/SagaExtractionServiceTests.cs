@@ -476,14 +476,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         ArcanumSettings disabledSettings = new()
         {
-            Features = new FeatureSettings { Embeddings = false, Saga = false },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Dimensions = TestDimensions,
-                },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = false, SagaEnabled = false, Dimensions = TestDimensions },
         };
 
         ServiceCollection services = new();
@@ -559,16 +552,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             _db!,
             new WeaveIndexAvailability(),
             new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings
-                {
-                    Integrations = new IntegrationSettings
-                    {
-                        Embeddings = new EmbeddingIntegrationSettings
-                        {
-                            Dimensions = TestDimensions,
-                        },
-                    },
-                }));
+                new ArcanumSettings { Embeddings = new EmbeddingSettings { Dimensions = TestDimensions } }));
 
     /// <summary>Builds a <see cref="TestDimensions"/>-length vector with <paramref name="leading"/> in its first slots and zeros elsewhere.</summary>
     private static float[] Vec(params float[] leading)
@@ -589,14 +573,14 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         int maxMemoriesPerSession = 50)
     {
 
-        EmbeddingSettings embeddings = ArcanumRuntimeDefaults.Embeddings with
+        EmbeddingSettings embeddings = new()
         {
             Enabled = true,
             SagaEnabled = true,
             Provider = "test",
             Model = "test-embed",
             Dimensions = TestDimensions,
-            Saga = ArcanumRuntimeDefaults.Embeddings.Saga with
+            Saga = new SagaEmbeddingSettings
             {
                 ExtractionEnabled = true,
                 MaxMemoriesTotal = maxMemoriesTotal,
@@ -605,25 +589,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             },
         };
 
-        ArcanumSettings settings = new()
-        {
-            FastModel = "fast-test-model",
-            Features = new FeatureSettings
-            {
-                Embeddings = true,
-                Saga = true,
-                SagaExtraction = true,
-            },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "test",
-                    Model = "test-embed",
-                    Dimensions = TestDimensions,
-                },
-            },
-        };
+        ArcanumSettings settings = new() { Embeddings = embeddings, FastModel = "fast-test-model" };
 
         ServiceCollection services = new();
 

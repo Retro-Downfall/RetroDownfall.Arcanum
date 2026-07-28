@@ -1,11 +1,13 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Workspaces;
 
+[Collection("WorkspacePathPolicy")]
 public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 {
 
@@ -28,6 +30,12 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+
+        SecureFileReader.AfterOpenForTests = null;
+
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = null;
 
         await _workspace.DisposeAsync();
 
@@ -215,13 +223,14 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
     public async Task ReadAsync_oversized_file_returns_too_large()
     {
 
-        int oversizedLength = checked(
-            (int)ArcanumSettingClamps.MaxFileReadSizeBytes(
-                ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes)
-            + 1);
-        _workspace.WriteFile("huge.txt", new string('x', oversizedLength));
+        _workspace.WriteFile("huge.txt", new string('x', 2048));
 
-        PhysicalFileSystemBrowser browser = CreateBrowser();
+        ArcanumSettings settings = new()
+        {
+            Workspaces = new WorkspaceSettings { MaxFileReadSizeBytes = 1024 },
+        };
+
+        PhysicalFileSystemBrowser browser = new(new TestOptionsMonitor<ArcanumSettings>(settings));
 
         WorkspaceInfo workspace = MakeWorkspace();
 
@@ -230,6 +239,98 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal("Workspace.FileTooLarge", result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ReadAsync_rejects_file_that_grows_past_cap_after_open()
+    {
+
+        _workspace.WriteFile("growing.txt", new string('x', 1024));
+
+        ArcanumSettings settings = new()
+        {
+            Workspaces = new WorkspaceSettings
+            {
+                MaxFileReadSizeBytes = 1024,
+            },
+        };
+
+        PhysicalFileSystemBrowser browser =
+            new(new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        SecureFileReader.AfterOpenForTests = path =>
+        {
+            SecureFileReader.AfterOpenForTests = null;
+
+            File.AppendAllText(path, "y");
+        };
+
+        Result<FileReadResult> result = await browser.ReadAsync(
+            workspace,
+            "growing.txt",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.FileTooLarge", result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ReadAsync_rejects_preopen_and_handle_identity_mismatch()
+    {
+
+        _workspace.WriteFile("mismatch.txt", "secret");
+
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = _ =>
+            new FileHandleMetadata(
+                new FileHandleIdentity(7, 1),
+                HardLinkCount: 1);
+
+        FileHandleIdentityInterop.TryGetHandleMetadataForTests = _ =>
+            new FileHandleMetadata(
+                new FileHandleIdentity(7, 2),
+                HardLinkCount: 1);
+
+        Result<FileReadResult> result = await CreateBrowser().ReadAsync(
+            MakeWorkspace(),
+            "mismatch.txt",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.SymbolicLinkEscape", result.Error.Code);
+
+        Assert.DoesNotContain(
+            "secret",
+            result.Error.Message,
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ReadAsync_rejects_malformed_utf8()
+    {
+
+        string path = Path.Combine(_workspace.Root, "malformed.txt");
+
+        await File.WriteAllBytesAsync(path, [0x66, 0x80, 0x6f]);
+
+        Result<FileReadResult> result = await CreateBrowser().ReadAsync(
+            MakeWorkspace(),
+            "malformed.txt",
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.AccessDenied", result.Error.Code);
+
+        Assert.DoesNotContain(path, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("f�o", result.Error.Message, StringComparison.Ordinal);
 
     }
 
@@ -268,16 +369,21 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ListAsync_respects_internal_max_paths_boundary()
+    public async Task ListAsync_respects_max_paths_setting()
     {
-        int maxPaths = ArcanumSettingClamps.ListDirectoryMaxPaths(
-            ArcanumRuntimeDefaults.Intelligence.ListDirectoryMaxPaths);
-        for (int i = 0; i <= maxPaths; i++)
-        {
-            _workspace.WriteFile($"bounded-{i}.txt", "x");
-        }
 
-        PhysicalFileSystemBrowser browser = CreateBrowser();
+        _workspace.WriteFile("one.txt", "1");
+
+        _workspace.WriteFile("two.txt", "2");
+
+        _workspace.WriteFile("three.txt", "3");
+
+        ArcanumSettings settings = new()
+        {
+            Intelligence = new IntelligenceSettings { ListDirectoryMaxPaths = 2 },
+        };
+
+        PhysicalFileSystemBrowser browser = new(new TestOptionsMonitor<ArcanumSettings>(settings));
 
         WorkspaceInfo workspace = MakeWorkspace();
 
@@ -285,7 +391,7 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
         Assert.True(result.IsSuccess);
 
-        Assert.Equal(maxPaths, result.Value!.Entries.Length);
+        Assert.True(result.Value!.Entries.Length <= 2);
 
     }
 

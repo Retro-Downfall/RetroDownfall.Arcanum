@@ -36,8 +36,11 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
 
     [Fact]
 
-    public async Task RoundTrip_preserves_provider_credential_reference_and_host_port()
+    public async Task RoundTrip_preserves_provider_api_key_and_host_port()
     {
+
+        ArcanumDataProtectionSecretProtector protector = new();
+
         ArcanumSettings seed = new()
 
         {
@@ -57,7 +60,7 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
 
                     Endpoint = "https://api.openai.com/v1",
 
-                    CredentialEnvironmentVariable = "OPENAI_API_KEY",
+                    ApiKey = "sk-test",
 
                     Models = ["gpt-4o"],
 
@@ -66,16 +69,10 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
                 },
 
             ],
-            Integrations = new IntegrationSettings
-            {
-                CommLink = new CommLinkIntegrationSettings
-                {
-                    WebhookUrlEnvironmentVariable =
-                        "ARCANUM_COMMLINK_WEBHOOK_URL",
-                },
-            },
 
         };
+
+        ArcanumSettings encryptedSeed = protector.EncryptProviderKeys(seed);
 
         string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
 
@@ -84,10 +81,10 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
         await File.WriteAllTextAsync(
             configPath,
             JsonSerializer.Serialize(
-                new ArcanumConfigurationFile { Arcanum = seed },
+                new ArcanumConfigurationFile { Arcanum = encryptedSeed },
                 ConfigurationJsonContext.Default.ArcanumConfigurationFile));
 
-        using ArcanumConfigurationStore store = new();
+        using ArcanumConfigurationStore store = new(protector);
 
         ArcanumSettings read = await store.ReadAsync(CancellationToken.None);
 
@@ -95,12 +92,7 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
 
         Assert.Single(read.Providers);
 
-        Assert.Equal(
-            "OPENAI_API_KEY",
-            read.Providers[0].CredentialEnvironmentVariable);
-        Assert.Equal(
-            "ARCANUM_COMMLINK_WEBHOOK_URL",
-            read.Integrations.CommLink.WebhookUrlEnvironmentVariable);
+        Assert.Equal("sk-test", read.Providers[0].ApiKey);
 
         ArcanumSettings edited = read with
 
@@ -120,83 +112,14 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
 
         Assert.Single(reread.Providers);
 
-        Assert.Equal(
-            "OPENAI_API_KEY",
-            reread.Providers[0].CredentialEnvironmentVariable);
+        Assert.Equal("sk-test", reread.Providers[0].ApiKey);
 
         string savedJson = await File.ReadAllTextAsync(configPath);
 
-        Assert.Contains("OPENAI_API_KEY", savedJson, StringComparison.Ordinal);
-        Assert.Contains(
-            "ARCANUM_COMMLINK_WEBHOOK_URL",
-            savedJson,
-            StringComparison.Ordinal);
+        Assert.Contains("dp:v1:", savedJson, StringComparison.Ordinal);
 
-        Assert.DoesNotContain("\"apiKey\"", savedJson, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("\"webhookUrl\"", savedJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sk-test", savedJson, StringComparison.Ordinal);
 
-    }
-
-    [Fact]
-    public async Task ReadAsync_rejects_obsolete_provider_secret_values()
-    {
-        string configPath = Path.Combine(
-            ArcanumPaths.GrimoireDirectory,
-            "arcanum.json");
-        _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
-        await File.WriteAllTextAsync(
-            configPath,
-            """
-            {
-              "Arcanum": {
-                "providers": [
-                  {
-                    "name": "old",
-                    "apiKey": "must-not-be-accepted",
-                    "models": ["model"]
-                  }
-                ]
-              }
-            }
-            """);
-        using ArcanumConfigurationStore store = new();
-
-        InvalidOperationException error =
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                () => store.ReadAsync(CancellationToken.None));
-
-        Assert.Contains(
-            "CredentialEnvironmentVariable",
-            error.Message,
-            StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            "must-not-be-accepted",
-            error.Message,
-            StringComparison.Ordinal);
-    }
-
-    [Theory]
-    [InlineData("""{"providers":[]}""", "providers")]
-    [InlineData("""{"Arcanum":{"host":{"retiredOption":true}}}""", "host.retiredOption")]
-    public async Task ReadAsync_rejects_wrong_root_and_unknown_nested_paths(
-        string json,
-        string expectedPointer)
-    {
-        string configPath = Path.Combine(
-            ArcanumPaths.GrimoireDirectory,
-            "arcanum.json");
-        _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
-        await File.WriteAllTextAsync(configPath, json);
-        using ArcanumConfigurationStore store = new();
-
-        InvalidOperationException error =
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                () => store.ReadAsync(CancellationToken.None));
-
-        Assert.Contains(
-            expectedPointer,
-            error.Message,
-            StringComparison.Ordinal);
     }
 
     public void Dispose()

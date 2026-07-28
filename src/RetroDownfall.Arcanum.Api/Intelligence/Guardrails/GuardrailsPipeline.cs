@@ -21,9 +21,8 @@ public sealed record GuardrailAuditContext(string? SessionId, string? Model);
 /// <summary>
 /// Content guardrails pipeline (Tier 3 Phase 4, §8.x) — a singleton scanning input messages and
 /// output text for PII, toxicity, and topic-policy violations before/after inference. A complete
-/// pass-through when <c>Arcanum:Features:Guardrails</c> is <see langword="false"/> (the default): no
-/// scanning, no audit logging, success returned immediately. Authored policy comes from
-/// <c>Arcanum:Security:Guardrails</c>. PII detection uses
+/// pass-through when <c>Arcanum:Guardrails:Enabled</c> is <see langword="false"/> (the default): no
+/// scanning, no audit logging, success returned immediately. PII detection uses
 /// <see cref="GeneratedRegexAttribute"/> source generators (AOT-clean); toxicity is a configurable
 /// case-insensitive substring blocklist; topics are operator-supplied regex allow/block lists.
 /// </summary>
@@ -64,7 +63,7 @@ public sealed partial class GuardrailsPipeline(
         GuardrailAuditContext? auditContext = null)
     {
 
-        GuardrailsSettings settings = optionsMonitor.CurrentValue.ResolveGuardrails();
+        GuardrailsSettings settings = optionsMonitor.CurrentValue.Guardrails;
 
         if (!settings.Enabled || messages is null or { Count: 0 })
         {
@@ -106,7 +105,7 @@ public sealed partial class GuardrailsPipeline(
         GuardrailAuditContext? auditContext = null)
     {
 
-        GuardrailsSettings settings = optionsMonitor.CurrentValue.ResolveGuardrails();
+        GuardrailsSettings settings = optionsMonitor.CurrentValue.Guardrails;
 
         if (!settings.Enabled || string.IsNullOrEmpty(text))
         {

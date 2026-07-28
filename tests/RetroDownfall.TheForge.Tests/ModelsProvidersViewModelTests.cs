@@ -17,7 +17,7 @@ public class ModelsProvidersViewModelTests
 
             Models = [new ModelInfoDto("gpt-4o", "openai", "OpenAICompatible", "***", 128000, false)],
 
-            Providers = [new ProviderInfoDto("openai", "OpenAICompatible", "***", "OPENAI_API_KEY", ["gpt-4o"], 128000)],
+            Providers = [new ProviderInfoDto("openai", "OpenAICompatible", "***", "***", ["gpt-4o"], 128000)],
 
         };
 
@@ -32,10 +32,6 @@ public class ModelsProvidersViewModelTests
         Assert.Equal("gpt-4o", viewModel.Models[0].Model);
 
         Assert.Equal("openai", viewModel.Providers[0].Name);
-
-        Assert.Equal(
-            "OPENAI_API_KEY",
-            viewModel.Providers[0].CredentialEnvironmentVariable);
 
     }
 

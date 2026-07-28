@@ -30,7 +30,7 @@ public sealed class HostWorkspaceContextTests
 
             ArcanumSettings settings = new()
             {
-                Workspaces = new WorkspaceSettings { DefaultRoot = root },
+                Host = new HostSettings { Workspace = root },
             };
 
             HostWorkspaceContext context = new(new TestOptionsMonitor<ArcanumSettings>(settings));

@@ -3,8 +3,11 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Models;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -148,6 +151,133 @@ public sealed class ArcanumBuiltInToolsTests
         Assert.Equal(JsonValueKind.Object, local.JsonSchema.ValueKind);
 
         Assert.Equal(JsonValueKind.Object, system.JsonSchema.ValueKind);
+    }
+
+    [Fact]
+    public async Task BuiltInToolRegistry_UnexpectedFailure_UsesModelSafeToolContract()
+    {
+        const string canary = "CANARY_TOOL_ARGUMENT_FILE_CONTENT";
+        TestCapturingLogger<BuiltInToolRegistry> logger = new();
+        BuiltInToolRegistry registry = new(
+            new StubHttpClientFactory(),
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            browseWebLogger: null,
+            logger: logger);
+        JsonElement disposedArguments;
+
+        using (JsonDocument document = JsonDocument.Parse(
+            $$"""{"secret":"{{canary}}"}"""))
+        {
+            disposedArguments = document.RootElement;
+        }
+
+        Result<JsonElement> result = await registry.InvokeAsync(
+            ArcanumLocalTimeTool.ToolName,
+            disposedArguments,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Hub.Error, result.Error.Code);
+        Assert.Equal(
+            ToolExecutionPipeline.PublicToolFailureMessage(ArcanumLocalTimeTool.ToolName),
+            result.Error.Message);
+        Assert.DoesNotContain(canary, result.Error.Message, StringComparison.Ordinal);
+
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(ObjectDisposedException), log.Message, StringComparison.Ordinal);
+        Assert.Contains(ArcanumLocalTimeTool.ToolName, log.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BuiltInToolRegistry_Cancellation_Propagates()
+    {
+        ArcanumSettings settings = new()
+        {
+            WebBrowsing = new WebBrowsingSettings { Enabled = true },
+        };
+        BuiltInToolRegistry registry = new(
+            new StubHttpClientFactory(new CancellingHandler()),
+            new TestOptionsSnapshot<ArcanumSettings>(settings));
+        using JsonDocument document = JsonDocument.Parse(
+            """{"url":"https://example.test/"}""");
+        using CancellationTokenSource cancellation = new();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            registry.InvokeAsync(
+                ArcanumBrowseWebTool.ToolName,
+                document.RootElement,
+                cancellation.Token));
+    }
+
+    [Fact]
+    public async Task BuiltInToolRegistry_BrowseFailure_SanitizesModelOutputAndLogs()
+    {
+        const string canary = "CANARY_BROWSE_PROVIDER_RESPONSE_AND_URL";
+        ArcanumSettings settings = new()
+        {
+            WebBrowsing = new WebBrowsingSettings { Enabled = true },
+        };
+        TestCapturingLogger<ArcanumBrowseWebTool> logger = new();
+        BuiltInToolRegistry registry = new(
+            new StubHttpClientFactory(new ThrowingHandler(canary)),
+            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            logger);
+        using JsonDocument document = JsonDocument.Parse(
+            """{"url":"https://example.com/private-path"}""");
+
+        Result<JsonElement> result = await registry.InvokeAsync(
+            ArcanumBrowseWebTool.ToolName,
+            document.RootElement,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        BrowseWebResult? output = result.Value.Deserialize(
+            ArcanumJsonContext.Default.BrowseWebResult);
+        Assert.NotNull(output);
+        Assert.Equal(
+            ToolExecutionPipeline.PublicToolFailureMessage(ArcanumBrowseWebTool.ToolName),
+            output.Content);
+
+        string serialized = result.Value.GetRawText();
+        Assert.DoesNotContain(canary, serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-path", serialized, StringComparison.Ordinal);
+
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("private-path", log.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(InvalidOperationException), log.Message, StringComparison.Ordinal);
+        Assert.Contains(ArcanumBrowseWebTool.ToolName, log.Message, StringComparison.Ordinal);
+    }
+
+    private sealed class StubHttpClientFactory(HttpMessageHandler? handler = null)
+        : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) =>
+            handler is null
+                ? new HttpClient()
+                : new HttpClient(handler, disposeHandler: false);
+    }
+
+    private sealed class CancellingHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromException<HttpResponseMessage>(
+                new OperationCanceledException("tool provider cancelled"));
+    }
+
+    private sealed class ThrowingHandler(string message) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) =>
+            Task.FromException<HttpResponseMessage>(
+                new InvalidOperationException(message));
     }
 
 }

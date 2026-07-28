@@ -52,7 +52,9 @@ internal sealed class ApplyPatchToolExecutionService
 
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
 
-        _settings = settings;
+        _settings =
+            ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
+                settings);
 
         _outputBudgetBytes = outputBudgetBytes;
 

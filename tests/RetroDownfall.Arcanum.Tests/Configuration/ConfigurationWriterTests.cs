@@ -1,9 +1,10 @@
-using System.Text.Json;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
@@ -14,11 +15,11 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
     private TempWorkspace _workspace = null!;
 
-    private string? _backupConfigPath;
+    private string? _originalDotnetEnvironment;
 
-    private string? _originalHome;
+    private string? _originalAspNetCoreEnvironment;
 
-    private string? _originalUserProfile;
+    private string? _originalTestHome;
 
     public async Task InitializeAsync()
     {
@@ -27,57 +28,40 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
         await _workspace.InitializeAsync();
 
-        _originalHome = global::System.Environment.GetEnvironmentVariable("HOME");
+        _originalDotnetEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
 
-        _originalUserProfile = global::System.Environment.GetEnvironmentVariable("USERPROFILE");
+        _originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
 
-        global::System.Environment.SetEnvironmentVariable("HOME", _workspace.Root);
+        _originalTestHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
 
-        global::System.Environment.SetEnvironmentVariable("USERPROFILE", _workspace.Root);
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
 
-        string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
 
-        if (File.Exists(configPath))
-        {
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _workspace.Root);
 
-            _backupConfigPath = Path.Combine(_workspace.Root, "arcanum.json.bak");
-
-            File.Copy(configPath, _backupConfigPath, overwrite: true);
-
-        }
+        Assert.StartsWith(
+            Path.GetFullPath(_workspace.Root),
+            Path.GetFullPath(ArcanumPaths.GrimoireDirectory),
+            StringComparison.Ordinal);
 
     }
 
     public async Task DisposeAsync()
     {
 
-        string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", _originalDotnetEnvironment);
 
-        if (_backupConfigPath is not null && File.Exists(_backupConfigPath))
-        {
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", _originalAspNetCoreEnvironment);
 
-            File.Copy(_backupConfigPath, configPath, overwrite: true);
-
-            File.Delete(_backupConfigPath);
-
-        }
-        else if (File.Exists(configPath))
-        {
-
-            File.Delete(configPath);
-
-        }
-
-        global::System.Environment.SetEnvironmentVariable("HOME", _originalHome);
-
-        global::System.Environment.SetEnvironmentVariable("USERPROFILE", _originalUserProfile);
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _originalTestHome);
 
         await _workspace.DisposeAsync();
 
     }
 
     [Fact]
-    public async Task WriteAsync_persists_credential_references_without_secret_fields()
+    public async Task WriteAsync_persists_protected_settings_to_grimoire()
     {
 
         ConfigurationWriter writer = CreateWriter();
@@ -86,19 +70,8 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
         {
             Providers =
             [
-                new ProviderSettings
-                {
-                    Name = "openai",
-                    CredentialEnvironmentVariable = "OPENAI_API_KEY",
-                },
+                new ProviderSettings { Name = "openai", ApiKey = "sk-test" },
             ],
-            Integrations = new IntegrationSettings
-            {
-                CommLink = new CommLinkIntegrationSettings
-                {
-                    WebhookUrlEnvironmentVariable = "ARCANUM_COMMLINK_WEBHOOK_URL",
-                },
-            },
         };
 
         Result result = await writer.WriteAsync(settings, CancellationToken.None);
@@ -113,11 +86,9 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
         Assert.Contains("openai", json, StringComparison.Ordinal);
 
-        Assert.Contains("OPENAI_API_KEY", json, StringComparison.Ordinal);
-        Assert.Contains("ARCANUM_COMMLINK_WEBHOOK_URL", json, StringComparison.Ordinal);
+        Assert.Contains("dp:v1:", json, StringComparison.Ordinal);
 
-        Assert.DoesNotContain("\"apiKey\"", json, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("\"webhookUrl\"", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sk-test", json, StringComparison.Ordinal);
 
     }
 
@@ -131,11 +102,7 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
         {
             Providers =
             [
-                new ProviderSettings
-                {
-                    Name = "openai",
-                    CredentialEnvironmentVariable = "OPENAI_API_KEY",
-                },
+                new ProviderSettings { Name = "openai", ApiKey = "sk-test" },
             ],
         };
 
@@ -149,40 +116,13 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
         Assert.Contains('\n', json);
 
-        using JsonDocument document = JsonDocument.Parse(json);
-        JsonElement arcanum = document.RootElement.GetProperty("Arcanum");
+        Assert.Contains("\"host\":", json, StringComparison.Ordinal);
 
-        foreach (string retained in new[]
-                 {
-                     "edition",
-                     "host",
-                     "providers",
-                     "defaultModel",
-                     "fastModel",
-                     "security",
-                     "workspaces",
-                     "features",
-                     "integrations",
-                     "execution",
-                     "cost",
-                     "daemon",
-                     "cli",
-                 })
-        {
-            Assert.True(arcanum.TryGetProperty(retained, out _), $"Missing retained root '{retained}'.");
-        }
+        Assert.Contains("\"port\": 5001", json, StringComparison.Ordinal);
 
-        foreach (string removed in new[]
-                 {
-                     "server",
-                     "intelligence",
-                     "codingTools",
-                     "resilience",
-                     "structuredOutput",
-                 })
-        {
-            Assert.False(arcanum.TryGetProperty(removed, out _), $"Removed root '{removed}' was serialized.");
-        }
+        Assert.Contains("\"server\":", json, StringComparison.Ordinal);
+
+        Assert.Contains("\"pidFilePath\":", json, StringComparison.Ordinal);
 
     }
 
@@ -196,11 +136,7 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
         {
             Providers =
             [
-                new ProviderSettings
-                {
-                    Name = "original",
-                    CredentialEnvironmentVariable = "ORIGINAL_API_KEY",
-                },
+                new ProviderSettings { Name = "original", ApiKey = "sk-original" },
             ],
         };
 
@@ -218,11 +154,7 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
         {
             Providers =
             [
-                new ProviderSettings
-                {
-                    Name = "replacement",
-                    CredentialEnvironmentVariable = "REPLACEMENT_API_KEY",
-                },
+                new ProviderSettings { Name = "replacement", ApiKey = "sk-replacement" },
             ],
         };
 
@@ -238,7 +170,12 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
     private static ConfigurationWriter CreateWriter()
     {
-        return new ConfigurationWriter(NullLogger<ConfigurationWriter>.Instance);
+
+        IDataProtectionProvider provider = DataProtectionProvider.Create("Arcanum.ConfigurationWriterTests");
+
+        ConfigurationSecretProtector secretProtector = new(provider);
+
+        return new ConfigurationWriter(NullLogger<ConfigurationWriter>.Instance, secretProtector);
 
     }
 

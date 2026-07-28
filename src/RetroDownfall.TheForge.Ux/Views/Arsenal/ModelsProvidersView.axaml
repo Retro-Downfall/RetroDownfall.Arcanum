@@ -36,7 +36,7 @@
                 <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
                 <TextBlock Text="{Binding Type}" Opacity="0.7" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
                 <TextBlock Text="{Binding Endpoint}" Opacity="0.55" FontFamily="Cascadia Mono, Consolas, monospace" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
-                <TextBlock Text="{Binding CredentialEnvironmentVariable, StringFormat='Credential: {0}'}" Opacity="0.5" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" />
+                <TextBlock Text="API key redacted by API" Opacity="0.5" FontSize="{DynamicResource ForgeUiSecondaryFontSize}" IsVisible="{Binding ApiKey, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
               </StackPanel>
             </DataTemplate>
           </ListBox.ItemTemplate>

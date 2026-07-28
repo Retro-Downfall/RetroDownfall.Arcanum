@@ -1,15 +1,13 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Spell-management runtime projection. Path authority comes from
-/// <c>Arcanum:Security:SpellWorkspaceRoots</c>; file, cache, dependency, and resonance limits are
-/// code-owned.
+/// Spell management API path containment.
 /// </summary>
 public sealed record SpellSettings
 {
 
     /// <summary>
-    /// Effective list of absolute directory roots that spell CRUD routes may use when
+    /// Optional list of absolute directory roots that spell CRUD routes may use when
     /// <c>?workspace=</c> is supplied or when a default workspace is resolved.
     /// An empty array denies all access by default (secure-by-default via
     /// <see cref="WorkspaceRootPolicy"/>). When non-empty, resolved workspace paths must
@@ -19,7 +17,7 @@ public sealed record SpellSettings
 
     /// <summary>
     /// Maximum <c>SPELL.md</c> (and related frontmatter) read size in bytes. Default 256 KiB; clamp 1 KiB–1 MiB,
-    /// further capped by <see cref="ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes"/>.
+    /// further capped by <see cref="WorkspaceSettings.MaxFileReadSizeBytes"/>.
     /// </summary>
     public long MaxFileSizeBytes { get; set; } = 262_144L;
 

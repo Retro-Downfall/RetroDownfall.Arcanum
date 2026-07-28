@@ -61,6 +61,16 @@ public sealed partial class McpConnectionManager
         return new Error(ErrorCodes.Mcp.AmbiguousServer, $"Multiple MCP servers named '{name}' exist; specify workingDirectory.");
     }
 
+    internal ManagedMcpServerEntry? GetManagedEntryForTests(
+        string name,
+        string? workingDirectory)
+    {
+        Result<ManagedMcpServerEntry> resolved =
+            ResolveEntry(name, workingDirectory);
+
+        return resolved.IsSuccess ? resolved.Value : null;
+    }
+
     private static string? NormalizeScopeWorkingDirectory(string? workingDirectory)
     {
         if (string.IsNullOrWhiteSpace(workingDirectory))
@@ -138,7 +148,13 @@ public sealed partial class McpConnectionManager
 
     private sealed record CachedMcpToolSurface(
         long Generation,
+        string? SourceDigest,
         IReadOnlyList<AITool> Tools);
+
+    private sealed record BuiltMcpToolSurface(
+        IReadOnlyList<AITool> Tools,
+        string? SourceDigest,
+        bool Cacheable);
 
     private static McpServerStatusDto ToStatusDto(McpServerMetadata meta)
     {

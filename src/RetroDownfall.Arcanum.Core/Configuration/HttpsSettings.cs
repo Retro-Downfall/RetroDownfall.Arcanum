@@ -36,17 +36,17 @@ public sealed record HttpsSettings
 
     /// <summary>
     /// Optional path to a PEM private key file. When set, HTTPS is loaded from the PEM certificate at
-    /// <see cref="CertificatePath"/> plus this key (the certificate-password environment reference
-    /// is ignored for PEM). When empty (default), <see cref="CertificatePath"/> is treated as a
-    /// PKCS#12 bundle.
+    /// <see cref="CertificatePath"/> plus this key (<see cref="CertificatePassword"/> is ignored for
+    /// PEM). When empty (default), <see cref="CertificatePath"/> is treated as a PKCS#12 bundle.
     /// </summary>
     public string? PrivateKeyPath { get; set; }
 
     /// <summary>
-    /// Optional exact environment-variable name containing the PKCS#12 password. When omitted,
-    /// Arcanum reads <c>ARCANUM_HTTPS_CERTIFICATE_PASSWORD</c>. The reference is ignored for PEM
-    /// certificate/key pairs. Secret material never enters configuration or diagnostics.
+    /// Optional password for a PKCS#12 (PFX) bundle. Only consulted for PFX loading — ignored when
+    /// <see cref="PrivateKeyPath"/> is set (PEM). May be stored encrypted with the <c>dp:v1:</c>
+    /// Data Protection prefix (unprotected at load time) or as plaintext. Never logged and never
+    /// surfaced in validation or load errors.
     /// </summary>
-    public string? CertificatePasswordEnvironmentVariable { get; set; }
+    public string? CertificatePassword { get; set; }
 
 }

@@ -246,18 +246,13 @@ public sealed class SessionDivinationEndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                Features = settings.Features with
+                Embeddings = settings.Embeddings with
                 {
-                    Embeddings = true,
-                    SessionSearch = true,
-                },
-                Integrations = settings.Integrations with
-                {
-                    Embeddings = settings.Integrations.Embeddings with
-                    {
-                        Provider = "test",
-                        Model = "test-embed",
-                    },
+                    Enabled = true,
+                    SessionSearchEnabled = true,
+                    Provider = "test",
+                    Model = "test-embed",
+                    SimilarityThreshold = 0f,
                 },
             },
             ServiceOverrides = services =>
@@ -335,7 +330,8 @@ public sealed class SessionDivinationEndpointTests
             UpdatedAt = now,
         };
 
-        Campaign saved = await repository.AddAsync(campaign, CancellationToken.None);
+        Campaign saved = (await repository
+            .AddAsync(campaign, CancellationToken.None)).Value;
 
         return saved.Id;
 

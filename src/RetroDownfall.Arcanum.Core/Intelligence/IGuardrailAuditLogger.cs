@@ -7,9 +7,8 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 /// guardrail violations that blocked an inference turn, independent of the inference audit log
 /// (which records completed turns). Implementations must never throw: a logging failure must not
 /// fail the guardrail check that recorded it (the turn is already being rejected — the audit trail
-/// is best-effort). A complete no-op when
-/// <c>Arcanum:Security:Guardrails:AuditLog:Enabled</c> is <see langword="false"/> (the default) —
-/// no file I/O at all.
+/// is best-effort). A complete no-op when <c>Arcanum:Guardrails:AuditLog:Enabled</c> is
+/// <see langword="false"/> (the default) — no file I/O at all.
 /// </summary>
 public interface IGuardrailAuditLogger
 {

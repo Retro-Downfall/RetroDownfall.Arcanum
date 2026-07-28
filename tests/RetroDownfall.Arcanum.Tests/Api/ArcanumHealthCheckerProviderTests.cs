@@ -12,18 +12,33 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
-[Collection("ProcessEnvironment")]
-public sealed class ArcanumHealthCheckerProviderTests : IDisposable
+public sealed class ArcanumHealthCheckerProviderTests
 {
-    private const string CredentialVariable = "ARCANUM_TEST_HEALTH_REPORT_KEY";
-    private readonly string? _originalCredential;
-
-    public ArcanumHealthCheckerProviderTests()
+    [Fact]
+    public async Task BuildReportAsync_ResilienceDisabled_ConfigOnlyDetail_NotActivelyProbed()
     {
-        _originalCredential =
-            System.Environment.GetEnvironmentVariable(CredentialVariable);
-        System.Environment.SetEnvironmentVariable(CredentialVariable, null);
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "alpha", Type = AiProviderKind.OpenAICompatible, Endpoint = "http://localhost" },
+            ],
+            Resilience = new ResilienceSettings { Enabled = false },
+        };
+
+        FakeProviderHealthTracker tracker = new();
+        tracker.MarkFailed("alpha");
+        tracker.MarkFailed("alpha");
+        tracker.MarkFailed("alpha");
+
+        ArcanumHealthChecker checker = CreateChecker(settings, tracker);
+        HealthReportDto report = await checker.BuildReportAsync(CancellationToken.None);
+
+        HealthComponentDto providers = Assert.Single(report.Components, c => c.Name == "Providers");
+        Assert.Equal(HealthStatus.Healthy, providers.Status);
+        Assert.Contains("not actively probed", providers.Detail, StringComparison.OrdinalIgnoreCase);
     }
+
     [Fact]
     public async Task BuildReportAsync_AllKnownProvidersUnhealthy_ProvidersUnhealthy_OverallDegraded()
     {
@@ -34,6 +49,7 @@ public sealed class ArcanumHealthCheckerProviderTests : IDisposable
                 new ProviderSettings { Name = "alpha", Type = AiProviderKind.OpenAICompatible, Endpoint = "http://localhost" },
                 new ProviderSettings { Name = "beta", Type = AiProviderKind.OpenAICompatible, Endpoint = "http://localhost" },
             ],
+            Resilience = new ResilienceSettings { Enabled = true },
         };
 
         FakeProviderHealthTracker tracker = new();
@@ -58,6 +74,7 @@ public sealed class ArcanumHealthCheckerProviderTests : IDisposable
                 new ProviderSettings { Name = "alpha", Type = AiProviderKind.OpenAICompatible, Endpoint = "http://localhost" },
                 new ProviderSettings { Name = "beta", Type = AiProviderKind.OpenAICompatible, Endpoint = "http://localhost" },
             ],
+            Resilience = new ResilienceSettings { Enabled = true },
         };
 
         FakeProviderHealthTracker tracker = new();
@@ -70,39 +87,6 @@ public sealed class ArcanumHealthCheckerProviderTests : IDisposable
         HealthComponentDto providers = Assert.Single(report.Components, c => c.Name == "Providers");
         Assert.Equal(HealthStatus.Degraded, providers.Status);
         Assert.True(report.Status is HealthStatus.Healthy or HealthStatus.Degraded);
-    }
-
-    [Fact]
-    public async Task BuildReportAsync_ReportsCredentialPresenceWithoutSecretMaterial()
-    {
-        const string secret = "health-report-secret-material";
-        System.Environment.SetEnvironmentVariable(CredentialVariable, secret);
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "credentialed",
-                    Type = AiProviderKind.OpenAICompatible,
-                    Endpoint = "https://example.test/v1",
-                    CredentialEnvironmentVariable = CredentialVariable,
-                },
-            ],
-        };
-
-        HealthReportDto report = await CreateChecker(
-                settings,
-                new FakeProviderHealthTracker())
-            .BuildReportAsync(CancellationToken.None);
-        HealthComponentDto providers =
-            Assert.Single(report.Components, component => component.Name == "Providers");
-
-        Assert.Contains(
-            "1/1 provider credentials available",
-            providers.Detail,
-            StringComparison.Ordinal);
-        Assert.DoesNotContain(secret, providers.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -282,12 +266,5 @@ public sealed class ArcanumHealthCheckerProviderTests : IDisposable
 
         public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
-    }
-
-    public void Dispose()
-    {
-        System.Environment.SetEnvironmentVariable(
-            CredentialVariable,
-            _originalCredential);
     }
 }

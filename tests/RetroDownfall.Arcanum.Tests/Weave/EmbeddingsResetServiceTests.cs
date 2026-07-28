@@ -44,16 +44,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
             _db,
             availability,
             new TestOptionsMonitor<ArcanumSettings>(
-                new ArcanumSettings
-                {
-                    Integrations = new IntegrationSettings
-                    {
-                        Embeddings = new EmbeddingIntegrationSettings
-                        {
-                            Dimensions = TestDimensions,
-                        },
-                    },
-                }));
+                new ArcanumSettings { Embeddings = new EmbeddingSettings { Dimensions = TestDimensions } }));
 
         _resetService = new EmbeddingsResetService(_db, availability);
 

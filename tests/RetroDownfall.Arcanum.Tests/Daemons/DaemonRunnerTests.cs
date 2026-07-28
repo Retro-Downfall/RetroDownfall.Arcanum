@@ -184,9 +184,17 @@ public sealed class DaemonRunnerTests
         out InMemoryDaemonExecutionRepository repository)
     {
 
-        InMemoryLogRingBuffer logBuffer = new();
+        ArcanumSettings settings = new()
+        {
+            Logs = new LogSettings { RingBufferCapacity = 16 },
+            EventBus = new EventBusSettings { ChannelCapacity = 8 },
+        };
 
-        repository = new(logBuffer);
+        InMemoryLogRingBuffer logBuffer = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        repository = new(
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            logBuffer);
 
         DaemonJobRegistry registry = new(jobs);
 

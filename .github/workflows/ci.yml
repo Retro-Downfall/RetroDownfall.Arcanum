@@ -17,8 +17,6 @@ jobs:
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
-      COVERAGE_LINE_TARGET: "83"
-      COVERAGE_BRANCH_TARGET: "73"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -59,9 +57,7 @@ jobs:
           dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj -c Release --no-build
 
       - name: Arcanum tests + coverage thresholds
-        run: |
-          python3 -m unittest scripts/coverage_threshold_test.py
-          ./scripts/coverage.sh --threshold
+        run: ./scripts/coverage.sh --threshold
 
       - name: Upload coverage report
         if: always()

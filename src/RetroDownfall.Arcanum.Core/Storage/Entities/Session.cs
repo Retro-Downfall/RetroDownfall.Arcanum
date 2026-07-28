@@ -35,7 +35,7 @@ public sealed class Session
     /// When this session was created by <c>POST /api/sessions/{id}/fork</c>, the source session's id.
     /// <see langword="null"/> for a "root" session (never forked, or the very first session in a
     /// fork lineage). Used by <c>SessionRepository.ComputeForkDepthAsync</c> to walk the lineage
-    /// chain and enforce the code-owned depth limit.
+    /// chain and enforce <c>Arcanum:Sessions:MaxForkDepth</c>.
     /// </summary>
     public Guid? ForkedFromSessionId { get; set; }
 

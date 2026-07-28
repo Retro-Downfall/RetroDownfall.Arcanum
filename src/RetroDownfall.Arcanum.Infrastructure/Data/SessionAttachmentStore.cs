@@ -143,7 +143,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         using IDisposable gate = await AttachmentGates.AcquireAsync(gateKey, cancellationToken).ConfigureAwait(false);
 
-        AttachmentsSettings attachments = _options.Value.ResolveAttachments();
+        AttachmentsSettings attachments = _options.Value.Attachments ?? new AttachmentsSettings();
 
         int maxVersions = ArcanumSettingClamps.AttachmentsMaxVersionsPerLogicalKey(attachments.MaxVersionsPerLogicalKey);
 

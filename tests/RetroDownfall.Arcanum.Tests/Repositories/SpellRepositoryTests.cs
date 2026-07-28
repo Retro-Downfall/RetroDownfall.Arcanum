@@ -529,6 +529,56 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ValidateAsync_recognizes_browse_web_as_a_builtin_tool()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spellDir = Path.Combine(
+            _workspaceRoot,
+            "spells",
+            "browser");
+
+        Directory.CreateDirectory(spellDir);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SPELL.md"),
+            """
+            ---
+            name: browser
+            description: Browser spell
+            ---
+            body
+            """);
+        await File.WriteAllTextAsync(
+            Path.Combine(spellDir, "SKILL.json"),
+            """
+            {
+              "name": "browser",
+              "version": "1.0.0",
+              "description": "Browser spell",
+              "tags": [],
+              "declaredTools": ["browse_web"],
+              "dependencies": []
+            }
+            """);
+
+        SpellRepository repository = CreateRepository(
+            mcp: new FakeMcpConnectionManager());
+
+        SpellValidationResultDto validation = await repository.ValidateAsync(
+            "browser",
+            _workspaceRoot,
+            CancellationToken.None);
+
+        Assert.True(validation.IsValid, string.Join("; ", validation.Errors));
+        Assert.DoesNotContain(
+            validation.Warnings,
+            static warning => warning.Contains(
+                "browse_web",
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    [SkippableFact]
     public async Task ExportAsync_and_ImportAsync_round_trip_spell_payload()
     {
 
@@ -881,13 +931,18 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             Path.Combine(spellDir, "scripts", "small.sh"),
             new byte[64]);
 
-        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(
-            new ArcanumSettings());
+        // EffectiveSpellMaxFileSizeBytes clamps to a 1 KiB floor; exceed that so the file is skipped.
         await File.WriteAllBytesAsync(
             Path.Combine(spellDir, "scripts", "big.sh"),
-            new byte[checked((int)perFileCap + 1)]);
+            new byte[2048]);
 
-        SpellRepository repository = CreateRepository();
+        ArcanumSettings settings = new()
+        {
+            Spells = new SpellSettings { MaxFileSizeBytes = 1 },
+            Workspaces = new WorkspaceSettings { MaxFileReadSizeBytes = 1 },
+        };
+
+        SpellRepository repository = CreateRepository(settings: settings);
 
         SpellExportDto? exported = await repository.ExportAsync("big-script", _workspaceRoot, CancellationToken.None);
 
@@ -921,26 +976,26 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
             body
             """);
 
-        long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(
-            new ArcanumSettings());
-        long aggregateCap = ArcanumSettingClamps.MaxFileReadSizeBytes(
-            ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
-        int scriptsWithinAggregateCap = checked((int)(aggregateCap / perFileCap));
-
-        foreach (int index in Enumerable.Range(0, scriptsWithinAggregateCap + 1))
+        // Each script is 600 bytes (under the 1 KiB per-file cap), but two of them together
+        // exceed the 1 KiB aggregate cap, so reading stops after the first.
+        foreach ((string name, int size) in new[] { ("a.sh", 600), ("b.sh", 600), ("c.sh", 600) })
         {
-            await File.WriteAllBytesAsync(
-                Path.Combine(spellDir, "scripts", $"{index:D2}.sh"),
-                new byte[checked((int)perFileCap)]);
+            await File.WriteAllBytesAsync(Path.Combine(spellDir, "scripts", name), new byte[size]);
         }
 
-        SpellRepository repository = CreateRepository();
+        ArcanumSettings settings = new()
+        {
+            Spells = new SpellSettings { MaxFileSizeBytes = 1 },
+            Workspaces = new WorkspaceSettings { MaxFileReadSizeBytes = 1 },
+        };
+
+        SpellRepository repository = CreateRepository(settings: settings);
 
         SpellExportDto? exported = await repository.ExportAsync("agg-cap", _workspaceRoot, CancellationToken.None);
 
         Assert.NotNull(exported);
 
-        Assert.Equal(scriptsWithinAggregateCap, exported!.Scripts.Count);
+        Assert.Single(exported!.Scripts);
 
     }
 

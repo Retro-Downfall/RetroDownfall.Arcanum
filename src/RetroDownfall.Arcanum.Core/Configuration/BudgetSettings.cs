@@ -1,9 +1,9 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Runtime projection of <c>Arcanum:Cost:Budget</c>. Daily spend is compared against
-/// <see cref="DailyLimitUsd"/>; the alert threshold is code-owned, and at 100% further inference
-/// turns are rejected with <c>Budget.Exceeded</c> (HTTP 429).
+/// Cost-tracking budget settings. Daily spend is compared against <see cref="DailyLimitUsd"/>; when
+/// it crosses <see cref="AlertThresholdPercent"/> (default 80%) a Comm Link warning is dispatched,
+/// and at 100% further inference turns are rejected with <c>Budget.Exceeded</c> (HTTP 429).
 /// </summary>
 public sealed record BudgetSettings
 {

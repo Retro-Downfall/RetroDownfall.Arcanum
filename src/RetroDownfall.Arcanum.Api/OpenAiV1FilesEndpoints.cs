@@ -13,7 +13,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 namespace RetroDownfall.Arcanum.Api;
 
 /// <summary>
-/// OpenAI-compatible <c>/v1/files</c> upload storage (<c>docs/Arcanum.DESIGN.md</c> §11.20). File bytes live on disk
+/// OpenAI-compatible <c>/v1/files</c> upload storage (DESIGN.md §11.20). File bytes live on disk
 /// under <see cref="ArcanumPaths.FilesDirectory"/>, named by a fresh <see cref="Guid"/> (never the
 /// client-supplied filename) — path traversal and filename collisions are structurally impossible.
 /// The database row is metadata only.
@@ -88,14 +88,15 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
-        FilesSettings filesSettings = settings.Value.ResolveFiles();
-        long maxUploadBytes = ResolveMaxUploadBytes();
+        FilesSettings filesSettings = settings.Value.Files ?? new FilesSettings();
 
-        if (!IsUploadSizeAllowed(file.Length))
+        long maxUploadBytes = ArcanumSettingClamps.FilesMaxUploadSizeBytes(filesSettings.MaxUploadSizeBytes);
+
+        if (file.Length > maxUploadBytes)
         {
 
             return JsonError(
-                $"'file' ({file.Length} bytes) exceeds the internal upload limit ({maxUploadBytes} bytes).",
+                $"'file' ({file.Length} bytes) exceeds the configured limit ({maxUploadBytes} bytes, Arcanum:Files:MaxUploadSizeBytes).",
                 "invalid_request_error",
                 "invalid_value",
                 "file",
@@ -122,7 +123,7 @@ internal static partial class OpenAiV1Endpoints
         {
 
             return JsonError(
-                $"Content type '{declaredMimeType}' is not permitted by this server's Arcanum:Security:AllowedUploadMimeTypes policy.",
+                $"Content type '{declaredMimeType}' is not permitted by this server's Arcanum:Files:AllowedMimeTypes configuration.",
                 "invalid_request_error",
                 "invalid_value",
                 "file",
@@ -169,13 +170,6 @@ internal static partial class OpenAiV1Endpoints
         return Results.Json(OpenAiFileObject.FromRecord(record), ArcanumJsonContext.Default.OpenAiFileObject, statusCode: StatusCodes.Status201Created);
 
     }
-
-    internal static long ResolveMaxUploadBytes() =>
-        ArcanumSettingClamps.FilesMaxUploadSizeBytes(
-            ArcanumRuntimeDefaults.Files.MaxUploadSizeBytes);
-
-    internal static bool IsUploadSizeAllowed(long fileLength) =>
-        fileLength <= ResolveMaxUploadBytes();
 
     private static async Task<IResult> HandleListAsync(
         string? purpose,

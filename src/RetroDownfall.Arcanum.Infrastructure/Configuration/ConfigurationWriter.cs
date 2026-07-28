@@ -14,12 +14,16 @@ internal sealed class ConfigurationWriter
 
     private readonly ILogger<ConfigurationWriter> _logger;
 
+    private readonly ConfigurationSecretProtector _secretProtector;
+
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
-    public ConfigurationWriter(ILogger<ConfigurationWriter> logger)
+    public ConfigurationWriter(ILogger<ConfigurationWriter> logger, ConfigurationSecretProtector secretProtector)
     {
 
         _logger = logger;
+
+        _secretProtector = secretProtector;
 
     }
 
@@ -37,7 +41,9 @@ internal sealed class ConfigurationWriter
 
             string tempPath = Path.Combine(directory, $".arcanum.{Guid.NewGuid():N}.tmp");
 
-            var wrapper = new ArcanumConfigurationFile { Arcanum = settings };
+            ArcanumSettings storedSettings = _secretProtector.ProtectSettingsForStorage(settings);
+
+            var wrapper = new ArcanumConfigurationFile { Arcanum = storedSettings };
 
             AtomicReplaceStatus replaceStatus = await AtomicFile.ReplaceAsync(
                 path,

@@ -248,8 +248,7 @@ internal static class CappedChildProcessRunner
 
         }
 
-        bool processGroupEstablishedByLauncher =
-            UnixProcessGroupSupervisor.Apply(startInfo);
+        UnixProcessGroupSupervisor.Apply(startInfo);
 
         using Process process = new();
 
@@ -438,9 +437,7 @@ internal static class CappedChildProcessRunner
             // actually need a live pid to clean up correctly.
             startedPid = process.Id;
 
-            unixProcessGroupId = processGroupEstablishedByLauncher
-                ? startedPid
-                : UnixProcessGroup.TryCreate(startedPid);
+            unixProcessGroupId = UnixProcessGroup.TryCreate(startedPid);
             descendantSupervisor =
                 MacOsDescendantSupervisor.TryStart(startedPid);
 
@@ -740,7 +737,7 @@ internal static class CappedChildProcessRunner
     {
         bool cleaned =
             await ChildProcessFilesystemJail.CleanupTempPathsAsync(
-                    sandboxResult?.TempPathsToCleanup,
+                    sandboxResult?.OwnedArtifactsToCleanup,
                     GetCleanupTimeRemaining(
                         getCleanupTimeRemaining))
                 .ConfigureAwait(false);
@@ -748,7 +745,7 @@ internal static class CappedChildProcessRunner
         if (!cleaned)
         {
             logger?.LogWarning(
-                "Timed out cleaning child-process sandbox temporary paths.");
+                "Child-process sandbox temporary-artifact cleanup was incomplete or exceeded its deadline; unmatched artifacts were retained.");
         }
     }
 

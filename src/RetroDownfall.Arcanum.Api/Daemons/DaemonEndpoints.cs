@@ -23,6 +23,10 @@ internal static class DaemonEndpoints
 
         MapUnseenServantJobRoutes(unseenServant, routeNamePrefix: "UnseenServant");
 
+        RouteGroupBuilder daemon = apiGroup.MapGroup("/daemon");
+
+        MapUnseenServantJobRoutes(daemon, routeNamePrefix: "Daemon");
+
         apiGroup.MapGet(
             "/daemons",
             async (IDaemonRegistry registry, HttpContext ctx) =>

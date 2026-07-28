@@ -181,16 +181,13 @@ internal static class CampaignEndpoints
                     UpdatedAt = now,
                 };
 
-                try
+                Result<Campaign> addResult = await repo
+                    .AddAsync(campaign, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                if (addResult.IsFailure)
                 {
-                    await repo.AddAsync(campaign, ctx.RequestAborted).ConfigureAwait(false);
-                }
-                catch (InvalidOperationException ex) when (ex.Message == ErrorCodes.Campaign.MaxReached)
-                {
-                    return Results.BadRequest(
-                        ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.MaxReached, "The maximum number of campaigns has been reached.")),
-                            traceId));
+                    return MapCampaignError(addResult.Error, traceId);
                 }
 
                 CampaignDto dto = CampaignPathPolicy.ToDto(campaign);

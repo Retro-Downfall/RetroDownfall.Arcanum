@@ -24,17 +24,17 @@ public sealed class A2AServerTests
 
     private static ArcanumSettings EnabledSettings() => new()
     {
-        Features = new FeatureSettings
+        Conclave = new ConclaveSettings
         {
-            Conclave = true,
-            A2AServer = true,
+            Enabled = true,
+            A2A = new ConclaveA2ASettings { Enabled = true, ServerEnabled = true },
         },
 
-        // Security.CampaignRoots is secure-by-default: empty denies every workspace, including the
+        // Campaigns.AllowedRoots is secure-by-default: empty denies every workspace, including the
         // Directory.GetCurrentDirectory() fallback ResolveWorkspace ultimately falls back to. Operators
-        // enabling A2A must configure CampaignRoots (or A2A.DefaultWorkspace under an allowed root) for
+        // enabling A2A must configure AllowedRoots (or A2A:DefaultWorkspace under an allowed root) for
         // any inbound task to have a usable workspace — see DESIGN.md §5.7.1.
-        Security = new SecuritySettings { CampaignRoots = [Directory.GetCurrentDirectory()] },
+        Campaigns = new CampaignsSettings { AllowedRoots = [Directory.GetCurrentDirectory()] },
     };
 
     private static RequestContext RequestWithText(string text, string taskId = "task-1", string contextId = "ctx-1") => new()
@@ -334,9 +334,9 @@ public sealed class A2AServerTests
 
         ArcanumSettings settings = new()
         {
-            Integrations = new IntegrationSettings
+            Conclave = new ConclaveSettings
             {
-                A2A = new A2AIntegrationSettings
+                A2A = new ConclaveA2ASettings
                 {
                     AgentCardName = "Test Arcanum",
                     AgentCardDescription = "A test description.",

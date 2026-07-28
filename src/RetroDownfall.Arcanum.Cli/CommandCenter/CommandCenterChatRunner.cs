@@ -98,7 +98,7 @@ internal sealed class CommandCenterChatRunner(
                 CliTerminalFormatting: true,
                 UnattendedMode: OperatorFacingUnattendedMode.Resolve(
                     cliUnattendedFlag: false,
-                    settingsMonitor.CurrentValue.Security?.Ward),
+                    settingsMonitor.CurrentValue.Ward),
                 CampaignId: state.CampaignId,
                 ScryingFoci: attachments.ScryingFoci?.ToList(),
                 AttachmentReferences: attachmentReferences);

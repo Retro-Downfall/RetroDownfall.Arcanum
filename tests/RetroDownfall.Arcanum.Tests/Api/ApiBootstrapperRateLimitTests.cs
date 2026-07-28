@@ -1,32 +1,12 @@
 using System.Net;
 using System.Reflection;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Configuration;
 using RetroDownfall.Arcanum.Api;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
-[Collection("ProcessEnvironment")]
-public sealed class ApiBootstrapperRateLimitTests : IDisposable
+public sealed class ApiBootstrapperRateLimitTests
 {
-
-    private readonly string? _originalHostAny;
-
-    public ApiBootstrapperRateLimitTests()
-    {
-
-        _originalHostAny = global::System.Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY");
-
-        global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", null);
-
-    }
-
-    public void Dispose()
-    {
-
-        global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", _originalHostAny);
-
-    }
 
     [Fact]
     public void ResolveRateLimitPartitionKey_always_uses_remote_ip()
@@ -58,35 +38,6 @@ public sealed class ApiBootstrapperRateLimitTests : IDisposable
 
     }
 
-    [Fact]
-    public void IsRateLimitEnabled_ListenAnyForcesLimiter()
-    {
-
-        IConfiguration configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Arcanum:Host:ListenAny"] = "true",
-            })
-            .Build();
-
-        Assert.True(InvokeIsRateLimitEnabled(configuration));
-
-    }
-
-    [Fact]
-    public void IsRateLimitEnabled_RemovedHostRateLimitKeyCannotEnableLoopback()
-    {
-        IConfiguration configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Arcanum:Host:ListenAny"] = "false",
-                ["Arcanum:Host:RateLimit:Enabled"] = "true",
-            })
-            .Build();
-
-        Assert.False(InvokeIsRateLimitEnabled(configuration));
-    }
-
     private static string InvokeResolveRateLimitPartitionKey(HttpContext context)
     {
 
@@ -99,21 +50,6 @@ public sealed class ApiBootstrapperRateLimitTests : IDisposable
         object? result = method.Invoke(null, [context]);
 
         return Assert.IsType<string>(result);
-
-    }
-
-    private static bool InvokeIsRateLimitEnabled(IConfiguration configuration)
-    {
-
-        MethodInfo? method = typeof(ApiBootstrapper).GetMethod(
-            "IsRateLimitEnabled",
-            BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.NotNull(method);
-
-        object? result = method.Invoke(null, [configuration]);
-
-        return Assert.IsType<bool>(result);
 
     }
 

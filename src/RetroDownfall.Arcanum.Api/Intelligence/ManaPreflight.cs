@@ -44,7 +44,7 @@ internal sealed class ManaPreflight
     {
 
         return ArcanumSettingClamps.MaxMessagesPerConversationLoad(
-            ArcanumRuntimeDefaults.Grimoire.MaxMessagesPerConversationLoad);
+            settings.Grimoire?.MaxMessagesPerConversationLoad ?? new GrimoireSettings().MaxMessagesPerConversationLoad);
 
     }
 

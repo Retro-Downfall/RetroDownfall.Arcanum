@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 /// <summary>
 /// One line of a <c>/v1/batches</c> input JSONL file — OpenAI's real batch request wrapper shape
 /// (<c>custom_id</c>/<c>method</c>/<c>url</c>/<c>body</c>), not a bare <c>OpenAiChatRequest</c>. See
-/// <c>docs/Arcanum.DESIGN.md</c> §11.21.
+/// DESIGN.md §11.21.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; processor tests cover wire parsing.
 public sealed record BatchJsonlRequestLine(

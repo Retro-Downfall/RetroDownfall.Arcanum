@@ -15,14 +15,16 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// existing LLM-based <see cref="SemanticRouter"/> is needed at all:
 ///
 /// <list type="bullet">
-/// <item><b>Disabled</b> (<c>Arcanum:Features:SemanticSpellRouting</c> is <c>false</c>, the default):
-/// always <see cref="SpellRoutingDecision.FullGrimoire"/> — the hub calls the unchanged LLM router
-/// with the full catalog.</item>
-/// <item><b>Pure embedding mode</b> (the current code-owned mode): embeds the user prompt, computes
-/// cosine similarity against cached spell description embeddings (see <see cref="SpellWeaveCache"/>),
-/// and returns <see cref="SpellRoutingDecision.DirectResonance"/> with the highest-similarity spell
-/// above the internal threshold (or <c>null</c> if none) — no LLM call at all.</item>
-/// <item><b>Hybrid mode</b> (reserved internal mode): returns a code-owned top-K candidate set via
+/// <item><b>Disabled</b> (<c>Embeddings:SemanticSpellRoutingEnabled</c> is <c>false</c>, the default):
+/// always <see cref="SpellRoutingDecision.FullGrimoire"/> — the hub calls the unchanged LLM router with
+/// the full catalog.</item>
+/// <item><b>Pure embedding mode</b> (enabled, <c>SpellRoutingHybridMode</c> is <c>false</c>): embeds the
+/// user prompt, computes cosine similarity against cached spell description embeddings (see
+/// <see cref="SpellWeaveCache"/>), and returns <see cref="SpellRoutingDecision.DirectResonance"/> with
+/// the highest-similarity spell above <c>Embeddings:SimilarityThreshold</c> (or <c>null</c> if none) —
+/// no LLM call at all.</item>
+/// <item><b>Hybrid mode</b> (enabled, <c>SpellRoutingHybridMode</c> is <c>true</c>): same embedding
+/// similarity, but returns the top <c>SpellRoutingHybridTopK</c> candidates via
 /// <see cref="SpellRoutingDecision.FilteredDivination"/> for the LLM router to pick from — reduced
 /// context, same JSON response protocol and timeout/fallback behavior as today.</item>
 /// </list>
@@ -45,7 +47,7 @@ public sealed class SemanticSpellRouter(
         CancellationToken cancellationToken)
     {
 
-        EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
+        EmbeddingSettings embeddings = settings.Value.Embeddings ?? new EmbeddingSettings();
 
         if (!embeddings.Enabled || !embeddings.SemanticSpellRoutingEnabled)
         {

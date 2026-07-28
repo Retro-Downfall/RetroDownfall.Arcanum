@@ -17,7 +17,7 @@ public static class GrimoireLimits
         params string?[] contents)
     {
 
-        SessionSettings resolved = settings ?? ArcanumRuntimeDefaults.Sessions;
+        SessionSettings resolved = settings ?? new SessionSettings();
 
         int maxEntries = ArcanumSettingClamps.MaxEntriesPerSession(resolved.MaxEntriesPerSession);
 

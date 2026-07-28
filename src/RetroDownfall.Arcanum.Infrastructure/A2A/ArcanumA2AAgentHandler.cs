@@ -23,8 +23,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// A2A tasks map to Apprentices, not Sessions: the task lifecycle IS the Apprentice lifecycle, so this
 /// class does no independent scheduling — it starts the Apprentice via <see cref="IApprenticeRuntime"/> and
 /// then simply relays <see cref="IApprenticeRuntime.SubscribeChronicleAsync"/>. The A2A task id ↔ Apprentice
-/// id association lives only in <see cref="_taskToApprentice"/> and is intentionally not persisted to
-/// the Grimoire, so it does not survive a process restart.
+/// id association lives only in <see cref="_taskToApprentice"/> (in-memory; no Grimoire persistence — see
+/// persistence.md), so it does not survive a process restart.
 /// </remarks>
 public sealed class ArcanumA2AAgentHandler(
     IServiceScopeFactory scopeFactory,
@@ -41,9 +41,9 @@ public sealed class ArcanumA2AAgentHandler(
 
         ArcanumSettings settings = options.CurrentValue;
 
-        ConclaveA2ASettings a2a = settings.ResolveA2A();
+        ConclaveA2ASettings a2a = settings.Conclave.A2A ?? new ConclaveA2ASettings();
 
-        if (!settings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ServerEnabled)
+        if (!settings.Conclave.Enabled || !a2a.Enabled || !a2a.ServerEnabled)
         {
 
             await RejectAsync(updater, "A2A is disabled on this Arcanum instance.", cancellationToken).ConfigureAwait(false);
@@ -257,14 +257,10 @@ public sealed class ArcanumA2AAgentHandler(
 
         }
 
-        string? defaultWorkspace = settings.ResolveDefaultWorkspace();
-
-        if (!string.IsNullOrWhiteSpace(defaultWorkspace))
+        if (!string.IsNullOrWhiteSpace(settings.Host?.Workspace))
         {
 
-            return CampaignPathPolicy.ValidateAndNormalizePath(
-                defaultWorkspace,
-                settings);
+            return CampaignPathPolicy.ValidateAndNormalizePath(settings.Host.Workspace, settings);
 
         }
 

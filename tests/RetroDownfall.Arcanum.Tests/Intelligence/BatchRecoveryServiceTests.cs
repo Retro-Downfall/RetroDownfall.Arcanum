@@ -13,7 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// Startup / reset recovery for stranded <see cref="BatchStatuses.InProgress"/> batches
 /// (<see cref="IBatchRecoveryService"/>).
 /// </summary>
-[Collection("Grimoire")]
+[Collection("ProcessEnvironment")]
 [Trait("Category", "Integration")]
 public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 {
@@ -30,6 +30,14 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
     private IUploadedFileRepository? _files;
 
+    private string _testHome = string.Empty;
+
+    private string? _originalDotnetEnvironment;
+
+    private string? _originalAspNetCoreEnvironment;
+
+    private string? _originalTestHome;
+
     public BatchRecoveryServiceTests(GrimoireFixture fixture)
     {
 
@@ -39,6 +47,30 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
+
+        _testHome = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-batch-recovery-tests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(_testHome);
+
+        _originalDotnetEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+        _originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
+        _originalTestHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _testHome);
+
+        Assert.StartsWith(
+            Path.GetFullPath(_testHome),
+            Path.GetFullPath(ArcanumPaths.FilesDirectory),
+            StringComparison.Ordinal);
 
         _dbPath = _fixture.CopyDatabase();
 
@@ -87,6 +119,19 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             {
 
             }
+
+        }
+
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", _originalDotnetEnvironment);
+
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", _originalAspNetCoreEnvironment);
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _originalTestHome);
+
+        if (Directory.Exists(_testHome))
+        {
+
+            Directory.Delete(_testHome, recursive: true);
 
         }
 
@@ -268,7 +313,7 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
         BatchProcessingService processing = new(
             root.GetRequiredService<IServiceScopeFactory>(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Batches = new BatchesSettings() }),
             root,
             NullLogger<BatchProcessingService>.Instance);
 

@@ -1,9 +1,5 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-/// <summary>
-/// Code-owned Grimoire hydration, retention, and paging invariants; this is not a public
-/// configuration root.
-/// </summary>
 public sealed record GrimoireSettings
 {
 

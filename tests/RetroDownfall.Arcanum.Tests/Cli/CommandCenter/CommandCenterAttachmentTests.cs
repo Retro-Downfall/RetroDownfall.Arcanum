@@ -123,15 +123,16 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     public void Oversized_text_file_is_rejected()
     {
         string path = Path.Combine(_root, "big.txt");
-        long maxFileBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
-            ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
-        File.WriteAllBytes(path, new byte[checked((int)maxFileBytes + 1)]);
+        File.WriteAllText(path, new string('x', 2048), Encoding.UTF8);
+
+        ArcanumSettings settings = DefaultSettings();
+        settings.Cli.MaxAttachFileSizeBytes = 1024;
 
         TurnAttachmentBuildResult result = CommandCenterTurnAttachmentBuilder.Build(
             $"@{path}",
             workingDirectory: _root,
             preStagedPaths: [],
-            settings: DefaultSettings());
+            settings: settings);
 
         Assert.Null(result.AttachedFiles);
         Assert.Contains(result.StatusLines, static s => s.Contains("exceeds", StringComparison.OrdinalIgnoreCase));
@@ -140,7 +141,13 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     private static ArcanumSettings DefaultSettings() =>
         new()
         {
-            Features = new FeatureSettings { Scrying = true },
+            Cli = new CliSettings { MaxAttachFileSizeBytes = 1_048_576L },
+            Scrying = new ScryingSettings
+            {
+                Enabled = true,
+                MaxImageBytes = 1_048_576L,
+                AllowedMimeTypes = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"],
+            },
         };
 }
 

@@ -135,12 +135,12 @@ internal sealed partial class ArcanumInternalToolServer
         CancellationToken cancellationToken)
     {
 
-        SendCommLinkAlertParams? args;
+        UseCommlinkParams? args;
 
         try
         {
 
-            args = JsonSerializer.Deserialize(arguments, _json.SendCommLinkAlertParams);
+            args = JsonSerializer.Deserialize(arguments, _json.UseCommlinkParams);
 
         }
         catch (JsonException ex)

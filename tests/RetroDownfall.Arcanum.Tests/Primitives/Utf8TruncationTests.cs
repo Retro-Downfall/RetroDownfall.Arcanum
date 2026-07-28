@@ -114,6 +114,37 @@ public sealed class Utf8TruncationTests
 
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public void NormalizeInvalidUtf16_ReplacesLoneSurrogates(
+        bool highSurrogate,
+        bool includeSurroundingText)
+    {
+        string loneSurrogate = new(
+            highSurrogate ? '\uD83D' : '\uDE00',
+            1);
+        string malformed = includeSurroundingText
+            ? "before" + loneSurrogate + "after"
+            : loneSurrogate;
+
+        string normalized = Utf8Truncation.NormalizeInvalidUtf16(malformed);
+
+        Assert.Equal(
+            includeSurroundingText ? "before\uFFFDafter" : "\uFFFD",
+            normalized);
+        Assert.DoesNotContain(normalized, char.IsSurrogate);
+    }
+
+    [Fact]
+    public void NormalizeInvalidUtf16_PreservesValidSurrogatePairs()
+    {
+        string text = "before" + Emoji + "after";
+
+        Assert.Same(text, Utf8Truncation.NormalizeInvalidUtf16(text));
+    }
+
     [Fact]
     public void TruncateUtf8BytesToCodepointBoundary_DoesNotSplitMultibyteSequence()
     {

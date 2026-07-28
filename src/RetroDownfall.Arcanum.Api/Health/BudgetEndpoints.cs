@@ -26,7 +26,7 @@ internal static class BudgetEndpoints
 
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            BudgetSettings budget = settings.Value.ResolveBudget();
+            BudgetSettings budget = settings.Value.Budget;
 
             bool enabled = budget.Enabled;
 

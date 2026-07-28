@@ -71,7 +71,7 @@ internal static class WorkspaceIndexInspectorEndpoints
 
         }
 
-        EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
+        EmbeddingSettings embeddings = options.CurrentValue.Embeddings ?? new EmbeddingSettings();
 
         (bool _, string vectorMode, string vectorDiagnostic, int _) =
             EmbeddingsVectorStatus.Resolve(embeddings, weaveIndexAvailability);

@@ -1,7 +1,5 @@
 using System.Reflection;
-using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Compendium.Ux.Models;
 
 namespace RetroDownfall.Compendium.Ux.ViewModels;
@@ -117,7 +115,7 @@ public static class GenericSettingsUpdater
         if (index == parts.Length - 1)
         {
 
-            return SetPropertyOnClone(node, property, CoerceToPropertyType(property.PropertyType, value));
+            return SetInitProperty(node, property, CoerceToPropertyType(property.PropertyType, value));
 
         }
 
@@ -146,16 +144,17 @@ public static class GenericSettingsUpdater
 
         }
 
-        return SetPropertyOnClone(node, property, updatedChild);
+        return SetInitProperty(node, property, updatedChild);
 
     }
 
-    private static object? SetPropertyOnClone(object node, PropertyInfo property, object? value)
+    private static object? SetInitProperty(object node, PropertyInfo property, object? value)
     {
 
         Type type = node.GetType();
 
-        // Clone each record on the traversed path so an edit never mutates the loaded snapshot.
+        // C# records expose a compiler-generated <Clone>$ method. Prefer that so init-only
+        // properties can be updated via reflection without reconstructing via the copy ctor.
         MethodInfo? cloneMethod = type.GetMethod(
             "<Clone>$",
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
@@ -310,40 +309,6 @@ public static class GenericSettingsUpdater
                 return text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
             }
-
-        }
-
-        if (underlying == typeof(List<string>))
-        {
-
-            if (value is IEnumerable<string> items)
-            {
-
-                return items.ToList();
-
-            }
-
-            if (value is string text)
-            {
-
-                return text.Split(
-                        ',',
-                        StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .ToList();
-
-            }
-
-        }
-
-        if (underlying.IsGenericType
-            && underlying.GetGenericTypeDefinition() == typeof(Dictionary<,>)
-            && value is string json)
-        {
-
-            return JsonSerializer.Deserialize(
-                string.IsNullOrWhiteSpace(json) ? "{}" : json,
-                underlying,
-                ConfigurationJsonContext.Default);
 
         }
 

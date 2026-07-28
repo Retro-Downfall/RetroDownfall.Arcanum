@@ -2,10 +2,12 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -36,11 +38,9 @@ internal sealed class SpellCastPreviewService(
 
         long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings);
 
-        int maxDependencies = ArcanumSettingClamps.MaxDependencies(
-            ArcanumRuntimeDefaults.Spells.MaxDependencies);
+        int maxDependencies = ArcanumSettingClamps.MaxDependencies(settings.Spells.MaxDependencies);
 
-        int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(
-            ArcanumRuntimeDefaults.Spells.MaxDeclaredTools);
+        int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(settings.Spells.MaxDeclaredTools);
 
         IReadOnlyList<ParsedSpell> allSpells = await SpellScanner
             .ScanAsync(resolvedWorkspace, cancellationToken, maxSpellFileSizeBytes, maxDependencies, maxDeclaredTools)
@@ -54,8 +54,7 @@ internal sealed class SpellCastPreviewService(
                 new Error(ErrorCodes.Spell.NotFound, "No spell exists with that name in the resolved workspace."));
         }
 
-        int maxResonantDependencies = ArcanumSettingClamps.MaxResonantDependencies(
-            ArcanumRuntimeDefaults.Spells.MaxResonantDependencies);
+        int maxResonantDependencies = ArcanumSettingClamps.MaxResonantDependencies(settings.Spells.MaxResonantDependencies);
 
         ResolvedSpell resolved = await SpellDependencyResolver
             .ResolveAsync(primary, resolvedWorkspace, maxSpellFileSizeBytes, cancellationToken, logger, spellCatalog: null, maxResonantDependencies)
@@ -69,8 +68,7 @@ internal sealed class SpellCastPreviewService(
             Prompt: string.Empty,
             WorkingDirectory: resolvedWorkspace ?? string.Empty);
 
-        int maxResonantBytes = ArcanumSettingClamps.MaxResonantBytes(
-            ArcanumRuntimeDefaults.Spells.MaxResonantBytes);
+        int maxResonantBytes = ArcanumSettingClamps.MaxResonantBytes(settings.Spells.MaxResonantBytes);
 
         string systemPrompt = SystemPromptBuilder.Build(
             ping,
@@ -80,17 +78,6 @@ internal sealed class SpellCastPreviewService(
             campaignSummary: null,
             dependencySpells: resolved.Resonants,
             maxResonantBytes: maxResonantBytes);
-
-        IReadOnlyList<AITool> mcpTools = await mcpConnectionManager
-            .GetAvailableToolsAsync(resolvedWorkspace, cancellationToken)
-            .ConfigureAwait(false);
-
-        AttunementResult attunement = ArtifactAttunement.ApplyAttunement(mcpTools, primary.SkillMetadata?.DeclaredTools);
-
-        string[] availableTools = attunement.Allowed
-            .OfType<AIFunction>()
-            .Select(static f => f.Name)
-            .ToArray();
 
         HashSet<string> scripts = new(StringComparer.Ordinal);
 
@@ -107,6 +94,48 @@ internal sealed class SpellCastPreviewService(
             }
         }
 
+        IReadOnlyList<string>? declaredTools =
+            primary.SkillMetadata?.DeclaredTools;
+        IReadOnlyList<AITool> mcpTools = await mcpConnectionManager
+            .GetAvailableToolsAsync(resolvedWorkspace, cancellationToken)
+            .ConfigureAwait(false);
+        AttunementResult attunement =
+            ArtifactAttunement.ApplyAttunement(
+                mcpTools,
+                declaredTools);
+        List<string> availableTools =
+        [
+            ArcanumBuiltInToolNames.GetLocalSystemTime,
+            ArcanumBuiltInToolNames.GetArcanumSystemInfo,
+        ];
+
+        bool hostProcessToolsAllowed =
+            HostProcessToolPolicy.AreAllowed(
+                ArcanumEnvironment.ResolveEdition(settings.Edition));
+
+        if (scripts.Count > 0 && hostProcessToolsAllowed)
+        {
+            availableTools.Add(
+                ArcanumBuiltInToolNames.RunSpellScript);
+        }
+
+        bool browseWebAttuned =
+            declaredTools is not { Count: > 0 }
+            || declaredTools.Contains(
+                ArcanumBuiltInToolNames.BrowseWeb,
+                StringComparer.OrdinalIgnoreCase);
+
+        if (settings.WebBrowsing.Enabled && browseWebAttuned)
+        {
+            availableTools.Add(
+                ArcanumBuiltInToolNames.BrowseWeb);
+        }
+
+        availableTools.AddRange(
+            attunement.Allowed
+                .OfType<AIFunction>()
+                .Select(static function => function.Name));
+
         string[] resonantNames = resolved.Resonants.Select(static r => r.Name).ToArray();
 
         SpellCastResult result = new(
@@ -114,7 +143,7 @@ internal sealed class SpellCastPreviewService(
             string.IsNullOrEmpty(primary.Description) ? null : primary.Description,
             systemPrompt,
             resonantNames,
-            availableTools,
+            availableTools.ToArray(),
             scripts.ToArray(),
             codexContent,
             HasDeclaredToolsFilter: primary.SkillMetadata?.DeclaredTools is { Count: > 0 });

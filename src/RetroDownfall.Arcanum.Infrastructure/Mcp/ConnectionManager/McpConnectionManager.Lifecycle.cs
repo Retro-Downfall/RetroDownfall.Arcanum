@@ -27,6 +27,18 @@ public sealed partial class McpConnectionManager
     // unsupported. Both transports converge on FinishStartAsync (initialize + tools/list + wiring).
     private async Task<Result> StartManagedServerCoreAsync(ManagedMcpServerEntry entry, CancellationToken cancellationToken)
     {
+        if (entry.DetachedClientDisposal is { } detachedDisposal)
+        {
+            if (!detachedDisposal.IsCompleted)
+            {
+                return new Error(
+                    "Mcp.ClientDisposalIncomplete",
+                    "The previous MCP client is still shutting down.");
+            }
+
+            entry.DetachedClientDisposal = null;
+        }
+
         McpServerConfig cfg = entry.Config;
 
         return entry.Transport switch
@@ -248,7 +260,8 @@ public sealed partial class McpConnectionManager
         }
     }
 
-    private async Task StopManagedServerCoreAsync(ManagedMcpServerEntry entry, CancellationToken cancellationToken)
+    private async Task<bool> StopManagedServerCoreAsync(
+        ManagedMcpServerEntry entry)
     {
         IMcpClient? client = entry.Client;
 
@@ -256,27 +269,74 @@ public sealed partial class McpConnectionManager
 
         entry.LoadedTools.Clear();
 
-        if (client is not null)
+        Task? disposal = entry.DetachedClientDisposal;
+
+        try
         {
-            try
+            if (client is not null)
             {
-                await client.DisposeAsync().ConfigureAwait(false);
+                disposal = null;
+                disposal = client.DisposeAsync()
+                    .AsTask();
+
+                entry.DetachedClientDisposal = disposal;
+                TrackPendingWorkspaceRetirement(disposal);
+
+                using CancellationTokenSource cleanupDeadline =
+                    new(WorkspaceRetirementCleanupTimeout);
+
+                await disposal
+                    .WaitAsync(cleanupDeadline.Token)
+                    .ConfigureAwait(false);
             }
-            catch (Exception ex)
+            else if (disposal is not null)
             {
-                logger.LogWarning(ex, "Error disposing MCP client for server {ServerName}.", entry.Name);
+                if (!disposal.IsCompletedSuccessfully)
+                {
+                    _ = disposal.Exception;
+
+                    return false;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+            when (disposal is { IsCompleted: false })
+        {
+            logger.LogWarning(
+                "Timed out disposing a detached MCP client for server {ServerName}.",
+                entry.Name);
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            entry.DetachedClientDisposal =
+                disposal
+                ?? Task.FromException(ex);
+
+            logger.LogWarning(ex, "Error disposing MCP client for server {ServerName}.", entry.Name);
+
+            return false;
+        }
+        finally
+        {
+            string partitionKey = entry.ScopeWorkingDirectory is null
+                ? GlobalPartitionKey
+                : entry.ScopeWorkingDirectory;
+
+            if (client is not null
+                && _partitionClients.TryGetValue(
+                    partitionKey,
+                    out Lazy<McpPartitionClients>? partitionLazy)
+                && partitionLazy.IsValueCreated)
+            {
+                partitionLazy.Value.Clients.Remove(client);
             }
         }
 
-        string partitionKey = entry.ScopeWorkingDirectory is null ? GlobalPartitionKey : entry.ScopeWorkingDirectory;
+        entry.DetachedClientDisposal = null;
 
-        if (client is not null
-            && _partitionClients.TryGetValue(partitionKey, out Lazy<McpPartitionClients>? partitionLazy)
-            && partitionLazy.IsValueCreated
-            && partitionLazy.Value.Clients.Contains(client))
-        {
-            partitionLazy.Value.Clients.Remove(client);
-        }
+        return true;
     }
 
     private void RemoveClientFromPartition(ManagedMcpServerEntry entry, IMcpClient client)
@@ -479,14 +539,12 @@ public sealed partial class McpConnectionManager
 
     private int GetClampedListDirectoryMaxPaths()
     {
-        return ArcanumSettingClamps.ListDirectoryMaxPaths(
-            ArcanumRuntimeDefaults.Intelligence.ListDirectoryMaxPaths);
+        return ArcanumSettingClamps.ListDirectoryMaxPaths(settings.CurrentValue.Intelligence.ListDirectoryMaxPaths);
     }
 
     private long GetClampedToolOutputCapBytes()
     {
-        return ArcanumSettingClamps.ToolOutputCapBytes(
-            ArcanumRuntimeDefaults.Intelligence.ToolOutputCapBytes);
+        return ArcanumSettingClamps.ToolOutputCapBytes(settings.CurrentValue.Intelligence.ToolOutputCapBytes);
     }
 
     private async Task StartInternalInProcessServerForPartitionAsync(
@@ -504,18 +562,17 @@ public sealed partial class McpConnectionManager
         int listDirectoryMaxPaths = GetClampedListDirectoryMaxPaths();
 
         long maxFileReadSizeBytes = ArcanumSettingClamps.MaxFileReadSizeBytes(
-            ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
+            settings.CurrentValue.Workspaces?.MaxFileReadSizeBytes ?? new WorkspaceSettings().MaxFileReadSizeBytes);
 
-        EmbeddingSettings embeddings = settings.CurrentValue.ResolveEmbeddings();
+        EmbeddingSettings embeddings = settings.CurrentValue.Embeddings ?? new EmbeddingSettings();
 
         bool sagaEnabled = embeddings.Enabled && embeddings.SagaEnabled;
 
-        ConclaveSettings conclave = settings.CurrentValue.ResolveConclave();
+        ConclaveSettings conclave = settings.CurrentValue.Conclave ?? new ConclaveSettings();
 
-        ConclaveA2ASettings a2a =
-            conclave.A2A ?? ArcanumRuntimeDefaults.Conclave.A2A;
+        ConclaveA2ASettings a2a = conclave.A2A ?? new ConclaveA2ASettings();
 
-        AttachmentsSettings attachments = settings.CurrentValue.ResolveAttachments();
+        AttachmentsSettings attachments = settings.CurrentValue.Attachments ?? new AttachmentsSettings();
 
         bool attachmentsToolEnabled = attachments.Enabled && attachments.EnableModelAttachTool;
 
@@ -528,7 +585,8 @@ public sealed partial class McpConnectionManager
         bool a2aClientEffective = conclaveEffective && a2a.Enabled && a2a.ClientEnabled;
 
         WorkspaceCheckSettings workspaceCheck =
-            settings.CurrentValue.ResolveWorkspaceChecks();
+            settings.CurrentValue.CodingTools?.WorkspaceCheck
+            ?? _defaultWorkspaceCheckSettings;
 
         (ChannelWriter<string> toServer, ChannelReader<string> fromServer, ArcanumInternalToolServer server) =
             InProcessMcpTransport.CreateServerChannelPair(
@@ -539,7 +597,7 @@ public sealed partial class McpConnectionManager
                 executeTimeout,
                 timeoutSeconds,
                 listDirectoryMaxPaths,
-                settings.CurrentValue.ResolveIntelligence(),
+                settings.CurrentValue.Intelligence,
                 maxFileReadSizeBytes,
                 conclaveEffective,
                 sagaEnabled,
@@ -548,12 +606,13 @@ public sealed partial class McpConnectionManager
                 GetClampedMcpMaxJsonRpcLineBytes(),
                 logger: null,
                 allowHostProcessTools: allowHostProcessTools,
-                codingToolsSettings: settings.CurrentValue.ResolveCodingTools(),
+                codingToolsSettings: settings.CurrentValue.CodingTools,
                 workspaceCheckRuntime: new WorkspaceCheckRuntime(
                     workspaceCheck,
                     scopeFactory,
                     currentSettingsProvider: () =>
-                        settings.CurrentValue.ResolveWorkspaceChecks()));
+                        settings.CurrentValue.CodingTools?.WorkspaceCheck
+                        ?? _defaultWorkspaceCheckSettings));
 
         // The server's own RunAsync loop terminates when the client-to-server channel completes
         // (ChannelClientTransport session dispose calls toServer.TryComplete() on client disposal).

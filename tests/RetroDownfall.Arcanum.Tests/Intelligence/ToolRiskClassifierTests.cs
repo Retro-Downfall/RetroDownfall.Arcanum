@@ -14,7 +14,7 @@ public sealed class ToolRiskClassifierTests
     [InlineData("Workspace_Check")]
     public void RequiresWard_IntrinsicTool_IgnoresCustomizedForbiddenArtsAndCampaignPolicy(string toolName)
     {
-        WardSettings wards = ArcanumRuntimeDefaults.Ward with
+        WardSettings wards = new()
         {
             Enabled = true,
             ForbiddenArts = [],
@@ -26,7 +26,7 @@ public sealed class ToolRiskClassifierTests
     [Fact]
     public void RequiresWard_WardsDisabled_DisablesIntrinsicClassification()
     {
-        WardSettings wards = ArcanumRuntimeDefaults.Ward with
+        WardSettings wards = new()
         {
             Enabled = false,
             ForbiddenArts = [],
@@ -42,7 +42,7 @@ public sealed class ToolRiskClassifierTests
     [Fact]
     public void RequiresWard_ConfiguredNonIntrinsicTool_StillRequiresCampaignPolicy()
     {
-        WardSettings wards = ArcanumRuntimeDefaults.Ward with
+        WardSettings wards = new()
         {
             Enabled = true,
             ForbiddenArts = ["write_file"],
@@ -93,7 +93,7 @@ public sealed class ToolRiskClassifierTests
     [Fact]
     public void WardDefaults_ContinueToAdvertiseIntrinsicRiskNames()
     {
-        WardSettings defaults = ArcanumRuntimeDefaults.Ward;
+        WardSettings defaults = new();
 
         Assert.Contains(ToolRiskClassifier.ExecuteCommandToolName, defaults.ForbiddenArts);
         Assert.Contains(ToolRiskClassifier.ApplyPatchToolName, defaults.ForbiddenArts);

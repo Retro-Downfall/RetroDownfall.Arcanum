@@ -8,9 +8,16 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 /// </summary>
 public interface IModelCallExecutor
 {
+
     /// <summary>
-    /// Buffered provider invocation with purpose metadata. Production callers must supply a
-    /// model-call context so context, cache, fingerprint, and cost admission cannot be bypassed.
+    /// Records that a model call is about to occur against <paramref name="budget"/>. Returns false when
+    /// the turn's model-call ceiling is exhausted.
+    /// </summary>
+    bool TryBeginModelCall(ITurnBudget budget);
+
+    /// <summary>
+    /// Buffered provider invocation with budget begin + purpose metadata. Production callers must
+    /// supply a model-call context so admission cannot be bypassed.
     /// </summary>
     Task<ModelCallOutcome> ExecuteBufferedAsync(
         IChatClient chatClient,
@@ -24,7 +31,7 @@ public interface IModelCallExecutor
     /// <summary>
     /// Streaming provider invocation; yields semantic context/answer/reasoning/usage updates before
     /// each corresponding raw response update, then completes. Production callers must supply a
-    /// model-call context so non-count admission remains authoritative.
+    /// model-call context.
     /// </summary>
     IAsyncEnumerable<ModelCallUpdate> ExecuteStreamingAsync(
         IChatClient chatClient,

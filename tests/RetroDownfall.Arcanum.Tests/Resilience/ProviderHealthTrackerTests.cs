@@ -2,20 +2,28 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Resilience;
 using RetroDownfall.Arcanum.Infrastructure.Resilience;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Resilience;
 
 public sealed class ProviderHealthTrackerTests
 {
 
-    private static IProviderHealthTracker CreateTracker()
+    private static IProviderHealthTracker CreateTracker(int healthFailureThreshold = 3)
     {
-        return new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance);
-    }
 
-    private static int FailureThreshold =>
-        ArcanumSettingClamps.HealthFailureThreshold(
-            ArcanumRuntimeDefaults.Resilience.HealthFailureThreshold);
+        ArcanumSettings settings = new()
+        {
+
+            Resilience = new ResilienceSettings { HealthFailureThreshold = healthFailureThreshold },
+
+        };
+
+        return new ProviderHealthTracker(
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<ProviderHealthTracker>.Instance);
+
+    }
 
     [Fact]
     public void IsHealthy_returns_true_for_unknown_provider()
@@ -31,7 +39,7 @@ public sealed class ProviderHealthTrackerTests
     public void MarkFailed_increments_consecutive_failures()
     {
 
-        IProviderHealthTracker tracker = CreateTracker();
+        IProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 3);
 
         tracker.MarkFailed("ollama");
 
@@ -47,12 +55,13 @@ public sealed class ProviderHealthTrackerTests
     public void IsHealthy_returns_false_after_threshold()
     {
 
-        IProviderHealthTracker tracker = CreateTracker();
+        IProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 3);
 
-        for (int i = 0; i < FailureThreshold; i++)
-        {
-            tracker.MarkFailed("ollama");
-        }
+        tracker.MarkFailed("ollama");
+
+        tracker.MarkFailed("ollama");
+
+        tracker.MarkFailed("ollama");
 
         Assert.False(tracker.IsHealthy("ollama"));
 
@@ -62,12 +71,13 @@ public sealed class ProviderHealthTrackerTests
     public void MarkHealthy_resets_to_healthy()
     {
 
-        IProviderHealthTracker tracker = CreateTracker();
+        IProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 3);
 
-        for (int i = 0; i < FailureThreshold; i++)
-        {
-            tracker.MarkFailed("ollama");
-        }
+        tracker.MarkFailed("ollama");
+
+        tracker.MarkFailed("ollama");
+
+        tracker.MarkFailed("ollama");
 
         Assert.False(tracker.IsHealthy("ollama"));
 
@@ -85,12 +95,11 @@ public sealed class ProviderHealthTrackerTests
     public void MarkFailed_below_threshold_stays_healthy()
     {
 
-        IProviderHealthTracker tracker = CreateTracker();
+        IProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 3);
 
-        for (int i = 0; i < FailureThreshold - 1; i++)
-        {
-            tracker.MarkFailed("ollama");
-        }
+        tracker.MarkFailed("ollama");
+
+        tracker.MarkFailed("ollama");
 
         Assert.True(tracker.IsHealthy("ollama"));
 
@@ -100,16 +109,13 @@ public sealed class ProviderHealthTrackerTests
     public void HealthChanged_fires_only_on_transition()
     {
 
-        IProviderHealthTracker tracker = CreateTracker();
+        IProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 2);
 
         List<ProviderHealthStatus> transitions = [];
 
         tracker.HealthChanged += transitions.Add;
 
-        for (int i = 0; i < FailureThreshold - 1; i++)
-        {
-            tracker.MarkFailed("ollama");
-        }
+        tracker.MarkFailed("ollama");
 
         Assert.Empty(transitions);
 

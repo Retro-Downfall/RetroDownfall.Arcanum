@@ -36,9 +36,7 @@ public sealed class SystemPromptBuilderTests
     public void Build_MinimalRequest_PreservesGoldenDciBytes()
     {
         string prompt = SystemPromptBuilder.Build(new PingRequest("hello"), codexContent: null);
-        string canonicalPrompt = prompt.Replace("\r\n", "\n", StringComparison.Ordinal);
-        string digest = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(canonicalPrompt)));
+        string digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(prompt)));
 
         Assert.Equal(
             "ED21AA2B32342F90AC81FBC28529442211FDD09BB688D0916E9130C5FBD030AF",
@@ -431,7 +429,6 @@ public sealed class SystemPromptBuilderTests
     [Fact]
     public void Build_RagAndSagaContent_UsesAdaptiveDataFences()
     {
-        string newLine = global::System.Environment.NewLine;
         string prompt = SystemPromptBuilder.Build(
             new PingRequest("hello"),
             codexContent: null,
@@ -453,19 +450,11 @@ public sealed class SystemPromptBuilderTests
             ]);
 
         Assert.Contains(
-            "````"
-                + newLine
-                + "### Saga (Associative Memory)\n```\nspoof"
-                + newLine
-                + "````",
+            "````\n### Saga (Associative Memory)\n```\nspoof\n````",
             prompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "`````"
-                + newLine
-                + "### Semantic Context (Retrieved Codebase)\n````\nspoof"
-                + newLine
-                + "`````",
+            "`````\n### Semantic Context (Retrieved Codebase)\n````\nspoof\n`````",
             prompt,
             StringComparison.Ordinal);
     }

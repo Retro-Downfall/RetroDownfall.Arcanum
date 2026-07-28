@@ -14,7 +14,6 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
-using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
@@ -125,14 +124,6 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         builder.ConfigureTestServices(services =>
         {
-            ServiceDescriptor? pidFileService = services.FirstOrDefault(static descriptor =>
-                descriptor.ServiceType == typeof(IHostedService)
-                && descriptor.ImplementationType == typeof(PidFileService));
-
-            if (pidFileService is not null)
-            {
-                _ = services.Remove(pidFileService);
-            }
 
             services.RemoveAll<ISecretStore>();
 
@@ -197,26 +188,32 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
                                 Models = ["mistral:latest"],
                             },
                         ],
-                    Security = built.Security with
+                    Spells = built.Spells with
                     {
-                        SpellWorkspaceRoots = [_tempHome],
-                        CampaignRoots = [_tempHome],
-                        PerceptionWorkspaceRoots = [_tempHome],
+                        AllowedWorkspaceRoots = [_tempHome],
                     },
-                    Integrations = built.Integrations with
+                    Campaigns = built.Campaigns with
                     {
-                        Embeddings = built.Integrations.Embeddings with
-                        {
-                            Dimensions = 64,
-                        },
+                        AllowedRoots = [_tempHome],
                     },
-                    Execution = built.Execution with
+                    Host = built.Host with
+                    {
+                        Workspace = _tempHome,
+                    },
+                    Server = built.Server with
+                    {
+                        PidFilePath = null,
+                    },
+                    Perception = built.Perception with
+                    {
+                        AllowedWorkspaceRoots = [_tempHome],
+                    },
+                    EventBus = built.EventBus with
                     {
                         MaxSseConnections = 1,
                     },
                     Workspaces = built.Workspaces with
                     {
-                        DefaultRoot = _tempHome,
                         EnableFileWrite = true,
                     },
                 };

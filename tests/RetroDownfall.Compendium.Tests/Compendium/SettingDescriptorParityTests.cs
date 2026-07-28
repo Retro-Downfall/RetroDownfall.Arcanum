@@ -151,7 +151,7 @@ public sealed class SettingDescriptorParityTests
     {
         SettingDescriptor descriptor = Assert.Single(
             SettingDescriptors.All,
-            static d => d.Key == "cost.pricing.defaultPricing.reasoningPer1M");
+            static d => d.Key == "pricing.defaultPricing.reasoningPer1M");
 
         Assert.Equal(SettingKind.Float, descriptor.Kind);
         Assert.Equal(0, descriptor.Min);
@@ -161,26 +161,21 @@ public sealed class SettingDescriptorParityTests
 
     [Theory]
     [InlineData(
-        "execution.maxConcurrentApprentices",
+        "codingTools.search.maxPatternChars",
         1,
-        50,
-        nameof(ArcanumSettingClamps.MaxConcurrentApprentices))]
+        16_384,
+        nameof(ArcanumSettingClamps.WorkspaceSearchMaxPatternChars))]
     [InlineData(
-        "execution.maxPendingApprenticeStarts",
-        1,
+        "codingTools.patch.fuzzyMatchWindowLines",
+        0,
         1_000,
-        nameof(ArcanumSettingClamps.MaxPendingStarts))]
+        nameof(ArcanumSettingClamps.WorkspacePatchFuzzyMatchWindowLines))]
     [InlineData(
-        "execution.maxSseConnections",
-        1,
-        100,
-        nameof(ArcanumSettingClamps.MaxSseConnections))]
-    [InlineData(
-        "daemon.maxConcurrentJobs",
-        1,
-        1_024,
-        nameof(ArcanumSettingClamps.DaemonMaxConcurrentJobs))]
-    public void Capacity_descriptor_matches_contract_bounds(
+        "codingTools.workspaceCheck.timeoutSeconds",
+        30,
+        1_800,
+        nameof(ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds))]
+    public void Coding_tool_descriptor_matches_contract_bounds(
         string key,
         double min,
         double max,

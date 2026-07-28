@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the test suite with coverage, render an HTML report, and (optionally)
-# enforce the tiered coverage gates documented in docs/Arcanum.DESIGN.md section 13.
+# enforce the tiered coverage gates documented in docs/tests.README.md.
 #
 # Usage:
 #   scripts/coverage.sh              # collect coverage + write HTML report

@@ -25,8 +25,6 @@ internal sealed class ApprenticeService(
     ILogger<ApprenticeService> logger) : BackgroundService, IApprenticeRuntime
 {
 
-    private const string UnattendedDenySnippet = "Forbidden art denied";
-
     private readonly ConcurrentDictionary<Guid, ExecutionLease> _executionTokens = new();
 
     private readonly ConcurrentDictionary<Guid, long> _executionGenerations = new();
@@ -1065,7 +1063,9 @@ internal sealed class ApprenticeService(
                     return;
                 }
 
-                plan = ApprenticePlanParser.ParsePlan(planResult.Value.Text);
+                plan = ApprenticePlanParser.ParsePlan(
+                    planResult.Value.Text,
+                    ArcanumSettingClamps.MaxPlanSteps(optionsMonitor.CurrentValue.Intelligence.MaxPlanSteps));
 
                 apprentice.Plan = ApprenticeRepository.SerializePlan(plan);
 
@@ -1105,9 +1105,46 @@ internal sealed class ApprenticeService(
                 await repo.UpdateAsync(apprentice, linkedCts.Token).ConfigureAwait(false);
             }
 
+            int stepTimeoutMinutes = ArcanumSettingClamps.StepTimeoutMinutes(settings.StepTimeoutMinutes);
+
+            int maxStepRetries = ArcanumSettingClamps.MaxStepRetries(settings.MaxStepRetries);
+
+            int retryBackoffSeconds = ArcanumSettingClamps.RetryBackoffSeconds(settings.RetryBackoffSeconds);
+
+            int retryBackoffMaxSeconds = ArcanumSettingClamps.RetryBackoffMaxSeconds(settings.RetryBackoffMaxSeconds);
+
+            int maxRunSteps = ArcanumSettingClamps.MaxRunSteps(settings.MaxRunSteps);
+
+            int maxRunDurationMinutes = ArcanumSettingClamps.MaxRunDurationMinutes(settings.MaxRunDurationMinutes);
+
+            int maxReweavesPerRun = ArcanumSettingClamps.MaxReweavesPerRun(settings.MaxReweavesPerRun);
+
+            int stepsExecutedThisRun = 0;
+
+            int reweavesThisRun = 0;
+
             while (apprentice.CurrentStep < plan.Count)
             {
                 linkedCts.Token.ThrowIfCancellationRequested();
+
+                TimeSpan runElapsed = DateTimeOffset.UtcNow - runStarted;
+
+                if (ApprenticeExecutionPolicy.IsRunStepBudgetExceeded(stepsExecutedThisRun, maxRunSteps)
+                    || ApprenticeExecutionPolicy.IsRunDurationBudgetExceeded(runElapsed, maxRunDurationMinutes))
+                {
+
+                    await TerminateRunBudgetAsync(
+                        repo,
+                        apprentice,
+                        apprenticeId,
+                        apprentice.CurrentStep,
+                        "Per-run step or time budget was exceeded.",
+                        settings,
+                        linkedCts.Token).ConfigureAwait(false);
+
+                    return;
+
+                }
 
                 Apprentice? fresh = await repo.GetByIdAsync(apprenticeId, linkedCts.Token).ConfigureAwait(false);
 
@@ -1145,7 +1182,7 @@ internal sealed class ApprenticeService(
                 if (simulacrumGroupEnd - stepIndex > 1)
                 {
 
-                    bool advanced = await ExecuteSimulacrumGroupAsync(
+                    (bool advanced, reweavesThisRun) = await ExecuteSimulacrumGroupAsync(
                         repo,
                         intelligence,
                         apprentice,
@@ -1153,8 +1190,14 @@ internal sealed class ApprenticeService(
                         stepIndex,
                         simulacrumGroupEnd,
                         settings,
+                        stepTimeoutMinutes,
+                        maxStepRetries,
+                        retryBackoffSeconds,
+                        retryBackoffMaxSeconds,
                         apprenticeId,
-                        linkedCts).ConfigureAwait(false);
+                        linkedCts,
+                        reweavesThisRun,
+                        maxReweavesPerRun).ConfigureAwait(false);
 
                     if (!advanced)
                     {
@@ -1163,15 +1206,15 @@ internal sealed class ApprenticeService(
 
                     }
 
+                    stepsExecutedThisRun += simulacrumGroupEnd - stepIndex;
+
                     continue;
 
                 }
 
                 StepExecutionOutcome? outcome = null;
-                HashSet<StepRecoveryState> observedRecoveryStates = [];
-                int attempt = 1;
 
-                while (true)
+                for (int attempt = 1; attempt <= maxStepRetries + 1; attempt++)
                 {
 
                     linkedCts.Token.ThrowIfCancellationRequested();
@@ -1224,6 +1267,7 @@ internal sealed class ApprenticeService(
                         intelligence,
                         apprentice,
                         stepPrompt,
+                        stepTimeoutMinutes,
                         linkedCts,
                         apprenticeId).ConfigureAwait(false);
 
@@ -1282,37 +1326,47 @@ internal sealed class ApprenticeService(
 
                     }
 
-                    StepRecoveryState recoveryState = BuildStepRecoveryState(outcome);
-                    if (!observedRecoveryStates.Add(recoveryState))
+                    if (attempt > maxStepRetries)
                     {
-                        const string noProgressMessage =
-                            "Step recovery stopped because the same failure evidence repeated.";
+
                         if (settings.EnableDivineIntervention)
                         {
+
                             await EscalateAsync(
                                 repo,
                                 apprentice,
                                 apprenticeId,
                                 stepIndex,
-                                noProgressMessage,
+                                outcome.ErrorMessage ?? "Step retries were exhausted.",
                                 alreadyAlerted: false,
                                 linkedCts.Token).ConfigureAwait(false);
+
                         }
                         else
                         {
+
                             await FailStepAsync(
                                 repo,
                                 apprentice,
                                 plan,
                                 stepIndex,
                                 current,
-                                noProgressMessage,
+                                outcome.ErrorMessage ?? "Step retries were exhausted.",
                                 apprenticeId,
                                 linkedCts.Token).ConfigureAwait(false);
+
                         }
 
                         return;
+
                     }
+
+                    TimeSpan backoff = ApprenticeExecutionPolicy.ComputeBackoff(
+                        attempt,
+                        retryBackoffSeconds,
+                        retryBackoffMaxSeconds);
+
+                    long backoffMs = (long)backoff.TotalMilliseconds;
 
                     string retryMessage = ApprenticeExecutionPolicy.SanitizeOperatorMessage(outcome.ErrorMessage);
 
@@ -1329,11 +1383,35 @@ internal sealed class ApprenticeService(
                         Timestamp = DateTimeOffset.UtcNow,
                         StepIndex = current.Index,
                         Attempt = attempt,
-                        BackoffMs = 0,
+                        BackoffMs = backoffMs,
                         Error = retryMessage,
                     });
 
-                    attempt++;
+                    try
+                    {
+
+                        await Task.Delay(backoff, linkedCts.Token).ConfigureAwait(false);
+
+                    }
+                    catch (OperationCanceledException)
+                    {
+
+                        Apprentice? pausedCheck = await repo
+                            .GetByIdAsync(apprenticeId, CancellationToken.None)
+                            .ConfigureAwait(false);
+
+                        if (pausedCheck is not null
+                            && (string.Equals(pausedCheck.Status, ApprenticeStatus.Paused.ToString(), StringComparison.Ordinal)
+                                || string.Equals(pausedCheck.Status, ApprenticeStatus.Cancelled.ToString(), StringComparison.Ordinal)))
+                        {
+
+                            return;
+
+                        }
+
+                        throw;
+
+                    }
 
                 }
 
@@ -1359,13 +1437,15 @@ internal sealed class ApprenticeService(
                 if (settings.EnableShiftingFate)
                 {
 
-                    plan = await AttemptShiftingFateAsync(
+                    (plan, reweavesThisRun) = await AttemptShiftingFateAsync(
                         repo,
                         intelligence,
                         apprentice,
                         plan,
                         stepIndex,
                         apprenticeId,
+                        reweavesThisRun,
+                        maxReweavesPerRun,
                         linkedCts.Token).ConfigureAwait(false);
 
                 }
@@ -1381,6 +1461,8 @@ internal sealed class ApprenticeService(
                     linkedCts.Token).ConfigureAwait(false);
 
                 plan = ApprenticeRepository.DeserializePlan(apprentice.Plan);
+
+                stepsExecutedThisRun++;
 
             }
 
@@ -1665,17 +1747,64 @@ internal sealed class ApprenticeService(
 
     }
 
-    private async Task<List<PlanStep>> AttemptShiftingFateAsync(
+    private async Task TerminateRunBudgetAsync(
+        IApprenticeRepository repo,
+        Apprentice apprentice,
+        Guid apprenticeId,
+        int stepIndex,
+        string reason,
+        ApprenticeSettings settings,
+        CancellationToken cancellationToken)
+    {
+
+        string sanitized = ApprenticeExecutionPolicy.SanitizeOperatorMessage(reason);
+
+        if (settings.EnableDivineIntervention)
+        {
+
+            await EscalateAsync(
+                repo,
+                apprentice,
+                apprenticeId,
+                stepIndex,
+                sanitized,
+                alreadyAlerted: false,
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        else
+        {
+
+            await FailApprenticeAsync(repo, apprentice, sanitized, apprenticeId, cancellationToken).ConfigureAwait(false);
+
+        }
+
+    }
+
+    private async Task<(List<PlanStep> Plan, int ReweavesThisRun)> AttemptShiftingFateAsync(
         IApprenticeRepository repo,
         IArcanumIntelligenceProvider intelligence,
         Apprentice apprentice,
         List<PlanStep> plan,
         int completedStepIndex,
         Guid apprenticeId,
+        int reweavesThisRun,
+        int maxReweavesPerRun,
         CancellationToken cancellationToken)
     {
         try
         {
+
+            if (ApprenticeExecutionPolicy.IsReweaveBudgetExceeded(reweavesThisRun, maxReweavesPerRun))
+            {
+
+                logger.LogInformation(
+                    "Shifting Fate re-weave budget reached for Apprentice {ApprenticeId}.",
+                    apprenticeId);
+
+                return (plan, reweavesThisRun);
+
+            }
 
             string weavePrompt = ApprenticePromptBuilder.BuildWeaveEvaluationPrompt(
                 apprentice,
@@ -1701,16 +1830,17 @@ internal sealed class ApprenticeService(
                     apprenticeId,
                     weaveResult.Error.Message);
 
-                return plan;
+                return (plan, reweavesThisRun);
 
             }
 
-            if (!ApprenticePlanParser.TryParseRevisedPlan(
-                    weaveResult.Value.Text,
-                    out List<PlanStep>? revisedTail)
+            int maxPlanSteps = ArcanumSettingClamps.MaxPlanSteps(optionsMonitor.CurrentValue.Intelligence.MaxPlanSteps);
+
+            if (!ApprenticePlanParser.TryParseRevisedPlan(weaveResult.Value.Text, out List<PlanStep>? revisedTail, maxPlanSteps)
                 || revisedTail is null)
             {
-                return plan;
+
+                return (plan, reweavesThisRun);
 
             }
 
@@ -1718,11 +1848,6 @@ internal sealed class ApprenticeService(
                 plan,
                 completedStepIndex + 1,
                 revisedTail);
-
-            if (merged.SequenceEqual(plan))
-            {
-                return plan;
-            }
 
             apprentice.Plan = ApprenticeRepository.SerializePlan(merged);
 
@@ -1737,19 +1862,15 @@ internal sealed class ApprenticeService(
                 AtStep = completedStepIndex + 1,
             });
 
-            return merged;
+            return (merged, reweavesThisRun + 1);
 
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
         }
         catch (Exception ex)
         {
 
             logger.LogWarning(ex, "Shifting Fate evaluation threw for Apprentice {ApprenticeId}.", apprenticeId);
 
-            return plan;
+            return (plan, reweavesThisRun);
 
         }
 
@@ -1849,7 +1970,7 @@ internal sealed class ApprenticeService(
 
     }
 
-    private async Task<bool> ExecuteSimulacrumGroupAsync(
+    private async Task<(bool Advanced, int ReweavesThisRun)> ExecuteSimulacrumGroupAsync(
         IApprenticeRepository repo,
         IArcanumIntelligenceProvider intelligence,
         Apprentice apprentice,
@@ -1857,8 +1978,14 @@ internal sealed class ApprenticeService(
         int groupStart,
         int groupEnd,
         ApprenticeSettings settings,
+        int stepTimeoutMinutes,
+        int maxStepRetries,
+        int retryBackoffSeconds,
+        int retryBackoffMaxSeconds,
         Guid apprenticeId,
-        CancellationTokenSource linkedCts)
+        CancellationTokenSource linkedCts,
+        int reweavesThisRun,
+        int maxReweavesPerRun)
     {
         DateTimeOffset groupStarted = DateTimeOffset.UtcNow;
 
@@ -1901,9 +2028,9 @@ internal sealed class ApprenticeService(
 
         }
 
-        int maxConcurrentBranches = ArcanumSettingClamps.MaxConcurrentApprenticeBranches(
-            optionsMonitor.CurrentValue.Execution.MaxConcurrentApprenticeBranches);
-        using SemaphoreSlim gate = new(maxConcurrentBranches, maxConcurrentBranches);
+        int maxSimulacra = ArcanumSettingClamps.MaxSimulacra(settings.MaxSimulacra);
+
+        using SemaphoreSlim gate = new(maxSimulacra, maxSimulacra);
 
         Apprentice snapshot = apprentice;
 
@@ -1922,6 +2049,10 @@ internal sealed class ApprenticeService(
                 planSnapshot,
                 branchIndex,
                 settings,
+                stepTimeoutMinutes,
+                maxStepRetries,
+                retryBackoffSeconds,
+                retryBackoffMaxSeconds,
                 apprenticeId,
                 linkedCts));
 
@@ -1971,7 +2102,7 @@ internal sealed class ApprenticeService(
         if (anyPaused)
         {
 
-            return false;
+            return (false, reweavesThisRun);
 
         }
 
@@ -1980,7 +2111,7 @@ internal sealed class ApprenticeService(
         if (fresh is null)
         {
 
-            return false;
+            return (false, reweavesThisRun);
 
         }
 
@@ -1989,7 +2120,7 @@ internal sealed class ApprenticeService(
             || ApprenticeExecutionPolicy.IsEscalatedStatus(fresh.Status))
         {
 
-            return false;
+            return (false, reweavesThisRun);
 
         }
 
@@ -2026,7 +2157,7 @@ internal sealed class ApprenticeService(
 
             }
 
-            return false;
+            return (false, reweavesThisRun);
 
         }
 
@@ -2042,7 +2173,7 @@ internal sealed class ApprenticeService(
                 escalated.AlreadyAlerted,
                 linkedCts.Token).ConfigureAwait(false);
 
-            return false;
+            return (false, reweavesThisRun);
 
         }
 
@@ -2118,18 +2249,20 @@ internal sealed class ApprenticeService(
         if (settings.EnableShiftingFate)
         {
 
-            _ = await AttemptShiftingFateAsync(
+            (plan, reweavesThisRun) = await AttemptShiftingFateAsync(
                 repo,
                 intelligence,
                 apprentice,
                 plan,
                 groupEnd - 1,
                 apprenticeId,
+                reweavesThisRun,
+                maxReweavesPerRun,
                 linkedCts.Token).ConfigureAwait(false);
 
         }
 
-        return true;
+        return (true, reweavesThisRun);
 
     }
 
@@ -2139,6 +2272,10 @@ internal sealed class ApprenticeService(
         IReadOnlyList<PlanStep> planSnapshot,
         int stepIndex,
         ApprenticeSettings settings,
+        int stepTimeoutMinutes,
+        int maxStepRetries,
+        int retryBackoffSeconds,
+        int retryBackoffMaxSeconds,
         Guid apprenticeId,
         CancellationTokenSource linkedCts)
     {
@@ -2170,11 +2307,15 @@ internal sealed class ApprenticeService(
                 stepIndex,
                 stateless: true,
                 settings,
+                stepTimeoutMinutes,
+                maxStepRetries,
+                retryBackoffSeconds,
+                retryBackoffMaxSeconds,
                 apprenticeId,
                 linkedCts).ConfigureAwait(false);
 
         }
-        catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
 
             return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, 0, []);
@@ -2215,16 +2356,18 @@ internal sealed class ApprenticeService(
         int stepIndex,
         bool stateless,
         ApprenticeSettings settings,
+        int stepTimeoutMinutes,
+        int maxStepRetries,
+        int retryBackoffSeconds,
+        int retryBackoffMaxSeconds,
         Guid apprenticeId,
         CancellationTokenSource linkedCts)
     {
         ApprenticeCheckpoint? checkpoint = ApprenticeRepository.DeserializeCheckpoint(snapshot.CheckpointData);
 
         StepExecutionOutcome? outcome = null;
-        HashSet<StepRecoveryState> observedRecoveryStates = [];
-        int attempt = 1;
 
-        while (true)
+        for (int attempt = 1; attempt <= maxStepRetries + 1; attempt++)
         {
 
             linkedCts.Token.ThrowIfCancellationRequested();
@@ -2239,6 +2382,7 @@ internal sealed class ApprenticeService(
                 intelligence,
                 snapshot,
                 stepPrompt,
+                stepTimeoutMinutes,
                 linkedCts,
                 apprenticeId,
                 stateless).ConfigureAwait(false);
@@ -2293,30 +2437,19 @@ internal sealed class ApprenticeService(
 
             }
 
-            StepRecoveryState recoveryState = BuildStepRecoveryState(outcome);
-            if (!observedRecoveryStates.Add(recoveryState))
+            if (attempt > maxStepRetries)
             {
-                const string noProgressMessage =
-                    "Step recovery stopped because the same failure evidence repeated.";
+
                 return settings.EnableDivineIntervention
-                    ? new SingleStepResult(
-                        stepIndex,
-                        StepResultKind.Escalated,
-                        null,
-                        noProgressMessage,
-                        false,
-                        attempt - 1,
-                        outcome.SpawnedChildIds)
-                    : new SingleStepResult(
-                        stepIndex,
-                        StepResultKind.Terminal,
-                        null,
-                        noProgressMessage,
-                        false,
-                        attempt - 1,
-                        outcome.SpawnedChildIds);
+                    ? new SingleStepResult(stepIndex, StepResultKind.Escalated, null, outcome.ErrorMessage ?? "Step retries were exhausted.", false, attempt - 1, outcome.SpawnedChildIds)
+                    : new SingleStepResult(stepIndex, StepResultKind.Terminal, null, outcome.ErrorMessage ?? "Step retries were exhausted.", false, attempt - 1, outcome.SpawnedChildIds);
 
             }
+
+            TimeSpan backoff = ApprenticeExecutionPolicy.ComputeBackoff(
+                attempt,
+                retryBackoffSeconds,
+                retryBackoffMaxSeconds);
 
             Publish(apprenticeId, new ApprenticeEvent
             {
@@ -2325,30 +2458,35 @@ internal sealed class ApprenticeService(
                 Timestamp = DateTimeOffset.UtcNow,
                 StepIndex = planSnapshot[stepIndex].Index,
                 Attempt = attempt,
-                BackoffMs = 0,
+                BackoffMs = (long)backoff.TotalMilliseconds,
                 Error = ApprenticeExecutionPolicy.SanitizeOperatorMessage(outcome.ErrorMessage),
             });
 
-            attempt++;
+            try
+            {
+
+                await Task.Delay(backoff, linkedCts.Token).ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                return new SingleStepResult(stepIndex, StepResultKind.PausedOrCancelled, null, null, false, attempt, outcome.SpawnedChildIds);
+
+            }
 
         }
 
+        return new SingleStepResult(
+            stepIndex,
+            StepResultKind.Terminal,
+            null,
+            outcome?.ErrorMessage ?? "Step execution failed.",
+            false,
+            maxStepRetries,
+            outcome?.SpawnedChildIds ?? []);
+
     }
-
-    private static StepRecoveryState BuildStepRecoveryState(StepExecutionOutcome outcome) =>
-        new(
-            outcome.ErrorMessage ?? string.Empty,
-            outcome.ResultText ?? string.Empty,
-            string.Join(
-                ",",
-                outcome.SpawnedChildIds
-                    .Order()
-                    .Select(static id => id.ToString("N"))));
-
-    private readonly record struct StepRecoveryState(
-        string ErrorMessage,
-        string ResultText,
-        string SpawnedChildIds);
 
     private enum StepResultKind
     {
@@ -2589,10 +2727,15 @@ internal sealed class ApprenticeService(
         IArcanumIntelligenceProvider intelligence,
         Apprentice apprentice,
         string stepPrompt,
+        int stepTimeoutMinutes,
         CancellationTokenSource linkedCts,
         Guid apprenticeId,
         bool stateless = false)
     {
+        using CancellationTokenSource stepTimeout = CancellationTokenSource.CreateLinkedTokenSource(linkedCts.Token);
+
+        stepTimeout.CancelAfter(TimeSpan.FromMinutes(stepTimeoutMinutes));
+
         DateTimeOffset stepStarted = DateTimeOffset.UtcNow;
 
         string stepResultText = string.Empty;
@@ -2638,7 +2781,7 @@ internal sealed class ApprenticeService(
                     SkipSpellRouting: true);
 
             await foreach (IntelligenceEvent frame in intelligence
-                .StreamPromptAsync(stepRequest, linkedCts.Token)
+                .StreamPromptAsync(stepRequest, stepTimeout.Token)
                 .ConfigureAwait(false))
             {
 
@@ -2729,14 +2872,14 @@ internal sealed class ApprenticeService(
                 }
 
                 if (frame.Type == IntelligenceEventType.ToolResult
-                    && frame.Message.Contains(UnattendedDenySnippet, StringComparison.OrdinalIgnoreCase))
+                    && frame.ToolDenied)
                 {
 
                     stepFailed = true;
 
                     forbiddenArtDenied = true;
 
-                    stepError = frame.Message;
+                    stepError = frame.Data;
 
                 }
 
@@ -2756,7 +2899,7 @@ internal sealed class ApprenticeService(
                 // so the Chronicle events are published immediately here — apprenticeId (the currently
                 // running Apprentice) is already in scope, which is exactly the piece of context the
                 // dispatch_sending MCP tool itself cannot see (it is workspace-scoped, not
-                // Apprentice-scoped; see docs/Arcanum.DESIGN.md §5.7.1.
+                // Apprentice-scoped; see DESIGN.md §5.7.1).
                 if (frame.Type == IntelligenceEventType.ToolResult
                     && string.Equals(frame.ToolCall?.Name, "dispatch_sending", StringComparison.Ordinal)
                     && !string.IsNullOrWhiteSpace(frame.Data))
@@ -2784,6 +2927,14 @@ internal sealed class ApprenticeService(
         {
 
             pauseOrCancel = true;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            stepFailed = true;
+
+            stepError = $"Step timed out after {stepTimeoutMinutes} minutes.";
 
         }
 
@@ -2884,7 +3035,7 @@ internal sealed class ApprenticeService(
         chronicleHub.Publish(apprenticeId, @event);
 
     private ApprenticeSettings GetApprenticeSettings() =>
-        optionsMonitor.CurrentValue.ResolveApprentices();
+        optionsMonitor.CurrentValue.Apprentices ?? new ApprenticeSettings();
 
     private string? ResolveModel()
     {

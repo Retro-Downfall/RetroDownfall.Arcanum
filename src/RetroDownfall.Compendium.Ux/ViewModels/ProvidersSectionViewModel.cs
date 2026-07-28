@@ -14,11 +14,15 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
     public ObservableCollection<ProviderViewModel> Providers { get; } = [];
 
+    private ProviderSettings[] _providerSnapshot = [];
+
     public void LoadFrom(
         ProviderSettings[] providers,
         string? defaultModel,
         string? fastModel)
     {
+
+        _providerSnapshot = providers;
 
         DefaultModel = defaultModel ?? string.Empty;
 
@@ -35,12 +39,27 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
     }
 
-    public ProviderSettings[] BuildProviders() =>
-        [.. Providers.Select(static provider => provider.Build())];
+    public ProviderSettings[] BuildProviders()
+    {
+
+        if (Providers.Count == 0)
+        {
+
+            return [];
+
+        }
+
+        return Providers.Select(static p => p.Build()).ToArray();
+
+    }
 
     [RelayCommand]
-    private void AddProvider() =>
+    private void AddProvider()
+    {
+
         Providers.Add(new ProviderViewModel(new ProviderSettings()));
+
+    }
 
     [RelayCommand]
     private void RemoveProvider(ProviderViewModel? provider)
@@ -64,10 +83,14 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private string _endpoint = string.Empty;
 
-        [ObservableProperty] private string _credentialEnvironmentVariable = string.Empty;
+        [ObservableProperty] private string _apiKey = string.Empty;
 
         [ObservableProperty] private int _contextWindowLimit;
 
+        /// <summary>
+        /// Editable per-model name and Scrying rows. Each row also retains optional nested capability
+        /// objects as opaque metadata so ordinary provider edits round-trip them unchanged.
+        /// </summary>
         public ObservableCollection<ModelEntryViewModel> Models { get; } = [];
 
         private ProviderSettings _snapshot;
@@ -92,10 +115,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             Endpoint = snapshot.Endpoint;
 
-            CredentialEnvironmentVariable =
-                snapshot.CredentialEnvironmentVariable ?? string.Empty;
-
-            ContextWindowLimit = snapshot.ContextWindowLimit;
+            ApiKey = snapshot.ApiKey ?? string.Empty;
 
             Models.Clear();
 
@@ -106,22 +126,34 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             }
 
+            ContextWindowLimit = snapshot.ContextWindowLimit;
+
         }
 
         public ProviderSettings Build() => _snapshot with
         {
+
             Name = Name,
+
             Type = Type,
+
             Endpoint = Endpoint,
-            CredentialEnvironmentVariable =
-                NullIfWhiteSpace(CredentialEnvironmentVariable),
-            Models = [.. Models.Select(static model => model.Build())],
+
+            ApiKey = string.IsNullOrWhiteSpace(ApiKey) ? null : ApiKey,
+
+            Models = [.. Models.Select(static m => m.Build())],
+
             ContextWindowLimit = ContextWindowLimit,
+
         };
 
         [RelayCommand]
-        private void AddModel() =>
-            Models.Add(new ModelEntryViewModel(new ModelEntry()));
+        private void AddModel()
+        {
+
+            Models.Add(new ModelEntryViewModel());
+
+        }
 
         [RelayCommand]
         private void RemoveModel(ModelEntryViewModel? model)
@@ -138,6 +170,11 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
     }
 
+    /// <summary>
+    /// A single <c>Arcanum:Providers[].models</c> entry. Name and Scrying support are edited by the
+    /// polished provider UI; optional capability metadata is preserved unchanged for configuration
+    /// or generic-descriptor editing. See <see cref="ModelEntry"/>.
+    /// </summary>
     public sealed partial class ModelEntryViewModel : ObservableObject
     {
 
@@ -145,119 +182,33 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private bool _supportsVision;
 
-        [ObservableProperty] private bool _hasReasoning;
+        [ObservableProperty] private ReasoningCapabilities? _reasoning;
 
-        [ObservableProperty] private ReasoningControlSupport _reasoningControl;
+        [ObservableProperty] private ModelTokenizationProfile? _tokenization;
 
-        [ObservableProperty] private bool _reasoningSupportsSummary;
+        [ObservableProperty] private PromptCachingProfile? _promptCaching;
 
-        [ObservableProperty] private bool _reasoningSupportsFull;
+        public ModelEntryViewModel()
+        {
+        }
 
-        [ObservableProperty] private bool _reasoningSupportsStreaming;
-
-        [ObservableProperty] private bool _reasoningReportsReasoningTokens;
-
-        [ObservableProperty] private bool _reasoningAllowsClientOutput;
-
-        [ObservableProperty] private ReasoningWireDialect _reasoningDialect =
-            ReasoningWireDialect.Standard;
-
-        [ObservableProperty] private bool _hasReasoningMaxBudgetTokens;
-
-        [ObservableProperty] private int _reasoningMaxBudgetTokens = 1;
-
-        private ModelEntry _snapshot;
-
-        public ModelEntryViewModel(ModelEntry snapshot)
+        public ModelEntryViewModel(ModelEntry entry)
         {
 
-            _snapshot = snapshot;
+            Name = entry.Name;
 
-            LoadFrom(snapshot);
+            SupportsVision = entry.SupportsVision;
+
+            Reasoning = entry.Reasoning;
+
+            Tokenization = entry.Tokenization;
+
+            PromptCaching = entry.PromptCaching;
 
         }
 
-        public IReadOnlyList<ReasoningControlSupport> ReasoningControlSupportValues { get; } =
-            Enum.GetValues<ReasoningControlSupport>();
-
-        public IReadOnlyList<ReasoningWireDialect> ReasoningWireDialectValues { get; } =
-            Enum.GetValues<ReasoningWireDialect>();
-
-        public ReasoningCapabilities? Reasoning => BuildReasoning();
-
-        public void LoadFrom(ModelEntry snapshot)
-        {
-
-            _snapshot = snapshot;
-
-            Name = snapshot.Name;
-
-            SupportsVision = snapshot.SupportsVision;
-
-            ReasoningCapabilities? reasoning = snapshot.Reasoning;
-
-            HasReasoning = reasoning is not null;
-
-            ReasoningControl = reasoning?.ControlSupport
-                ?? ReasoningControlSupport.None;
-
-            ReasoningSupportsSummary = reasoning?.SupportsSummary == true;
-
-            ReasoningSupportsFull = reasoning?.SupportsFull == true;
-
-            ReasoningSupportsStreaming = reasoning?.SupportsStreaming == true;
-
-            ReasoningReportsReasoningTokens = reasoning?.ReportsReasoningTokens == true;
-
-            ReasoningAllowsClientOutput = reasoning?.AllowsClientOutput == true;
-
-            ReasoningDialect = reasoning?.WireDialect
-                ?? ReasoningWireDialect.Standard;
-
-            HasReasoningMaxBudgetTokens = reasoning?.MaxBudgetTokens is not null;
-
-            ReasoningMaxBudgetTokens = reasoning?.MaxBudgetTokens ?? 1;
-
-        }
-
-        public ModelEntry Build() => _snapshot with
-        {
-            Name = Name,
-            SupportsVision = SupportsVision,
-            Reasoning = BuildReasoning(),
-        };
-
-        private ReasoningCapabilities? BuildReasoning()
-        {
-
-            if (!HasReasoning)
-            {
-
-                return null;
-
-            }
-
-            return (_snapshot.Reasoning ?? new ReasoningCapabilities()) with
-            {
-                ControlSupport = ReasoningControl,
-                SupportsSummary = ReasoningSupportsSummary,
-                SupportsFull = ReasoningSupportsFull,
-                SupportsStreaming = ReasoningSupportsStreaming,
-                ReportsReasoningTokens = ReasoningReportsReasoningTokens,
-                AllowsClientOutput = ReasoningAllowsClientOutput,
-                WireDialect = ReasoningDialect,
-                MaxBudgetTokens = HasReasoningMaxBudgetTokens
-                    ? ReasoningMaxBudgetTokens
-                    : null,
-            };
-
-        }
+        public ModelEntry Build() => new(Name, SupportsVision, Reasoning, Tokenization, PromptCaching);
 
     }
-
-    private static string? NullIfWhiteSpace(string value) =>
-        string.IsNullOrWhiteSpace(value)
-            ? null
-            : value;
 
 }

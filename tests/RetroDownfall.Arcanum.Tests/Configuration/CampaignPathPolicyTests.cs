@@ -58,7 +58,7 @@ public sealed class CampaignPathPolicyTests : IClassFixture<TempWorkspace>
 
         ArcanumSettings settings = new()
         {
-            Security = new SecuritySettings { CampaignRoots = [] },
+            Campaigns = new CampaignsSettings { AllowedRoots = [] },
         };
 
         Result<string> result = CampaignPathPolicy.ValidateAndNormalizePath(campaignDir, settings);
@@ -77,7 +77,7 @@ public sealed class CampaignPathPolicyTests : IClassFixture<TempWorkspace>
 
         ArcanumSettings settings = new()
         {
-            Security = new SecuritySettings { CampaignRoots = [_workspace.Root] },
+            Campaigns = new CampaignsSettings { AllowedRoots = [_workspace.Root] },
         };
 
         Result<string> result = CampaignPathPolicy.ValidateAndNormalizePath(campaignDir, settings);
@@ -98,7 +98,7 @@ public sealed class CampaignPathPolicyTests : IClassFixture<TempWorkspace>
 
         ArcanumSettings settings = new()
         {
-            Security = new SecuritySettings { CampaignRoots = [otherRoot] },
+            Campaigns = new CampaignsSettings { AllowedRoots = [otherRoot] },
         };
 
         Result<string> result = CampaignPathPolicy.ValidateAndNormalizePath(outsideRoot, settings);

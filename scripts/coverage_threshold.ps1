@@ -5,38 +5,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Resolve-CoverageTarget {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Name,
-
-        [Parameter(Mandatory = $true)]
-        [double] $Default
-    )
-
-    $raw = [System.Environment]::GetEnvironmentVariable($Name)
-
-    if ([string]::IsNullOrWhiteSpace($raw)) {
-        return $Default
-    }
-
-    $value = 0.0
-    $parsed = [double]::TryParse(
-        $raw,
-        [System.Globalization.NumberStyles]::Float,
-        [System.Globalization.CultureInfo]::InvariantCulture,
-        [ref] $value
-    )
-
-    if (-not $parsed -or [double]::IsNaN($value) -or [double]::IsInfinity($value) -or $value -lt 0.0 -or $value -gt 100.0) {
-        throw "$Name must be a number from 0 through 100"
-    }
-
-    return $value
-}
-
-$lineTarget = Resolve-CoverageTarget -Name "COVERAGE_LINE_TARGET" -Default 85.0
-$branchTarget = Resolve-CoverageTarget -Name "COVERAGE_BRANCH_TARGET" -Default 75.0
+$lineTarget = 85.0
+$branchTarget = 75.0
 $securityBranchTarget = 100.0
 
 $securityTypes = [System.Collections.Generic.HashSet[string]]::new(
@@ -46,9 +16,11 @@ $securityTypes = [System.Collections.Generic.HashSet[string]]::new(
         "DataProtectionSecretStore",
         "GrimoireKeyDerivation",
         "McpSecurityLimits",
+        "TrustedMcpWorkspaceStore",
         "SandboxedFileIo",
+        "SecureFileReader",
+        "IdentityOwnedFileSystemCleanup",
         "SanctumGuard",
-        "ToolHelpers",
         "OutboundUrlGuard",
         "HostProcessToolPolicy",
         "IdempotencyClaimStore",
@@ -73,13 +45,16 @@ $branchRate = [double]::Parse(
 ) * 100.0
 
 $failures = [System.Collections.Generic.List[string]]::new()
+$seenSecurityTypes = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::Ordinal
+)
 
 if ($lineRate -lt $lineTarget) {
-    $failures.Add(("line coverage {0:F2}% < {1:G}%" -f $lineRate, $lineTarget))
+    $failures.Add(("line coverage {0:F2}% < {1:F0}%" -f $lineRate, $lineTarget))
 }
 
 if ($branchRate -lt $branchTarget) {
-    $failures.Add(("branch coverage {0:F2}% < {1:G}%" -f $branchRate, $branchTarget))
+    $failures.Add(("branch coverage {0:F2}% < {1:F0}%" -f $branchRate, $branchTarget))
 }
 
 foreach ($class in $document.SelectNodes("//class")) {
@@ -90,6 +65,8 @@ foreach ($class in $document.SelectNodes("//class")) {
     if (-not $securityTypes.Contains($shortName)) {
         continue
     }
+
+    $null = $seenSecurityTypes.Add($shortName)
 
     $bestByLine = @{}
 
@@ -147,9 +124,17 @@ foreach ($class in $document.SelectNodes("//class")) {
     }
 }
 
-Write-Output ("Overall line coverage:   {0:F2}% (target >= {1:G}%)" -f $lineRate, $lineTarget)
+foreach ($requiredType in $securityTypes) {
+    if (-not $seenSecurityTypes.Contains($requiredType)) {
+        $failures.Add(
+            "required security type $requiredType is absent from the coverage report"
+        )
+    }
+}
 
-Write-Output ("Overall branch coverage: {0:F2}% (target >= {1:G}%)" -f $branchRate, $branchTarget)
+Write-Output ("Overall line coverage:   {0:F2}% (target >= {1:F0}%)" -f $lineRate, $lineTarget)
+
+Write-Output ("Overall branch coverage: {0:F2}% (target >= {1:F0}%)" -f $branchRate, $branchTarget)
 
 if ($failures.Count -gt 0) {
     [Console]::Error.WriteLine("Threshold failures:")

@@ -1,9 +1,9 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Runtime projection for the Prometheus-format <c>GET /metrics</c> endpoint. Activation comes
-/// from <c>Arcanum:Features:Metrics</c> and authentication policy from
-/// <c>Arcanum:Security:MetricsRequireApiKey</c>.
+/// Configuration for the Prometheus-format <c>GET /metrics</c> endpoint. Bound from
+/// <c>Arcanum:Metrics</c>. No <see cref="ArcanumSettingClamps"/> entries are needed — both values are
+/// booleans with no numeric range to clamp.
 /// </summary>
 public sealed record MetricsSettings
 {

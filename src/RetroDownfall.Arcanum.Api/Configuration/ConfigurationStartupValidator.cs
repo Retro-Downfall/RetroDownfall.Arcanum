@@ -45,14 +45,14 @@ internal sealed class ConfigurationStartupValidator : IStartupFilter
     public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next)
     {
 
-        Result rawTree = _validator.RejectObsoleteKeys(_configuration);
+        Result obsolete = _validator.RejectObsoleteKeys(_configuration);
 
-        if (rawTree.IsFailure)
+        if (obsolete.IsFailure)
         {
 
-            LogValidationFailure(rawTree.Error);
+            LogValidationFailure(obsolete.Error);
 
-            throw new ConfigurationValidationException(rawTree.Error);
+            throw new ConfigurationValidationException(obsolete.Error);
 
         }
 

@@ -106,7 +106,8 @@ public sealed class ProviderResolverCandidatesTests
 
         // Health tracking can be stale (e.g. a slow probe interval marking every matching provider
         // unhealthy transiently), so returning only the first match here would prevent
-        // WizardIntelligenceProvider's finite candidate walk from ever trying the others.
+        // WizardIntelligenceProvider's runtime fallback loop from ever trying the others — collapsing
+        // Resilience.MaxFallbackAttempts down to a single attempt regardless of configuration.
         ArcanumSettings settings = new()
         {
 

@@ -4,6 +4,6 @@ public sealed record ProviderInfoDto(
     string Name,
     string Type,
     string Endpoint,
-    string CredentialEnvironmentVariable,
+    string? ApiKey,
     string[] Models,
     int ContextWindowLimit);

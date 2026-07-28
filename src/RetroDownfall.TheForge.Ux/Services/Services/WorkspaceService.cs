@@ -63,9 +63,7 @@ public sealed class WorkspaceService
 
     }
 
-    /// <summary><c>POST /api/workspaces/{id}/files/index</c> — triggers the server background
-    /// re-index (202); gated by <c>Arcanum:Features:CodebaseRetrieval</c> plus valid embedding
-    /// integration facts.</summary>
+    /// <summary><c>POST /api/workspaces/{id}/files/index</c> — triggers the server background re-index (202); gated by Embeddings+CodebaseRetrievalEnabled.</summary>
     public Task<ApiResponse<bool>?> IndexWorkspaceAsync(string workspaceId, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             $"/api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/index",

@@ -120,11 +120,7 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     {
         string normalizedRoot = Path.GetFullPath(_workspace.Root);
 
-        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
-        {
-            EnableLexiconSystem = false,
-            EnableArchiveSearch = false,
-        };
+        IntelligenceSettings settings = new() { EnableLexiconSystem = false, EnableArchiveSearch = false };
 
         ServiceCollection services = new();
 

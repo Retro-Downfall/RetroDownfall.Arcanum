@@ -2,10 +2,6 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-/// <summary>
-/// Ward runtime projection. Operator policy comes from <c>Arcanum:Security:Ward</c>; timeout and
-/// active-ward capacity are code-owned invariants.
-/// </summary>
 public sealed record WardSettings
 {
 

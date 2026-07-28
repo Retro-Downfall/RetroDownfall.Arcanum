@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
@@ -52,10 +53,10 @@ internal sealed partial class SpellRepository : ISpellRepository
         ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(_settingsMonitor.CurrentValue);
 
     private int GetMaxSpellDependencies() =>
-        ArcanumSettingClamps.MaxDependencies(ArcanumRuntimeDefaults.Spells.MaxDependencies);
+        ArcanumSettingClamps.MaxDependencies((_settingsMonitor.CurrentValue.Spells ?? new SpellSettings()).MaxDependencies);
 
     private int GetMaxSpellDeclaredTools() =>
-        ArcanumSettingClamps.MaxDeclaredTools(ArcanumRuntimeDefaults.Spells.MaxDeclaredTools);
+        ArcanumSettingClamps.MaxDeclaredTools((_settingsMonitor.CurrentValue.Spells ?? new SpellSettings()).MaxDeclaredTools);
 
     public async Task<SpellSummary[]> ListAsync(string? workingDirectory, CancellationToken ct)
     {
@@ -140,7 +141,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             return Result.Failure(new Error("Spell.InvalidFrontmatter", frontmatterError));
         }
 
-        SpellSettings spellSettings = ArcanumRuntimeDefaults.Spells;
+        SpellSettings spellSettings = _settingsMonitor.CurrentValue.Spells ?? new SpellSettings();
 
         int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
 
@@ -263,7 +264,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             return Result.Failure(new Error("Spell.InvalidFrontmatter", frontmatterError));
         }
 
-        SpellSettings spellSettings = ArcanumRuntimeDefaults.Spells;
+        SpellSettings spellSettings = _settingsMonitor.CurrentValue.Spells ?? new SpellSettings();
 
         int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
 
@@ -417,7 +418,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             foreach (string tool in detail.DeclaredTools)
             {
-                if (!known.Contains(tool))
+                if (!known.Contains(tool)
+                    && !ArcanumBuiltInToolNames.IsKnown(tool))
                 {
                     warnings.Add($"Declared tool '{tool}' was not found in configured MCP servers.");
                 }
@@ -464,10 +466,9 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings);
 
-        // Spell export has a code-owned aggregate script-byte envelope. Reuse the clamped workspace
-        // read-size cap so a single export cannot stream unbounded content.
-        long aggregateScriptCap = ArcanumSettingClamps.MaxFileReadSizeBytes(
-            ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
+        // No dedicated Spells.MaxExportBytes exists; reuse the clamped workspace read-size cap as
+        // the aggregate budget for script bytes so a single export cannot stream unbounded content.
+        long aggregateScriptCap = ArcanumSettingClamps.MaxFileReadSizeBytes(settings.Workspaces.MaxFileReadSizeBytes);
 
         SkillMetadata? metadata = null;
 

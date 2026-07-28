@@ -1,5 +1,6 @@
 using System.Text;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -15,6 +16,11 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public static class SessionAttachmentTurnService
 {
+    internal const string PublicPersistenceFailureMessage =
+        "Session attachment persistence failed.";
+
+    internal const string PublicPromotionFailureMessage =
+        "Session attachment promotion failed.";
 
     private static readonly SessionAttachmentTurnPreparation Empty = new(
         IndexItems: [],
@@ -27,26 +33,48 @@ public static class SessionAttachmentTurnService
     /// On validation or persist failure, <see cref="SessionAttachmentTurnPreparation.ErrorMessage"/> is set
     /// so the caller can fail closed before the model call.
     /// </summary>
-    public static async Task<SessionAttachmentTurnPreparation> PrepareAsync(
+    public static Task<SessionAttachmentTurnPreparation> PrepareAsync(
         PingRequest request,
         ISessionAttachmentStore store,
         ArcanumSettings settings,
         Guid? turnSessionId,
         Guid? turnEntryId,
         string? pendingTurnId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        PrepareAsync(
+            request,
+            store,
+            settings,
+            turnSessionId,
+            turnEntryId,
+            pendingTurnId,
+            cancellationToken,
+            logger: null);
+
+    internal static async Task<SessionAttachmentTurnPreparation> PrepareAsync(
+        PingRequest request,
+        ISessionAttachmentStore store,
+        ArcanumSettings settings,
+        Guid? turnSessionId,
+        Guid? turnEntryId,
+        string? pendingTurnId,
+        CancellationToken cancellationToken,
+        ILogger? logger)
     {
 
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(settings);
 
-        AttachmentsSettings attachments = settings.ResolveAttachments();
+        AttachmentsSettings attachments = settings.Attachments ?? new AttachmentsSettings();
 
         if (!attachments.Enabled)
         {
             return Empty;
         }
+
+        Guid? sessionId = request.SessionId ?? turnSessionId;
+        string operation = "validation";
 
         try
         {
@@ -59,7 +87,6 @@ public static class SessionAttachmentTurnService
                 return new SessionAttachmentTurnPreparation([], [], null, validationError);
             }
 
-            Guid? sessionId = request.SessionId ?? turnSessionId;
             string? effectivePending = sessionId is null ? pendingTurnId : null;
             Guid? entryId = turnEntryId;
 
@@ -75,6 +102,8 @@ public static class SessionAttachmentTurnService
                     }
 
                     ReadOnlyMemory<byte> bytes = Encoding.UTF8.GetBytes(file.Content ?? string.Empty);
+
+                    operation = "persist-text";
 
                     await store
                         .PersistNewAsync(
@@ -114,6 +143,8 @@ public static class SessionAttachmentTurnService
 
                     string mime = string.IsNullOrWhiteSpace(focus.MimeType) ? "image/png" : focus.MimeType;
 
+                    operation = "persist-image";
+
                     await store
                         .PersistNewAsync(
                             sessionId,
@@ -135,6 +166,8 @@ public static class SessionAttachmentTurnService
             {
                 foreach (Guid attachmentId in request.AttachmentReferences)
                 {
+                    operation = "load-reference";
+
                     SessionAttachmentRecord? record = await store
                         .GetByIdAsync(attachmentId, cancellationToken)
                         .ConfigureAwait(false);
@@ -157,6 +190,8 @@ public static class SessionAttachmentTurnService
                             effectivePending,
                             $"Attachment '{attachmentId}' is not a bound attachment for this session.");
                     }
+
+                    operation = "read-reference";
 
                     ReadOnlyMemory<byte> bytes = await store
                         .ReadBytesAsync(record, cancellationToken)
@@ -198,7 +233,7 @@ public static class SessionAttachmentTurnService
                     else
                     {
                         long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
-                            ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+                            settings.Cli.MaxAttachFileSizeBytes);
 
                         string text = DecodeTextWithByteBound(bytes, maxTextBytes);
 
@@ -223,6 +258,8 @@ public static class SessionAttachmentTurnService
 
             if (sessionId is { } boundSessionId)
             {
+                operation = "build-index";
+
                 int maxItems = ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(
                     attachments.MaxIndexItemsInPrompt);
 
@@ -237,17 +274,67 @@ public static class SessionAttachmentTurnService
                 effectivePending,
                 ErrorMessage: null);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(
+                "Session attachment preparation failed during {Operation}; exception type {ExceptionType}, session {SessionId}, entry {EntryId}.",
+                operation,
+                ex.GetType().FullName,
+                sessionId,
+                turnEntryId);
+
             return new SessionAttachmentTurnPreparation(
                 [],
                 [],
                 null,
-                string.IsNullOrWhiteSpace(ex.Message)
-                    ? "Session attachment persistence failed."
-                    : ex.Message);
+                PublicPersistenceFailureMessage);
         }
 
+    }
+
+    /// <summary>
+    /// Binds pending attachments to a newly created session. Cancellation propagates; unexpected
+    /// failures return the stable public promotion message and log only safe metadata.
+    /// </summary>
+    internal static async Task<string?> PromotePendingAsync(
+        ISessionAttachmentStore store,
+        string pendingTurnId,
+        Guid sessionId,
+        Guid? entryId,
+        CancellationToken cancellationToken = default,
+        ILogger? logger = null)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+
+        try
+        {
+            await store
+                .PromotePendingAsync(
+                    pendingTurnId,
+                    sessionId,
+                    entryId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(
+                "Failed to promote pending session attachments for session {SessionId}; exception type {ExceptionType}.",
+                sessionId,
+                ex.GetType().FullName);
+
+            return PublicPromotionFailureMessage;
+        }
     }
 
     private static string DecodeTextWithByteBound(ReadOnlyMemory<byte> bytes, long maxTextBytes)

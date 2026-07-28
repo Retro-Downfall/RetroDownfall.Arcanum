@@ -8,13 +8,14 @@ using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Embeddings;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 // RAG Phase 1 — The Weave (shared embedding foundation). Mirrors the existing IChatClientFactory /
 // ChatClientFactory (see ChatClientFactory.cs) pattern: a singleton factory that reads
 // IOptionsMonitor<ArcanumSettings>.CurrentValue only inside ResolveGeneratorAsync (hot-reload safe),
-// resolves Arcanum:Integrations:Embeddings:Provider by name via ProviderResolver, and builds an
+// resolves the Arcanum:Embeddings:Provider by name via ProviderResolver, and builds an
 // IEmbeddingGenerator<string, Embedding<float>> for OpenAI-compatible providers.
 //
 // AiProviderKind.OpenAICompatible providers go through the OpenAI-compatible EmbeddingClient against
@@ -29,13 +30,14 @@ public interface IEmbeddingGeneratorFactory
 
 /// <summary>
 /// Builds and caches <see cref="IEmbeddingGenerator{String, Embedding}"/> instances from
-/// the retained feature/integration schema. Reads <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> only
+/// <c>Arcanum:Embeddings</c>. Reads <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> only
 /// inside <see cref="ResolveGeneratorAsync"/> for hot-reload safety — never cached on the singleton
 /// itself.
 /// </summary>
 public sealed class EmbeddingGeneratorFactory(
     IHttpClientFactory httpClientFactory,
-    IOptionsMonitor<ArcanumSettings> optionsMonitor) : IEmbeddingGeneratorFactory
+    IOptionsMonitor<ArcanumSettings> optionsMonitor,
+    ConfigurationSecretProtector secretProtector) : IEmbeddingGeneratorFactory
 {
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
@@ -55,19 +57,19 @@ public sealed class EmbeddingGeneratorFactory(
 
         ArcanumSettings arc = optionsMonitor.CurrentValue;
 
-        EmbeddingSettings embeddings = arc.ResolveEmbeddings();
+        EmbeddingSettings embeddings = arc.Embeddings ?? new EmbeddingSettings();
 
         if (!embeddings.Enabled)
         {
             throw new InvalidOperationException(
-                "Embeddings are disabled (Arcanum:Features:Embeddings is false).");
+                "Embeddings are disabled (Arcanum:Embeddings:Enabled is false).");
 
         }
 
         if (string.IsNullOrWhiteSpace(embeddings.Provider) || string.IsNullOrWhiteSpace(embeddings.Model))
         {
             throw new InvalidOperationException(
-                "Arcanum:Integrations:Embeddings:Provider and Model must both be configured.");
+                "Arcanum:Embeddings:Provider and Arcanum:Embeddings:Model must both be configured.");
 
         }
 
@@ -75,7 +77,7 @@ public sealed class EmbeddingGeneratorFactory(
             || provider is null)
         {
             throw new InvalidOperationException(
-                $"Arcanum:Integrations:Embeddings:Provider '{embeddings.Provider}' does not match any configured provider.");
+                $"Arcanum:Embeddings:Provider '{embeddings.Provider}' does not match any configured provider.");
 
         }
 
@@ -97,8 +99,7 @@ public sealed class EmbeddingGeneratorFactory(
 
         // Includes the endpoint and a credential fingerprint (not the raw secret — see
         // ComputeCredentialFingerprint) so an operator hot-reloading Arcanum:Providers[].Endpoint or
-        // the resolved credential environment value for this same provider name/model actually
-        // takes effect: a cache key of just
+        // ApiKey for this same provider name/model actually takes effect: a cache key of just
         // "providerName::model" would keep serving a generator built against the OLD endpoint/key
         // forever, since GetOrAdd only ever calls the factory once per key.
         string cacheKey = CacheKey(provider, model, resolvedApiKey);
@@ -136,9 +137,10 @@ public sealed class EmbeddingGeneratorFactory(
 
     }
 
-    private static string ResolveApiKeyValue(ProviderSettings provider) =>
-        EnvironmentCredentialResolver.ResolveProviderApiKey(provider)
-        ?? KeylessOpenAiPlaceholder;
+    private string ResolveApiKeyValue(ProviderSettings provider) =>
+        string.IsNullOrEmpty(provider.ApiKey)
+            ? KeylessOpenAiPlaceholder
+            : secretProtector.ResolveApiKey(provider.ApiKey) ?? KeylessOpenAiPlaceholder;
 
     private static string CacheKey(ProviderSettings provider, string model, string resolvedApiKey) =>
         $"{provider.Name}::{model}::{provider.Endpoint}::{ComputeCredentialFingerprint(resolvedApiKey)}";

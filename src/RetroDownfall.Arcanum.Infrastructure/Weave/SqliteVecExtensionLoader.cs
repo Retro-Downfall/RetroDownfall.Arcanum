@@ -6,7 +6,7 @@ using SQLitePCL;
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
-/// Attempts to enable SQLite extension loading and load the sqlite-vec native library
+/// RAG Phase 1 — attempts to enable SQLite extension loading and load the sqlite-vec native library
 /// into a connection, verifying success with <c>SELECT vec_version()</c>. Uses the same low-level
 /// <c>SQLitePCL.raw</c> API that <c>GrimoireSqlSchemaMigrator</c> already uses for its
 /// <c>sqlite3_exec</c> migration runner (see <c>GrimoireSqlSchemaMigrator.cs</c>), so this stays
@@ -19,16 +19,18 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// an acceleration layer, and the managed brute-force cosine search over the BLOB source-of-truth
 /// tables is the guaranteed baseline.
 ///
-/// No sqlite-vec NuGet package is referenced by the solution (see
-/// <c>docs/Arcanum.DESIGN.md</c> §21), so packaged hosts default to the managed path unless a compatible
-/// native extension is otherwise available at <see cref="ExtensionLibraryName"/>.
+/// Phase 1 default: no sqlite-vec NuGet package is referenced anywhere in the solution (see
+/// DESIGN.md §21), so <see cref="TryLoad"/> always returns <c>false</c> today — there is no native
+/// library at <see cref="ExtensionLibraryName"/> for <c>sqlite3_load_extension</c> to find. This class
+/// exists, and is tested, so that adding the sqlite-vec native asset later is a drop-in change: no code
+/// here needs to change for <see cref="WeaveIndexAvailability.IsVecAvailable"/> to start flipping true.
 /// </summary>
 internal static class SqliteVecExtensionLoader
 {
 
     // sqlite-vec's upstream loadable-extension name; the platform loader resolves the actual file
     // (vec0.dylib / vec0.so / vec0.dll) from the process's library search path. No such library ships
-    // with Arcanum — see class remarks.
+    // with Arcanum in Phase 1 — see class remarks.
     private const string ExtensionLibraryName = "vec0";
 
     public static bool TryLoad(SqliteConnection connection, ILogger? logger = null)

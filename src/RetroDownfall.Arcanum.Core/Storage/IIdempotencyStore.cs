@@ -2,7 +2,7 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 
 /// <summary>
 /// Grimoire-backed cache of replayed responses for the <c>Idempotency-Key</c> request header
-/// (RFC-style client-supplied replay protection — see <c>docs/Arcanum.DESIGN.md</c> §11.17). Keyed by a SHA-256 hash
+/// (RFC-style client-supplied replay protection — see DESIGN.md §11.17). Keyed by a SHA-256 hash
 /// of the client's key plus the canonical request body, so two different bodies sent under the
 /// same header value are never conflated.
 /// </summary>

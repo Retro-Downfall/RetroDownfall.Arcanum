@@ -66,6 +66,18 @@ internal static class AtomicFile
 
         string? backupPath = null;
 
+        IdentityOwnedFileSystemArtifact tempArtifact = default;
+
+        bool tempArtifactCaptured = false;
+
+        IdentityOwnedFileSystemArtifact backupArtifact = default;
+
+        bool backupArtifactCaptured = false;
+
+        StagedFileFingerprint backupFingerprint = default;
+
+        bool backupFingerprintCaptured = false;
+
         bool destinationExisted = false;
 
         FileHandleMetadata expectedDestinationMetadata = default;
@@ -110,6 +122,16 @@ internal static class AtomicFile
                 bufferSize: 4096,
                 FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
+
+                if (!IdentityOwnedFileSystemCleanup.TryCaptureOpenFile(
+                        tempPath,
+                        stream.SafeFileHandle,
+                        out tempArtifact))
+                {
+                    return AtomicReplaceStatus.Aborted;
+                }
+
+                tempArtifactCaptured = true;
 
                 await writeAsync(stream, cancellationToken).ConfigureAwait(false);
 
@@ -159,14 +181,93 @@ internal static class AtomicFile
                     Path.GetDirectoryName(destinationPath) ?? string.Empty,
                     $".arcanum-bak-{Guid.NewGuid():N}");
 
-                File.Copy(destinationPath, backupPath, overwrite: false);
-
-                if (!TryApplyPreservedUnixMode(backupPath, expectedUnixMode))
+                FileStreamOptions backupOptions = new()
                 {
+                    Mode = FileMode.CreateNew,
+                    Access = FileAccess.Write,
+                    Share = FileShare.None,
+                    BufferSize = 4096,
+                    Options =
+                        FileOptions.Asynchronous
+                        | FileOptions.WriteThrough,
+                };
 
-                    return AtomicReplaceStatus.Aborted;
-
+                if (!OperatingSystem.IsWindows())
+                {
+                    backupOptions.UnixCreateMode =
+                        UnixFileMode.UserRead
+                        | UnixFileMode.UserWrite;
                 }
+
+                await using (FileStream backupStream = new(
+                                 backupPath,
+                                 backupOptions))
+                {
+                    backupArtifactCaptured =
+                        IdentityOwnedFileSystemCleanup
+                            .TryCaptureOpenFile(
+                                backupPath,
+                                backupStream.SafeFileHandle,
+                                out backupArtifact);
+
+                    if (!backupArtifactCaptured)
+                    {
+                        return AtomicReplaceStatus.Aborted;
+                    }
+
+                    if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                            backupPath,
+                            FileSystemObjectKind.RegularFile,
+                            out IdentityOwnedFileSystemArtifact pathArtifact))
+                    {
+                        return AtomicReplaceStatus.Aborted;
+                    }
+
+                    if (pathArtifact.Metadata
+                        != backupArtifact.Metadata)
+                    {
+                        return AtomicReplaceStatus.Aborted;
+                    }
+
+                    SecureFileOpenStatus backupSourceStatus =
+                        SecureFileReader.TryOpenRegularFile(
+                            destinationPath,
+                            expectedDestinationMetadata.Identity,
+                            out FileStream? sourceStream,
+                            out _);
+
+                    if (backupSourceStatus
+                            is not SecureFileOpenStatus.Success
+                        || sourceStream is null)
+                    {
+                        return AtomicReplaceStatus.Aborted;
+                    }
+
+                    await using (sourceStream)
+                    {
+                        await sourceStream.CopyToAsync(
+                                backupStream,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    await backupStream.FlushAsync(
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                if (!TryApplyPreservedUnixMode(
+                        backupPath,
+                        expectedUnixMode)
+                    || !TryCaptureFileFingerprint(
+                        backupPath,
+                        backupArtifact.Metadata.Identity,
+                        out backupFingerprint))
+                {
+                    return AtomicReplaceStatus.Aborted;
+                }
+
+                backupFingerprintCaptured = true;
 
             }
 
@@ -200,6 +301,9 @@ internal static class AtomicFile
                         destinationPath,
                         backupPath,
                         stagedIdentity,
+                        backupArtifact,
+                        backupFingerprint,
+                        backupFingerprintCaptured,
                         retainQuarantine: true))
                 {
 
@@ -222,6 +326,9 @@ internal static class AtomicFile
                         destinationPath,
                         backupPath,
                         stagedIdentity,
+                        backupArtifact,
+                        backupFingerprint,
+                        backupFingerprintCaptured,
                         retainQuarantine: false))
                 {
 
@@ -247,6 +354,9 @@ internal static class AtomicFile
                         destinationPath,
                         backupPath,
                         stagedIdentity,
+                        backupArtifact,
+                        backupFingerprint,
+                        backupFingerprintCaptured,
                         retainQuarantine: true))
                 {
 
@@ -268,17 +378,20 @@ internal static class AtomicFile
         finally
         {
 
-            if (!replaced)
+            if (!replaced && tempArtifactCaptured)
             {
 
-                TryDeleteTempFile(tempPath);
+                _ = IdentityOwnedFileSystemCleanup.TryDelete(
+                    tempArtifact);
 
             }
 
-            if (backupPath is not null)
+            if (backupPath is not null
+                && backupArtifactCaptured)
             {
 
-                TryDeleteTempFile(backupPath);
+                _ = IdentityOwnedFileSystemCleanup.TryDelete(
+                    backupArtifact);
 
             }
 
@@ -390,14 +503,18 @@ internal static class AtomicFile
     }
 
     /// <summary>
-    /// Best-effort recovery after a failed post-move check: restore the pre-move backup when one
-    /// exists, otherwise quarantine (rename aside) or delete the unverified destination.
+    /// Best-effort recovery after a failed post-move check: quarantine the unverified destination,
+    /// restore only a backup whose captured identity and content fingerprint still match, and
+    /// verify that same fingerprint after the restore move.
     /// </summary>
     /// <returns><see langword="true"/> when the destination no longer holds unverified content.</returns>
     private static bool TryRestoreOrQuarantine(
         string destinationPath,
         string? backupPath,
         FileHandleIdentity stagedIdentity,
+        IdentityOwnedFileSystemArtifact backupArtifact,
+        StagedFileFingerprint backupFingerprint,
+        bool backupFingerprintCaptured,
         bool retainQuarantine)
     {
 
@@ -445,12 +562,36 @@ internal static class AtomicFile
 
             }
 
+            if (!backupFingerprintCaptured
+                || !string.Equals(
+                    Path.GetFullPath(backupPath),
+                    backupArtifact.Path,
+                    StringComparison.Ordinal)
+                || backupFingerprint.Identity
+                    != backupArtifact.Metadata.Identity
+                || !TryVerifyFileFingerprint(
+                    backupPath,
+                    backupFingerprint))
+            {
+                return false;
+            }
+
             File.Move(backupPath, destinationPath, overwrite: false);
+
+            if (!TryVerifyFileFingerprint(
+                    destinationPath,
+                    backupFingerprint))
+            {
+                return false;
+            }
 
             if (!retainQuarantine)
             {
 
-                TryDeleteTempFile(quarantinePath);
+                _ = IdentityOwnedFileSystemCleanup.TryDelete(
+                    new IdentityOwnedFileSystemArtifact(
+                        Path.GetFullPath(quarantinePath),
+                        quarantinedMetadata));
 
             }
 
@@ -571,29 +712,6 @@ internal static class AtomicFile
             expected.Identity,
             out StagedFileFingerprint current)
         && current == expected;
-
-    private static void TryDeleteTempFile(string tempPath)
-    {
-
-        try
-        {
-
-            if (File.Exists(tempPath))
-            {
-
-                File.Delete(tempPath);
-
-            }
-
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-
-            // Best-effort cleanup: a leftover temp file is harmless and will be overwritten on retry.
-
-        }
-
-    }
 
     private readonly record struct StagedFileFingerprint(
         FileHandleIdentity Identity,

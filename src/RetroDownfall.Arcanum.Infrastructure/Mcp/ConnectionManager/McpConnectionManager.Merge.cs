@@ -17,7 +17,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 public sealed partial class McpConnectionManager
 {
 
-    private async Task<IReadOnlyList<AITool>> BuildMergedToolsForWorkspaceAsync(
+    private async Task<BuiltMcpToolSurface> BuildMergedToolsForWorkspaceAsync(
         McpPartitionClients partition,
         string workspaceKey,
         CancellationToken cancellationToken)
@@ -25,61 +25,104 @@ public sealed partial class McpConnectionManager
         List<LoadedMcpToolRow> internalTagged = await EnsurePartitionInternalToolsAsync(partition, workspaceKey, cancellationToken).ConfigureAwait(false);
 
         List<LoadedMcpToolRow> workspaceLocalTagged = [];
+        string? workspaceSourceDigest = null;
+        bool cacheable = workspaceKey == NoWorkspaceKey;
 
         if (workspaceKey != NoWorkspaceKey)
         {
             string localPath = Path.Combine(workspaceKey, "mcp.json");
 
-            if (File.Exists(localPath))
+            McpConfigSnapshot? localSnapshot =
+                await ReadMcpConfigAsync(localPath, cancellationToken).ConfigureAwait(false);
+
+            if (localSnapshot is null)
             {
-                McpConfig? localConfig = await ReadMcpConfigAsync(localPath, cancellationToken).ConfigureAwait(false);
+                await RetireWorkspaceEntriesAsync(workspaceKey, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                bool workspaceTrusted = await trustedMcpWorkspaces
+                    .IsApprovedDigestAsync(
+                        workspaceKey,
+                        localSnapshot.SourceDigest,
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
-                if (localConfig?.McpServers is { Count: > 0 })
+                if (!workspaceTrusted)
                 {
-                    bool workspaceTrusted = await trustedMcpWorkspaces
-                        .IsTrustedAsync(workspaceKey, cancellationToken)
-                        .ConfigureAwait(false);
+                    await RetireWorkspaceEntriesAsync(workspaceKey, cancellationToken).ConfigureAwait(false);
 
-                    if (!workspaceTrusted)
+                    return new BuiltMcpToolSurface(
+                        McpToolMerger.MergeWorkspaceSurface(
+                            internalTagged,
+                            _globalFirstByToolName,
+                            workspaceLocalTagged,
+                            logger),
+                        SourceDigest: null,
+                        Cacheable: false);
+                }
+
+                TrustedMcpWorkspaceSnapshot trustSnapshot =
+                    new(localSnapshot.SourceDigest, IsApproved: true);
+                workspaceSourceDigest = localSnapshot.SourceDigest;
+                cacheable = true;
+
+                await ReconcileWorkspaceConfigAsync(
+                        localSnapshot.Config,
+                        workspaceKey,
+                        localSnapshot.SourceDigest,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                foreach (ManagedMcpServerEntry entry in _registry.Values.Where(
+                             entry =>
+                                 entry.ScopeWorkingDirectory == workspaceKey
+                                 && trustSnapshot.Authorizes(entry.SourceDigest)))
+                {
+                    if (!entry.AlwaysOn && entry.State is not McpServerState.Running)
                     {
-
-                        return McpToolMerger.MergeWorkspaceSurface(internalTagged, _globalFirstByToolName, workspaceLocalTagged, logger);
-
+                        continue;
                     }
 
-                    await RegisterFromConfigAsync(localConfig, workspaceKey, cancellationToken).ConfigureAwait(false);
-
-                    foreach (ManagedMcpServerEntry entry in _registry.Values.Where(e => e.ScopeWorkingDirectory == workspaceKey))
+                    if (IsRestartBackoffActive(entry))
                     {
-                        if (!entry.AlwaysOn && entry.State is not McpServerState.Running)
-                        {
-                            continue;
-                        }
-
-                        if (IsRestartBackoffActive(entry))
-                        {
-                            continue;
-                        }
-
-                        if (entry.State is not McpServerState.Running)
-                        {
-                            Result startResult = await StartAsync(entry.Name, workspaceKey, cancellationToken).ConfigureAwait(false);
-
-                            if (startResult.IsFailure && entry.State is not McpServerState.Running)
-                            {
-                                SyncPartitionServerMetadata(entry);
-
-                                continue;
-                            }
-                        }
-
-                        AttachEntryToPartition(entry, partition, workspaceLocalTagged);
+                        continue;
                     }
+
+                    if (entry.State is not McpServerState.Running)
+                    {
+                        Result startResult = await StartAsync(
+                                entry.Name,
+                                workspaceKey,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+
+                        if (startResult.IsFailure && entry.State is not McpServerState.Running)
+                        {
+                            SyncPartitionServerMetadata(entry);
+
+                            continue;
+                        }
+                    }
+
+                    if (!trustSnapshot.Authorizes(entry.SourceDigest))
+                    {
+                        continue;
+                    }
+
+                    AttachEntryToPartition(entry, partition, workspaceLocalTagged);
                 }
             }
         }
 
-        return McpToolMerger.MergeWorkspaceSurface(internalTagged, _globalFirstByToolName, workspaceLocalTagged, logger);
+        return new BuiltMcpToolSurface(
+            McpToolMerger.MergeWorkspaceSurface(
+                internalTagged,
+                _globalFirstByToolName,
+                workspaceLocalTagged,
+                logger),
+            workspaceSourceDigest,
+            cacheable);
     }
 
     private void AttachEntryToPartition(ManagedMcpServerEntry entry, McpPartitionClients partition, List<LoadedMcpToolRow> toolsSink)

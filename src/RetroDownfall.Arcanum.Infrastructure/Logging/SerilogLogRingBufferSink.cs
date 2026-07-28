@@ -21,7 +21,7 @@ public sealed class SerilogLogRingBufferSink(
 
             LogLevel arcanumLevel = MapLevel(logEvent.Level);
 
-            LogLevel minLevel = settings.CurrentValue.Host.MinLogLevelInBuffer;
+            LogLevel minLevel = settings.CurrentValue.Logs?.MinLevelInBuffer ?? LogLevel.Information;
 
             if (arcanumLevel < minLevel)
             {

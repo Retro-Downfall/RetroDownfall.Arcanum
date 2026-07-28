@@ -189,10 +189,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IUnseenServantJobTracker>(static sp => sp.GetRequiredService<UnseenServantJobTracker>());
 
-        List<UnseenServantJob> jobs =
-            ConfigurationBootstrapper.LoadArcanumSettings(
-                () => configuration.GetSection("Arcanum").Get<ArcanumSettings>()
-                    ?? new ArcanumSettings()).Daemon.Jobs;
+        List<UnseenServantJob> jobs = configuration.GetSection("Arcanum:Daemon:Jobs").Get<List<UnseenServantJob>>() ?? [];
 
         foreach (UnseenServantJob job in jobs)
         {
@@ -211,12 +208,9 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddArcanumInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
-        ArcanumSettings settingsSnapshot =
-            ConfigurationBootstrapper.LoadArcanumSettings(
-                () => configuration.GetSection("Arcanum").Get<ArcanumSettings>()
-                    ?? new ArcanumSettings());
-        services.Configure<ArcanumSettings>(settings =>
-            ConfigurationBootstrapper.CopySettings(settingsSnapshot, settings));
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+
+        services.AddSingleton<IPostConfigureOptions<ArcanumSettings>, LoreToLexiconSettingsPostConfigure>();
 
         services.AddHostedService<PidFileService>();
 
@@ -255,6 +249,8 @@ public static class ServiceCollectionExtensions
             .SetApplicationName("ArcanumCore")
             .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
 
+        services.AddSingleton<ConfigurationSecretProtector>();
+
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
         services.AddArcanumSecretStore();
@@ -276,9 +272,9 @@ public static class ServiceCollectionExtensions
         // One-shot pending attachment GC; runs after Grimoire schema bootstrap above.
         services.AddHostedService<SessionAttachmentPendingGcHostedService>();
 
-        // RAG Phase 2/3 — Entry Weaving and Workspace Indexing both idle (no-op) until
-        // Arcanum:Features:SessionSearch / CodebaseRetrieval are enabled, so registering them
-        // unconditionally is safe on the hot path. Registered after
+        // RAG Phase 2/3 — Entry Weaving and Workspace Indexing both idle (no-op) until their feature
+        // flags are enabled (Arcanum:Embeddings:SessionSearchEnabled / CodebaseRetrievalEnabled), so
+        // registering them unconditionally is safe on the hot path. Registered after
         // GrimoireDatabaseHostedService so the Grimoire (and The Weave's schema) is guaranteed ready
         // before either service's first tick can run any query.
         services.AddHostedService<EntryWeavingService>();
@@ -370,14 +366,10 @@ public static class ServiceCollectionExtensions
                 IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
 
                 int timeoutSeconds = ArcanumSettingClamps.WebhookTimeoutSeconds(
-                    opts.CurrentValue.ResolveCommLink().WebhookTimeoutSeconds);
+                    opts.CurrentValue.CommLink?.WebhookTimeoutSeconds ?? new CommLinkSettings().WebhookTimeoutSeconds);
 
                 client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             })
-            // Default IHttpClientFactory logging includes the request URI. CommLink URLs can carry
-            // credentials in path/query data, so only WebhookCommLinkDispatcher's host-only logs
-            // are permitted for this named client.
-            .RemoveAllLoggers()
             .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
 
         services.AddHttpClient(
@@ -387,7 +379,7 @@ public static class ServiceCollectionExtensions
                 IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
 
                 int timeoutSeconds = ArcanumSettingClamps.WebBrowsingRequestTimeoutSeconds(
-                    opts.CurrentValue.ResolveWebBrowsing().RequestTimeoutSeconds);
+                    opts.CurrentValue.WebBrowsing?.RequestTimeoutSeconds ?? new WebBrowsingSettings().RequestTimeoutSeconds);
 
                 client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             })
@@ -415,7 +407,7 @@ public static class ServiceCollectionExtensions
                 IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
 
                 int timeoutSeconds = ArcanumSettingClamps.McpHttpRequestTimeoutSeconds(
-                    opts.CurrentValue.ResolveMcp().HttpRequestTimeoutSeconds);
+                    opts.CurrentValue.Mcp?.HttpRequestTimeoutSeconds ?? new McpSettings().HttpRequestTimeoutSeconds);
 
                 client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             })
@@ -454,8 +446,9 @@ public static class ServiceCollectionExtensions
     /// <summary>
     /// Registers the provider resilience layer: the in-memory health tracker, the connectivity probe,
     /// the periodic probe scheduler, and a dedicated <c>"ProviderHealthProbe"</c> named <see cref="HttpClient"/>
-    /// (short timeout, no connection pooling — never reuses the long-lived inference clients).
-    /// Provider health and fallback mechanics are code-owned and active whenever providers exist.
+    /// (short timeout, no connection pooling — never reuses the long-lived inference clients). The probe
+    /// scheduler is always registered but idles when <c>Arcanum:Resilience:Enabled</c> is <c>false</c>
+    /// (the default), so this is a no-op on the hot path until an operator opts in.
     /// </summary>
     private static IServiceCollection AddArcanumResilience(this IServiceCollection services)
     {
@@ -470,7 +463,7 @@ public static class ServiceCollectionExtensions
                 IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
 
                 int timeoutSeconds = ArcanumSettingClamps.HealthProbeTimeoutSeconds(
-                    ArcanumRuntimeDefaults.Resilience.HealthProbeTimeoutSeconds);
+                    opts.CurrentValue.Resilience?.HealthProbeTimeoutSeconds ?? new ResilienceSettings().HealthProbeTimeoutSeconds);
 
                 client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             })

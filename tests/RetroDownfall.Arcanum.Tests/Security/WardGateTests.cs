@@ -325,12 +325,13 @@ public sealed class WardGateTests
     public async Task Resolve_ExpiredTombstone_ReturnsNotFoundWhileFreshTombstoneIsRetained()
     {
 
-        int configuredTimeoutSeconds = ArcanumSettingClamps.WardTimeoutSeconds(
-            ArcanumRuntimeDefaults.Ward.TimeoutSeconds);
+        const int configuredTimeoutSeconds = 10;
 
         FakeTimeProvider timeProvider = new();
 
-        WardGate gate = CreateGate(timeProvider);
+        WardGate gate = CreateGate(
+            timeoutSeconds: configuredTimeoutSeconds,
+            timeProvider: timeProvider);
 
         Task<WardResolution> staleWardTask = gate.WardAsync(
             "ward-stale",
@@ -373,16 +374,42 @@ public sealed class WardGateTests
     }
 
     [Fact]
+    public async Task WardAsync_AtMaxActiveWards_AutoDenies()
+    {
+
+        WardGate gate = CreateGate(maxActiveWards: 1);
+
+        _ = gate.WardAsync(
+            "ward-cap-1",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        WardResolution resolution = await gate.WardAsync(
+            "ward-cap-2",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        Assert.False(resolution.Allowed);
+
+        Assert.Equal(CapacityReason, resolution.Reason);
+
+        gate.Resolve("ward-cap-1", allow: true, reason: null);
+
+    }
+
+    [Fact]
     public async Task WardAsync_MissingWardSettings_UsesDefaultCapacityBoundary()
     {
 
-        int defaultCapacity = ArcanumSettingClamps.MaxActiveWards(
-            ArcanumRuntimeDefaults.Ward.MaxActiveWards);
+        int defaultCapacity = new WardSettings().MaxActiveWards;
 
-        WardGate gate = new(new FakeOptionsMonitor(new ArcanumSettings
-        {
-            Security = new SecuritySettings { Ward = null! },
-        }));
+        WardGate gate = new(new FakeOptionsMonitor(new ArcanumSettings { Ward = null! }));
 
         Task<WardResolution>[] admitted = Enumerable.Range(0, defaultCapacity)
             .Select(i => gate.WardAsync(
@@ -432,11 +459,11 @@ public sealed class WardGateTests
     public async Task WardAsync_ConcurrentSubmissions_NeverOvershootsMaxActiveWards()
     {
 
-        int maxActiveWards = ArcanumSettingClamps.MaxActiveWards(
-            ArcanumRuntimeDefaults.Ward.MaxActiveWards);
-        int submissionCount = maxActiveWards + 12;
+        const int maxActiveWards = 4;
 
-        WardGate gate = CreateGate();
+        const int submissionCount = 16;
+
+        WardGate gate = CreateGate(maxActiveWards: maxActiveWards);
 
         TimeSpan longTimeout = TimeSpan.FromSeconds(30);
 
@@ -506,10 +533,18 @@ public sealed class WardGateTests
 
     }
 
-    private static WardGate CreateGate(TimeProvider? timeProvider = null) =>
-        new(
-            new FakeOptionsMonitor(new ArcanumSettings()),
-            timeProvider);
+    private static WardGate CreateGate(
+        int timeoutSeconds = 30,
+        int maxActiveWards = 50,
+        TimeProvider? timeProvider = null) =>
+        new(new FakeOptionsMonitor(new ArcanumSettings
+        {
+            Ward = new WardSettings
+            {
+                TimeoutSeconds = timeoutSeconds,
+                MaxActiveWards = maxActiveWards,
+            },
+        }), timeProvider);
 
     // W3.4 Group B: WardEntry.Arguments holds a JsonDocument that owns pooled native memory.
     // On every terminal path out of _pending (resolve / timeout / caller-cancel) the entry

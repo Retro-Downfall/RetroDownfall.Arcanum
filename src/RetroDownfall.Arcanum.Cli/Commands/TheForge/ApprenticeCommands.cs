@@ -529,7 +529,7 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
             {
                 AnsiConsole.MarkupLine(
                     themePalette.ErrorMarkup(
-                        Markup.Escape("The Conclave is disabled; cross-Apprentice delegation is not available. Enable Arcanum:Features:Conclave on the host to use 'apprentice cast'.")));
+                        Markup.Escape("The Conclave is disabled; cross-Apprentice delegation is not available. Enable Arcanum:Conclave:Enabled on the host to use 'apprentice cast'.")));
             }
             else
             {

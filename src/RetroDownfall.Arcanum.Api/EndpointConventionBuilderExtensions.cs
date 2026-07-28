@@ -20,9 +20,11 @@ public static class EndpointConventionBuilderExtensions
     }
 
     /// <summary>
-    /// Raises the Kestrel request body size limit for this endpoint to the code-owned upload
-    /// envelope's 10 GiB physical ceiling so the handler enforces the effective cap and returns a
-    /// structured <c>413</c> JSON error instead of an abrupt Kestrel-level connection reset.
+    /// Raises the Kestrel request body size limit for this endpoint to the ceiling of
+    /// <c>Arcanum:Files:MaxUploadSizeBytes</c>'s clamp range (10 GiB — see
+    /// <c>ArcanumSettingClamps.FilesMaxUploadSizeBytes</c>) so the configured upload cap is always
+    /// enforced by the handler itself (returning a structured <c>413</c> JSON error), never by an
+    /// abrupt Kestrel-level connection reset below the configured limit.
     /// </summary>
     public static TBuilder WithFileUploadRequestBody<TBuilder>(this TBuilder builder)
         where TBuilder : IEndpointConventionBuilder

@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
 /// Shared campaign and workspace registration path validation against
-/// <see cref="SecuritySettings.CampaignRoots"/>.
+/// <see cref="CampaignsSettings.AllowedRoots"/>.
 /// </summary>
 public static class CampaignPathPolicy
 {
@@ -34,13 +34,13 @@ public static class CampaignPathPolicy
             return Result<string>.Failure(new Error(ErrorCodes.Campaign.InvalidPath, "The campaign path does not exist or is not a directory."));
         }
 
-        string[] allowedRoots = settings.ResolveCampaignRoots();
+        string[] allowedRoots = settings.Campaigns?.AllowedRoots ?? [];
 
         Result<string> allowed = WorkspaceRootPolicy.EnforceAllowedRoots(
             normalized,
             allowedRoots,
             ErrorCodes.Campaign.PathNotAllowed,
-            "The campaign path is outside Arcanum:Security:CampaignRoots.");
+            "The campaign path is not under an allowed root.");
 
         if (allowed.IsFailure)
         {

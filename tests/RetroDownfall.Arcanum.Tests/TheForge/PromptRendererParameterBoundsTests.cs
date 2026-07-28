@@ -21,23 +21,25 @@ public sealed class PromptRendererParameterBoundsTests
     [Fact]
     public void Render_RejectsParameterValueExceedingMaxChars()
     {
+
+        ArcanumSettings settings = new()
+        {
+            Prompts = new PromptSettings { MaxParameterValueChars = 256 },
+        };
+
         Prompt prompt = new()
         {
             Template = "Hello {{name}}",
             ParameterSchema = NameSchema,
         };
-        int maxParameterValueChars = ArcanumSettingClamps.MaxParameterValueChars(
-            ArcanumRuntimeDefaults.Prompts.MaxParameterValueChars);
 
-        PromptRenderer renderer = PromptRendererTestSupport.CreateRenderer(
-            new ZeroTokenCounter(),
-            new ArcanumSettings());
+        PromptRenderer renderer = PromptRendererTestSupport.CreateRenderer(new ZeroTokenCounter(), settings);
 
         Result<PromptRenderResultDto> result = renderer.Render(
             prompt,
             new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                ["name"] = new string('x', maxParameterValueChars + 1),
+                ["name"] = new string('x', 257),
             });
 
         Assert.True(result.IsFailure);

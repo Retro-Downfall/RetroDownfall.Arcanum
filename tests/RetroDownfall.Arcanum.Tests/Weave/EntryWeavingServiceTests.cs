@@ -134,8 +134,7 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
         Guid sessionId = await CreateSessionAsync();
 
-        int chunkSize = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
-            ArcanumRuntimeDefaults.Embeddings.ChunkSizeChars);
+        const int chunkSize = 128;
 
         string longContent = new('x', chunkSize + 200);
 
@@ -143,7 +142,7 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
         FakeWeaveService weave = new();
 
-        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings, chunkSizeChars: chunkSize);
 
         await service.RunTickAsync(embeddings, CancellationToken.None);
 
@@ -184,9 +183,7 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
         Guid sessionId = await CreateSessionAsync();
 
-        int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(
-            ArcanumRuntimeDefaults.Embeddings.BatchSize);
-        for (int i = 0; i < (batchSize * 2) + 1; i++)
+        for (int i = 0; i < 5; i++)
         {
 
             await CreateEntryAsync(sessionId, $"entry number {i}");
@@ -195,19 +192,19 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
         FakeWeaveService weave = new();
 
-        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings, batchSize: 2);
 
         await service.RunTickAsync(embeddings, CancellationToken.None);
 
-        Assert.Equal(batchSize, await CountEntryEmbeddingsAsync());
+        Assert.Equal(2, await CountEntryEmbeddingsAsync());
 
         await service.RunTickAsync(embeddings, CancellationToken.None);
 
-        Assert.Equal(batchSize * 2, await CountEntryEmbeddingsAsync());
+        Assert.Equal(4, await CountEntryEmbeddingsAsync());
 
         await service.RunTickAsync(embeddings, CancellationToken.None);
 
-        Assert.Equal((batchSize * 2) + 1, await CountEntryEmbeddingsAsync());
+        Assert.Equal(5, await CountEntryEmbeddingsAsync());
 
     }
 
@@ -225,10 +222,10 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
         ArcanumSettings disabledSettings = new()
         {
-            Features = new FeatureSettings
+            Embeddings = new EmbeddingSettings
             {
-                Embeddings = false,
-                SessionSearch = false,
+                Enabled = false,
+                SessionSearchEnabled = false,
             },
         };
 
@@ -287,30 +284,25 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
     private EntryWeavingService CreateService(
         FakeWeaveService weave,
-        out EmbeddingSettings embeddings)
+        out EmbeddingSettings embeddings,
+        int batchSize = 32,
+        int chunkSizeChars = 1000)
     {
 
-        embeddings = ArcanumRuntimeDefaults.Embeddings;
+        embeddings = new EmbeddingSettings
+        {
+            Enabled = true,
+            SessionSearchEnabled = true,
+            Provider = "test",
+            Model = "test-embed",
+            BatchSize = batchSize,
+            ChunkSizeChars = chunkSizeChars,
+        };
 
         IServiceScopeFactory scopeFactory = BuildScopeFactory();
 
         return new EntryWeavingService(
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
-            {
-                Features = new FeatureSettings
-                {
-                    Embeddings = true,
-                    SessionSearch = true,
-                },
-                Integrations = new IntegrationSettings
-                {
-                    Embeddings = new EmbeddingIntegrationSettings
-                    {
-                        Provider = "test",
-                        Model = "test-embed",
-                    },
-                },
-            }),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Embeddings = embeddings }),
             weave,
             new WeaveIndexAvailability(),
             scopeFactory,

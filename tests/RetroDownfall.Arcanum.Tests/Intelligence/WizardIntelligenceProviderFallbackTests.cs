@@ -26,6 +26,7 @@ using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Resilience;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -37,7 +38,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// <summary>
 /// Direct-construction fallback-loop tests for <see cref="WizardIntelligenceProvider"/>, mirroring the
 /// pattern in <c>WizardIntelligenceProviderTests.cs</c> (own scripted <see cref="IChatClientFactory"/>
-/// and health-tracker doubles) rather than the HTTP <c>ArcanumWebApplicationFactory</c>
+/// double + a real <see cref="ProviderHealthTracker"/>) rather than the HTTP <c>ArcanumWebApplicationFactory</c>
 /// path, since that fixture unconditionally substitutes <see cref="IArcanumIntelligenceProvider"/> with a fake.
 /// </summary>
 public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
@@ -90,35 +91,40 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ExecutePromptAsync_tries_every_distinct_eligible_candidate()
+    public async Task ExecutePromptAsync_stops_after_max_attempts()
     {
-        ProviderSettings[] providers = Enumerable.Range(1, 5)
-            .Select(static index => MakeProvider($"provider-{index}"))
-            .ToArray();
+
+        ProviderSettings providerA = MakeProvider("provider-a");
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+
+        ProviderSettings providerC = MakeProvider("provider-c");
+
         RecordingChatClientFactory factory = new();
 
-        foreach (ProviderSettings provider in providers[..^1])
-        {
-            factory.CandidateExceptions[provider.Name] =
-                new HttpRequestException($"connection refused by {provider.Name}");
-        }
+        factory.CandidateExceptions[providerA.Name] = new HttpRequestException("connection refused");
 
-        ScriptingChatClient finalChat = new();
-        finalChat.EnqueueText("answer from final candidate");
-        factory.CandidateResolvers[providers[^1].Name] =
-            () => MakeLease(finalChat, providers[^1]);
-        IProviderHealthTracker tracker = CreateTracker();
-        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providers);
+        factory.CandidateExceptions[providerB.Name] = new HttpRequestException("connection refused");
+
+        factory.CandidateExceptions[providerC.Name] = new HttpRequestException("connection refused");
+
+        ProviderHealthTracker tracker = CreateTracker();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            factory,
+            tracker,
+            maxFallbackAttempts: 2,
+            providerA,
+            providerB,
+            providerC);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
             BaseRequest(),
             CancellationToken.None);
 
-        Assert.True(result.IsSuccess);
-        Assert.Equal("answer from final candidate", result.Value.Text);
-        Assert.Equal(
-            providers.Select(static provider => provider.Name),
-            factory.CandidateCallOrder);
+        Assert.True(result.IsFailure);
+
+        Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
 
     }
 
@@ -226,37 +232,40 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task StreamPromptAsync_tries_every_distinct_eligible_candidate()
+    public async Task StreamPromptAsync_retries_pre_stream_failure()
     {
-        ProviderSettings[] providers = Enumerable.Range(1, 5)
-            .Select(static index => MakeProvider($"provider-{index}"))
-            .ToArray();
+
+        ProviderSettings providerA = MakeProvider("provider-a");
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+
         RecordingChatClientFactory factory = new();
 
-        foreach (ProviderSettings provider in providers[..^1])
-        {
-            factory.CandidateExceptions[provider.Name] =
-                new HttpRequestException($"connection refused by {provider.Name}");
-        }
+        factory.CandidateExceptions[providerA.Name] = new HttpRequestException("connection refused");
 
-        ScriptingChatClient finalChat = new();
-        finalChat.EnqueueStreamTokens("final ", "answer");
-        factory.CandidateResolvers[providers[^1].Name] =
-            () => MakeLease(finalChat, providers[^1]);
-        IProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
-        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providers);
+        ScriptingChatClient chatB = new();
+
+        chatB.EnqueueStreamTokens("he", "llo");
+
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
 
         List<IntelligenceEvent> events = await CollectStreamAsync(wizard, BaseRequest());
 
-        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "final ");
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "he");
 
-        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "answer");
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "llo");
 
         Assert.DoesNotContain(events, static e => e.Type == IntelligenceEventType.Error);
 
-        Assert.Equal(
-            providers.Select(static provider => provider.Name),
-            factory.CandidateCallOrder);
+        Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
+
+        Assert.False(tracker.IsHealthy(providerA.Name));
+
+        Assert.True(tracker.IsHealthy(providerB.Name));
 
     }
 
@@ -326,20 +335,20 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Health_tracker_absent_uses_single_resolution_without_fallback()
+    public async Task Resilience_disabled_skips_fallback()
     {
 
         ProviderSettings providerA = MakeProvider("provider-a");
 
         RecordingChatClientFactory factory = new();
 
-        // The direct-construction path without a health tracker uses single resolution and only
-        // catches InvalidOperationException (the ProviderResolver "no model resolved" contract).
+        // The non-resilience single-resolution path only catches InvalidOperationException (the
+        // ProviderResolver "no model resolved" contract) — matches the disabled-path production code.
         factory.SingleCallException = new InvalidOperationException("No AI model could be resolved.");
 
         ProviderHealthTracker tracker = CreateTracker();
 
-        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, withHealthTracker: false, providerA);
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, resilienceEnabled: false, providerA);
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(BaseRequest(), CancellationToken.None);
 
@@ -354,7 +363,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ExecutePromptAsync_without_health_tracker_rejects_unsupported_reasoning_before_chat_call_and_disposes_lease()
+    public async Task ExecutePromptAsync_resilience_disabled_rejects_unsupported_reasoning_before_chat_call_and_disposes_lease()
     {
 
         ProviderSettings provider = MakeProvider("provider-a");
@@ -383,7 +392,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         WizardIntelligenceProvider wizard = CreateWizard(
             factory,
             CreateTracker(),
-            withHealthTracker: false,
+            resilienceEnabled: false,
             provider);
 
         PingRequest request = BaseRequest() with
@@ -404,7 +413,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task StreamPromptAsync_without_health_tracker_rejects_unsupported_reasoning_before_chat_call_and_disposes_lease()
+    public async Task StreamPromptAsync_resilience_disabled_rejects_unsupported_reasoning_before_chat_call_and_disposes_lease()
     {
 
         ProviderSettings provider = MakeProvider("provider-a");
@@ -433,7 +442,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         WizardIntelligenceProvider wizard = CreateWizard(
             factory,
             CreateTracker(),
-            withHealthTracker: false,
+            resilienceEnabled: false,
             provider);
 
         PingRequest request = BaseRequest() with
@@ -840,7 +849,12 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     // ===== Helpers =====
 
     private static ProviderHealthTracker CreateTracker(int healthFailureThreshold = 3) =>
-        new(healthFailureThreshold);
+        new(
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
+            {
+                Resilience = new ResilienceSettings { HealthFailureThreshold = healthFailureThreshold },
+            }),
+            NullLogger<ProviderHealthTracker>.Instance);
 
     private static ProviderSettings MakeProvider(string name) => new()
     {
@@ -882,12 +896,27 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IChatClientFactory factory,
         IProviderHealthTracker? healthTracker,
         params ProviderSettings[] providers) =>
-        CreateWizard(factory, healthTracker, withHealthTracker: true, providers);
+        CreateWizard(factory, healthTracker, resilienceEnabled: true, maxFallbackAttempts: 3, providers);
 
     private static WizardIntelligenceProvider CreateWizard(
         IChatClientFactory factory,
         IProviderHealthTracker? healthTracker,
-        bool withHealthTracker,
+        int maxFallbackAttempts,
+        params ProviderSettings[] providers) =>
+        CreateWizard(factory, healthTracker, resilienceEnabled: true, maxFallbackAttempts, providers);
+
+    private static WizardIntelligenceProvider CreateWizard(
+        IChatClientFactory factory,
+        IProviderHealthTracker? healthTracker,
+        bool resilienceEnabled,
+        params ProviderSettings[] providers) =>
+        CreateWizard(factory, healthTracker, resilienceEnabled, maxFallbackAttempts: 3, providers);
+
+    private static WizardIntelligenceProvider CreateWizard(
+        IChatClientFactory factory,
+        IProviderHealthTracker? healthTracker,
+        bool resilienceEnabled,
+        int maxFallbackAttempts,
         params ProviderSettings[] providers)
     {
 
@@ -898,7 +927,13 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
             Providers = providers,
 
-            Features = new FeatureSettings { Lexicon = false },
+            Resilience = new ResilienceSettings
+            {
+                Enabled = resilienceEnabled,
+                MaxFallbackAttempts = maxFallbackAttempts,
+            },
+
+            Intelligence = new IntelligenceSettings { EnableLexiconSystem = false },
 
         };
 
@@ -928,7 +963,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 NullLogger<ToolExecutionPipeline>.Instance),
             new GrimoireTurnWriter(
                 grimoire,
-                new SessionEventHub(NullLogger<SessionEventHub>.Instance),
+                new SessionEventHub(new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SessionEventHub>.Instance),
                 NullLogger<GrimoireTurnWriter>.Instance),
             CreateInferenceContextBuilder(grimoire, settings),
             sanctumGuard,
@@ -958,7 +993,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 NullLogger<BudgetMonitor>.Instance),
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
-            withHealthTracker ? healthTracker : null);
+            healthTracker);
     }
 
     private static IServiceScopeFactory CreateBudgetMonitorScopeFactory(
@@ -1008,57 +1043,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     }
 
     // ===== Test doubles =====
-
-    private sealed class ProviderHealthTracker(int failureThreshold) : IProviderHealthTracker
-    {
-        private readonly int _failureThreshold = Math.Max(1, failureThreshold);
-        private readonly Dictionary<string, ProviderHealthStatus> _statuses =
-            new(StringComparer.Ordinal);
-
-        public event Action<ProviderHealthStatus>? HealthChanged;
-
-        public bool IsHealthy(string providerName) =>
-            !_statuses.TryGetValue(providerName, out ProviderHealthStatus? status)
-            || status.IsHealthy;
-
-        public void MarkFailed(string providerName)
-        {
-            bool wasHealthy = IsHealthy(providerName);
-            int failures = _statuses.TryGetValue(providerName, out ProviderHealthStatus? status)
-                ? status.ConsecutiveFailures + 1
-                : 1;
-            ProviderHealthStatus updated = new(
-                providerName,
-                failures < _failureThreshold,
-                DateTimeOffset.UtcNow,
-                failures);
-            _statuses[providerName] = updated;
-
-            if (wasHealthy != updated.IsHealthy)
-            {
-                HealthChanged?.Invoke(updated);
-            }
-        }
-
-        public void MarkHealthy(string providerName)
-        {
-            bool wasHealthy = IsHealthy(providerName);
-            ProviderHealthStatus updated = new(
-                providerName,
-                true,
-                DateTimeOffset.UtcNow,
-                0);
-            _statuses[providerName] = updated;
-
-            if (!wasHealthy)
-            {
-                HealthChanged?.Invoke(updated);
-            }
-        }
-
-        public IReadOnlyList<ProviderHealthStatus> GetAllStatuses() =>
-            _statuses.Values.ToArray();
-    }
 
     private sealed class NoopWeaveService : IWeaveService
     {
@@ -1539,8 +1523,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new ListPageResult<Campaign>([], false));
 
-        public Task<Campaign> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+        public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             Task.FromResult(campaign);

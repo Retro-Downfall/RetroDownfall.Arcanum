@@ -1,9 +1,11 @@
 using System.Runtime.CompilerServices;
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -15,37 +17,27 @@ public sealed class ModelCallExecutorTests
 {
 
     [Fact]
-    public void ModelCallExecutor_contract_keeps_provider_io_without_counter_gate()
+    public async Task ExecuteBufferedAsync_ReturnsResponse_AndConsumesBudget()
     {
-        Assert.Null(typeof(IModelCallExecutor).GetMethod("TryBeginModelCall"));
-        Assert.Null(typeof(ModelCallExecutor).GetMethod("TryBeginModelCall"));
-        Assert.NotNull(typeof(IModelCallExecutor).GetMethod("ExecuteBufferedAsync"));
-        Assert.NotNull(typeof(IModelCallExecutor).GetMethod("ExecuteStreamingAsync"));
-    }
-
-    [Fact]
-    public async Task ExecuteBufferedAsync_AdmitsCallsBeyondFormerCountCeiling()
-    {
-        const int callCount = 13;
         ScriptingChatClient chat = new(text: "pong");
-        TurnBudget budget = new();
+
+        TurnBudget budget = new(maxModelCalls: 2);
+
         ModelCallExecutor executor = new();
 
-        for (int call = 0; call < callCount; call++)
-        {
-            ModelCallOutcome result = await executor.ExecuteBufferedAsync(
-                chat,
-                [new ChatMessage(ChatRole.User, $"ping-{call}")],
-                new ChatOptions(),
-                budget,
-                ModelCallPurpose.MainInference,
-                CancellationToken.None);
+        ModelCallOutcome result = await executor.ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "ping")],
+            new ChatOptions(),
+            budget,
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
 
-            Assert.True(result.IsSuccess);
-            Assert.Equal("pong", result.Value.Response.Text);
-        }
+        Assert.True(result.IsSuccess);
 
-        Assert.Equal(callCount, chat.CallCount);
+        Assert.Equal("pong", result.Value.Response.Text);
+
+        Assert.Equal(1, budget.RemainingModelCalls);
     }
 
     [Theory]
@@ -54,7 +46,7 @@ public sealed class ModelCallExecutorTests
     public async Task ExecuteAsync_AppliesCacheMetadataOnlyToProviderBoundClones(bool streaming)
     {
         ProviderSettings provider = CacheProvider();
-        PromptCachePlan plan = EligiblePlan(provider.Name, "gpt-5");
+        PromptCachePlan plan = EligiblePlan(provider.Name, "cache-model");
         ChatMessage originalMessage = new(ChatRole.System, "stable");
         List<ChatMessage> messages = [originalMessage, new(ChatRole.User, "solve")];
         ChatOptions options = new();
@@ -66,7 +58,7 @@ public sealed class ModelCallExecutorTests
         ModelCallExecutor executor = CreateAccountedExecutor(provider);
         ModelCallContext context = new(
             provider,
-            "gpt-5",
+            "cache-model",
             ReservedAnswerTokens: 0,
             ReservedReasoningTokens: 0,
             PromptCachePlan: plan);
@@ -77,7 +69,7 @@ public sealed class ModelCallExecutorTests
                 chat,
                 messages,
                 options,
-                new TurnBudget(),
+                new TurnBudget(1),
                 ModelCallPurpose.MainInference,
                 CancellationToken.None,
                 context))
@@ -90,7 +82,7 @@ public sealed class ModelCallExecutorTests
                 chat,
                 messages,
                 options,
-                new TurnBudget(),
+                new TurnBudget(1),
                 ModelCallPurpose.MainInference,
                 CancellationToken.None,
                 context);
@@ -110,19 +102,19 @@ public sealed class ModelCallExecutorTests
     public async Task ExecuteBufferedAsync_RejectsCachePlanForDifferentProviderBeforeIo()
     {
         ProviderSettings provider = CacheProvider();
-        PromptCachePlan plan = EligiblePlan("other-provider", "gpt-5");
+        PromptCachePlan plan = EligiblePlan("other-provider", "cache-model");
         ScriptingChatClient chat = new("answer");
 
         ModelCallOutcome outcome = await CreateAccountedExecutor(provider).ExecuteBufferedAsync(
             chat,
             [new ChatMessage(ChatRole.System, "stable")],
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(1),
             ModelCallPurpose.MainInference,
             CancellationToken.None,
             new ModelCallContext(
                 provider,
-                "gpt-5",
+                "cache-model",
                 0,
                 0,
                 PromptCachePlan: plan));
@@ -137,7 +129,8 @@ public sealed class ModelCallExecutorTests
     {
         string marker = Guid.NewGuid().ToString("N");
         ProviderSettings provider = CacheProvider() with { Name = marker };
-        PromptCachePlan plan = EligiblePlan(marker, "gpt-5") with
+        provider.Models[0].PromptCaching!.ReportsCachedInputUsage = true;
+        PromptCachePlan plan = EligiblePlan(marker, "cache-model") with
         {
             EligiblePrefixTokenEstimate = 25,
         };
@@ -156,7 +149,7 @@ public sealed class ModelCallExecutorTests
         {
             ModelPricing =
             {
-                ["gpt-5"] = new ModelPricingEntry
+                ["cache-model"] = new ModelPricingEntry
                 {
                     InputPer1M = 10m,
                     CachedPer1M = 2m,
@@ -195,12 +188,12 @@ public sealed class ModelCallExecutorTests
                 chat,
                 [new ChatMessage(ChatRole.System, "stable")],
                 new ChatOptions(),
-                new TurnBudget(),
+                new TurnBudget(1),
                 ModelCallPurpose.MainInference,
                 CancellationToken.None,
                 new ModelCallContext(
                     provider,
-                    "gpt-5",
+                    "cache-model",
                     0,
                     0,
                     PromptCachePlan: plan));
@@ -220,16 +213,15 @@ public sealed class ModelCallExecutorTests
     }
 
     [Fact]
-    public async Task ExecuteBufferedAsync_UnknownCatalogProfileDoesNotClaimCachedUsage()
+    public async Task ExecuteBufferedAsync_ProfileReportingGateOverridesLegacyMetricFlag()
     {
         string marker = Guid.NewGuid().ToString("N");
-        ProviderSettings provider = new()
+        ProviderSettings provider = CacheProvider() with
         {
             Name = marker,
-            Type = AiProviderKind.OpenAICompatible,
-            Endpoint = "https://unknown.example/v1",
-            Models = ["unknown-model"],
+            SupportsPromptCaching = true,
         };
+        provider.Models[0].PromptCaching!.ReportsCachedInputUsage = false;
         ChatResponse response = new(new ChatMessage(ChatRole.Assistant, "answer"))
         {
             Usage = new UsageDetails
@@ -259,39 +251,135 @@ public sealed class ModelCallExecutorTests
             new ScriptingChatClient(string.Empty) { BufferedResponse = response },
             [new ChatMessage(ChatRole.System, "stable")],
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(1),
             ModelCallPurpose.MainInference,
             CancellationToken.None,
             new ModelCallContext(
                 provider,
-                "unknown-model",
+                "cache-model",
                 0,
-                0));
+                0,
+                PromptCachePlan: EligiblePlan(marker, "cache-model")));
 
         Assert.True(outcome.IsSuccess);
         Assert.Empty(captured);
     }
 
     [Fact]
-    public async Task ExecuteBufferedAsync_PreservesTypedProviderFailure()
+    public async Task ExecuteBufferedAsync_FailsWhenBudgetExhausted()
     {
-        HttpRequestException connectivityFailure = new("connection refused");
+        ScriptingChatClient chat = new(text: "pong");
+
+        TurnBudget budget = new(maxModelCalls: 1);
+
+        ModelCallExecutor executor = new();
+
+        Assert.True(budget.TryConsumeModelCall());
+
+        ModelCallOutcome result = await executor.ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "ping")],
+            new ChatOptions(),
+            budget,
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Hub.TurnBudgetExceeded, result.Error.Code);
+
+        Assert.Equal(0, chat.CallCount);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_ProviderFailure_PreservesCauseButSanitizesPublicError()
+    {
+        const string canary = "CANARY_PROVIDER_SECRET_RESPONSE_BODY";
+        HttpRequestException connectivityFailure = new(canary);
         ScriptingChatClient chat = new(text: string.Empty)
         {
             BufferedException = connectivityFailure,
         };
+        TestCapturingLogger<ModelCallExecutor> logger = new();
 
-        ModelCallOutcome outcome = await new ModelCallExecutor().ExecuteBufferedAsync(
+        ModelCallOutcome outcome = await new ModelCallExecutor(logger: logger).ExecuteBufferedAsync(
             chat,
             [new ChatMessage(ChatRole.User, "ping")],
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
         Assert.True(outcome.IsFailure);
         Assert.Same(connectivityFailure, outcome.Failure.Cause);
-        Assert.Equal("connection refused", outcome.Error.Message);
+        Assert.Equal(
+            "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.",
+            outcome.Error.Message);
+
+        string serialized = JsonSerializer.Serialize(
+            outcome.Error,
+            ArcanumJsonContext.Default.Error);
+        Assert.DoesNotContain(canary, serialized, StringComparison.Ordinal);
+
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(HttpRequestException), log.Message, StringComparison.Ordinal);
+        Assert.Contains(outcome.Failure.ModelCallId, log.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            nameof(ModelCallPurpose.MainInference),
+            log.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_NoncancelledProviderOce_ReturnsSanitizedFailure()
+    {
+        const string canary = "CANARY_PROVIDER_CANCELLATION_BODY";
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedException = new OperationCanceledException(canary),
+        };
+        TestCapturingLogger<ModelCallExecutor> logger = new();
+
+        ModelCallOutcome outcome = await new ModelCallExecutor(logger: logger).ExecuteBufferedAsync(
+            chat,
+            [new ChatMessage(ChatRole.User, "ping")],
+            new ChatOptions(),
+            new TurnBudget(maxModelCalls: 1),
+            ModelCallPurpose.MainInference,
+            CancellationToken.None);
+
+        Assert.True(outcome.IsFailure);
+        Assert.Equal(
+            "Inference failed. Ensure the provider is running and reachable, then try again. See server logs for details.",
+            outcome.Failure?.Error.Message);
+        Assert.DoesNotContain(canary, outcome.Failure?.Error.Message, StringComparison.Ordinal);
+
+        TestLogEntry log = Assert.Single(logger.Entries);
+        Assert.Null(log.Exception);
+        Assert.Contains(nameof(OperationCanceledException), log.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(canary, log.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExecuteBufferedAsync_CancelledOwnedToken_Propagates()
+    {
+        ScriptingChatClient chat = new(text: string.Empty)
+        {
+            BufferedException = new OperationCanceledException("provider cancelled"),
+        };
+        using CancellationTokenSource cts = new();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new ModelCallExecutor().ExecuteBufferedAsync(
+                chat,
+                [new ChatMessage(ChatRole.User, "ping")],
+                new ChatOptions(),
+                new TurnBudget(maxModelCalls: 1),
+                ModelCallPurpose.MainInference,
+                cts.Token));
     }
 
     [Fact]
@@ -299,7 +387,7 @@ public sealed class ModelCallExecutorTests
     {
         ScriptingChatClient chat = new(text: "ab");
 
-        TurnBudget budget = new();
+        TurnBudget budget = new(maxModelCalls: 1);
 
         ModelCallExecutor executor = new();
 
@@ -317,7 +405,8 @@ public sealed class ModelCallExecutorTests
         }
 
         Assert.Contains(updates, u => u is ModelCallTextDelta);
-        Assert.Equal(1, chat.CallCount);
+
+        Assert.Equal(0, budget.RemainingModelCalls);
     }
 
     [Fact]
@@ -356,7 +445,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
             },
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
@@ -398,7 +487,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.None },
             },
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
@@ -428,7 +517,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
             },
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.SpellRouting,
             CancellationToken.None);
 
@@ -459,7 +548,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
             },
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.StructuredOutputRetry,
             CancellationToken.None);
 
@@ -494,7 +583,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
             },
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
@@ -540,7 +629,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
             },
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
@@ -615,7 +704,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Full },
             },
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None))
         {
@@ -660,7 +749,7 @@ public sealed class ModelCallExecutorTests
             chat,
             [new ChatMessage(ChatRole.User, "reason")],
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None))
         {
@@ -700,7 +789,7 @@ public sealed class ModelCallExecutorTests
             chat,
             [new ChatMessage(ChatRole.User, "reason")],
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None))
         {
@@ -730,7 +819,7 @@ public sealed class ModelCallExecutorTests
             chat,
             [new ChatMessage(ChatRole.User, "reason")],
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(maxModelCalls: 1),
             ModelCallPurpose.MainInference,
             CancellationToken.None))
         {
@@ -814,12 +903,19 @@ public sealed class ModelCallExecutorTests
 
     private static ProviderSettings CacheProvider()
     {
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            WireDialect = PromptCachingWireDialect.OpenAiPromptCacheRetention,
+            CacheKeysSupported = true,
+            EmitCacheKey = true,
+        };
+
         return new ProviderSettings
         {
             Name = "provider",
             Type = AiProviderKind.OpenAICompatible,
-            Endpoint = "https://api.openai.com/v1",
-            Models = ["gpt-5"],
+            Models = [new ModelEntry("cache-model") { PromptCaching = profile }],
         };
     }
 
@@ -844,9 +940,10 @@ public sealed class ModelCallExecutorTests
         ArcanumSettings settings = new()
         {
             Providers = [provider],
-            Cost = new CostSettings
+            Pricing = pricing ?? new PricingSettings(),
+            Intelligence = new IntelligenceSettings
             {
-                Pricing = pricing ?? new PricingSettings(),
+                TokenizerEncoding = "o200k_base",
             },
         };
         InferenceTokenizerResolver tokenizer = new(

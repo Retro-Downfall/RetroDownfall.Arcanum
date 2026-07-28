@@ -27,8 +27,8 @@ internal sealed class UnseenServantService(
     /// <summary>
     /// Startup jitter watermark, intentionally NOT persisted — regenerated fresh every process start
     /// to spread first-tick load. Last-run watermarks are persisted to the Grimoire via
-    /// <see cref="IUnseenServantJobTracker.HydrateAsync"/>/<see cref="IUnseenServantWatermarkStore"/>,
-    /// so a hydrated job's <see cref="IUnseenServantJobTracker.GetLastRunAt"/>
+    /// <see cref="IUnseenServantJobTracker.HydrateAsync"/>/<see cref="IUnseenServantWatermarkStore"/>
+    /// (see docs/persistence.md), so a hydrated job's <see cref="IUnseenServantJobTracker.GetLastRunAt"/>
     /// is non-null and this jitter path is skipped for it.
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTimeOffset> _firstDispatchAfterUtc = new(StringComparer.Ordinal);
@@ -42,7 +42,7 @@ internal sealed class UnseenServantService(
     /// <summary>
     /// Cleanup cadence for expired <c>IdempotencyKeys</c> rows. Piggybacks on this service's
     /// existing 1-minute scheduler tick instead of standing up a dedicated <see cref="BackgroundService"/>
-    /// — see <c>docs/Arcanum.DESIGN.md</c> §11.17.
+    /// — see DESIGN.md §11.17.
     /// </summary>
     private static readonly TimeSpan IdempotencyCleanupInterval = TimeSpan.FromHours(1);
 
@@ -99,7 +99,7 @@ internal sealed class UnseenServantService(
             IIdempotencyClaimStore claimStore = scope.ServiceProvider.GetRequiredService<IIdempotencyClaimStore>();
 
             int ttlHours = ArcanumSettingClamps.SecurityIdempotencyTtlHours(
-                ArcanumRuntimeDefaults.SecurityIdempotencyTtlHours);
+                optionsMonitor.CurrentValue.Security?.IdempotencyTtlHours ?? new SecuritySettings().IdempotencyTtlHours);
 
             DateTimeOffset olderThan = DateTimeOffset.UtcNow.AddHours(-ttlHours);
 
@@ -252,7 +252,7 @@ internal sealed class UnseenServantService(
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
 
         int drainSeconds = ArcanumSettingClamps.DaemonShutdownDrainTimeoutSeconds(
-            ArcanumRuntimeDefaults.DaemonShutdownDrainTimeoutSeconds);
+            optionsMonitor.CurrentValue.Daemon?.ShutdownDrainTimeoutSeconds ?? new DaemonSettings().ShutdownDrainTimeoutSeconds);
 
         if (drainSeconds <= 0)
         {

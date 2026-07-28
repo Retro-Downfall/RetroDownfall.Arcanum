@@ -1,8 +1,7 @@
 namespace RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 /// <summary>
-/// One JSONL line in the persisted guardrails audit log
-/// (<c>Arcanum:Security:Guardrails:AuditLog</c>,
+/// One JSONL line in the persisted guardrails audit log (<c>Arcanum:Guardrails:AuditLog</c>,
 /// §8.x). Written by <c>GuardrailAuditLogger</c> only when a guardrail violation blocks a turn —
 /// never for allowed turns — so the trail is a focused record of policy hits, not a per-turn log.
 /// Multiple violations detected in a single turn may each produce a separate audit record (capped at

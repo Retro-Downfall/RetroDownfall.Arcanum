@@ -20,7 +20,12 @@ public sealed class McpConnectionManagerMaxServersCapTests : IAsyncLifetime
     public Task InitializeAsync()
     {
 
-        ArcanumSettings settings = new();
+        ArcanumSettings settings = new()
+        {
+
+            Mcp = new McpSettings { MaxServers = 4 },
+
+        };
 
         ServiceCollection services = new();
 
@@ -69,15 +74,15 @@ public sealed class McpConnectionManagerMaxServersCapTests : IAsyncLifetime
     // parallel registrations could all pass the count check and overshoot the cap.
     // The fix wraps the register+count-check in _registryLock. A Barrier releases
     // all registrations onto the seam at the same instant so the check-then-add
-    // window is actually contested; with the code-owned MaxServers=K < N, at most
-    // K servers may be registered.
+    // window is actually contested; with MaxServers=K < N, at most K servers may
+    // be registered.
     [Fact]
     public async Task RegisterFromConfigAsync_ConcurrentRegistrations_NeverOvershootsMaxServers()
     {
 
-        int maxServers = ArcanumSettingClamps.McpMaxServers(
-            ArcanumRuntimeDefaults.Mcp.MaxServers);
-        int registrationCount = maxServers + 16;
+        const int maxServers = 4;
+
+        const int registrationCount = 16;
 
         using Barrier barrier = new(registrationCount);
 
@@ -175,6 +180,23 @@ public sealed class McpConnectionManagerMaxServersCapTests : IAsyncLifetime
 
         public Task<bool> IsTrustedAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
+
+        public Task<bool> IsTrustedAsync(
+            string workspaceRootPath,
+            string sourceDigest,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<bool> IsApprovedDigestAsync(
+            string workspaceRootPath,
+            string sourceDigest,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<TrustedMcpWorkspaceSnapshot> GetSnapshotAsync(
+            string workspaceRootPath,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(default(TrustedMcpWorkspaceSnapshot));
 
         public Task TrustAsync(string workspaceRootPath, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;

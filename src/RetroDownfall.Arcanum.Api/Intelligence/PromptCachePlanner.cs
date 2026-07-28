@@ -16,6 +16,7 @@ internal static class PromptCachePlanner
     public static PromptCachePlan Create(
         ProviderSettings provider,
         string model,
+        PromptCachingProfile? profile,
         SystemPromptDocument document,
         ChatOptions options,
         PromptCacheSemanticNamespace semanticNamespace,
@@ -24,9 +25,6 @@ internal static class PromptCachePlanner
         ArgumentNullException.ThrowIfNull(provider);
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(options);
-
-        PromptCachingProfile? profile =
-            ModelCapabilityCatalog.ResolvePromptCaching(provider, model);
 
         if (profile is null)
         {

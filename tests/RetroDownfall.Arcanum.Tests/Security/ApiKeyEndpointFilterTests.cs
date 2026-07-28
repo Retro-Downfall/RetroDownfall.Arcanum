@@ -85,9 +85,16 @@ public sealed class ApiKeyEndpointFilterTests
 
     ApiKeyDigestCache cache = new(new FakeTimeProvider());
 
-    ApiKeyEndpointFilter filter = new(
-      store,
-      cache);
+    ArcanumSettings settings = new()
+    {
+      Security = new SecuritySettings
+      {
+        MaxApiKeyHeaderUtf16Chars = 256,
+        ApiKeyCacheTtlSeconds = 60,
+      },
+    };
+
+    ApiKeyEndpointFilter filter = new(store, cache, new TestOptionsMonitor<ArcanumSettings>(settings));
 
     DefaultHttpContext first = new();
 
@@ -173,13 +180,16 @@ public sealed class ApiKeyEndpointFilterTests
   [Fact]
   public async Task InvokeAsync_HeaderTooLong_Returns401()
   {
-    ApiKeyEndpointFilter filter = CreateFilter(ValidKey);
+    ArcanumSettings settings = new()
+    {
+      Security = new SecuritySettings { MaxApiKeyHeaderUtf16Chars = 128 },
+    };
+
+    ApiKeyEndpointFilter filter = new(new FakeSecretStore(ValidKey), new ApiKeyDigestCache(new FakeTimeProvider()), new TestOptionsMonitor<ArcanumSettings>(settings));
 
     DefaultHttpContext httpContext = new();
 
-    int maxChars = ArcanumSettingClamps.MaxApiKeyHeaderUtf16Chars(
-      ArcanumRuntimeDefaults.SecurityMaxApiKeyHeaderUtf16Chars);
-    string tooLong = new('k', maxChars + 1);
+    string tooLong = new string('k', 200);
 
     httpContext.Request.Headers[ArcanumApiHeaders.ApiKey] = tooLong;
 
@@ -395,9 +405,16 @@ public sealed class ApiKeyEndpointFilterTests
 
     FakeTimeProvider timeProvider = new();
 
-    ApiKeyEndpointFilter filter = new(
-      store,
-      new ApiKeyDigestCache(timeProvider));
+    ArcanumSettings settings = new()
+    {
+      Security = new SecuritySettings
+      {
+        MaxApiKeyHeaderUtf16Chars = 256,
+        ApiKeyCacheTtlSeconds = 1,
+      },
+    };
+
+    ApiKeyEndpointFilter filter = new(store, new ApiKeyDigestCache(timeProvider), new TestOptionsMonitor<ArcanumSettings>(settings));
 
     DefaultHttpContext first = new();
 
@@ -407,9 +424,7 @@ public sealed class ApiKeyEndpointFilterTests
 
     store.GetCallCount = 0;
 
-    int cacheTtlSeconds = ArcanumSettingClamps.ApiKeyCacheTtlSeconds(
-      ArcanumRuntimeDefaults.SecurityApiKeyCacheTtlSeconds);
-    timeProvider.Advance(TimeSpan.FromSeconds(cacheTtlSeconds + 1));
+    timeProvider.Advance(TimeSpan.FromSeconds(2));
 
     DefaultHttpContext second = new();
 
@@ -449,9 +464,16 @@ public sealed class ApiKeyEndpointFilterTests
 
   private static ApiKeyEndpointFilter CreateFilter(FakeSecretStore store)
   {
-    return new ApiKeyEndpointFilter(
-      store,
-      new ApiKeyDigestCache(new FakeTimeProvider()));
+    ArcanumSettings settings = new()
+    {
+      Security = new SecuritySettings
+      {
+        MaxApiKeyHeaderUtf16Chars = 256,
+        ApiKeyCacheTtlSeconds = 60,
+      },
+    };
+
+    return new ApiKeyEndpointFilter(store, new ApiKeyDigestCache(new FakeTimeProvider()), new TestOptionsMonitor<ArcanumSettings>(settings));
   }
 
   private static EndpointFilterInvocationContext CreateContext(HttpContext httpContext) =>

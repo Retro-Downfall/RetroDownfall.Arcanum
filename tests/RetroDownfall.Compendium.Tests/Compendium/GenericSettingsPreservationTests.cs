@@ -37,111 +37,51 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     }
 
     [Fact]
-    public async Task Editing_polished_host_preserves_every_generic_minimal_section()
+    public async Task Editing_polished_host_preserves_generic_resilience_values()
     {
 
         await SeedAsync(new ArcanumSettings
         {
             Host = new HostSettings { Port = 5001 },
-            Security = new SecuritySettings
+            Resilience = new ResilienceSettings
             {
-                CampaignRoots = ["/campaigns"],
-                Ward = new WardPolicySettings { UnattendedMode = true },
-            },
-            Workspaces = new WorkspaceSettings
-            {
-                DefaultRoot = "/workspace",
-                EnableFileWrite = true,
-            },
-            Features = new FeatureSettings
-            {
-                WebBrowsing = true,
-                Apprentices = true,
-            },
-            Integrations = new IntegrationSettings
-            {
-                Mcp = new McpIntegrationSettings { AllowedHttpHosts = ["localhost"] },
-            },
-            Execution = new ExecutionSettings
-            {
-                MaxConcurrentApprentices = 7,
-                MaxSseConnections = 80,
-            },
-            Cost = new CostSettings
-            {
-                Budget = new BudgetPolicySettings
-                {
-                    Enabled = true,
-                    DailyLimitUsd = 25m,
-                },
+                Enabled = true,
+                HealthProbeIntervalSeconds = 42,
+                MaxFallbackAttempts = 3,
             },
         });
 
         ConfigurationViewModel vm = CreateViewModel();
 
         await WaitForLoadAsync(vm);
+
+        Assert.Equal(5001, vm.Host.Port);
 
         vm.Host.Port = 5100;
 
         ArcanumSettings built = vm.BuildSettings();
 
         Assert.Equal(5100, built.Host.Port);
-        Assert.Equal(["/campaigns"], built.Security.CampaignRoots);
-        Assert.True(built.Security.Ward.UnattendedMode);
-        Assert.Equal("/workspace", built.Workspaces.DefaultRoot);
-        Assert.True(built.Workspaces.EnableFileWrite);
-        Assert.True(built.Features.WebBrowsing);
-        Assert.True(built.Features.Apprentices);
-        Assert.Equal(["localhost"], built.Integrations.Mcp.AllowedHttpHosts);
-        Assert.Equal(7, built.Execution.MaxConcurrentApprentices);
-        Assert.Equal(80, built.Execution.MaxSseConnections);
-        Assert.True(built.Cost.Budget.Enabled);
-        Assert.Equal(25m, built.Cost.Budget.DailyLimitUsd);
+
+        Assert.True(built.Resilience.Enabled);
+
+        Assert.Equal(42, built.Resilience.HealthProbeIntervalSeconds);
+
+        Assert.Equal(3, built.Resilience.MaxFallbackAttempts);
 
     }
 
     [Fact]
-    public async Task Editing_generic_fields_updates_new_sections()
-    {
-
-        await SeedAsync(new ArcanumSettings());
-
-        ConfigurationViewModel vm = CreateViewModel();
-
-        await WaitForLoadAsync(vm);
-
-        Field(vm, ConfigSection.Features, "features.webBrowsing").BoolValue = true;
-        Field(vm, ConfigSection.Security, "security.campaignRoots").StringValue =
-            "C:\\campaigns, D:\\archives";
-        Field(vm, ConfigSection.Execution, "execution.maxConcurrentApprentices").NumericValue = 9;
-        Field(vm, ConfigSection.Integrations, "integrations.embeddings.provider").StringValue =
-            "local-embeddings";
-
-        ArcanumSettings built = vm.BuildSettings();
-
-        Assert.True(built.Features.WebBrowsing);
-        Assert.Equal(["C:\\campaigns", "D:\\archives"], built.Security.CampaignRoots);
-        Assert.Equal(9, built.Execution.MaxConcurrentApprentices);
-        Assert.Equal("local-embeddings", built.Integrations.Embeddings.Provider);
-
-    }
-
-    [Fact]
-    public async Task Nullable_reasoning_price_preserves_null_and_can_set_then_clear_zero()
+    public async Task Editing_generic_resilience_field_persists_on_build()
     {
 
         await SeedAsync(new ArcanumSettings
         {
-            Cost = new CostSettings
+            Host = new HostSettings { Port = 5001 },
+            Resilience = new ResilienceSettings
             {
-                Pricing = new PricingSettings
-                {
-                    DefaultPricing = new ModelPricingEntry
-                    {
-                        OutputPer1M = 5m,
-                        ReasoningPer1M = null,
-                    },
-                },
+                Enabled = false,
+                HealthProbeIntervalSeconds = 30,
             },
         });
 
@@ -149,42 +89,78 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
         await WaitForLoadAsync(vm);
 
-        GenericSettingFieldViewModel reasoning = Field(
-            vm,
-            ConfigSection.Cost,
-            "cost.pricing.defaultPricing.reasoningPer1M");
+        GenericSectionViewModel section = vm.GetOrCreateGenericSection(ConfigSection.Resilience);
 
-        Assert.True(reasoning.Descriptor.AllowUnset);
-        Assert.False(reasoning.IsSet);
-        Assert.Null(vm.BuildSettings().Cost.Pricing.DefaultPricing.ReasoningPer1M);
+        GenericSettingFieldViewModel? interval = section.Fields
+            .FirstOrDefault(f => f.Descriptor.Key == "resilience.healthProbeIntervalSeconds");
 
-        reasoning.IsSet = true;
-        reasoning.NumericValue = 0;
+        Assert.NotNull(interval);
 
-        Assert.Equal(0m, vm.BuildSettings().Cost.Pricing.DefaultPricing.ReasoningPer1M);
+        interval.NumericValue = 55;
 
-        reasoning.IsSet = false;
+        GenericSettingFieldViewModel? enabled = section.Fields
+            .FirstOrDefault(f => f.Descriptor.Key == "resilience.enabled");
 
-        ArcanumSettings cleared = vm.BuildSettings();
+        Assert.NotNull(enabled);
 
-        Assert.Null(cleared.Cost.Pricing.DefaultPricing.ReasoningPer1M);
+        enabled.BoolValue = true;
 
-        using ArcanumConfigurationStore store = new();
+        ArcanumSettings built = vm.BuildSettings();
 
-        ConfigurationWriteResult writeResult = await store.WriteAsync(cleared, CancellationToken.None);
+        Assert.True(built.Resilience.Enabled);
 
-        Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
+        Assert.Equal(55, built.Resilience.HealthProbeIntervalSeconds);
 
-        ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
-
-        Assert.Null(saved.Cost.Pricing.DefaultPricing.ReasoningPer1M);
+        Assert.Equal(5001, built.Host.Port);
 
     }
 
     [Fact]
-    public async Task Provider_factual_capabilities_and_credential_reference_round_trip()
+    public async Task Nullable_reasoning_price_preserves_null_and_can_set_then_clear_zero()
     {
-        ReasoningCapabilities reasoning = new()
+        await SeedAsync(new ArcanumSettings
+        {
+            Pricing = new PricingSettings
+            {
+                DefaultPricing = new ModelPricingEntry
+                {
+                    OutputPer1M = 5m,
+                    ReasoningPer1M = null,
+                },
+            },
+        });
+
+        ConfigurationViewModel vm = CreateViewModel();
+        await WaitForLoadAsync(vm);
+        GenericSectionViewModel section = vm.GetOrCreateGenericSection(ConfigSection.Pricing);
+        GenericSettingFieldViewModel reasoning = Assert.Single(
+            section.Fields,
+            static field => field.Descriptor.Key == "pricing.defaultPricing.reasoningPer1M");
+
+        Assert.True(reasoning.Descriptor.AllowUnset);
+        Assert.False(reasoning.IsSet);
+        Assert.Null(vm.BuildSettings().Pricing.DefaultPricing.ReasoningPer1M);
+
+        reasoning.IsSet = true;
+        reasoning.NumericValue = 0;
+        Assert.Equal(0m, vm.BuildSettings().Pricing.DefaultPricing.ReasoningPer1M);
+
+        reasoning.IsSet = false;
+        ArcanumSettings cleared = vm.BuildSettings();
+        Assert.Null(cleared.Pricing.DefaultPricing.ReasoningPer1M);
+
+        using ArcanumConfigurationStore store = new(new ArcanumDataProtectionSecretProtector());
+        ConfigurationWriteResult writeResult = await store.WriteAsync(cleared, CancellationToken.None);
+        Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
+        ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
+        Assert.Null(saved.Pricing.DefaultPricing.ReasoningPer1M);
+    }
+
+    [Fact]
+    public async Task Provider_reasoning_capabilities_survive_load_build_and_save_round_trip()
+    {
+
+        ReasoningCapabilities expected = new()
         {
             ControlSupport = ReasoningControlSupport.EffortAndBudget,
             SupportsSummary = true,
@@ -205,14 +181,7 @@ public sealed class GenericSettingsPreservationTests : IDisposable
                     Name = "reasoning-provider",
                     Type = AiProviderKind.OpenAICompatible,
                     Endpoint = "https://reasoning.example/v1",
-                    CredentialEnvironmentVariable = "REASONING_PROVIDER_API_KEY",
-                    Models =
-                    [
-                        new ModelEntry(
-                            "reasoner",
-                            SupportsVision: true,
-                            Reasoning: reasoning),
-                    ],
+                    Models = [new ModelEntry("reasoner", SupportsVision: true, Reasoning: expected)],
                 },
             ],
         });
@@ -221,161 +190,220 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
         await WaitForLoadAsync(vm);
 
+        ProvidersSectionViewModel.ModelEntryViewModel model = Assert.Single(
+            Assert.Single(vm.Providers.Providers).Models);
+
+        Assert.Equal(expected, model.Reasoning);
+
+        ArcanumSettings built = vm.BuildSettings();
+        ReasoningCapabilities builtReasoning = Assert.IsType<ReasoningCapabilities>(
+            Assert.Single(Assert.Single(built.Providers).Models).Reasoning);
+
+        Assert.Equal(expected, builtReasoning);
+
+        using ArcanumConfigurationStore store = new(new ArcanumDataProtectionSecretProtector());
+        ConfigurationWriteResult writeResult = await store.WriteAsync(built, CancellationToken.None);
+
+        Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
+
+        ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
+        ReasoningCapabilities savedReasoning = Assert.IsType<ReasoningCapabilities>(
+            Assert.Single(Assert.Single(saved.Providers).Models).Reasoning);
+
+        Assert.Equal(expected, savedReasoning);
+
+    }
+
+    [Fact]
+    public async Task Provider_prompt_cache_profiles_survive_polished_model_edits_and_save()
+    {
+        PromptCachingProfile providerProfile = new()
+        {
+            ControlMode = PromptCachingControlMode.ProviderManaged,
+            ReportsCachedInputUsage = true,
+        };
+        PromptCachingProfile modelProfile = new()
+        {
+            ControlMode = PromptCachingControlMode.None,
+        };
+
+        await SeedAsync(new ArcanumSettings
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "cache-provider",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "https://cache.example/v1",
+                    PromptCaching = providerProfile,
+                    Models =
+                    [
+                        new ModelEntry(
+                            "cache-model",
+                            SupportsVision: false,
+                            PromptCaching: modelProfile),
+                        "legacy-model",
+                    ],
+                },
+            ],
+        });
+
+        ConfigurationViewModel vm = CreateViewModel();
+        await WaitForLoadAsync(vm);
+
         ProvidersSectionViewModel.ProviderViewModel provider = Assert.Single(vm.Providers.Providers);
-        ProvidersSectionViewModel.ModelEntryViewModel model = Assert.Single(provider.Models);
-
-        Assert.Equal(reasoning, model.Reasoning);
-        Assert.Equal(
-            "REASONING_PROVIDER_API_KEY",
-            provider.CredentialEnvironmentVariable);
-
-        model.Name = "reasoner-v2";
-        model.ReasoningSupportsFull = false;
-        model.ReasoningMaxBudgetTokens = 65536;
+        ProvidersSectionViewModel.ModelEntryViewModel cacheModel = provider.Models[0];
+        ProvidersSectionViewModel.ModelEntryViewModel legacyModel = provider.Models[1];
+        cacheModel.Name = "cache-model-renamed";
+        cacheModel.SupportsVision = true;
 
         ArcanumSettings built = vm.BuildSettings();
         ProviderSettings builtProvider = Assert.Single(built.Providers);
-        ModelEntry builtModel = Assert.Single(builtProvider.Models);
 
-        Assert.Equal("reasoner-v2", builtModel.Name);
-        Assert.False(Assert.IsType<ReasoningCapabilities>(builtModel.Reasoning).SupportsFull);
-        Assert.Equal(65536, builtModel.Reasoning.MaxBudgetTokens);
-        Assert.Equal(
-            "REASONING_PROVIDER_API_KEY",
-            builtProvider.CredentialEnvironmentVariable);
+        Assert.Equal(providerProfile, builtProvider.PromptCaching);
+        Assert.Equal(modelProfile, builtProvider.Models[0].PromptCaching);
+        Assert.Equal("cache-model-renamed", builtProvider.Models[0].Name);
+        Assert.True(builtProvider.Models[0].SupportsVision);
+        Assert.Null(builtProvider.Models[1].PromptCaching);
+        Assert.Null(legacyModel.PromptCaching);
 
-        using ArcanumConfigurationStore store = new();
-
+        using ArcanumConfigurationStore store = new(new ArcanumDataProtectionSecretProtector());
         ConfigurationWriteResult writeResult = await store.WriteAsync(built, CancellationToken.None);
 
         Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
 
         ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
         ProviderSettings savedProvider = Assert.Single(saved.Providers);
-        ModelEntry savedModel = Assert.Single(savedProvider.Models);
 
-        Assert.Equal("reasoner-v2", savedModel.Name);
-        Assert.Equal(65536, savedModel.Reasoning?.MaxBudgetTokens);
-        Assert.Equal(
-            "REASONING_PROVIDER_API_KEY",
-            savedProvider.CredentialEnvironmentVariable);
-
+        Assert.Equal(providerProfile, savedProvider.PromptCaching);
+        Assert.Equal(modelProfile, savedProvider.Models[0].PromptCaching);
+        Assert.Null(savedProvider.Models[1].PromptCaching);
     }
 
     [Fact]
-    public async Task Authored_dictionary_editors_use_source_generated_contracts_and_round_trip()
+    public async Task Provider_tokenization_profiles_survive_load_build_and_save_round_trip()
     {
+        ModelTokenizationProfile expected = new()
+        {
+            Type = ModelTokenizationProfileType.CalibratedApproximation,
+            TokenizerId = "o200k_base",
+            SafetyMarginPercent = 20,
+            UnknownImageReserveTokens = 4096,
+            Confidence = 0.8,
+        };
 
-        WorkspaceCheckProfileSettings original = new()
+        await SeedAsync(new ArcanumSettings
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "profiled-provider",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "https://profiled.example/v1",
+                    Models = [new ModelEntry("profiled-model", Tokenization: expected)],
+                },
+            ],
+        });
+
+        ConfigurationViewModel vm = CreateViewModel();
+        await WaitForLoadAsync(vm);
+
+        ProvidersSectionViewModel.ModelEntryViewModel model = Assert.Single(
+            Assert.Single(vm.Providers.Providers).Models);
+        Assert.Equal(expected, model.Tokenization);
+
+        ArcanumSettings built = vm.BuildSettings();
+        Assert.Equal(
+            expected,
+            Assert.Single(Assert.Single(built.Providers).Models).Tokenization);
+
+        using ArcanumConfigurationStore store = new(new ArcanumDataProtectionSecretProtector());
+        ConfigurationWriteResult writeResult = await store.WriteAsync(built, CancellationToken.None);
+        Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
+
+        ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
+        Assert.Equal(
+            expected,
+            Assert.Single(Assert.Single(saved.Providers).Models).Tokenization);
+    }
+
+    [Fact]
+    public async Task Workspace_check_custom_profiles_remain_opaque_and_survive_save_reload()
+    {
+        WorkspaceCheckProfileSettings expected = new()
         {
             ExecutableId = "dotnet",
             Kind = WorkspaceCheckKind.Test,
             Parser = WorkspaceCheckDiagnosticParserKind.VsTest,
             FixedArguments = ["test"],
-        };
-
-        await SeedAsync(new ArcanumSettings
-        {
-            Integrations = new IntegrationSettings
+            Options = new Dictionary<string, WorkspaceCheckProfileOptionSettings>
             {
-                WorkspaceChecks = new WorkspaceCheckIntegrationSettings
+                ["configuration"] = new()
                 {
-                    CustomProfiles = new Dictionary<string, WorkspaceCheckProfileSettings>
+                    AllowedValues = new Dictionary<string, string[]>
                     {
-                        ["ci-test"] = original,
+                        ["release"] = ["--configuration", "Release"],
                     },
                 },
             },
-            Cost = new CostSettings
+        };
+        await SeedAsync(new ArcanumSettings
+        {
+            CodingTools = new CodingToolsSettings
             {
-                Pricing = new PricingSettings
+                WorkspaceCheck = new WorkspaceCheckSettings
                 {
-                    ModelPricing = new Dictionary<string, ModelPricingEntry>
+                    CustomProfiles = new Dictionary<string, WorkspaceCheckProfileSettings>
                     {
-                        ["reasoner"] = new() { InputPer1M = 1m, OutputPer1M = 2m },
+                        ["ci-test"] = expected,
                     },
                 },
             },
         });
 
         ConfigurationViewModel vm = CreateViewModel();
-
         await WaitForLoadAsync(vm);
+        GenericSectionViewModel section = vm.GetOrCreateGenericSection(ConfigSection.CodingTools);
 
-        GenericSettingFieldViewModel profiles = Field(
-            vm,
-            ConfigSection.Integrations,
-            "integrations.workspaceChecks.customProfiles");
-
-        GenericSettingFieldViewModel pricing = Field(
-            vm,
-            ConfigSection.Cost,
-            "cost.pricing.modelPricing");
-
-        Assert.Contains("\"ci-test\"", profiles.StringValue, StringComparison.Ordinal);
-        Assert.Contains("\"reasoner\"", pricing.StringValue, StringComparison.Ordinal);
-
-        Dictionary<string, WorkspaceCheckProfileSettings> updatedProfiles =
-            new(StringComparer.OrdinalIgnoreCase)
-            {
-                ["release-build"] = new WorkspaceCheckProfileSettings
-                {
-                    ExecutableId = "dotnet",
-                    Kind = WorkspaceCheckKind.Build,
-                    Parser = WorkspaceCheckDiagnosticParserKind.MsBuild,
-                    FixedArguments = ["build", "--configuration", "Release"],
-                },
-            };
-
-        profiles.StringValue = JsonSerializer.Serialize(
-            updatedProfiles,
-            typeof(Dictionary<string, WorkspaceCheckProfileSettings>),
-            ConfigurationJsonContext.Default);
+        Assert.DoesNotContain(
+            section.Fields,
+            static field => field.Descriptor.Key.StartsWith(
+                "codingTools.workspaceCheck.customProfiles.",
+                StringComparison.Ordinal));
 
         ArcanumSettings built = vm.BuildSettings();
+        WorkspaceCheckProfileSettings builtProfile = built.CodingTools.WorkspaceCheck.CustomProfiles["ci-test"];
 
-        Assert.DoesNotContain("ci-test", built.Integrations.WorkspaceChecks.CustomProfiles.Keys);
+        Assert.Equal(expected.ExecutableId, builtProfile.ExecutableId);
+        Assert.Equal(expected.Kind, builtProfile.Kind);
+        Assert.Equal(expected.Parser, builtProfile.Parser);
+        Assert.Equal(expected.FixedArguments, builtProfile.FixedArguments);
         Assert.Equal(
-            ["build", "--configuration", "Release"],
-            built.Integrations.WorkspaceChecks.CustomProfiles["release-build"].FixedArguments);
-        Assert.Equal(
-            1m,
-            built.Cost.Pricing.ModelPricing["reasoner"].InputPer1M);
+            ["--configuration", "Release"],
+            builtProfile.Options["configuration"].AllowedValues["release"]);
 
-        using ArcanumConfigurationStore store = new();
-
+        using ArcanumConfigurationStore store = new(new ArcanumDataProtectionSecretProtector());
         ConfigurationWriteResult writeResult = await store.WriteAsync(built, CancellationToken.None);
-
         Assert.True(writeResult.IsSuccess, writeResult.ErrorMessage);
-
         ArcanumSettings saved = await store.ReadAsync(CancellationToken.None);
+        WorkspaceCheckProfileSettings savedProfile = saved.CodingTools.WorkspaceCheck.CustomProfiles["ci-test"];
 
+        Assert.Equal(expected.FixedArguments, savedProfile.FixedArguments);
         Assert.Equal(
-            WorkspaceCheckKind.Build,
-            saved.Integrations.WorkspaceChecks.CustomProfiles["release-build"].Kind);
-        Assert.Equal(
-            2m,
-            saved.Cost.Pricing.ModelPricing["reasoner"].OutputPer1M);
-
+            ["--configuration", "Release"],
+            savedProfile.Options["configuration"].AllowedValues["release"]);
     }
-
-    private static GenericSettingFieldViewModel Field(
-        ConfigurationViewModel vm,
-        ConfigSection section,
-        string key) =>
-        Assert.Single(
-            vm.GetOrCreateGenericSection(section).Fields,
-            field => field.Descriptor.Key == key);
 
     private static ConfigurationViewModel CreateViewModel()
     {
 
-        ArcanumConfigurationStore store = new();
+        ArcanumDataProtectionSecretProtector protector = new();
 
-        return new ConfigurationViewModel(
-            store,
-            new NoopDialogService(),
-            new SynchronousUiDispatcher());
+        ArcanumConfigurationStore store = new(protector);
+
+        return new ConfigurationViewModel(store, new NoopDialogService(), new SynchronousUiDispatcher());
 
     }
 
@@ -384,12 +412,16 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
         _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
+        ArcanumDataProtectionSecretProtector protector = new();
+
+        ArcanumSettings encrypted = protector.EncryptProviderKeys(settings);
+
         string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
 
         await File.WriteAllTextAsync(
             configPath,
             JsonSerializer.Serialize(
-                new ArcanumConfigurationFile { Arcanum = settings },
+                new ArcanumConfigurationFile { Arcanum = encrypted },
                 ConfigurationJsonContext.Default.ArcanumConfigurationFile));
 
     }
@@ -400,8 +432,7 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         for (int i = 0; i < 50; i++)
         {
 
-            if (!string.IsNullOrEmpty(vm.StatusMessage)
-                && vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal))
+            if (!string.IsNullOrEmpty(vm.StatusMessage) && vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal))
             {
 
                 return;
@@ -444,18 +475,10 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     private sealed class NoopDialogService : IDialogService
     {
 
-        public Task ShowAlertAsync(
-            string title,
-            string message,
-            string cancel = "OK") =>
-            Task.CompletedTask;
+        public Task ShowAlertAsync(string title, string message, string cancel = "OK") => Task.CompletedTask;
 
-        public Task<bool> ShowConfirmAsync(
-            string title,
-            string message,
-            string accept = "Yes",
-            string cancel = "No") =>
-            Task.FromResult(true);
+        public Task<bool> ShowConfirmAsync(string title, string message, string accept = "Yes", string cancel = "No")
+            => Task.FromResult(true);
 
     }
 

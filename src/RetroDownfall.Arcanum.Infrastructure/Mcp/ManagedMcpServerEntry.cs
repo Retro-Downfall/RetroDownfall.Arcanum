@@ -8,12 +8,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal sealed class ManagedMcpServerEntry
 {
 
+    private int _retired;
+
     public ManagedMcpServerEntry(
         string name,
         string? scopeWorkingDirectory,
         McpServerConfig config,
         McpServerTransport transport,
-        bool alwaysOn)
+        bool alwaysOn,
+        string? sourceDigest)
     {
         Name = name;
 
@@ -24,6 +27,8 @@ internal sealed class ManagedMcpServerEntry
         Transport = transport;
 
         AlwaysOn = alwaysOn;
+
+        SourceDigest = sourceDigest;
 
         Gate = new SemaphoreSlim(1, 1);
     }
@@ -41,7 +46,18 @@ internal sealed class ManagedMcpServerEntry
 
     public bool AlwaysOn { get; }
 
+    /// <summary>
+    /// SHA-256 of the exact workspace <c>mcp.json</c> bytes that produced this entry.
+    /// Global entries have no workspace source digest.
+    /// </summary>
+    public string? SourceDigest { get; }
+
     public SemaphoreSlim Gate { get; }
+
+    public bool IsRetired => Volatile.Read(ref _retired) != 0;
+
+    public bool MarkRetired() =>
+        Interlocked.Exchange(ref _retired, 1) == 0;
 
     /// <summary>
     /// Incremented each time a new subprocess transport is started; stale <c>Exited</c> handlers ignore mismatched generations.
@@ -51,6 +67,8 @@ internal sealed class ManagedMcpServerEntry
     public McpServerState State { get; set; } = McpServerState.Stopped;
 
     public IMcpClient? Client { get; set; }
+
+    public Task? DetachedClientDisposal { get; set; }
 
     public string[] Tools { get; set; } = [];
 

@@ -5,10 +5,10 @@ using Microsoft.ML.Tokenizers;
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
-/// Resolves a process-cached Tiktoken tokenizer by encoding name (code-owned default
-/// <c>o200k_base</c>) for pre-flight token counting. The cache remains keyed by the requested
-/// encoding for internal capability profiles; unknown names fall back to <c>o200k_base</c> with a
-/// warning.
+/// Resolves a process-cached Tiktoken tokenizer by encoding name (default <c>o200k_base</c>) for
+/// pre-flight token counting. The cache is keyed on the requested encoding so operators who set
+/// <c>Arcanum:Intelligence:TokenizerEncoding</c> get the expected tokenizer; unknown encoding
+/// names fall back to <c>o200k_base</c> with a warning so the hub never throws on misconfig.
 /// </summary>
 public sealed class InferenceTokenizerResolver(ILogger<InferenceTokenizerResolver> logger)
 {

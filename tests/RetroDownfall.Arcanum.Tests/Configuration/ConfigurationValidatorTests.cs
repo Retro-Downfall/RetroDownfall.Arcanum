@@ -34,214 +34,36 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void Validate_InvalidProviderCredentialEnvironmentVariable_ReturnsFailure()
+    public void Validate_TokenizationProfileOutsideClamps_ReturnsFailure()
     {
         ArcanumSettings settings = new()
         {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "provider",
-                    Type = AiProviderKind.OpenAICompatible,
-                    CredentialEnvironmentVariable = "INVALID=NAME",
-                    Models = ["model"],
-                },
-            ],
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static error =>
-                error.Pointer
-                == "providers[0].credentialEnvironmentVariable");
-    }
-
-    [Theory]
-    [InlineData("Arcanum__Host__Port")]
-    [InlineData("ARCANUM_Arcanum__Host__Port")]
-    [InlineData("ARCANUM_EDITION")]
-    [InlineData("ARCANUM_HOST_ANY")]
-    [InlineData("ARCANUM_ALLOW_HOST_PROCESS_TOOLS")]
-    [InlineData("ARCANUM_SKIP_KEY_BOOTSTRAP")]
-    public void Validate_SecretReferenceOverlappingConfigurationNamespace_ReturnsFailure(
-        string environmentVariable)
-    {
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "provider",
-                    Type = AiProviderKind.OpenAICompatible,
-                    CredentialEnvironmentVariable = environmentVariable,
-                    Models = ["model"],
-                },
-            ],
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static error =>
-                error.Pointer
-                == "providers[0].credentialEnvironmentVariable");
-    }
-
-    [Fact]
-    public void Validate_BlankProviderName_ReturnsFailure()
-    {
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "   ",
-                    Type = AiProviderKind.OpenAICompatible,
-                    Models = ["model"],
-                },
-            ],
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static error => error.Pointer == "providers[0].name");
-    }
-
-    [Fact]
-    public void Validate_DerivedProviderCredentialReferencesCollide_ReturnsFailure()
-    {
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "A-B",
-                    Type = AiProviderKind.OpenAICompatible,
-                    Models = ["model-a"],
-                },
-                new ProviderSettings
-                {
-                    Name = "A B",
-                    Type = AiProviderKind.OpenAICompatible,
-                    Models = ["model-b"],
-                },
-            ],
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static error => error.Pointer == "providers[0].credentialEnvironmentVariable");
-        Assert.Contains(
-            result.Error.Details!,
-            static error => error.Pointer == "providers[1].credentialEnvironmentVariable");
-    }
-
-    [Fact]
-    public void Validate_ExplicitProviderReferenceDisambiguatesDerivedReferences_ReturnsSuccess()
-    {
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "A-B",
-                    Type = AiProviderKind.OpenAICompatible,
-                    Models = ["model-a"],
-                },
-                new ProviderSettings
-                {
-                    Name = "A B",
-                    Type = AiProviderKind.OpenAICompatible,
-                    CredentialEnvironmentVariable = "ARCANUM_PROVIDER_A_B_SECONDARY_API_KEY",
-                    Models = ["model-b"],
-                },
-            ],
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsSuccess);
-    }
-
-    [Fact]
-    public void Validate_CommLinkReferenceMustBePortableAndUniqueWithoutEchoingIt()
-    {
-        const string sharedReference = "SHARED_SECRET_REFERENCE";
-        ArcanumSettings settings = new()
-        {
-            Providers =
-            [
-                new ProviderSettings
-                {
-                    Name = "provider",
-                    Type = AiProviderKind.OpenAICompatible,
-                    CredentialEnvironmentVariable = sharedReference,
-                    Models = ["model"],
-                },
-            ],
-            Integrations = new IntegrationSettings
+            Intelligence = new IntelligenceSettings
             {
-                CommLink = new CommLinkIntegrationSettings
-                {
-                    WebhookUrlEnvironmentVariable = sharedReference.ToLowerInvariant(),
-                },
+                EstimatedTokenSafetyMarginPercent = 101,
+                UnknownImageTokenReserve = 0,
             },
-        };
-
-        Result collision = _validator.Validate(settings);
-
-        Assert.True(collision.IsFailure);
-        Assert.Contains(
-            collision.Error.Details!,
-            static error => error.Pointer == "providers[0].credentialEnvironmentVariable");
-        Assert.Contains(
-            collision.Error.Details!,
-            static error => error.Pointer == "integrations.commLink.webhookUrlEnvironmentVariable");
-        Assert.DoesNotContain(
-            collision.Error.Details!,
-            error => error.Detail.Contains(sharedReference, StringComparison.OrdinalIgnoreCase));
-
-        settings.Integrations.CommLink.WebhookUrlEnvironmentVariable = "INVALID=NAME";
-
-        Result invalid = _validator.Validate(settings);
-
-        Assert.True(invalid.IsFailure);
-        Assert.Contains(
-            invalid.Error.Details!,
-            static error => error.Pointer == "integrations.commLink.webhookUrlEnvironmentVariable");
-        Assert.DoesNotContain(
-            invalid.Error.Details!,
-            static error => error.Detail.Contains("INVALID=NAME", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void Validate_InvalidCertificatePasswordEnvironmentVariable_ReturnsFailure()
-    {
-        ArcanumSettings settings = new()
-        {
-            Host = new HostSettings
-            {
-                Https = new HttpsSettings
+            Providers =
+            [
+                new ProviderSettings
                 {
-                    CertificatePasswordEnvironmentVariable = "INVALID=NAME",
+                    Name = "provider",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models =
+                    [
+                        new ModelEntry("model")
+                        {
+                            Tokenization = new ModelTokenizationProfile
+                            {
+                                Type = ModelTokenizationProfileType.ExactLocalTokenizer,
+                                TokenizerId = "",
+                                PerToolOverheadTokens = 129,
+                                Confidence = 2,
+                            },
+                        },
+                    ],
                 },
-            },
+            ],
         };
 
         Result result = _validator.Validate(settings);
@@ -249,9 +71,52 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
         Assert.Contains(
             result.Error.Details!,
-            static error =>
-                error.Pointer
-                == "host.https.certificatePasswordEnvironmentVariable");
+            static error => error.Pointer == "intelligence.estimatedTokenSafetyMarginPercent");
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "intelligence.unknownImageTokenReserve");
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "providers[0].models[0].tokenization.tokenizerId");
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "providers[0].models[0].tokenization.perToolOverheadTokens");
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "providers[0].models[0].tokenization.confidence");
+    }
+
+    [Fact]
+    public void Validate_ProviderTokenizerApiWithoutSupportedProviderStrategy_ReturnsFailure()
+    {
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "provider",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models =
+                    [
+                        new ModelEntry("model")
+                        {
+                            Tokenization = new ModelTokenizationProfile
+                            {
+                                Type = ModelTokenizationProfileType.ProviderTokenizerApi,
+                            },
+                        },
+                    ],
+                },
+            ],
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "providers[0].models[0].tokenization.type");
     }
 
     [Fact]
@@ -268,15 +133,12 @@ public sealed class ConfigurationValidatorTests
                     Models = ["model"],
                 },
             ],
-            Cost = new CostSettings
+            Pricing = new PricingSettings
             {
-                Pricing = new PricingSettings
+                DefaultPricing = new ModelPricingEntry { InputPer1M = -1m },
+                ModelPricing =
                 {
-                    DefaultPricing = new ModelPricingEntry { InputPer1M = -1m },
-                    ModelPricing =
-                    {
-                        ["model"] = new ModelPricingEntry { ReasoningPer1M = 1_000_001m },
-                    },
+                    ["model"] = new ModelPricingEntry { ReasoningPer1M = 1_000_001m },
                 },
             },
         };
@@ -286,10 +148,10 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
         Assert.Contains(
             result.Error.Details!,
-            static error => error.Pointer == "cost.pricing.defaultPricing.inputPer1M");
+            static error => error.Pointer == "pricing.defaultPricing.inputPer1M");
         Assert.Contains(
             result.Error.Details!,
-            static error => error.Pointer == "cost.pricing.modelPricing[model].reasoningPer1M");
+            static error => error.Pointer == "pricing.modelPricing[model].reasoningPer1M");
     }
 
     [Fact]
@@ -347,12 +209,7 @@ public sealed class ConfigurationValidatorTests
 
         Assert.NotNull(result.Error.Details);
 
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Detail.Contains("endpoint", StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(
-            result.Error.Details!,
-            static e => e.Detail.Contains("not a valid uri", StringComparison.Ordinal));
+        Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("Endpoint", StringComparison.Ordinal));
 
     }
 
@@ -585,29 +442,134 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void RuntimeDefaults_JsonRpcFrameAccommodatesToolOutputCap()
+    public void Validate_MaxJsonRpcLineBytesBelowToolOutputCap_ReturnsFailure()
     {
-        IntelligenceSettings intelligence = ArcanumRuntimeDefaults.Intelligence;
-        McpSettings mcp = ArcanumRuntimeDefaults.Mcp;
-        long configuredCap =
-            ArcanumSettingClamps.ToolOutputCapBytes(intelligence.ToolOutputCapBytes);
-        long effectiveCap = ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
-            intelligence.ToolOutputCapBytes,
-            ArcanumSettingClamps.McpMaxJsonRpcLineBytes(mcp.MaxJsonRpcLineBytes));
 
-        Assert.Equal(configuredCap, effectiveCap);
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models = ["llama3"],
+                },
+            ],
+            Intelligence = new IntelligenceSettings
+            {
+                ToolOutputCapBytes = 2_097_152,
+            },
+            Mcp = new McpSettings
+            {
+                MaxJsonRpcLineBytes = 1_048_576,
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.NotNull(result.Error.Details);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "mcp.maxJsonRpcLineBytes");
 
     }
 
     [Fact]
-    public void RuntimeDefaults_McpRequestTimeoutCoversExecuteCommandTimeout()
+    public void Validate_MaxJsonRpcLineBytesAtLeastToolOutputCap_ReturnsSuccess()
     {
-        int executeTimeout = ArcanumSettingClamps.ExecuteCommandTimeoutSeconds(
-            ArcanumRuntimeDefaults.Intelligence.ExecuteCommandTimeoutSeconds);
-        int requestTimeout = ArcanumSettingClamps.McpRequestTimeoutSeconds(
-            ArcanumRuntimeDefaults.Mcp.RequestTimeoutSeconds);
 
-        Assert.True(requestTimeout >= executeTimeout);
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models = ["llama3"],
+                },
+            ],
+            Intelligence = new IntelligenceSettings
+            {
+                ToolOutputCapBytes = 1_048_576,
+            },
+            Mcp = new McpSettings
+            {
+                MaxJsonRpcLineBytes = 2_228_224,
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_RequestTimeoutBelowExecuteCommandTimeout_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models = ["llama3"],
+                },
+            ],
+            Intelligence = new IntelligenceSettings
+            {
+                ExecuteCommandTimeoutSeconds = 120,
+            },
+            Mcp = new McpSettings
+            {
+                RequestTimeoutSeconds = 60,
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.NotNull(result.Error.Details);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "mcp.requestTimeoutSeconds");
+
+    }
+
+    [Fact]
+    public void Validate_RequestTimeoutAtLeastExecuteCommandTimeout_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models = ["llama3"],
+                },
+            ],
+            Intelligence = new IntelligenceSettings
+            {
+                ExecuteCommandTimeoutSeconds = 30,
+            },
+            Mcp = new McpSettings
+            {
+                RequestTimeoutSeconds = 60,
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
 
     }
 
@@ -684,9 +646,10 @@ public sealed class ConfigurationValidatorTests
 
             ],
 
-            Security = new SecuritySettings
+            Campaigns = new CampaignsSettings
             {
-                CampaignRoots = ["relative/path"],
+
+                AllowedRoots = ["relative/path"],
 
             },
 
@@ -696,7 +659,7 @@ public sealed class ConfigurationValidatorTests
 
         Assert.True(result.IsFailure);
 
-        Assert.Contains(result.Error.Details!, static e => e.Pointer == "security.campaignRoots");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "campaigns.allowedRoots");
 
     }
 
@@ -723,9 +686,10 @@ public sealed class ConfigurationValidatorTests
 
             ],
 
-            Security = new SecuritySettings
+            Spells = new SpellSettings
             {
-                SpellWorkspaceRoots = [Path.Combine(Path.GetTempPath(), "does-not-exist-" + Guid.NewGuid())],
+
+                AllowedWorkspaceRoots = [Path.Combine(Path.GetTempPath(), "does-not-exist-" + Guid.NewGuid())],
 
             },
 
@@ -735,7 +699,7 @@ public sealed class ConfigurationValidatorTests
 
         Assert.True(result.IsFailure);
 
-        Assert.Contains(result.Error.Details!, static e => e.Pointer == "security.spellWorkspaceRoots");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "spells.allowedWorkspaceRoots");
 
     }
 
@@ -769,9 +733,10 @@ public sealed class ConfigurationValidatorTests
 
                 ],
 
-                Security = new SecuritySettings
+                Perception = new PerceptionSettings
                 {
-                    PerceptionWorkspaceRoots = [tempDir],
+
+                    AllowedWorkspaceRoots = [tempDir],
 
                 },
 
@@ -814,9 +779,10 @@ public sealed class ConfigurationValidatorTests
 
             ],
 
-            Workspaces = new WorkspaceSettings
+            Host = new HostSettings
             {
-                DefaultRoot = Path.Combine(Path.GetTempPath(), "does-not-exist-" + Guid.NewGuid()),
+
+                Workspace = Path.Combine(Path.GetTempPath(), "does-not-exist-" + Guid.NewGuid()),
 
             },
 
@@ -826,18 +792,18 @@ public sealed class ConfigurationValidatorTests
 
         Assert.True(result.IsFailure);
 
-        Assert.Contains(result.Error.Details!, static e => e.Pointer == "workspaces.defaultRoot");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "host.workspace");
 
     }
 
     [Fact]
-    public void Validate_NullFeatures_DoesNotThrow()
+    public void Validate_NullIntelligence_DoesNotThrow()
     {
 
         ArcanumSettings settings = new()
         {
 
-            Features = null!,
+            Intelligence = null!,
 
             Providers =
             [
@@ -855,13 +821,13 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void Validate_NullIntegrations_DoesNotThrow()
+    public void Validate_NullMcp_DoesNotThrow()
     {
 
         ArcanumSettings settings = new()
         {
 
-            Integrations = null!,
+            Mcp = null!,
 
             Providers =
             [
@@ -903,14 +869,18 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void Validate_NullPublicPolicySubObjects_DoesNotThrow()
+    public void Validate_NullPathAllowlistSubObjects_DoesNotThrow()
     {
 
         ArcanumSettings settings = new()
         {
 
-            Security = null!,
-            Workspaces = null!,
+            Campaigns = null!,
+
+            Spells = null!,
+
+            Perception = null!,
+
             Host = null!,
 
             Providers =
@@ -935,7 +905,7 @@ public sealed class ConfigurationValidatorTests
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
-            Features = new FeatureSettings { Embeddings = false },
+            Embeddings = new EmbeddingSettings { Enabled = false },
         };
 
         Result result = _validator.Validate(settings);
@@ -951,18 +921,14 @@ public sealed class ConfigurationValidatorTests
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings { Model = "nomic-embed-text" },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Model = "nomic-embed-text" },
         };
 
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsFailure);
 
-        Assert.Contains(result.Error.Details!, static e => e.Pointer == "integrations.embeddings.provider");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "embeddings.provider");
 
     }
 
@@ -973,18 +939,14 @@ public sealed class ConfigurationValidatorTests
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings { Provider = "ollama" },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "ollama" },
         };
 
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsFailure);
 
-        Assert.Contains(result.Error.Details!, static e => e.Pointer == "integrations.embeddings.model");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "embeddings.model");
 
     }
 
@@ -995,22 +957,14 @@ public sealed class ConfigurationValidatorTests
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "does-not-exist",
-                    Model = "nomic-embed-text",
-                },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "does-not-exist", Model = "nomic-embed-text" },
         };
 
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsFailure);
 
-        Assert.Contains(result.Error.Details!, static e => e.Pointer == "integrations.embeddings.provider");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "embeddings.provider");
 
         Assert.Contains(result.Error.Details!, static e => e.Detail.Contains("does-not-exist", StringComparison.Ordinal));
 
@@ -1023,15 +977,7 @@ public sealed class ConfigurationValidatorTests
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "ollama",
-                    Model = "nomic-embed-text",
-                },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "ollama", Model = "nomic-embed-text" },
         };
 
         Result result = _validator.Validate(settings);
@@ -1041,73 +987,33 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Theory]
-    [InlineData(nameof(FeatureSettings.SessionSearch))]
-    [InlineData(nameof(FeatureSettings.CodebaseRetrieval))]
-    [InlineData(nameof(FeatureSettings.Saga))]
-    [InlineData(nameof(FeatureSettings.SemanticSpellRouting))]
-    public void Validate_EmbeddingBackedFeatureWithoutEmbeddings_DerivesSubstrate(string flagName)
+    [InlineData(nameof(EmbeddingSettings.SessionSearchEnabled), "embeddings.sessionSearchEnabled")]
+    [InlineData(nameof(EmbeddingSettings.CodebaseRetrievalEnabled), "embeddings.codebaseRetrievalEnabled")]
+    [InlineData(nameof(EmbeddingSettings.SagaEnabled), "embeddings.sagaEnabled")]
+    [InlineData(nameof(EmbeddingSettings.SemanticSpellRoutingEnabled), "embeddings.semanticSpellRoutingEnabled")]
+    public void Validate_FeatureFlagEnabledWithoutEmbeddingsEnabled_ReturnsFailure(string flagName, string expectedPointer)
     {
 
-        FeatureSettings features = flagName switch
+        EmbeddingSettings embeddings = flagName switch
         {
-            nameof(FeatureSettings.SessionSearch) => new FeatureSettings { SessionSearch = true },
-            nameof(FeatureSettings.CodebaseRetrieval) => new FeatureSettings { CodebaseRetrieval = true },
-            nameof(FeatureSettings.Saga) => new FeatureSettings { Saga = true },
-            nameof(FeatureSettings.SemanticSpellRouting) => new FeatureSettings { SemanticSpellRouting = true },
+            nameof(EmbeddingSettings.SessionSearchEnabled) => new EmbeddingSettings { SessionSearchEnabled = true },
+            nameof(EmbeddingSettings.CodebaseRetrievalEnabled) => new EmbeddingSettings { CodebaseRetrievalEnabled = true },
+            nameof(EmbeddingSettings.SagaEnabled) => new EmbeddingSettings { SagaEnabled = true },
+            nameof(EmbeddingSettings.SemanticSpellRoutingEnabled) => new EmbeddingSettings { SemanticSpellRoutingEnabled = true },
             _ => throw new ArgumentOutOfRangeException(nameof(flagName)),
         };
 
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
-            Features = features,
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "ollama",
-                    Model = "nomic-embed-text",
-                },
-            },
+            Embeddings = embeddings,
         };
 
-        EmbeddingSettings embeddings = settings.ResolveEmbeddings();
         Result result = _validator.Validate(settings);
 
-        Assert.True(embeddings.Enabled);
+        Assert.True(result.IsFailure);
 
-        Assert.True(result.IsSuccess);
-
-    }
-
-    [Fact]
-    public void Validate_SagaExtractionWithoutSagaOrEmbeddings_DerivesBothParents()
-    {
-
-        ArcanumSettings settings = new()
-        {
-            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
-            Features = new FeatureSettings { SagaExtraction = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "ollama",
-                    Model = "nomic-embed-text",
-                },
-            },
-        };
-
-        EmbeddingSettings embeddings = settings.ResolveEmbeddings();
-        Result result = _validator.Validate(settings);
-
-        Assert.True(embeddings.Enabled);
-
-        Assert.True(embeddings.SagaEnabled);
-
-        Assert.True(embeddings.Saga.ExtractionEnabled);
-
-        Assert.True(result.IsSuccess);
+        Assert.Contains(result.Error.Details!, e => e.Pointer == expectedPointer);
 
     }
 
@@ -1118,21 +1024,15 @@ public sealed class ConfigurationValidatorTests
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
-            Features = new FeatureSettings
+            Embeddings = new EmbeddingSettings
             {
-                Embeddings = true,
-                SessionSearch = true,
-                CodebaseRetrieval = true,
-                Saga = true,
-                SemanticSpellRouting = true,
-            },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "ollama",
-                    Model = "nomic-embed-text",
-                },
+                Enabled = true,
+                Provider = "ollama",
+                Model = "nomic-embed-text",
+                SessionSearchEnabled = true,
+                CodebaseRetrievalEnabled = true,
+                SagaEnabled = true,
+                SemanticSpellRoutingEnabled = true,
             },
         };
 
@@ -1158,20 +1058,38 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void ScryingMaxImageBytes_clamps_to_physical_bounds()
+    public void Validate_ScryingMaxImageBytesOutOfClampRange_ReturnsFailure()
     {
-        Assert.Equal(1_024L, ArcanumSettingClamps.ScryingMaxImageBytes(0));
-        Assert.Equal(
-            20L * 1024L * 1024L,
-            ArcanumSettingClamps.ScryingMaxImageBytes(long.MaxValue));
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
+            Scrying = new ScryingSettings { MaxImageBytes = 10 },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "scrying.maxImageBytes");
 
     }
 
     [Fact]
-    public void ScryingMaxImagesPerRequest_clamps_to_physical_bounds()
+    public void Validate_ScryingMaxImagesPerRequestOutOfClampRange_ReturnsFailure()
     {
-        Assert.Equal(1, ArcanumSettingClamps.ScryingMaxImagesPerRequest(0));
-        Assert.Equal(100, ArcanumSettingClamps.ScryingMaxImagesPerRequest(int.MaxValue));
+
+        ArcanumSettings settings = new()
+        {
+            Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
+            Scrying = new ScryingSettings { MaxImagesPerRequest = 0 },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "scrying.maxImagesPerRequest");
 
     }
 
@@ -1182,15 +1100,14 @@ public sealed class ConfigurationValidatorTests
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
-            Features = new FeatureSettings { Scrying = true },
-            Security = new SecuritySettings { AllowedImageMimeTypes = [] },
+            Scrying = new ScryingSettings { Enabled = true, AllowedMimeTypes = [] },
         };
 
         Result result = _validator.Validate(settings);
 
         Assert.True(result.IsFailure);
 
-        Assert.Contains(result.Error.Details!, static e => e.Pointer == "security.allowedImageMimeTypes");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "scrying.allowedMimeTypes");
 
     }
 
@@ -1201,8 +1118,7 @@ public sealed class ConfigurationValidatorTests
         ArcanumSettings settings = new()
         {
             Providers = [new ProviderSettings { Name = "ollama", Type = AiProviderKind.OpenAICompatible, Models = ["llama3"] }],
-            Features = new FeatureSettings { Scrying = false },
-            Security = new SecuritySettings { AllowedImageMimeTypes = [] },
+            Scrying = new ScryingSettings { Enabled = false, AllowedMimeTypes = [] },
         };
 
         Result result = _validator.Validate(settings);
@@ -1443,6 +1359,112 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
+    public void Validate_ExplicitOpenAiPromptCacheRetentionProfile_ReturnsSuccess()
+    {
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            WireDialect = PromptCachingWireDialect.OpenAiPromptCacheRetention,
+            CacheKeysSupported = true,
+            EmitCacheKey = true,
+            RetentionSelectionSupported = true,
+            Retention = PromptCacheRetentionPolicy.TwentyFourHours,
+            ToolSchemasParticipate = true,
+            ReportsCachedInputUsage = true,
+        };
+
+        Result result = _validator.Validate(SettingsWithPromptCaching(profile));
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
+    public void Validate_ExplicitPromptCacheProfileWithoutDirective_ReturnsFailure()
+    {
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            ReportsCachedInputUsage = true,
+        };
+
+        Result result = _validator.Validate(SettingsWithPromptCaching(profile));
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "providers[0].models[0].promptCaching.controlMode");
+    }
+
+    [Fact]
+    public void Validate_ExplicitPromptCacheProfileContradictsLegacyFalse_ReturnsFailure()
+    {
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            CacheKeysSupported = true,
+            EmitCacheKey = true,
+        };
+
+        Result result = _validator.Validate(
+            SettingsWithPromptCaching(profile, providerLevel: true, legacySupport: false));
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "providers[0].promptCaching.controlMode");
+    }
+
+    [Theory]
+    [InlineData("emitCacheKey")]
+    [InlineData("retention")]
+    [InlineData("emitStablePrefixBreakpoint")]
+    [InlineData("controlMode")]
+    [InlineData("wireDialect")]
+    public void Validate_InvalidPromptCacheProfileCombination_ReturnsTargetedFailure(string scenario)
+    {
+        PromptCachingProfile profile = new()
+        {
+            ControlMode = PromptCachingControlMode.Explicit,
+            CacheKeysSupported = true,
+            EmitCacheKey = true,
+        };
+
+        switch (scenario)
+        {
+            case "emitCacheKey":
+                profile.CacheKeysSupported = false;
+                break;
+
+            case "retention":
+                profile.RetentionSelectionSupported = false;
+                profile.Retention = PromptCacheRetentionPolicy.InMemory;
+                break;
+
+            case "emitStablePrefixBreakpoint":
+                profile.StablePrefixBreakpointsSupported = false;
+                profile.EmitStablePrefixBreakpoint = true;
+                break;
+
+            case "controlMode":
+                profile.ControlMode = PromptCachingControlMode.ProviderManaged;
+                break;
+
+            case "wireDialect":
+                profile.WireDialect = PromptCachingWireDialect.OpenAiPromptCacheBreakpoints;
+                profile.StablePrefixBreakpointsSupported = true;
+                profile.EmitStablePrefixBreakpoint = true;
+                break;
+        }
+
+        Result result = _validator.Validate(SettingsWithPromptCaching(profile));
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            error => error.Pointer == $"providers[0].models[0].promptCaching.{scenario}");
+    }
+
+    [Fact]
     public void Validate_ListenAnyWithoutHttps_ReturnsFailure()
     {
 
@@ -1607,8 +1629,7 @@ public sealed class ConfigurationValidatorTests
                         Enabled = true,
                         Port = 5443,
                         CertificatePath = certificatePath,
-                        CertificatePasswordEnvironmentVariable =
-                            "ARCANUM_CERT_PASSWORD",
+                        CertificatePassword = "secret",
                     },
                 },
             };
@@ -1683,8 +1704,7 @@ public sealed class ConfigurationValidatorTests
                     Enabled = true,
                     Port = 5001,
                     CertificatePath = null,
-                    CertificatePasswordEnvironmentVariable =
-                        "ARCANUM_CERT_PASSWORD",
+                    CertificatePassword = "top-secret-password",
                 },
             },
         };
@@ -1693,11 +1713,7 @@ public sealed class ConfigurationValidatorTests
 
         Assert.True(result.IsFailure);
 
-        Assert.DoesNotContain(
-            result.Error.Details!,
-            static e => e.Detail.Contains(
-                "ARCANUM_CERT_PASSWORD",
-                StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Error.Details!, static e => e.Detail.Contains("top-secret-password", StringComparison.Ordinal));
 
     }
 
@@ -1768,14 +1784,11 @@ public sealed class ConfigurationValidatorTests
                     Models = ["nomic-embed-text"],
                 },
             ],
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
+            Embeddings = new EmbeddingSettings
             {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "ollama",
-                    Model = "nomic-embed-text",
-                },
+                Enabled = true,
+                Provider = "ollama",
+                Model = "nomic-embed-text",
             },
         };
 
@@ -1831,91 +1844,30 @@ public sealed class ConfigurationValidatorTests
 
     }
 
-    [Fact]
-    public void RejectObsoleteKeys_RemovedProviderAndCertificateFields_ReturnAllErrors()
+    [Theory]
+    [InlineData("ControlMode")]
+    [InlineData("WireDialect")]
+    [InlineData("Retention")]
+    public void RejectObsoleteKeys_NumericPromptCachingEnums_ReturnValidationError(string field)
     {
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["Arcanum:Host:Https:CertificatePassword"] = "secret",
-                ["Arcanum:Integrations:CommLink:WebhookUrl"] = "https://hooks.example.test/secret",
-                ["Arcanum:Providers:0:ApiKey"] = "secret",
-                ["Arcanum:Providers:0:Tokenization:Type"] = "unknownFallback",
-                ["Arcanum:Providers:0:PromptCaching:ControlMode"] = "none",
-                ["Arcanum:Providers:0:SupportsPromptCaching"] = "true",
+                ["Arcanum:Providers:0:PromptCaching:" + field] = "1",
                 ["Arcanum:Providers:0:Models:0:Name"] = "model",
-                ["Arcanum:Providers:0:Models:0:Tokenization:Type"] = "unknownFallback",
-                ["Arcanum:Providers:0:Models:0:PromptCaching:ControlMode"] = "none",
+                ["Arcanum:Providers:0:Models:0:PromptCaching:" + field] = "1",
             })
             .Build();
 
         Result result = _validator.RejectObsoleteKeys(configuration);
 
         Assert.True(result.IsFailure);
-        string[] pointers = result.Error.Details!
-            .Select(static error => error.Pointer)
-            .ToArray();
-        Assert.Contains("host.https.certificatePassword", pointers);
-        Assert.Contains("integrations.commLink.webhookUrl", pointers);
-        Assert.Contains("providers[0].apiKey", pointers);
-        Assert.Contains("providers[0].tokenization", pointers);
-        Assert.Contains("providers[0].promptCaching", pointers);
-        Assert.Contains("providers[0].supportsPromptCaching", pointers);
-        Assert.Contains("providers[0].models[0].tokenization", pointers);
-        Assert.Contains("providers[0].models[0].promptCaching", pointers);
-    }
-
-    [Fact]
-    public void RejectObsoleteKeys_GroupsNestedObsoleteAndUnknownPathsWhileAllowingDynamicKeys()
-    {
-        IConfiguration configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Arcanum:Host:Https:CertificatePassword"] = "secret",
-                ["Arcanum:Host:Https:RetiredTlsSwitch"] = "true",
-                ["Arcanum:Providers:0:Name"] = "provider",
-                ["Arcanum:Providers:0:Models:0:Name"] = "model",
-                ["Arcanum:Providers:0:Models:0:PromptCaching:ControlMode"] = "none",
-                ["Arcanum:Providers:0:Models:0:UnknownCapability"] = "true",
-                ["Arcanum:Cost:Pricing:ModelPricing:model-a:InputPer1M"] = "1",
-                ["Arcanum:Cost:Pricing:ModelPricing:model-a:UnknownRate"] = "2",
-                ["Arcanum:Cost:Pricing:ModelPricing:mistral:latest:InputPer1M"] = "1",
-                ["Arcanum:Integrations:WorkspaceChecks:CustomProfiles:custom-build:ExecutableId"] = "dotnet",
-                ["Arcanum:Integrations:WorkspaceChecks:CustomProfiles:custom-build:Kind"] = "build",
-                ["Arcanum:Integrations:WorkspaceChecks:CustomProfiles:custom-build:Parser"] = "msBuild",
-                ["Arcanum:Integrations:WorkspaceChecks:CustomProfiles:custom-build:FixedArguments:0"] = "build",
-                ["Arcanum:Integrations:WorkspaceChecks:CustomProfiles:custom-build:Options:configuration:UnknownOption"] = "x",
-                ["Arcanum:Daemon:Jobs:0:Name"] = "daily",
-                ["Arcanum:Daemon:Jobs:0:UnexpectedSchedule"] = "midnight",
-            })
-            .Build();
-
-        Result result = _validator.RejectObsoleteKeys(configuration);
-
-        Assert.True(result.IsFailure);
-        string[] pointers = result.Error.Details!
-            .Select(static error => error.Pointer)
-            .ToArray();
-        Assert.Contains("host.https.certificatePassword", pointers);
-        Assert.Contains("host.https.RetiredTlsSwitch", pointers);
-        Assert.Contains("providers[0].models[0].promptCaching", pointers);
-        Assert.Contains("providers[0].models[0].UnknownCapability", pointers);
-        Assert.Contains("cost.pricing.modelPricing[model-a].UnknownRate", pointers);
         Assert.Contains(
-            "integrations.workspaceChecks.customProfiles[custom-build].options[configuration].UnknownOption",
-            pointers);
-        Assert.Contains("daemon.jobs[0].UnexpectedSchedule", pointers);
-        Assert.DoesNotContain(
-            pointers,
-            static pointer => pointer is "cost.pricing.modelPricing[model-a]"
-                or "cost.pricing.modelPricing[mistral:latest]"
-                or "integrations.workspaceChecks.customProfiles[custom-build]"
-                or "integrations.workspaceChecks.customProfiles[custom-build].options[configuration]");
-        Assert.DoesNotContain(
-            pointers,
-            static pointer => pointer.StartsWith(
-                "cost.pricing.modelPricing[mistral",
-                StringComparison.Ordinal));
+            result.Error.Details!,
+            error => error.Pointer == $"providers[0].promptCaching.{char.ToLowerInvariant(field[0]) + field[1..]}");
+        Assert.Contains(
+            result.Error.Details!,
+            error => error.Pointer == $"providers[0].models[0].promptCaching.{char.ToLowerInvariant(field[0]) + field[1..]}");
     }
 
     [Fact]
@@ -1995,9 +1947,6 @@ public sealed class ConfigurationValidatorTests
     [InlineData("""{"providers":[{"name":"local","ModelMap":{"m":"https://x"}}]}""")]
     [InlineData("""{"providers":[{"name":"local","type":"LlamaCppServer","models":["m"]}]}""")]
     [InlineData("""{"Providers":[{"Name":"local","Type":"llamacppserver","Models":["m"]}]}""")]
-    [InlineData("""{"host":{"https":{"certificatePassword":"secret"}}}""")]
-    [InlineData("""{"integrations":{"commLink":{"webhookUrl":"https://hooks.example.test/secret"}}}""")]
-    [InlineData("""{"providers":[{"name":"old","apiKey":"secret","tokenization":{},"promptCaching":{},"supportsPromptCaching":true,"models":[{"name":"m","tokenization":{},"promptCaching":{}}]}]}""")]
     public void RejectObsoleteJsonKeys_ObsoleteShapes_ReturnMigrationError(string json)
     {
 
@@ -2011,101 +1960,6 @@ public sealed class ConfigurationValidatorTests
 
         Assert.NotEmpty(result.Error.Details!);
 
-    }
-
-    [Fact]
-    public void RejectObsoleteJsonKeys_GroupsNestedObsoleteAndUnknownPathsWhileAllowingDynamicKeys()
-    {
-        const string json =
-            """
-            {
-              "host": {
-                "https": {
-                  "certificatePassword": "secret",
-                  "retiredTlsSwitch": true
-                }
-              },
-              "providers": [
-                {
-                  "name": "provider",
-                  "models": [
-                    {
-                      "name": "model",
-                      "promptCaching": { "controlMode": "none" },
-                      "unknownCapability": true
-                    }
-                  ]
-                }
-              ],
-              "cost": {
-                "pricing": {
-                  "modelPricing": {
-                    "model-a": {
-                      "inputPer1M": 1,
-                      "unknownRate": 2
-                    }
-                  }
-                }
-              },
-              "integrations": {
-                "workspaceChecks": {
-                  "customProfiles": {
-                    "custom-build": {
-                      "executableId": "dotnet",
-                      "kind": "build",
-                      "parser": "msBuild",
-                      "fixedArguments": ["build"],
-                      "options": {
-                        "configuration": {
-                          "unknownOption": "x"
-                        }
-                      }
-                    }
-                  }
-                }
-              },
-              "daemon": {
-                "jobs": [
-                  {
-                    "name": "daily",
-                    "unexpectedSchedule": "midnight"
-                  }
-                ]
-              }
-            }
-            """;
-        using JsonDocument document = JsonDocument.Parse(json);
-
-        Result result = _validator.RejectObsoleteJsonKeys(document.RootElement);
-
-        Assert.True(result.IsFailure);
-        string[] pointers = result.Error.Details!
-            .Select(static error => error.Pointer)
-            .ToArray();
-        Assert.Contains("host.https.certificatePassword", pointers);
-        Assert.Contains("host.https.retiredTlsSwitch", pointers);
-        Assert.Contains("providers[0].models[0].promptCaching", pointers);
-        Assert.Contains("providers[0].models[0].unknownCapability", pointers);
-        Assert.Contains("cost.pricing.modelPricing[model-a].unknownRate", pointers);
-        Assert.Contains(
-            "integrations.workspaceChecks.customProfiles[custom-build].options[configuration].unknownOption",
-            pointers);
-        Assert.Contains("daemon.jobs[0].unexpectedSchedule", pointers);
-    }
-
-    [Theory]
-    [InlineData("null")]
-    [InlineData("[]")]
-    [InlineData("\"wrong-root\"")]
-    [InlineData("""{"Arcanum":{"providers":[]}}""")]
-    public void RejectObsoleteJsonKeys_WrongPutRoot_ReturnsFailure(string json)
-    {
-        using JsonDocument document = JsonDocument.Parse(json);
-
-        Result result = _validator.RejectObsoleteJsonKeys(document.RootElement);
-
-        Assert.True(result.IsFailure);
-        Assert.Equal("Configuration.ValidationFailed", result.Error.Code);
     }
 
     [Fact]
@@ -2135,78 +1989,9 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void RejectObsoleteJsonKeys_RetainedDynamicCollectionKeys_Succeed()
-    {
-        const string json =
-            """
-            {
-              "providers": [
-                {
-                  "name": "provider",
-                  "models": [
-                    {
-                      "name": "model",
-                      "reasoning": {
-                        "controlSupport": "None",
-                        "wireDialect": "Standard"
-                      }
-                    }
-                  ]
-                }
-              ],
-              "cost": {
-                "pricing": {
-                  "modelPricing": {
-                    "model/a": {
-                      "inputPer1M": 1,
-                      "outputPer1M": 2,
-                      "cachedPer1M": 0
-                    }
-                  }
-                }
-              },
-              "integrations": {
-                "workspaceChecks": {
-                  "customProfiles": {
-                    "custom-build": {
-                      "executableId": "dotnet",
-                      "kind": "build",
-                      "parser": "msBuild",
-                      "fixedArguments": ["build"],
-                      "options": {
-                        "configuration": {
-                          "allowedValues": {
-                            "release": ["--configuration", "Release"]
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              },
-              "daemon": {
-                "jobs": [
-                  {
-                    "name": "daily",
-                    "intervalMinutes": 60,
-                    "targetSpell": "daily-report",
-                    "enabled": true
-                  }
-                ]
-              }
-            }
-            """;
-        using JsonDocument document = JsonDocument.Parse(json);
-
-        Result result = _validator.RejectObsoleteJsonKeys(document.RootElement);
-
-        Assert.True(result.IsSuccess);
-    }
-
-    [Fact]
     public void CodingTools_defaults_are_bounded_and_workspace_check_timeout_is_five_minutes()
     {
-        CodingToolsSettings settings = ArcanumRuntimeDefaults.CodingTools;
+        CodingToolsSettings settings = new();
 
         Assert.Equal(300, settings.WorkspaceCheck.TimeoutSeconds);
         Assert.Equal(300, ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(300));
@@ -2222,30 +2007,103 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void RuntimeDefaults_CodingToolValuesRemainWithinPhysicalClamps()
+    public void Validate_CodingToolValuesOutsideClamps_ReturnsFocusedFailures()
     {
-        CodingToolsSettings defaults = ArcanumRuntimeDefaults.CodingTools;
-        WorkspaceCheckSettings check = ArcanumRuntimeDefaults.WorkspaceChecks;
+        ArcanumSettings settings = new()
+        {
+            CodingTools = new CodingToolsSettings
+            {
+                Search = new WorkspaceSearchSettings
+                {
+                    MaxPatternChars = 0,
+                    RegexTimeoutMilliseconds = 0,
+                    MaxMatches = 0,
+                },
+                Patch = new WorkspacePatchSettings
+                {
+                    MaxPatchBytes = 0,
+                    MaxFiles = 0,
+                    FuzzyMatchWindowLines = -1,
+                },
+                WorkspaceCheck = new WorkspaceCheckSettings
+                {
+                    TimeoutSeconds = 1,
+                    MaxDiagnostics = 0,
+                },
+            },
+        };
 
-        Assert.Equal(
-            defaults.Search.MaxPatternChars,
-            ArcanumSettingClamps.WorkspaceSearchMaxPatternChars(defaults.Search.MaxPatternChars));
-        Assert.Equal(
-            defaults.Search.RegexTimeoutMilliseconds,
-            ArcanumSettingClamps.WorkspaceSearchRegexTimeoutMilliseconds(
-                defaults.Search.RegexTimeoutMilliseconds));
-        Assert.Equal(
-            defaults.Patch.MaxPatchBytes,
-            ArcanumSettingClamps.WorkspacePatchMaxPatchBytes(defaults.Patch.MaxPatchBytes));
-        Assert.Equal(
-            defaults.Patch.MaxFiles,
-            ArcanumSettingClamps.WorkspacePatchMaxFiles(defaults.Patch.MaxFiles));
-        Assert.Equal(
-            check.TimeoutSeconds,
-            ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(check.TimeoutSeconds));
-        Assert.Equal(
-            check.MaxDiagnostics,
-            ArcanumSettingClamps.WorkspaceCheckMaxDiagnostics(check.MaxDiagnostics));
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.search.maxPatternChars");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.search.regexTimeoutMilliseconds");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.search.maxMatches");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.patch.maxPatchBytes");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.patch.maxFiles");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.patch.fuzzyMatchWindowLines");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.workspaceCheck.timeoutSeconds");
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "codingTools.workspaceCheck.maxDiagnostics");
+    }
+
+    [Fact]
+    public void Validate_WorkspacePatchRollbackReserveRelation_ReturnsFocusedFailure()
+    {
+        ArcanumSettings settings = new()
+        {
+            CodingTools = new CodingToolsSettings
+            {
+                Patch = new WorkspacePatchSettings
+                {
+                    MaxElapsedMilliseconds = 100,
+                    RollbackReserveMilliseconds = 100,
+                },
+            },
+        };
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+        Assert.Contains(
+            result.Error.Details!,
+            static error =>
+                error.Pointer
+                    == "codingTools.patch.rollbackReserveMilliseconds"
+                && error.Detail.Contains(
+                    "must be less than MaxElapsedMilliseconds",
+                    StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_WorkspaceCheckDeadlineRelation_AppliesOnlyWhenCurrentlyAdvertisable()
+    {
+        ArcanumSettings settings = new()
+        {
+            Intelligence = new IntelligenceSettings { InferenceTimeoutSeconds = 600 },
+            CodingTools = new CodingToolsSettings
+            {
+                WorkspaceCheck = new WorkspaceCheckSettings
+                {
+                    Enabled = true,
+                    TimeoutSeconds = 571,
+                },
+            },
+        };
+
+        Result eligible = new ConfigurationValidator(
+            workspaceCheckEligibility: new StubWorkspaceCheckEligibility(true)).Validate(settings);
+        Result unavailable = new ConfigurationValidator(
+            workspaceCheckEligibility: new StubWorkspaceCheckEligibility(false)).Validate(settings);
+        settings.CodingTools.WorkspaceCheck.Enabled = false;
+        Result disabled = new ConfigurationValidator(
+            workspaceCheckEligibility: new StubWorkspaceCheckEligibility(true)).Validate(settings);
+
+        Assert.True(eligible.IsFailure);
+        Assert.Contains(
+            eligible.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.timeoutSeconds");
+        Assert.True(unavailable.IsSuccess);
+        Assert.True(disabled.IsSuccess);
     }
 
     [Fact]
@@ -2253,9 +2111,9 @@ public sealed class ConfigurationValidatorTests
     {
         ArcanumSettings settings = new()
         {
-            Integrations = new IntegrationSettings
+            CodingTools = new CodingToolsSettings
             {
-                WorkspaceChecks = new WorkspaceCheckIntegrationSettings
+                WorkspaceCheck = new WorkspaceCheckSettings
                 {
                     CustomProfiles = new Dictionary<string, WorkspaceCheckProfileSettings>
                     {
@@ -2276,7 +2134,7 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
         Assert.Contains(
             result.Error.Details!,
-            static e => e.Pointer == "integrations.workspaceChecks.customProfiles[dotnet-build]");
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[dotnet-build]");
         Assert.Contains(
             result.Error.Details!,
             static e => e.Pointer.EndsWith(".executableId", StringComparison.Ordinal));
@@ -2323,10 +2181,14 @@ public sealed class ConfigurationValidatorTests
         };
         ArcanumSettings settings = new()
         {
-            Integrations = new IntegrationSettings
+            CodingTools = new CodingToolsSettings
             {
-                WorkspaceChecks = new WorkspaceCheckIntegrationSettings
+                WorkspaceCheck = new WorkspaceCheckSettings
                 {
+                    MaxCustomProfiles = 2,
+                    MaxFixedArgumentsPerProfile = 1,
+                    MaxOptionsPerProfile = 0,
+                    MaxAllowedValuesPerOption = 1,
                     CustomProfiles = profiles,
                 },
             },
@@ -2337,56 +2199,28 @@ public sealed class ConfigurationValidatorTests
         Assert.True(result.IsFailure);
         Assert.Contains(
             result.Error.Details!,
-            static e => e.Pointer == "integrations.workspaceChecks.customProfiles[bad profile].kind");
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles");
         Assert.Contains(
             result.Error.Details!,
-            static e => e.Pointer == "integrations.workspaceChecks.customProfiles[bad profile].parser");
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[bad profile].kind");
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[bad profile].parser");
         Assert.Contains(
             result.Error.Details!,
             static e => e.Pointer.EndsWith(".fixedArguments[1]", StringComparison.Ordinal));
         Assert.Contains(
             result.Error.Details!,
-            static e => e.Pointer == "integrations.workspaceChecks.customProfiles[custom-test].parser");
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[custom-test].parser");
         Assert.Contains(
             result.Error.Details!,
-            static e => e.Pointer == "integrations.workspaceChecks.customProfiles[custom-test].target");
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[custom-test].target");
+        Assert.Contains(
+            result.Error.Details!,
+            static e => e.Pointer == "codingTools.workspaceCheck.customProfiles[custom-test].options");
         Assert.Contains(
             result.Error.Details!,
             static e => e.Detail.Contains("duplicated case-insensitively", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void Validate_CustomWorkspaceCheckProfiles_RejectsPhysicalCollectionLimit()
-    {
-        int maxProfiles = ArcanumRuntimeDefaults.WorkspaceChecks.MaxCustomProfiles;
-        Dictionary<string, WorkspaceCheckProfileSettings> profiles =
-            Enumerable.Range(0, maxProfiles + 1).ToDictionary(
-                static index => $"custom-{index}",
-                static _ => new WorkspaceCheckProfileSettings
-                {
-                    ExecutableId = WorkspaceCheckCatalogDefaults.DotNetExecutableId,
-                    Kind = WorkspaceCheckKind.Build,
-                    Parser = WorkspaceCheckDiagnosticParserKind.MsBuild,
-                    FixedArguments = ["build"],
-                },
-                StringComparer.OrdinalIgnoreCase);
-        ArcanumSettings settings = new()
-        {
-            Integrations = new IntegrationSettings
-            {
-                WorkspaceChecks = new WorkspaceCheckIntegrationSettings
-                {
-                    CustomProfiles = profiles,
-                },
-            },
-        };
-
-        Result result = _validator.Validate(settings);
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Pointer == "integrations.workspaceChecks.customProfiles");
     }
 
     [Fact]
@@ -2401,10 +2235,10 @@ public sealed class ConfigurationValidatorTests
         {
             ArcanumSettings settings = new()
             {
-                Workspaces = new WorkspaceSettings { DefaultRoot = workspace },
-                Integrations = new IntegrationSettings
+                Host = new HostSettings { Workspace = workspace },
+                CodingTools = new CodingToolsSettings
                 {
-                    WorkspaceChecks = new WorkspaceCheckIntegrationSettings
+                    WorkspaceCheck = new WorkspaceCheckSettings
                     {
                         ExecutableCatalog = new WorkspaceCheckExecutableCatalogSettings
                         {
@@ -2419,7 +2253,7 @@ public sealed class ConfigurationValidatorTests
             Assert.True(result.IsFailure);
             Assert.Contains(
                 result.Error.Details!,
-                static e => e.Pointer == "integrations.workspaceChecks.executableCatalog.dotNet.path"
+                static e => e.Pointer == "codingTools.workspaceCheck.executableCatalog.dotNet.path"
                     && e.Detail.Contains("outside the source workspace", StringComparison.Ordinal));
         }
         finally
@@ -2441,5 +2275,34 @@ public sealed class ConfigurationValidatorTests
                 },
             ],
         };
+
+    private static ArcanumSettings SettingsWithPromptCaching(
+        PromptCachingProfile profile,
+        bool providerLevel = false,
+        bool? legacySupport = null)
+    {
+        ProviderSettings provider = new()
+        {
+            Name = "cache-provider",
+            Type = AiProviderKind.OpenAICompatible,
+            Models =
+            [
+                new ModelEntry("cache-model")
+                {
+                    PromptCaching = providerLevel ? null : profile,
+                },
+            ],
+            PromptCaching = providerLevel ? profile : null,
+            SupportsPromptCaching = legacySupport,
+        };
+
+        return new ArcanumSettings { Providers = [provider] };
+    }
+
+    private sealed class StubWorkspaceCheckEligibility(bool isCurrentlyEligible)
+        : IWorkspaceCheckAdvertisementEligibility
+    {
+        public bool IsCurrentlyEligible { get; } = isCurrentlyEligible;
+    }
 
 }

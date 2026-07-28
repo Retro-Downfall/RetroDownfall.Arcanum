@@ -183,7 +183,7 @@ internal static partial class OpenAiV1Endpoints
 
         string echoModel = body.Model!.Trim();
 
-        string systemFingerprint = ResolveSystemFingerprint();
+        string systemFingerprint = ResolveSystemFingerprint(settings.Value);
 
         InferenceAuditContext auditContext = new()
         {
@@ -394,13 +394,17 @@ internal static partial class OpenAiV1Endpoints
 
         DisconnectPolicy disconnectPolicy = httpContext.RequestServices
             .GetRequiredService<IOptionsSnapshot<ArcanumSettings>>()
-            .Value.ResolveIntelligence().DisconnectPolicy;
+            .Value.Intelligence.DisconnectPolicy;
 
         bool continueThenReplay = TurnContextGuards.ResolveContinueThenReplay(httpContext, disconnectPolicy);
+        CancellationToken ownershipLost = TurnIdempotencyAmbient.OwnershipLostToken;
 
         using CancellationTokenSource streamCts = continueThenReplay
-            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-            : CancellationTokenSource.CreateLinkedTokenSource(httpContext.RequestAborted, cancellationToken);
+            ? CancellationTokenSource.CreateLinkedTokenSource(ownershipLost)
+            : CancellationTokenSource.CreateLinkedTokenSource(
+                httpContext.RequestAborted,
+                cancellationToken,
+                ownershipLost);
 
         CancellationToken ct = streamCts.Token;
 
@@ -589,9 +593,22 @@ internal static partial class OpenAiV1Endpoints
                 move = enumerator.MoveNextAsync().AsTask();
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (
+            ct.IsCancellationRequested
+            || cancellationToken.IsCancellationRequested
+            || httpContext.RequestAborted.IsCancellationRequested
+            || ownershipLost.IsCancellationRequested)
         {
             aborted = true;
+
+            if (ownershipLost.IsCancellationRequested)
+            {
+                return Results.Empty;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
         {
@@ -606,7 +623,10 @@ internal static partial class OpenAiV1Endpoints
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Unhandled exception while streaming OpenAI chat completion {CompletionId}.", completionId);
+            logger.LogError(
+                "Unhandled exception while streaming OpenAI chat completion {CompletionId}; exception type {ExceptionType}.",
+                completionId,
+                ex.GetType().FullName);
 
             try
             {
@@ -623,7 +643,10 @@ internal static partial class OpenAiV1Endpoints
             }
             catch (Exception writeEx)
             {
-                logger.LogWarning(writeEx, "Failed to write terminal error to OpenAI SSE stream {CompletionId}.", completionId);
+                logger.LogWarning(
+                    "Failed to write terminal error to OpenAI SSE stream {CompletionId}; exception type {ExceptionType}.",
+                    completionId,
+                    writeEx.GetType().FullName);
             }
 
             return Results.Empty;
@@ -663,7 +686,10 @@ internal static partial class OpenAiV1Endpoints
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to write terminal frames to OpenAI SSE stream {CompletionId}.", completionId);
+            logger.LogWarning(
+                "Failed to write terminal frames to OpenAI SSE stream {CompletionId}; exception type {ExceptionType}.",
+                completionId,
+                ex.GetType().FullName);
         }
 
         return Results.Empty;
@@ -985,7 +1011,17 @@ internal static partial class OpenAiV1Endpoints
         return "stop";
     }
 
-    private static string ResolveSystemFingerprint() => DefaultSystemFingerprint;
+    private static string ResolveSystemFingerprint(ArcanumSettings settings)
+    {
+        string? configured = settings.Host.SystemFingerprint;
+
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured.Trim();
+        }
+
+        return DefaultSystemFingerprint;
+    }
 
     private static string BuildDefaultSystemFingerprint()
     {
@@ -1018,6 +1054,8 @@ internal static partial class OpenAiV1Endpoints
             ErrorCodes.Hub.Model => ("api_error", "model_not_found"),
             ErrorCodes.Validation.InvalidPrompt => ("api_error", "missing_required_parameter"),
             ErrorCodes.Validation.AttachedFiles => ("api_error", "invalid_value"),
+            ErrorCodes.Hub.ToolLoop => ("api_error", "server_error"),
+            ErrorCodes.Hub.Timeout => ("api_error", "server_error"),
             ErrorCodes.Hub.Error => ("api_error", "inference_failed"),
             ErrorCodes.Scrying.VisionNotSupported => ("api_error", "vision_not_supported"),
             ErrorCodes.Scrying.FeatureDisabled => ("api_error", "feature_disabled"),
@@ -1036,12 +1074,14 @@ internal static partial class OpenAiV1Endpoints
         internalCode switch
         {
             ErrorCodes.Hub.Model =>
-                "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.",
+                PublicInferenceErrorMessages.ModelNotConfigured,
             ErrorCodes.Validation.InvalidPrompt => "Prompt is required.",
             ErrorCodes.Validation.AttachedFiles => "Attached file validation failed.",
+            ErrorCodes.Hub.ToolLoop => "Tool invocation limit reached.",
+            ErrorCodes.Hub.Timeout => PublicInferenceErrorMessages.OpenAiTimeout,
             ErrorCodes.StructuredOutput.SchemaInvalid => "The supplied JSON schema for structured output is invalid.",
             ErrorCodes.StructuredOutput.ValidationFailed => "The model response did not match the requested JSON schema.",
-            _ => "Inference failed. See server logs for details.",
+            _ => PublicInferenceErrorMessages.OpenAiGenericFailure,
         };
 
     private static string MapScryingOpenAiErrorCode(string internalCode) =>
@@ -1186,7 +1226,7 @@ internal static partial class OpenAiV1Endpoints
 
     internal static IResult CreateUnhandledInferenceErrorResult() =>
         JsonError(
-            "Inference failed. See server logs for details.",
+            PublicInferenceErrorMessages.OpenAiGenericFailure,
             "api_error",
             code: "inference_failed",
             param: null,

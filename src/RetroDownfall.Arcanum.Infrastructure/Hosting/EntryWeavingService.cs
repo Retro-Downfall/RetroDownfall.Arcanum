@@ -16,19 +16,21 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <summary>
-/// Session Divination support: imprints not-yet-embedded Grimoire entries into The Weave in the background.
+/// RAG Phase 2 — imprints not-yet-embedded Grimoire entries into The Weave in the background.
 /// "Weaving" is the act of turning an entry's content into a vector (via <see cref="IWeaveService"/>)
 /// and persisting it to <c>entry_embeddings</c> (and, when available, <c>entry_embeddings_vec</c>) so
 /// Divination (see <c>SessionDivinationEndpoints</c>) can later retrieve it.
 ///
-/// Idles unless <c>Arcanum:Features:SessionSearch</c> is enabled; the polling cadence is a code-owned
-/// invariant. This is therefore a no-op on the hot path until an operator opts in.
+/// Idles (1s poll of <c>Arcanum:Embeddings:Enabled</c> / <c>Arcanum:Embeddings:SessionSearchEnabled</c>)
+/// when either flag is false — the default — so this is a no-op on the hot path until an operator opts
+/// in. Same idle-when-disabled pattern as
+/// <see cref="RetroDownfall.Arcanum.Infrastructure.Resilience.ProviderHealthProbeService"/>.
 ///
 /// Idempotency: each tick's <c>LEFT JOIN ... WHERE ee."EntryId" IS NULL</c> query naturally skips
 /// already-embedded entries, so ticks are safe to run repeatedly and a partially-processed batch (e.g.
 /// after a shutdown mid-tick) is simply picked up again on the next tick. Re-embedding after a model or
 /// dimension change requires manually truncating <c>entry_embeddings</c> (and
-/// <c>entry_embeddings_vec</c>, when present) — see <c>docs/Arcanum.DESIGN.md</c> §21.
+/// <c>entry_embeddings_vec</c>, when present) — see DESIGN.md §21.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: IHostedService embedding queue scheduler; covered via EntryWeavingServiceTests exercising the tick logic directly.
 internal sealed class EntryWeavingService(
@@ -52,7 +54,7 @@ internal sealed class EntryWeavingService(
             try
             {
 
-                EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
+                EmbeddingSettings embeddings = optionsMonitor.CurrentValue.Embeddings ?? new EmbeddingSettings();
 
                 bool enabled = embeddings.Enabled && embeddings.SessionSearchEnabled;
 
@@ -125,7 +127,7 @@ internal sealed class EntryWeavingService(
         {
 
             logger.LogDebug(
-                "Entry Weaving tick skipped: The Weave is unavailable (enable an embedding-backed Arcanum:Features option and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model).");
+                "Entry Weaving tick skipped: The Weave is unavailable (Provider/Model not configured, or Embeddings disabled).");
 
             return;
 
@@ -200,8 +202,8 @@ internal sealed class EntryWeavingService(
                 // slots every tick (they never gain an entry_embeddings row, so the LEFT JOIN keeps
                 // re-selecting them), starving real work.
                 //
-                // SUBSTR(..., 1, @chunkSize) applies the same code-owned per-item ceiling that
-                // WeaveService.EmbedBatchAsync applies before the provider.
+                // SUBSTR(..., 1, @chunkSize) hard-caps each payload to Embeddings:ChunkSizeChars —
+                // the same per-item ceiling WeaveService.EmbedBatchAsync applies before the provider.
                 cmd.CommandText =
                     """
                     SELECT e."Id", SUBSTR(e."Content", 1, @chunkSize)

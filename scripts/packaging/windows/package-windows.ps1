@@ -88,7 +88,7 @@ try {
 
         New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
         Copy-Item -LiteralPath $published -Destination (Join-Path $stageDir "arcanum.exe")
-        Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\Arcanum.README.md") -Destination (Join-Path $stageDir "README.md")
+        Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\PRIVATE-BETA-NOTES.md") -Destination (Join-Path $stageDir "PRIVATE-BETA-NOTES.md")
 
         if ($Sign) {
             Write-Host "==> Authenticode signing arcanum.exe"
@@ -124,7 +124,7 @@ try {
 
         New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
         Copy-Item -Path (Join-Path $publishDir "*") -Destination $stageDir -Recurse -Force
-        Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\Arcanum.README.md") -Destination (Join-Path $stageDir "README.md")
+        Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\PRIVATE-BETA-NOTES.md") -Destination (Join-Path $stageDir "PRIVATE-BETA-NOTES.md")
 
         if ($Sign) {
             $exes = Get-ChildItem -Path $stageDir -Filter *.exe -File

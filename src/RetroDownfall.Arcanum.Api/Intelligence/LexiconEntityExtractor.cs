@@ -70,7 +70,9 @@ internal static class LexiconEntityExtractor
         {
             IModelCallExecutor executor = modelCallExecutor ?? new ModelCallExecutor();
 
-            TurnBudget auxBudget = new();
+            // Auxiliary preflight — dedicated budget so Lexicon extraction does not consume the
+            // interactive turn's model-call ceiling.
+            TurnBudget auxBudget = new(maxModelCalls: 1);
 
             var callResult = await executor
                 .ExecuteBufferedAsync(

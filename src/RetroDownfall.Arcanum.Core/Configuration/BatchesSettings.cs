@@ -1,9 +1,8 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Runtime projection for OpenAI-compatible <c>/v1/batches</c> asynchronous bulk chat-completion
-/// processing. Host concurrency comes from <c>Arcanum:Execution</c>; request and expiry mechanics
-/// are code-owned.
+/// OpenAI-compatible <c>/v1/batches</c> asynchronous bulk chat-completion processing. Bound from
+/// <c>Arcanum:Batches</c>. See DESIGN.md §11.21.
 /// </summary>
 public sealed record BatchesSettings
 {

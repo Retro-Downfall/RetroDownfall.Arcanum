@@ -2,28 +2,28 @@ namespace RetroDownfall.TheForge.Ux.Services;
 
 /// <summary>
 /// Canonical Arcanum configuration paths surfaced in disabled-state banners across The Forge.
-/// Values match <c>arcanum.json</c> colon notation exactly (e.g. <c>Arcanum:Features:Embeddings</c>).
+/// Values match <c>arcanum.json</c> colon notation exactly (e.g. <c>Arcanum:Embeddings:Enabled</c>).
 /// </summary>
 public static class DisabledSettingPaths
 {
 
-    public const string EmbeddingsEnabled = "Arcanum:Features:Embeddings";
+    public const string EmbeddingsEnabled = "Arcanum:Embeddings:Enabled";
 
-    public const string SessionSearchEnabled = "Arcanum:Features:SessionSearch";
+    public const string SessionSearchEnabled = "Arcanum:Embeddings:SessionSearchEnabled";
 
-    public const string CodebaseRetrievalEnabled = "Arcanum:Features:CodebaseRetrieval";
+    public const string CodebaseRetrievalEnabled = "Arcanum:Embeddings:CodebaseRetrievalEnabled";
 
-    public const string SagaEnabled = "Arcanum:Features:Saga";
+    public const string SagaEnabled = "Arcanum:Embeddings:SagaEnabled";
 
     public const string EnableFileWrite = "Arcanum:Workspaces:EnableFileWrite";
 
-    public const string AllowMemoryManagement = "Arcanum:Features:MemoryManagement";
+    public const string AllowMemoryManagement = "Arcanum:Sessions:AllowMemoryManagement";
 
-    public const string BudgetEnabled = "Arcanum:Cost:Budget:Enabled";
+    public const string BudgetEnabled = "Arcanum:Budget:Enabled";
 
     public const string InferenceAuditLogEnabled = "Arcanum:Host:AuditLog:Enabled";
 
-    public const string GuardrailsAuditLogEnabled = "Arcanum:Security:Guardrails:AuditLog:Enabled";
+    public const string GuardrailsAuditLogEnabled = "Arcanum:Guardrails:AuditLog:Enabled";
 
     public static readonly string[] SessionDivination = [EmbeddingsEnabled, SessionSearchEnabled];
 

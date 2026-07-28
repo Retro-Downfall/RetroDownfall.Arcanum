@@ -1,5 +1,8 @@
+using System.Data;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -17,11 +20,20 @@ public sealed class CampaignRepository : ICampaignRepository
 
     private const int DefaultListLimit = 100;
 
+    private const int ImmediateTransactionTimeoutSeconds = 1;
+
+    private const int ImmediateTransactionBusyTimeoutMilliseconds =
+        ImmediateTransactionTimeoutSeconds * 1000;
+
     private readonly ArcanumDbContext _db;
 
     private readonly ILogger<CampaignRepository> _logger;
 
     private readonly IOptionsSnapshot<ArcanumSettings> _arcOptions;
+
+    internal Func<CancellationToken, Task>? AfterImmediateTransactionBeganForTesting { get; set; }
+
+    internal Func<int, Exception, CancellationToken, ValueTask>? RetryingForTesting { get; set; }
 
     public CampaignRepository(
         ArcanumDbContext db,
@@ -113,26 +125,164 @@ public sealed class CampaignRepository : ICampaignRepository
         return new ListPageResult<Campaign>(page.ToArray(), hasMore, nextOffset);
     }
 
-    public async Task<Campaign> AddAsync(Campaign campaign, CancellationToken cancellationToken = default)
+    public async Task<Result<Campaign>> AddAsync(
+        Campaign campaign,
+        CancellationToken cancellationToken = default)
     {
-        CampaignsSettings settings = ArcanumRuntimeDefaults.Campaigns;
+        CampaignsSettings settings = _arcOptions.Value.Campaigns ?? new CampaignsSettings();
 
         int maxCampaigns = ArcanumSettingClamps.MaxCampaigns(settings.MaxCampaigns);
 
-        int count = await _db.Campaigns.CountAsync(cancellationToken).ConfigureAwait(false);
-
-        if (count >= maxCampaigns)
+        if (_db.Database.GetDbConnection() is not SqliteConnection connection)
         {
-            throw new InvalidOperationException(ErrorCodes.Campaign.MaxReached);
+            throw new InvalidOperationException("Campaign persistence requires a SQLite connection.");
         }
 
-        campaign.NameLower = campaign.Name.Trim().ToLowerInvariant();
+        bool openedHere = connection.State != ConnectionState.Open;
 
-        _db.Campaigns.Add(campaign);
+        int originalTimeout = connection.DefaultTimeout;
 
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        connection.DefaultTimeout = originalTimeout <= 0
+            ? ImmediateTransactionTimeoutSeconds
+            : Math.Min(originalTimeout, ImmediateTransactionTimeoutSeconds);
 
-        return campaign;
+        int? originalBusyTimeout = null;
+
+        try
+        {
+            return await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+                    if (connection.State == ConnectionState.Broken)
+                    {
+                        await connection.CloseAsync().ConfigureAwait(false);
+                    }
+
+                    if (connection.State != ConnectionState.Open)
+                    {
+                        await _db.Database
+                            .OpenConnectionAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    if (originalBusyTimeout is null)
+                    {
+                        originalBusyTimeout = ReadBusyTimeout(connection, cancellationToken);
+
+                        SetBusyTimeout(
+                            connection,
+                            ImmediateTransactionBusyTimeoutMilliseconds,
+                            cancellationToken);
+                    }
+
+                    return await AddWithinImmediateTransactionAsync(
+                        connection,
+                        campaign,
+                        maxCampaigns,
+                        cancellationToken).ConfigureAwait(false);
+                },
+                cancellationToken,
+                RetryingForTesting).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (originalBusyTimeout is { } busyTimeout
+                && connection.State == ConnectionState.Open)
+            {
+                SetBusyTimeout(connection, busyTimeout, CancellationToken.None);
+            }
+
+            connection.DefaultTimeout = originalTimeout;
+
+            if (openedHere && connection.State != ConnectionState.Closed)
+            {
+                await _db.Database.CloseConnectionAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task<Result<Campaign>> AddWithinImmediateTransactionAsync(
+        SqliteConnection connection,
+        Campaign campaign,
+        int maxCampaigns,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        await using SqliteTransaction sqliteTransaction =
+            connection.BeginTransaction(deferred: false);
+
+        await using IDbContextTransaction efTransaction =
+            await _db.Database
+                .UseTransactionAsync(sqliteTransaction, cancellationToken)
+                .ConfigureAwait(false)
+            ?? throw new InvalidOperationException("EF could not attach the SQLite campaign transaction.");
+
+        bool committed = false;
+
+        bool commitStarted = false;
+
+        try
+        {
+            if (AfterImmediateTransactionBeganForTesting is { } afterTransactionBegan)
+            {
+                await afterTransactionBegan(cancellationToken).ConfigureAwait(false);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            int count = await _db.Campaigns
+                .CountAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            if (count >= maxCampaigns)
+            {
+                await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return Result<Campaign>.Failure(
+                    new Error(
+                        ErrorCodes.Campaign.MaxReached,
+                        "The maximum number of campaigns has been reached."));
+            }
+
+            campaign.NameLower = campaign.Name.Trim().ToLowerInvariant();
+
+            _db.Campaigns.Add(campaign);
+
+            _ = await EfSaveChangesRetry
+                .ExecuteOnceAsync(_db, cancellationToken)
+                .ConfigureAwait(false);
+
+            commitStarted = true;
+
+            await efTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            committed = true;
+
+            return Result<Campaign>.Success(campaign);
+        }
+        catch (Exception exception)
+        {
+            bool rolledBack = await TryRollbackAsync(efTransaction).ConfigureAwait(false);
+
+            if (!rolledBack)
+            {
+                throw new InvalidOperationException(
+                    commitStarted
+                        ? "The campaign insert outcome is ambiguous because commit and rollback both failed."
+                        : "The campaign insert outcome is ambiguous because the failed transaction could not be rolled back.",
+                    exception);
+            }
+
+            throw;
+        }
+        finally
+        {
+            if (!committed && _db.Entry(campaign).State != EntityState.Detached)
+            {
+                _db.Entry(campaign).State = EntityState.Detached;
+            }
+        }
     }
 
     public async Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default)
@@ -141,7 +291,9 @@ public sealed class CampaignRepository : ICampaignRepository
 
         _db.Campaigns.Update(campaign);
 
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        _ = await EfSaveChangesRetry
+            .ExecuteAsync(_db, cancellationToken)
+            .ConfigureAwait(false);
 
         return campaign;
     }
@@ -179,6 +331,50 @@ public sealed class CampaignRepository : ICampaignRepository
 
     public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
         _db.Campaigns.CountAsync(cancellationToken);
+
+    private static async Task<bool> TryRollbackAsync(IDbContextTransaction transaction)
+    {
+        try
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is SqliteException
+                or InvalidOperationException
+                or ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
+    private static int ReadBusyTimeout(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "PRAGMA busy_timeout;";
+
+        return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static void SetBusyTimeout(
+        SqliteConnection connection,
+        int milliseconds,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"PRAGMA busy_timeout={milliseconds};";
+
+        _ = command.ExecuteNonQuery();
+    }
 
     public static CampaignSettings DeserializeSettings(string json)
     {

@@ -1,16 +1,16 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Code-owned provider-resilience mechanics — periodic health probing and fallback resolution
-/// across configured providers.
+/// Configuration for the provider resilience layer — periodic health probing, fallback resolution,
+/// and inference retry across configured providers. Bound from <c>Arcanum:Resilience</c>.
 /// </summary>
 public sealed record ResilienceSettings
 {
 
     /// <summary>
-    /// Internal runtime switch for
-    /// <see cref="RetroDownfall.Arcanum.Core.Resilience.IProviderHealthTracker"/> probing and fallback.
-    /// The retained public projection enables it automatically; there is no operator setting.
+    /// When <c>true</c>, <see cref="RetroDownfall.Arcanum.Core.Resilience.IProviderHealthTracker"/> probing
+    /// runs and fallback resolution is active. When <c>false</c> (default), behavior is unchanged: the
+    /// probe service idles and the resolver returns exactly one candidate.
     /// </summary>
     public bool Enabled { get; set; }
 
@@ -32,6 +32,12 @@ public sealed record ResilienceSettings
     /// excluded from fallback candidates. Default <c>3</c>; clamped 1–100 at runtime.
     /// </summary>
     public int HealthFailureThreshold { get; set; } = 3;
+
+    /// <summary>
+    /// Maximum number of candidate providers to try per inference turn before giving up. Default
+    /// <c>3</c>; clamped 1–10 at runtime.
+    /// </summary>
+    public int MaxFallbackAttempts { get; set; } = 3;
 
     /// <summary>
     /// HTTP timeout in seconds for each individual health probe call. Default <c>5</c>; clamped 1–30 at

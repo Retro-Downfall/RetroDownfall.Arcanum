@@ -5,117 +5,164 @@
              x:Class="RetroDownfall.Compendium.Ux.Views.HostPage"
              x:DataType="vm:ConfigurationViewModel">
 
-  <ScrollViewer>
-    <StackPanel Margin="24"
-                Spacing="16">
+    <ScrollViewer>
 
-      <TextBlock Text="Host"
-                 FontSize="{DynamicResource ForgePageTitleFontSize}"
-                 FontWeight="SemiBold" />
+        <StackPanel Orientation="Vertical"
+                    Margin="24"
+                    Spacing="16">
 
-      <controls:LabeledStepper Label="Port"
-                               Description="Kestrel HTTP listen port."
-                               Key="host.port"
-                               ValidationErrors="{Binding ValidationErrorsByPointer}"
-                               Value="{Binding Host.Port, Mode=TwoWay}"
-                               Minimum="1"
-                               Maximum="65535"
-                               Increment="1" />
+            <TextBlock Text="Host"
+                       FontSize="{DynamicResource ForgePageTitleFontSize}"
+                       FontWeight="SemiBold" />
 
-      <controls:LabeledToggle Label="Listen on all interfaces"
-                              Description="Bind externally using HTTPS-only. External binding also enforces rate limiting and metrics authentication."
-                              IsOn="{Binding Host.ListenAny, Mode=TwoWay}" />
+            <controls:LabeledStepper Label="Port"
+                                     Description="Kestrel listen port."
+                                     Key="host.port"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.Port, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="65535"
+                                     Increment="1" />
 
-      <controls:ChipsEditor Label="CORS allowed origins"
-                            Description="Browser origins permitted to read Arcanum responses."
-                            Text="{Binding Host.CorsAllowedOrigins, Mode=TwoWay}" />
+            <controls:LabeledToggle Label="Listen on all interfaces"
+                                    Description="When true, Kestrel binds to all network interfaces instead of loopback. The ARCANUM_HOST_ANY env var is still honored as an override."
+                                    IsOn="{Binding Host.ListenAny, Mode=TwoWay}" />
 
-      <TextBlock Text="Audit policy"
-                 FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
-                 FontWeight="SemiBold" />
+            <controls:LabeledToggle Label="Enable Scalar UI"
+                                    Description="When true, mounts the Scalar interactive API documentation UI at /api/scalar. The UI ships with inline JavaScript and CSS that conflict with strict CSP; default false."
+                                    IsOn="{Binding Host.EnableScalarUi, Mode=TwoWay}" />
 
-      <controls:LabeledToggle Label="Inference audit log"
-                              Description="Persist an append-only audit trail for completed inference turns."
-                              IsOn="{Binding Host.AuditLogEnabled, Mode=TwoWay}" />
+            <controls:ChipsEditor Label="CORS allowed origins"
+                                  Description="Allowed origins for CORS. Use [*] to allow any origin (browser callers can read responses with the API key)."
+                                  Text="{Binding Host.CorsAllowedOrigins, Mode=TwoWay}" />
 
-      <controls:LabeledStepper Label="Audit retention (days)"
-                               Description="Delete dated inference audit files older than this compliance retention period."
-                               Key="host.auditLog.retentionDays"
-                               ValidationErrors="{Binding ValidationErrorsByPointer}"
-                               Value="{Binding Host.AuditLogRetentionDays, Mode=TwoWay}"
-                               Minimum="1"
-                               Maximum="365"
-                               Increment="1" />
+            <controls:LabeledStepper Label="Max request body bytes"
+                                     Description="Kestrel MaxRequestBodySize in bytes. Default 10 MiB; clamped 256 KiB - 1 GiB."
+                                     Key="host.maxRequestBodyBytes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.MaxRequestBodyBytes, Mode=TwoWay}"
+                                     Minimum="262144"
+                                     Maximum="1073741824"
+                                     Increment="1048576" />
 
-      <controls:LabeledToggle Label="Redact tool arguments"
-                              Description="Store tool names without potentially sensitive argument JSON."
-                              IsOn="{Binding Host.AuditLogRedactToolArguments, Mode=TwoWay}" />
+            <controls:LabeledEntry Label="Default workspace path"
+                                   Description="Optional default workspace root for spell management and other workspace-scoped API routes. Prefer absolute paths."
+                                   Key="host.workspace"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Host.Workspace, Mode=TwoWay}"
+                                   Placeholder="/home/me/projects" />
 
-      <TextBlock Text="HTTPS"
-                 FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
-                 FontWeight="SemiBold" />
+            <controls:LabeledEntry Label="System fingerprint"
+                                   Description="Optional stable identifier surfaced as system_fingerprint on OpenAI-shaped /v1/chat/completions responses. When null, the API derives one from the assembly version."
+                                   Key="host.systemFingerprint"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Host.SystemFingerprint, Mode=TwoWay}"
+                                   Placeholder="arcanum-0.1.0-beta" />
 
-      <Border Background="{DynamicResource ForgeSurfaceAltBrush}"
-              BorderBrush="{DynamicResource ForgeWarningBrush}"
-              BorderThickness="1"
-              CornerRadius="6"
-              Padding="12">
-        <TextBlock TextWrapping="Wrap"
-                   Foreground="{DynamicResource ForgeMutedTextBrush}"
-                   Text="ListenAny / ARCANUM_HOST_ANY requires HTTPS and exposes only the TLS port. The local certificate generator creates loopback SANs and does not install trust; use a correctly trusted certificate for remote access." />
-      </Border>
+            <controls:LabeledStepper Label="Retained log file count"
+                                     Description="Number of rolling log files kept on disk before oldest are pruned."
+                                     Key="host.retainedLogFileCount"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.RetainedLogFileCount, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="366"
+                                     Increment="1" />
 
-      <controls:LabeledToggle Label="Enable HTTPS"
-                              Description="Add the TLS listener; required for all-interface binding."
-                              IsOn="{Binding Host.HttpsEnabled, Mode=TwoWay}" />
+            <controls:LabeledToggle Label="Enable enterprise telemetry"
+                                    Description="When true, emits structured telemetry events to configured sinks."
+                                    IsOn="{Binding Host.EnableEnterpriseTelemetry, Mode=TwoWay}" />
 
-      <controls:LabeledStepper Label="HTTPS port"
-                               Description="TLS listen port. It must differ from the HTTP port."
-                               Key="host.https.port"
-                               ValidationErrors="{Binding ValidationErrorsByPointer}"
-                               Value="{Binding Host.HttpsPort, Mode=TwoWay}"
-                               Minimum="1"
-                               Maximum="65535"
-                               Increment="1" />
+            <TextBlock Text="Rate limiting"
+                       FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                       FontWeight="SemiBold" />
 
-      <controls:LabeledEntry Label="Certificate path"
-                             Description="PFX bundle path, or PEM certificate path when a private key path is supplied."
-                             Key="host.https.certificatePath"
-                             ValidationErrors="{Binding ValidationErrorsByPointer}"
-                             Text="{Binding Host.HttpsCertificatePath, Mode=TwoWay}"
-                             Placeholder="~/.config/arcanum/certs/localhost.pfx" />
+            <controls:LabeledToggle Label="Enabled"
+                                    Description="When true, applies a fixed-window limiter to /api and /v1 endpoint groups, partitioned by API key (or IP when no key header is present)."
+                                    IsOn="{Binding Host.RateLimitEnabled, Mode=TwoWay}" />
 
-      <controls:LabeledEntry Label="Private key path"
-                             Description="Optional PEM private key path."
-                             Key="host.https.privateKeyPath"
-                             ValidationErrors="{Binding ValidationErrorsByPointer}"
-                             Text="{Binding Host.HttpsPrivateKeyPath, Mode=TwoWay}"
-                             Placeholder="~/.config/arcanum/certs/localhost.key" />
+            <controls:LabeledStepper Label="Permit limit"
+                                     Description="Maximum requests permitted per window per partition. Default 120."
+                                     Key="host.rateLimit.permitLimit"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.RateLimitPermitLimit, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="1000000"
+                                     Increment="1" />
 
-      <controls:LabeledEntry Label="Certificate password environment variable"
-                             Description="Exact variable containing the PFX password. Leave blank to use ARCANUM_HTTPS_CERTIFICATE_PASSWORD. Ignored for PEM."
-                             Key="host.https.certificatePasswordEnvironmentVariable"
-                             ValidationErrors="{Binding ValidationErrorsByPointer}"
-                             Text="{Binding Host.HttpsCertificatePasswordEnvironmentVariable, Mode=TwoWay}"
-                             Placeholder="ARCANUM_HTTPS_CERTIFICATE_PASSWORD" />
+            <controls:LabeledStepper Label="Window seconds"
+                                     Description="Window size in seconds for the fixed-window limiter. Default 60."
+                                     Key="host.rateLimit.windowSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.RateLimitWindowSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="86400"
+                                     Increment="1" />
 
-      <Button Content="Generate local certificate"
-              HorizontalAlignment="Left"
-              Command="{Binding Host.GenerateLocalCertificateCommand}" />
+            <controls:LabeledStepper Label="Queue limit"
+                                     Description="Maximum queued requests per partition (served once the window resets). Default 0: excess requests are rejected with HTTP 429."
+                                     Key="host.rateLimit.queueLimit"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.RateLimitQueueLimit, Mode=TwoWay}"
+                                     Minimum="0"
+                                     Maximum="1000000"
+                                     Increment="1" />
 
-      <TextBlock Text="Observability"
-                 FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
-                 FontWeight="SemiBold" />
+            <TextBlock Text="HTTPS (TLS)"
+                       FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                       FontWeight="SemiBold" />
 
-      <controls:LabeledPicker Label="Buffered log level"
-                              Description="Minimum log level retained in the in-memory diagnostics buffer."
-                              PickerTitle="Select log level"
-                              Key="host.minLogLevelInBuffer"
-                              ValidationErrors="{Binding ValidationErrorsByPointer}"
-                              ItemsSource="{Binding LogLevels}"
-                              SelectedItem="{Binding Host.MinLogLevelInBuffer, Mode=TwoWay}" />
+            <Border Background="{DynamicResource ForgeSurfaceAltBrush}"
+                    BorderBrush="{DynamicResource ForgeWarningBrush}"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="12">
 
-    </StackPanel>
-  </ScrollViewer>
+                <TextBlock TextWrapping="Wrap"
+                           Foreground="{DynamicResource ForgeMutedTextBrush}"
+                           Text="On loopback, enabling HTTPS adds a TLS listener alongside plaintext HTTP. ListenAny / ARCANUM_HOST_ANY requires HTTPS and binds only the TLS port (no plaintext any-IP HTTP). Generates a self-signed certificate for localhost only. It is not installed into your OS trust store. Browsers and HTTP clients may warn until you trust it manually. For remote access / ListenAny, use a certificate whose SAN includes your hostname or IP." />
+
+            </Border>
+
+            <controls:LabeledToggle Label="Enable HTTPS"
+                                    Description="When true, Kestrel adds a TLS listener on the HTTPS port using the configured certificate. Default false."
+                                    IsOn="{Binding Host.HttpsEnabled, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="HTTPS port"
+                                     Description="TLS listen port. Default 5443; clamped 1-65535. Must differ from the HTTP port."
+                                     Key="host.https.port"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Host.HttpsPort, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="65535"
+                                     Increment="1" />
+
+            <controls:LabeledEntry Label="Certificate path"
+                                   Description="PFX bundle path when no private key path is set, or a PEM certificate path when a private key path is provided. Leading ~ expands to your home directory."
+                                   Key="host.https.certificatePath"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Host.HttpsCertificatePath, Mode=TwoWay}"
+                                   Placeholder="~/.config/arcanum/certs/localhost.pfx" />
+
+            <controls:LabeledEntry Label="Private key path (PEM)"
+                                   Description="Optional PEM private key path. When set, the certificate path is treated as a PEM certificate and the password is ignored. Leave blank to use a PFX bundle."
+                                   Key="host.https.privateKeyPath"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Host.HttpsPrivateKeyPath, Mode=TwoWay}"
+                                   Placeholder="~/.config/arcanum/certs/localhost.key" />
+
+            <controls:LabeledEntry Label="Certificate password (PFX)"
+                                   Description="Password for the PFX bundle. Encrypted at rest with the dp:v1: prefix; ignored for PEM. Leave blank for a password-less PFX."
+                                   Key="host.https.certificatePassword"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Host.HttpsCertificatePassword, Mode=TwoWay}"
+                                   IsPassword="True" />
+
+            <Button Content="Generate local certificate"
+                    HorizontalAlignment="Left"
+                    Command="{Binding Host.GenerateLocalCertificateCommand}" />
+
+        </StackPanel>
+
+    </ScrollViewer>
 
 </UserControl>

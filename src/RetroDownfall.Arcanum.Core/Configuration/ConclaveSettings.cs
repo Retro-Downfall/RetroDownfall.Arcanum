@@ -1,57 +1,68 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Runtime projection for <strong>The Conclave</strong> &#8212; the overarching multi-agent
-/// coordination network in which the Master coordinates multiple Apprentices.
+/// Configuration for <strong>The Conclave</strong> &#8212; the overarching multi-agent coordination
+/// network in which the Master (Wizard) coordinates multiple Apprentices.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <see cref="Enabled"/> gates the cross-Apprentice delegation surface ("Cast Sending"). When
 /// <c>false</c> (the default), the in-process <c>cast_sending</c> MCP tool is not advertised and the
-/// <c>POST /api/apprentices/{id}/cast</c> endpoint refuses delegation. Operators may opt in directly
-/// via <c>Arcanum:Features:Conclave</c>; either A2A server/client opt-in also derives Conclave
-/// availability because those surfaces depend on it.
+/// <c>POST /api/apprentices/{id}/cast</c> endpoint refuses delegation, so operators opt in to
+/// multi-agent fan-out explicitly. Bound from <c>Arcanum:Conclave</c>.
+/// </para>
+/// <para>
+/// This block replaces the former reserved <c>Arcanum:Bureau</c> placeholder. Documented in
+/// DESIGN.md &#167;3.4 / &#167;16.
 /// </para>
 /// </remarks>
 public sealed record ConclaveSettings
 {
 
     /// <summary>
-    /// When <c>true</c>, enables The Conclave's cross-Apprentice delegation (Cast Sending). Derived
-    /// from the direct Conclave opt-in or either A2A surface; default <c>false</c>.
+    /// When <c>true</c>, enables The Conclave's cross-Apprentice delegation (Cast Sending). Default <c>false</c>.
     /// </summary>
     public bool Enabled { get; set; } = false;
 
     /// <summary>
-    /// A2A (Agent-to-Agent) protocol projection for The Conclave. See
-    /// <see cref="ConclaveA2ASettings"/>.
+    /// Maximum delegation depth from a Conclave root Apprentice (0 = root only, no children). Default <c>3</c>.
+    /// </summary>
+    public int MaxDelegationDepth { get; set; } = 3;
+
+    /// <summary>
+    /// Maximum total descendant Apprentices allowed under one Conclave root. Default <c>16</c>.
+    /// </summary>
+    public int MaxDescendantsPerRoot { get; set; } = 16;
+
+    /// <summary>
+    /// A2A (Agent-to-Agent) protocol interoperability surface for The Conclave. Bound from
+    /// <c>Arcanum:Conclave:A2A</c>. See <see cref="ConclaveA2ASettings"/>.
     /// </summary>
     public ConclaveA2ASettings A2A { get; set; } = new();
 
 }
 
 /// <summary>
-/// Runtime projection for the A2A (Agent-to-Agent) protocol surface layered on The Conclave.
+/// Configuration for the A2A (Agent-to-Agent) protocol surface layered on top of The Conclave.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="Enabled"/> is derived from the server/client opt-ins, and either opt-in also derives
-/// parent <see cref="ConclaveSettings.Enabled"/> availability. Server/client activation comes from
-/// <c>Arcanum:Features:A2AServer</c> / <c>Arcanum:Features:A2AClient</c>; identity and endpoint data come from
-/// <c>Arcanum:Integrations:A2A</c>. Operators do not need to maintain separate parent toggles.
+/// Both <see cref="Enabled"/> (this block) and the parent <see cref="ConclaveSettings.Enabled"/> must be
+/// <c>true</c> for any A2A surface — server or client — to activate. Default is <c>false</c>: zero behavior
+/// change until an operator explicitly opts in. Bound from <c>Arcanum:Conclave:A2A</c>.
 /// </para>
 /// <para>
 /// <see cref="ServerEnabled"/> exposes Arcanum Apprentices as A2A tasks to external agents (the "Heraldry" /
 /// Agent Card surface). <see cref="ClientEnabled"/> enables the in-process <c>dispatch_sending</c> MCP tool
 /// so an Apprentice can delegate a "Sending" to a remote A2A agent (the "Archmage Client"). Documented in
-/// <c>docs/Arcanum.DESIGN.md</c> &#167;3.4 / &#167;5.7.1.
+/// DESIGN.md &#167;3.4 / &#167;5.7.1.
 /// </para>
 /// </remarks>
 public sealed record ConclaveA2ASettings
 {
 
     /// <summary>
-    /// Derived gate for the A2A server and client surfaces. Default <c>false</c>.
+    /// Master toggle gating both the A2A server and client surfaces. Default <c>false</c>.
     /// </summary>
     public bool Enabled { get; set; } = false;
 
@@ -82,6 +93,16 @@ public sealed record ConclaveA2ASettings
     public bool ClientEnabled { get; set; } = false;
 
     /// <summary>
+    /// Maximum number of concurrently in-flight external (client-side) A2A delegations. Default <c>50</c>, clamped 1-500.
+    /// </summary>
+    public int MaxExternalTasks { get; set; } = 50;
+
+    /// <summary>
+    /// Per-delegation timeout, in minutes, for a client-side <c>dispatch_sending</c> call. Default <c>60</c>, clamped 5-1440.
+    /// </summary>
+    public int ExternalTaskTimeoutMinutes { get; set; } = 60;
+
+    /// <summary>
     /// Optional allowlist of remote Agent Card URLs (or origins) that <c>dispatch_sending</c> may target.
     /// Empty (default) means any URL is a candidate, subject to the outbound SSRF guard, which always applies
     /// regardless of this allowlist.
@@ -90,8 +111,8 @@ public sealed record ConclaveA2ASettings
 
     /// <summary>
     /// Fallback workspace path for inbound A2A tasks (server side) when the request carries no workspace or
-    /// campaign hint. Empty (default) falls back to <c>Arcanum:Workspaces:DefaultRoot</c>, then the
-    /// process's current directory, validated the same way as every other Apprentice workspace resolution.
+    /// campaign hint. Empty (default) falls back to <c>Arcanum:Host:Workspace</c>, then the process's current
+    /// directory, validated the same way as every other Apprentice workspace resolution.
     /// </summary>
     public string DefaultWorkspace { get; set; } = string.Empty;
 

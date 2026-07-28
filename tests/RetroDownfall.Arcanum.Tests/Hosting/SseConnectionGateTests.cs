@@ -14,7 +14,7 @@ public sealed class SseConnectionGateTests
 
         ArcanumSettings settings = new()
         {
-            Execution = new ExecutionSettings { MaxSseConnections = 2 },
+            EventBus = new EventBusSettings { MaxSseConnections = 2 },
         };
 
         SseConnectionGate gate = new(new SseConnectionCounter(), new TestOptionsMonitor<ArcanumSettings>(settings));

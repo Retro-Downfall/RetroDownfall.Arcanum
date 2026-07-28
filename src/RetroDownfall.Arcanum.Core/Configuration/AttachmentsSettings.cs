@@ -1,9 +1,6 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-/// <summary>
-/// Session-attachment runtime projection. Activation comes from
-/// <c>Arcanum:Features:Attachments</c>; storage and prompt envelopes are code-owned.
-/// </summary>
+/// <summary>Session attachment persistence. Bound from <c>Arcanum:Attachments</c>.</summary>
 public sealed record AttachmentsSettings
 {
 

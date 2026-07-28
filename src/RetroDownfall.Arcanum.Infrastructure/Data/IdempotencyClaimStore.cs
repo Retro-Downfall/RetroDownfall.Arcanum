@@ -69,21 +69,42 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
                 bool reclaimed = await TryReclaimAsync(existing.Id, request.OwnerId, request.LeaseExpiresAt, cancellationToken)
                     .ConfigureAwait(false);
 
+                IdempotencyClaim? refreshed = await TryGetAsync(request.ClaimKeyHash, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (refreshed is null)
+                {
+                    return await TryCreateAsync(request, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
                 if (reclaimed)
                 {
-                    IdempotencyClaim? refreshed = await TryGetAsync(request.ClaimKeyHash, cancellationToken)
-                        .ConfigureAwait(false);
-
-                    if (refreshed is not null)
-                    {
-                        return new IdempotencyClaimAcquireResult(Conflict: false, Acquired: true, Claim: refreshed);
-                    }
+                    return new IdempotencyClaimAcquireResult(Conflict: false, Acquired: true, Claim: refreshed);
                 }
+
+                bool conflict = !string.Equals(
+                    refreshed.FingerprintHash,
+                    request.FingerprintHash,
+                    StringComparison.Ordinal);
+
+                return new IdempotencyClaimAcquireResult(
+                    Conflict: conflict,
+                    Acquired: false,
+                    Claim: refreshed);
             }
 
             return new IdempotencyClaimAcquireResult(Conflict: false, Acquired: false, Claim: existing);
         }
 
+        return await TryCreateAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<IdempotencyClaimAcquireResult> TryCreateAsync(
+        IdempotencyClaimAcquireRequest request,
+        CancellationToken cancellationToken)
+    {
         Guid id = Guid.NewGuid();
 
         try
@@ -140,7 +161,8 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
         catch (DbException)
         {
             // Unique race — re-read.
-            existing = await TryGetAsync(request.ClaimKeyHash, cancellationToken).ConfigureAwait(false);
+            IdempotencyClaim? existing =
+                await TryGetAsync(request.ClaimKeyHash, cancellationToken).ConfigureAwait(false);
 
             if (existing is null)
             {
@@ -156,7 +178,11 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
         }
     }
 
-    public Task HeartbeatAsync(Guid claimId, string ownerId, DateTimeOffset leaseExpiresAt, CancellationToken cancellationToken = default)
+    public Task<bool> HeartbeatAsync(
+        Guid claimId,
+        string ownerId,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default)
     {
         return SqliteBusyRetry.ExecuteAsync(
             async () =>
@@ -179,7 +205,8 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
                 AddParameter(cmd, "@heartbeat", now.ToString("o", CultureInfo.InvariantCulture));
                 AddParameter(cmd, "@running", (int)IdempotencyClaimState.Running);
 
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                int rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                return rows > 0;
             },
             cancellationToken);
     }
@@ -353,7 +380,7 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
                     """
                     UPDATE "IdempotencyClaims"
                     SET "State" = @state, "TerminalStreamComplete" = 0, "UpdatedAt" = @updated
-                    WHERE "Id" = @id AND "OwnerId" = @owner AND "State" = @running
+                    WHERE "Id" = @id AND "OwnerId" = @owner AND "State" IN (@running, @claimed)
                     """;
 
                 AddParameter(cmd, "@id", claimId.ToString("N"));
@@ -361,6 +388,7 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
                 AddParameter(cmd, "@state", (int)state);
                 AddParameter(cmd, "@updated", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
                 AddParameter(cmd, "@running", (int)IdempotencyClaimState.Running);
+                AddParameter(cmd, "@claimed", (int)IdempotencyClaimState.Claimed);
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },

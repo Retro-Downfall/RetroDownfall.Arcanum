@@ -4,12 +4,15 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
 internal static class OpenAiStreamErrorMapper
 {
-    private const string GenericFailureMessage = "Inference failed. See server logs for details.";
+    private const string GenericFailureMessage =
+        PublicInferenceErrorMessages.OpenAiGenericFailure;
 
     private static readonly HashSet<string> AllowedMessages =
     [
         GenericFailureMessage,
-        "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.",
+        "Tool invocation limit reached.",
+        PublicInferenceErrorMessages.OpenAiTimeout,
+        PublicInferenceErrorMessages.ModelNotConfigured,
         "Prompt is required.",
         "Attached file validation failed.",
     ];
@@ -52,20 +55,38 @@ internal static class OpenAiStreamErrorMapper
                     Code: "invalid_schema"),
 
             _ => new OpenAiErrorDetail(
-                SanitizeMessage(error?.Message),
+                ResolveMessage(error),
                 "api_error",
                 Param: null,
-                Code: "inference_failed"),
+                Code: ResolveGenericCode(internalCode)),
         };
     }
 
     public static bool IsReasoningValidationCode(string? internalCode) =>
         MapReasoningValidationCode(internalCode) is not null;
 
+    private static string ResolveMessage(Error? error) =>
+        error?.Code switch
+        {
+            ErrorCodes.Hub.Model =>
+                PublicInferenceErrorMessages.ModelNotConfigured,
+            ErrorCodes.Hub.ToolLoop => "Tool invocation limit reached.",
+            ErrorCodes.Hub.Timeout =>
+                PublicInferenceErrorMessages.OpenAiTimeout,
+            ErrorCodes.Validation.InvalidPrompt => "Prompt is required.",
+            ErrorCodes.Validation.AttachedFiles => "Attached file validation failed.",
+            _ => SanitizeMessage(error?.Message),
+        };
+
     private static string SanitizeMessage(string? message) =>
         !string.IsNullOrWhiteSpace(message) && AllowedMessages.Contains(message)
             ? message
             : GenericFailureMessage;
+
+    private static string ResolveGenericCode(string? internalCode) =>
+        internalCode is ErrorCodes.Hub.ToolLoop or ErrorCodes.Hub.Timeout
+            ? "server_error"
+            : "inference_failed";
 
     private static string? MapReasoningValidationCode(string? internalCode) =>
         internalCode switch

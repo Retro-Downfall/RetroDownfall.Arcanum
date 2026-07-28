@@ -39,7 +39,7 @@ public sealed class InMemoryWorkspaceRegistryTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-            Security = new SecuritySettings { CampaignRoots = [_root] },
+            Campaigns = new CampaignsSettings { AllowedRoots = [_root] },
         };
 
         InMemoryWorkspaceRegistry registry = new(new TestOptionsMonitor<ArcanumSettings>(settings));
@@ -80,7 +80,7 @@ public sealed class InMemoryWorkspaceRegistryTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-            Security = new SecuritySettings { CampaignRoots = [_root] },
+            Campaigns = new CampaignsSettings { AllowedRoots = [_root] },
         };
 
         InMemoryWorkspaceRegistry registry = new(new TestOptionsMonitor<ArcanumSettings>(settings));

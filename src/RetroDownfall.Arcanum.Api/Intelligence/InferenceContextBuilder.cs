@@ -211,6 +211,13 @@ public sealed class InferenceContextBuilder(
         Session? thread = context.Thread;
         ChatClientLease lease = context.Lease;
 
+        if (!settings.Value.Intelligence.EnableContextCompression)
+        {
+
+            return (false, chatMessages);
+
+        }
+
         if (HasStatelessMessages(request) || thread is null)
         {
 
@@ -228,7 +235,7 @@ public sealed class InferenceContextBuilder(
 
         int effectiveLimit = contextCompressionService.ComputeEffectiveLimit(
             lease.Provider.ContextWindowLimit,
-            settings.Value.ResolveIntelligence().ContextWindowCompressionThreshold);
+            settings.Value.Intelligence.ContextWindowCompressionThreshold);
 
         if (totalTokens <= effectiveLimit)
         {
@@ -262,13 +269,12 @@ public sealed class InferenceContextBuilder(
             request.AttachedFiles,
             thread.Summary,
             context.DependencySpells,
-            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
-                ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
+            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(settings.Value.Spells.MaxResonantBytes),
             semanticContext: context.SemanticContext,
             sagaMemories: context.SagaMemories,
             lexiconEntries: context.LexiconEntries,
             maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
-                settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
+                settings.Value.Intelligence.LexiconMaxInjectedBytes),
             sessionAttachmentsIndex: context.SessionAttachmentsIndex,
             maxIndexItems: context.MaxIndexItems,
             maxIndexBytes: context.MaxIndexBytes);

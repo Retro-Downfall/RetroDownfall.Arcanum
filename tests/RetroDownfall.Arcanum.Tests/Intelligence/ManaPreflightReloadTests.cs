@@ -8,25 +8,36 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class ManaPreflightReloadTests
 {
 
+    // W3.3 Fix 6: ManaPreflight's LRU capacity is reloaded on IOptionsMonitor.OnChange
+    // by swapping the single BoundedLruCache field atomically. A PUT /api/config that
+    // changes Grimoire.MaxMessagesPerConversationLoad must take effect without a restart.
     [Fact]
-    public void OnChange_PreservesCodeOwnedMessageTokenCacheCapacity()
+    public void OnChange_ResizesMessageTokenCache()
     {
-        ArcanumSettings initial = new();
+
+        ArcanumSettings initial = new()
+        {
+
+            Grimoire = new GrimoireSettings { MaxMessagesPerConversationLoad = 100 },
+
+        };
+
         ArcanumSettings reloaded = new()
         {
-            Features = new FeatureSettings { ArchiveSearch = false },
+
+            Grimoire = new GrimoireSettings { MaxMessagesPerConversationLoad = 250 },
+
         };
-        int expectedCapacity = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
-            ArcanumRuntimeDefaults.Grimoire.MaxMessagesPerConversationLoad);
+
         TriggerableOptionsMonitor<ArcanumSettings> monitor = new(initial);
 
         ManaPreflight preflight = new(monitor);
 
-        Assert.Equal(expectedCapacity, GetMessageTokenCacheCapacity(preflight));
+        Assert.Equal(100, GetMessageTokenCacheCapacity(preflight));
 
         monitor.TriggerChange(reloaded);
 
-        Assert.Equal(expectedCapacity, GetMessageTokenCacheCapacity(preflight));
+        Assert.Equal(250, GetMessageTokenCacheCapacity(preflight));
 
     }
 

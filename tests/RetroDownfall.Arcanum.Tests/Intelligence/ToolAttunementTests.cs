@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -77,6 +78,30 @@ public sealed class ToolAttunementTests
 
         Assert.Equal("search_workspace", allowed.Name);
         Assert.Equal(["apply_patch", "workspace_check"], result.Excluded);
+    }
+
+    [Fact]
+    public void BuiltInToolCatalog_DefinesExactlyThreeAttunementExemptions()
+    {
+        Assert.True(
+            ArcanumBuiltInToolNames.IsAttunementExempt(
+                ArcanumBuiltInToolNames.GetLocalSystemTime));
+        Assert.True(
+            ArcanumBuiltInToolNames.IsAttunementExempt(
+                ArcanumBuiltInToolNames.GetArcanumSystemInfo));
+        Assert.True(
+            ArcanumBuiltInToolNames.IsAttunementExempt(
+                ArcanumBuiltInToolNames.RunSpellScript));
+
+        Assert.False(
+            ArcanumBuiltInToolNames.IsAttunementExempt(
+                ArcanumBuiltInToolNames.BrowseWeb));
+        Assert.True(
+            ArcanumBuiltInToolNames.IsKnown(
+                ArcanumBuiltInToolNames.BrowseWeb));
+        Assert.False(
+            ArcanumBuiltInToolNames.IsAttunementExempt(
+                "some_other_tool"));
     }
 
     private static AIFunction CreateTool(string name)

@@ -6,12 +6,119 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 public sealed class InternalCodingToolSettingsFingerprintTests
 {
     [Fact]
-    public void Fingerprint_null_fallback_matches_resolved_code_owned_defaults()
+    public void Fingerprint_changes_for_every_scalar_tool_surface_setting()
     {
-        Assert.Equal(
-            InternalCodingToolSettingsFingerprint.Build(null),
+        string baseline =
             InternalCodingToolSettingsFingerprint.Build(
-                new ArcanumSettings().ResolveCodingTools()));
+                new CodingToolsSettings());
+        (string Name, Action<CodingToolsSettings> Mutate)[] mutations =
+        [
+            ("search.maxPatternChars", value =>
+                value.Search.MaxPatternChars++),
+            ("search.regexTimeoutMilliseconds", value =>
+                value.Search.RegexTimeoutMilliseconds++),
+            ("search.maxElapsedMilliseconds", value =>
+                value.Search.MaxElapsedMilliseconds++),
+            ("search.maxFiles", value =>
+                value.Search.MaxFiles++),
+            ("search.maxBytes", value =>
+                value.Search.MaxBytes++),
+            ("search.maxTraversalSteps", value =>
+                value.Search.MaxTraversalSteps++),
+            ("search.maxMatches", value =>
+                value.Search.MaxMatches++),
+            ("search.maxPreviewChars", value =>
+                value.Search.MaxPreviewChars++),
+            ("patch.maxPatchBytes", value =>
+                value.Patch.MaxPatchBytes++),
+            ("patch.maxInputBytesPerFile", value =>
+                value.Patch.MaxInputBytesPerFile++),
+            ("patch.maxTotalInputBytes", value =>
+                value.Patch.MaxTotalInputBytes++),
+            ("patch.maxOutputBytesPerFile", value =>
+                value.Patch.MaxOutputBytesPerFile++),
+            ("patch.maxTotalOutputBytes", value =>
+                value.Patch.MaxTotalOutputBytes++),
+            ("patch.maxStagingBytesPerFile", value =>
+                value.Patch.MaxStagingBytesPerFile++),
+            ("patch.maxTotalStagingBytes", value =>
+                value.Patch.MaxTotalStagingBytes++),
+            ("patch.maxElapsedMilliseconds", value =>
+                value.Patch.MaxElapsedMilliseconds++),
+            ("patch.rollbackReserveMilliseconds", value =>
+                value.Patch.RollbackReserveMilliseconds++),
+            ("patch.maxFiles", value =>
+                value.Patch.MaxFiles++),
+            ("patch.maxHunks", value =>
+                value.Patch.MaxHunks++),
+            ("patch.maxLinesPerHunk", value =>
+                value.Patch.MaxLinesPerHunk++),
+            ("patch.fuzzyMatchWindowLines", value =>
+                value.Patch.FuzzyMatchWindowLines++),
+            ("patch.maxResultItems", value =>
+                value.Patch.MaxResultItems++),
+            ("workspaceCheck.enabled", value =>
+                value.WorkspaceCheck.Enabled =
+                    !value.WorkspaceCheck.Enabled),
+            ("workspaceCheck.timeoutSeconds", value =>
+                value.WorkspaceCheck.TimeoutSeconds++),
+            ("workspaceCheck.maxCustomProfiles", value =>
+                value.WorkspaceCheck.MaxCustomProfiles++),
+            ("workspaceCheck.maxFixedArgumentsPerProfile", value =>
+                value.WorkspaceCheck
+                    .MaxFixedArgumentsPerProfile++),
+            ("workspaceCheck.maxArgumentTokenChars", value =>
+                value.WorkspaceCheck.MaxArgumentTokenChars++),
+            ("workspaceCheck.maxOptionsPerProfile", value =>
+                value.WorkspaceCheck.MaxOptionsPerProfile++),
+            ("workspaceCheck.maxAllowedValuesPerOption", value =>
+                value.WorkspaceCheck
+                    .MaxAllowedValuesPerOption++),
+            ("workspaceCheck.maxDiagnostics", value =>
+                value.WorkspaceCheck.MaxDiagnostics++),
+            ("workspaceCheck.maxOutputBytes", value =>
+                value.WorkspaceCheck.MaxOutputBytes++),
+            ("workspaceCheck.executableCatalog.dotNet.path", value =>
+                value.WorkspaceCheck.ExecutableCatalog.DotNet.Path =
+                    "/trusted/dotnet"),
+        ];
+
+        foreach ((string name, Action<CodingToolsSettings> mutate)
+                 in mutations)
+        {
+            CodingToolsSettings changed = new();
+            mutate(changed);
+
+            Assert.NotEqual(
+                baseline,
+                InternalCodingToolSettingsFingerprint.Build(
+                    changed));
+        }
+    }
+
+    [Fact]
+    public void Fingerprint_uses_normalized_workspace_patch_deadline_relation()
+    {
+        CodingToolsSettings first = new()
+        {
+            Patch = new WorkspacePatchSettings
+            {
+                MaxElapsedMilliseconds = 100,
+                RollbackReserveMilliseconds = 50_000,
+            },
+        };
+        CodingToolsSettings second = new()
+        {
+            Patch = new WorkspacePatchSettings
+            {
+                MaxElapsedMilliseconds = 100,
+                RollbackReserveMilliseconds = 60_000,
+            },
+        };
+
+        Assert.Equal(
+            InternalCodingToolSettingsFingerprint.Build(first),
+            InternalCodingToolSettingsFingerprint.Build(second));
     }
 
     [Fact]
@@ -57,55 +164,52 @@ public sealed class InternalCodingToolSettingsFingerprintTests
         string profileId,
         string optionId,
         string valueId) =>
-        new ArcanumSettings
+        new()
         {
-            Integrations = new IntegrationSettings
+            WorkspaceCheck = new WorkspaceCheckSettings
             {
-                WorkspaceChecks = new WorkspaceCheckIntegrationSettings
-                {
-                    CustomProfiles =
-                        new Dictionary<
-                            string,
-                            WorkspaceCheckProfileSettings>(
-                            StringComparer.OrdinalIgnoreCase)
-                        {
-                            [profileId] =
-                                new WorkspaceCheckProfileSettings
-                                {
-                                    ExecutableId = "dotnet",
-                                    Kind = WorkspaceCheckKind.Build,
-                                    Parser =
-                                        WorkspaceCheckDiagnosticParserKind
-                                            .MsBuild,
-                                    FixedArguments =
-                                        ["build", "--no-restore"],
-                                    Options =
-                                        new Dictionary<
-                                            string,
-                                            WorkspaceCheckProfileOptionSettings>(
-                                            StringComparer.OrdinalIgnoreCase)
-                                        {
-                                            [optionId] =
-                                                new WorkspaceCheckProfileOptionSettings
-                                                {
-                                                    AllowedValues =
-                                                        new Dictionary<
-                                                            string,
-                                                            string[]>(
-                                                            StringComparer
-                                                                .OrdinalIgnoreCase)
-                                                        {
-                                                            [valueId] =
-                                                            [
-                                                                "--configuration",
-                                                                "Release",
-                                                            ],
-                                                        },
-                                                },
-                                        },
-                                },
-                        },
-                },
+                CustomProfiles =
+                    new Dictionary<
+                        string,
+                        WorkspaceCheckProfileSettings>(
+                        StringComparer.OrdinalIgnoreCase)
+                    {
+                        [profileId] =
+                            new WorkspaceCheckProfileSettings
+                            {
+                                ExecutableId = "dotnet",
+                                Kind = WorkspaceCheckKind.Build,
+                                Parser =
+                                    WorkspaceCheckDiagnosticParserKind
+                                        .MsBuild,
+                                FixedArguments =
+                                    ["build", "--no-restore"],
+                                Options =
+                                    new Dictionary<
+                                        string,
+                                        WorkspaceCheckProfileOptionSettings>(
+                                        StringComparer.OrdinalIgnoreCase)
+                                    {
+                                        [optionId] =
+                                            new WorkspaceCheckProfileOptionSettings
+                                            {
+                                                AllowedValues =
+                                                    new Dictionary<
+                                                        string,
+                                                        string[]>(
+                                                        StringComparer
+                                                            .OrdinalIgnoreCase)
+                                                    {
+                                                        [valueId] =
+                                                        [
+                                                            "--configuration",
+                                                            "Release",
+                                                        ],
+                                                    },
+                                            },
+                                    },
+                            },
+                    },
             },
-        }.ResolveCodingTools();
+        };
 }

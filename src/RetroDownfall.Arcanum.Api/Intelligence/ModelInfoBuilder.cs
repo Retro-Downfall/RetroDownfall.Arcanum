@@ -39,7 +39,7 @@ internal static class ModelInfoBuilder
                     provider.ContextWindowLimit,
                     model.SupportsVision,
                     model.Reasoning,
-                    ModelCapabilityCatalog.ResolvePromptCaching(provider, model.Name)));
+                    model.PromptCaching ?? provider.PromptCaching));
 
             }
 

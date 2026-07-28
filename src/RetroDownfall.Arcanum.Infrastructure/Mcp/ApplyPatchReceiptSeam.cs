@@ -310,7 +310,4 @@ internal sealed record PendingApplyPatchReceipt(
     internal Task<WorkspaceArtifactCleanupResult> MarkIrreversibleAsync(
         CancellationToken cancellationToken) =>
         Transaction.MarkIrreversibleAsync(cancellationToken);
-
-    internal Task AbandonAsync() =>
-        Transaction.AbandonAsync();
 }

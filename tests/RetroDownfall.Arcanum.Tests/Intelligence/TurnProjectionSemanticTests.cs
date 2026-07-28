@@ -1,8 +1,10 @@
 using System.Threading.Channels;
+using System.Text.Json;
 
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -141,6 +143,37 @@ public sealed class TurnProjectionSemanticTests
                 Assert.Equal("synthetic result", result.Data);
                 Assert.Equal("call-1", result.ToolCall?.CallId);
             });
+    }
+
+    [Fact]
+    public void IntelligenceEventProjection_DeniedTool_PreservesNonWireOutcome()
+    {
+        ToolInvocationCompleted completed = new(
+            Correlation(1),
+            "call-denied",
+            "execute_command",
+            "{}",
+            "blocked",
+            Failed: false,
+            Denied: true,
+            ToleratedFailure: false,
+            PublicErrorText: null,
+            Duration: TimeSpan.Zero,
+            AttachmentPostProcessed: false);
+
+        IntelligenceEvent result = Assert.Single(
+            IntelligenceEventProjection.Map(completed));
+
+        Assert.True(result.ToolDenied);
+
+        string json = JsonSerializer.Serialize(
+            result,
+            ArcanumJsonContext.Default.IntelligenceEvent);
+
+        Assert.DoesNotContain(
+            "toolDenied",
+            json,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

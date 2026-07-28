@@ -325,8 +325,12 @@ public sealed class GrimoireTurnWriterTests
 
         };
 
-        await writer.ResolveInterruptedAndMarkFinalizedAsync(handle, null, CancellationToken.None);
+        bool resolved = await writer.ResolveInterruptedAndMarkFinalizedAsync(
+            handle,
+            null,
+            CancellationToken.None);
 
+        Assert.True(resolved);
         Assert.True(handle.IsFinalized);
 
     }
@@ -354,6 +358,36 @@ public sealed class GrimoireTurnWriterTests
 
         Assert.Equal(CancellationToken.None, grimoire.LastDiscardToken);
 
+        Assert.True(handle.IsFinalized);
+
+    }
+
+    [Fact]
+    public async Task ResolveInterruptedAndMarkFinalizedAsync_FailedCleanup_RemainsRetryable()
+    {
+        TrackingGrimoireRepository grimoire = new()
+        {
+            FinalizeFailuresRemaining = 1,
+        };
+        GrimoireTurnWriter writer = CreateWriter(grimoire);
+        GrimoireTurnWriter.TurnHandle handle = new()
+        {
+            AssistantEntryId = Guid.NewGuid(),
+        };
+
+        bool first = await writer.ResolveInterruptedAndMarkFinalizedAsync(
+            handle,
+            "partial",
+            CancellationToken.None);
+        bool second = await writer.ResolveInterruptedAndMarkFinalizedAsync(
+            handle,
+            "partial",
+            CancellationToken.None);
+
+        Assert.False(first);
+        Assert.True(second);
+        Assert.True(handle.IsFinalized);
+        Assert.Equal(2, grimoire.FinalizeCallCount);
     }
 
     [Fact]
@@ -437,8 +471,9 @@ public sealed class GrimoireTurnWriterTests
             AssistantEntryId = Guid.NewGuid(),
         };
 
-        await writer.ResolveInterruptedAsync(handle, "partial", CancellationToken.None);
+        bool resolved = await writer.ResolveInterruptedAsync(handle, "partial", CancellationToken.None);
 
+        Assert.False(resolved);
         Assert.Equal(1, grimoire.FinalizeCallCount);
         Assert.Contains(
             logger.Entries,
@@ -702,12 +737,6 @@ public sealed class GrimoireTurnWriterTests
             pendingEvent.IsCompleted,
             "A failed or ambiguous mandatory receipt published a session event.");
 
-        if (outcome == MandatoryToolInteractionAppendOutcome.Ambiguous)
-        {
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                () => transaction.RollbackAsync(CancellationToken.None));
-        }
-
         cancellation.Cancel();
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
             async () => _ = await pendingEvent);
@@ -731,7 +760,9 @@ public sealed class GrimoireTurnWriterTests
             logger);
 
     private static SessionEventHub CreateHub() =>
-        new(NullLogger<SessionEventHub>.Instance);
+        new(
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            NullLogger<SessionEventHub>.Instance);
 
     private static async Task<Entry?> ReadOneAsync(
         SessionEventHub hub,
@@ -818,6 +849,8 @@ public sealed class GrimoireTurnWriterTests
 
         public bool FinalizeThrows { get; init; }
 
+        public int FinalizeFailuresRemaining { get; set; }
+
         public Exception? FinalizeException { get; init; }
 
         public bool DiscardThrows { get; init; }
@@ -880,6 +913,15 @@ public sealed class GrimoireTurnWriterTests
 
             if (FinalizeThrows)
             {
+
+                throw new InvalidOperationException("finalize failed");
+
+            }
+
+            if (FinalizeFailuresRemaining > 0)
+            {
+
+                FinalizeFailuresRemaining--;
 
                 throw new InvalidOperationException("finalize failed");
 

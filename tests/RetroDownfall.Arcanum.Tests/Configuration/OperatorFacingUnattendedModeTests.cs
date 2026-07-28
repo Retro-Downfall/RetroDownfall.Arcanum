@@ -6,9 +6,9 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 public sealed class OperatorFacingUnattendedModeTests
 {
     [Fact]
-    public void WardPolicySettings_UnattendedMode_defaults_to_false()
+    public void WardSettings_UnattendedMode_defaults_to_false()
     {
-        Assert.False(new WardPolicySettings().UnattendedMode);
+        Assert.False(new WardSettings().UnattendedMode);
     }
 
     [Theory]
@@ -18,7 +18,7 @@ public sealed class OperatorFacingUnattendedModeTests
     [InlineData(true, true, true)]
     public void Resolve_cli_flag_or_host_setting(bool cliFlag, bool hostSetting, bool expected)
     {
-        WardPolicySettings ward = new() { UnattendedMode = hostSetting };
+        WardSettings ward = new() { UnattendedMode = hostSetting };
 
         Assert.Equal(expected, OperatorFacingUnattendedMode.Resolve(cliFlag, ward));
     }

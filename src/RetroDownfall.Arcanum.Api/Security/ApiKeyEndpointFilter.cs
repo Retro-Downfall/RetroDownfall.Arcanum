@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -12,14 +13,15 @@ namespace RetroDownfall.Arcanum.Api.Security;
 
 public sealed class ApiKeyEndpointFilter(
     ISecretStore secretStore,
-    IApiKeyDigestCache digestCache) : IEndpointFilter
+    IApiKeyDigestCache digestCache,
+    IOptionsMonitor<ArcanumSettings> arcOptions) : IEndpointFilter
 {
     private const int Sha256Bytes = 32;
 
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
         int maxHeaderUtf16 = ArcanumSettingClamps.MaxApiKeyHeaderUtf16Chars(
-            ArcanumRuntimeDefaults.SecurityMaxApiKeyHeaderUtf16Chars);
+            arcOptions.CurrentValue.Security.MaxApiKeyHeaderUtf16Chars);
 
         IHeaderDictionary headers = context.HttpContext.Request.Headers;
 
@@ -146,7 +148,7 @@ public sealed class ApiKeyEndpointFilter(
         CryptographicOperations.ZeroMemory(expectedUtf8);
 
         int ttlSeconds = ArcanumSettingClamps.ApiKeyCacheTtlSeconds(
-            ArcanumRuntimeDefaults.SecurityApiKeyCacheTtlSeconds);
+            arcOptions.CurrentValue.Security.ApiKeyCacheTtlSeconds);
 
         digestCache.StoreDigest(digest, ttlSeconds);
 

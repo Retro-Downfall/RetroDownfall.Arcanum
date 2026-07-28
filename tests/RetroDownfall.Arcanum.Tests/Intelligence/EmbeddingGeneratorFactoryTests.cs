@@ -1,28 +1,21 @@
+using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-[Collection("ProcessEnvironment")]
-public sealed class EmbeddingGeneratorFactoryTests : IDisposable
+public sealed class EmbeddingGeneratorFactoryTests
 {
-    private const string CredentialVariable = "ARCANUM_TEST_EMBEDDING_PROVIDER_KEY";
-    private readonly string? _originalCredential;
 
-    public EmbeddingGeneratorFactoryTests()
-    {
-        _originalCredential =
-            System.Environment.GetEnvironmentVariable(CredentialVariable);
-        System.Environment.SetEnvironmentVariable(CredentialVariable, null);
-    }
     [Fact]
     public async Task ResolveGeneratorAsync_EmbeddingsDisabled_Throws()
     {
 
         EmbeddingGeneratorFactory factory = CreateFactory(new ArcanumSettings
         {
-            Features = new FeatureSettings { Embeddings = false },
+            Embeddings = new EmbeddingSettings { Enabled = false },
         });
 
         InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -38,11 +31,7 @@ public sealed class EmbeddingGeneratorFactoryTests : IDisposable
 
         EmbeddingGeneratorFactory factory = CreateFactory(new ArcanumSettings
         {
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings { Provider = "local" },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "local" },
         });
 
         await Assert.ThrowsAsync<InvalidOperationException>(
@@ -56,15 +45,7 @@ public sealed class EmbeddingGeneratorFactoryTests : IDisposable
 
         ArcanumSettings settings = new()
         {
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "missing",
-                    Model = "nomic-embed-text",
-                },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "missing", Model = "nomic-embed-text" },
             Providers =
             [
                 new ProviderSettings { Name = "local", Type = AiProviderKind.OpenAICompatible, Endpoint = "http://127.0.0.1:11434/v1", Models = ["nomic-embed-text"] },
@@ -88,15 +69,7 @@ public sealed class EmbeddingGeneratorFactoryTests : IDisposable
         // OpenAI-compatible EmbeddingClient path as any other AiProviderKind.OpenAICompatible provider.
         ArcanumSettings settings = new()
         {
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "local",
-                    Model = "nomic-embed-text",
-                },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "local", Model = "nomic-embed-text" },
             Providers =
             [
                 new ProviderSettings { Name = "local", Type = AiProviderKind.OpenAICompatible, Endpoint = "http://127.0.0.1:11434/v1", Models = ["nomic-embed-text"] },
@@ -114,22 +87,13 @@ public sealed class EmbeddingGeneratorFactoryTests : IDisposable
     [Fact]
     public async Task ResolveGeneratorAsync_OpenAiCompatibleProvider_ReturnsLease()
     {
-        System.Environment.SetEnvironmentVariable(CredentialVariable, "sk-test");
 
         ArcanumSettings settings = new()
         {
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "compat",
-                    Model = "text-embedding-3-small",
-                },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "compat", Model = "text-embedding-3-small" },
             Providers =
             [
-                new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", CredentialEnvironmentVariable = CredentialVariable, Models = ["text-embedding-3-small"] },
+                new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", ApiKey = "sk-test", Models = ["text-embedding-3-small"] },
             ],
         };
 
@@ -147,15 +111,7 @@ public sealed class EmbeddingGeneratorFactoryTests : IDisposable
 
         ArcanumSettings settings = new()
         {
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "compat",
-                    Model = "text-embedding-3-small",
-                },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "compat", Model = "text-embedding-3-small" },
             Providers =
             [
                 new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", Models = ["text-embedding-3-small"] },
@@ -178,15 +134,7 @@ public sealed class EmbeddingGeneratorFactoryTests : IDisposable
 
         MutableOptionsMonitor<ArcanumSettings> monitor = new(new ArcanumSettings
         {
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "compat",
-                    Model = "text-embedding-3-small",
-                },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "compat", Model = "text-embedding-3-small" },
             Providers =
             [
                 new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", Models = ["text-embedding-3-small"] },
@@ -215,24 +163,15 @@ public sealed class EmbeddingGeneratorFactoryTests : IDisposable
     }
 
     [Fact]
-    public async Task ResolveGeneratorAsync_EnvironmentCredentialRotation_BuildsNewGenerator()
+    public async Task ResolveGeneratorAsync_ApiKeyChangedViaHotReload_BuildsNewGenerator()
     {
-        System.Environment.SetEnvironmentVariable(CredentialVariable, "sk-old");
 
         MutableOptionsMonitor<ArcanumSettings> monitor = new(new ArcanumSettings
         {
-            Features = new FeatureSettings { Embeddings = true },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "compat",
-                    Model = "text-embedding-3-small",
-                },
-            },
+            Embeddings = new EmbeddingSettings { Enabled = true, Provider = "compat", Model = "text-embedding-3-small" },
             Providers =
             [
-                new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", CredentialEnvironmentVariable = CredentialVariable, Models = ["text-embedding-3-small"] },
+                new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", ApiKey = "sk-old", Models = ["text-embedding-3-small"] },
             ],
         });
 
@@ -240,8 +179,14 @@ public sealed class EmbeddingGeneratorFactoryTests : IDisposable
 
         using EmbeddingGeneratorLease first = await factory.ResolveGeneratorAsync(CancellationToken.None);
 
-        // The environment value rotates without copying secret material into hot-reloaded settings.
-        System.Environment.SetEnvironmentVariable(CredentialVariable, "sk-new");
+        // Hot-reload: the operator rotates the API key for the same provider name/model/endpoint.
+        monitor.CurrentValue = monitor.CurrentValue with
+        {
+            Providers =
+            [
+                new ProviderSettings { Name = "compat", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", ApiKey = "sk-new", Models = ["text-embedding-3-small"] },
+            ],
+        };
 
         using EmbeddingGeneratorLease second = await factory.ResolveGeneratorAsync(CancellationToken.None);
 
@@ -259,17 +204,16 @@ public sealed class EmbeddingGeneratorFactoryTests : IDisposable
     private static EmbeddingGeneratorFactory CreateFactoryWithMonitor(
         Microsoft.Extensions.Options.IOptionsMonitor<ArcanumSettings> monitor)
     {
+
+        IDataProtectionProvider protection = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector secretProtector = new(protection);
+
         return new EmbeddingGeneratorFactory(
             new FakeHttpClientFactory(),
-            monitor);
+            monitor,
+            secretProtector);
 
-    }
-
-    public void Dispose()
-    {
-        System.Environment.SetEnvironmentVariable(
-            CredentialVariable,
-            _originalCredential);
     }
 
     /// <summary>Simulates <c>IOptionsMonitor&lt;T&gt;.CurrentValue</c> changing across calls (hot-reload), unlike the fixed-snapshot <see cref="TestOptionsMonitor{T}"/>.</summary>

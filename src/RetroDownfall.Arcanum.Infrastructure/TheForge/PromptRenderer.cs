@@ -75,8 +75,7 @@ public sealed partial class PromptRenderer
     }
 
     private int ResolveMaxParameterValueChars() =>
-        ArcanumSettingClamps.MaxParameterValueChars(
-            ArcanumRuntimeDefaults.Prompts.MaxParameterValueChars);
+        ArcanumSettingClamps.MaxParameterValueChars(_settings.CurrentValue.Prompts.MaxParameterValueChars);
 
     private static Result<Dictionary<string, string>> ValidateParameters(
         string? parameterSchemaJson,

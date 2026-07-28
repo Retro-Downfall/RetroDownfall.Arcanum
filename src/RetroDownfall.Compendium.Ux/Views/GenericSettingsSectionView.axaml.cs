@@ -131,7 +131,6 @@ public partial class GenericSettingsSectionView : UserControl
             SettingKind.Int or SettingKind.Long or SettingKind.Float => CreateStepper(field, root),
             SettingKind.Enum => CreatePicker(field, root),
             SettingKind.StringArray => CreateChips(field),
-            SettingKind.Dictionary => CreateDictionaryEditor(field),
             SettingKind.Color => CreateColor(field, root),
             SettingKind.Secret => CreateEntry(field, root, isPassword: true),
             _ => CreateEntry(field, root, isPassword: false),
@@ -261,42 +260,6 @@ public partial class GenericSettingsSectionView : UserControl
         });
 
         return entry;
-
-    }
-
-    private static Control CreateDictionaryEditor(GenericSettingFieldViewModel field)
-    {
-
-        TextBox editor = new()
-        {
-            AcceptsReturn = true,
-            MinHeight = 180,
-            TextWrapping = TextWrapping.NoWrap,
-            DataContext = field,
-        };
-
-        editor.Bind(
-            TextBox.TextProperty,
-            new Binding(nameof(GenericSettingFieldViewModel.StringValue)));
-
-        return new StackPanel
-        {
-            Spacing = 4,
-            Children =
-            {
-                new TextBlock
-                {
-                    Text = field.Descriptor.Label,
-                    FontWeight = FontWeight.SemiBold,
-                },
-                new TextBlock
-                {
-                    Text = field.Descriptor.Description,
-                    TextWrapping = TextWrapping.Wrap,
-                },
-                editor,
-            },
-        };
 
     }
 

@@ -18,7 +18,7 @@ public sealed class BudgetMonitorTests
     public async Task CheckAsync_Disabled_ReturnsSuccessWithoutCheckingSpend()
     {
 
-        BudgetPolicySettings budget = new() { Enabled = false, DailyLimitUsd = 10m };
+        BudgetSettings budget = new() { Enabled = false, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 999m };
 
@@ -29,7 +29,7 @@ public sealed class BudgetMonitorTests
         BudgetMonitor monitor = new(
             CreateScopeFactory(grimoire, alerts),
             commLink,
-            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Budget = budget }),
             NullLogger<BudgetMonitor>.Instance);
 
         Result result = await monitor.CheckAsync(CancellationToken.None);
@@ -46,14 +46,14 @@ public sealed class BudgetMonitorTests
     public async Task CheckAsync_ZeroLimit_ReturnsSuccess()
     {
 
-        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 0m };
+        BudgetSettings budget = new() { Enabled = true, DailyLimitUsd = 0m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 5m };
 
         BudgetMonitor monitor = new(
             CreateScopeFactory(grimoire, new FakeBudgetAlertRepository()),
             new FakeCommLinkDispatcher(),
-            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Budget = budget }),
             NullLogger<BudgetMonitor>.Instance);
 
         Result result = await monitor.CheckAsync(CancellationToken.None);
@@ -68,7 +68,7 @@ public sealed class BudgetMonitorTests
     public async Task CheckAsync_SpendAtLimit_ReturnsExceededFailure()
     {
 
-        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
+        BudgetSettings budget = new() { Enabled = true, DailyLimitUsd = 10m, AlertThresholdPercent = 80 };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 10m };
 
@@ -77,7 +77,7 @@ public sealed class BudgetMonitorTests
         BudgetMonitor monitor = new(
             CreateScopeFactory(grimoire, new FakeBudgetAlertRepository()),
             commLink,
-            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Budget = budget }),
             NullLogger<BudgetMonitor>.Instance);
 
         Result result = await monitor.CheckAsync(CancellationToken.None);
@@ -94,14 +94,14 @@ public sealed class BudgetMonitorTests
     public async Task CheckAsync_SpendAboveLimit_ReturnsExceededFailure()
     {
 
-        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
+        BudgetSettings budget = new() { Enabled = true, DailyLimitUsd = 10m, AlertThresholdPercent = 80 };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 15m };
 
         BudgetMonitor monitor = new(
             CreateScopeFactory(grimoire, new FakeBudgetAlertRepository()),
             new FakeCommLinkDispatcher(),
-            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Budget = budget }),
             NullLogger<BudgetMonitor>.Instance);
 
         Result result = await monitor.CheckAsync(CancellationToken.None);
@@ -116,7 +116,7 @@ public sealed class BudgetMonitorTests
     public async Task CheckAsync_SpendAboveAlertThreshold_DispatchesWarningAndRecords()
     {
 
-        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
+        BudgetSettings budget = new() { Enabled = true, DailyLimitUsd = 10m, AlertThresholdPercent = 80 };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 8m };
 
@@ -127,7 +127,7 @@ public sealed class BudgetMonitorTests
         BudgetMonitor monitor = new(
             CreateScopeFactory(grimoire, alerts),
             commLink,
-            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Budget = budget }),
             NullLogger<BudgetMonitor>.Instance);
 
         Result result = await monitor.CheckAsync(CancellationToken.None);
@@ -146,7 +146,7 @@ public sealed class BudgetMonitorTests
     public async Task CheckAsync_AlreadyAlertedToday_DoesNotRedispatch()
     {
 
-        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
+        BudgetSettings budget = new() { Enabled = true, DailyLimitUsd = 10m, AlertThresholdPercent = 80 };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 8m };
 
@@ -159,7 +159,7 @@ public sealed class BudgetMonitorTests
         BudgetMonitor monitor = new(
             CreateScopeFactory(grimoire, alerts),
             commLink,
-            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Budget = budget }),
             NullLogger<BudgetMonitor>.Instance);
 
         Result result = await monitor.CheckAsync(CancellationToken.None);
@@ -174,7 +174,7 @@ public sealed class BudgetMonitorTests
     public async Task CheckAsync_SpendBelowThreshold_ReturnsSuccessWithoutAlert()
     {
 
-        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
+        BudgetSettings budget = new() { Enabled = true, DailyLimitUsd = 10m, AlertThresholdPercent = 80 };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 5m };
 
@@ -185,7 +185,7 @@ public sealed class BudgetMonitorTests
         BudgetMonitor monitor = new(
             CreateScopeFactory(grimoire, alerts),
             commLink,
-            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Budget = budget }),
             NullLogger<BudgetMonitor>.Instance);
 
         Result result = await monitor.CheckAsync(CancellationToken.None);
@@ -197,15 +197,6 @@ public sealed class BudgetMonitorTests
         Assert.Empty(alerts.AlertedThresholdsToday);
 
     }
-
-    private static ArcanumSettings Settings(BudgetPolicySettings budget) =>
-        new()
-        {
-            Cost = new CostSettings
-            {
-                Budget = budget,
-            },
-        };
 
     private static IServiceScopeFactory CreateScopeFactory(
         IGrimoireRepository grimoire,

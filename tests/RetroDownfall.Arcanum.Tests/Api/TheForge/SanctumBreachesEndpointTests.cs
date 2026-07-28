@@ -178,7 +178,8 @@ public sealed class SanctumBreachesEndpointTests
             UpdatedAt = now,
         };
 
-        Campaign saved = await repository.AddAsync(campaign, CancellationToken.None);
+        Campaign saved = (await repository
+            .AddAsync(campaign, CancellationToken.None)).Value;
 
         return saved.Id;
 

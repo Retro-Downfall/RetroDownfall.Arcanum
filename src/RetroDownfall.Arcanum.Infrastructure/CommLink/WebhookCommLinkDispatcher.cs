@@ -22,17 +22,14 @@ internal sealed class WebhookCommLinkDispatcher(
         CancellationToken cancellationToken = default)
     {
 
-        CommLinkSettings commLinkSettings = optionsMonitor.CurrentValue.ResolveCommLink();
+        CommLinkSettings? commLinkSettings = optionsMonitor.CurrentValue.CommLink;
 
-        // Resolve the secret-bearing URL only at the dispatch boundary. The URL never enters the
-        // bindable configuration graph and is never included in logs or returned errors.
-        string? url = EnvironmentCredentialResolver.ResolveCommLinkWebhookUrl(
-            commLinkSettings);
+        string? url = commLinkSettings?.WebhookUrl;
 
         if (string.IsNullOrWhiteSpace(url))
         {
 
-            logger.LogWarning("Comm Link webhook URL environment reference is unset; alert was not sent.");
+            logger.LogWarning("Comm Link webhook URL is not configured; alert was not sent.");
 
             return Result<CommLinkDeliveryResult>.Success(
                 new CommLinkDeliveryResult(CommLinkDeliveryStatus.Suppressed));
@@ -49,13 +46,13 @@ internal sealed class WebhookCommLinkDispatcher(
 
         }
 
-        string[] allowedSchemes = commLinkSettings.AllowedSchemes ?? ["https"];
+        string[] allowedSchemes = commLinkSettings?.AllowedSchemes ?? ["https"];
 
-        if (commLinkSettings.AllowedHosts.Length > 0 && !IsHostAllowed(endpoint.Host, commLinkSettings.AllowedHosts))
+        if (commLinkSettings?.AllowedHosts.Length > 0 && !IsHostAllowed(endpoint.Host, commLinkSettings.AllowedHosts))
         {
 
             logger.LogWarning(
-                "Comm Link webhook URL host '{Host}' is not in Arcanum:Integrations:CommLink:AllowedHosts; alert was not sent.",
+                "Comm Link webhook URL host '{Host}' is not in Arcanum:CommLink:AllowedHosts; alert was not sent.",
                 endpoint.Host);
 
             return Result<CommLinkDeliveryResult>.Success(
@@ -67,7 +64,7 @@ internal sealed class WebhookCommLinkDispatcher(
         {
 
             logger.LogWarning(
-                "Comm Link webhook URL scheme '{Scheme}' is not in Arcanum:Integrations:CommLink:AllowedSchemes; alert was not sent.",
+                "Comm Link webhook URL scheme '{Scheme}' is not in Arcanum:CommLink:AllowedSchemes; alert was not sent.",
                 endpoint.Scheme);
 
             return Result<CommLinkDeliveryResult>.Success(
@@ -133,10 +130,12 @@ internal sealed class WebhookCommLinkDispatcher(
             if (!response.IsSuccessStatusCode)
             {
 
+                string phrase = response.ReasonPhrase ?? string.Empty;
+
                 return Result<CommLinkDeliveryResult>.Failure(
                     new Error(
                         "CommLink.WebhookHttpError",
-                        $"Webhook returned HTTP {(int)response.StatusCode}."));
+                        $"Webhook returned HTTP {(int)response.StatusCode} {phrase}".Trim()));
 
             }
 
@@ -152,9 +151,9 @@ internal sealed class WebhookCommLinkDispatcher(
 
             // Log host only — never the full webhook URL (may contain path/query secrets).
             logger.LogWarning(
-                "Comm Link webhook POST failed for host {Host} ({FailureType}).",
-                endpoint.Host,
-                ex.GetType().Name);
+                ex,
+                "Comm Link webhook POST failed for host {Host}.",
+                endpoint.Host);
 
             return Result<CommLinkDeliveryResult>.Failure(
                 new Error(

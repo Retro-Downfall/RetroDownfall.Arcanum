@@ -16,6 +16,13 @@ internal static class ArtifactAttunement
 
         HashSet<string> allow = new(declaredTools, StringComparer.OrdinalIgnoreCase);
 
+        // Legacy declaredTools: ["use_commlink"] permits the internal canonical alert tool only —
+        // it does not broaden access to an unrelated external MCP tool that happens to share the alias.
+        if (allow.Contains("use_commlink"))
+        {
+            allow.Add("send_commlink_alert");
+        }
+
         var allowed = new List<AITool>(mcpTools.Count);
 
         var excluded = new List<string>();

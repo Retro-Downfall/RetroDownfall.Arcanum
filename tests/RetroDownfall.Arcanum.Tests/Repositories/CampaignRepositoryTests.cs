@@ -1,3 +1,6 @@
+using System.Diagnostics;
+
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -97,7 +100,11 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
             UpdatedAt = now,
         };
 
-        Campaign saved = await repository.AddAsync(campaign, CancellationToken.None);
+        Result<Campaign> addResult = await repository.AddAsync(campaign, CancellationToken.None);
+
+        Assert.True(addResult.IsSuccess, addResult.Error.Code);
+
+        Campaign saved = addResult.Value;
 
         Campaign? byId = await repository.GetByIdAsync(saved.Id, CancellationToken.None);
 
@@ -135,7 +142,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         Directory.CreateDirectory(secondDir);
 
-        Campaign first = await repository.AddAsync(
+        Campaign first = (await repository.AddAsync(
             new Campaign
             {
                 Id = Guid.NewGuid(),
@@ -147,9 +154,9 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
                 CreatedAt = now,
                 UpdatedAt = now,
             },
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
-        Campaign second = await repository.AddAsync(
+        Campaign second = (await repository.AddAsync(
             new Campaign
             {
                 Id = Guid.NewGuid(),
@@ -161,7 +168,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
                 CreatedAt = now,
                 UpdatedAt = now,
             },
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         ListPageResult<Campaign> page = await repository.ListAsync(typeFilter: null, limit: 10, cancellationToken: CancellationToken.None);
 
@@ -199,7 +206,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         Directory.CreateDirectory(campaignDir);
 
-        Campaign campaign = await repository.AddAsync(
+        Campaign campaign = (await repository.AddAsync(
             new Campaign
             {
                 Id = Guid.NewGuid(),
@@ -211,7 +218,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
                 CreatedAt = now,
                 UpdatedAt = now,
             },
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Guid sessionId = Guid.NewGuid();
 
@@ -241,12 +248,318 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
     }
 
-    private CampaignRepository CreateRepository()
+    [Fact]
+    public void AddAsync_contract_returns_result()
     {
+
+        Type returnType = typeof(ICampaignRepository)
+            .GetMethod(nameof(ICampaignRepository.AddAsync))!
+            .ReturnType;
+
+        Assert.Equal(typeof(Task<Result<Campaign>>), returnType);
+
+    }
+
+    [SkippableFact]
+    public async Task AddAsync_at_limit_returns_max_result()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CampaignRepository repository = CreateRepository(maxCampaigns: 10);
+
+        for (int i = 0; i < 10; i++)
+        {
+
+            Result<Campaign> seeded = await repository.AddAsync(
+                NewCampaign($"seed-{i}"),
+                CancellationToken.None);
+
+            Assert.True(seeded.IsSuccess, seeded.Error.Code);
+
+        }
+
+        Result<Campaign> result = await repository.AddAsync(
+            NewCampaign("over-limit"),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Campaign.MaxReached, result.Error.Code);
+
+        Assert.Equal(10, await repository.CountAsync(CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task AddAsync_two_contexts_at_max_minus_one_only_one_succeeds()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const int maxCampaigns = 10;
+
+        CampaignRepository seedRepository = CreateRepository(maxCampaigns: maxCampaigns);
+
+        for (int i = 0; i < maxCampaigns - 1; i++)
+        {
+
+            Result<Campaign> seeded = await seedRepository.AddAsync(
+                NewCampaign($"concurrent-seed-{i}"),
+                CancellationToken.None);
+
+            Assert.True(seeded.IsSuccess, seeded.Error.Code);
+
+        }
+
+        await using ArcanumDbContext firstContext = _fixture.CreateContext(_dbPath);
+
+        await using ArcanumDbContext secondContext = _fixture.CreateContext(_dbPath);
+
+        CampaignRepository firstRepository = CreateRepository(firstContext, maxCampaigns);
+
+        CampaignRepository secondRepository = CreateRepository(secondContext, maxCampaigns);
+
+        TaskCompletionSource firstTransactionBegan = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource releaseFirstTransaction = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource secondObservedContention = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        firstRepository.AfterImmediateTransactionBeganForTesting = async cancellationToken =>
+        {
+            firstTransactionBegan.SetResult();
+
+            await releaseFirstTransaction.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        };
+
+        secondRepository.RetryingForTesting = (_, _, _) =>
+        {
+            secondObservedContention.SetResult();
+
+            return ValueTask.CompletedTask;
+        };
+
+        Task<Result<Campaign>> firstTask = firstRepository.AddAsync(
+            NewCampaign("concurrent-first"),
+            CancellationToken.None);
+
+        await firstTransactionBegan.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task<Result<Campaign>> secondTask = secondRepository.AddAsync(
+            NewCampaign("concurrent-second"),
+            CancellationToken.None);
+
+        await secondObservedContention.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        releaseFirstTransaction.SetResult();
+
+        Result<Campaign>[] results = await Task.WhenAll(firstTask, secondTask);
+
+        Assert.Single(results, result => result.IsSuccess);
+
+        Result<Campaign> rejected = Assert.Single(results, result => result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Campaign.MaxReached, rejected.Error.Code);
+
+        await using ArcanumDbContext verificationContext = _fixture.CreateContext(_dbPath);
+
+        Assert.Equal(
+            maxCampaigns,
+            await verificationContext.Campaigns.CountAsync(CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task AddAsync_unrelated_write_failure_is_not_mapped_to_max()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CampaignRepository repository = CreateRepository(maxCampaigns: 10);
+
+        Result<Campaign> first = await repository.AddAsync(
+            NewCampaign("duplicate-name"),
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess, first.Error.Code);
+
+        Campaign duplicate = NewCampaign("duplicate-name");
+
+        _ = await Assert.ThrowsAsync<DbUpdateException>(
+            () => repository.AddAsync(duplicate, CancellationToken.None));
+
+        Assert.Equal(EntityState.Detached, _db!.Entry(duplicate).State);
+
+        await using ArcanumDbContext verificationContext = _fixture.CreateContext(_dbPath);
+
+        Assert.Equal(1, await verificationContext.Campaigns.CountAsync(CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task AddAsync_exhausted_lock_failure_does_not_report_max_or_poison_entity_state()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await _db!.Database.OpenConnectionAsync(CancellationToken.None);
+
+        SqliteConnection repositoryConnection =
+            Assert.IsType<SqliteConnection>(_db.Database.GetDbConnection());
+
+        repositoryConnection.DefaultTimeout = 1;
+
+        await using SqliteConnection blocker =
+            new(_db.Database.GetConnectionString());
+
+        await blocker.OpenAsync(CancellationToken.None);
+
+        await using (SqliteCommand begin = blocker.CreateCommand())
+        {
+            begin.CommandText = "BEGIN IMMEDIATE;";
+
+            _ = await begin.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        Campaign campaign = NewCampaign("locked-campaign");
+
+        CampaignRepository repository = CreateRepository(maxCampaigns: 10);
+
+        SqliteException failure;
+
+        try
+        {
+            failure = await Assert.ThrowsAsync<SqliteException>(
+                () => repository.AddAsync(campaign, CancellationToken.None));
+        }
+        finally
+        {
+            await using SqliteCommand rollback = blocker.CreateCommand();
+
+            rollback.CommandText = "ROLLBACK;";
+
+            _ = await rollback.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        Assert.Contains(failure.SqliteErrorCode, new[] { 5, 6 });
+
+        Assert.Equal(EntityState.Detached, _db.Entry(campaign).State);
+
+        repositoryConnection.DefaultTimeout = 30;
+
+        Result<Campaign> retry = await repository.AddAsync(
+            campaign,
+            CancellationToken.None);
+
+        Assert.True(retry.IsSuccess, retry.Error.Code);
+
+        Assert.Equal(1, await repository.CountAsync(CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task AddAsync_canceled_during_contention_is_bounded()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await _db!.Database.OpenConnectionAsync(CancellationToken.None);
+
+        await using SqliteConnection blocker =
+            new(_db.Database.GetConnectionString());
+
+        await blocker.OpenAsync(CancellationToken.None);
+
+        await using (SqliteCommand begin = blocker.CreateCommand())
+        {
+            begin.CommandText = "BEGIN IMMEDIATE;";
+
+            _ = await begin.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        CampaignRepository repository = CreateRepository(maxCampaigns: 10);
+
+        using CancellationTokenSource cancellation = new();
+
+        TaskCompletionSource firstBoundedAttemptFinished =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        repository.RetryingForTesting = (_, _, _) =>
+        {
+            firstBoundedAttemptFinished.SetResult();
+
+            cancellation.Cancel();
+
+            return ValueTask.CompletedTask;
+        };
+
+        Stopwatch elapsed = Stopwatch.StartNew();
+
+        try
+        {
+            Task<Result<Campaign>> addTask = repository.AddAsync(
+                NewCampaign("cancelled-contention"),
+                cancellation.Token);
+
+            await firstBoundedAttemptFinished.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => addTask);
+        }
+        finally
+        {
+            await using SqliteCommand rollback = blocker.CreateCommand();
+
+            rollback.CommandText = "ROLLBACK;";
+
+            _ = await rollback.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+
+        elapsed.Stop();
+
+        Assert.True(
+            elapsed.Elapsed < TimeSpan.FromSeconds(3),
+            $"Cancellation took {elapsed.Elapsed}; expected one bounded acquisition attempt plus retry cancellation.");
+
+    }
+
+    private Campaign NewCampaign(string suffix)
+    {
+
+        string campaignDir = Path.Combine(_workspaceRoot, suffix);
+
+        Directory.CreateDirectory(campaignDir);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        return new Campaign
+        {
+            Id = Guid.NewGuid(),
+            Name = suffix,
+            Path = campaignDir,
+            Type = WorkspaceType.Campaign,
+            Settings = CampaignRepository.SerializeSettings(CampaignSettings.CreateDefault()),
+            SanctumConfigJson = CampaignRepository.SerializeSanctumConfig(CampaignRepository.DefaultSanctumConfig()),
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+
+    }
+
+    private CampaignRepository CreateRepository(
+        ArcanumDbContext? db = null,
+        int maxCampaigns = 500)
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Campaigns = new CampaignsSettings { MaxCampaigns = maxCampaigns },
+        };
+
         return new CampaignRepository(
-            _db!,
+            db ?? _db!,
             NullLogger<CampaignRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(settings));
 
     }
 

@@ -842,7 +842,12 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
 
         SkipUnavailable();
 
-        GrimoireRepository repository = CreateRepository(_db!);
+        GrimoireRepository repository = CreateRepository(
+            _db!,
+            new SessionSettings
+            {
+                MaxEntryContentBytes = 1_024,
+            });
 
         (Guid sessionId, Guid assistantEntryId) =
             await repository.BeginAssistantReplyAsync(
@@ -857,12 +862,10 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
 
         workspace.WriteFile("capacity.txt", "before\n");
 
-        int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
-            ArcanumRuntimeDefaults.Sessions.MaxEntryContentBytes);
         ApplyPatchInvocationContext context = PatchContext(
             sessionId,
             assistantEntryId,
-            new string('x', maxEntryBytes + 100),
+            new string('x', 1_100),
             CreateWriterSink(repository));
 
         ApplyPatchToolExecutionResponse response =
@@ -1756,7 +1759,10 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
     }
 
     private static SessionEventHub CreateSessionEventHub() =>
-        new(NullLogger<SessionEventHub>.Instance);
+        new(
+            new TestOptionsMonitor<ArcanumSettings>(
+                new ArcanumSettings()),
+            NullLogger<SessionEventHub>.Instance);
 
     private static async Task<Entry[]> ReadEntriesAsync(
         SessionEventHub hub,
@@ -1918,13 +1924,30 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
                 session => session.Id == sessionId,
                 CancellationToken.None);
 
-    private static GrimoireRepository CreateRepository(ArcanumDbContext db)
+    private static GrimoireRepository CreateRepository(
+        ArcanumDbContext db,
+        SessionSettings? sessions = null)
     {
+
+        ArcanumSettings settings = new()
+        {
+            Grimoire = new GrimoireSettings
+            {
+                MaxMessagesPerConversationLoad = 50,
+                WorkspaceContextRetentionCount = 5,
+            },
+            Intelligence = new IntelligenceSettings
+            {
+                ArchiveSearchMaxQueryLength = 256,
+            },
+            Sessions = sessions ?? new SessionSettings(),
+        };
+
         return new GrimoireRepository(
             db,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+            new TestOptionsSnapshot<ArcanumSettings>(settings));
 
     }
 

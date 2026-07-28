@@ -27,7 +27,7 @@ public sealed partial class DiagnosticMcpInvocationViewModel : ViewModelBase, ID
     public const string PolicyBanner =
         "Diagnostic MCP Invocation — policy-constrained. External MCP tools only. " +
         "The internal server and Forbidden Arts (execute_command, write_file, replace_text_block, " +
-        "delete_lexicon, run_spell_script) are blocked and must be exercised through the Master tool " +
+        "delete_lexicon, run_spell_script) are blocked and must be exercised through the Wizard tool " +
         "execution pipeline. Not model execution; not unauthenticated.";
 
     public const string SensitiveFixtureWarning =

@@ -1,5 +1,7 @@
+using Microsoft.AspNetCore.DataProtection;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -58,7 +60,7 @@ public sealed class ChatClientFactoryTests
                     Name = "compat",
                     Type = AiProviderKind.OpenAICompatible,
                     Endpoint = "https://example.test/v1",
-                    CredentialEnvironmentVariable = "ARCANUM_TEST_CHAT_PROVIDER_KEY",
+                    ApiKey = "sk-test",
                     Models = ["gpt-test"],
                 },
             ],
@@ -73,9 +75,14 @@ public sealed class ChatClientFactoryTests
 
     private static ChatClientFactory CreateFactory(ArcanumSettings settings)
     {
+        IDataProtectionProvider protection = DataProtectionProvider.Create("Arcanum.Tests");
+
+        ConfigurationSecretProtector secretProtector = new(protection);
+
         return new ChatClientFactory(
             new FakeHttpClientFactory(),
-            new TestOptionsMonitor<ArcanumSettings>(settings));
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            secretProtector);
     }
 
     private sealed class FakeHttpClientFactory : IHttpClientFactory

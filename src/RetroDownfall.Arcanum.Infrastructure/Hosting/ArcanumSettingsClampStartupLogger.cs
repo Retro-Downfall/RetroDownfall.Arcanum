@@ -19,17 +19,49 @@ public sealed class ArcanumSettingsClampStartupLogger(
 
         LogIfClamped("Arcanum:Host:Port", settings.Host.Port, ArcanumSettingClamps.HostPort(settings.Host.Port));
 
-        EventBusSettings eventBus = settings.ResolveEventBus();
+        LogIfClamped(
+            "Arcanum:Host:MaxRequestBodyBytes",
+            settings.Host.MaxRequestBodyBytes,
+            ArcanumSettingClamps.MaxRequestBodyBytes(settings.Host.MaxRequestBodyBytes));
+
+        EventBusSettings eventBus = settings.EventBus ?? new EventBusSettings();
 
         LogIfClamped(
-            "Arcanum:Execution:MaxSseConnections",
+            "Arcanum:EventBus:ChannelCapacity",
+            eventBus.ChannelCapacity,
+            ArcanumSettingClamps.EventBusChannelCapacity(eventBus.ChannelCapacity));
+
+        LogIfClamped(
+            "Arcanum:EventBus:HeartbeatSeconds",
+            eventBus.HeartbeatSeconds,
+            ArcanumSettingClamps.EventBusHeartbeatSeconds(eventBus.HeartbeatSeconds));
+
+        LogIfClamped(
+            "Arcanum:EventBus:MaxSseConnections",
             eventBus.MaxSseConnections,
             ArcanumSettingClamps.MaxSseConnections(eventBus.MaxSseConnections));
 
         LogIfClamped(
-            "Arcanum:Execution:MaxSseConnectionsPerType",
+            "Arcanum:EventBus:MaxSseConnectionsPerType",
             eventBus.MaxSseConnectionsPerType,
             ArcanumSettingClamps.SseConnectionsPerType(eventBus.MaxSseConnectionsPerType));
+
+        IntelligenceSettings intelligence = settings.Intelligence ?? new IntelligenceSettings();
+
+        LogIfClamped(
+            "Arcanum:Intelligence:MaxToolInferenceRounds",
+            intelligence.MaxToolInferenceRounds,
+            ArcanumSettingClamps.MaxToolInferenceRounds(intelligence.MaxToolInferenceRounds));
+
+        LogIfClamped(
+            "Arcanum:Intelligence:ReservedOutputTokens",
+            intelligence.ReservedOutputTokens,
+            ArcanumSettingClamps.ReservedOutputTokens(intelligence.ReservedOutputTokens));
+
+        LogIfClamped(
+            "Arcanum:Intelligence:InferenceTimeoutSeconds",
+            intelligence.InferenceTimeoutSeconds,
+            ArcanumSettingClamps.InferenceTimeoutSeconds(intelligence.InferenceTimeoutSeconds));
 
         return Task.CompletedTask;
 

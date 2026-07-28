@@ -1,9 +1,5 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-/// <summary>
-/// Runtime projection for client-declared tools. Activation comes from
-/// <c>Arcanum:Features:ClientTools</c>; request-count limits are code-owned.
-/// </summary>
 public sealed record ClientToolForwardingSettings
 {
 

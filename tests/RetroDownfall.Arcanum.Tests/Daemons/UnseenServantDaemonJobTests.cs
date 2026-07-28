@@ -113,7 +113,7 @@ public sealed class UnseenServantDaemonJobTests
 
         ArcanumSettings settings = new()
         {
-            Features = new FeatureSettings { Lexicon = enableLexicon },
+            Intelligence = new IntelligenceSettings { EnableLexiconSystem = enableLexicon },
         };
 
         ServiceCollection services = new();

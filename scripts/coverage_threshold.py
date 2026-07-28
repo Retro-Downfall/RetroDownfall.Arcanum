@@ -3,14 +3,12 @@
 
 from __future__ import annotations
 
-import math
-import os
 import sys
 import xml.etree.ElementTree as ET
 
-DEFAULT_LINE_TARGET = 85.0
+LINE_TARGET = 85.0
 
-DEFAULT_BRANCH_TARGET = 75.0
+BRANCH_TARGET = 75.0
 
 SECURITY_BRANCH_TARGET = 100.0
 
@@ -20,9 +18,11 @@ SECURITY_TYPES = {
     "DataProtectionSecretStore",
     "GrimoireKeyDerivation",
     "McpSecurityLimits",
+    "TrustedMcpWorkspaceStore",
     "SandboxedFileIo",
+    "SecureFileReader",
+    "IdentityOwnedFileSystemCleanup",
     "SanctumGuard",
-    "ToolHelpers",
     "OutboundUrlGuard",
     "HostProcessToolPolicy",
     "IdempotencyClaimStore",
@@ -37,41 +37,11 @@ def pct(covered: float, total: float) -> float:
     return (covered / total) * 100.0
 
 
-def read_target(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-
-    if raw is None or raw.strip() == "":
-        return default
-
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a number from 0 through 100") from exc
-
-    if not math.isfinite(value) or value < 0.0 or value > 100.0:
-        raise ValueError(f"{name} must be a number from 0 through 100")
-
-    return value
-
-
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
 
     if len(args) != 1:
         print("usage: coverage_threshold.py <coverage.cobertura.xml>", file=sys.stderr)
-        return 2
-
-    try:
-        line_target = read_target(
-            "COVERAGE_LINE_TARGET",
-            DEFAULT_LINE_TARGET,
-        )
-        branch_target = read_target(
-            "COVERAGE_BRANCH_TARGET",
-            DEFAULT_BRANCH_TARGET,
-        )
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
         return 2
 
     root = ET.parse(args[0]).getroot()
@@ -81,12 +51,13 @@ def main(argv: list[str] | None = None) -> int:
     branch_rate = float(root.attrib.get("branch-rate", "0")) * 100.0
 
     failures: list[str] = []
+    seen_security_types: set[str] = set()
 
-    if line_rate < line_target:
-        failures.append(f"line coverage {line_rate:.2f}% < {line_target:g}%")
+    if line_rate < LINE_TARGET:
+        failures.append(f"line coverage {line_rate:.2f}% < {LINE_TARGET:.0f}%")
 
-    if branch_rate < branch_target:
-        failures.append(f"branch coverage {branch_rate:.2f}% < {branch_target:g}%")
+    if branch_rate < BRANCH_TARGET:
+        failures.append(f"branch coverage {branch_rate:.2f}% < {BRANCH_TARGET:.0f}%")
 
     for cls in root.findall(".//class"):
         name = cls.attrib.get("name", "")
@@ -95,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if short not in SECURITY_TYPES:
             continue
+
+        seen_security_types.add(short)
 
         # Cobertura class branch-rate is a fraction; use lines with condition-coverage when present.
         lines = cls.findall(".//line")
@@ -153,9 +126,14 @@ def main(argv: list[str] | None = None) -> int:
                 f"security type {short}: branch coverage {rate:.2f}% < {SECURITY_BRANCH_TARGET:.0f}%"
             )
 
-    print(f"Overall line coverage:   {line_rate:.2f}% (target >= {line_target:g}%)")
+    for missing in sorted(SECURITY_TYPES - seen_security_types):
+        failures.append(
+            f"required security type {missing} is absent from the coverage report"
+        )
 
-    print(f"Overall branch coverage: {branch_rate:.2f}% (target >= {branch_target:g}%)")
+    print(f"Overall line coverage:   {line_rate:.2f}% (target >= {LINE_TARGET:.0f}%)")
+
+    print(f"Overall branch coverage: {branch_rate:.2f}% (target >= {BRANCH_TARGET:.0f}%)")
 
     if failures:
         print("Threshold failures:", file=sys.stderr)

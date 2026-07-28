@@ -596,7 +596,7 @@ public sealed partial class SetupWizardViewModel : ViewModelBase
             ? "Could not read embeddings status from /api/meta."
             : EmbeddingsEnabled
                 ? $"Embeddings enabled (vector mode: {meta.EmbeddingsVectorMode})."
-                : "Embeddings disabled — enable Arcanum:Features:Embeddings in Compendium for Divination / The Weave.";
+                : "Embeddings disabled — enable Arcanum:Embeddings:Enabled in Compendium for Divination / The Weave.";
 
         if (meta is not null && !string.IsNullOrWhiteSpace(meta.ConfigPath))
         {

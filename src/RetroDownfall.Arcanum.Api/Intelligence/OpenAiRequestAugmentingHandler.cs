@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -15,11 +16,18 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 {
+
+    private readonly IOptionsMonitor<ArcanumSettings> _settings;
+
     private readonly ILogger<OpenAiRequestAugmentingHandler> _logger;
 
     public OpenAiRequestAugmentingHandler(
+        IOptionsMonitor<ArcanumSettings> settings,
         ILogger<OpenAiRequestAugmentingHandler> logger)
     {
+
+        _settings = settings;
+
         _logger = logger;
 
     }
@@ -36,7 +44,7 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 
         }
 
-        StructuredOutputSettings structuredOutput = ArcanumRuntimeDefaults.StructuredOutput;
+        StructuredOutputSettings structuredOutput = _settings.CurrentValue.StructuredOutput;
 
         if (!structuredOutput.Enabled || !structuredOutput.UseProviderConstrainedDecoding)
         {

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -22,7 +23,8 @@ internal static class SqliteBusyRetry
 
     public static async Task ExecuteAsync(
         Func<Task> action,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<int, Exception, CancellationToken, ValueTask>? retrying = null)
     {
         _ = await ExecuteAsync(
             async () =>
@@ -31,12 +33,14 @@ internal static class SqliteBusyRetry
 
                 return true;
             },
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            retrying).ConfigureAwait(false);
     }
 
     public static async Task<T> ExecuteAsync<T>(
         Func<Task<T>> action,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<int, Exception, CancellationToken, ValueTask>? retrying = null)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
 
@@ -46,8 +50,16 @@ internal static class SqliteBusyRetry
             {
                 return await action().ConfigureAwait(false);
             }
-            catch (SqliteException ex) when (IsBusyOrLocked(ex) && attempt < MaxAttempts && stopwatch.Elapsed < MaxTotalDelay)
+            catch (Exception ex) when (
+                IsBusyOrLocked(ex)
+                && attempt < MaxAttempts
+                && stopwatch.Elapsed < MaxTotalDelay)
             {
+                if (retrying is not null)
+                {
+                    await retrying(attempt, ex, cancellationToken).ConfigureAwait(false);
+                }
+
                 await Task.Delay(ComputeDelay(attempt), cancellationToken).ConfigureAwait(false);
             }
         }
@@ -56,8 +68,38 @@ internal static class SqliteBusyRetry
     }
 
 
-    private static bool IsBusyOrLocked(SqliteException ex) =>
-        ex.SqliteErrorCode is 5 or 6;
+    private static bool IsBusyOrLocked(Exception exception)
+    {
+        if (exception is OperationCanceledException)
+        {
+            return false;
+        }
+
+        if (exception is SqliteException direct)
+        {
+            return direct.SqliteErrorCode is 5 or 6;
+        }
+
+        if (exception is not DbUpdateException)
+        {
+            return false;
+        }
+
+        for (Exception? current = exception.InnerException; current is not null; current = current.InnerException)
+        {
+            if (current is OperationCanceledException)
+            {
+                return false;
+            }
+
+            if (current is SqliteException sqlite)
+            {
+                return sqlite.SqliteErrorCode is 5 or 6;
+            }
+        }
+
+        return false;
+    }
 
     private static TimeSpan ComputeDelay(int attempt)
     {

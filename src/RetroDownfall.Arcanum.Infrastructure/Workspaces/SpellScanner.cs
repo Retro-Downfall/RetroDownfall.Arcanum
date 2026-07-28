@@ -862,10 +862,8 @@ internal static class SpellScanner
                     if (skillMetadata is not null
                         && SkillJsonBoundsValidator.Validate(
                             skillMetadata,
-                            ArcanumSettingClamps.MaxDependencies(
-                                maxDependencies ?? ArcanumRuntimeDefaults.Spells.MaxDependencies),
-                            ArcanumSettingClamps.MaxDeclaredTools(
-                                maxDeclaredTools ?? ArcanumRuntimeDefaults.Spells.MaxDeclaredTools)) is not null)
+                            ArcanumSettingClamps.MaxDependencies(maxDependencies ?? new SpellSettings().MaxDependencies),
+                            ArcanumSettingClamps.MaxDeclaredTools(maxDeclaredTools ?? new SpellSettings().MaxDeclaredTools)) is not null)
                     {
 
                         skillMetadata = null;

@@ -1,0 +1,280 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:RetroDownfall.Compendium.Ux.Views.Controls"
+             xmlns:vm="using:RetroDownfall.Compendium.Ux.ViewModels"
+             x:Class="RetroDownfall.Compendium.Ux.Views.IntelligencePage"
+             x:DataType="vm:ConfigurationViewModel">
+
+    <ScrollViewer>
+
+        <StackPanel Orientation="Vertical"
+                    Margin="24"
+                    Spacing="16">
+
+<TextBlock Text="Intelligence &amp; Context"
+                   FontSize="{DynamicResource ForgePageTitleFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledStepper Label="Inference timeout (s)"
+                                     Description="Wall-clock timeout for a single inference turn (buffered or streaming), including tool rounds. Default 600."
+                                     Key="intelligence.inferenceTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.InferenceTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="5"
+                                     Maximum="3600"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Execute command timeout (s)"
+                                     Description="Wall-clock timeout for in-process MCP execute_command and run_spell_script. Must be &lt;= Mcp.RequestTimeoutSeconds."
+                                     Key="intelligence.executeCommandTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.ExecuteCommandTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="600"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Tool output cap (bytes)"
+                                     Description="Hard cap on captured stdout/stderr for in-process execute_command and run_spell_script. Output beyond this is truncated."
+                                     Key="intelligence.toolOutputCapBytes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.ToolOutputCapBytes, Mode=TwoWay}"
+                                     Minimum="65536"
+                                     Maximum="67108864"
+                                     Increment="65536" />
+
+            <controls:LabeledStepper Label="Max tool inference rounds"
+                                     Description="Maximum agentic tool rounds per inference turn. Beyond this the turn fails with Hub.ToolLoop."
+                                     Key="intelligence.maxToolInferenceRounds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.MaxToolInferenceRounds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="64"
+                                     Increment="1" />
+
+            <controls:LabeledEntry Label="Tokenizer encoding"
+                                   Description="Fallback Tiktoken encoding used for unknown or calibrated model profiles. Known and explicitly configured exact profiles resolve independently."
+                                   Key="intelligence.tokenizerEncoding"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Intelligence.TokenizerEncoding, Mode=TwoWay}"
+                                   Placeholder="o200k_base" />
+
+            <controls:LabeledStepper Label="Estimated-token safety margin (%)"
+                                     Description="Percentage added to calibrated and unknown input-token estimates. Exact tokenizer output is never inflated."
+                                     Key="intelligence.estimatedTokenSafetyMarginPercent"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.EstimatedTokenSafetyMarginPercent, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="100"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Unknown image token reserve"
+                                     Description="Conservative reserve per image when no provider/model image formula is available. Byte size is never reported as an exact image-token count."
+                                     Key="intelligence.unknownImageTokenReserve"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.UnknownImageTokenReserve, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="128000"
+                                     Increment="1" />
+
+            <TextBlock Text="Semantic router"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledStepper Label="Preflight timeout (s)"
+                                     Description="Timeout for the FastModel preflight call that decides whether semantic spell routing applies."
+                                     Key="intelligence.semanticRouterPreflightTimeoutSeconds"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.SemanticRouterPreflightTimeoutSeconds, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="600"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max tokens"
+                                     Description="Maximum completion tokens for the semantic router preflight call."
+                                     Key="intelligence.semanticRouterMaxTokens"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.SemanticRouterMaxTokens, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="4096"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Temperature"
+                                     Description="Sampling temperature for the semantic router preflight call."
+                                     Key="intelligence.semanticRouterTemperature"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.SemanticRouterTemperature, Mode=TwoWay}"
+                                     Minimum="0"
+                                     Maximum="2"
+                                     Increment="0.1" />
+
+            <controls:LabeledToggle Label="Use fast model for spell routing"
+                                    Description="When true, semantic spell-router preflight uses the configured FastModel."
+                                    IsOn="{Binding Intelligence.UseFastModelForSpellRouting, Mode=TwoWay}" />
+
+            <TextBlock Text="Context compression"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledToggle Label="Enable context compression"
+                                    Description="When true, older session entries are summarized near the context limit (rows are never deleted)."
+                                    IsOn="{Binding Intelligence.EnableContextCompression, Mode=TwoWay}" />
+
+            <controls:LabeledToggle Label="Enable token tracking"
+                                    Description="When true, token counts are tracked per inference turn and surfaced in usage stats."
+                                    IsOn="{Binding Intelligence.EnableTokenTracking, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="Context compression threshold (%)"
+                                     Description="Percentage of the context window at which read-time compression is triggered."
+                                     Key="intelligence.contextWindowCompressionThreshold"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.ContextWindowCompressionThreshold, Mode=TwoWay}"
+                                     Minimum="50"
+                                     Maximum="100"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Manual compact min messages"
+                                     Description="Minimum history size before the explicit compact operation tokenizes and prunes entries. Live provider calls always measure materialized context."
+                                     Key="intelligence.compressionPreflightMinMessages"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.CompressionPreflightMinMessages, Mode=TwoWay}"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Fallback per-message framing (tokens)"
+                                     Description="Default role/template framing for calibrated and unknown tokenization profiles; a provider/model profile may override it."
+                                     Key="intelligence.perMessageTemplateOverheadTokens"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.PerMessageTemplateOverheadTokens, Mode=TwoWay}"
+                                     Minimum="0"
+                                     Maximum="32"
+                                     Increment="1" />
+
+            <TextBlock Text="Tools &amp; directories"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledStepper Label="List directory max paths"
+                                     Description="Maximum file/dir entries returned by the list_directory tool in one call."
+                                     Key="intelligence.listDirectoryMaxPaths"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.ListDirectoryMaxPaths, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="2000"
+                                     Increment="1" />
+
+            <TextBlock Text="Lore &amp; archive search"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledToggle Label="Enable Lore system"
+                                    Description="When true, the operator key-value Lore memory is consulted during inference."
+                                    IsOn="{Binding Intelligence.EnableLoreSystem, Mode=TwoWay}" />
+
+            <controls:LabeledToggle Label="Enable archive search"
+                                    Description="When true, the archive search tool can be invoked to query past sessions."
+                                    IsOn="{Binding Intelligence.EnableArchiveSearch, Mode=TwoWay}" />
+
+            <controls:LabeledStepper Label="Archive search max results"
+                                     Description="Maximum number of past-session entries returned by an archive search query."
+                                     Key="intelligence.archiveSearchMaxResults"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.ArchiveSearchMaxResults, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="100"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Archive search max query length"
+                                     Description="Maximum character length of an archive search query string."
+                                     Key="intelligence.archiveSearchMaxQueryLength"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.ArchiveSearchMaxQueryLength, Mode=TwoWay}"
+                                     Minimum="32"
+                                     Maximum="4096"
+                                     Increment="1" />
+
+            <TextBlock Text="Campaign log"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledStepper Label="Campaign log threshold"
+                                     Description="Minimum importance level at which campaign events are persisted to the log."
+                                     Key="intelligence.campaignLogThreshold"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.CampaignLogThreshold, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="10000"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Campaign log idle timeout (m)"
+                                     Description="Minutes of idle time before an open campaign log channel is closed."
+                                     Key="intelligence.campaignLogIdleTimeoutMinutes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.CampaignLogIdleTimeoutMinutes, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="43200"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Campaign log sweep interval (m)"
+                                     Description="Minutes between sweeper passes that close idle campaign log channels."
+                                     Key="intelligence.campaignLogSweepIntervalMinutes"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.CampaignLogSweepIntervalMinutes, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="1440"
+                                     Increment="1" />
+
+            <TextBlock Text="Request bounds"
+                   FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                   FontWeight="SemiBold" />
+
+            <controls:LabeledStepper Label="Max ping prompt chars"
+                                     Description="Maximum character length of the prompt in a single /api/intelligence/ping request."
+                                     Key="intelligence.maxPingPromptChars"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.MaxPingPromptChars, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="262144"
+                                     Increment="1024" />
+
+            <controls:LabeledStepper Label="Max plan steps"
+                                     Description="Maximum steps in an Apprentice plan before the plan is rejected."
+                                     Key="intelligence.maxPlanSteps"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.MaxPlanSteps, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="200"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max OpenAI API messages"
+                                     Description="Maximum messages accepted in a single /v1/chat/completions request body."
+                                     Key="intelligence.maxOpenApiMessages"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.MaxOpenApiMessages, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="10000"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max stateless messages"
+                                     Description="Maximum messages accepted in a single stateless /api/intelligence/ping request body."
+                                     Key="intelligence.maxStatelessMessages"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.MaxStatelessMessages, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="10000"
+                                     Increment="1" />
+
+            <controls:LabeledStepper Label="Max content parts per message"
+                                     Description="Maximum content parts accepted within a single multimodal message."
+                                     Key="intelligence.maxContentPartsPerMessage"
+                                     ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                     Value="{Binding Intelligence.MaxContentPartsPerMessage, Mode=TwoWay}"
+                                     Minimum="1"
+                                     Maximum="1024"
+                                     Increment="1" />
+
+        </StackPanel>
+
+    </ScrollViewer>
+
+</UserControl>

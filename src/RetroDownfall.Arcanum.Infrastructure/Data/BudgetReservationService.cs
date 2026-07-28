@@ -21,7 +21,7 @@ internal sealed class BudgetReservationService(
         BudgetReservationRequest request,
         CancellationToken cancellationToken = default)
     {
-        BudgetSettings budget = settings.CurrentValue.ResolveBudget();
+        BudgetSettings budget = settings.CurrentValue.Budget ?? new BudgetSettings();
 
         if (!budget.Enabled || budget.DailyLimitUsd <= 0)
         {
@@ -131,7 +131,7 @@ internal sealed class BudgetReservationService(
         decimal reservedUsd,
         CancellationToken cancellationToken = default)
     {
-        BudgetSettings budget = settings.CurrentValue.ResolveBudget();
+        BudgetSettings budget = settings.CurrentValue.Budget ?? new BudgetSettings();
         if (!budget.Enabled || budget.DailyLimitUsd <= 0)
         {
             return Result.Success();
@@ -360,16 +360,19 @@ internal sealed class BudgetReservationService(
     public static string UtcBudgetPeriod(DateTimeOffset utcNow) =>
         utcNow.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
-    /// <summary>Worst-case reservation estimate for the current provider call.</summary>
+    /// <summary>
+    /// Worst-case reservation estimate from <see cref="TurnLimitsDefaults"/> and default pricing.
+    /// </summary>
     public static decimal EstimateWorstCaseTurnUsd(
         ModelPricingEntry pricing,
         int? maxOutputTokens = null,
         int? reasoningBudgetTokens = null,
         long? estimatedInputTokens = null) =>
-        EstimateWorstCaseCallUsd(
+        EstimateWorstCaseCallsUsd(
             pricing,
             maxOutputTokens,
             reasoningBudgetTokens,
+            TurnLimitsDefaults.MaxModelCalls,
             estimatedInputTokens);
 
     /// <summary>
@@ -379,16 +382,18 @@ internal sealed class BudgetReservationService(
         ModelPricingEntry pricing,
         int? maxOutputTokens = null,
         int? reasoningBudgetTokens = null) =>
-        EstimateWorstCaseCallUsd(
+        EstimateWorstCaseCallsUsd(
             pricing,
             maxOutputTokens,
             reasoningBudgetTokens,
+            callCount: 1,
             estimatedInputTokens: null);
 
-    private static decimal EstimateWorstCaseCallUsd(
+    private static decimal EstimateWorstCaseCallsUsd(
         ModelPricingEntry pricing,
         int? maxOutputTokens,
         int? reasoningBudgetTokens,
+        int callCount,
         long? estimatedInputTokens)
     {
         long requestedOutput = maxOutputTokens is > 0 ? maxOutputTokens.Value : 4096L;
@@ -397,24 +402,22 @@ internal sealed class BudgetReservationService(
         long inputPerCall = estimatedInputTokens is > 0
             ? estimatedInputTokens.Value
             : maxPerCall;
-        long outputPerCall = estimatedInputTokens is > 0
-            ? SaturatingAdd(requestedOutput, requestedReasoning)
-            : maxPerCall;
+        long outputPerCall = maxPerCall;
         decimal outputRate = Math.Max(0m, pricing.OutputPer1M);
         decimal reasoningRate = Math.Max(0m, pricing.ReasoningPer1M ?? outputRate);
         long conservativelyPricedReasoning =
             reasoningRate > outputRate ? Math.Min(requestedReasoning, outputPerCall) : 0L;
 
         return CostCalculator.CalculateCost(
-            inputTokens: inputPerCall,
-            outputTokens: outputPerCall,
+            inputTokens: SaturatingMultiply(inputPerCall, callCount),
+            outputTokens: SaturatingMultiply(outputPerCall, callCount),
             cachedTokens: 0L,
-            reasoningTokens: conservativelyPricedReasoning,
+            reasoningTokens: SaturatingMultiply(conservativelyPricedReasoning, callCount),
             pricing);
     }
 
-    private static long SaturatingAdd(long left, long right) =>
-        long.CreateSaturating((Int128)left + right);
+    private static long SaturatingMultiply(long value, int multiplier) =>
+        long.CreateSaturating((Int128)value * multiplier);
 
     /// <summary>
     /// Worst-case USD for an embedding batch sized by approximate input tokens.

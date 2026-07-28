@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -19,6 +20,165 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 [Collection("ApprenticeReliability")]
 public sealed class ApprenticeServiceReliabilityTests
 {
+    [Fact]
+    public async Task ExecuteStepStream_StructuredToolDenial_FailsRegardlessOfWording()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+        IntelligenceEvent denial = new(
+            IntelligenceEventType.ToolResult,
+            Message: "execute_command",
+            Data: "The operator policy blocked this invocation.",
+            ToolCall: new IntelligenceToolCallEvent(
+                "denied-call",
+                "execute_command",
+                "{}"),
+            ToolDenied: true);
+        ScriptedStreamIntelligence intelligence = new(denial);
+        ApprenticeService service = CreateService(
+            new InMemoryApprenticeRepository(),
+            new ArcanumSettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        object outcome = await ExecuteStepStreamAsync(
+            service,
+            intelligence,
+            TestApprentice(apprenticeId));
+
+        Assert.True(OutcomeProperty<bool>(outcome, "StepFailed"));
+        Assert.True(OutcomeProperty<bool>(outcome, "ForbiddenArtDenied"));
+        Assert.False(OutcomeProperty<bool>(outcome, "IsRetryable"));
+        Assert.Equal(
+            denial.Data,
+            OutcomeProperty<string?>(outcome, "ErrorMessage"));
+    }
+
+    [Fact]
+    public async Task ExecuteStepStream_DenialPhraseInSuccessfulToolData_DoesNotFailTheStep()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+        ScriptedStreamIntelligence intelligence = new(
+            new IntelligenceEvent(
+                IntelligenceEventType.ToolResult,
+                Message: "read_file",
+                Data: "Forbidden art denied appears in ordinary successful content.",
+                ToolCall: new IntelligenceToolCallEvent(
+                    "successful-content-call",
+                    "read_file",
+                    "{}"),
+                ToolDenied: false),
+            new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                Message: "completed"));
+        ApprenticeService service = CreateService(
+            new InMemoryApprenticeRepository(),
+            new ArcanumSettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        object outcome = await ExecuteStepStreamAsync(
+            service,
+            intelligence,
+            TestApprentice(apprenticeId));
+
+        Assert.False(OutcomeProperty<bool>(outcome, "StepFailed"));
+        Assert.False(OutcomeProperty<bool>(outcome, "ForbiddenArtDenied"));
+        Assert.Equal(
+            "completed",
+            OutcomeProperty<string?>(outcome, "ResultText"));
+    }
+
+    [Fact]
+    public async Task ExecuteStepStream_ToolNameContainingDenialPhrase_DoesNotFailTheStep()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+        ScriptedStreamIntelligence intelligence = new(
+            new IntelligenceEvent(
+                IntelligenceEventType.ToolResult,
+                Message: "arbitrary_forbidden art denied_tool",
+                Data: "ok",
+                ToolCall: new IntelligenceToolCallEvent(
+                    "successful-call",
+                    "arbitrary_forbidden art denied_tool",
+                    "{}")),
+            new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                Message: "completed"));
+        ApprenticeService service = CreateService(
+            new InMemoryApprenticeRepository(),
+            new ArcanumSettings(),
+            new CapturingLogger<ApprenticeService>(),
+            intelligence);
+
+        object outcome = await ExecuteStepStreamAsync(
+            service,
+            intelligence,
+            TestApprentice(apprenticeId));
+
+        Assert.False(OutcomeProperty<bool>(outcome, "StepFailed"));
+        Assert.False(OutcomeProperty<bool>(outcome, "ForbiddenArtDenied"));
+        Assert.Equal(
+            "completed",
+            OutcomeProperty<string?>(outcome, "ResultText"));
+    }
+
+    [Fact]
+    public async Task ExecuteStepStream_ReasoningDenialText_IsIgnoredAndNotPublished()
+    {
+        Guid apprenticeId = Guid.NewGuid();
+        ScriptedStreamIntelligence intelligence = new(
+            new IntelligenceEvent(
+                IntelligenceEventType.Reasoning,
+                Message: "Forbidden art denied in reasoning.",
+                Data: "Forbidden art denied in hidden reasoning."),
+            new IntelligenceEvent(
+                IntelligenceEventType.ToolResult,
+                Message: "read_file",
+                Data: "ok",
+                ToolCall: new IntelligenceToolCallEvent(
+                    "read-call",
+                    "read_file",
+                    "{}")),
+            new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                Message: "completed"));
+        ArcanumSettings settings = new();
+        ChronicleHub hub = new(
+            new TestOptionsMonitor<ArcanumSettings>(settings));
+        ApprenticeService service = CreateService(
+            new InMemoryApprenticeRepository(),
+            settings,
+            new CapturingLogger<ApprenticeService>(),
+            intelligence,
+            hub: hub);
+        using CancellationTokenSource chronicleCancellation = new();
+        await using IAsyncEnumerator<ApprenticeEvent> chronicle =
+            hub.SubscribeAsync(
+                    apprenticeId,
+                    chronicleCancellation.Token)
+                .GetAsyncEnumerator();
+        Task<bool> firstEvent = chronicle.MoveNextAsync().AsTask();
+
+        object outcome = await ExecuteStepStreamAsync(
+            service,
+            intelligence,
+            TestApprentice(apprenticeId));
+
+        Assert.False(OutcomeProperty<bool>(outcome, "StepFailed"));
+        Assert.Equal(
+            "completed",
+            OutcomeProperty<string?>(outcome, "ResultText"));
+        Assert.True(
+            await firstEvent.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(
+            IntelligenceEventType.ToolResult,
+            chronicle.Current.WizardEvent?.Type);
+
+        Task<bool> unexpectedEvent = chronicle.MoveNextAsync().AsTask();
+        await chronicleCancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => unexpectedEvent);
+    }
 
     // P8: intervene-and-resume at full capacity must acquire the slot FIRST and
     // return MaxReached with NO state mutation (no plan/checkpoint/publish).
@@ -59,7 +219,21 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = CreateCapacitySettings();
+        ArcanumSettings settings = new()
+        {
+
+            Apprentices = new ApprenticeSettings
+            {
+
+                Enabled = true,
+
+                MaxConcurrentApprentices = 1,
+
+                MaxPendingStarts = 1,
+
+            },
+
+        };
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -122,7 +296,21 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = CreateCapacitySettings();
+        ArcanumSettings settings = new()
+        {
+
+            Apprentices = new ApprenticeSettings
+            {
+
+                Enabled = true,
+
+                MaxConcurrentApprentices = 1,
+
+                MaxPendingStarts = 1,
+
+            },
+
+        };
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -179,7 +367,21 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = CreateCapacitySettings();
+        ArcanumSettings settings = new()
+        {
+
+            Apprentices = new ApprenticeSettings
+            {
+
+                Enabled = true,
+
+                MaxConcurrentApprentices = 1,
+
+                MaxPendingStarts = 1,
+
+            },
+
+        };
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -239,7 +441,21 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = CreateCapacitySettings();
+        ArcanumSettings settings = new()
+        {
+
+            Apprentices = new ApprenticeSettings
+            {
+
+                Enabled = true,
+
+                MaxConcurrentApprentices = 1,
+
+                MaxPendingStarts = 1,
+
+            },
+
+        };
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -294,7 +510,21 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = CreateCapacitySettings();
+        ArcanumSettings settings = new()
+        {
+
+            Apprentices = new ApprenticeSettings
+            {
+
+                Enabled = true,
+
+                MaxConcurrentApprentices = 1,
+
+                MaxPendingStarts = 1,
+
+            },
+
+        };
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -324,7 +554,15 @@ public sealed class ApprenticeServiceReliabilityTests
 
             0,
 
-            settings.ResolveApprentices(),
+            settings.Apprentices!,
+
+            1,
+
+            0,
+
+            1,
+
+            60,
 
             apprenticeId,
 
@@ -384,7 +622,21 @@ public sealed class ApprenticeServiceReliabilityTests
 
         OceOnFirstGetApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = CreateCapacitySettings();
+        ArcanumSettings settings = new()
+        {
+
+            Apprentices = new ApprenticeSettings
+            {
+
+                Enabled = true,
+
+                MaxConcurrentApprentices = 1,
+
+                MaxPendingStarts = 1,
+
+            },
+
+        };
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -448,7 +700,21 @@ public sealed class ApprenticeServiceReliabilityTests
 
         OceOnFirstGetApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = CreateCapacitySettings();
+        ArcanumSettings settings = new()
+        {
+
+            Apprentices = new ApprenticeSettings
+            {
+
+                Enabled = true,
+
+                MaxConcurrentApprentices = 1,
+
+                MaxPendingStarts = 1,
+
+            },
+
+        };
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -505,7 +771,21 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = CreateCapacitySettings();
+        ArcanumSettings settings = new()
+        {
+
+            Apprentices = new ApprenticeSettings
+            {
+
+                Enabled = true,
+
+                MaxConcurrentApprentices = 1,
+
+                MaxPendingStarts = 1,
+
+            },
+
+        };
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -513,7 +793,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         NotImplementedGrimoireRepository grimoire = new();
 
-        ChronicleHub hub = new();
+        ChronicleHub hub = new(new TestOptionsMonitor<ArcanumSettings>(settings));
 
         ApprenticeService service = CreateService(repo, settings, logger, intelligence, grimoire, hub);
 
@@ -600,15 +880,70 @@ public sealed class ApprenticeServiceReliabilityTests
 
     }
 
-    private static ArcanumSettings CreateCapacitySettings() => new()
+    private static async Task<object> ExecuteStepStreamAsync(
+        ApprenticeService service,
+        IArcanumIntelligenceProvider intelligence,
+        Apprentice apprentice)
     {
-        Features = new FeatureSettings { Apprentices = true },
-        Execution = new ExecutionSettings
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod(
+                "ExecuteStepStreamAsync",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        using CancellationTokenSource linkedCancellation = new();
+        Task execution = Assert.IsAssignableFrom<Task>(
+            method!.Invoke(
+                service,
+                [
+                    intelligence,
+                    apprentice,
+                    "perform the step",
+                    1,
+                    linkedCancellation,
+                    apprentice.Id,
+                    false,
+                ]));
+
+        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
+        PropertyInfo? resultProperty = execution.GetType()
+            .GetProperty("Result", BindingFlags.Public | BindingFlags.Instance);
+
+        Assert.NotNull(resultProperty);
+
+        object? result = resultProperty!.GetValue(execution);
+
+        Assert.NotNull(result);
+
+        return result;
+    }
+
+    private static T OutcomeProperty<T>(
+        object outcome,
+        string propertyName)
+    {
+        PropertyInfo? property = outcome.GetType()
+            .GetProperty(
+                propertyName,
+                BindingFlags.Public | BindingFlags.Instance);
+
+        Assert.NotNull(property);
+
+        return Assert.IsAssignableFrom<T>(
+            property!.GetValue(outcome));
+    }
+
+    private static Apprentice TestApprentice(Guid apprenticeId) =>
+        new()
         {
-            MaxConcurrentApprentices = 1,
-            MaxPendingApprenticeStarts = 1,
-        },
-    };
+            Id = apprenticeId,
+            Name = "test",
+            Goal = "test stream behavior",
+            SessionId = Guid.NewGuid(),
+            WorkspacePath = Path.GetTempPath(),
+        };
 
     private static ApprenticeService CreateService(
         InMemoryApprenticeRepository repo,
@@ -621,7 +956,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         TestOptionsMonitor<ArcanumSettings> options = new(settings);
 
-        ChronicleHub resolvedHub = hub ?? new();
+        ChronicleHub resolvedHub = hub ?? new(options);
 
         SingleServiceScopeFactory scopeFactory = new(repo, intelligence, grimoire);
 
@@ -1015,6 +1350,32 @@ public sealed class ApprenticeServiceReliabilityTests
 
     // StreamPromptAsync throws a non-cancel exception to inject a Simulacrum
     // branch fault (Fix 3). ExecutePromptAsync is unused by the Fix 3 test.
+
+    private sealed class ScriptedStreamIntelligence(
+        params IntelligenceEvent[] frames)
+        : IArcanumIntelligenceProvider
+    {
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+            PingRequest request,
+            CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null) =>
+            throw new NotImplementedException();
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+            PingRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default,
+            InferenceAuditContext? auditContext = null)
+        {
+            foreach (IntelligenceEvent frame in frames)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                yield return frame;
+
+                await Task.Yield();
+            }
+        }
+    }
 
     private sealed class ThrowingIntelligenceProvider : IArcanumIntelligenceProvider
     {

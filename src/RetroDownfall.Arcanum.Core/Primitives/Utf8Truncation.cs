@@ -13,6 +13,35 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 public static class Utf8Truncation
 {
 
+    private static readonly Encoding StrictUtf8 =
+        new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    /// <summary>
+    /// Returns text whose UTF-16 is well formed. Valid text is returned unchanged after strict
+    /// validation, while malformed lone surrogate code units are replaced with U+FFFD by the
+    /// platform UTF-8 replacement fallback.
+    /// </summary>
+    public static string NormalizeInvalidUtf16(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        if (text.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            _ = StrictUtf8.GetByteCount(text);
+
+            return text;
+        }
+        catch (EncoderFallbackException)
+        {
+            return Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(text));
+        }
+    }
+
     /// <summary>
     /// Returns the largest character count from the start of <paramref name="text"/> whose UTF-8
     /// encoding does not exceed <paramref name="maxUtf8Bytes"/>, without splitting a surrogate pair at
@@ -115,7 +144,8 @@ public static class Utf8Truncation
     /// <summary>
     /// Returns the largest character count from the start of <paramref name="text"/>, up to
     /// <paramref name="maxChars"/>, that does not split a surrogate pair at the boundary. Used to
-    /// hard-cap outbound text by a code-owned character limit rather than by UTF-8 byte budget.
+    /// hard-cap outbound text by character count (for example against
+    /// <c>Arcanum:Embeddings:ChunkSizeChars</c>) rather than by UTF-8 byte budget.
     /// </summary>
     public static int SafeCharSliceLength(ReadOnlySpan<char> text, int maxChars)
     {

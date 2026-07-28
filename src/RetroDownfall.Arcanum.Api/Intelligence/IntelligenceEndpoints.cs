@@ -153,7 +153,7 @@ internal static class IntelligenceEndpoints
                 }
 
                 int maxAnswerBytes = ArcanumSettingClamps.MaxEntryContentBytes(
-                    settings.Value.ResolveSessions().MaxEntryContentBytes);
+                    settings.Value.Sessions.MaxEntryContentBytes);
 
                 if (System.Text.Encoding.UTF8.GetByteCount(body.Answer) > maxAnswerBytes)
                 {
@@ -303,7 +303,7 @@ internal static class IntelligenceEndpoints
             long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings.Value);
 
             int metadataScanCacheTtlSeconds = ArcanumSettingClamps.MetadataScanCacheTtlSeconds(
-                ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds);
+                settings.Value.Spells.MetadataScanCacheTtlSeconds);
 
             IReadOnlyList<Core.Intelligence.Spells.SpellSummary> spellSummaries = await SpellScanner
                 .ScanSummariesAsync(spellRoot, ct, maxSpellFileSizeBytes, metadataScanCacheTtlSeconds)
@@ -415,7 +415,7 @@ internal static class IntelligenceEndpoints
 
         if (body.Tools)
         {
-            ArcanumBrowseWebTool? browseTool = settings.Value.ResolveWebBrowsing().Enabled
+            ArcanumBrowseWebTool? browseTool = settings.Value.WebBrowsing.Enabled
                 ? new ArcanumBrowseWebTool(httpClientFactory, settings, browseWebLogger)
                 : null;
             chatOptions.Tools = await ManaToolCatalog

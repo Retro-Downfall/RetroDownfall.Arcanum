@@ -5,184 +5,143 @@
              x:Class="RetroDownfall.Compendium.Ux.Views.ProvidersPage"
              x:DataType="vm:ConfigurationViewModel">
 
-  <ScrollViewer>
-    <StackPanel Margin="24"
-                Spacing="16">
+    <ScrollViewer>
 
-      <TextBlock Text="Providers &amp; Models"
-                 FontSize="{DynamicResource ForgePageTitleFontSize}"
-                 FontWeight="SemiBold" />
+        <StackPanel Orientation="Vertical"
+                    Margin="24"
+                    Spacing="16">
 
-      <controls:LabeledEntry Label="Default model"
-                             Description="Model used when a request does not select one."
-                             Key="defaultModel"
-                             ValidationErrors="{Binding ValidationErrorsByPointer}"
-                             Text="{Binding Providers.DefaultModel, Mode=TwoWay}"
-                             Placeholder="gpt-4o" />
+            <TextBlock Text="AI Providers"
+                       FontSize="{DynamicResource ForgePageTitleFontSize}"
+                       FontWeight="SemiBold" />
 
-      <controls:LabeledEntry Label="Fast model"
-                             Description="Optional model used automatically for eligible internal work."
-                             Key="fastModel"
-                             ValidationErrors="{Binding ValidationErrorsByPointer}"
-                             Text="{Binding Providers.FastModel, Mode=TwoWay}"
-                             Placeholder="gpt-4o-mini" />
+            <controls:LabeledEntry Label="Default model"
+                                   Description="Model used when a request does not specify one. Must match a models entry on some provider."
+                                   Key="defaultModel"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Providers.DefaultModel, Mode=TwoWay}"
+                                   Placeholder="deepseek-chat" />
 
-      <Button Content="Add Provider"
-              HorizontalAlignment="Left"
-              Command="{Binding Providers.AddProviderCommand}" />
+            <controls:LabeledEntry Label="Fast model"
+                                   Description="Model used for internal background summarization, semantic routing preflight, and semantic Inquisitor judges. Must match a models entry on some provider."
+                                   Key="fastModel"
+                                   ValidationErrors="{Binding ValidationErrorsByPointer}"
+                                   Text="{Binding Providers.FastModel, Mode=TwoWay}"
+                                   Placeholder="mistral:latest" />
 
-      <ItemsControl ItemsSource="{Binding Providers.Providers}">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate x:DataType="vm:ProvidersSectionViewModel+ProviderViewModel">
-            <Border BorderBrush="{DynamicResource ForgeBorderBrush}"
-                    BorderThickness="1"
-                    CornerRadius="6"
-                    Margin="0,8"
-                    Padding="12">
-              <StackPanel Spacing="8">
+            <Button Content="Add Provider"
+                    Command="{Binding Providers.AddProviderCommand}" />
 
-                <controls:LabeledEntry Label="Name"
-                                       Description="Human-readable provider identity."
-                                       Text="{Binding Name, Mode=TwoWay}"
-                                       Placeholder="Local provider" />
+            <ItemsControl ItemsSource="{Binding Providers.Providers}">
 
-                <controls:LabeledPicker Label="Type"
-                                        Description="Provider wire contract."
-                                        PickerTitle="Select type"
-                                        ItemsSource="{Binding $parent[UserControl].((vm:ConfigurationViewModel)DataContext).ProviderKinds}"
-                                        SelectedItem="{Binding Type, Mode=TwoWay}" />
+                <ItemsControl.ItemTemplate>
 
-                <controls:LabeledEntry Label="Endpoint"
-                                       Description="OpenAI-compatible base endpoint."
-                                       Text="{Binding Endpoint, Mode=TwoWay}"
-                                       Placeholder="https://api.openai.com/v1" />
+                    <DataTemplate x:DataType="vm:ProvidersSectionViewModel+ProviderViewModel">
 
-                <controls:LabeledEntry Label="Credential environment variable"
-                                       Description="Exact variable containing the API key. Leave blank to derive one from the provider name, such as ARCANUM_PROVIDER_OPENAI_API_KEY."
-                                       Text="{Binding CredentialEnvironmentVariable, Mode=TwoWay}"
-                                       Placeholder="OPENAI_API_KEY" />
+                        <Border BorderBrush="{DynamicResource ForgeBorderBrush}"
+                                BorderThickness="1"
+                                Margin="0,8"
+                                Padding="12">
 
-                <controls:LabeledStepper Label="Context window limit"
-                                         Description="Factual provider context-window capacity."
-                                         Value="{Binding ContextWindowLimit, Mode=TwoWay}"
-                                         Minimum="256"
-                                         Maximum="2097152"
-                                         Increment="128" />
-
-                <TextBlock Text="Models"
-                           FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
-                           FontWeight="SemiBold" />
-
-                <ItemsControl ItemsSource="{Binding Models}">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="vm:ProvidersSectionViewModel+ModelEntryViewModel">
-                      <Border Background="{DynamicResource ForgeSurfaceAltBrush}"
-                              BorderBrush="{DynamicResource ForgeBorderBrush}"
-                              BorderThickness="1"
-                              CornerRadius="4"
-                              Margin="0,4"
-                              Padding="10">
-                        <StackPanel Spacing="8">
-
-                          <Grid ColumnDefinitions="*,Auto,Auto"
-                                ColumnSpacing="8">
-                            <TextBox Grid.Column="0"
-                                     Text="{Binding Name, Mode=TwoWay}"
-                                     PlaceholderText="gpt-4o" />
-
-                            <StackPanel Grid.Column="1"
-                                        Orientation="Horizontal"
-                                        Spacing="4"
-                                        VerticalAlignment="Center">
-                              <TextBlock Text="Vision"
-                                         VerticalAlignment="Center" />
-                              <ToggleSwitch IsChecked="{Binding SupportsVision, Mode=TwoWay}" />
-                            </StackPanel>
-
-                            <Button Grid.Column="2"
-                                    Content="Remove"
-                                    x:CompileBindings="False"
-                                    Command="{Binding $parent[ItemsControl].DataContext.RemoveModelCommand}"
-                                    CommandParameter="{Binding}" />
-                          </Grid>
-
-                          <controls:LabeledToggle Label="Declare reasoning capability"
-                                                  Description="Expose only factual controls and wire behavior verified for this model."
-                                                  IsOn="{Binding HasReasoning, Mode=TwoWay}" />
-
-                          <Expander Header="Reasoning capability"
-                                    IsEnabled="{Binding HasReasoning}">
-                            <StackPanel Margin="0,8,0,0"
+                            <StackPanel Orientation="Vertical"
                                         Spacing="8">
 
-                              <controls:LabeledPicker Label="Supported controls"
-                                                      Description="Effort, numeric budget, both, or none."
-                                                      PickerTitle="Select controls"
-                                                      ItemsSource="{Binding ReasoningControlSupportValues}"
-                                                      SelectedItem="{Binding ReasoningControl, Mode=TwoWay}" />
+                                <controls:LabeledEntry Label="Name"
+                                                       Description="Human-readable name for this provider entry."
+                                                       Text="{Binding Name, Mode=TwoWay}"
+                                                       Placeholder="Local Ollama" />
 
-                              <controls:LabeledPicker Label="Wire dialect"
-                                                      Description="Exact request wire shape required by this provider/model."
-                                                      PickerTitle="Select dialect"
-                                                      ItemsSource="{Binding ReasoningWireDialectValues}"
-                                                      SelectedItem="{Binding ReasoningDialect, Mode=TwoWay}" />
+                                <controls:LabeledPicker Label="Type"
+                                                        Description="Backend kind: OpenAI Compatible (any OpenAI-shaped HTTP API). Ollama works via its OpenAI-compatible /v1 endpoint — not as a native Ollama provider."
+                                                        PickerTitle="Select type"
+                                                        ItemsSource="{Binding $parent[UserControl].((vm:ConfigurationViewModel)DataContext).ProviderKinds}"
+                                                        SelectedItem="{Binding Type, Mode=TwoWay}" />
 
-                              <controls:LabeledToggle Label="Supports summaries"
-                                                      Description="Can return a client-safe reasoning summary."
-                                                      IsOn="{Binding ReasoningSupportsSummary, Mode=TwoWay}" />
+                                <controls:LabeledEntry Label="Endpoint"
+                                                       Description="Base URL for the provider API. Usually includes /v1 (for example Ollama: http://localhost:11434/v1)."
+                                                       Text="{Binding Endpoint, Mode=TwoWay}"
+                                                       Placeholder="https://api.openai.com/v1" />
 
-                              <controls:LabeledToggle Label="Supports full output"
-                                                      Description="Can return explicitly client-safe full reasoning output."
-                                                      IsOn="{Binding ReasoningSupportsFull, Mode=TwoWay}" />
+                                <controls:LabeledEntry Label="API key"
+                                                       Description="Secret API key for this provider. Encrypted at rest with dp:v1: prefix; decrypted in the UI for editing. Leave blank for local OpenAI-compatible endpoints (for example Ollama)."
+                                                       Text="{Binding ApiKey, Mode=TwoWay}"
+                                                       IsPassword="True"
+                                                       Placeholder="sk-..." />
 
-                              <controls:LabeledToggle Label="Streams reasoning"
-                                                      Description="Client-safe reasoning output may arrive incrementally."
-                                                      IsOn="{Binding ReasoningSupportsStreaming, Mode=TwoWay}" />
+                                <TextBlock Text="Models"
+                                           FontWeight="SemiBold" />
 
-                              <controls:LabeledToggle Label="Reports reasoning tokens"
-                                                      Description="Usage reports reasoning tokens as a completion-token subset."
-                                                      IsOn="{Binding ReasoningReportsReasoningTokens, Mode=TwoWay}" />
+                                <TextBlock Text="Model IDs advertised by this provider, and whether each supports vision (Scrying). Must include the DefaultModel and FastModel if those reference this provider."
+                                           FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                                           Foreground="{DynamicResource ForgeMutedTextBrush}" />
 
-                              <controls:LabeledToggle Label="Allow client output"
-                                                      Description="Permit projection of provider-returned client-safe reasoning."
-                                                      IsOn="{Binding ReasoningAllowsClientOutput, Mode=TwoWay}" />
+                                <ItemsControl ItemsSource="{Binding Models}">
 
-                              <CheckBox Content="Set a maximum numeric reasoning budget"
-                                        IsChecked="{Binding HasReasoningMaxBudgetTokens, Mode=TwoWay}" />
+                                    <ItemsControl.ItemTemplate>
 
-                              <controls:LabeledStepper Label="Maximum reasoning budget"
-                                                       Description="Maximum numeric reasoning budget accepted by this model."
-                                                       IsEnabled="{Binding HasReasoningMaxBudgetTokens}"
-                                                       Value="{Binding ReasoningMaxBudgetTokens, Mode=TwoWay}"
-                                                       Minimum="1"
-                                                       Maximum="2097152"
-                                                       Increment="1" />
+                                        <DataTemplate x:DataType="vm:ProvidersSectionViewModel+ModelEntryViewModel">
+
+                                            <Grid ColumnDefinitions="*,Auto,Auto"
+                                                  ColumnSpacing="8"
+                                                  Margin="0,4">
+
+                                                <TextBox Grid.Column="0"
+                                                         Text="{Binding Name, Mode=TwoWay}"
+                                                         PlaceholderText="gpt-4o" />
+
+                                                <StackPanel Grid.Column="1"
+                                                            Orientation="Horizontal"
+                                                            Spacing="4"
+                                                            VerticalAlignment="Center">
+
+                                                    <TextBlock Text="Vision"
+                                                               FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                                                               VerticalAlignment="Center" />
+
+                                                    <ToggleSwitch IsChecked="{Binding SupportsVision, Mode=TwoWay}" />
+
+                                                </StackPanel>
+
+                                                <Button Grid.Column="2"
+                                                        Content="Remove"
+                                                        x:CompileBindings="False"
+                                                        Command="{Binding $parent[ItemsControl].DataContext.RemoveModelCommand}"
+                                                        CommandParameter="{Binding}" />
+
+                                            </Grid>
+
+                                        </DataTemplate>
+
+                                    </ItemsControl.ItemTemplate>
+
+                                </ItemsControl>
+
+                                <Button Content="Add Model"
+                                        Command="{Binding AddModelCommand}" />
+
+                                <controls:LabeledStepper Label="Context window limit"
+                                                         Description="Maximum tokens the hub will assemble into a single inference request for this provider. Clamp 256 - 2,097,152."
+                                                         Value="{Binding ContextWindowLimit, Mode=TwoWay}"
+                                                         Minimum="256"
+                                                         Maximum="2097152"
+                                                         Increment="128" />
+
+                                <Button Content="Remove"
+                                        Command="{Binding $parent[UserControl].((vm:ConfigurationViewModel)DataContext).Providers.RemoveProviderCommand}"
+                                        CommandParameter="{Binding .}" />
 
                             </StackPanel>
-                          </Expander>
 
-                        </StackPanel>
-                      </Border>
+                        </Border>
+
                     </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
 
-                <Button Content="Add Model"
-                        HorizontalAlignment="Left"
-                        Command="{Binding AddModelCommand}" />
+                </ItemsControl.ItemTemplate>
 
-                <Button Content="Remove Provider"
-                        HorizontalAlignment="Left"
-                        Command="{Binding $parent[UserControl].((vm:ConfigurationViewModel)DataContext).Providers.RemoveProviderCommand}"
-                        CommandParameter="{Binding .}" />
+            </ItemsControl>
 
-              </StackPanel>
-            </Border>
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
+        </StackPanel>
 
-    </StackPanel>
-  </ScrollViewer>
+    </ScrollViewer>
 
 </UserControl>

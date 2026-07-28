@@ -7,13 +7,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
-public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
+public sealed class PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> optionsMonitor) : IFileSystemBrowser
 {
-
-    public PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> optionsMonitor)
-    {
-        ArgumentNullException.ThrowIfNull(optionsMonitor);
-    }
 
     public Task<Result<FileListResult>> ListAsync(
         WorkspaceInfo workspace,
@@ -176,45 +171,91 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
 
-        if (Directory.Exists(resolvedPath))
-        {
-            return new Error("Workspace.FileNotFound", "The file or directory was not found.");
-        }
-
-        if (!File.Exists(resolvedPath))
-        {
-            return new Error("Workspace.FileNotFound", "The file or directory was not found.");
-        }
-
         if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, resolvedPath))
         {
-            return new Error("Workspace.SymbolicLinkEscape", "The path resolves outside the workspace via a symbolic link.");
+            return new Error(
+                ErrorCodes.Workspace.SymbolicLinkEscape,
+                "The path resolves outside the workspace via a symbolic link.");
         }
 
-        long maxBytes = GetMaxFileReadSizeBytes();
+        if (!FileHandleIdentityInterop.TryGetPathMetadata(
+                resolvedPath,
+                out FileHandleMetadata expectedMetadata))
+        {
+            return !File.Exists(resolvedPath)
+                   && !Directory.Exists(resolvedPath)
+                ? new Error(
+                    ErrorCodes.Workspace.FileNotFound,
+                    "The file or directory was not found.")
+                : new Error(
+                    ErrorCodes.Workspace.SymbolicLinkEscape,
+                    "The path could not be proven to be a safe workspace file.");
+        }
+
+        if (expectedMetadata.Kind == FileSystemObjectKind.Directory)
+        {
+            return new Error(
+                ErrorCodes.Workspace.FileNotFound,
+                "The file or directory was not found.");
+        }
+
+        if (expectedMetadata.Kind != FileSystemObjectKind.RegularFile
+            || expectedMetadata.HardLinkCount != 1)
+        {
+            return new Error(
+                ErrorCodes.Workspace.SymbolicLinkEscape,
+                "The path could not be proven to be a safe workspace file.");
+        }
+
+        int maxBytes = checked((int)GetMaxFileReadSizeBytes());
+
+        SecureUtf8FileReadResult readResult =
+            await SecureFileReader.ReadUtf8TextAsync(
+                    resolvedPath,
+                    maxBytes,
+                    ct,
+                    expectedMetadata.Identity)
+                .ConfigureAwait(false);
+
+        if (readResult.Status is not SecureFileReadStatus.Success
+            || readResult.Text is null)
+        {
+            return MapSecureReadError(readResult.Status);
+        }
+
+        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(
+                workspaceRoot,
+                resolvedPath)
+            || !FileHandleIdentityInterop.TryGetPathMetadata(
+                resolvedPath,
+                out FileHandleMetadata finalMetadata)
+            || finalMetadata.Kind != FileSystemObjectKind.RegularFile
+            || finalMetadata.HardLinkCount != 1
+            || !FileHandleIdentity.IdentitiesMatch(
+                readResult.Metadata.Identity,
+                finalMetadata.Identity))
+        {
+            return new Error(
+                ErrorCodes.Workspace.SymbolicLinkEscape,
+                "The path could not be proven to remain inside the workspace.");
+        }
 
         try
         {
-
-            FileInfo info = new(resolvedPath);
-
-            if (info.Length > maxBytes)
-            {
-                return new Error("Workspace.FileTooLarge", "The file exceeds the maximum read size limit.");
-            }
-
-            string content = await File.ReadAllTextAsync(resolvedPath, ct).ConfigureAwait(false);
-
-            string entryRelativePath = Path.GetRelativePath(workspaceRoot, resolvedPath);
+            string entryRelativePath =
+                Path.GetRelativePath(workspaceRoot, resolvedPath);
 
             return new FileReadResult(
                 entryRelativePath,
-                content,
+                readResult.Text,
                 "utf-8",
-                info.Length,
-                info.LastWriteTimeUtc);
+                readResult.ByteLength,
+                File.GetLastWriteTimeUtc(resolvedPath));
         }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException
+                or SecurityException)
         {
             return new Error("Workspace.AccessDenied", "Insufficient permissions to read the file.");
         }
@@ -286,24 +327,55 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
     private int GetListDirectoryMaxPaths()
     {
-        int configured = ArcanumRuntimeDefaults.Intelligence.ListDirectoryMaxPaths;
+
+        ArcanumSettings settings = optionsMonitor.CurrentValue;
+
+        int configured = settings.Intelligence?.ListDirectoryMaxPaths ?? new IntelligenceSettings().ListDirectoryMaxPaths;
 
         return ArcanumSettingClamps.ListDirectoryMaxPaths(configured);
     }
 
     private int GetListDirectoryMaxDepth()
     {
-        int configured = ArcanumRuntimeDefaults.WorkspaceListDirectoryMaxDepth;
+
+        ArcanumSettings settings = optionsMonitor.CurrentValue;
+
+        int configured = settings.Workspaces?.ListDirectoryMaxDepth ?? new WorkspaceSettings().ListDirectoryMaxDepth;
 
         return ArcanumSettingClamps.ListDirectoryMaxDepth(configured);
     }
 
     private long GetMaxFileReadSizeBytes()
     {
-        long configured = ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes;
+
+        ArcanumSettings settings = optionsMonitor.CurrentValue;
+
+        long configured = settings.Workspaces?.MaxFileReadSizeBytes ?? new WorkspaceSettings().MaxFileReadSizeBytes;
 
         return ArcanumSettingClamps.MaxFileReadSizeBytes(configured);
     }
+
+    private static Error MapSecureReadError(
+        SecureFileReadStatus status) =>
+        status switch
+        {
+            SecureFileReadStatus.NotFound =>
+                new Error(
+                    ErrorCodes.Workspace.FileNotFound,
+                    "The file or directory was not found."),
+            SecureFileReadStatus.TooLarge =>
+                new Error(
+                    ErrorCodes.Workspace.FileTooLarge,
+                    "The file exceeds the maximum read size limit."),
+            SecureFileReadStatus.Rejected =>
+                new Error(
+                    ErrorCodes.Workspace.SymbolicLinkEscape,
+                    "The path could not be proven to be a safe workspace file."),
+            _ =>
+                new Error(
+                    ErrorCodes.Workspace.AccessDenied,
+                    "The file could not be read safely."),
+        };
 
     private static FileEntry? TryMapToFileEntry(string workspaceRoot, string fullPath)
     {

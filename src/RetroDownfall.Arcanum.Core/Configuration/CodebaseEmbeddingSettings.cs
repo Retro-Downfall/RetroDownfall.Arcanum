@@ -1,9 +1,9 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// RAG Phase 3 — code-owned semantic codebase retrieval mechanics. Only relevant when
-/// <c>Arcanum:Features:CodebaseRetrieval</c> is enabled together with
-/// <c>Arcanum:Features:Embeddings</c>.
+/// RAG Phase 3 — semantic codebase retrieval sub-settings. Bound from <c>Arcanum:Embeddings:Codebase</c>.
+/// Only relevant when <c>Arcanum:Embeddings:CodebaseRetrievalEnabled</c> is <c>true</c> (which itself
+/// requires <c>Arcanum:Embeddings:Enabled</c>) — see <see cref="EmbeddingSettings"/>.
 /// </summary>
 public sealed record CodebaseEmbeddingSettings
 {

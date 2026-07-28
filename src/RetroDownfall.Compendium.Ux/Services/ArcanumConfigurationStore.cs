@@ -11,6 +11,8 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
     private const string ConfigurationFileName = "arcanum.json";
 
+    private readonly IArcanumSecretProtector _secretProtector;
+
     private readonly ConfigurationValidator _validator;
 
     private readonly FileSystemWatcher? _watcher;
@@ -23,8 +25,10 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
     private bool _disposed;
 
-    public ArcanumConfigurationStore()
+    public ArcanumConfigurationStore(IArcanumSecretProtector secretProtector)
     {
+
+        _secretProtector = secretProtector;
 
         _validator = new ConfigurationValidator();
 
@@ -82,30 +86,14 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
             await using FileStream stream = File.OpenRead(_filePath);
 
-            using JsonDocument document = await JsonDocument
-                .ParseAsync(stream, cancellationToken: ct)
-                .ConfigureAwait(false);
-            Result rawTree =
-                _validator.ValidateConfigurationFileJson(document.RootElement);
+            ArcanumConfigurationFile? wrapper = await JsonSerializer.DeserializeAsync(
+                stream,
+                ConfigurationJsonContext.Default.ArcanumConfigurationFile,
+                ct).ConfigureAwait(false);
 
-            if (rawTree.IsFailure)
-            {
-                string detail = string.Join(
-                    "; ",
-                    rawTree.Error.Details?.Select(
-                        static error =>
-                            $"{error.Pointer}: {error.Detail}")
-                    ?? [rawTree.Error.Message]);
+            ArcanumSettings settings = wrapper?.Arcanum ?? new ArcanumSettings();
 
-                throw new InvalidOperationException(
-                    $"Failed to parse {_filePath}: {detail}");
-            }
-
-            ArcanumConfigurationFile? wrapper =
-                document.RootElement.Deserialize(
-                    ConfigurationJsonContext.Default.ArcanumConfigurationFile);
-
-            return wrapper?.Arcanum ?? new ArcanumSettings();
+            return _secretProtector.DecryptProviderKeys(settings);
 
         }
         catch (JsonException ex)
@@ -142,7 +130,9 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
             string tempPath = Path.Combine(_directory, $".arcanum.{Guid.NewGuid():N}.tmp");
 
-            var wrapper = new ArcanumConfigurationFile { Arcanum = settings };
+            ArcanumSettings encrypted = _secretProtector.EncryptProviderKeys(settings);
+
+            var wrapper = new ArcanumConfigurationFile { Arcanum = encrypted };
 
             await using (FileStream tempStream = File.Create(tempPath))
 

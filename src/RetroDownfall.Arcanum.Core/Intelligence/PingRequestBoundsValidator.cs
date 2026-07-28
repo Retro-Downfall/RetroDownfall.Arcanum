@@ -10,9 +10,9 @@ public static class PingRequestBoundsValidator
     public static Result Validate(PingRequest request, ArcanumSettings settings)
     {
 
-        IntelligenceSettings intelligence = ArcanumRuntimeDefaults.Intelligence;
+        IntelligenceSettings intelligence = settings.Intelligence ?? new IntelligenceSettings();
 
-        SessionSettings sessions = ArcanumRuntimeDefaults.Sessions;
+        SessionSettings sessions = settings.Sessions ?? new SessionSettings();
 
         Result reasoningOptions = ReasoningRequestValidator.Validate(request.Reasoning);
 
@@ -142,7 +142,7 @@ public static class PingRequestBoundsValidator
     public static Result ValidateOpenApiMessageCount(int messageCount, ArcanumSettings settings)
     {
 
-        IntelligenceSettings intelligence = ArcanumRuntimeDefaults.Intelligence;
+        IntelligenceSettings intelligence = settings.Intelligence ?? new IntelligenceSettings();
 
         int maxMessages = ArcanumSettingClamps.MaxOpenApiMessages(intelligence.MaxOpenApiMessages);
 

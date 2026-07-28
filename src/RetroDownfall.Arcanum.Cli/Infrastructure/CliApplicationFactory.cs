@@ -32,12 +32,7 @@ internal static class CliApplicationFactory
     public static void ConfigureCliServices(IServiceCollection services, IConfiguration configuration)
     {
 
-        ArcanumSettings settingsSnapshot =
-            ConfigurationBootstrapper.LoadArcanumSettings(
-                () => configuration.GetSection("Arcanum").Get<ArcanumSettings>()
-                    ?? new ArcanumSettings());
-        services.Configure<ArcanumSettings>(settings =>
-            ConfigurationBootstrapper.CopySettings(settingsSnapshot, settings));
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
 
         services.AddArcanumThemeDetection();
 
@@ -61,11 +56,15 @@ internal static class CliApplicationFactory
                 _ => sp.GetRequiredService<IThemeDetector>().SystemPrefersDark,
             };
 
+            ThemeColors tc = cli.ThemeColors;
+
+            ThemeSemanticColors sem = useDark ? tc.Dark : tc.Light;
+
             ThemeColors builtin = new();
 
-            ThemeSemanticColors sem = useDark ? builtin.Dark : builtin.Light;
+            ThemeSemanticColors fb = useDark ? builtin.Dark : builtin.Light;
 
-            return new ConfiguredThemePalette(sem, sem);
+            return new ConfiguredThemePalette(sem, fb);
         });
 
         services.AddSingleton<CliSessionManager>();
@@ -94,7 +93,7 @@ internal static class CliApplicationFactory
                 ArcanumSettings settings = serviceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
 
                 int timeoutSeconds = ArcanumSettingClamps.ApiRequestTimeoutSeconds(
-                    ArcanumRuntimeDefaults.CliApiRequestTimeoutSeconds);
+                    settings.Cli.ApiRequestTimeoutSeconds);
 
                 client.BaseAddress = new Uri(ArcanumLocalApiAddress.ResolveBaseUrl(settings.Host));
 

@@ -12,10 +12,10 @@ public enum SseDenialReason
 
     None,
 
-    /// <summary>The global <c>Arcanum:Execution:MaxSseConnections</c> cap was reached.</summary>
+    /// <summary>The global <c>Arcanum:EventBus:MaxSseConnections</c> cap was reached.</summary>
     Global,
 
-    /// <summary>The per-event-type <c>Arcanum:Execution:MaxSseConnectionsPerType</c> cap was reached.</summary>
+    /// <summary>The per-event-type <c>Arcanum:EventBus:MaxSseConnectionsPerType</c> cap was reached.</summary>
     PerType,
 
 }
@@ -62,7 +62,7 @@ public sealed class SseConnectionGate
     public bool TryAcquire(string eventType, out SseConnectionLease? lease, out SseConnectionDenial denial)
     {
 
-        EventBusSettings eventBus = _settings.CurrentValue.ResolveEventBus();
+        EventBusSettings eventBus = _settings.CurrentValue.EventBus ?? new EventBusSettings();
 
         int maxConnections = ArcanumSettingClamps.MaxSseConnections(eventBus.MaxSseConnections);
 

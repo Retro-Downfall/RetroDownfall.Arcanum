@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
+[Collection("ProcessEnvironment")]
 public sealed class ArcanumServeLauncherTests
 {
 
@@ -285,25 +286,36 @@ public sealed class ArcanumServeLauncherTests
 
         string? originalHostAny = global::System.Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY");
 
-        string marker = Path.Combine(ArcanumPaths.GrimoireDirectory, ".listen-any-acknowledged");
+        string? originalDotnetEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
 
-        string? relocated = null;
+        string? originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
+        string? originalTestHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        string testHome = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-serve-launcher-tests",
+            Guid.NewGuid().ToString("N"));
 
         try
         {
+
+            Directory.CreateDirectory(testHome);
+
+            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+            global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", testHome);
 
             global::System.Environment.SetEnvironmentVariable(ListenAnySecurityPolicy.AcknowledgementEnvironmentVariable, null);
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", null);
 
-            if (File.Exists(marker))
-            {
-
-                relocated = marker + ".test-bak";
-
-                File.Move(marker, relocated, overwrite: true);
-
-            }
+            Assert.StartsWith(
+                Path.GetFullPath(testHome),
+                Path.GetFullPath(ArcanumPaths.GrimoireDirectory),
+                StringComparison.Ordinal);
 
             SequencedHandler handler = new(_ => throw ConnectionRefused());
 
@@ -340,10 +352,16 @@ public sealed class ArcanumServeLauncherTests
 
             global::System.Environment.SetEnvironmentVariable("ARCANUM_HOST_ANY", originalHostAny);
 
-            if (relocated is not null && File.Exists(relocated))
+            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", originalDotnetEnvironment);
+
+            global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", originalAspNetCoreEnvironment);
+
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", originalTestHome);
+
+            if (Directory.Exists(testHome))
             {
 
-                File.Move(relocated, marker, overwrite: true);
+                Directory.Delete(testHome, recursive: true);
 
             }
 

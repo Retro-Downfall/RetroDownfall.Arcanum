@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Daemons;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Daemons;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Daemons;
 
@@ -60,7 +61,9 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
         InMemoryLogRingBuffer logBuffer = CreateLogBuffer();
 
-        InMemoryDaemonExecutionRepository repository = new(logBuffer);
+        InMemoryDaemonExecutionRepository repository = new(
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            logBuffer);
 
         string executionId = await repository.StartAsync("daemon-c", "Daemon C", CancellationToken.None);
 
@@ -133,19 +136,30 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
     [Fact]
     public async Task TrimHistory_NeverRemovesRunningExecutions()
     {
-        InMemoryDaemonExecutionRepository repository = CreateRepository();
-        int historyLimit = ArcanumSettingClamps.DaemonExecutionHistoryLimit(
-            ArcanumRuntimeDefaults.DaemonExecutionHistoryLimit);
 
-        for (int i = 0; i < historyLimit; i++)
+        ArcanumSettings settings = new()
         {
-            string completed = await repository.StartAsync("daemon-trim", "Daemon Trim", CancellationToken.None);
-            await repository.CompleteAsync(completed, CancellationToken.None);
-        }
+            Logs = new LogSettings { RingBufferCapacity = 16 },
+            EventBus = new EventBusSettings { ChannelCapacity = 8 },
+            Daemon = new DaemonSettings { ExecutionHistoryLimit = 2 },
+        };
+
+        InMemoryDaemonExecutionRepository repository = new(
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            CreateLogBuffer());
+
+        string first = await repository.StartAsync("daemon-trim", "Daemon Trim", CancellationToken.None);
+
+        await repository.CompleteAsync(first, CancellationToken.None);
+
+        string second = await repository.StartAsync("daemon-trim", "Daemon Trim", CancellationToken.None);
+
+        await repository.CompleteAsync(second, CancellationToken.None);
 
         string running = await repository.StartAsync("daemon-trim", "Daemon Trim", CancellationToken.None);
 
-        // Crossing the code-owned history limit trims a completed record, never the live one.
+        // Limit is 2; a third start after two completed would normally trim the oldest.
+        // With a Running record present, trim must keep it.
         DaemonExecutionDetail? detail = await repository.GetAsync(running, CancellationToken.None);
 
         Assert.NotNull(detail);
@@ -264,9 +278,24 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
     private static InMemoryDaemonExecutionRepository CreateRepository()
     {
-        return new InMemoryDaemonExecutionRepository(CreateLogBuffer());
+
+        return new InMemoryDaemonExecutionRepository(
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            CreateLogBuffer());
+
     }
 
-    private static InMemoryLogRingBuffer CreateLogBuffer() => new();
+    private static InMemoryLogRingBuffer CreateLogBuffer()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Logs = new LogSettings { RingBufferCapacity = 16 },
+            EventBus = new EventBusSettings { ChannelCapacity = 8 },
+        };
+
+        return new InMemoryLogRingBuffer(new TestOptionsMonitor<ArcanumSettings>(settings));
+
+    }
 
 }

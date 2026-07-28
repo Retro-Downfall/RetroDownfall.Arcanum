@@ -203,19 +203,14 @@ public sealed class SagaEndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                Features = settings.Features with
+                Embeddings = settings.Embeddings with
                 {
-                    Embeddings = true,
-                    Saga = true,
-                },
-                Integrations = settings.Integrations with
-                {
-                    Embeddings = settings.Integrations.Embeddings with
-                    {
-                        Provider = "test",
-                        Model = "test-embed",
-                        Dimensions = TestDimensions,
-                    },
+                    Enabled = true,
+                    SagaEnabled = true,
+                    Provider = "test",
+                    Model = "test-embed",
+                    SimilarityThreshold = 0f,
+                    Dimensions = TestDimensions,
                 },
             },
             ServiceOverrides = services =>
@@ -371,19 +366,14 @@ public sealed class SagaEndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                Features = settings.Features with
+                Embeddings = settings.Embeddings with
                 {
-                    Embeddings = true,
-                    Saga = true,
-                },
-                Integrations = settings.Integrations with
-                {
-                    Embeddings = settings.Integrations.Embeddings with
-                    {
-                        Provider = "test",
-                        Model = "test-embed",
-                        Dimensions = TestDimensions,
-                    },
+                    Enabled = true,
+                    SagaEnabled = true,
+                    Provider = "test",
+                    Model = "test-embed",
+                    SimilarityThreshold = 0f,
+                    Dimensions = TestDimensions,
                 },
             },
             ServiceOverrides = services =>

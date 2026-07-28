@@ -221,7 +221,7 @@ public static class GrimoireDatabaseBootstrapper
                 .GetRequiredService<ILoggerFactory>()
                 .CreateLogger("RetroDownfall.Arcanum.Infrastructure.Weave.WeaveSchemaInitializer");
 
-            EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
+            EmbeddingSettings embeddings = optionsMonitor.CurrentValue.Embeddings ?? new EmbeddingSettings();
 
             int dimensions = ArcanumSettingClamps.EmbeddingsDimensions(embeddings.Dimensions);
 

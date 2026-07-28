@@ -35,7 +35,7 @@ public static class SessionAttachmentRequestValidator
 
         if (!settings.Enabled)
         {
-            return "Session attachments are disabled. Enable Arcanum:Features:Attachments to send attachment references.";
+            return "Session attachments are disabled. Enable Arcanum:Attachments:Enabled to send attachment references.";
         }
 
         if (request.SessionId is null)
@@ -43,8 +43,7 @@ public static class SessionAttachmentRequestValidator
             return "AttachmentReferences require a SessionId.";
         }
 
-        int maxRefs = ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn(
-            ArcanumRuntimeDefaults.Attachments.MaxReferencesPerTurn);
+        int maxRefs = ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn(settings.MaxReferencesPerTurn);
 
         if (refs.Count > maxRefs)
         {

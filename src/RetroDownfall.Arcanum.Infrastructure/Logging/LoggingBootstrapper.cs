@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -57,13 +58,25 @@ public static class LoggingBootstrapper
 
                 IConfiguration? configuration = serviceProvider.GetService<IConfiguration>();
 
-                int retained = ArcanumSettingClamps.RetainedLogFileCount(
-                    ArcanumRuntimeDefaults.RetainedLogFileCount);
+                int retainedRaw = new HostSettings().RetainedLogFileCount;
 
-                bool enableEnterpriseTelemetry = false;
+                if (int.TryParse(
+                        configuration?["Arcanum:Host:RetainedLogFileCount"],
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out int parsedRetained))
+                {
+
+                    retainedRaw = parsedRetained;
+
+                }
+
+                int retained = ArcanumSettingClamps.RetainedLogFileCount(retainedRaw);
+
+                bool enableEnterpriseTelemetry = new HostSettings().EnableEnterpriseTelemetry;
 
                 if (bool.TryParse(
-                        configuration?["Arcanum:Features:EnterpriseTelemetry"],
+                        configuration?["Arcanum:Host:EnableEnterpriseTelemetry"],
                         out bool parsedEnterprise))
                 {
 

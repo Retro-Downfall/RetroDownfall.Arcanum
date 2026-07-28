@@ -55,20 +55,16 @@ public sealed class ArcanumSettingClampsTests
 
     }
 
-    [Theory]
-    [InlineData("MaxToolInferenceRounds")]
-    [InlineData("MaxRunSteps")]
-    [InlineData("MaxStepRetries")]
-    [InlineData("RetryBackoffSeconds")]
-    [InlineData("RetryBackoffMaxSeconds")]
-    [InlineData("MaxReweavesPerRun")]
-    [InlineData("MaxPlanSteps")]
-    [InlineData("MaxFallbackAttempts")]
-    [InlineData("StructuredOutputMaxValidationRetries")]
-    [InlineData("ExternalTaskTimeoutMinutes")]
-    public void Workflow_termination_limits_have_no_configuration_clamp(string methodName)
+    [Fact]
+    public void StructuredOutputMaxValidationRetries_clamps_to_valid_range()
     {
-        Assert.Null(typeof(ArcanumSettingClamps).GetMethod(methodName));
+
+        Assert.Equal(0, ArcanumSettingClamps.StructuredOutputMaxValidationRetries(-1));
+
+        Assert.Equal(2, ArcanumSettingClamps.StructuredOutputMaxValidationRetries(2));
+
+        Assert.Equal(5, ArcanumSettingClamps.StructuredOutputMaxValidationRetries(10));
+
     }
 
     [Fact]
@@ -118,5 +114,102 @@ public sealed class ArcanumSettingClampsTests
         Assert.Equal(100, ArcanumSettingClamps.BudgetAlertThresholdPercent(150));
 
     }
+
+    [Fact]
+    public void MaxToolInferenceRounds_clamps_to_1_through_100()
+    {
+        Assert.Equal(1, ArcanumSettingClamps.MaxToolInferenceRounds(0));
+        Assert.Equal(50, ArcanumSettingClamps.MaxToolInferenceRounds(50));
+        Assert.Equal(100, ArcanumSettingClamps.MaxToolInferenceRounds(100));
+        Assert.Equal(100, ArcanumSettingClamps.MaxToolInferenceRounds(250));
+    }
+
+    [Fact]
+    public void NormalizeWorkspacePatchSettings_clamps_every_scalar_to_lower_bounds()
+    {
+        WorkspacePatchSettings normalized =
+            ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
+                ExtremePatchSettings(long.MinValue, int.MinValue));
+
+        Assert.Equal(1_024L, normalized.MaxPatchBytes);
+        Assert.Equal(1_024L, normalized.MaxInputBytesPerFile);
+        Assert.Equal(1_024L, normalized.MaxTotalInputBytes);
+        Assert.Equal(1_024L, normalized.MaxOutputBytesPerFile);
+        Assert.Equal(1_024L, normalized.MaxTotalOutputBytes);
+        Assert.Equal(1_024L, normalized.MaxStagingBytesPerFile);
+        Assert.Equal(1_024L, normalized.MaxTotalStagingBytes);
+        Assert.Equal(100, normalized.MaxElapsedMilliseconds);
+        Assert.Equal(50, normalized.RollbackReserveMilliseconds);
+        Assert.Equal(1, normalized.MaxFiles);
+        Assert.Equal(1, normalized.MaxHunks);
+        Assert.Equal(1, normalized.MaxLinesPerHunk);
+        Assert.Equal(0, normalized.FuzzyMatchWindowLines);
+        Assert.Equal(1, normalized.MaxResultItems);
+    }
+
+    [Fact]
+    public void NormalizeWorkspacePatchSettings_clamps_every_scalar_to_upper_bounds()
+    {
+        WorkspacePatchSettings normalized =
+            ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
+                ExtremePatchSettings(long.MaxValue, int.MaxValue));
+
+        Assert.Equal(64L * 1024L * 1024L, normalized.MaxPatchBytes);
+        Assert.Equal(256L * 1024L * 1024L, normalized.MaxInputBytesPerFile);
+        Assert.Equal(1L * 1024L * 1024L * 1024L, normalized.MaxTotalInputBytes);
+        Assert.Equal(256L * 1024L * 1024L, normalized.MaxOutputBytesPerFile);
+        Assert.Equal(1L * 1024L * 1024L * 1024L, normalized.MaxTotalOutputBytes);
+        Assert.Equal(512L * 1024L * 1024L, normalized.MaxStagingBytesPerFile);
+        Assert.Equal(2L * 1024L * 1024L * 1024L, normalized.MaxTotalStagingBytes);
+        Assert.Equal(300_000, normalized.MaxElapsedMilliseconds);
+        Assert.Equal(60_000, normalized.RollbackReserveMilliseconds);
+        Assert.Equal(1_000, normalized.MaxFiles);
+        Assert.Equal(10_000, normalized.MaxHunks);
+        Assert.Equal(100_000, normalized.MaxLinesPerHunk);
+        Assert.Equal(1_000, normalized.FuzzyMatchWindowLines);
+        Assert.Equal(10_000, normalized.MaxResultItems);
+    }
+
+    [Fact]
+    public void NormalizeWorkspacePatchSettings_enforces_reserve_relation_without_mutating_source()
+    {
+        WorkspacePatchSettings source = new()
+        {
+            MaxElapsedMilliseconds = 100,
+            RollbackReserveMilliseconds = 60_000,
+        };
+
+        WorkspacePatchSettings normalized =
+            ArcanumSettingClamps.NormalizeWorkspacePatchSettings(source);
+
+        Assert.NotSame(source, normalized);
+        Assert.Equal(100, normalized.MaxElapsedMilliseconds);
+        Assert.Equal(99, normalized.RollbackReserveMilliseconds);
+        Assert.True(
+            normalized.RollbackReserveMilliseconds
+            < normalized.MaxElapsedMilliseconds);
+        Assert.Equal(60_000, source.RollbackReserveMilliseconds);
+    }
+
+    private static WorkspacePatchSettings ExtremePatchSettings(
+        long longValue,
+        int intValue) =>
+        new()
+        {
+            MaxPatchBytes = longValue,
+            MaxInputBytesPerFile = longValue,
+            MaxTotalInputBytes = longValue,
+            MaxOutputBytesPerFile = longValue,
+            MaxTotalOutputBytes = longValue,
+            MaxStagingBytesPerFile = longValue,
+            MaxTotalStagingBytes = longValue,
+            MaxElapsedMilliseconds = intValue,
+            RollbackReserveMilliseconds = intValue,
+            MaxFiles = intValue,
+            MaxHunks = intValue,
+            MaxLinesPerHunk = intValue,
+            FuzzyMatchWindowLines = intValue,
+            MaxResultItems = intValue,
+        };
 
 }

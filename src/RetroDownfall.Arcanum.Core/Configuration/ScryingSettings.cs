@@ -1,9 +1,7 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Scrying — vision/multimodality runtime projection. Activation comes from
-/// <c>Arcanum:Features:Scrying</c> and MIME policy from
-/// <c>Arcanum:Security:AllowedImageMimeTypes</c>. Governs image content
+/// Scrying — vision/multimodality. Bound from <c>Arcanum:Scrying</c>. Governs image content
 /// accepted on inference requests (native <c>ContentParts</c>/<c>ScryingFoci</c> and OpenAI
 /// <c>/v1/chat/completions</c> <c>image_url</c> parts) independent of per-model capability
 /// declarations (see <see cref="ModelEntry.SupportsVision"/>).

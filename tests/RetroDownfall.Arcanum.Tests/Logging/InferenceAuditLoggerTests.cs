@@ -312,16 +312,13 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     public async Task LogAsync_SizeCapReached_DropsFurtherWrites()
     {
 
-        InferenceAuditLogger logger = CreateLogger(enabled: true);
+        InferenceAuditLogger logger = CreateLogger(enabled: true, maxSizeMb: 10);
 
         string todayFile = Path.Combine(_tempDirectory, $"audit-{DateTime.UtcNow:yyyyMMdd}.jsonl");
 
-        int maxSizeMb = ArcanumSettingClamps.HostAuditLogMaxSizeMb(
-            ArcanumRuntimeDefaults.HostAuditLog.MaxSizeMb);
-        await using (FileStream stream = File.Create(todayFile))
-        {
-            stream.SetLength((long)maxSizeMb * 1024L * 1024L);
-        }
+        // Fabricate a file already at the (clamp-floor) 10 MB cap so the very first LogAsync call
+        // exercises the size-cap branch instead of needing to accumulate real writes up to 10 MB.
+        await File.WriteAllBytesAsync(todayFile, new byte[10 * 1024 * 1024]);
 
         long sizeBefore = new FileInfo(todayFile).Length;
 
@@ -395,6 +392,7 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     private InferenceAuditLogger CreateLogger(
         bool enabled,
         bool redactToolArguments = true,
+        int maxSizeMb = 100,
         int retentionDays = 7)
     {
 
@@ -402,9 +400,11 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         {
             Host = new HostSettings
             {
-                AuditLog = new HostAuditPolicySettings
+                AuditLog = new HostAuditLogSettings
                 {
                     Enabled = enabled,
+                    FilePath = Path.Combine(_tempDirectory, "audit.jsonl"),
+                    MaxSizeMb = maxSizeMb,
                     RetentionDays = retentionDays,
                     RedactToolArguments = redactToolArguments,
                 },
@@ -413,8 +413,7 @@ public sealed class InferenceAuditLoggerTests : IDisposable
 
         return new InferenceAuditLogger(
             new TestOptionsMonitor<ArcanumSettings>(settings),
-            NullLogger<InferenceAuditLogger>.Instance,
-            Path.Combine(_tempDirectory, "audit.jsonl"));
+            NullLogger<InferenceAuditLogger>.Instance);
 
     }
 

@@ -109,9 +109,7 @@ internal static class HealthEndpoints
             string? httpUrl = ArcanumLocalApiAddress.ResolveHttpUrl(settings.Value.Host, listenAny);
 
             (bool embeddingsEnabled, string vectorMode, string vectorDiagnostic, int managedBudget) =
-                EmbeddingsVectorStatus.Resolve(
-                    settings.Value.ResolveEmbeddings(),
-                    weaveIndexAvailability);
+                EmbeddingsVectorStatus.Resolve(settings.Value.Embeddings, weaveIndexAvailability);
 
             InstanceMetadataDto metadata = new(
                 Version: GetInformationalVersion(),
@@ -125,10 +123,10 @@ internal static class HealthEndpoints
                 ConfigPath: Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json"),
                 Port: ArcanumSettingClamps.HostPort(settings.Value.Host.Port),
                 ListenAny: listenAny,
-                LoreSystemEnabled: false,
-                ArchiveSearchEnabled: settings.Value.ResolveIntelligence().EnableArchiveSearch,
-                ContextCompressionEnabled: true,
-                TokenTrackingEnabled: true,
+                LoreSystemEnabled: settings.Value.Intelligence.EnableLoreSystem,
+                ArchiveSearchEnabled: settings.Value.Intelligence.EnableArchiveSearch,
+                ContextCompressionEnabled: settings.Value.Intelligence.EnableContextCompression,
+                TokenTrackingEnabled: settings.Value.Intelligence.EnableTokenTracking,
                 HttpsEnabled: httpsEnabled,
                 HttpsPort: httpsPort,
                 HttpsUrl: httpsUrl,

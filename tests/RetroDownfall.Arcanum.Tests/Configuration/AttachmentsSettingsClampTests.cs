@@ -87,7 +87,7 @@ public sealed class AttachmentsSettingsClampTests
     public void AttachmentsSettings_has_expected_defaults()
     {
 
-        AttachmentsSettings settings = ArcanumRuntimeDefaults.Attachments;
+        AttachmentsSettings settings = new();
 
         Assert.True(settings.Enabled);
 
@@ -108,12 +108,14 @@ public sealed class AttachmentsSettingsClampTests
     }
 
     [Fact]
-    public void ArcanumSettings_projects_attachment_feature()
+    public void ArcanumSettings_includes_Attachments()
     {
-        ArcanumSettings settings = new();
-        AttachmentsSettings attachments = settings.ResolveAttachments();
 
-        Assert.True(attachments.Enabled);
+        ArcanumSettings settings = new();
+
+        Assert.NotNull(settings.Attachments);
+
+        Assert.True(settings.Attachments.Enabled);
 
     }
 

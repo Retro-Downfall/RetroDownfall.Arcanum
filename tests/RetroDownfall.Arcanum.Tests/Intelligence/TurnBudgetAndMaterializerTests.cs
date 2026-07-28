@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using System.Text;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -11,71 +12,37 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class TurnBudgetAndMaterializerTests
 {
+    private const string Emoji = "\uD83D\uDE00";
+    private const string TruncationMarkerBody = "[truncated: tool result exceeded token/byte budget]";
+    private const string TruncationMarker = "\n" + TruncationMarkerBody;
 
     [Fact]
-    public void TurnBudget_contract_has_no_workflow_count_members()
+    public void TurnBudget_TryConsumeToolRoundAndToolCalls_EnforcesCeilings()
     {
-        string[] forbiddenMemberNames =
-        [
-            "MaxToolRounds",
-            "MaxModelCalls",
-            "MaxToolCalls",
-            "MaxToolCallsPerRound",
-            "MaxSideEffectingToolCalls",
-            "RemainingModelCalls",
-            "RemainingToolRounds",
-            "RemainingToolCalls",
-            "TryConsumeModelCall",
-            "TryConsumeToolRound",
-            "TryConsumeToolCalls",
-        ];
-        HashSet<string> forbidden = new(
-            forbiddenMemberNames,
-            StringComparer.OrdinalIgnoreCase);
-        Type budgetContract = typeof(ITurnBudget);
-        Type? budgetImplementation = budgetContract.Assembly.GetType(
-            "RetroDownfall.Arcanum.Core.Intelligence.TurnBudget");
-        List<string> violations = [];
+        TurnBudget budget = new(
+            maxToolRounds: 2,
+            maxModelCalls: 10,
+            maxToolCalls: 3,
+            maxToolCallsPerRound: 2,
+            maxSideEffectingToolCalls: 1);
 
-        foreach (Type type in new[] { budgetContract, budgetImplementation }
-            .OfType<Type>())
-        {
-            violations.AddRange(type
-                .GetProperties()
-                .Where(property => forbidden.Contains(property.Name))
-                .Select(property => $"{type.Name}.{property.Name}"));
-            violations.AddRange(type
-                .GetMethods()
-                .Where(method => forbidden.Contains(method.Name))
-                .Select(method => $"{type.Name}.{method.Name}"));
-            violations.AddRange(type
-                .GetConstructors()
-                .SelectMany(static constructor => constructor.GetParameters())
-                .Where(parameter => parameter.Name is not null
-                    && forbidden.Contains(parameter.Name))
-                .Select(parameter => $"{type.Name} constructor parameter {parameter.Name}"));
-        }
-
-        Assert.Empty(violations);
+        Assert.True(budget.TryConsumeToolRound());
+        Assert.True(budget.TryConsumeToolCalls(2, sideEffectingCount: 1));
+        Assert.False(budget.TryConsumeToolCalls(1, sideEffectingCount: 1));
+        Assert.True(budget.TryConsumeToolRound());
+        Assert.False(budget.TryConsumeToolRound());
+        Assert.False(budget.TryConsumeToolCalls(-1));
+        Assert.False(budget.TryConsumeToolCalls(3));
     }
 
     [Fact]
-    public void Turn_limit_defaults_have_no_workflow_count_constants()
+    public void ModelCallExecutor_DelegatesToBudget()
     {
-        Type? defaultsType = typeof(ITurnBudget).Assembly.GetType(
-            "RetroDownfall.Arcanum.Core.Configuration.TurnLimitsDefaults");
-        string[] workflowCountConstants = defaultsType?
-            .GetFields()
-            .Where(static field =>
-                field.Name.Contains("ModelCall", StringComparison.Ordinal)
-                || field.Name.Contains("ToolRound", StringComparison.Ordinal)
-                || field.Name.Contains("ToolCall", StringComparison.Ordinal)
-                || field.Name.Contains("SideEffect", StringComparison.Ordinal))
-            .Select(static field => field.Name)
-            .ToArray()
-            ?? [];
+        ModelCallExecutor executor = new();
+        TurnBudget budget = new(maxModelCalls: 1);
 
-        Assert.Empty(workflowCountConstants);
+        Assert.True(executor.TryBeginModelCall(budget));
+        Assert.False(executor.TryBeginModelCall(budget));
     }
 
     [Fact]
@@ -119,34 +86,258 @@ public sealed class TurnBudgetAndMaterializerTests
             "read_file",
             text,
             new ToolResultMaterializerOptions(
-                MaxTokens: 4,
+                MaxTokens: 16,
                 MaxUtf8Bytes: 1_024,
                 PreservePrefixAndSuffix: false));
 
         Assert.True(result.WasTruncated);
-        Assert.StartsWith(text[..16], result.TextForModel, StringComparison.Ordinal);
-        Assert.Contains("[truncated", result.TextForModel, StringComparison.Ordinal);
+        Assert.EndsWith(TruncationMarker, result.TextForModel, StringComparison.Ordinal);
         Assert.DoesNotContain('…', result.TextForModel);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 16, maxUtf8Bytes: 1_024);
     }
 
     [Fact]
-    public void ToolResultMaterializer_SmallPreserveEndsBudget_FallsBackToPrefix()
+    public void ToolResultMaterializer_PrefixOnly_EmojiAtBoundary_DropsWholePairAndKeepsMarker()
     {
         ToolResultMaterializer materializer = new();
-        string text = new('x', 64);
+        string expectedPrefix = new('a', 27);
+        string text = expectedPrefix + Emoji + new string('b', 80);
 
         ToolResultMaterialization result = materializer.Materialize(
             "read_file",
             text,
             new ToolResultMaterializerOptions(
-                MaxTokens: 1,
+                MaxTokens: 20,
+                MaxUtf8Bytes: 1_024,
+                PreservePrefixAndSuffix: false));
+
+        Assert.True(result.WasTruncated);
+        Assert.Equal(expectedPrefix + TruncationMarker, result.TextForModel);
+        AssertValidUtf8(result.TextForModel);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 20, maxUtf8Bytes: 1_024);
+    }
+
+    [Fact]
+    public void ToolResultMaterializer_PreserveEnds_EmojiAtHeadBoundary_DropsWholePair()
+    {
+        ToolResultMaterializer materializer = new();
+        string expectedHead = new('h', 32);
+        string expectedTail = new('t', 32);
+        string text = expectedHead + Emoji + new string('m', 60) + expectedTail;
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            text,
+            new ToolResultMaterializerOptions(
+                MaxTokens: 30,
                 MaxUtf8Bytes: 1_024,
                 PreservePrefixAndSuffix: true));
 
         Assert.True(result.WasTruncated);
-        Assert.StartsWith(text[..32], result.TextForModel, StringComparison.Ordinal);
-        Assert.Contains("[truncated", result.TextForModel, StringComparison.Ordinal);
-        Assert.DoesNotContain('…', result.TextForModel);
+        Assert.StartsWith(expectedHead + "\n…\n", result.TextForModel, StringComparison.Ordinal);
+        Assert.EndsWith(expectedTail + TruncationMarker, result.TextForModel, StringComparison.Ordinal);
+        AssertValidUtf8(result.TextForModel);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 30, maxUtf8Bytes: 1_024);
+    }
+
+    [Fact]
+    public void ToolResultMaterializer_PreserveEnds_EmojiAtTailBoundary_KeepsWholePair()
+    {
+        ToolResultMaterializer materializer = new();
+        string expectedTail = Emoji + new string('z', 30);
+        string text = new string('a', 100) + expectedTail;
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            text,
+            new ToolResultMaterializerOptions(
+                MaxTokens: 30,
+                MaxUtf8Bytes: 1_024,
+                PreservePrefixAndSuffix: true));
+
+        Assert.True(result.WasTruncated);
+        Assert.EndsWith(expectedTail + TruncationMarker, result.TextForModel, StringComparison.Ordinal);
+        Assert.Contains("\n…\n", result.TextForModel, StringComparison.Ordinal);
+        AssertValidUtf8(result.TextForModel);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 30, maxUtf8Bytes: 1_024);
+    }
+
+    [Fact]
+    public void ToolResultMaterializer_PreserveEnds_AsymmetricUtf8Budget_KeepsBothEndsWhenPossible()
+    {
+        ToolResultMaterializer materializer = new();
+        string text = Emoji + new string('m', 100) + "z";
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            text,
+            new ToolResultMaterializerOptions(
+                MaxTokens: 20,
+                MaxUtf8Bytes: 62,
+                PreservePrefixAndSuffix: true));
+
+        Assert.True(result.WasTruncated);
+        Assert.Equal(
+            Emoji + "\n…\nz" + TruncationMarker,
+            result.TextForModel);
+        AssertValidUtf8(result.TextForModel);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 20, maxUtf8Bytes: 62);
+    }
+
+    [Theory]
+    [InlineData(0, "")]
+    [InlineData(1, "[")]
+    [InlineData(2, "[t")]
+    [InlineData(3, "[tr")]
+    [InlineData(4, "[tru")]
+    public void ToolResultMaterializer_TinyByteBudget_UsesLargestBoundedMarkerFallback(
+        int maxUtf8Bytes,
+        string expected)
+    {
+        ToolResultMaterializer materializer = new();
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            Emoji + new string('x', 80),
+            new ToolResultMaterializerOptions(
+                MaxTokens: 1,
+                MaxUtf8Bytes: maxUtf8Bytes,
+                PreservePrefixAndSuffix: false));
+
+        Assert.True(result.WasTruncated);
+        Assert.Equal(expected, result.TextForModel);
+        AssertValidUtf8(result.TextForModel);
+        AssertWithinBudgets(
+            result.TextForModel,
+            maxTokens: 1,
+            maxUtf8Bytes: maxUtf8Bytes);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ToolResultMaterializer_MalformedLoneSurrogate_RespectsTinyByteBudget(
+        bool highSurrogate)
+    {
+        ToolResultMaterializer materializer = new();
+        string malformed = new(
+            highSurrogate ? '\uD83D' : '\uDE00',
+            1);
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            malformed + new string('x', 80),
+            new ToolResultMaterializerOptions(
+                MaxTokens: 1,
+                MaxUtf8Bytes: 2,
+                PreservePrefixAndSuffix: false));
+
+        Assert.True(result.WasTruncated);
+        Assert.Equal("[t", result.TextForModel);
+        AssertValidUtf8(result.TextForModel);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 1, maxUtf8Bytes: 2);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ToolResultMaterializer_UntruncatedMalformedUtf16_ReturnsNormalizedString(
+        bool highSurrogate)
+    {
+        ToolResultMaterializer materializer = new();
+        string malformed = new(
+            highSurrogate ? '\uD83D' : '\uDE00',
+            1);
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            malformed,
+            new ToolResultMaterializerOptions(
+                MaxTokens: 1,
+                MaxUtf8Bytes: 3,
+                PreservePrefixAndSuffix: false));
+
+        Assert.False(result.WasTruncated);
+        Assert.Equal("\uFFFD", result.TextForModel);
+        AssertValidUtf8(result.TextForModel);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 1, maxUtf8Bytes: 3);
+    }
+
+    [Fact]
+    public void ToolResultMaterializer_MalformedUtf16_NormalizesBeforeFitChecks()
+    {
+        ToolResultMaterializer materializer = new();
+        string malformed = new('\uD83D', 1);
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            malformed + "x",
+            new ToolResultMaterializerOptions(
+                MaxTokens: 1,
+                MaxUtf8Bytes: 4,
+                PreservePrefixAndSuffix: false));
+
+        Assert.False(result.WasTruncated);
+        Assert.Equal("\uFFFDx", result.TextForModel);
+        AssertValidUtf8(result.TextForModel);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 1, maxUtf8Bytes: 4);
+    }
+
+    [Fact]
+    public void ToolResultMaterializer_CompleteMarkerAtExactBudget_StaysComplete()
+    {
+        ToolResultMaterializer materializer = new();
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            new string('x', 100),
+            new ToolResultMaterializerOptions(
+                MaxTokens: 13,
+                MaxUtf8Bytes: TruncationMarkerBody.Length,
+                PreservePrefixAndSuffix: false));
+
+        Assert.True(result.WasTruncated);
+        Assert.Equal(TruncationMarkerBody, result.TextForModel);
+        AssertWithinBudgets(
+            result.TextForModel,
+            maxTokens: 13,
+            maxUtf8Bytes: TruncationMarkerBody.Length);
+    }
+
+    [Fact]
+    public void ToolResultMaterializer_TokenBudgetIncludesCompleteMarker()
+    {
+        ToolResultMaterializer materializer = new();
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            new string('x', 1_000),
+            new ToolResultMaterializerOptions(
+                MaxTokens: 16,
+                MaxUtf8Bytes: 1_024,
+                PreservePrefixAndSuffix: false));
+
+        Assert.True(result.WasTruncated);
+        Assert.EndsWith(TruncationMarker, result.TextForModel, StringComparison.Ordinal);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 16, maxUtf8Bytes: 1_024);
+    }
+
+    [Fact]
+    public void ToolResultMaterializer_ByteBudgetIncludesCompleteMarker()
+    {
+        ToolResultMaterializer materializer = new();
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            new string('x', 1_000),
+            new ToolResultMaterializerOptions(
+                MaxTokens: 1_024,
+                MaxUtf8Bytes: 60,
+                PreservePrefixAndSuffix: false));
+
+        Assert.True(result.WasTruncated);
+        Assert.EndsWith(TruncationMarker, result.TextForModel, StringComparison.Ordinal);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 1_024, maxUtf8Bytes: 60);
     }
 
     [Fact]
@@ -180,6 +371,56 @@ public sealed class TurnBudgetAndMaterializerTests
 
         Assert.False(result.WasTruncated);
         Assert.Equal("small", result.TextForModel);
+    }
+
+    [Fact]
+    public void ToolResultMaterializer_MaximumTokenBudget_WithTinyByteBudget_DoesNotOverflow()
+    {
+        ToolResultMaterializer materializer = new();
+
+        ToolResultMaterialization result = materializer.Materialize(
+            "read_file",
+            "small",
+            new ToolResultMaterializerOptions(
+                MaxTokens: int.MaxValue,
+                MaxUtf8Bytes: 1,
+                PreservePrefixAndSuffix: false));
+
+        Assert.True(result.WasTruncated);
+        Assert.Equal("[", result.TextForModel);
+        AssertWithinBudgets(
+            result.TextForModel,
+            maxTokens: int.MaxValue,
+            maxUtf8Bytes: 1);
+    }
+
+    private static void AssertValidUtf8(string text)
+    {
+        var strictUtf8 = new UTF8Encoding(
+            encoderShouldEmitUTF8Identifier: false,
+            throwOnInvalidBytes: true);
+
+        _ = strictUtf8.GetBytes(text);
+    }
+
+    private static void AssertWithinBudgets(
+        string text,
+        int maxTokens,
+        int maxUtf8Bytes)
+    {
+        int estimatedTokens =
+            string.IsNullOrEmpty(text)
+                ? 0
+                : (int)Math.Min(
+                    int.MaxValue,
+                    ((long)text.Length + 3L) / 4L);
+
+        Assert.True(
+            estimatedTokens <= maxTokens,
+            $"Estimated tokens {estimatedTokens} exceeded {maxTokens}.");
+        Assert.True(
+            Encoding.UTF8.GetByteCount(text) <= maxUtf8Bytes,
+            $"UTF-8 bytes exceeded {maxUtf8Bytes}.");
     }
 
     [Fact]

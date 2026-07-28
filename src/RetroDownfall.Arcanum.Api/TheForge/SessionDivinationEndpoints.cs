@@ -20,9 +20,9 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
 /// <summary>
-/// Session Divination via <c>POST /api/sessions/divine</c>: semantic search over Grimoire entries embedded by
+/// RAG Phase 2 — <c>POST /api/sessions/divine</c>: semantic search over Grimoire entries embedded by
 /// <c>EntryWeavingService</c>. Every step degrades gracefully when The Weave is disabled or unavailable
-/// — see the graceful-degradation matrix in <c>docs/Arcanum.DESIGN.md</c> §21.4.
+/// — see the graceful-degradation matrix in DESIGN.md §21.4.
 /// </summary>
 internal static class SessionDivinationEndpoints
 {
@@ -53,7 +53,7 @@ internal static class SessionDivinationEndpoints
 
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
+                EmbeddingSettings embeddings = options.CurrentValue.Embeddings ?? new EmbeddingSettings();
 
                 if (!embeddings.Enabled || !embeddings.SessionSearchEnabled)
                 {
@@ -62,7 +62,7 @@ internal static class SessionDivinationEndpoints
                         traceId,
                         new Error(
                             ErrorCodes.Embeddings.FeatureDisabled,
-                            "Session semantic search is disabled (Arcanum:Features:Embeddings and Arcanum:Features:SessionSearch must both be true)."));
+                            "Session semantic search is disabled (Arcanum:Embeddings:Enabled and Arcanum:Embeddings:SessionSearchEnabled must both be true)."));
 
                 }
 

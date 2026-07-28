@@ -100,13 +100,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         _workspace.WriteFile("small.txt", "short content");
 
-        int maxFileSizeChars = ArcanumSettingClamps.EmbeddingsCodebaseMaxFileSizeChars(
-            ArcanumRuntimeDefaults.Embeddings.Codebase.MaxFileSizeChars);
-        _workspace.WriteFile("big.txt", new string('x', maxFileSizeChars + 1));
+        _workspace.WriteFile("big.txt", new string('x', 5000));
 
         FakeWeaveService weave = new();
 
-        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings);
+        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings, maxFileSizeChars: 1000);
 
         await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
 
@@ -325,10 +323,10 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         ArcanumSettings disabledSettings = new()
         {
-            Features = new FeatureSettings
+            Embeddings = new EmbeddingSettings
             {
-                Embeddings = false,
-                CodebaseRetrieval = false,
+                Enabled = false,
+                CodebaseRetrievalEnabled = false,
             },
         };
 
@@ -387,7 +385,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         FakeWeaveService weave = new();
 
-        // Empty Security.CampaignRoots is secure-by-default (WorkspaceRootPolicy.EnforceAllowedRoots
+        // Empty Campaigns.AllowedRoots is secure-by-default (WorkspaceRootPolicy.EnforceAllowedRoots
         // denies everything), so this call must be a graceful no-op rather than indexing an
         // unvalidated directory — see CampaignPathPolicy.ValidateAndNormalizePath.
         WorkspaceIndexingService service = CreateService(weave, out _, campaignAllowedRoots: []);
@@ -412,7 +410,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         WorkspaceIndexingService service = CreateService(weave, out _, campaignAllowedRoots: []);
 
-        // RegisterWorkspace must silently reject the path (Security.CampaignRoots is empty above),
+        // RegisterWorkspace must silently reject the path (Campaigns.AllowedRoots is empty above),
         // so the background tick never has this workspace queued for indexing.
         service.RegisterWorkspace(_workspace.Root);
 
@@ -454,32 +452,28 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     private WorkspaceIndexingService CreateService(
         FakeWeaveService weave,
         out EmbeddingSettings embeddings,
+        int maxFileSizeChars = 50_000,
         string[]? campaignAllowedRoots = null)
     {
 
-        embeddings = ArcanumRuntimeDefaults.Embeddings;
+        embeddings = new EmbeddingSettings
+        {
+            Enabled = true,
+            CodebaseRetrievalEnabled = true,
+            Provider = "test",
+            Model = "test-embed",
+            Codebase = new CodebaseEmbeddingSettings
+            {
+                MaxFileSizeChars = maxFileSizeChars,
+            },
+        };
 
         IServiceScopeFactory scopeFactory = BuildScopeFactory();
 
         ArcanumSettings settings = new()
         {
-            Features = new FeatureSettings
-            {
-                Embeddings = true,
-                CodebaseRetrieval = true,
-            },
-            Integrations = new IntegrationSettings
-            {
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-                    Provider = "test",
-                    Model = "test-embed",
-                },
-            },
-            Security = new SecuritySettings
-            {
-                CampaignRoots = campaignAllowedRoots ?? [_workspace.Root],
-            },
+            Embeddings = embeddings,
+            Campaigns = new CampaignsSettings { AllowedRoots = campaignAllowedRoots ?? [_workspace.Root] },
         };
 
         return new WorkspaceIndexingService(

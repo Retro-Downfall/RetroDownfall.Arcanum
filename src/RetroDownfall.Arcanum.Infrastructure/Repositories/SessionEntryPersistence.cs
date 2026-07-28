@@ -92,9 +92,7 @@ internal sealed class SessionEntryPersistence
     public Task SaveChangesWithRetryAsync(CancellationToken cancellationToken = default)
     {
 
-        return SqliteBusyRetry.ExecuteAsync(
-            () => _db.SaveChangesAsync(cancellationToken),
-            cancellationToken);
+        return EfSaveChangesRetry.ExecuteAsync(_db, cancellationToken);
 
     }
 

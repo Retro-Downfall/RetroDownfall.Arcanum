@@ -10,11 +10,12 @@ internal static class InternalCodingToolSettingsFingerprint
         CodingToolsSettings? configured)
     {
         CodingToolsSettings settings =
-            configured ?? ArcanumRuntimeDefaults.CodingTools;
+            configured ?? new CodingToolsSettings();
         WorkspaceSearchSettings search =
             settings.Search ?? new WorkspaceSearchSettings();
         WorkspacePatchSettings patch =
-            settings.Patch ?? new WorkspacePatchSettings();
+            ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
+                settings.Patch ?? new WorkspacePatchSettings());
         WorkspaceCheckSettings check =
             settings.WorkspaceCheck
             ?? new WorkspaceCheckSettings();
@@ -45,48 +46,20 @@ internal static class InternalCodingToolSettingsFingerprint
             ArcanumSettingClamps.WorkspaceSearchMaxPreviewChars(
                 search.MaxPreviewChars));
 
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxPatchBytes(
-                patch.MaxPatchBytes));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxInputBytesPerFile(
-                patch.MaxInputBytesPerFile));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxTotalInputBytes(
-                patch.MaxTotalInputBytes));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxOutputBytesPerFile(
-                patch.MaxOutputBytesPerFile));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxTotalOutputBytes(
-                patch.MaxTotalOutputBytes));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxStagingBytesPerFile(
-                patch.MaxStagingBytesPerFile));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxTotalStagingBytes(
-                patch.MaxTotalStagingBytes));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxElapsedMilliseconds(
-                patch.MaxElapsedMilliseconds));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchRollbackReserveMilliseconds(
-                patch.RollbackReserveMilliseconds));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxFiles(
-                patch.MaxFiles));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxHunks(
-                patch.MaxHunks));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxLinesPerHunk(
-                patch.MaxLinesPerHunk));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchFuzzyMatchWindowLines(
-                patch.FuzzyMatchWindowLines));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspacePatchMaxResultItems(
-                patch.MaxResultItems));
+        fingerprint.Append(patch.MaxPatchBytes);
+        fingerprint.Append(patch.MaxInputBytesPerFile);
+        fingerprint.Append(patch.MaxTotalInputBytes);
+        fingerprint.Append(patch.MaxOutputBytesPerFile);
+        fingerprint.Append(patch.MaxTotalOutputBytes);
+        fingerprint.Append(patch.MaxStagingBytesPerFile);
+        fingerprint.Append(patch.MaxTotalStagingBytes);
+        fingerprint.Append(patch.MaxElapsedMilliseconds);
+        fingerprint.Append(patch.RollbackReserveMilliseconds);
+        fingerprint.Append(patch.MaxFiles);
+        fingerprint.Append(patch.MaxHunks);
+        fingerprint.Append(patch.MaxLinesPerHunk);
+        fingerprint.Append(patch.FuzzyMatchWindowLines);
+        fingerprint.Append(patch.MaxResultItems);
 
         AppendWorkspaceCheck(fingerprint, check);
         return fingerprint.ToString();

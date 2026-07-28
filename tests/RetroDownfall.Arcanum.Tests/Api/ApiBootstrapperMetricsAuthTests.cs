@@ -27,12 +27,12 @@ public sealed class ApiBootstrapperMetricsAuthTests : IDisposable
     }
 
     [Fact]
-    public void MetricsSecurityAndFeatureSettings_DefaultToEnabled()
+    public void MetricsSettings_RequireApiKey_DefaultsToTrue()
     {
 
-        Assert.True(new SecuritySettings().MetricsRequireApiKey);
+        Assert.True(new MetricsSettings().RequireApiKey);
 
-        Assert.True(new FeatureSettings().Metrics);
+        Assert.True(new MetricsSettings().Enabled);
 
     }
 
@@ -57,7 +57,7 @@ public sealed class ApiBootstrapperMetricsAuthTests : IDisposable
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["Arcanum:Security:MetricsRequireApiKey"] = configured,
+                ["Arcanum:Metrics:RequireApiKey"] = configured,
                 ["Arcanum:Host:ListenAny"] = "false",
             })
             .Build();
@@ -73,7 +73,7 @@ public sealed class ApiBootstrapperMetricsAuthTests : IDisposable
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["Arcanum:Security:MetricsRequireApiKey"] = "false",
+                ["Arcanum:Metrics:RequireApiKey"] = "false",
                 ["Arcanum:Host:ListenAny"] = "true",
             })
             .Build();
@@ -91,7 +91,7 @@ public sealed class ApiBootstrapperMetricsAuthTests : IDisposable
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["Arcanum:Security:MetricsRequireApiKey"] = "false",
+                ["Arcanum:Metrics:RequireApiKey"] = "false",
                 ["Arcanum:Host:ListenAny"] = "false",
             })
             .Build();
@@ -107,7 +107,7 @@ public sealed class ApiBootstrapperMetricsAuthTests : IDisposable
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["Arcanum:Security:MetricsRequireApiKey"] = "maybe",
+                ["Arcanum:Metrics:RequireApiKey"] = "maybe",
             })
             .Build();
 

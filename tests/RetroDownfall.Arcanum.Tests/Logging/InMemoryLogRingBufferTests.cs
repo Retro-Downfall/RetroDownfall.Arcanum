@@ -13,7 +13,14 @@ public sealed class InMemoryLogRingBufferTests
     [Fact]
     public void Write_and_GetSnapshot_preserve_insertion_order()
     {
-        InMemoryLogRingBuffer buffer = new();
+
+        ArcanumSettings settings = new()
+        {
+            Logs = new LogSettings { RingBufferCapacity = 4 },
+            EventBus = new EventBusSettings { ChannelCapacity = 4 },
+        };
+
+        InMemoryLogRingBuffer buffer = new(new TestOptionsMonitor<ArcanumSettings>(settings));
 
         buffer.Write(MakeEntry("first"));
 
@@ -32,9 +39,16 @@ public sealed class InMemoryLogRingBufferTests
     [Fact]
     public void Write_evicts_oldest_when_capacity_exceeded()
     {
-        int capacity = ArcanumSettingClamps.LogRingBufferCapacity(
-            ArcanumRuntimeDefaults.Logs.RingBufferCapacity);
-        InMemoryLogRingBuffer buffer = new();
+
+        const int capacity = 1000;
+
+        ArcanumSettings settings = new()
+        {
+            Logs = new LogSettings { RingBufferCapacity = capacity },
+            EventBus = new EventBusSettings { ChannelCapacity = 4 },
+        };
+
+        InMemoryLogRingBuffer buffer = new(new TestOptionsMonitor<ArcanumSettings>(settings));
 
         for (int i = 0; i < capacity; i++)
         {
@@ -58,7 +72,14 @@ public sealed class InMemoryLogRingBufferTests
     [Fact]
     public async Task StreamAsync_receives_new_entries()
     {
-        InMemoryLogRingBuffer buffer = new();
+
+        ArcanumSettings settings = new()
+        {
+            Logs = new LogSettings { RingBufferCapacity = 8 },
+            EventBus = new EventBusSettings { ChannelCapacity = 4 },
+        };
+
+        InMemoryLogRingBuffer buffer = new(new TestOptionsMonitor<ArcanumSettings>(settings));
 
         using CancellationTokenSource cts = new();
 

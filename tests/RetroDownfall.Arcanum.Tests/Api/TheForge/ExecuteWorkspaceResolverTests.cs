@@ -86,10 +86,7 @@ public sealed class ExecuteWorkspaceResolverTests : IAsyncLifetime
             new FakeHostWorkspaceContext(null),
             Microsoft.Extensions.Options.Options.Create(new Core.Configuration.ArcanumSettings
             {
-                Security = new Core.Configuration.SecuritySettings
-                {
-                    SpellWorkspaceRoots = [_workspace.Root],
-                },
+                Spells = new Core.Configuration.SpellSettings { AllowedWorkspaceRoots = [_workspace.Root] },
             }));
     }
 
@@ -121,8 +118,8 @@ public sealed class ExecuteWorkspaceResolverTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new Core.Primitives.ListPageResult<Campaign>([], false));
 
-        public Task<Campaign> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+        public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             Task.FromResult(campaign);
@@ -229,8 +226,8 @@ public sealed class PingRequestResolverTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new ListPageResult<Campaign>([], false));
 
-        public Task<Campaign> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+        public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             Task.FromResult(campaign);

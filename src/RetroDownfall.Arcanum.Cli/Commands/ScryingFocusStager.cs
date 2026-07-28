@@ -3,9 +3,8 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
 /// <summary>
-/// Scrying — reads an image file from disk, detects its MIME type, validates the code-owned size
-/// envelope and <c>Arcanum:Security:AllowedImageMimeTypes</c>, then base64-encodes it into a
-/// <see cref="ScryingFocusDto"/>. Runtime enablement comes from <c>Arcanum:Features:Scrying</c>.
+/// Scrying — reads an image file from disk, detects its MIME type, validates size/type against
+/// <c>Arcanum:Scrying</c> settings, and base64-encodes it into a <see cref="ScryingFocusDto"/>.
 /// Shared by the <c>chat</c> REPL's <c>@path</c> inline staging and the <c>ask --image</c> flag.
 /// Staging is entirely in-memory and ephemeral — no temp files, no disk writes.
 /// </summary>

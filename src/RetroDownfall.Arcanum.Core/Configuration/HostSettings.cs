@@ -1,4 +1,3 @@
-using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
@@ -7,6 +6,10 @@ public sealed record HostSettings
 {
 
     public int Port { get; set; } = 5001;
+
+    public int RetainedLogFileCount { get; set; } = 7;
+
+    public bool EnableEnterpriseTelemetry { get; set; } = false;
 
     /// <summary>
     /// Allowed origins for CORS. Defaults to localhost loopback ports.
@@ -21,6 +24,19 @@ public sealed record HostSettings
     ];
 
     /// <summary>
+    /// When <c>true</c>, mounts the Scalar interactive API documentation UI at <c>/api/scalar</c>.
+    /// The UI ships with inline JavaScript and CSS that conflict with strict CSP; default <c>false</c>.
+    /// </summary>
+    public bool EnableScalarUi { get; set; } = false;
+
+    /// <summary>
+    /// Optional stable identifier surfaced as <c>system_fingerprint</c> on OpenAI-shaped
+    /// <c>/v1/chat/completions</c> responses. When <c>null</c> (default), the API derives one
+    /// from the host assembly's informational version (for example <c>arcanum-0.1.0-beta</c>).
+    /// </summary>
+    public string? SystemFingerprint { get; set; }
+
+    /// <summary>
     /// When <c>true</c>, Kestrel binds HTTPS-only to all network interfaces (<c>ListenAnyIP</c> on
     /// <see cref="HttpsSettings.Port"/>). Plaintext any-IP HTTP is refused — <see cref="HttpsSettings.Enabled"/>
     /// and a loadable certificate are required. Default <c>false</c> (loopback HTTP on
@@ -30,10 +46,26 @@ public sealed record HostSettings
     public bool ListenAny { get; set; } = false;
 
     /// <summary>
+    /// Kestrel <c>MaxRequestBodySize</c> in bytes. Default 10 MiB; clamped 256 KiB &#8211; 1 GiB.
+    /// </summary>
+    public long MaxRequestBodyBytes { get; set; } = 10L * 1024L * 1024L;
+
+    /// <summary>
+    /// Optional default workspace root for spell management and other workspace-scoped API routes.
+    /// Relative paths resolve against the process current directory. Prefer absolute paths in config.
+    /// </summary>
+    public string? Workspace { get; set; }
+
+    /// <summary>
+    /// Optional request rate-limit configuration applied to <c>/api</c> and <c>/v1</c> groups.
+    /// </summary>
+    public HostRateLimitSettings RateLimit { get; set; } = new();
+
+    /// <summary>
     /// Persisted inference audit log configuration (§8.26). Disabled by default — zero behavior
     /// change (no file writes, no <c>GET /api/audit</c> results) until an operator opts in.
     /// </summary>
-    public HostAuditPolicySettings AuditLog { get; set; } = new();
+    public HostAuditLogSettings AuditLog { get; set; } = new();
 
     /// <summary>
     /// Optional HTTPS/TLS binding. Disabled by default — the plaintext HTTP loopback binding is
@@ -44,16 +76,13 @@ public sealed record HostSettings
     /// </summary>
     public HttpsSettings Https { get; set; } = new();
 
-    public LogLevel MinLogLevelInBuffer { get; set; } = LogLevel.Information;
-
 }
 
 /// <summary>
-/// Runtime projection for the persisted inference audit log — a durable, append-only JSONL trail
-/// of completed inference turns (model, provider, token counts, latency, tool activity, finish
-/// reason), independent of the Grimoire (which stores conversation content). Operator policy comes
-/// from <c>Arcanum:Host:AuditLog</c>; file path and size envelope are code-owned. See
-/// <c>docs/Arcanum.DESIGN.md</c> §8.26.
+/// Configuration for the persisted inference audit log — a durable, append-only JSONL trail of
+/// completed inference turns (model, provider, token counts, latency, tool activity, finish
+/// reason), independent of the Grimoire (which stores conversation content). Bound from
+/// <c>Arcanum:Host:AuditLog</c>. See DESIGN.md §8.26.
 /// </summary>
 public sealed record HostAuditLogSettings
 {
@@ -100,7 +129,7 @@ public sealed record HostAuditLogSettings
 }
 
 /// <summary>
-/// Code-owned rate-limit mechanics; partitions requests by API key (or IP when no key header is present).
+/// Rate limit configuration; partitions requests by API key (or IP when no key header is present).
 /// </summary>
 public sealed record HostRateLimitSettings
 {

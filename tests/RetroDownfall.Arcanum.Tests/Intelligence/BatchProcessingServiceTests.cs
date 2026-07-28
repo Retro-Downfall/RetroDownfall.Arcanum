@@ -21,15 +21,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// <see cref="FakeIntelligenceProvider"/>, matching the pattern used by
 /// <c>EntryWeavingServiceTests</c>.
 /// </summary>
-/// <remarks>
-/// Writes/deletes only fresh, GUID-named files under the real <c>ArcanumPaths.FilesDirectory</c>
-/// (never a fixed/shared name), and removes every file it creates in <see cref="DisposeAsync"/> —
-/// <see cref="UploadedFileStorage.ResolvePath"/> is a hardcoded static path with no DI seam to
-/// redirect, and overriding the process-wide <c>HOME</c> environment variable here (as
-/// <c>ArcanumWebApplicationFactory</c> does) would race against concurrently-running "ApiHost"
-/// collection tests that do the same.
-/// </remarks>
-[Collection("Grimoire")]
+[Collection("ProcessEnvironment")]
 [Trait("Category", "Integration")]
 public sealed class BatchProcessingServiceTests : IAsyncLifetime
 {
@@ -46,6 +38,14 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     private IUploadedFileRepository? _files;
 
+    private string _testHome = string.Empty;
+
+    private string? _originalDotnetEnvironment;
+
+    private string? _originalAspNetCoreEnvironment;
+
+    private string? _originalTestHome;
+
     public BatchProcessingServiceTests(GrimoireFixture fixture)
     {
 
@@ -55,6 +55,30 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     public Task InitializeAsync()
     {
+
+        _testHome = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-batch-processing-tests",
+            Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(_testHome);
+
+        _originalDotnetEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+        _originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
+        _originalTestHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _testHome);
+
+        Assert.StartsWith(
+            Path.GetFullPath(_testHome),
+            Path.GetFullPath(ArcanumPaths.FilesDirectory),
+            StringComparison.Ordinal);
 
         _dbPath = _fixture.CopyDatabase();
 
@@ -104,6 +128,19 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             {
 
             }
+
+        }
+
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", _originalDotnetEnvironment);
+
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", _originalAspNetCoreEnvironment);
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _originalTestHome);
+
+        if (Directory.Exists(_testHome))
+        {
+
+            Directory.Delete(_testHome, recursive: true);
 
         }
 
@@ -345,9 +382,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        BatchProcessingService service = CreateService(new FakeIntelligenceProvider());
-        int expiryHours = ArcanumSettingClamps.BatchesBatchExpiryHours(
-            ArcanumRuntimeDefaults.Batches.BatchExpiryHours);
+        BatchProcessingService service = CreateService(new FakeIntelligenceProvider(), batchExpiryHours: 1);
 
         Guid inputFileId = await SeedInputFileAsync("{}\n");
 
@@ -358,7 +393,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             inputFileId,
             "/v1/chat/completions",
             BatchStatuses.Validating,
-            DateTimeOffset.UtcNow.AddHours(-(expiryHours + 1)),
+            DateTimeOffset.UtcNow.AddHours(-2),
             null,
             null,
             null);
@@ -460,17 +495,23 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     private BatchProcessingService CreateService(
         IArcanumIntelligenceProvider intelligence,
+        int? batchExpiryHours = null,
         ITurnRunWriter? turnRunWriter = null,
         IBudgetReservationService? budgetReservations = null,
         PricingSettings? pricing = null)
     {
+
+        BatchesSettings batches = new()
+        {
+            MaxConcurrentBatches = 3,
+            MaxRequestsPerBatch = 100,
+            MaxConcurrentRequestsPerBatch = 2,
+            BatchExpiryHours = batchExpiryHours ?? 24,
+        };
+
         ArcanumSettings settings = new()
         {
-            Execution = new ExecutionSettings
-            {
-                MaxConcurrentBatches = 3,
-                MaxConcurrentRequestsPerBatch = 2,
-            },
+            Batches = batches,
             Providers =
             [
                 new ProviderSettings
@@ -487,7 +528,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
                     ],
                 },
             ],
-            Cost = new CostSettings { Pricing = pricing ?? new PricingSettings() },
+            Pricing = pricing ?? new PricingSettings(),
         };
 
         ServiceProvider root = BuildServiceProvider(intelligence, turnRunWriter, budgetReservations);

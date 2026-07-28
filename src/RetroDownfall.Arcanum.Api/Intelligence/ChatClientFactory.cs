@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Chat;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -30,7 +31,8 @@ public interface IChatClientFactory
 /// </summary>
 public sealed class ChatClientFactory(
     IHttpClientFactory httpClientFactory,
-    IOptionsMonitor<ArcanumSettings> optionsMonitor) : IChatClientFactory
+    IOptionsMonitor<ArcanumSettings> optionsMonitor,
+    ConfigurationSecretProtector secretProtector) : IChatClientFactory
 {
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
@@ -74,9 +76,9 @@ public sealed class ChatClientFactory(
     private ChatClientLease CreateOpenAiCompatibleLease(ProviderSettings provider, string resolvedModel)
     {
 
-        string key =
-            EnvironmentCredentialResolver.ResolveProviderApiKey(provider)
-            ?? KeylessOpenAiPlaceholder;
+        string key = string.IsNullOrEmpty(provider.ApiKey)
+            ? KeylessOpenAiPlaceholder
+            : secretProtector.ResolveApiKey(provider.ApiKey) ?? KeylessOpenAiPlaceholder;
 
         var credential = new ApiKeyCredential(key);
 

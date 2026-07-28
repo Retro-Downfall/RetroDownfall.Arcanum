@@ -63,7 +63,13 @@ public sealed class ToolInvokeEndpointTests : IAsyncLifetime
             },
             SettingsOverride = settings => settings with
             {
-                Features = settings.Features with { WebBrowsing = true },
+                WebBrowsing = settings.WebBrowsing with
+                {
+                    Enabled = true,
+                    MaxContentBytes = 50_000,
+                    RequestTimeoutSeconds = 10,
+                    MaxLinks = 10,
+                },
             },
         };
 
@@ -162,7 +168,7 @@ public sealed class ToolInvokeEndpointTests : IAsyncLifetime
             },
             SettingsOverride = settings => settings with
             {
-                Features = settings.Features with { WebBrowsing = false },
+                WebBrowsing = settings.WebBrowsing with { Enabled = false },
             },
         };
 

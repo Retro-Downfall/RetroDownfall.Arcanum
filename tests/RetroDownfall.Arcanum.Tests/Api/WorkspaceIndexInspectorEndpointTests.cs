@@ -367,18 +367,13 @@ public sealed class WorkspaceIndexInspectorEndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                Features = settings.Features with
+                Embeddings = (settings.Embeddings ?? new EmbeddingSettings()) with
                 {
-                    Embeddings = true,
-                    CodebaseRetrieval = true,
-                },
-                Integrations = settings.Integrations with
-                {
-                    Embeddings = settings.Integrations.Embeddings with
-                    {
-                        Provider = "test",
-                        Model = "test-embed",
-                    },
+                    Enabled = true,
+                    CodebaseRetrievalEnabled = true,
+                    Provider = "test",
+                    Model = "test-embed",
+                    SimilarityThreshold = 0f,
                 },
             },
         };

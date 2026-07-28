@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -229,13 +228,38 @@ public sealed class OpenAiV1FilesEndpointTests
 
     }
 
-    [Fact]
-    public void UploadSizeBoundary_rejects_content_above_internal_limit()
+    [SkippableFact]
+    public async Task PostFiles_OversizedUpload_Returns413()
     {
-        long maxUploadBytes = OpenAiV1Endpoints.ResolveMaxUploadBytes();
 
-        Assert.True(OpenAiV1Endpoints.IsUploadSizeAllowed(maxUploadBytes));
-        Assert.False(OpenAiV1Endpoints.IsUploadSizeAllowed(maxUploadBytes + 1));
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory smallCapFactory = new()
+        {
+            SettingsOverride = settings => settings with
+            {
+                Files = settings.Files with { MaxUploadSizeBytes = 1024 * 1024 },
+            },
+        };
+
+        HttpClient client = smallCapFactory.CreateAuthenticatedClient();
+
+        byte[] oversized = new byte[2 * 1024 * 1024];
+
+        using MultipartFormDataContent form = new();
+
+        ByteArrayContent fileContent = new(oversized);
+
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+
+        form.Add(fileContent, "file", "big.txt");
+
+        form.Add(new StringContent("assistants"), "purpose");
+
+        HttpResponseMessage response = await client.PostAsync("/v1/files", form);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+
     }
 
     private static async Task<OpenAiFileObject> UploadAsync(

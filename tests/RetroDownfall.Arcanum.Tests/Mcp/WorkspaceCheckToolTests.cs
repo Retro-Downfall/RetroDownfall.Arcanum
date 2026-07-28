@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -8,11 +7,34 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
-public sealed class WorkspaceCheckToolTests
+[Collection("ProcessEnvironment")]
+public sealed class WorkspaceCheckToolTests : IDisposable
 {
+    private readonly string? _originalHome =
+        global::System.Environment.GetEnvironmentVariable("HOME");
+
+    private readonly string? _originalUserProfile =
+        global::System.Environment.GetEnvironmentVariable("USERPROFILE");
+
+    public WorkspaceCheckToolTests()
+    {
+        global::System.Environment.SetEnvironmentVariable(
+            "HOME",
+            TestProcessPaths.OriginalUserProfile);
+        global::System.Environment.SetEnvironmentVariable(
+            "USERPROFILE",
+            TestProcessPaths.OriginalUserProfile);
+    }
+
+    public void Dispose()
+    {
+        global::System.Environment.SetEnvironmentVariable("HOME", _originalHome);
+        global::System.Environment.SetEnvironmentVariable("USERPROFILE", _originalUserProfile);
+    }
 
     [Fact]
     public void Built_in_profiles_render_only_closed_server_owned_arguments()
@@ -299,14 +321,7 @@ public sealed class WorkspaceCheckToolTests
         Assert.Equal("1", environment["DOTNET_CLI_TELEMETRY_OPTOUT"]);
         Assert.Equal("1", environment["DOTNET_NOLOGO"]);
         Assert.Equal("1", environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"]);
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.DoesNotContain("LANG", environment.Keys);
-        }
-        else
-        {
-            Assert.Equal("en_US.UTF-8", environment["LANG"]);
-        }
+        Assert.Equal("en_US.UTF-8", environment["LANG"]);
         Assert.DoesNotContain(
             environment.Keys,
             static key => key.StartsWith("ARCANUM_", StringComparison.OrdinalIgnoreCase));
@@ -377,11 +392,11 @@ public sealed class WorkspaceCheckToolTests
             [packages, sdk],
             [output]);
 
-        Assert.Contains(request.ReadOnlyRoots, root => PathsEqual(root, workspace));
-        Assert.Contains(request.ReadOnlyRoots, root => PathsEqual(root, packages));
-        Assert.Contains(request.ReadExecuteRoots, root => PathsEqual(root, sdk));
-        Assert.Contains(request.ReadWriteRoots, root => PathsEqual(root, output));
-        Assert.DoesNotContain(request.ReadWriteRoots, root => PathsEqual(root, workspace));
+        Assert.Contains(workspace, request.ReadOnlyRoots);
+        Assert.Contains(packages, request.ReadOnlyRoots);
+        Assert.Contains(sdk, request.ReadExecuteRoots);
+        Assert.Contains(output, request.ReadWriteRoots);
+        Assert.DoesNotContain(workspace, request.ReadWriteRoots);
         Assert.False(request.AllowUnsandboxed);
         Assert.True(request.RequireAppliedFilesystemJail);
     }
@@ -1064,15 +1079,7 @@ public sealed class WorkspaceCheckToolTests
                 .Snapshot!;
         File.WriteAllText(
             Path.Combine(workspace, "global.json"),
-            JsonSerializer.Serialize(new
-            {
-                sdk = new
-                {
-                    version = "10.0.100",
-                    rollForward = "disable",
-                    paths = new[] { dotnetRoot },
-                },
-            }));
+            $"{{\"sdk\":{{\"version\":\"10.0.100\",\"rollForward\":\"disable\",\"paths\":[\"{dotnetRoot}\"]}}}}");
 
         WorkspaceCheckSdkResolution trusted =
             WorkspaceCheckSdkResolver.Resolve(
@@ -1119,14 +1126,7 @@ public sealed class WorkspaceCheckToolTests
         tree.CreateSdk(second, "10.0.100", "10.0.1");
         File.WriteAllText(
             Path.Combine(workspace, "global.json"),
-            JsonSerializer.Serialize(new
-            {
-                sdk = new
-                {
-                    version = "10.0.100",
-                    paths = new[] { first, second },
-                },
-            }));
+            $"{{\"sdk\":{{\"version\":\"10.0.100\",\"paths\":[\"{first}\",\"{second}\"]}}}}");
         WorkspaceCheckExecutableSnapshot host =
             WorkspaceCheckExecutableRuntimePolicy
                 .ForTrustedRoots([dotnetRoot])
@@ -1197,16 +1197,10 @@ public sealed class WorkspaceCheckToolTests
                         "10.0.100",
                         sanitized,
                         StringComparison.Ordinal);
-                    using JsonDocument sanitizedJson = JsonDocument.Parse(sanitized);
-                    string[] sanitizedPaths = sanitizedJson.RootElement
-                        .GetProperty("sdk")
-                        .GetProperty("paths")
-                        .EnumerateArray()
-                        .Select(static path => path.GetString()!)
-                        .ToArray();
                     Assert.Contains(
-                        sanitizedPaths,
-                        path => PathsEqual(path, host.DotNetRoot));
+                        host.DotNetRoot,
+                        sanitized,
+                        StringComparison.Ordinal);
                     Assert.DoesNotContain(
                         "$host$",
                         sanitized,
@@ -2352,8 +2346,7 @@ public sealed class WorkspaceCheckToolTests
     {
 
         string path = Path.Combine(
-            global::System.Environment.GetFolderPath(
-                global::System.Environment.SpecialFolder.UserProfile),
+            TestProcessPaths.OriginalUserProfile,
             ".nuget",
             "packages");
         DirectoryInfo directory = new(path);
@@ -2582,14 +2575,6 @@ public sealed class WorkspaceCheckToolTests
             CancellationToken ct = default) =>
             Task.CompletedTask;
     }
-
-    private static bool PathsEqual(string left, string right) =>
-        string.Equals(
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
-            OperatingSystem.IsWindows()
-                ? StringComparison.OrdinalIgnoreCase
-                : StringComparison.Ordinal);
 
     private sealed class TestTree : IDisposable
     {

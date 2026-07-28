@@ -95,7 +95,7 @@ internal static partial class OpenAiV1Endpoints
             if (m.Content?.Parts is { } parts)
             {
                 int maxParts = ArcanumSettingClamps.MaxContentPartsPerMessage(
-                    settings.ResolveIntelligence().MaxContentPartsPerMessage);
+                    (settings.Intelligence ?? new IntelligenceSettings()).MaxContentPartsPerMessage);
 
                 if (parts.Length > maxParts)
                 {
@@ -134,8 +134,7 @@ internal static partial class OpenAiV1Endpoints
                 StatusCodes.Status400BadRequest);
         }
 
-        ClientToolForwardingSettings clientTools = settings.ResolveClientTools();
-        bool forwardClientTools = clientTools.Enabled && !forceDisableAllTools;
+        bool forwardClientTools = settings.ClientToolForwarding.Enabled && !forceDisableAllTools;
 
         if (body.Tools is { Length: > 0 })
         {
@@ -149,13 +148,9 @@ internal static partial class OpenAiV1Endpoints
                     StatusCodes.Status400BadRequest);
             }
 
-            int schemaMaxDepth = ArcanumSettingClamps.JsonSchemaMaxDepth(
-                ArcanumRuntimeDefaults.StructuredOutput.SchemaMaxDepth);
+            int schemaMaxDepth = ArcanumSettingClamps.JsonSchemaMaxDepth(settings.StructuredOutput.SchemaMaxDepth);
 
-            Result toolsValidation = ValidateClientTools(
-                body.Tools,
-                clientTools.MaxClientTools,
-                schemaMaxDepth);
+            Result toolsValidation = ValidateClientTools(body.Tools, settings.ClientToolForwarding.MaxClientTools, schemaMaxDepth);
 
             if (toolsValidation.IsFailure)
             {
@@ -279,12 +274,12 @@ internal static partial class OpenAiV1Endpoints
 
         if (ScryingValidator.RequestContainsImages(mapped))
         {
-            ScryingSettings scrying = settings.ResolveScrying();
+            ScryingSettings scrying = settings.Scrying ?? new ScryingSettings();
 
             if (!scrying.Enabled)
             {
                 return new ChatCompletionValidationFailure(
-                    "Scrying is disabled. Enable Arcanum:Features:Scrying to send images.",
+                    "Scrying is disabled. Enable Arcanum:Scrying:Enabled to send images.",
                     "invalid_request_error",
                     "feature_disabled",
                     null,

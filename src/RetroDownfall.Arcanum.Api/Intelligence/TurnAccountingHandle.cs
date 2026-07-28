@@ -14,7 +14,7 @@ internal sealed record BatchReservationLine(
     int? ReasoningBudgetTokens);
 
 /// <summary>
-/// Per-turn (or per-batch) run + reservation + cost-accounting handle. Failures are logged by the
+/// Per-turn (or per-batch) run + reservation + model-call budget handle. Failures are logged by the
 /// caller; reservation acquisition failures surface as <see cref="ErrorCodes.Budget.Exceeded"/>.
 /// When <see cref="OwnsLifecycle"/> is false, the handle is ambient (batch parent / nested work) —
 /// callers must not <see cref="CompleteAsync"/>.

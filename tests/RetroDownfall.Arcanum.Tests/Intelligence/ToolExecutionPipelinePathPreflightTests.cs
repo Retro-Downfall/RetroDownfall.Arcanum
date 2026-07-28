@@ -174,6 +174,41 @@ public sealed class ToolExecutionPipelinePathPreflightTests
     }
 
     [Fact]
+    public void Apply_patch_preflight_clamps_validator_bypassed_extreme_limits()
+    {
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new
+            {
+                patch =
+                    """
+                    --- /dev/null
+                    +++ b/new.txt
+                    @@ -0,0 +1 @@
+                    +value
+                    """,
+            });
+        WorkspacePatchSettings settings = new()
+        {
+            MaxPatchBytes = long.MinValue,
+            MaxFiles = int.MinValue,
+            MaxHunks = int.MinValue,
+            MaxLinesPerHunk = int.MinValue,
+            MaxElapsedMilliseconds = int.MinValue,
+            RollbackReserveMilliseconds = int.MaxValue,
+        };
+
+        bool parsed = ToolExecutionPipeline.TryParseApplyPatchManifest(
+            arguments,
+            settings,
+            CancellationToken.None,
+            out var manifest);
+
+        Assert.True(parsed);
+        Assert.NotNull(manifest);
+        Assert.Equal(["new.txt"], manifest.NormalizedPaths);
+    }
+
+    [Fact]
     public void Apply_patch_preflight_propagates_parser_cancellation()
     {
 
@@ -209,13 +244,10 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         DenyingWard ward = new();
         ArcanumSettings settings = new()
         {
-            Security = new SecuritySettings
+            Ward = new WardSettings
             {
-                Ward = new WardPolicySettings
-                {
-                    Enabled = true,
-                    ForbiddenArts = [],
-                },
+                Enabled = true,
+                ForbiddenArts = [],
             },
         };
         ToolExecutionPipeline pipeline = new(

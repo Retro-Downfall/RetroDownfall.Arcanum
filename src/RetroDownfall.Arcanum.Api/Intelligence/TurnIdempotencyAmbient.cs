@@ -7,12 +7,22 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 internal static class TurnIdempotencyAmbient
 {
 
-    private static readonly AsyncLocal<bool?> CurrentLocal = new();
+    private static readonly AsyncLocal<State?> CurrentLocal = new();
 
-    public static bool Current => CurrentLocal.Value == true;
+    public static bool Current => CurrentLocal.Value?.HasIdempotencyKey == true;
 
-    public static void Publish(bool hasIdempotencyKey) => CurrentLocal.Value = hasIdempotencyKey;
+    public static CancellationToken OwnershipLostToken =>
+        CurrentLocal.Value?.OwnershipLostToken ?? CancellationToken.None;
+
+    public static void Publish(
+        bool hasIdempotencyKey,
+        CancellationToken ownershipLostToken = default) =>
+        CurrentLocal.Value = new State(hasIdempotencyKey, ownershipLostToken);
 
     public static void Clear() => CurrentLocal.Value = null;
+
+    private sealed record State(
+        bool HasIdempotencyKey,
+        CancellationToken OwnershipLostToken);
 
 }

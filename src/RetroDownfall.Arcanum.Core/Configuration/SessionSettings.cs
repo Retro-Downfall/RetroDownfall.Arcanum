@@ -1,9 +1,5 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
-/// <summary>
-/// Code-owned session limits plus the runtime projection of
-/// <c>Arcanum:Features:MemoryManagement</c>. This record is not a public configuration root.
-/// </summary>
 public sealed record SessionSettings
 {
 
@@ -17,15 +13,16 @@ public sealed record SessionSettings
 
     /// <summary>
     /// Maximum fork lineage depth — a session forked from a session that was itself forked
-    /// <see cref="MaxForkDepth"/> times is rejected with <c>Session.ForkDepthExceeded</c>. Default
+    /// <see cref="MaxForkDepth"/> times is rejected with <c>Session.ForkDepthExceeded</c>. Mirrors
+    /// <c>ConclaveSettings.MaxDelegationDepth</c>'s role for Apprentice delegation trees. Default
     /// <c>3</c>; clamped 0–20 (<c>0</c> permits only forking an un-forked, "root" session).
     /// </summary>
     public int MaxForkDepth { get; set; } = 3;
 
     /// <summary>
     /// When false (default), memory-management endpoints (<c>DELETE /entries</c>, pin/unpin, compact)
-    /// return <c>Session.MemoryManagementDisabled</c>. The value projects
-    /// <c>Arcanum:Features:MemoryManagement</c>.
+    /// return <c>Session.MemoryManagementDisabled</c>. Gate remains off until an operator explicitly
+    /// enables it.
     /// </summary>
     public bool AllowMemoryManagement { get; set; } = false;
 

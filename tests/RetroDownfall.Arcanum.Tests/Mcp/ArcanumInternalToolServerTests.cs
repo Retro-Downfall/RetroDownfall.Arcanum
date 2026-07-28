@@ -14,11 +14,13 @@ using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
+[Collection("WorkspacePathPolicy")]
 public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 {
 
@@ -41,6 +43,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+
+        SecureFileReader.AfterOpenForTests = null;
 
         await _workspace.DisposeAsync();
 
@@ -603,9 +607,9 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         _workspace.WriteFile(
             "expensive-search.txt",
             new string('a', 100_000) + "!");
-        CodingToolsSettings codingTools = ArcanumRuntimeDefaults.CodingTools with
+        CodingToolsSettings codingTools = new()
         {
-            Search = ArcanumRuntimeDefaults.CodingTools.Search with
+            Search = new WorkspaceSearchSettings
             {
                 RegexTimeoutMilliseconds = 1_000,
                 MaxElapsedMilliseconds = 5_000,
@@ -659,15 +663,15 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
                 Enumerable.Range(1, 500)
                     .Select(static index =>
                         $"needle {index:D3} {new string('x', 96)}")));
-        IntelligenceSettings intelligenceSettings = ArcanumRuntimeDefaults.Intelligence with
+        IntelligenceSettings intelligenceSettings = new()
         {
             EnableLexiconSystem = false,
             EnableArchiveSearch = false,
             ToolOutputCapBytes = 4_096,
         };
-        CodingToolsSettings codingTools = ArcanumRuntimeDefaults.CodingTools with
+        CodingToolsSettings codingTools = new()
         {
-            Search = ArcanumRuntimeDefaults.CodingTools.Search with
+            Search = new WorkspaceSearchSettings
             {
                 MaxMatches = 1_000,
                 MaxPreviewChars = 128,
@@ -725,7 +729,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task ToolsList_names_match_registered_handlers_when_all_features_enabled()
     {
 
-        IntelligenceSettings allFeatures = ArcanumRuntimeDefaults.Intelligence with
+        IntelligenceSettings allFeatures = new()
         {
 
             EnableLexiconSystem = true,
@@ -739,9 +743,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             conclaveEnabled: true,
             sagaEnabled: true,
             a2aClientEnabled: true,
-            attachmentsToolEnabled: true,
-            workspaceCheckRuntime: new FakeWorkspaceCheckRuntime(
-                new WorkspaceCheckExecutionStatus(true, false, "available")));
+            attachmentsToolEnabled: true);
 
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
 
@@ -754,7 +756,14 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         HashSet<string> registeredNames = session.Server.RegisteredToolHandlerNamesForTests
             .ToHashSet(StringComparer.Ordinal);
 
+        // Deprecated tools/call-only alias — registered but never advertised.
+        Assert.Contains("use_commlink", registeredNames);
+
+        Assert.DoesNotContain("use_commlink", listedNames);
+
         Assert.Contains("send_commlink_alert", listedNames);
+
+        registeredNames.Remove("use_commlink");
 
         Assert.Equal(registeredNames, listedNames);
 
@@ -961,7 +970,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             Path.Combine(_workspace.Root, "notes", "huge.txt"),
             largeLine + "\nsecond line");
 
-        IntelligenceSettings intelligenceSettings = ArcanumRuntimeDefaults.Intelligence with
+        IntelligenceSettings intelligenceSettings = new()
         {
             EnableLexiconSystem = false,
             EnableArchiveSearch = false,
@@ -1089,6 +1098,142 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ToolsCall_replace_text_block_rejects_growth_past_read_cap_after_open()
+    {
+
+        const string relativePath = "notes/growing.txt";
+
+        _workspace.WriteFile(relativePath, new string('x', 1024));
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            maxFileReadSizeBytes: 1024);
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        SecureFileReader.AfterOpenForTests = path =>
+        {
+            SecureFileReader.AfterOpenForTests = null;
+
+            File.AppendAllText(path, "y");
+        };
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ReplaceTextBlockParams
+            {
+                RelativePath = relativePath,
+                ExactSearchText = "xx",
+                ReplacementText = "zz",
+            },
+            McpJsonSerializerContext.Default.ReplaceTextBlockParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "replace_text_block",
+            arguments);
+
+        Assert.True(result.IsError);
+
+        string message = Assert.Single(result.Content!).Text!;
+
+        Assert.Contains("maximum read size", message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
+            Path.Combine(_workspace.Root, relativePath),
+            message,
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_replace_text_block_rejects_path_swap_after_open()
+    {
+
+        const string relativePath = "notes/swapped.txt";
+
+        string path = _workspace.WriteFile(
+            relativePath,
+            "replace this original");
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        SecureFileReader.AfterOpenForTests = openedPath =>
+        {
+            SecureFileReader.AfterOpenForTests = null;
+
+            File.Delete(openedPath);
+
+            File.WriteAllText(openedPath, "external replacement");
+        };
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ReplaceTextBlockParams
+            {
+                RelativePath = relativePath,
+                ExactSearchText = "original",
+                ReplacementText = "updated",
+            },
+            McpJsonSerializerContext.Default.ReplaceTextBlockParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "replace_text_block",
+            arguments);
+
+        Assert.True(result.IsError);
+
+        Assert.Equal("external replacement", await File.ReadAllTextAsync(path));
+
+        string message = Assert.Single(result.Content!).Text!;
+
+        Assert.DoesNotContain(path, message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "external replacement",
+            message,
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_replace_text_block_rejects_malformed_utf8()
+    {
+
+        const string relativePath = "notes/malformed.txt";
+
+        string path = Path.Combine(_workspace.Root, relativePath);
+
+        await File.WriteAllBytesAsync(path, [0x66, 0x80, 0x6f]);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        using IDisposable persistedTurn = BeginPersistedTurn();
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ReplaceTextBlockParams
+            {
+                RelativePath = relativePath,
+                ExactSearchText = "f",
+                ReplacementText = "z",
+            },
+            McpJsonSerializerContext.Default.ReplaceTextBlockParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "replace_text_block",
+            arguments);
+
+        Assert.True(result.IsError);
+
+        string message = Assert.Single(result.Content!).Text!;
+
+        Assert.Contains("UTF-8", message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(path, message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("f�o", message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public async Task ToolsCall_read_file_chunk_rejects_path_outside_workspace()
     {
 
@@ -1186,7 +1331,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         string longClientName = new('x', 200);
 
-        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
+        IntelligenceSettings settings = new()
         {
             EnableLexiconSystem = false,
             EnableArchiveSearch = false,
@@ -1553,11 +1698,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task ToolsList_advertises_lexicon_tools_when_enabled()
     {
 
-        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
-        {
-            EnableLexiconSystem = true,
-            EnableArchiveSearch = false,
-        };
+        IntelligenceSettings settings = new() { EnableLexiconSystem = true, EnableArchiveSearch = false };
 
         await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
 
@@ -1579,11 +1720,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task ToolsList_omits_lexicon_tools_when_disabled()
     {
 
-        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
-        {
-            EnableLexiconSystem = false,
-            EnableArchiveSearch = false,
-        };
+        IntelligenceSettings settings = new() { EnableLexiconSystem = false, EnableArchiveSearch = false };
 
         await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
 
@@ -1601,11 +1738,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task ToolsCall_scribe_lexicon_creates_entry()
     {
 
-        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
-        {
-            EnableLexiconSystem = true,
-            EnableArchiveSearch = false,
-        };
+        IntelligenceSettings settings = new() { EnableLexiconSystem = true, EnableArchiveSearch = false };
 
         await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
 
@@ -1625,11 +1758,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task ToolsCall_delete_lexicon_removes_entry()
     {
 
-        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
-        {
-            EnableLexiconSystem = true,
-            EnableArchiveSearch = false,
-        };
+        IntelligenceSettings settings = new() { EnableLexiconSystem = true, EnableArchiveSearch = false };
 
         await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
 
@@ -1968,12 +2097,11 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             ? Path.GetFullPath(_workspace.Root)
             : null;
 
-        IntelligenceSettings settings = intelligenceSettings
-            ?? (ArcanumRuntimeDefaults.Intelligence with
-            {
-                EnableLexiconSystem = false,
-                EnableArchiveSearch = false,
-            });
+        IntelligenceSettings settings = intelligenceSettings ?? new IntelligenceSettings
+        {
+            EnableLexiconSystem = false,
+            EnableArchiveSearch = false,
+        };
 
         ServiceCollection services = new();
 

@@ -125,21 +125,21 @@ public sealed class SessionService
             TheForgeJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
 
-    /// <summary><c>POST /api/sessions/{id}/entries/{entryId}/pin</c> — gated by <c>Arcanum:Features:MemoryManagement</c>; 409 <c>Session.TooManyPinned</c>.</summary>
+    /// <summary><c>POST /api/sessions/{id}/entries/{entryId}/pin</c> — gated by <c>Arcanum:Sessions:AllowMemoryManagement</c>; 409 <c>Session.TooManyPinned</c>.</summary>
     public Task<ApiResponse<bool>?> PinEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             $"/api/sessions/{id}/entries/{entryId}/pin",
             TheForgeJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
 
-    /// <summary><c>DELETE /api/sessions/{id}/entries/{entryId}/pin</c> — gated by <c>Arcanum:Features:MemoryManagement</c>.</summary>
+    /// <summary><c>DELETE /api/sessions/{id}/entries/{entryId}/pin</c> — gated by <c>Arcanum:Sessions:AllowMemoryManagement</c>.</summary>
     public Task<ApiResponse<bool>?> UnpinEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
         _apiClient.DeleteAsync(
             $"/api/sessions/{id}/entries/{entryId}/pin",
             TheForgeJsonContext.Default.ApiResponseBoolean,
             cancellationToken);
 
-    /// <summary><c>POST /api/sessions/{id}/compact</c> — gated by <c>Arcanum:Features:MemoryManagement</c>.</summary>
+    /// <summary><c>POST /api/sessions/{id}/compact</c> — gated by <c>Arcanum:Sessions:AllowMemoryManagement</c>.</summary>
     public Task<ApiResponse<CompactResult>?> CompactAsync(Guid id, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             $"/api/sessions/{id}/compact",

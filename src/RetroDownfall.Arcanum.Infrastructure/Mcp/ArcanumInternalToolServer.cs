@@ -83,7 +83,7 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _adjustInitiativeSchema;
 
-    private readonly JsonElement _sendCommLinkAlertSchema;
+    private readonly JsonElement _useCommlinkSchema;
 
     private readonly JsonElement _petitionDungeonMasterSchema;
 
@@ -258,51 +258,9 @@ internal sealed partial class ArcanumInternalToolServer
         WorkspacePatchSettings configuredPatch =
             codingToolsSettings?.Patch ?? new WorkspacePatchSettings();
 
-        _workspacePatchSettings = new WorkspacePatchSettings
-        {
-            MaxPatchBytes =
-                ArcanumSettingClamps.WorkspacePatchMaxPatchBytes(
-                    configuredPatch.MaxPatchBytes),
-            MaxInputBytesPerFile =
-                ArcanumSettingClamps.WorkspacePatchMaxInputBytesPerFile(
-                    configuredPatch.MaxInputBytesPerFile),
-            MaxTotalInputBytes =
-                ArcanumSettingClamps.WorkspacePatchMaxTotalInputBytes(
-                    configuredPatch.MaxTotalInputBytes),
-            MaxOutputBytesPerFile =
-                ArcanumSettingClamps.WorkspacePatchMaxOutputBytesPerFile(
-                    configuredPatch.MaxOutputBytesPerFile),
-            MaxTotalOutputBytes =
-                ArcanumSettingClamps.WorkspacePatchMaxTotalOutputBytes(
-                    configuredPatch.MaxTotalOutputBytes),
-            MaxStagingBytesPerFile =
-                ArcanumSettingClamps.WorkspacePatchMaxStagingBytesPerFile(
-                    configuredPatch.MaxStagingBytesPerFile),
-            MaxTotalStagingBytes =
-                ArcanumSettingClamps.WorkspacePatchMaxTotalStagingBytes(
-                    configuredPatch.MaxTotalStagingBytes),
-            MaxElapsedMilliseconds =
-                ArcanumSettingClamps.WorkspacePatchMaxElapsedMilliseconds(
-                    configuredPatch.MaxElapsedMilliseconds),
-            RollbackReserveMilliseconds =
-                ArcanumSettingClamps.WorkspacePatchRollbackReserveMilliseconds(
-                    configuredPatch.RollbackReserveMilliseconds),
-            MaxFiles =
-                ArcanumSettingClamps.WorkspacePatchMaxFiles(
-                    configuredPatch.MaxFiles),
-            MaxHunks =
-                ArcanumSettingClamps.WorkspacePatchMaxHunks(
-                    configuredPatch.MaxHunks),
-            MaxLinesPerHunk =
-                ArcanumSettingClamps.WorkspacePatchMaxLinesPerHunk(
-                    configuredPatch.MaxLinesPerHunk),
-            FuzzyMatchWindowLines =
-                ArcanumSettingClamps.WorkspacePatchFuzzyMatchWindowLines(
-                    configuredPatch.FuzzyMatchWindowLines),
-            MaxResultItems =
-                ArcanumSettingClamps.WorkspacePatchMaxResultItems(
-                    configuredPatch.MaxResultItems),
-        };
+        _workspacePatchSettings =
+            ArcanumSettingClamps.NormalizeWorkspacePatchSettings(
+                configuredPatch);
 
         _workspaceCheckSettings =
             codingToolsSettings?.WorkspaceCheck
@@ -367,7 +325,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         _adjustInitiativeSchema = BuildAdjustInitiativeSchema();
 
-        _sendCommLinkAlertSchema = BuildSendCommLinkAlertSchema();
+        _useCommlinkSchema = BuildUseCommlinkSchema();
 
         _petitionDungeonMasterSchema = BuildPetitionDungeonMasterSchema();
 
@@ -829,7 +787,7 @@ internal sealed partial class ArcanumInternalToolServer
                 Name = "send_commlink_alert",
                 Description =
                     "Send a one-way external notification through the configured Comm Link. This does not wait for or receive a reply.",
-                InputSchema = _sendCommLinkAlertSchema,
+                InputSchema = _useCommlinkSchema,
             });
 
         tools.Add(
