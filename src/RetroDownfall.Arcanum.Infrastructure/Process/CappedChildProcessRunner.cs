@@ -248,7 +248,8 @@ internal static class CappedChildProcessRunner
 
         }
 
-        UnixProcessGroupSupervisor.Apply(startInfo);
+        bool processGroupEstablishedByLauncher =
+            UnixProcessGroupSupervisor.Apply(startInfo);
 
         using Process process = new();
 
@@ -437,7 +438,9 @@ internal static class CappedChildProcessRunner
             // actually need a live pid to clean up correctly.
             startedPid = process.Id;
 
-            unixProcessGroupId = UnixProcessGroup.TryCreate(startedPid);
+            unixProcessGroupId = processGroupEstablishedByLauncher
+                ? startedPid
+                : UnixProcessGroup.TryCreate(startedPid);
             descendantSupervisor =
                 MacOsDescendantSupervisor.TryStart(startedPid);
 

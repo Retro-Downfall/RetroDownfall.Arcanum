@@ -18,22 +18,46 @@ internal static class UnixProcessGroupSupervisor
         + "trap - EXIT; cleanup; "
         + "exit \"$status\"";
 
-    internal static void Apply(ProcessStartInfo startInfo)
+    private static readonly string[] LinuxSetSidCandidates =
+    [
+        "/usr/bin/setsid",
+        "/bin/setsid",
+    ];
+
+    internal static bool Apply(ProcessStartInfo startInfo)
     {
         if (OperatingSystem.IsWindows())
         {
-            return;
+            return false;
         }
 
         string target = startInfo.FileName;
 
         if (string.IsNullOrWhiteSpace(target))
         {
-            return;
+            return false;
         }
 
         List<string> arguments = [.. startInfo.ArgumentList];
+        string? setSidPath = OperatingSystem.IsLinux()
+            ? LinuxSetSidCandidates.FirstOrDefault(File.Exists)
+            : null;
         startInfo.ArgumentList.Clear();
+
+        if (setSidPath is not null)
+        {
+            startInfo.FileName = setSidPath;
+            startInfo.ArgumentList.Add("--");
+            startInfo.ArgumentList.Add(target);
+
+            foreach (string argument in arguments)
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+
+            return true;
+        }
+
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add(SupervisorScript);
         startInfo.ArgumentList.Add("arcanum-process-group");
@@ -45,5 +69,6 @@ internal static class UnixProcessGroupSupervisor
         }
 
         startInfo.FileName = "/bin/sh";
+        return false;
     }
 }
