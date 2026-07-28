@@ -10,10 +10,9 @@
   <Project Path="src/RetroDownfall.Arcanum.Api/RetroDownfall.Arcanum.Api.csproj" />
   <Folder Name="/docs/">
     <File Path="docs\Arcanum.DESIGN.md" />
+    <File Path="docs\Arcanum.Design.Human.md" />
     <File Path="docs\Arcanum.README.md" />
     <File Path="docs\Compendium.README.md" />
-    <File Path="docs\TheForge.DESIGN.md" />
-    <File Path="docs\TheForge.README.md" />
   </Folder>
 
   <Project Path="src/RetroDownfall.Arcanum.Api.DevHost/RetroDownfall.Arcanum.Api.DevHost.csproj" />

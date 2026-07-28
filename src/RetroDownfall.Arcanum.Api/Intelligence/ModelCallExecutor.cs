@@ -61,8 +61,6 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         _logger = logger;
     }
 
-    public bool TryBeginModelCall(ITurnBudget budget) => budget.TryConsumeModelCall();
-
     public async Task<ModelCallOutcome> ExecuteBufferedAsync(
         IChatClient chatClient,
         IList<ChatMessage> messages,
@@ -76,11 +74,6 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         ArgumentNullException.ThrowIfNull(messages);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(budget);
-
-        if (budget.RemainingModelCalls <= 0)
-        {
-            return ModelCallOutcome.Failed(ModelCallBudgetFailure(purpose));
-        }
 
         if (ValidatePrecomputedBreakdown(messages, options, context) is { } staleError)
         {
@@ -109,11 +102,6 @@ public sealed class ModelCallExecutor : IModelCallExecutor
                 string.Empty,
                 admission.Error,
                 Cause: null));
-        }
-
-        if (!TryBeginModelCall(budget))
-        {
-            return ModelCallOutcome.Failed(ModelCallBudgetFailure(purpose));
         }
 
         string modelCallId = Guid.NewGuid().ToString("N");
@@ -184,15 +172,6 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(budget);
 
-        if (budget.RemainingModelCalls <= 0)
-        {
-            yield return new ModelCallFailureUpdate(
-                purpose,
-                string.Empty,
-                ModelCallBudgetFailure(purpose).Error);
-            yield break;
-        }
-
         if (ValidatePrecomputedBreakdown(messages, options, context) is { } staleError)
         {
             yield return new ModelCallFailureUpdate(
@@ -219,15 +198,6 @@ public sealed class ModelCallExecutor : IModelCallExecutor
                 purpose,
                 string.Empty,
                 admission.Error);
-            yield break;
-        }
-
-        if (!TryBeginModelCall(budget))
-        {
-            yield return new ModelCallFailureUpdate(
-                purpose,
-                string.Empty,
-                ModelCallBudgetFailure(purpose).Error);
             yield break;
         }
 
@@ -342,14 +312,15 @@ public sealed class ModelCallExecutor : IModelCallExecutor
             { "provider", context.Provider.Name },
             { "model", context.Model },
             { "purpose", purpose.ToString() },
-            { "control_mode", profile?.ControlMode.ToString() ?? "Legacy" },
+            { "control_mode", profile?.ControlMode.ToString() ?? "Unknown" },
             { "eligibility", eligibility.ToString() },
             { "reason", reason.ToString() },
         };
 
         ArcanumMetrics.PromptCacheCallsTotal.Add(1, tags);
 
-        ModelPricingEntry? pricing = _settings?.CurrentValue.Pricing.ResolveForModel(context.Model);
+        ModelPricingEntry? pricing =
+            _settings?.CurrentValue.ResolvePricing().ResolveForModel(context.Model);
 
         if (pricing is not null
             && plan is { Eligibility: PromptCacheEligibility.Eligible }
@@ -362,9 +333,7 @@ public sealed class ModelCallExecutor : IModelCallExecutor
                 tags);
         }
 
-        bool reportsCachedInput = profile?.ReportsCachedInputUsage
-            ?? context.Provider.SupportsPromptCaching
-            ?? context.Provider.Type == AiProviderKind.OpenAICompatible;
+        bool reportsCachedInput = profile?.ReportsCachedInputUsage == true;
         long cachedTokens = Math.Max(0L, usage?.CachedInputTokenCount ?? 0L);
 
         if (!reportsCachedInput || cachedTokens <= 0)
@@ -691,15 +660,6 @@ public sealed class ModelCallExecutor : IModelCallExecutor
             hasProviderContent,
             hasProtectedData);
     }
-
-    private static ModelCallFailure ModelCallBudgetFailure(ModelCallPurpose purpose) =>
-        new(
-            purpose,
-            string.Empty,
-            new Error(
-                ErrorCodes.Hub.TurnBudgetExceeded,
-                "Model call limit reached for this turn."),
-            Cause: null);
 
     private static (ReasoningOutputMode? Requested, ReasoningOutputMode Effective) ResolveReasoningOutput(
         ChatOptions options,

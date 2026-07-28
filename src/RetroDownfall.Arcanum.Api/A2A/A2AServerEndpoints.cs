@@ -25,7 +25,7 @@ namespace RetroDownfall.Arcanum.Api.A2A;
 /// Registered on <c>apiGroup</c> (not a standalone route), so every A2A route inherits
 /// <see cref="ApiKeyEndpointFilter"/> and the active rate limiter exactly like every other <c>/api</c> route
 /// — deliberately not the public, unauthenticated <c>/.well-known/agent-card.json</c> convention (see
-/// DESIGN.md &#167;5.7.1). Structural mapping happens once at startup from the config snapshot at boot;
+/// <c>docs/Arcanum.DESIGN.md</c> &#167;5.7.1). Structural mapping happens once at startup from the config snapshot at boot;
 /// <see cref="ArcanumA2AAgentHandler"/> itself still re-checks <c>IOptionsMonitor</c> per call, matching
 /// every other Conclave gate.
 /// </remarks>
@@ -45,9 +45,9 @@ internal static class A2AServerEndpoints
             return apiGroup;
         }
 
-        ConclaveA2ASettings a2a = startupSettings.Conclave.A2A ?? new ConclaveA2ASettings();
+        ConclaveA2ASettings a2a = startupSettings.ResolveA2A();
 
-        if (!startupSettings.Conclave.Enabled || !a2a.Enabled || !a2a.ServerEnabled)
+        if (!startupSettings.ResolveConclave().Enabled || !a2a.Enabled || !a2a.ServerEnabled)
         {
 
             return apiGroup;
@@ -104,7 +104,7 @@ internal static class A2AServerEndpoints
     internal static AgentCard BuildAgentCard(ArcanumSettings settings, HttpContext context, string serverPath)
     {
 
-        ConclaveA2ASettings a2a = settings.Conclave.A2A ?? new ConclaveA2ASettings();
+        ConclaveA2ASettings a2a = settings.ResolveA2A();
 
         string interfaceUrl = $"{context.Request.Scheme}://{context.Request.Host}{serverPath}";
 

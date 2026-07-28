@@ -109,6 +109,52 @@ public sealed class CappedChildProcessRunnerTests
     }
 
     [SkippableFact]
+    public void Unix_process_group_supervisor_without_setsid_uses_shell_fallback()
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "Linux-specific launch construction.");
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "/bin/echo",
+        };
+        startInfo.ArgumentList.Add("-n");
+        startInfo.ArgumentList.Add("hello");
+
+        bool directGroup = UnixProcessGroupSupervisor.Apply(
+            startInfo,
+            static () => null);
+
+        Assert.False(directGroup);
+        Assert.Equal("/bin/sh", startInfo.FileName);
+        Assert.Equal("-c", startInfo.ArgumentList[0]);
+        Assert.Contains("set -m", startInfo.ArgumentList[1], StringComparison.Ordinal);
+        Assert.Equal("arcanum-process-group", startInfo.ArgumentList[2]);
+        Assert.Equal("/bin/echo", startInfo.ArgumentList[3]);
+        Assert.Equal("-n", startInfo.ArgumentList[4]);
+        Assert.Equal("hello", startInfo.ArgumentList[5]);
+    }
+
+    [SkippableFact]
+    public void Unix_process_group_supervisor_with_setsid_preserves_argv()
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "Linux-specific launch construction.");
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "-option-shaped-command",
+        };
+        startInfo.ArgumentList.Add("argument with spaces");
+
+        bool directGroup = UnixProcessGroupSupervisor.Apply(
+            startInfo,
+            static () => "/usr/bin/setsid");
+
+        Assert.True(directGroup);
+        Assert.Equal("/usr/bin/setsid", startInfo.FileName);
+        Assert.Equal(
+            ["--", "-option-shaped-command", "argument with spaces"],
+            startInfo.ArgumentList);
+    }
+
+    [SkippableFact]
     public async Task RunAsync_kills_process_group_descendants_after_normal_parent_exit()
     {
 
@@ -147,7 +193,9 @@ public sealed class CappedChildProcessRunnerTests
             using global::System.Diagnostics.Process descendant =
                 global::System.Diagnostics.Process.GetProcessById(descendantPid);
             Assert.True(
-                descendant.HasExited,
+                await WaitForProcessExitOrZombieAsync(
+                    descendantPid,
+                    TimeSpan.FromSeconds(2)),
                 $"Detached descendant {descendantPid} survived normal parent exit.");
 
         }
@@ -219,7 +267,9 @@ public sealed class CappedChildProcessRunnerTests
                 global::System.Diagnostics.Process.GetProcessById(
                     descendantPid);
             Assert.True(
-                descendant.HasExited,
+                await WaitForProcessExitOrZombieAsync(
+                    descendantPid,
+                    TimeSpan.FromSeconds(2)),
                 $"Detached descendant {descendantPid} survived timeout cleanup.");
         }
         catch (ArgumentException)
@@ -290,7 +340,9 @@ public sealed class CappedChildProcessRunnerTests
                 global::System.Diagnostics.Process.GetProcessById(
                     descendantPid);
             Assert.True(
-                descendant.HasExited,
+                await WaitForProcessExitOrZombieAsync(
+                    descendantPid,
+                    TimeSpan.FromSeconds(2)),
                 $"Escaped descendant {descendantPid} survived parent success.");
         }
         catch (ArgumentException)
@@ -681,6 +733,66 @@ public sealed class CappedChildProcessRunnerTests
 
         };
 
+    }
+
+    private static async Task<bool> WaitForProcessExitOrZombieAsync(
+        int processId,
+        TimeSpan timeout)
+    {
+        long deadline = global::System.Environment.TickCount64
+            + (long)Math.Max(1, timeout.TotalMilliseconds);
+
+        do
+        {
+            if (IsExitedOrZombie(processId))
+            {
+                return true;
+            }
+
+            await Task.Delay(25);
+        }
+        while (global::System.Environment.TickCount64 < deadline);
+
+        return IsExitedOrZombie(processId);
+    }
+
+    private static bool IsExitedOrZombie(int processId)
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            string statPath = $"/proc/{processId}/stat";
+            if (File.Exists(statPath))
+            {
+                try
+                {
+                    string stat = File.ReadAllText(statPath);
+                    int commandEnd = stat.LastIndexOf(')');
+                    if (commandEnd >= 0
+                        && commandEnd + 2 < stat.Length
+                        && stat[commandEnd + 2] is 'Z' or 'X')
+                    {
+                        return true;
+                    }
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+
+        try
+        {
+            using global::System.Diagnostics.Process process =
+                global::System.Diagnostics.Process.GetProcessById(processId);
+            return process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return true;
+        }
     }
 
     private static ProcessStartInfo CreateSleepProcessStartInfo(int seconds)

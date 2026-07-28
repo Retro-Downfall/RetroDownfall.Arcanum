@@ -92,7 +92,7 @@ public static class ApiBootstrapper
                 IOptionsMonitor<ArcanumSettings> monitor = ctx.RequestServices
                     .GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
 
-                HostRateLimitSettings rl = monitor.CurrentValue.Host?.RateLimit ?? new HostRateLimitSettings();
+                HostRateLimitSettings rl = ArcanumRuntimeDefaults.HostRateLimit;
 
                 int permitLimit = ArcanumSettingClamps.RateLimitPermitLimit(rl.PermitLimit);
 
@@ -162,17 +162,13 @@ public static class ApiBootstrapper
     }
 
     private static bool IsRateLimitEnabled(IConfiguration configuration)
-    {
-        bool explicitlyEnabled = string.Equals(
-            configuration["Arcanum:Host:RateLimit:Enabled"]?.Trim(),
-            bool.TrueString,
-            StringComparison.OrdinalIgnoreCase);
-
-        return ArcanumEnvironment.IsRateLimitEnabled(explicitlyEnabled, ReadConfiguredListenAny(configuration));
-    }
+        => ArcanumEnvironment.IsRateLimitEnabled(
+            rateLimitConfigEnabled: false,
+            listenAnyConfigValue: ReadConfiguredListenAny(configuration));
 
     /// <summary>
-    /// Effective <c>/metrics</c> auth gate. Default is on (<see cref="MetricsSettings.RequireApiKey"/>).
+    /// Effective <c>/metrics</c> auth gate. Default is on
+    /// (<see cref="SecuritySettings.MetricsRequireApiKey"/>).
     /// Explicit <c>false</c> is honored only on a loopback bind; an all-interfaces bind
     /// (<c>Arcanum:Host:ListenAny</c> / <c>ARCANUM_HOST_ANY</c>) forces the gate on regardless —
     /// the same zero-trust downgrade pattern applied to CORS wildcards
@@ -188,7 +184,8 @@ public static class ApiBootstrapper
 
         }
 
-        string? configured = configuration["Arcanum:Metrics:RequireApiKey"]?.Trim();
+        string? configured =
+            configuration["Arcanum:Security:MetricsRequireApiKey"]?.Trim();
 
         if (string.IsNullOrEmpty(configured))
         {
@@ -428,9 +425,8 @@ public static class ApiBootstrapper
     }
 
     /// <summary>
-    /// Activates the Arcanum rate-limiter middleware when rate limiting is effective
-    /// (<c>Arcanum:Host:RateLimit:Enabled</c> or all-interfaces bind via ListenAny / <c>ARCANUM_HOST_ANY</c>);
-    /// otherwise no-op (zero overhead).
+    /// Activates the Arcanum rate-limiter middleware for an all-interfaces bind via ListenAny /
+    /// <c>ARCANUM_HOST_ANY</c>; otherwise no-op (zero overhead).
     /// </summary>
     public static void UseArcanumRateLimiter(this WebApplication app)
     {
@@ -531,7 +527,7 @@ public static class ApiBootstrapper
         apiGroup.MapOpenApi();
 
         bool enableScalar = string.Equals(
-            app.Configuration["Arcanum:Host:EnableScalarUi"]?.Trim(),
+            app.Configuration["Arcanum:Features:ScalarUi"]?.Trim(),
             bool.TrueString,
             StringComparison.OrdinalIgnoreCase);
 

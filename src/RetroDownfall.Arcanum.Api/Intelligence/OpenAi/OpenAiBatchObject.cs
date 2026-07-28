@@ -4,14 +4,14 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
-/// <summary>Body for <c>POST /v1/batches</c>. See DESIGN.md §11.21.</summary>
+/// <summary>Body for <c>POST /v1/batches</c>. See <c>docs/Arcanum.DESIGN.md</c> §11.21.</summary>
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; endpoint tests cover wire parsing.
 public sealed record OpenAiBatchRequest(
     [property: JsonPropertyName("input_file_id")] string? InputFileId,
     [property: JsonPropertyName("endpoint")] string? Endpoint,
     [property: JsonPropertyName("completion_window")] string? CompletionWindow = "24h");
 
-/// <summary>OpenAI-shaped <c>batch</c> object. See DESIGN.md §11.21.</summary>
+/// <summary>OpenAI-shaped <c>batch</c> object. See <c>docs/Arcanum.DESIGN.md</c> §11.21.</summary>
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 public sealed record OpenAiBatchObject(
     [property: JsonPropertyName("id")] string Id,

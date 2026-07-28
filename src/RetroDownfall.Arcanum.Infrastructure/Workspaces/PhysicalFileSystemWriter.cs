@@ -336,20 +336,14 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
     private long GetMaxFileWriteSizeBytes()
     {
-
-        ArcanumSettings settings = options.Value;
-
-        long configured = settings.Workspaces?.MaxFileWriteSizeBytes ?? new WorkspaceSettings().MaxFileWriteSizeBytes;
+        long configured = ArcanumRuntimeDefaults.WorkspaceMaxFileWriteSizeBytes;
 
         return ArcanumSettingClamps.MaxFileWriteSizeBytes(configured);
     }
 
     private long GetMaxReplaceTextBlockBytes()
     {
-
-        ArcanumSettings settings = options.Value;
-
-        long configured = settings.Workspaces?.MaxReplaceTextBlockBytes ?? new WorkspaceSettings().MaxReplaceTextBlockBytes;
+        long configured = ArcanumRuntimeDefaults.WorkspaceMaxReplaceTextBlockBytes;
 
         return ArcanumSettingClamps.MaxReplaceTextBlockBytes(configured);
     }

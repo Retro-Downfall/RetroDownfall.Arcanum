@@ -55,16 +55,20 @@ public sealed class ArcanumSettingClampsTests
 
     }
 
-    [Fact]
-    public void StructuredOutputMaxValidationRetries_clamps_to_valid_range()
+    [Theory]
+    [InlineData("MaxToolInferenceRounds")]
+    [InlineData("MaxRunSteps")]
+    [InlineData("MaxStepRetries")]
+    [InlineData("RetryBackoffSeconds")]
+    [InlineData("RetryBackoffMaxSeconds")]
+    [InlineData("MaxReweavesPerRun")]
+    [InlineData("MaxPlanSteps")]
+    [InlineData("MaxFallbackAttempts")]
+    [InlineData("StructuredOutputMaxValidationRetries")]
+    [InlineData("ExternalTaskTimeoutMinutes")]
+    public void Workflow_termination_limits_have_no_configuration_clamp(string methodName)
     {
-
-        Assert.Equal(0, ArcanumSettingClamps.StructuredOutputMaxValidationRetries(-1));
-
-        Assert.Equal(2, ArcanumSettingClamps.StructuredOutputMaxValidationRetries(2));
-
-        Assert.Equal(5, ArcanumSettingClamps.StructuredOutputMaxValidationRetries(10));
-
+        Assert.Null(typeof(ArcanumSettingClamps).GetMethod(methodName));
     }
 
     [Fact]
@@ -113,15 +117,6 @@ public sealed class ArcanumSettingClampsTests
 
         Assert.Equal(100, ArcanumSettingClamps.BudgetAlertThresholdPercent(150));
 
-    }
-
-    [Fact]
-    public void MaxToolInferenceRounds_clamps_to_1_through_100()
-    {
-        Assert.Equal(1, ArcanumSettingClamps.MaxToolInferenceRounds(0));
-        Assert.Equal(50, ArcanumSettingClamps.MaxToolInferenceRounds(50));
-        Assert.Equal(100, ArcanumSettingClamps.MaxToolInferenceRounds(100));
-        Assert.Equal(100, ArcanumSettingClamps.MaxToolInferenceRounds(250));
     }
 
     [Fact]
@@ -211,5 +206,4 @@ public sealed class ArcanumSettingClampsTests
             FuzzyMatchWindowLines = intValue,
             MaxResultItems = intValue,
         };
-
 }

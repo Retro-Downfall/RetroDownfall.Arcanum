@@ -13,8 +13,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 
 /// <summary>
 /// <c>GET /api/guardrails/audit</c> — read-only query surface over the persisted guardrails audit
-/// log (§8.x). Returns an empty list (not an error) when <c>Arcanum:Guardrails:AuditLog:Enabled</c>
-/// is <see langword="false"/>, matching every other disabled-feature convention in Arcanum.
+/// log (§8.x). Returns an empty list (not an error) when
+/// <c>Arcanum:Security:Guardrails:AuditLog:Enabled</c> is <see langword="false"/>, matching every
+/// other disabled-feature convention in Arcanum.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: thin query-parameter parsing over IGuardrailAuditLogger.QueryAsync; logic covered by GuardrailAuditLoggerTests.
 internal static class GuardrailsAuditEndpoints

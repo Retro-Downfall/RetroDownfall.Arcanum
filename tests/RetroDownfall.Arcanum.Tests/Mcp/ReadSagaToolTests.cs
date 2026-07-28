@@ -20,7 +20,7 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 
 /// <summary>
 /// RAG Phase 4 — <c>read_saga</c> MCP tool: gating (advertised/callable only when
-/// <c>Embeddings:SagaEnabled</c>), semantic search happy path, empty results, and embedding failure.
+/// <c>Features:Saga</c>), semantic search happy path, empty results, and embedding failure.
 /// Mirrors <see cref="ArcanumInternalToolServerTests"/>'s session harness, but with its own minimal
 /// scope providing <see cref="IWeaveService"/>, <see cref="IDivinationService"/>, and
 /// <see cref="ISagaMemoryStore"/> — read_saga needs none of the workspace/Grimoire dependencies that
@@ -200,7 +200,14 @@ public sealed class ReadSagaToolTests
         services.AddSingleton<ISagaMemoryStore>(store ?? new FakeSagaMemoryStore());
 
         services.AddSingleton<IOptionsMonitor<ArcanumSettings>>(
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Embeddings = new EmbeddingSettings { Enabled = true, SagaEnabled = sagaEnabled } }));
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
+            {
+                Features = new FeatureSettings
+                {
+                    Embeddings = true,
+                    Saga = sagaEnabled,
+                },
+            }));
 
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
@@ -212,7 +219,7 @@ public sealed class ReadSagaToolTests
             scopeFactory,
             NullLogger<UnseenServantPacer>.Instance);
 
-        IntelligenceSettings intelligenceSettings = new()
+        IntelligenceSettings intelligenceSettings = ArcanumRuntimeDefaults.Intelligence with
         {
             EnableLexiconSystem = false,
             EnableArchiveSearch = false,

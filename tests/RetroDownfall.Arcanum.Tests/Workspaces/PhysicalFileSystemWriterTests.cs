@@ -149,14 +149,22 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-            Workspaces = new WorkspaceSettings { EnableFileWrite = true, MaxFileWriteSizeBytes = 1024 },
+            Workspaces = new WorkspaceSettings { EnableFileWrite = true },
         };
 
         PhysicalFileSystemWriter writer = CreateWriter(settings);
 
         WorkspaceInfo workspace = MakeWorkspace();
+        int oversizedLength = checked(
+            (int)ArcanumSettingClamps.MaxFileWriteSizeBytes(
+                ArcanumRuntimeDefaults.WorkspaceMaxFileWriteSizeBytes)
+            + 1);
 
-        Result<FileWriteResult> result = await writer.WriteFileAsync(workspace, "big.txt", new string('x', 2048), CancellationToken.None);
+        Result<FileWriteResult> result = await writer.WriteFileAsync(
+            workspace,
+            "big.txt",
+            new string('x', oversizedLength),
+            CancellationToken.None);
 
         Assert.True(result.IsFailure);
 
@@ -343,15 +351,23 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-            Workspaces = new WorkspaceSettings { EnableFileWrite = true, MaxReplaceTextBlockBytes = 1024 },
+            Workspaces = new WorkspaceSettings { EnableFileWrite = true },
         };
 
         PhysicalFileSystemWriter writer = CreateWriter(settings);
 
         WorkspaceInfo workspace = MakeWorkspace();
+        int replacementLength = checked(
+            (int)ArcanumSettingClamps.MaxReplaceTextBlockBytes(
+                ArcanumRuntimeDefaults.WorkspaceMaxReplaceTextBlockBytes));
 
         Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
-            workspace, "target.txt", "foo", new string('y', 2048), null, CancellationToken.None);
+            workspace,
+            "target.txt",
+            "foo",
+            new string('y', replacementLength),
+            null,
+            CancellationToken.None);
 
         Assert.True(result.IsFailure);
 

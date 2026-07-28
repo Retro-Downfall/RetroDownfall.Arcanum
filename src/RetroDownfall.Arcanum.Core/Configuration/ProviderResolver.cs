@@ -83,21 +83,13 @@ public static class ProviderResolver
     }
 
     /// <summary>
-    /// Resolves the full prompt-cache profile for a provider/model pair. A declared model profile
-    /// replaces the provider profile; profiles are never partially merged.
+    /// Resolves the verified built-in prompt-cache profile for a provider/model pair. Unknown
+    /// providers, endpoints, and models return <see langword="null"/> rather than inferring support.
     /// </summary>
     public static PromptCachingProfile? ResolvePromptCachingProfile(
         ProviderSettings provider,
-        string? modelName)
-    {
-        if (TryResolveModelEntry(provider, modelName, out ModelEntry? entry)
-            && entry?.PromptCaching is { } modelProfile)
-        {
-            return modelProfile;
-        }
-
-        return provider.PromptCaching;
-    }
+        string? modelName) =>
+        ModelCapabilityCatalog.ResolvePromptCaching(provider, modelName);
 
     /// <summary>
     /// Finds the exact configured model entry on a resolved provider. This is the capability lookup
@@ -202,9 +194,8 @@ public static class ProviderResolver
     /// result; if that would leave zero candidates, every match is returned anyway (not just the
     /// first) so the caller's runtime connectivity fallback can still rotate through all configured
     /// candidates — health tracking can be stale (e.g. all matches transiently marked unhealthy by a
-    /// slow probe interval) and returning only one candidate would prevent
-    /// <c>WizardIntelligenceProvider</c>'s fallback loop from ever trying the others, collapsing
-    /// <c>Resilience.MaxFallbackAttempts</c> down to a single attempt regardless of configuration.
+    /// slow probe interval), and returning only one candidate would prevent the runtime connectivity
+    /// fallback from trying every distinct eligible provider.
     /// </summary>
     public static IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> ResolveCandidates(
         ArcanumSettings settings,
@@ -304,7 +295,8 @@ public static class ProviderResolver
     /// <summary>
     /// Resolves a configured provider by its exact (case-insensitive) <see cref="ProviderSettings.Name"/>.
     /// Used by the Weave embedding generator factory and by <see cref="ConfigurationValidator"/> to
-    /// validate <c>Arcanum:Embeddings:Provider</c> — unlike <see cref="TryResolveProviderForModel"/>,
+    /// validate <c>Arcanum:Integrations:Embeddings:Provider</c> — unlike
+    /// <see cref="TryResolveProviderForModel"/>,
     /// this looks up by provider name, not by advertised model id.
     /// </summary>
     public static bool TryResolveProviderByName(

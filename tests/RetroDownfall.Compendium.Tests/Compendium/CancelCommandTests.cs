@@ -83,9 +83,7 @@ public sealed class CancelCommandTests : IDisposable
     private static ConfigurationViewModel CreateViewModel()
     {
 
-        ArcanumDataProtectionSecretProtector protector = new();
-
-        ArcanumConfigurationStore store = new(protector);
+        ArcanumConfigurationStore store = new();
 
         return new ConfigurationViewModel(store, new NoopDialogService(), new SynchronousUiDispatcher());
 
@@ -96,16 +94,12 @@ public sealed class CancelCommandTests : IDisposable
 
         _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
-        ArcanumDataProtectionSecretProtector protector = new();
-
-        ArcanumSettings encrypted = protector.EncryptProviderKeys(settings);
-
         string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
 
         await File.WriteAllTextAsync(
             configPath,
             JsonSerializer.Serialize(
-                new ArcanumConfigurationFile { Arcanum = encrypted },
+                new ArcanumConfigurationFile { Arcanum = settings },
                 ConfigurationJsonContext.Default.ArcanumConfigurationFile));
 
     }

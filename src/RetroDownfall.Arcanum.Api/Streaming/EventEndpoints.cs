@@ -288,7 +288,7 @@ internal static class EventEndpoints
     {
 
         int seconds = ArcanumSettingClamps.EventBusHeartbeatSeconds(
-            settings.EventBus?.HeartbeatSeconds ?? new EventBusSettings().HeartbeatSeconds);
+            settings.ResolveEventBus().HeartbeatSeconds);
 
         return TimeSpan.FromSeconds(seconds);
 

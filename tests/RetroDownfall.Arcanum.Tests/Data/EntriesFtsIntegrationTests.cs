@@ -95,19 +95,11 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
 
         Assert.True(ftsCount >= 1);
 
-        ArcanumSettings settings = new()
-        {
-            Intelligence = new IntelligenceSettings
-            {
-                ArchiveSearchMaxQueryLength = 256,
-            },
-        };
-
         GrimoireRepository repository = new(
             _db,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(settings));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
         string results = await repository.SearchArchivesAsync("moonstone", maxResults: 10, CancellationToken.None);
 

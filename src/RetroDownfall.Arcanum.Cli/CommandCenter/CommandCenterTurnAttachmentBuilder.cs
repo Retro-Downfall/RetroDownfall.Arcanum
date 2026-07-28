@@ -27,8 +27,9 @@ internal static class CommandCenterTurnAttachmentBuilder
         ArgumentNullException.ThrowIfNull(preStagedPaths);
         ArgumentNullException.ThrowIfNull(settings);
 
-        long maxAttach = ArcanumSettingClamps.MaxAttachFileSizeBytes(settings.Cli.MaxAttachFileSizeBytes);
-        ScryingSettings scrying = settings.Scrying ?? new ScryingSettings();
+        long maxAttach = ArcanumSettingClamps.MaxAttachFileSizeBytes(
+            ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+        ScryingSettings scrying = settings.ResolveScrying();
         long maxImage = ArcanumSettingClamps.ScryingMaxImageBytes(scrying.MaxImageBytes);
         string[] allowedMime = scrying.AllowedMimeTypes is { Length: > 0 }
             ? scrying.AllowedMimeTypes
@@ -228,8 +229,9 @@ internal static class CommandCenterTurnAttachmentBuilder
             return false;
         }
 
-        long maxAttach = ArcanumSettingClamps.MaxAttachFileSizeBytes(settings.Cli.MaxAttachFileSizeBytes);
-        ScryingSettings scrying = settings.Scrying ?? new ScryingSettings();
+        long maxAttach = ArcanumSettingClamps.MaxAttachFileSizeBytes(
+            ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+        ScryingSettings scrying = settings.ResolveScrying();
         long maxImage = ArcanumSettingClamps.ScryingMaxImageBytes(scrying.MaxImageBytes);
 
         if (ScryingFocusStager.IsImagePath(fullPath))

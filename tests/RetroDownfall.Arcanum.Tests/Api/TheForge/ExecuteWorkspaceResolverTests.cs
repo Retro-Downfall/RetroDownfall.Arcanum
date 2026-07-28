@@ -86,7 +86,10 @@ public sealed class ExecuteWorkspaceResolverTests : IAsyncLifetime
             new FakeHostWorkspaceContext(null),
             Microsoft.Extensions.Options.Options.Create(new Core.Configuration.ArcanumSettings
             {
-                Spells = new Core.Configuration.SpellSettings { AllowedWorkspaceRoots = [_workspace.Root] },
+                Security = new Core.Configuration.SecuritySettings
+                {
+                    SpellWorkspaceRoots = [_workspace.Root],
+                },
             }));
     }
 

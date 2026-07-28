@@ -78,7 +78,7 @@ public sealed class ComparisonWorkbenchDataSource : IComparisonWorkbenchDataSour
             .GetAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return response?.Data?.Pricing;
+        return response?.Data?.Cost.Pricing;
 
     }
 

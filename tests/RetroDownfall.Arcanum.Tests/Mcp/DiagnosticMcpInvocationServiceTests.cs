@@ -238,24 +238,6 @@ public sealed class DiagnosticMcpInvocationServiceTests
     }
 
     [Fact]
-    public async Task Timeout_ReturnsDiagnosticTimeout()
-    {
-
-        FakeMcpConnectionManager manager = new();
-        manager.AddServer("srv-a", "running", ["slow"]);
-        manager.AddTool("slow", throws: new OperationCanceledException(), delay: TimeSpan.FromSeconds(2));
-        ArcanumSettings settings = new() { Mcp = new McpSettings { RequestTimeoutSeconds = 1 } };
-        DiagnosticMcpInvocationService service = CreateService(manager, settings);
-
-        Result<DiagnosticMcpInvocationOutcome> result = await service
-            .InvokeAsync("slow", default, "srv-a", null, CancellationToken.None);
-
-        Assert.True(result.IsFailure);
-        Assert.Equal(ErrorCodes.Mcp.DiagnosticTimeout, result.Error.Code);
-
-    }
-
-    [Fact]
     public async Task NonJsonOutput_IsWrappedAsString()
     {
 

@@ -38,7 +38,7 @@ public class TheForgeJsonContextTests
     }
 
     [Fact]
-    public void ArcanumSettings_WithPromptCachingProfile_RoundTrips()
+    public void ArcanumSettings_WithProviderCredentialReference_RoundTrips()
     {
         ArcanumSettings original = new()
         {
@@ -47,18 +47,8 @@ public class TheForgeJsonContextTests
                 new ProviderSettings
                 {
                     Name = "cache-provider",
-                    Models =
-                    [
-                        new ModelEntry("cache-model")
-                        {
-                            PromptCaching = new PromptCachingProfile
-                            {
-                                ControlMode = PromptCachingControlMode.Explicit,
-                                CacheKeysSupported = true,
-                                EmitCacheKey = true,
-                            },
-                        },
-                    ],
+                    CredentialEnvironmentVariable = "CACHE_PROVIDER_API_KEY",
+                    Models = ["cache-model"],
                 },
             ],
         };
@@ -71,9 +61,11 @@ public class TheForgeJsonContextTests
             TheForgeJsonContext.Default.ArcanumSettings);
 
         Assert.Equal(
-            PromptCachingControlMode.Explicit,
-            roundTripped?.Providers[0].Models[0].PromptCaching?.ControlMode);
-        Assert.True(roundTripped?.Providers[0].Models[0].PromptCaching?.EmitCacheKey);
+            "CACHE_PROVIDER_API_KEY",
+            roundTripped?.Providers[0].CredentialEnvironmentVariable);
+        Assert.Equal(
+            "cache-model",
+            roundTripped?.Providers[0].Models[0].Name);
     }
 
     [Fact]

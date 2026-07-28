@@ -1,8 +1,8 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Settings for the in-process <c>browse_web</c> tool. Disabled by default; when enabled, the tool
-/// fetches a URL, extracts the title and visible text, and returns a capped list of absolute links.
+/// Runtime projection for the in-process <c>browse_web</c> tool. Activation comes from
+/// <c>Arcanum:Features:WebBrowsing</c>; fetch limits are code-owned.
 /// </summary>
 public sealed record WebBrowsingSettings
 {

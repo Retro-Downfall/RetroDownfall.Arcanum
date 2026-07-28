@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
@@ -6,14 +5,27 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Pattern;
 
-public sealed class EyeOfTheWorldService(IOptionsMonitor<ArcanumSettings> settings) : IEyeOfTheWorld
+public sealed class EyeOfTheWorldService : IEyeOfTheWorld
 {
 
-    private int MaxEnumerationSteps =>
-        ArcanumSettingClamps.MaxEnumerationSteps(settings.CurrentValue.Perception.MaxEnumerationSteps);
+    private readonly int _maxEnumerationSteps =
+        ArcanumSettingClamps.MaxEnumerationSteps(
+            ArcanumRuntimeDefaults.Perception.MaxEnumerationSteps);
+
+    public EyeOfTheWorldService()
+    {
+    }
+
+    internal EyeOfTheWorldService(int maxEnumerationSteps)
+    {
+        _maxEnumerationSteps = ArcanumSettingClamps.MaxEnumerationSteps(maxEnumerationSteps);
+    }
+
+    private int MaxEnumerationSteps => _maxEnumerationSteps;
 
     private int MaxTocLines =>
-        ArcanumSettingClamps.MaxTableOfContentsLines(settings.CurrentValue.Perception.MaxTableOfContentsLines);
+        ArcanumSettingClamps.MaxTableOfContentsLines(
+            ArcanumRuntimeDefaults.Perception.MaxTableOfContentsLines);
 
     private static readonly HashSet<string> IgnoredDirectorySegments = new(StringComparer.OrdinalIgnoreCase)
     {

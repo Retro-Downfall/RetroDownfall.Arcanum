@@ -2,7 +2,6 @@ using System.Globalization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
@@ -24,13 +23,13 @@ public static class ArcanumKestrelConfigurator
 {
 
     public const string ListenAnyRequiresHttpsMessage =
-        "ListenAny / ARCANUM_HOST_ANY requires Host:Https:Enabled with a loadable certificate; plaintext any-IP HTTP is not permitted.";
+        "ListenAny / ARCANUM_HOST_ANY requires Arcanum:Host:Https:Enabled with a loadable certificate; plaintext any-IP HTTP is not permitted.";
 
     public static void Configure(KestrelServerOptions options, IConfiguration configuration, bool listenAny)
     {
 
         options.Limits.MaxRequestBodySize = ArcanumSettingClamps.MaxRequestBodyBytes(
-            ReadLong(configuration, "Arcanum:Host:MaxRequestBodyBytes", new HostSettings().MaxRequestBodyBytes));
+            ArcanumRuntimeDefaults.HostMaxRequestBodyBytes);
 
         HttpsSettings https = ReadHttpsSettings(configuration);
 
@@ -97,11 +96,7 @@ public static class ArcanumKestrelConfigurator
 
         int httpsPort = ArcanumSettingClamps.HostHttpsPort(https.Port);
 
-        ConfigurationSecretProtector? protector = options.ApplicationServices is { } services
-            ? services.GetService<ConfigurationSecretProtector>()
-            : null;
-
-        HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(https, protector);
+        HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(https);
 
         if (!result.IsSuccess || result.Certificate is null)
         {
@@ -155,7 +150,8 @@ public static class ArcanumKestrelConfigurator
 
             PrivateKeyPath = configuration["Arcanum:Host:Https:PrivateKeyPath"],
 
-            CertificatePassword = configuration["Arcanum:Host:Https:CertificatePassword"],
+            CertificatePasswordEnvironmentVariable =
+                configuration["Arcanum:Host:Https:CertificatePasswordEnvironmentVariable"],
 
         };
 
@@ -190,24 +186,6 @@ public static class ArcanumKestrelConfigurator
         }
 
         return int.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
-            ? parsed
-            : fallback;
-
-    }
-
-    private static long ReadLong(IConfiguration configuration, string key, long fallback)
-    {
-
-        string? raw = configuration[key];
-
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-
-            return fallback;
-
-        }
-
-        return long.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed)
             ? parsed
             : fallback;
 

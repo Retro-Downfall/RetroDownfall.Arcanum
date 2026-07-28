@@ -80,11 +80,7 @@ public sealed class SaveCommandCanExecuteTests : IDisposable
         await SeedAsync(new ArcanumSettings
         {
             Host = new HostSettings { Port = 5001 },
-            Resilience = new ResilienceSettings
-            {
-                Enabled = false,
-                HealthProbeIntervalSeconds = 30,
-            },
+            Features = new FeatureSettings { WebBrowsing = false },
         });
 
         ConfigurationViewModel vm = CreateViewModel();
@@ -95,18 +91,18 @@ public sealed class SaveCommandCanExecuteTests : IDisposable
 
         Assert.False(vm.SaveCommand.CanExecute(null));
 
-        GenericSectionViewModel section = vm.GetOrCreateGenericSection(ConfigSection.Resilience);
+        GenericSectionViewModel section = vm.GetOrCreateGenericSection(ConfigSection.Features);
 
-        GenericSettingFieldViewModel? interval = section.Fields
-            .FirstOrDefault(f => f.Descriptor.Key == "resilience.healthProbeIntervalSeconds");
+        GenericSettingFieldViewModel? webBrowsing = section.Fields
+            .FirstOrDefault(f => f.Descriptor.Key == "features.webBrowsing");
 
-        Assert.NotNull(interval);
+        Assert.NotNull(webBrowsing);
 
         int canExecuteChangedCount = 0;
 
         vm.SaveCommand.CanExecuteChanged += (_, _) => canExecuteChangedCount++;
 
-        interval.NumericValue = 55;
+        webBrowsing.BoolValue = true;
 
         Assert.True(vm.IsDirty);
 
@@ -119,9 +115,7 @@ public sealed class SaveCommandCanExecuteTests : IDisposable
     private static ConfigurationViewModel CreateViewModel()
     {
 
-        ArcanumDataProtectionSecretProtector protector = new();
-
-        ArcanumConfigurationStore store = new(protector);
+        ArcanumConfigurationStore store = new();
 
         return new ConfigurationViewModel(store, new NoopDialogService(), new SynchronousUiDispatcher());
 
@@ -132,16 +126,12 @@ public sealed class SaveCommandCanExecuteTests : IDisposable
 
         _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
-        ArcanumDataProtectionSecretProtector protector = new();
-
-        ArcanumSettings encrypted = protector.EncryptProviderKeys(settings);
-
         string configPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
 
         await File.WriteAllTextAsync(
             configPath,
             JsonSerializer.Serialize(
-                new ArcanumConfigurationFile { Arcanum = encrypted },
+                new ArcanumConfigurationFile { Arcanum = settings },
                 ConfigurationJsonContext.Default.ArcanumConfigurationFile));
 
     }

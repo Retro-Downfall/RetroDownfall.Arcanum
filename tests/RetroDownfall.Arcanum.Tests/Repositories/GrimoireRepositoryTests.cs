@@ -523,7 +523,9 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             watermark,
             entryCeiling);
 
-        GrimoireRepository repository = CreateRepository(maxEntriesPerSession: entryCeiling);
+        GrimoireRepository repository = CreateRepository();
+
+        repository.SummarizationEntryCeilingForTesting = entryCeiling;
 
         List<Entry> result = await repository.GetUnsummarizedEntriesAsync(
             sessionId,
@@ -554,7 +556,9 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             watermark,
             entryCeiling + 1);
 
-        GrimoireRepository repository = CreateRepository(maxEntriesPerSession: entryCeiling);
+        GrimoireRepository repository = CreateRepository();
+
+        repository.SummarizationEntryCeilingForTesting = entryCeiling;
 
         InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
             () => repository.GetUnsummarizedEntriesAsync(
@@ -1067,33 +1071,13 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.Equal(second.CreatedAt, latest.CreatedAt);
     }
 
-    private GrimoireRepository CreateRepository(
-        ArcanumDbContext? db = null,
-        int maxEntriesPerSession = 10_000)
+    private GrimoireRepository CreateRepository(ArcanumDbContext? db = null)
     {
-
-        ArcanumSettings settings = new()
-        {
-            Grimoire = new GrimoireSettings
-            {
-                MaxMessagesPerConversationLoad = 50,
-                WorkspaceContextRetentionCount = 5,
-            },
-            Intelligence = new IntelligenceSettings
-            {
-                ArchiveSearchMaxQueryLength = 256,
-            },
-            Sessions = new SessionSettings
-            {
-                MaxEntriesPerSession = maxEntriesPerSession,
-            },
-        };
-
         return new GrimoireRepository(
             db ?? _db!,
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(settings));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
     }
 

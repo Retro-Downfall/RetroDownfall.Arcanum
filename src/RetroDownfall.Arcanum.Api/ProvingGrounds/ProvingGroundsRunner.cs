@@ -44,16 +44,6 @@ public sealed partial class ProvingGroundsRunner(
 
         ArcanumSettings arc = options.Value;
 
-        int maxInquisitors = ArcanumSettingClamps.MaxInquisitorsPerTrial(arc.ProvingGrounds.MaxInquisitorsPerTrial);
-
-        if (trial.Inquisitors.Count > maxInquisitors)
-        {
-            return Result<TrialResult>.Failure(
-                new Error(
-                    ErrorCodes.ProvingGrounds.TooManyInquisitors,
-                    $"Trial defines {trial.Inquisitors.Count} Inquisitors; the maximum is {maxInquisitors}."));
-        }
-
         Result<string> workspaceResult = workspaceResolver.ResolveRequired(trial.Workspace);
 
         if (workspaceResult.IsFailure)

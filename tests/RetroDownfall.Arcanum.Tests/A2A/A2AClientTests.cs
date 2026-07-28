@@ -52,16 +52,17 @@ public sealed class A2AClientTests : IDisposable
 
     }
 
-    private static ArcanumSettings EnabledSettings(int maxExternalTasks = 50, string[]? allowedRemoteAgents = null) => new()
+    private static ArcanumSettings EnabledSettings(string[]? allowedRemoteAgents = null) => new()
     {
-        Conclave = new ConclaveSettings
+        Features = new FeatureSettings
         {
-            Enabled = true,
-            A2A = new ConclaveA2ASettings
+            Conclave = true,
+            A2AClient = true,
+        },
+        Integrations = new IntegrationSettings
+        {
+            A2A = new A2AIntegrationSettings
             {
-                Enabled = true,
-                ClientEnabled = true,
-                MaxExternalTasks = maxExternalTasks,
                 AllowedRemoteAgents = allowedRemoteAgents ?? [],
             },
         },
@@ -193,30 +194,36 @@ public sealed class A2AClientTests : IDisposable
     [Fact]
     public async Task DispatchSendingAsync_MaxExternalTasksReached_RejectsAndReleasesOnCompletion()
     {
-
-        using GateAgentHandler gateHandler = new();
+        ArcanumSettings settings = EnabledSettings();
+        settings.Execution.MaxConcurrentA2ATasks = 2;
+        int maxExternalTasks = settings.Execution.MaxConcurrentA2ATasks;
+        using GateAgentHandler gateHandler = new(maxExternalTasks);
 
         using TestServer server = await CreateFakeRemoteAgentServerAsync(gateHandler);
 
         using HttpMessageHandler handler = server.CreateHandler();
 
-        A2AClientService client = CreateClient(handler, EnabledSettings(maxExternalTasks: 1));
+        A2AClientService client = CreateClient(handler, settings);
 
-        Task<Result<A2ADispatchResult>> firstCall = client.DispatchSendingAsync("first", null, DiscoveryUrl);
+        Task<Result<A2ADispatchResult>>[] admittedCalls = Enumerable
+            .Range(0, maxExternalTasks)
+            .Select(index => client.DispatchSendingAsync($"admitted-{index}", null, DiscoveryUrl))
+            .ToArray();
 
         await gateHandler.WaitUntilEnteredAsync();
 
-        Result<A2ADispatchResult> secondResult = await client.DispatchSendingAsync("second", null, DiscoveryUrl);
+        Result<A2ADispatchResult> rejected =
+            await client.DispatchSendingAsync("rejected", null, DiscoveryUrl);
 
-        Assert.True(secondResult.IsFailure);
+        Assert.True(rejected.IsFailure);
 
-        Assert.Equal("Sending.MaxTasksReached", secondResult.Error.Code);
+        Assert.Equal("Sending.MaxTasksReached", rejected.Error.Code);
 
-        gateHandler.Release("first call's answer");
+        gateHandler.Release("admitted answer");
 
-        Result<A2ADispatchResult> firstResult = await firstCall;
+        Result<A2ADispatchResult>[] admittedResults = await Task.WhenAll(admittedCalls);
 
-        Assert.True(firstResult.IsSuccess);
+        Assert.All(admittedResults, static result => Assert.True(result.IsSuccess));
 
         // The slot must be released once the in-flight call completes, not leaked.
         Result<A2ADispatchResult> thirdResult = await client.DispatchSendingAsync("third", null, DiscoveryUrl);
@@ -354,12 +361,15 @@ public sealed class A2AClientTests : IDisposable
     }
 
     /// <summary>Blocks in ExecuteAsync until released by the test, to hold a concurrency slot open.</summary>
-    private sealed class GateAgentHandler : IAgentHandler, IDisposable
+    private sealed class GateAgentHandler(int expectedEntries) : IAgentHandler, IDisposable
     {
 
-        private readonly SemaphoreSlim _entered = new(0, 1);
+        private readonly TaskCompletionSource _allEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private readonly TaskCompletionSource<string> _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int _enteredCount;
 
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
         {
@@ -370,7 +380,10 @@ public sealed class A2AClientTests : IDisposable
 
             await updater.StartWorkAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            _entered.Release();
+            if (Interlocked.Increment(ref _enteredCount) == expectedEntries)
+            {
+                _allEntered.TrySetResult();
+            }
 
             string text = await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -383,11 +396,11 @@ public sealed class A2AClientTests : IDisposable
         public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task WaitUntilEnteredAsync() => _entered.WaitAsync();
+        public Task WaitUntilEnteredAsync() => _allEntered.Task;
 
         public void Release(string text) => _release.TrySetResult(text);
 
-        public void Dispose() => _entered.Dispose();
+        public void Dispose() => _allEntered.TrySetCanceled();
 
     }
 

@@ -33,6 +33,12 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
     internal Func<Guid, CancellationToken, ValueTask>? AfterRollupRemainingCountedForTesting { get; set; }
 
+    /// <summary>
+    /// Lowers the code-owned summarization ceiling so overflow recovery can be exercised without
+    /// seeding a production-sized session.
+    /// </summary>
+    internal int? SummarizationEntryCeilingForTesting { get; set; }
+
     public GrimoireRepository(
         ArcanumDbContext db,
         ISessionAttachmentStore attachments,
@@ -470,7 +476,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
         }
 
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
-            _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
+            ArcanumRuntimeDefaults.Grimoire.MaxMessagesPerConversationLoad);
 
         DateTime? watermark = session.LastSummarizedMessageAt;
 
@@ -527,7 +533,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
         }
 
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
-            _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
+            ArcanumRuntimeDefaults.Grimoire.MaxMessagesPerConversationLoad);
 
         int take = EntryWindowPolicy.ResolveTake(
             EntryWindowPolicy.EntryWindowKind.MaxMessagesOnly,
@@ -561,7 +567,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
         }
 
         int maxMessages = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
-            _arcOptions.Value.Grimoire.MaxMessagesPerConversationLoad);
+            ArcanumRuntimeDefaults.Grimoire.MaxMessagesPerConversationLoad);
 
         int clampedTake = EntryWindowPolicy.ResolveTake(
             EntryWindowPolicy.EntryWindowKind.ClampedTakeLast,
@@ -746,7 +752,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
         int offset = 0,
         CancellationToken cancellationToken = default)
     {
-        GrimoireSettings settings = _arcOptions.Value.Grimoire ?? new GrimoireSettings();
+        GrimoireSettings settings = ArcanumRuntimeDefaults.Grimoire;
 
         int pageSize = ArcanumSettingClamps.ListQueryLimit(
             limit ?? settings.DefaultLoreListLimit);
@@ -794,7 +800,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
         string trimmed = query.Trim();
 
         int maxQueryLen = ArcanumSettingClamps.ArchiveSearchMaxQueryLength(
-            _arcOptions.Value.Intelligence.ArchiveSearchMaxQueryLength);
+            _arcOptions.Value.ResolveIntelligence().ArchiveSearchMaxQueryLength);
 
         if (trimmed.Length > maxQueryLen)
         {
@@ -1016,8 +1022,9 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        int entryCeiling = ArcanumSettingClamps.MaxEntriesPerSession(
-            GetSessionSettings().MaxEntriesPerSession);
+        int entryCeiling = SummarizationEntryCeilingForTesting
+            ?? ArcanumSettingClamps.MaxEntriesPerSession(
+                GetSessionSettings().MaxEntriesPerSession);
 
         if (unsummarizedCount > entryCeiling)
         {
@@ -1191,7 +1198,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 cancellationToken).ConfigureAwait(false);
 
             int retain = ArcanumSettingClamps.WorkspaceContextRetentionCount(
-                _arcOptions.Value.Grimoire.WorkspaceContextRetentionCount);
+                ArcanumRuntimeDefaults.Grimoire.WorkspaceContextRetentionCount);
 
             // EF Core's SQLite provider cannot translate DateTimeOffset in ORDER BY; materialize
             // the workspace-scoped rows and pick the newest `retain` client-side. The retention
@@ -1337,7 +1344,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
     }
 
     private SessionSettings GetSessionSettings() =>
-        _arcOptions.Value.Sessions ?? new SessionSettings();
+        _arcOptions.Value.ResolveSessions();
 
     private static InvalidOperationException CreateSummarizationWindowOverflow(
         Guid sessionId,

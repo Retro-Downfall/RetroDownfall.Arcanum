@@ -10,7 +10,7 @@ public sealed class GenericSettingFieldViewModelTests
     public void ValueChange_NotifiesNumericValueOnlyForNumericKinds()
     {
         GenericSettingFieldViewModel numeric = new(
-            Descriptor("pricing.defaultPricing.reasoningPer1M", SettingKind.Float),
+            Descriptor("cost.pricing.defaultPricing.reasoningPer1M", SettingKind.Float),
             1m);
         List<string?> numericNotifications = [];
         numeric.PropertyChanged += (_, args) => numericNotifications.Add(args.PropertyName);
@@ -36,7 +36,7 @@ public sealed class GenericSettingFieldViewModelTests
     public void ValueChange_NotifiesIsSetOnlyWhenNullnessChanges()
     {
         GenericSettingFieldViewModel field = new(
-            Descriptor("pricing.defaultPricing.reasoningPer1M", SettingKind.Float),
+            Descriptor("cost.pricing.defaultPricing.reasoningPer1M", SettingKind.Float),
             value: null);
         List<string?> notifications = [];
         field.PropertyChanged += (_, args) => notifications.Add(args.PropertyName);
@@ -62,7 +62,7 @@ public sealed class GenericSettingFieldViewModelTests
     private static SettingDescriptor Descriptor(string key, SettingKind kind) =>
         new(
             key,
-            ConfigSection.Pricing,
+            ConfigSection.Cost,
             "Test",
             "Test setting.",
             kind,

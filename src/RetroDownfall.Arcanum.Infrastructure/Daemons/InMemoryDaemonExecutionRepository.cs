@@ -1,7 +1,5 @@
 using System.Collections.Concurrent;
 
-using Microsoft.Extensions.Options;
-
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Daemons;
 using RetroDownfall.Arcanum.Core.Logging;
@@ -37,7 +35,6 @@ internal sealed class DaemonExecutionRecord
 }
 
 public sealed class InMemoryDaemonExecutionRepository(
-    IOptionsMonitor<ArcanumSettings> options,
     ILogRingBuffer logRingBuffer) : IDaemonExecutionRepository
 {
 
@@ -319,7 +316,7 @@ public sealed class InMemoryDaemonExecutionRepository(
     private void TrimHistory(string daemonId, List<DaemonExecutionRecord> list)
     {
         int limit = ArcanumSettingClamps.DaemonExecutionHistoryLimit(
-            options.CurrentValue.Daemon?.ExecutionHistoryLimit ?? new DaemonSettings().ExecutionHistoryLimit);
+            ArcanumRuntimeDefaults.DaemonExecutionHistoryLimit);
 
         while (list.Count > limit)
         {

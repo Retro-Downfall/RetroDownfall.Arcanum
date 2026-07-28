@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -321,7 +322,14 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         Assert.Equal("1", environment["DOTNET_CLI_TELEMETRY_OPTOUT"]);
         Assert.Equal("1", environment["DOTNET_NOLOGO"]);
         Assert.Equal("1", environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"]);
-        Assert.Equal("en_US.UTF-8", environment["LANG"]);
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.DoesNotContain("LANG", environment.Keys);
+        }
+        else
+        {
+            Assert.Equal("en_US.UTF-8", environment["LANG"]);
+        }
         Assert.DoesNotContain(
             environment.Keys,
             static key => key.StartsWith("ARCANUM_", StringComparison.OrdinalIgnoreCase));
@@ -392,11 +400,11 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             [packages, sdk],
             [output]);
 
-        Assert.Contains(workspace, request.ReadOnlyRoots);
-        Assert.Contains(packages, request.ReadOnlyRoots);
-        Assert.Contains(sdk, request.ReadExecuteRoots);
-        Assert.Contains(output, request.ReadWriteRoots);
-        Assert.DoesNotContain(workspace, request.ReadWriteRoots);
+        Assert.Contains(request.ReadOnlyRoots, root => PathsEqual(root, workspace));
+        Assert.Contains(request.ReadOnlyRoots, root => PathsEqual(root, packages));
+        Assert.Contains(request.ReadExecuteRoots, root => PathsEqual(root, sdk));
+        Assert.Contains(request.ReadWriteRoots, root => PathsEqual(root, output));
+        Assert.DoesNotContain(request.ReadWriteRoots, root => PathsEqual(root, workspace));
         Assert.False(request.AllowUnsandboxed);
         Assert.True(request.RequireAppliedFilesystemJail);
     }
@@ -1079,7 +1087,15 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                 .Snapshot!;
         File.WriteAllText(
             Path.Combine(workspace, "global.json"),
-            $"{{\"sdk\":{{\"version\":\"10.0.100\",\"rollForward\":\"disable\",\"paths\":[\"{dotnetRoot}\"]}}}}");
+            JsonSerializer.Serialize(new
+            {
+                sdk = new
+                {
+                    version = "10.0.100",
+                    rollForward = "disable",
+                    paths = new[] { dotnetRoot },
+                },
+            }));
 
         WorkspaceCheckSdkResolution trusted =
             WorkspaceCheckSdkResolver.Resolve(
@@ -1126,7 +1142,14 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         tree.CreateSdk(second, "10.0.100", "10.0.1");
         File.WriteAllText(
             Path.Combine(workspace, "global.json"),
-            $"{{\"sdk\":{{\"version\":\"10.0.100\",\"paths\":[\"{first}\",\"{second}\"]}}}}");
+            JsonSerializer.Serialize(new
+            {
+                sdk = new
+                {
+                    version = "10.0.100",
+                    paths = new[] { first, second },
+                },
+            }));
         WorkspaceCheckExecutableSnapshot host =
             WorkspaceCheckExecutableRuntimePolicy
                 .ForTrustedRoots([dotnetRoot])
@@ -1197,10 +1220,16 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                         "10.0.100",
                         sanitized,
                         StringComparison.Ordinal);
+                    using JsonDocument sanitizedJson = JsonDocument.Parse(sanitized);
+                    string[] sanitizedPaths = sanitizedJson.RootElement
+                        .GetProperty("sdk")
+                        .GetProperty("paths")
+                        .EnumerateArray()
+                        .Select(static path => path.GetString()!)
+                        .ToArray();
                     Assert.Contains(
-                        host.DotNetRoot,
-                        sanitized,
-                        StringComparison.Ordinal);
+                        sanitizedPaths,
+                        path => PathsEqual(path, host.DotNetRoot));
                     Assert.DoesNotContain(
                         "$host$",
                         sanitized,
@@ -2575,6 +2604,14 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             CancellationToken ct = default) =>
             Task.CompletedTask;
     }
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
 
     private sealed class TestTree : IDisposable
     {

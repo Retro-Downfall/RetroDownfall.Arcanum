@@ -5,7 +5,8 @@ using RetroDownfall.Arcanum.Core.Serialization;
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Bounded configuration for the in-process repository editing tools.
+/// Code-owned search and patch limits plus the workspace-check runtime projection. This is not a
+/// public configuration root.
 /// </summary>
 public sealed record CodingToolsSettings
 {
@@ -73,8 +74,9 @@ public sealed record WorkspacePatchSettings
 }
 
 /// <summary>
-/// Global workspace-check configuration. Built-in profiles are code-owned; operators may add
-/// profiles only by selecting a closed executable catalog entry and exact argument renderings.
+/// Workspace-check runtime projection. Activation comes from
+/// <c>Arcanum:Features:WorkspaceChecks</c>; executable and custom-profile facts come from
+/// <c>Arcanum:Integrations:WorkspaceChecks</c>; physical limits and built-in profiles are code-owned.
 /// </summary>
 public sealed record WorkspaceCheckSettings
 {
@@ -107,7 +109,7 @@ public sealed record WorkspaceCheckSettings
 }
 
 /// <summary>
-/// Closed executable catalog. The first release contains only the trusted native
+/// Closed executable catalog. The catalog contains only the trusted native
 /// <c>dotnet</c> host; an empty path delegates canonical resolution to the runtime policy.
 /// </summary>
 public sealed record WorkspaceCheckExecutableCatalogSettings
@@ -177,7 +179,7 @@ public enum WorkspaceCheckDiagnosticParserKind
 }
 
 /// <summary>
-/// Stable IDs shared by configuration validation and the later runtime catalog implementation.
+/// Stable IDs shared by configuration validation and the runtime catalog.
 /// </summary>
 public static class WorkspaceCheckCatalogDefaults
 {

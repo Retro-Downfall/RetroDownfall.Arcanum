@@ -183,7 +183,7 @@ internal static partial class OpenAiV1Endpoints
 
         string echoModel = body.Model!.Trim();
 
-        string systemFingerprint = ResolveSystemFingerprint(settings.Value);
+        string systemFingerprint = ResolveSystemFingerprint();
 
         InferenceAuditContext auditContext = new()
         {
@@ -394,7 +394,7 @@ internal static partial class OpenAiV1Endpoints
 
         DisconnectPolicy disconnectPolicy = httpContext.RequestServices
             .GetRequiredService<IOptionsSnapshot<ArcanumSettings>>()
-            .Value.Intelligence.DisconnectPolicy;
+            .Value.ResolveIntelligence().DisconnectPolicy;
 
         bool continueThenReplay = TurnContextGuards.ResolveContinueThenReplay(httpContext, disconnectPolicy);
         CancellationToken ownershipLost = TurnIdempotencyAmbient.OwnershipLostToken;
@@ -1011,17 +1011,7 @@ internal static partial class OpenAiV1Endpoints
         return "stop";
     }
 
-    private static string ResolveSystemFingerprint(ArcanumSettings settings)
-    {
-        string? configured = settings.Host.SystemFingerprint;
-
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            return configured.Trim();
-        }
-
-        return DefaultSystemFingerprint;
-    }
+    private static string ResolveSystemFingerprint() => DefaultSystemFingerprint;
 
     private static string BuildDefaultSystemFingerprint()
     {
@@ -1054,8 +1044,6 @@ internal static partial class OpenAiV1Endpoints
             ErrorCodes.Hub.Model => ("api_error", "model_not_found"),
             ErrorCodes.Validation.InvalidPrompt => ("api_error", "missing_required_parameter"),
             ErrorCodes.Validation.AttachedFiles => ("api_error", "invalid_value"),
-            ErrorCodes.Hub.ToolLoop => ("api_error", "server_error"),
-            ErrorCodes.Hub.Timeout => ("api_error", "server_error"),
             ErrorCodes.Hub.Error => ("api_error", "inference_failed"),
             ErrorCodes.Scrying.VisionNotSupported => ("api_error", "vision_not_supported"),
             ErrorCodes.Scrying.FeatureDisabled => ("api_error", "feature_disabled"),
@@ -1077,8 +1065,6 @@ internal static partial class OpenAiV1Endpoints
                 PublicInferenceErrorMessages.ModelNotConfigured,
             ErrorCodes.Validation.InvalidPrompt => "Prompt is required.",
             ErrorCodes.Validation.AttachedFiles => "Attached file validation failed.",
-            ErrorCodes.Hub.ToolLoop => "Tool invocation limit reached.",
-            ErrorCodes.Hub.Timeout => PublicInferenceErrorMessages.OpenAiTimeout,
             ErrorCodes.StructuredOutput.SchemaInvalid => "The supplied JSON schema for structured output is invalid.",
             ErrorCodes.StructuredOutput.ValidationFailed => "The model response did not match the requested JSON schema.",
             _ => PublicInferenceErrorMessages.OpenAiGenericFailure,

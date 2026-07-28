@@ -590,7 +590,7 @@ internal static class PromptEndpoints
                             0,
                             prompt.MaxOutputTokens
                             ?? ArcanumSettingClamps.ReservedOutputTokens(
-                                settings.Value.Intelligence.ReservedOutputTokens)),
+                                settings.Value.ResolveIntelligence().ReservedOutputTokens)),
                         ReservedReasoningTokens: 0));
 
                 PromptTestResultDto dto = new(

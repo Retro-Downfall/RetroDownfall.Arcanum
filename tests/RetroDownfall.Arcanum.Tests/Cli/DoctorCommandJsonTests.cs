@@ -57,6 +57,8 @@ public sealed class DoctorCommandJsonTests : IDisposable
 
         Assert.Contains(report.Checks, c => c.Name == "Configuration");
 
+        Assert.Contains(report.Checks, c => c.Name == "ProviderCredentials");
+
         Assert.Contains(report.Checks, c => c.Name == "MCP");
 
         Assert.Contains(report.Checks, c => c.Name == "Tokenizer");

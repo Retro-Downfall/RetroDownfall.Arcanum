@@ -11,35 +11,20 @@ public sealed record ProviderSettings
 
     public string Endpoint { get; set; } = string.Empty;
 
-    public string? ApiKey { get; set; }
+    /// <summary>
+    /// Optional exact environment-variable name containing this provider's API key. When omitted,
+    /// Arcanum derives <c>ARCANUM_PROVIDER_{NORMALIZED_NAME}_API_KEY</c>; secret values never enter
+    /// configuration.
+    /// </summary>
+    public string? CredentialEnvironmentVariable { get; set; }
 
     public IReadOnlyList<ModelEntry> Models { get; set; } = [];
 
     public int ContextWindowLimit { get; set; } = 8192;
 
-    /// <summary>
-    /// Optional provider-wide token-accounting profile. A model entry may override this profile.
-    /// When absent, Arcanum resolves a built-in model profile or its conservative fallback.
-    /// </summary>
-    public ModelTokenizationProfile? Tokenization { get; set; }
-
-    /// <summary>
-    /// Optional provider-wide prompt-cache profile inherited by models that do not declare a full
-    /// model-specific override.
-    /// </summary>
-    public PromptCachingProfile? PromptCaching { get; set; }
-
-    /// <summary>
-    /// When <see langword="true"/>, Arcanum records <c>arcanum_prompt_cache_tokens</c> metrics for
-    /// this provider when the response usage reports cached prompt tokens. Defaults to
-    /// <see langword="true"/> for OpenAI-compatible providers (which cache automatically).
-    /// Operators can force this off for providers that do not support caching to avoid misleading metrics.
-    /// </summary>
-    public bool? SupportsPromptCaching { get; set; }
-
     public override string ToString()
     {
-        return $"{nameof(ProviderSettings)} {{ {nameof(Name)} = {Name}, {nameof(Type)} = {Type}, {nameof(Endpoint)} = {Endpoint}, {nameof(ApiKey)} = {(ApiKey is null ? "null" : "***")}, {nameof(Models)} = [{string.Join(", ", Models.Select(static m => m.SupportsVision ? $"{m.Name}(vision)" : m.Name))}], {nameof(ContextWindowLimit)} = {ContextWindowLimit} }}";
+        return $"{nameof(ProviderSettings)} {{ {nameof(Name)} = {Name}, {nameof(Type)} = {Type}, {nameof(Endpoint)} = {Endpoint}, {nameof(CredentialEnvironmentVariable)} = {CredentialEnvironmentVariable ?? "null"}, {nameof(Models)} = [{string.Join(", ", Models.Select(static m => m.SupportsVision ? $"{m.Name}(vision)" : m.Name))}], {nameof(ContextWindowLimit)} = {ContextWindowLimit} }}";
     }
 
 }

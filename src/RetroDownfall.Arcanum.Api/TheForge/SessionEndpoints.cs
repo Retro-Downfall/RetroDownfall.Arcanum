@@ -528,7 +528,7 @@ internal static class SessionEndpoints
                 SseStreamWriter.PrepareResponse(httpContext);
 
                 int channelCapacity = ArcanumSettingClamps.EventBusChannelCapacity(
-                    options.CurrentValue.EventBus?.ChannelCapacity ?? new EventBusSettings().ChannelCapacity);
+                    options.CurrentValue.ResolveEventBus().ChannelCapacity);
 
                 Channel<Entry> liveBuffer = Channel.CreateBounded<Entry>(
                     new BoundedChannelOptions(channelCapacity)
@@ -545,7 +545,7 @@ internal static class SessionEndpoints
 
                 HashSet<Guid> replayIds = [];
 
-                SessionSettings sessionSettings = options.CurrentValue.Sessions ?? new SessionSettings();
+                SessionSettings sessionSettings = options.CurrentValue.ResolveSessions();
 
                 int replayLimit = ArcanumSettingClamps.SessionStreamReplayLimit(
                     sessionSettings.MaxStreamReplayEntries);
@@ -583,7 +583,7 @@ internal static class SessionEndpoints
 
                 TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
                     ArcanumSettingClamps.EventBusHeartbeatSeconds(
-                        options.CurrentValue.EventBus?.HeartbeatSeconds ?? new EventBusSettings().HeartbeatSeconds));
+                        options.CurrentValue.ResolveEventBus().HeartbeatSeconds));
 
                 try
                 {
@@ -640,7 +640,7 @@ internal static class SessionEndpoints
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                SessionSettings sessionSettings = options.CurrentValue.Sessions ?? new SessionSettings();
+                SessionSettings sessionSettings = options.CurrentValue.ResolveSessions();
 
                 if (!sessionSettings.AllowMemoryManagement)
                 {
@@ -677,7 +677,7 @@ internal static class SessionEndpoints
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                SessionSettings sessionSettings = options.CurrentValue.Sessions ?? new SessionSettings();
+                SessionSettings sessionSettings = options.CurrentValue.ResolveSessions();
 
                 if (!sessionSettings.AllowMemoryManagement)
                 {
@@ -733,7 +733,7 @@ internal static class SessionEndpoints
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                SessionSettings sessionSettings = options.CurrentValue.Sessions ?? new SessionSettings();
+                SessionSettings sessionSettings = options.CurrentValue.ResolveSessions();
 
                 if (!sessionSettings.AllowMemoryManagement)
                 {
@@ -779,7 +779,7 @@ internal static class SessionEndpoints
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
-                SessionSettings sessionSettings = options.CurrentValue.Sessions ?? new SessionSettings();
+                SessionSettings sessionSettings = options.CurrentValue.ResolveSessions();
 
                 if (!sessionSettings.AllowMemoryManagement)
                 {

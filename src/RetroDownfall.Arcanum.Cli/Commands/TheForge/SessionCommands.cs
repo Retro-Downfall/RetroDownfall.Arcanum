@@ -15,7 +15,9 @@ public sealed class SessionCommands(ArcanumApiClient apiClient, IThemePalette th
 {
 
     /// <summary>
-    /// Semantic search over Grimoire entries (POST /api/sessions/divine; requires Arcanum:Embeddings:Enabled and SessionSearchEnabled).
+    /// Semantic search over Grimoire entries (POST /api/sessions/divine; requires
+    /// Arcanum:Features:SessionSearch plus configured Arcanum:Integrations:Embeddings:Provider and
+    /// Arcanum:Integrations:Embeddings:Model facts).
     /// </summary>
     /// <param name="query">Search query text.</param>
     /// <param name="limit">Maximum number of results to return.</param>

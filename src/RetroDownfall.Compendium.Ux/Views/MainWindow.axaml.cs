@@ -116,18 +116,9 @@ public partial class MainWindow : Window
         return section switch
         {
             ConfigSection.Host => new HostPage(),
-            ConfigSection.Server => new ServerPage(),
             ConfigSection.Providers => new ProvidersPage(),
-            ConfigSection.Intelligence => new IntelligencePage(),
-            ConfigSection.Mcp => new McpPage(),
-            ConfigSection.Orchestration => new OrchestrationPage(),
-            ConfigSection.Security => new SecurityPage(),
-            ConfigSection.CommLink => new CommLinkPage(),
-            ConfigSection.Storage => new StoragePage(),
-            ConfigSection.Forge => new TheForgePage(),
-            ConfigSection.ProvingGrounds => new ProvingGroundsPage(),
+            ConfigSection.Daemon => new DaemonPage(),
             ConfigSection.Cli => new CliPage(),
-            ConfigSection.Scrying => new ScryingPage(),
             _ => new GenericSettingsSectionView { Section = section },
         };
 

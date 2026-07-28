@@ -20,8 +20,8 @@ public enum PromptCachingControlMode
 }
 
 /// <summary>
-/// Closed set of verified prompt-cache request contracts. Arcanum never infers a dialect from
-/// provider or model names.
+/// Closed set of verified prompt-cache request contracts. Only
+/// <see cref="ModelCapabilityCatalog"/> selects a dialect.
 /// </summary>
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<PromptCachingWireDialect>))]
 public enum PromptCachingWireDialect
@@ -61,12 +61,9 @@ public enum PromptCacheRetentionPolicy
 }
 
 /// <summary>
-/// Provider- or model-level prompt-cache capability declaration and selected policy.
-/// A model profile is a complete override of its provider profile.
+/// Code-owned prompt-cache capability metadata emitted by <see cref="ModelCapabilityCatalog"/>.
+/// It is not reachable from the bindable provider/model configuration graph.
 /// </summary>
-/// <remarks>
-/// Properties use <c>set</c> so the source-generated configuration binder can populate them.
-/// </remarks>
 public sealed record PromptCachingProfile
 {
     public PromptCachingControlMode ControlMode { get; set; } =

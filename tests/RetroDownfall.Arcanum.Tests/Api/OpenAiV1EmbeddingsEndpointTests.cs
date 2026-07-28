@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -15,7 +16,7 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// <summary>
 /// <c>POST /v1/embeddings</c>. Most tests share a single isolated <see cref="ArcanumWebApplicationFactory"/>
 /// (created once in <see cref="InitializeAsync"/>) rather than the shared "ApiHost" collection fixture,
-/// because every test needs a custom <c>Arcanum:Embeddings</c> config and a <see cref="FakeWeaveService"/>
+/// because every test needs custom embedding feature/integration config and a <see cref="FakeWeaveService"/>
 /// substitute; sharing one instance across the whole class (instead of one per test) keeps concurrent
 /// Grimoire bootstrap load bounded — xUnit already runs the methods within a class sequentially by
 /// default, so a single shared host is safe and avoids the SQLCipher-bootstrap contention a
@@ -371,16 +372,10 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        FakeWeaveService fake = new();
-
-        // ArcanumSettingClamps.EmbeddingsMaxEmbeddingInputChars clamps to a 1,000 floor, so the cap
-        // and the oversized payload both need to sit above that floor to actually exercise the check.
-        // Needs a dedicated factory (distinct from the shared one) because it lowers MaxEmbeddingInputChars.
-        await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(fake, maxEmbeddingInputChars: 1_000);
-
-        HttpClient client = factory.CreateAuthenticatedClient();
-
-        string oversizedInput = new('a', 1_500);
+        HttpClient client = _factory.CreateAuthenticatedClient();
+        int maxInputChars = ArcanumSettingClamps.EmbeddingsMaxEmbeddingInputChars(
+            ArcanumRuntimeDefaults.Embeddings.MaxEmbeddingInputChars);
+        string oversizedInput = new('a', maxInputChars + 1);
 
         OpenAiEmbeddingRequest request = new(Model: null, Input: new OpenAiEmbeddingInput { Strings = [oversizedInput] });
 
@@ -413,7 +408,7 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         {
             SettingsOverride = settings => settings with
             {
-                Embeddings = settings.Embeddings with { Enabled = false },
+                Features = settings.Features with { Embeddings = false },
             },
         };
 
@@ -434,18 +429,19 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
     }
 
     private static ArcanumWebApplicationFactory CreateEnabledFactory(
-        FakeWeaveService weaveService,
-        int? maxEmbeddingInputChars = null) =>
+        FakeWeaveService weaveService) =>
         new()
         {
             SettingsOverride = settings => settings with
             {
-                Embeddings = settings.Embeddings with
+                Features = settings.Features with { Embeddings = true },
+                Integrations = settings.Integrations with
                 {
-                    Enabled = true,
-                    Provider = "test",
-                    Model = "test-embed",
-                    MaxEmbeddingInputChars = maxEmbeddingInputChars ?? settings.Embeddings.MaxEmbeddingInputChars,
+                    Embeddings = settings.Integrations.Embeddings with
+                    {
+                        Provider = "test",
+                        Model = "test-embed",
+                    },
                 },
             },
             ServiceOverrides = services =>

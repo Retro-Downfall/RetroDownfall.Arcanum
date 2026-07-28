@@ -106,9 +106,7 @@ internal static class SemanticRouter
         {
             IModelCallExecutor executor = modelCallExecutor ?? new ModelCallExecutor();
 
-            // Auxiliary preflight — dedicated budget so routing does not consume the interactive
-            // turn's model-call ceiling.
-            TurnBudget auxBudget = new(maxModelCalls: 1);
+            TurnBudget auxBudget = new();
 
             var callResult = await executor
                 .ExecuteBufferedAsync(

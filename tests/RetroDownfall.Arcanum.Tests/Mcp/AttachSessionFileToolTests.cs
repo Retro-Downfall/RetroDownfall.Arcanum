@@ -443,7 +443,7 @@ public sealed class AttachSessionFileToolTests
             scopeFactory,
             NullLogger<UnseenServantPacer>.Instance);
 
-        IntelligenceSettings intelligenceSettings = new()
+        IntelligenceSettings intelligenceSettings = ArcanumRuntimeDefaults.Intelligence with
         {
             EnableLexiconSystem = false,
             EnableArchiveSearch = false,

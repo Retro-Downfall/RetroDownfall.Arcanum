@@ -209,7 +209,7 @@ public sealed class SpellWeaveCache(
 
         }
 
-        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.Embeddings ?? new EmbeddingSettings();
+        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
 
         return new CatalogKey(snapshot, embeddings.Provider, embeddings.Model, embeddings.Dimensions);
 

@@ -539,12 +539,14 @@ public sealed partial class McpConnectionManager
 
     private int GetClampedListDirectoryMaxPaths()
     {
-        return ArcanumSettingClamps.ListDirectoryMaxPaths(settings.CurrentValue.Intelligence.ListDirectoryMaxPaths);
+        return ArcanumSettingClamps.ListDirectoryMaxPaths(
+            ArcanumRuntimeDefaults.Intelligence.ListDirectoryMaxPaths);
     }
 
     private long GetClampedToolOutputCapBytes()
     {
-        return ArcanumSettingClamps.ToolOutputCapBytes(settings.CurrentValue.Intelligence.ToolOutputCapBytes);
+        return ArcanumSettingClamps.ToolOutputCapBytes(
+            ArcanumRuntimeDefaults.Intelligence.ToolOutputCapBytes);
     }
 
     private async Task StartInternalInProcessServerForPartitionAsync(
@@ -562,17 +564,18 @@ public sealed partial class McpConnectionManager
         int listDirectoryMaxPaths = GetClampedListDirectoryMaxPaths();
 
         long maxFileReadSizeBytes = ArcanumSettingClamps.MaxFileReadSizeBytes(
-            settings.CurrentValue.Workspaces?.MaxFileReadSizeBytes ?? new WorkspaceSettings().MaxFileReadSizeBytes);
+            ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
 
-        EmbeddingSettings embeddings = settings.CurrentValue.Embeddings ?? new EmbeddingSettings();
+        EmbeddingSettings embeddings = settings.CurrentValue.ResolveEmbeddings();
 
         bool sagaEnabled = embeddings.Enabled && embeddings.SagaEnabled;
 
-        ConclaveSettings conclave = settings.CurrentValue.Conclave ?? new ConclaveSettings();
+        ConclaveSettings conclave = settings.CurrentValue.ResolveConclave();
 
-        ConclaveA2ASettings a2a = conclave.A2A ?? new ConclaveA2ASettings();
+        ConclaveA2ASettings a2a =
+            conclave.A2A ?? ArcanumRuntimeDefaults.Conclave.A2A;
 
-        AttachmentsSettings attachments = settings.CurrentValue.Attachments ?? new AttachmentsSettings();
+        AttachmentsSettings attachments = settings.CurrentValue.ResolveAttachments();
 
         bool attachmentsToolEnabled = attachments.Enabled && attachments.EnableModelAttachTool;
 
@@ -585,8 +588,7 @@ public sealed partial class McpConnectionManager
         bool a2aClientEffective = conclaveEffective && a2a.Enabled && a2a.ClientEnabled;
 
         WorkspaceCheckSettings workspaceCheck =
-            settings.CurrentValue.CodingTools?.WorkspaceCheck
-            ?? _defaultWorkspaceCheckSettings;
+            settings.CurrentValue.ResolveWorkspaceChecks();
 
         (ChannelWriter<string> toServer, ChannelReader<string> fromServer, ArcanumInternalToolServer server) =
             InProcessMcpTransport.CreateServerChannelPair(
@@ -597,7 +599,7 @@ public sealed partial class McpConnectionManager
                 executeTimeout,
                 timeoutSeconds,
                 listDirectoryMaxPaths,
-                settings.CurrentValue.Intelligence,
+                settings.CurrentValue.ResolveIntelligence(),
                 maxFileReadSizeBytes,
                 conclaveEffective,
                 sagaEnabled,
@@ -606,13 +608,12 @@ public sealed partial class McpConnectionManager
                 GetClampedMcpMaxJsonRpcLineBytes(),
                 logger: null,
                 allowHostProcessTools: allowHostProcessTools,
-                codingToolsSettings: settings.CurrentValue.CodingTools,
+                codingToolsSettings: settings.CurrentValue.ResolveCodingTools(),
                 workspaceCheckRuntime: new WorkspaceCheckRuntime(
                     workspaceCheck,
                     scopeFactory,
                     currentSettingsProvider: () =>
-                        settings.CurrentValue.CodingTools?.WorkspaceCheck
-                        ?? _defaultWorkspaceCheckSettings));
+                        settings.CurrentValue.ResolveWorkspaceChecks()));
 
         // The server's own RunAsync loop terminates when the client-to-server channel completes
         // (ChannelClientTransport session dispose calls toServer.TryComplete() on client disposal).

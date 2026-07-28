@@ -20,14 +20,6 @@ public sealed class OpenAiV1ContractTests
     }
 
     [Fact]
-    public void HubToolLoopFailure_ResolvesTo503()
-    {
-
-        Assert.Equal(StatusCodes.Status503ServiceUnavailable, OpenAiV1Endpoints.ResolveOpenAiInferenceFailureStatusCodeForTests("Hub.ToolLoop"));
-
-    }
-
-    [Fact]
     public void ValidationInvalidPromptFailure_ResolvesTo400()
     {
 

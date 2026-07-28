@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
-/// <summary>OpenAI-shaped <c>file</c> object for <c>/v1/files</c>. See DESIGN.md §11.20.</summary>
+/// <summary>OpenAI-shaped <c>file</c> object for <c>/v1/files</c>. See <c>docs/Arcanum.DESIGN.md</c> §11.20.</summary>
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 public sealed record OpenAiFileObject(
     [property: JsonPropertyName("id")] string Id,

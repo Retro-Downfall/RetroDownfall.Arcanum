@@ -382,7 +382,9 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        BatchProcessingService service = CreateService(new FakeIntelligenceProvider(), batchExpiryHours: 1);
+        BatchProcessingService service = CreateService(new FakeIntelligenceProvider());
+        int expiryHours = ArcanumSettingClamps.BatchesBatchExpiryHours(
+            ArcanumRuntimeDefaults.Batches.BatchExpiryHours);
 
         Guid inputFileId = await SeedInputFileAsync("{}\n");
 
@@ -393,7 +395,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             inputFileId,
             "/v1/chat/completions",
             BatchStatuses.Validating,
-            DateTimeOffset.UtcNow.AddHours(-2),
+            DateTimeOffset.UtcNow.AddHours(-(expiryHours + 1)),
             null,
             null,
             null);
@@ -495,23 +497,17 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     private BatchProcessingService CreateService(
         IArcanumIntelligenceProvider intelligence,
-        int? batchExpiryHours = null,
         ITurnRunWriter? turnRunWriter = null,
         IBudgetReservationService? budgetReservations = null,
         PricingSettings? pricing = null)
     {
-
-        BatchesSettings batches = new()
-        {
-            MaxConcurrentBatches = 3,
-            MaxRequestsPerBatch = 100,
-            MaxConcurrentRequestsPerBatch = 2,
-            BatchExpiryHours = batchExpiryHours ?? 24,
-        };
-
         ArcanumSettings settings = new()
         {
-            Batches = batches,
+            Execution = new ExecutionSettings
+            {
+                MaxConcurrentBatches = 3,
+                MaxConcurrentRequestsPerBatch = 2,
+            },
             Providers =
             [
                 new ProviderSettings
@@ -528,7 +524,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
                     ],
                 },
             ],
-            Pricing = pricing ?? new PricingSettings(),
+            Cost = new CostSettings { Pricing = pricing ?? new PricingSettings() },
         };
 
         ServiceProvider root = BuildServiceProvider(intelligence, turnRunWriter, budgetReservations);

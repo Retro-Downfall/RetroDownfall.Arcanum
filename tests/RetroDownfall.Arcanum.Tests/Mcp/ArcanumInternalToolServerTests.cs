@@ -607,9 +607,9 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         _workspace.WriteFile(
             "expensive-search.txt",
             new string('a', 100_000) + "!");
-        CodingToolsSettings codingTools = new()
+        CodingToolsSettings codingTools = ArcanumRuntimeDefaults.CodingTools with
         {
-            Search = new WorkspaceSearchSettings
+            Search = ArcanumRuntimeDefaults.CodingTools.Search with
             {
                 RegexTimeoutMilliseconds = 1_000,
                 MaxElapsedMilliseconds = 5_000,
@@ -663,15 +663,15 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
                 Enumerable.Range(1, 500)
                     .Select(static index =>
                         $"needle {index:D3} {new string('x', 96)}")));
-        IntelligenceSettings intelligenceSettings = new()
+        IntelligenceSettings intelligenceSettings = ArcanumRuntimeDefaults.Intelligence with
         {
             EnableLexiconSystem = false,
             EnableArchiveSearch = false,
             ToolOutputCapBytes = 4_096,
         };
-        CodingToolsSettings codingTools = new()
+        CodingToolsSettings codingTools = ArcanumRuntimeDefaults.CodingTools with
         {
-            Search = new WorkspaceSearchSettings
+            Search = ArcanumRuntimeDefaults.CodingTools.Search with
             {
                 MaxMatches = 1_000,
                 MaxPreviewChars = 128,
@@ -729,7 +729,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task ToolsList_names_match_registered_handlers_when_all_features_enabled()
     {
 
-        IntelligenceSettings allFeatures = new()
+        IntelligenceSettings allFeatures = ArcanumRuntimeDefaults.Intelligence with
         {
 
             EnableLexiconSystem = true,
@@ -743,7 +743,9 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             conclaveEnabled: true,
             sagaEnabled: true,
             a2aClientEnabled: true,
-            attachmentsToolEnabled: true);
+            attachmentsToolEnabled: true,
+            workspaceCheckRuntime: new FakeWorkspaceCheckRuntime(
+                new WorkspaceCheckExecutionStatus(true, false, "available")));
 
         JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
 
@@ -756,14 +758,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         HashSet<string> registeredNames = session.Server.RegisteredToolHandlerNamesForTests
             .ToHashSet(StringComparer.Ordinal);
 
-        // Deprecated tools/call-only alias — registered but never advertised.
-        Assert.Contains("use_commlink", registeredNames);
-
-        Assert.DoesNotContain("use_commlink", listedNames);
-
         Assert.Contains("send_commlink_alert", listedNames);
-
-        registeredNames.Remove("use_commlink");
 
         Assert.Equal(registeredNames, listedNames);
 
@@ -970,7 +965,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             Path.Combine(_workspace.Root, "notes", "huge.txt"),
             largeLine + "\nsecond line");
 
-        IntelligenceSettings intelligenceSettings = new()
+        IntelligenceSettings intelligenceSettings = ArcanumRuntimeDefaults.Intelligence with
         {
             EnableLexiconSystem = false,
             EnableArchiveSearch = false,
@@ -1331,7 +1326,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         string longClientName = new('x', 200);
 
-        IntelligenceSettings settings = new()
+        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
         {
             EnableLexiconSystem = false,
             EnableArchiveSearch = false,
@@ -1698,7 +1693,11 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task ToolsList_advertises_lexicon_tools_when_enabled()
     {
 
-        IntelligenceSettings settings = new() { EnableLexiconSystem = true, EnableArchiveSearch = false };
+        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
+        {
+            EnableLexiconSystem = true,
+            EnableArchiveSearch = false,
+        };
 
         await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
 
@@ -1720,7 +1719,11 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task ToolsList_omits_lexicon_tools_when_disabled()
     {
 
-        IntelligenceSettings settings = new() { EnableLexiconSystem = false, EnableArchiveSearch = false };
+        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
+        {
+            EnableLexiconSystem = false,
+            EnableArchiveSearch = false,
+        };
 
         await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
 
@@ -1738,7 +1741,11 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task ToolsCall_scribe_lexicon_creates_entry()
     {
 
-        IntelligenceSettings settings = new() { EnableLexiconSystem = true, EnableArchiveSearch = false };
+        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
+        {
+            EnableLexiconSystem = true,
+            EnableArchiveSearch = false,
+        };
 
         await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
 
@@ -1758,7 +1765,11 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     public async Task ToolsCall_delete_lexicon_removes_entry()
     {
 
-        IntelligenceSettings settings = new() { EnableLexiconSystem = true, EnableArchiveSearch = false };
+        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
+        {
+            EnableLexiconSystem = true,
+            EnableArchiveSearch = false,
+        };
 
         await using TestMcpSession session = await CreateSessionAsync(intelligenceSettings: settings);
 
@@ -2097,11 +2108,12 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             ? Path.GetFullPath(_workspace.Root)
             : null;
 
-        IntelligenceSettings settings = intelligenceSettings ?? new IntelligenceSettings
-        {
-            EnableLexiconSystem = false,
-            EnableArchiveSearch = false,
-        };
+        IntelligenceSettings settings = intelligenceSettings
+            ?? (ArcanumRuntimeDefaults.Intelligence with
+            {
+                EnableLexiconSystem = false,
+                EnableArchiveSearch = false,
+            });
 
         ServiceCollection services = new();
 

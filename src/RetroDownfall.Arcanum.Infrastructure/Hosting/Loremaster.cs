@@ -48,14 +48,14 @@ internal sealed class Loremaster(
         try
         {
             int sweepMinutes = ArcanumSettingClamps.CampaignLogSweepIntervalMinutes(
-                options.CurrentValue.Intelligence.CampaignLogSweepIntervalMinutes);
+                options.CurrentValue.ResolveIntelligence().CampaignLogSweepIntervalMinutes);
 
             using PeriodicTimer timer = new(TimeSpan.FromMinutes(sweepMinutes));
 
             try
             {
                 int threshold = ArcanumSettingClamps.CampaignLogThreshold(
-                    options.CurrentValue.Intelligence.CampaignLogThreshold);
+                    options.CurrentValue.ResolveIntelligence().CampaignLogThreshold);
 
                 await RunSweepAsync(threshold, stoppingToken).ConfigureAwait(false);
             }
@@ -73,7 +73,7 @@ internal sealed class Loremaster(
                 try
                 {
                     int threshold = ArcanumSettingClamps.CampaignLogThreshold(
-                        options.CurrentValue.Intelligence.CampaignLogThreshold);
+                        options.CurrentValue.ResolveIntelligence().CampaignLogThreshold);
 
                     await RunSweepAsync(threshold, stoppingToken).ConfigureAwait(false);
                 }
@@ -87,7 +87,7 @@ internal sealed class Loremaster(
                 }
 
                 sweepMinutes = ArcanumSettingClamps.CampaignLogSweepIntervalMinutes(
-                    options.CurrentValue.Intelligence.CampaignLogSweepIntervalMinutes);
+                    options.CurrentValue.ResolveIntelligence().CampaignLogSweepIntervalMinutes);
 
                 timer.Period = TimeSpan.FromMinutes(sweepMinutes);
             }
@@ -111,7 +111,7 @@ internal sealed class Loremaster(
             cancellationToken.ThrowIfCancellationRequested();
 
             int idleMinutes = ArcanumSettingClamps.CampaignLogIdleTimeoutMinutes(
-                options.CurrentValue.Intelligence.CampaignLogIdleTimeoutMinutes);
+                options.CurrentValue.ResolveIntelligence().CampaignLogIdleTimeoutMinutes);
 
             DateTime idleCutoff = DateTime.UtcNow.AddMinutes(-idleMinutes);
 
@@ -174,7 +174,7 @@ internal sealed class Loremaster(
                     DateTime watermark = session.LastSummarizedMessageAt ?? DateTime.MinValue;
 
                     int batchSize = ArcanumSettingClamps.MaxMessagesPerConversationLoad(
-                        options.CurrentValue.Grimoire.MaxMessagesPerConversationLoad);
+                        ArcanumRuntimeDefaults.Grimoire.MaxMessagesPerConversationLoad);
 
                     List<Entry> batch = await grimoire
                         .GetUnsummarizedEntriesAsync(sessionId, watermark, batchSize, stoppingToken)

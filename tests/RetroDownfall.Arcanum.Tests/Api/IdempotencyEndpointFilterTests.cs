@@ -659,18 +659,10 @@ public sealed class IdempotencyEndpointFilterTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        // A dedicated factory is required: default `IdempotencyMaxResponseBytes` (10 MiB) is far
-        // larger than what's practical to generate in a fast unit test, so this narrows the cap to
-        // the clamp floor (1 MiB) and drives a response just over it.
-        await using ArcanumWebApplicationFactory oversizedFactory = new()
-        {
-            SettingsOverride = settings => settings with
-            {
-                Security = settings.Security with { IdempotencyMaxResponseBytes = 1 },
-            },
-        };
-
-        string oversizedText = new('x', 2 * 1024 * 1024);
+        await using ArcanumWebApplicationFactory oversizedFactory = new();
+        int maxCacheBytes = ArcanumSettingClamps.SecurityIdempotencyMaxResponseBytes(
+            ArcanumRuntimeDefaults.SecurityIdempotencyMaxResponseBytes);
+        string oversizedText = new('x', maxCacheBytes + 1);
 
         oversizedFactory.FakeIntelligence.NextFailure = null;
 

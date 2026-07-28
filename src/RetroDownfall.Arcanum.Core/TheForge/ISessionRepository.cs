@@ -21,7 +21,7 @@ public interface ISessionRepository
     /// <summary>
     /// Creates a new session pre-loaded with a copy of <paramref name="sourceId"/>'s entries (fresh
     /// ids, original content/role/timestamps/tool metadata) — an independent branch a caller can
-    /// continue without mutating the source. See DESIGN.md §11.16.1.
+    /// continue without mutating the source. See <c>docs/Arcanum.DESIGN.md</c> §11.16.1.
     /// </summary>
     Task<Result<Session>> ForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct);
 

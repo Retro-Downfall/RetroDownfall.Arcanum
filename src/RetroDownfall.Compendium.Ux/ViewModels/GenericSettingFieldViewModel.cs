@@ -1,4 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
+using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Compendium.Ux.Models;
 
 namespace RetroDownfall.Compendium.Ux.ViewModels;
@@ -14,7 +16,9 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         Group = descriptor.Group
             ?? DeriveGroup(descriptor.Key);
 
-        _value = value;
+        _value = descriptor.Kind == SettingKind.Dictionary
+            ? SerializeDictionary(value)
+            : value;
 
         if (descriptor.EnumType is not null)
         {
@@ -90,6 +94,7 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
             null => string.Empty,
             string s => s,
             string[] arr => string.Join(", ", arr),
+            IEnumerable<string> items => string.Join(", ", items),
             IDictionary<string, string> dict => string.Join(", ", dict.Select(kv => $"{kv.Key}={kv.Value}")),
             _ => Value.ToString() ?? string.Empty,
         };
@@ -129,6 +134,9 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
     partial void OnValueChanged(object? oldValue, object? newValue)
     {
+        OnPropertyChanged(nameof(StringValue));
+        OnPropertyChanged(nameof(BoolValue));
+
         if (Descriptor.Kind is SettingKind.Int or SettingKind.Long or SettingKind.Float)
         {
             OnPropertyChanged(nameof(NumericValue));
@@ -167,6 +175,23 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         }
 
         return char.ToUpperInvariant(value[0]) + value[1..];
+
+    }
+
+    private static string SerializeDictionary(object? value)
+    {
+
+        if (value is null)
+        {
+
+            return "{}";
+
+        }
+
+        return JsonSerializer.Serialize(
+            value,
+            value.GetType(),
+            ConfigurationJsonContext.Default);
 
     }
 

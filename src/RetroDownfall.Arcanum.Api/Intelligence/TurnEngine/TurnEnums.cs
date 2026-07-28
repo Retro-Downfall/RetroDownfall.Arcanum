@@ -22,7 +22,6 @@ internal enum TurnTerminationReason
     GuardrailsBlocked = 2,
     ProviderFailure = 3,
     Timeout = 4,
-    TurnBudgetExceeded = 5,
     ContextBudgetExceeded = 6,
     HostShutdown = 7,
     ClientDisconnected = 8,

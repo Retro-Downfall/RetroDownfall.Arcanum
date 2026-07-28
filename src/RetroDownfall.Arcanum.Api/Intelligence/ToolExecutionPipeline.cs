@@ -69,11 +69,10 @@ public sealed class ToolExecutionPipeline(
 
     /// <summary>
     /// Synthesized tool result text when an unexpected (infrastructure-fault) exception is tolerated
-    /// rather than failing the whole turn — see <c>Arcanum:Intelligence:TolerateToolFailures</c>
-    /// (default <see langword="true"/>). The model sees this text as the tool's result and can decide
-    /// how to proceed (retry, apologize, try a different approach) instead of the turn failing
-    /// outright with <c>Hub.Error</c>. Exact wording is a contract with the model prompt, not just a
-    /// log message — do not change casually.
+    /// rather than failing the whole turn under the code-owned tolerant mode policy. The model sees
+    /// this text as the tool's result and can decide how to proceed (retry, apologize, try a
+    /// different approach) instead of the turn failing outright with <c>Hub.Error</c>. Exact wording
+    /// is a contract with the model prompt, not just a log message — do not change casually.
     /// </summary>
     public static string PublicToolFailureMessage(string toolName) =>
         $"[Tool error: {toolName} failed with an internal error. The operator has been notified.]";
@@ -230,14 +229,9 @@ public sealed class ToolExecutionPipeline(
     /// </summary>
     private static void RecordToolInvocationMetric(string toolName, string outcome)
     {
-        // Canonicalize the internal use_commlink alias so metrics stay on send_commlink_alert.
-        string metricToolName = string.Equals(toolName, "use_commlink", StringComparison.Ordinal)
-            ? "send_commlink_alert"
-            : toolName;
-
         ArcanumMetrics.ToolInvocationsTotal.Add(
             1,
-            new KeyValuePair<string, object?>("tool_name", metricToolName),
+            new KeyValuePair<string, object?>("tool_name", toolName),
             new KeyValuePair<string, object?>("outcome", outcome));
 
     }
@@ -416,7 +410,7 @@ public sealed class ToolExecutionPipeline(
             {
 
                 logger.LogError(
-                    "Tool {ToolName} failed during inference (tolerated — Arcanum:Intelligence:TolerateToolFailures); exception type {ExceptionType}, call {ToolCallId}.",
+                    "Tool {ToolName} failed during inference (tolerated by mode policy); exception type {ExceptionType}, call {ToolCallId}.",
                     toolName,
                     ex.GetType().FullName,
                     callId);
@@ -508,7 +502,7 @@ public sealed class ToolExecutionPipeline(
                 {
 
                     logger.LogError(
-                        "attach_session_file post-process failed during inference (tolerated — Arcanum:Intelligence:TolerateToolFailures); exception type {ExceptionType}, call {ToolCallId}.",
+                        "attach_session_file post-process failed during inference (tolerated by mode policy); exception type {ExceptionType}, call {ToolCallId}.",
                         ex.GetType().FullName,
                         callId);
 
@@ -772,7 +766,7 @@ public sealed class ToolExecutionPipeline(
 
         string toolName = fcc.Name ?? string.Empty;
 
-        WardSettings wardSettings = settings.Value.Ward ?? new WardSettings();
+        WardSettings wardSettings = settings.Value.ResolveWard();
 
         if (IsWardCandidate(toolName, turnContext.CampaignRequiresWard, wardSettings)
             && request.UnattendedMode
@@ -1295,8 +1289,7 @@ public sealed class ToolExecutionPipeline(
             {
 
                 WorkspacePatchSettings patchSettings =
-                    settings.Value.CodingTools?.Patch
-                    ?? new WorkspacePatchSettings();
+                    settings.Value.ResolveCodingTools().Patch;
 
                 if (!TryParseApplyPatchManifest(
                         argsRoot,
@@ -1455,35 +1448,6 @@ public sealed class ToolExecutionPipeline(
                         return scriptsRootResult;
 
                     }
-
-                }
-
-                break;
-
-            }
-
-            case "send_commlink_alert":
-            case "use_commlink":
-            case "petition_dungeon_master":
-            {
-
-                string? webhookUrl = settings.Value.CommLink?.WebhookUrl;
-
-                if (string.IsNullOrWhiteSpace(webhookUrl))
-                {
-
-                    break;
-
-                }
-
-                SanctumResult networkResult = await sanctumGuard
-                    .ValidateNetworkAsync(campaignId, webhookUrl, toolName, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (!networkResult.Allowed)
-                {
-
-                    return networkResult;
 
                 }
 

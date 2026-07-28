@@ -15,13 +15,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 /// guardrail violations that blocked an inference turn, one file per UTC day
 /// (<c>{stem}-{yyyyMMdd}.jsonl</c>). Registered as a singleton; a single in-process
 /// <see cref="SemaphoreSlim"/> serializes writes. A complete no-op — no file I/O at all — when
-/// <c>Arcanum:Guardrails:AuditLog:Enabled</c> is <see langword="false"/> (the default). Independent
-/// of <see cref="InferenceAuditLogger"/> (which records completed turns): this records only the
-/// violations that rejected a turn, and only when <c>Guardrails:Enabled</c> is also <see langword="true"/>.
+/// <c>Arcanum:Security:Guardrails:AuditLog:Enabled</c> is <see langword="false"/> (the default).
+/// Independent of <see cref="InferenceAuditLogger"/> (which records completed turns): this records
+/// only the violations that rejected a turn, and only when <c>Arcanum:Features:Guardrails</c> is
+/// also <see langword="true"/>.
 /// </summary>
 public sealed class GuardrailAuditLogger(
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
-    ILogger<GuardrailAuditLogger> logger) : IGuardrailAuditLogger, IDisposable
+    ILogger<GuardrailAuditLogger> logger,
+    string? filePathOverride = null) : IGuardrailAuditLogger, IDisposable
 {
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -33,7 +35,8 @@ public sealed class GuardrailAuditLogger(
     public async Task LogAsync(GuardrailAuditRecord record, CancellationToken cancellationToken)
     {
 
-        GuardrailsAuditLogSettings config = optionsMonitor.CurrentValue.Guardrails.AuditLog;
+        GuardrailsAuditLogSettings config =
+            optionsMonitor.CurrentValue.ResolveGuardrails().AuditLog;
 
         if (!config.Enabled)
         {
@@ -46,7 +49,8 @@ public sealed class GuardrailAuditLogger(
 
             try
             {
-                (string directory, string stem) = ResolvePathParts(config.FilePath);
+                (string directory, string stem) =
+                    ResolvePathParts(filePathOverride ?? config.FilePath);
 
                 string dateStamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
 
@@ -109,14 +113,16 @@ public sealed class GuardrailAuditLogger(
         CancellationToken cancellationToken)
     {
 
-        GuardrailsAuditLogSettings config = optionsMonitor.CurrentValue.Guardrails.AuditLog;
+        GuardrailsAuditLogSettings config =
+            optionsMonitor.CurrentValue.ResolveGuardrails().AuditLog;
 
         if (!config.Enabled)
         {
             return [];
         }
 
-        (string directory, string stem) = ResolvePathParts(config.FilePath);
+        (string directory, string stem) =
+            ResolvePathParts(filePathOverride ?? config.FilePath);
 
         if (!Directory.Exists(directory))
         {

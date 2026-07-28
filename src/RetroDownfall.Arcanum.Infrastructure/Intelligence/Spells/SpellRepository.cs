@@ -53,10 +53,10 @@ internal sealed partial class SpellRepository : ISpellRepository
         ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(_settingsMonitor.CurrentValue);
 
     private int GetMaxSpellDependencies() =>
-        ArcanumSettingClamps.MaxDependencies((_settingsMonitor.CurrentValue.Spells ?? new SpellSettings()).MaxDependencies);
+        ArcanumSettingClamps.MaxDependencies(ArcanumRuntimeDefaults.Spells.MaxDependencies);
 
     private int GetMaxSpellDeclaredTools() =>
-        ArcanumSettingClamps.MaxDeclaredTools((_settingsMonitor.CurrentValue.Spells ?? new SpellSettings()).MaxDeclaredTools);
+        ArcanumSettingClamps.MaxDeclaredTools(ArcanumRuntimeDefaults.Spells.MaxDeclaredTools);
 
     public async Task<SpellSummary[]> ListAsync(string? workingDirectory, CancellationToken ct)
     {
@@ -141,7 +141,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             return Result.Failure(new Error("Spell.InvalidFrontmatter", frontmatterError));
         }
 
-        SpellSettings spellSettings = _settingsMonitor.CurrentValue.Spells ?? new SpellSettings();
+        SpellSettings spellSettings = ArcanumRuntimeDefaults.Spells;
 
         int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
 
@@ -264,7 +264,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             return Result.Failure(new Error("Spell.InvalidFrontmatter", frontmatterError));
         }
 
-        SpellSettings spellSettings = _settingsMonitor.CurrentValue.Spells ?? new SpellSettings();
+        SpellSettings spellSettings = ArcanumRuntimeDefaults.Spells;
 
         int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
 
@@ -466,9 +466,10 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         long perFileCap = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings);
 
-        // No dedicated Spells.MaxExportBytes exists; reuse the clamped workspace read-size cap as
-        // the aggregate budget for script bytes so a single export cannot stream unbounded content.
-        long aggregateScriptCap = ArcanumSettingClamps.MaxFileReadSizeBytes(settings.Workspaces.MaxFileReadSizeBytes);
+        // Spell export has a code-owned aggregate script-byte envelope. Reuse the clamped workspace
+        // read-size cap so a single export cannot stream unbounded content.
+        long aggregateScriptCap = ArcanumSettingClamps.MaxFileReadSizeBytes(
+            ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
 
         SkillMetadata? metadata = null;
 

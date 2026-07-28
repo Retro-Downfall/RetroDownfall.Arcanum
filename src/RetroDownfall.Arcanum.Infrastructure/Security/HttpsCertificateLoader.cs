@@ -13,12 +13,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </summary>
 public static class HttpsCertificateLoader
 {
-
-    private const string DataProtectionPrefix = "dp:v1:";
-
     public static HttpsCertificateLoadResult Load(
         HttpsSettings https,
-        ConfigurationSecretProtector? secretProtector,
         ILogger? logger = null)
     {
 
@@ -35,7 +31,10 @@ public static class HttpsCertificateLoader
 
         return usePem
             ? LoadPem(certificatePath, https.PrivateKeyPath!, logger)
-            : LoadPfx(certificatePath, https.CertificatePassword, secretProtector, logger);
+            : LoadPfx(
+                certificatePath,
+                EnvironmentCredentialResolver.ResolveHttpsCertificatePassword(https),
+                logger);
 
     }
 
@@ -101,8 +100,7 @@ public static class HttpsCertificateLoader
 
     private static HttpsCertificateLoadResult LoadPfx(
         string certificatePath,
-        string? passwordRaw,
-        ConfigurationSecretProtector? secretProtector,
+        string? password,
         ILogger? logger)
     {
 
@@ -113,8 +111,6 @@ public static class HttpsCertificateLoader
                 FormatFailure(certificatePath, "PFX", "missing file"));
 
         }
-
-        string? password = ResolvePassword(passwordRaw, secretProtector);
 
         // macOS keychain-backed key import rejects the ephemeral key set; every other platform uses it
         // so the key is never persisted to a user or machine store during a short-lived host process.
@@ -189,26 +185,5 @@ public static class HttpsCertificateLoader
 
     private static string FormatFailure(string certificatePath, string mode, string reason) =>
         $"HTTPS {mode} certificate at '{certificatePath}' could not be loaded ({reason}).";
-
-    private static string? ResolvePassword(string? passwordRaw, ConfigurationSecretProtector? secretProtector)
-    {
-
-        if (string.IsNullOrEmpty(passwordRaw))
-        {
-
-            return passwordRaw;
-
-        }
-
-        if (passwordRaw.StartsWith(DataProtectionPrefix, StringComparison.Ordinal) && secretProtector is not null)
-        {
-
-            return secretProtector.Unprotect(passwordRaw);
-
-        }
-
-        return passwordRaw;
-
-    }
 
 }

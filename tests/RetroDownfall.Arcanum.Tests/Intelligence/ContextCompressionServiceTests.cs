@@ -32,42 +32,13 @@ public sealed class ContextCompressionServiceTests
     }
 
     [Fact]
-    public async Task CompressSessionAsync_DisabledCompression_DoesNotTokenizeOrDelete()
-    {
-        Session session = CreateSession(
-            CreateEntry("content that would otherwise be considered"));
-        CompressionGrimoireRepository grimoire = new() { Session = session };
-        ContextCompressionService service = CreateService(
-            grimoire,
-            new IntelligenceSettings
-            {
-                EnableContextCompression = false,
-                CompressionPreflightMinMessages = 0,
-            });
-
-        CompactResult result = await service.CompressSessionAsync(
-            session.Id,
-            256,
-            CancellationToken.None);
-
-        Assert.Equal(new CompactResult(0, 0, 0), result);
-        Assert.Empty(grimoire.DeletedEntryIds);
-    }
-
-    [Fact]
     public async Task CompressSessionAsync_ContextUnderDefaultLimit_PreservesMeasuredTokens()
     {
-        Session session = CreateSession(CreateEntry("short context"));
+        Session session = CreateSession(
+            [.. Enumerable.Range(0, 6)
+                .Select(index => CreateEntry($"short context {index}", createdAtOffset: index))]);
         CompressionGrimoireRepository grimoire = new() { Session = session };
-        ContextCompressionService service = CreateService(
-            grimoire,
-            new IntelligenceSettings
-            {
-                EnableContextCompression = true,
-                CompressionPreflightMinMessages = 0,
-                ContextWindowCompressionThreshold = 85,
-                TokenizerEncoding = null!,
-            });
+        ContextCompressionService service = CreateService(grimoire);
 
         CompactResult result = await service.CompressSessionAsync(
             session.Id,
@@ -85,11 +56,12 @@ public sealed class ContextCompressionServiceTests
     {
         Entry oldest = CreateEntry(new string('a', 20_000), createdAtOffset: 0);
         Entry retained = CreateEntry("retained", createdAtOffset: 1);
-        Session session = CreateSession(oldest, retained);
+        Entry[] fillers = Enumerable.Range(2, 4)
+            .Select(index => CreateEntry($"filler-{index}", isPinned: true, createdAtOffset: index))
+            .ToArray();
+        Session session = CreateSession([oldest, retained, .. fillers]);
         CompressionGrimoireRepository grimoire = new() { Session = session };
-        ContextCompressionService service = CreateService(
-            grimoire,
-            CompressionEnabledSettings());
+        ContextCompressionService service = CreateService(grimoire);
 
         CompactResult result = await service.CompressSessionAsync(
             session.Id,
@@ -106,12 +78,15 @@ public sealed class ContextCompressionServiceTests
     [Fact]
     public async Task CompressSessionAsync_OnlyPinnedEntries_LeavesOverLimitContextUntouched()
     {
-        Entry pinned = CreateEntry(new string('p', 20_000), isPinned: true);
+        Entry[] pinned = Enumerable.Range(0, 6)
+            .Select(index => CreateEntry(
+                new string('p', 20_000),
+                isPinned: true,
+                createdAtOffset: index))
+            .ToArray();
         Session session = CreateSession(pinned);
         CompressionGrimoireRepository grimoire = new() { Session = session };
-        ContextCompressionService service = CreateService(
-            grimoire,
-            CompressionEnabledSettings());
+        ContextCompressionService service = CreateService(grimoire);
 
         CompactResult result = await service.CompressSessionAsync(
             session.Id,
@@ -129,7 +104,10 @@ public sealed class ContextCompressionServiceTests
     {
         Entry removable = CreateEntry(string.Empty, createdAtOffset: 0);
         Entry pinned = CreateEntry(new string('p', 20_000), isPinned: true, createdAtOffset: 1);
-        Session session = CreateSession(removable, pinned);
+        Entry[] fillers = Enumerable.Range(2, 4)
+            .Select(index => CreateEntry($"filler-{index}", isPinned: true, createdAtOffset: index))
+            .ToArray();
+        Session session = CreateSession([removable, pinned, .. fillers]);
         CompressionGrimoireRepository grimoire = new()
         {
             Session = session,
@@ -138,7 +116,6 @@ public sealed class ContextCompressionServiceTests
         CapturingLogger<ContextCompressionService> logger = new();
         ContextCompressionService service = CreateService(
             grimoire,
-            CompressionEnabledSettings(),
             logger);
 
         CompactResult result = await service.CompressSessionAsync(
@@ -168,31 +145,17 @@ public sealed class ContextCompressionServiceTests
 
     private static ContextCompressionService CreateService(
         CompressionGrimoireRepository grimoire,
-        IntelligenceSettings? intelligence = null,
         ILogger<ContextCompressionService>? logger = null)
     {
-        ArcanumSettings settings = new()
-        {
-            Intelligence = intelligence ?? CompressionEnabledSettings(),
-        };
         InferenceTokenizerResolver tokenizerResolver = new(
             NullLogger<InferenceTokenizerResolver>.Instance);
 
         return new ContextCompressionService(
             grimoire,
-            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             tokenizerResolver,
             logger ?? NullLogger<ContextCompressionService>.Instance);
     }
-
-    private static IntelligenceSettings CompressionEnabledSettings() =>
-        new()
-        {
-            EnableContextCompression = true,
-            CompressionPreflightMinMessages = 0,
-            ContextWindowCompressionThreshold = 50,
-            PerMessageTemplateOverheadTokens = 0,
-        };
 
     private static Session CreateSession(params Entry[] entries)
     {

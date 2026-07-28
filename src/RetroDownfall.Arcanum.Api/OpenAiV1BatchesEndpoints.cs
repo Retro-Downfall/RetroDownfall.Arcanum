@@ -13,8 +13,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Api;
 
 /// <summary>
-/// OpenAI-compatible <c>/v1/batches</c> asynchronous bulk chat-completion processing (DESIGN.md
-/// §11.21). These endpoints only create/read/cancel batch metadata — the actual JSONL processing
+/// OpenAI-compatible <c>/v1/batches</c> asynchronous bulk chat-completion processing
+/// (<c>docs/Arcanum.DESIGN.md</c> §11.21). These endpoints only create/read/cancel batch metadata — the actual JSONL processing
 /// happens out-of-band in <see cref="BatchProcessingService"/>.
 /// (<see cref="ExcludeFromCodeCoverageAttribute"/> is applied once on the primary
 /// <c>OpenAiV1Endpoints.cs</c> partial declaration and covers this file too.)
@@ -22,7 +22,7 @@ namespace RetroDownfall.Arcanum.Api;
 internal static partial class OpenAiV1Endpoints
 {
 
-    /// <summary>Phase 1 supports only chat-completion batches — mirrors the JSONL body contract <c>BatchProcessingService</c> understands.</summary>
+    /// <summary>Only chat-completion batches are supported; this mirrors the JSONL body contract <c>BatchProcessingService</c> understands.</summary>
     private const string SupportedBatchEndpoint = "/v1/chat/completions";
 
     private const string BatchIdPrefix = "batch_";
@@ -359,7 +359,7 @@ internal static partial class OpenAiV1Endpoints
                     Logprobs: null),
             ],
             Usage: turn.Usage,
-            SystemFingerprint: ResolveSystemFingerprint(settings),
+            SystemFingerprint: ResolveSystemFingerprint(),
             ServiceTier: null);
 
         return Result<OpenAiChatResponse>.Success(response);

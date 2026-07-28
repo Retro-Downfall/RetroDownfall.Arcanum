@@ -1,13 +1,14 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Cost-tracking settings. Defines per-model pricing and a default fallback. Used by the hub to
-/// accumulate <see cref="CostCalculator"/> results per turn and enforce budget limits.
+/// Runtime projection of <c>Arcanum:Cost:Pricing</c>. Defines per-model pricing and a default
+/// fallback used by the hub to accumulate <see cref="CostCalculator"/> results per turn.
 /// </summary>
 public sealed record PricingSettings
 {
 
-    private readonly Dictionary<string, ModelPricingEntry> _modelPricing = [];
+    private Dictionary<string, ModelPricingEntry> _modelPricing =
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Per-model pricing keyed by model name (e.g. <c>gpt-4o</c>, <c>mistral:latest</c>). A provider's
@@ -18,7 +19,9 @@ public sealed record PricingSettings
 
         get => _modelPricing;
 
-        init => _modelPricing = new Dictionary<string, ModelPricingEntry>(value, StringComparer.OrdinalIgnoreCase);
+        set => _modelPricing = new Dictionary<string, ModelPricingEntry>(
+            value,
+            StringComparer.OrdinalIgnoreCase);
 
     }
 

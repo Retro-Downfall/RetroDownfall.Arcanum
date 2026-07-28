@@ -17,32 +17,69 @@ public sealed class TurnBudgetAndMaterializerTests
     private const string TruncationMarker = "\n" + TruncationMarkerBody;
 
     [Fact]
-    public void TurnBudget_TryConsumeToolRoundAndToolCalls_EnforcesCeilings()
+    public void TurnBudget_contract_has_no_workflow_count_members()
     {
-        TurnBudget budget = new(
-            maxToolRounds: 2,
-            maxModelCalls: 10,
-            maxToolCalls: 3,
-            maxToolCallsPerRound: 2,
-            maxSideEffectingToolCalls: 1);
+        string[] forbiddenMemberNames =
+        [
+            "MaxToolRounds",
+            "MaxModelCalls",
+            "MaxToolCalls",
+            "MaxToolCallsPerRound",
+            "MaxSideEffectingToolCalls",
+            "RemainingModelCalls",
+            "RemainingToolRounds",
+            "RemainingToolCalls",
+            "TryConsumeModelCall",
+            "TryConsumeToolRound",
+            "TryConsumeToolCalls",
+        ];
+        HashSet<string> forbidden = new(
+            forbiddenMemberNames,
+            StringComparer.OrdinalIgnoreCase);
+        Type budgetContract = typeof(ITurnBudget);
+        Type? budgetImplementation = budgetContract.Assembly.GetType(
+            "RetroDownfall.Arcanum.Core.Intelligence.TurnBudget");
+        List<string> violations = [];
 
-        Assert.True(budget.TryConsumeToolRound());
-        Assert.True(budget.TryConsumeToolCalls(2, sideEffectingCount: 1));
-        Assert.False(budget.TryConsumeToolCalls(1, sideEffectingCount: 1));
-        Assert.True(budget.TryConsumeToolRound());
-        Assert.False(budget.TryConsumeToolRound());
-        Assert.False(budget.TryConsumeToolCalls(-1));
-        Assert.False(budget.TryConsumeToolCalls(3));
+        foreach (Type type in new[] { budgetContract, budgetImplementation }
+            .OfType<Type>())
+        {
+            violations.AddRange(type
+                .GetProperties()
+                .Where(property => forbidden.Contains(property.Name))
+                .Select(property => $"{type.Name}.{property.Name}"));
+            violations.AddRange(type
+                .GetMethods()
+                .Where(method => forbidden.Contains(method.Name))
+                .Select(method => $"{type.Name}.{method.Name}"));
+            violations.AddRange(type
+                .GetConstructors()
+                .SelectMany(static constructor => constructor.GetParameters())
+                .Where(parameter => parameter.Name is not null
+                    && forbidden.Contains(parameter.Name))
+                .Select(parameter => $"{type.Name} constructor parameter {parameter.Name}"));
+        }
+
+        Assert.Empty(violations);
     }
 
     [Fact]
-    public void ModelCallExecutor_DelegatesToBudget()
+    public void Turn_limit_defaults_have_no_workflow_count_constants()
     {
-        ModelCallExecutor executor = new();
-        TurnBudget budget = new(maxModelCalls: 1);
+        Type? defaultsType = typeof(ITurnBudget).Assembly.GetType(
+            "RetroDownfall.Arcanum.Core.Configuration.TurnLimitsDefaults");
+        string[] workflowCountConstants = defaultsType?
+            .GetFields()
+            .Where(static field =>
+                field.Name.Contains("ModelCall", StringComparison.Ordinal)
+                || field.Name.Contains("ToolRound", StringComparison.Ordinal)
+                || field.Name.Contains("ToolCall", StringComparison.Ordinal)
+                || field.Name.Contains("SideEffect", StringComparison.Ordinal))
+            .Select(static field => field.Name)
+            .ToArray()
+            ?? [];
 
-        Assert.True(executor.TryBeginModelCall(budget));
-        Assert.False(executor.TryBeginModelCall(budget));
+        Assert.Empty(workflowCountConstants);
     }
 
     [Fact]

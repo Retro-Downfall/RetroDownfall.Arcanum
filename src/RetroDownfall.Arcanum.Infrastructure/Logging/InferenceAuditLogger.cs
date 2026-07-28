@@ -19,7 +19,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 /// </summary>
 public sealed class InferenceAuditLogger(
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
-    ILogger<InferenceAuditLogger> logger) : IInferenceAuditLogger, IDisposable
+    ILogger<InferenceAuditLogger> logger,
+    string? filePathOverride = null) : IInferenceAuditLogger, IDisposable
 {
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -31,7 +32,7 @@ public sealed class InferenceAuditLogger(
     public async Task LogAsync(InferenceAuditRecord record, CancellationToken cancellationToken)
     {
 
-        HostAuditLogSettings config = optionsMonitor.CurrentValue.Host.AuditLog;
+        HostAuditLogSettings config = ResolveConfig();
 
         if (!config.Enabled)
         {
@@ -48,7 +49,8 @@ public sealed class InferenceAuditLogger(
             try
             {
 
-                (string directory, string stem) = ResolvePathParts(config.FilePath);
+                (string directory, string stem) =
+                    ResolvePathParts(filePathOverride ?? config.FilePath);
 
                 string dateStamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
 
@@ -128,7 +130,7 @@ public sealed class InferenceAuditLogger(
         CancellationToken cancellationToken)
     {
 
-        HostAuditLogSettings config = optionsMonitor.CurrentValue.Host.AuditLog;
+        HostAuditLogSettings config = ResolveConfig();
 
         if (!config.Enabled)
         {
@@ -137,7 +139,8 @@ public sealed class InferenceAuditLogger(
 
         }
 
-        (string directory, string stem) = ResolvePathParts(config.FilePath);
+        (string directory, string stem) =
+            ResolvePathParts(filePathOverride ?? config.FilePath);
 
         if (!Directory.Exists(directory))
         {
@@ -365,6 +368,9 @@ public sealed class InferenceAuditLogger(
         }
 
     }
+
+    private HostAuditLogSettings ResolveConfig() =>
+        optionsMonitor.CurrentValue.ResolveHostAuditLog();
 
     /// <summary>
     /// Splits the configured <c>FilePath</c> into the directory to write dated files into and the

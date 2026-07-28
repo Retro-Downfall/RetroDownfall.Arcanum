@@ -20,7 +20,7 @@ public static class EmbeddingsVectorStatus
             return (
                 false,
                 WeaveIndexAvailability.ModeDisabled,
-                "Embeddings are disabled (Arcanum:Embeddings:Enabled=false).",
+                "Embeddings are disabled (no embedding-backed Arcanum:Features opt-in is enabled).",
                 budget);
 
         }
@@ -31,7 +31,7 @@ public static class EmbeddingsVectorStatus
             return (
                 true,
                 WeaveIndexAvailability.ModeUnavailable,
-                "Embeddings are enabled but provider/model is not configured.",
+                "Embeddings are enabled but Arcanum:Integrations:Embeddings:Provider or Arcanum:Integrations:Embeddings:Model is not configured.",
                 budget);
 
         }

@@ -6,7 +6,7 @@ namespace RetroDownfall.TheForge.Core.Chronicle;
 /// A tolerant, The Forge-local parse of one <c>GET /api/apprentices/{id}/chronicle</c> SSE frame.
 ///
 /// Deliberately NOT a deserialization of <c>RetroDownfall.Arcanum.Core.TheForge.ApprenticeEvent</c>:
-/// <c>ChronicleSseWriter.WritePassThroughEvent</c> flattens pass-through Wizard
+/// <c>ChronicleSseWriter.WritePassThroughEvent</c> flattens pass-through Master
 /// (<c>IntelligenceEvent</c>) fields directly onto the frame (<c>message</c>, <c>data</c>,
 /// <c>usage</c>, <c>toolCall</c>, <c>wardId</c>, <c>toolName</c>, <c>arguments</c>, <c>allowed</c>,
 /// <c>reason</c>) with no nested <c>wizardEvent</c> object, and three lifecycle types
@@ -31,7 +31,7 @@ public sealed record ChronicleFrame(
     int? Attempt = null,
     long? BackoffMs = null,
     int? StepIndex = null,
-    // Pass-through Wizard (IntelligenceEvent) fields — present only on toolCall/toolResult/warded/wardResolved frames.
+    // Pass-through Master (IntelligenceEvent) fields — present only on toolCall/toolResult/warded/wardResolved frames.
     string? Message = null,
     string? Data = null,
     JsonElement? Usage = null,

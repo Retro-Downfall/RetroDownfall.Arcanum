@@ -55,13 +55,13 @@ internal static class PerceptionEndpoints
                     return Results.BadRequest(ApiResponse<PatternSnapshot>.FromResult(invalid, badTraceId));
                 }
 
-                string[] allowedRoots = settings.Value.Perception.AllowedWorkspaceRoots ?? [];
+                string[] allowedRoots = settings.Value.ResolvePerceptionRoots();
 
                 Result<string> allowed = WorkspaceRootPolicy.EnforceAllowedRoots(
                     resolved,
                     allowedRoots,
                     "Perception.PathNotAllowed",
-                    "The specified directory is outside the configured Perception.AllowedWorkspaceRoots.");
+                    "The specified directory is outside Arcanum:Security:PerceptionWorkspaceRoots.");
 
                 if (allowed.IsFailure)
                 {

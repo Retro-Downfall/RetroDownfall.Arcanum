@@ -313,7 +313,7 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
         BatchProcessingService processing = new(
             root.GetRequiredService<IServiceScopeFactory>(),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings { Batches = new BatchesSettings() }),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
             root,
             NullLogger<BatchProcessingService>.Instance);
 

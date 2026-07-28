@@ -29,7 +29,7 @@ public sealed class BudgetMonitor(
     public async Task<Result> CheckAsync(CancellationToken cancellationToken = default)
     {
 
-        BudgetSettings budget = settings.CurrentValue.Budget;
+        BudgetSettings budget = settings.CurrentValue.ResolveBudget();
 
         if (!budget.Enabled || budget.DailyLimitUsd <= 0)
         {

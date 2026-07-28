@@ -7,8 +7,8 @@ namespace RetroDownfall.Arcanum.Api;
 
 /// <summary>
 /// OpenAI-compatible <c>POST /v1/moderations</c>. Arcanum does not implement moderation; the route
-/// remains for client compatibility and always returns <c>501 not_supported</c>. There is no
-/// <c>Arcanum:Moderations</c> setting — that block is rejected as obsolete at startup.
+/// remains for client compatibility and always returns <c>501 not_supported</c>. No configuration
+/// setting enables it.
 /// </summary>
 internal static partial class OpenAiV1Endpoints
 {

@@ -45,9 +45,6 @@ internal sealed partial class ArcanumInternalToolServer
 
             ["send_commlink_alert"] = ExecuteSendCommlinkAlertAsync,
 
-            // Deprecated call-only alias — not advertised in tools/list.
-            ["use_commlink"] = ExecuteSendCommlinkAlertAsync,
-
             ["petition_dungeon_master"] = ExecutePetitionDungeonMasterAsync,
 
             ["cast_sending"] = ExecuteCastSendingAsync,

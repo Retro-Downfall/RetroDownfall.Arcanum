@@ -38,7 +38,9 @@ public sealed class DivinationService
             TheForgeJsonContext.Default.ApiResponseWorkspaceSearchResultArray,
             cancellationToken);
 
-    /// <summary><c>POST /api/saga/divine</c> — Saga Divination; gated by Embeddings+SagaEnabled (503 <c>Embeddings.FeatureDisabled</c>).</summary>
+    /// <summary><c>POST /api/saga/divine</c> — Saga Divination; gated by
+    /// <c>Arcanum:Features:Saga</c> plus valid embedding integration facts
+    /// (503 <c>Embeddings.FeatureDisabled</c>).</summary>
     public Task<ApiResponse<SagaSearchResult>?> SearchSagaAsync(SagaSearchRequest request, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
             "/api/saga/divine",

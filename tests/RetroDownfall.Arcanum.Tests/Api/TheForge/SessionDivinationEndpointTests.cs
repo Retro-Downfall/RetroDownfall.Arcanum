@@ -246,13 +246,18 @@ public sealed class SessionDivinationEndpointTests
         {
             SettingsOverride = settings => settings with
             {
-                Embeddings = settings.Embeddings with
+                Features = settings.Features with
                 {
-                    Enabled = true,
-                    SessionSearchEnabled = true,
-                    Provider = "test",
-                    Model = "test-embed",
-                    SimilarityThreshold = 0f,
+                    Embeddings = true,
+                    SessionSearch = true,
+                },
+                Integrations = settings.Integrations with
+                {
+                    Embeddings = settings.Integrations.Embeddings with
+                    {
+                        Provider = "test",
+                        Model = "test-embed",
+                    },
                 },
             },
             ServiceOverrides = services =>

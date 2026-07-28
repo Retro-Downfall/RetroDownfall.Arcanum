@@ -14,10 +14,4 @@ internal static class PublicInferenceErrorMessages
 
     public const string ModelNotConfigured =
         "The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel.";
-
-    public const string NativeTimeout =
-        "Inference timed out. Increase Arcanum:Intelligence:InferenceTimeoutSeconds or retry with a shorter prompt.";
-
-    public const string OpenAiTimeout =
-        "Inference timed out.";
 }

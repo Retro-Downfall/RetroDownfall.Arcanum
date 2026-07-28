@@ -10,8 +10,6 @@ internal static class OpenAiStreamErrorMapper
     private static readonly HashSet<string> AllowedMessages =
     [
         GenericFailureMessage,
-        "Tool invocation limit reached.",
-        PublicInferenceErrorMessages.OpenAiTimeout,
         PublicInferenceErrorMessages.ModelNotConfigured,
         "Prompt is required.",
         "Attached file validation failed.",
@@ -58,7 +56,7 @@ internal static class OpenAiStreamErrorMapper
                 ResolveMessage(error),
                 "api_error",
                 Param: null,
-                Code: ResolveGenericCode(internalCode)),
+                Code: "inference_failed"),
         };
     }
 
@@ -70,9 +68,6 @@ internal static class OpenAiStreamErrorMapper
         {
             ErrorCodes.Hub.Model =>
                 PublicInferenceErrorMessages.ModelNotConfigured,
-            ErrorCodes.Hub.ToolLoop => "Tool invocation limit reached.",
-            ErrorCodes.Hub.Timeout =>
-                PublicInferenceErrorMessages.OpenAiTimeout,
             ErrorCodes.Validation.InvalidPrompt => "Prompt is required.",
             ErrorCodes.Validation.AttachedFiles => "Attached file validation failed.",
             _ => SanitizeMessage(error?.Message),
@@ -82,11 +77,6 @@ internal static class OpenAiStreamErrorMapper
         !string.IsNullOrWhiteSpace(message) && AllowedMessages.Contains(message)
             ? message
             : GenericFailureMessage;
-
-    private static string ResolveGenericCode(string? internalCode) =>
-        internalCode is ErrorCodes.Hub.ToolLoop or ErrorCodes.Hub.Timeout
-            ? "server_error"
-            : "inference_failed";
 
     private static string? MapReasoningValidationCode(string? internalCode) =>
         internalCode switch

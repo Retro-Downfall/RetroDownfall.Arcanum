@@ -143,8 +143,7 @@ public sealed class ApprenticeServiceReliabilityTests
                 IntelligenceEventType.Result,
                 Message: "completed"));
         ArcanumSettings settings = new();
-        ChronicleHub hub = new(
-            new TestOptionsMonitor<ArcanumSettings>(settings));
+        ChronicleHub hub = new();
         ApprenticeService service = CreateService(
             new InMemoryApprenticeRepository(),
             settings,
@@ -219,21 +218,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = new()
-        {
-
-            Apprentices = new ApprenticeSettings
-            {
-
-                Enabled = true,
-
-                MaxConcurrentApprentices = 1,
-
-                MaxPendingStarts = 1,
-
-            },
-
-        };
+        ArcanumSettings settings = CreateCapacitySettings();
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -296,21 +281,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = new()
-        {
-
-            Apprentices = new ApprenticeSettings
-            {
-
-                Enabled = true,
-
-                MaxConcurrentApprentices = 1,
-
-                MaxPendingStarts = 1,
-
-            },
-
-        };
+        ArcanumSettings settings = CreateCapacitySettings();
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -367,21 +338,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = new()
-        {
-
-            Apprentices = new ApprenticeSettings
-            {
-
-                Enabled = true,
-
-                MaxConcurrentApprentices = 1,
-
-                MaxPendingStarts = 1,
-
-            },
-
-        };
+        ArcanumSettings settings = CreateCapacitySettings();
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -441,21 +398,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = new()
-        {
-
-            Apprentices = new ApprenticeSettings
-            {
-
-                Enabled = true,
-
-                MaxConcurrentApprentices = 1,
-
-                MaxPendingStarts = 1,
-
-            },
-
-        };
+        ArcanumSettings settings = CreateCapacitySettings();
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -510,21 +453,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = new()
-        {
-
-            Apprentices = new ApprenticeSettings
-            {
-
-                Enabled = true,
-
-                MaxConcurrentApprentices = 1,
-
-                MaxPendingStarts = 1,
-
-            },
-
-        };
+        ArcanumSettings settings = CreateCapacitySettings();
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -554,15 +483,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
             0,
 
-            settings.Apprentices!,
-
-            1,
-
-            0,
-
-            1,
-
-            60,
+            settings.ResolveApprentices(),
 
             apprenticeId,
 
@@ -622,21 +543,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         OceOnFirstGetApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = new()
-        {
-
-            Apprentices = new ApprenticeSettings
-            {
-
-                Enabled = true,
-
-                MaxConcurrentApprentices = 1,
-
-                MaxPendingStarts = 1,
-
-            },
-
-        };
+        ArcanumSettings settings = CreateCapacitySettings();
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -700,21 +607,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         OceOnFirstGetApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = new()
-        {
-
-            Apprentices = new ApprenticeSettings
-            {
-
-                Enabled = true,
-
-                MaxConcurrentApprentices = 1,
-
-                MaxPendingStarts = 1,
-
-            },
-
-        };
+        ArcanumSettings settings = CreateCapacitySettings();
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -771,21 +664,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         InMemoryApprenticeRepository repo = new(apprentice);
 
-        ArcanumSettings settings = new()
-        {
-
-            Apprentices = new ApprenticeSettings
-            {
-
-                Enabled = true,
-
-                MaxConcurrentApprentices = 1,
-
-                MaxPendingStarts = 1,
-
-            },
-
-        };
+        ArcanumSettings settings = CreateCapacitySettings();
 
         CapturingLogger<ApprenticeService> logger = new();
 
@@ -793,7 +672,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         NotImplementedGrimoireRepository grimoire = new();
 
-        ChronicleHub hub = new(new TestOptionsMonitor<ArcanumSettings>(settings));
+        ChronicleHub hub = new();
 
         ApprenticeService service = CreateService(repo, settings, logger, intelligence, grimoire, hub);
 
@@ -880,6 +759,16 @@ public sealed class ApprenticeServiceReliabilityTests
 
     }
 
+    private static ArcanumSettings CreateCapacitySettings() => new()
+    {
+        Features = new FeatureSettings { Apprentices = true },
+        Execution = new ExecutionSettings
+        {
+            MaxConcurrentApprentices = 1,
+            MaxPendingApprenticeStarts = 1,
+        },
+    };
+
     private static async Task<object> ExecuteStepStreamAsync(
         ApprenticeService service,
         IArcanumIntelligenceProvider intelligence,
@@ -900,7 +789,6 @@ public sealed class ApprenticeServiceReliabilityTests
                     intelligence,
                     apprentice,
                     "perform the step",
-                    1,
                     linkedCancellation,
                     apprentice.Id,
                     false,
@@ -956,7 +844,7 @@ public sealed class ApprenticeServiceReliabilityTests
 
         TestOptionsMonitor<ArcanumSettings> options = new(settings);
 
-        ChronicleHub resolvedHub = hub ?? new(options);
+        ChronicleHub resolvedHub = hub ?? new();
 
         SingleServiceScopeFactory scopeFactory = new(repo, intelligence, grimoire);
 

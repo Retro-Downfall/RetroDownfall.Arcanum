@@ -35,9 +35,9 @@ public sealed class SpellCastPreviewServiceTests : IAsyncLifetime
 
         ArcanumSettings settings = new()
         {
-            WebBrowsing = new WebBrowsingSettings
+            Features = new FeatureSettings
             {
-                Enabled = webBrowsingEnabled,
+                WebBrowsing = webBrowsingEnabled,
             },
         };
         FakeMcpConnectionManager mcp = new(

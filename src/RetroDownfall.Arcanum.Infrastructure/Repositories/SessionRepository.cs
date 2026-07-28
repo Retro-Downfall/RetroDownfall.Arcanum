@@ -56,10 +56,12 @@ public sealed class SessionRepository(
 
     public async Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct)
     {
-        SessionSettings settings = optionsMonitor.CurrentValue.Sessions ?? new SessionSettings();
+        SessionSettings settings = optionsMonitor.CurrentValue.ResolveSessions();
 
         int limit = ArcanumSettingClamps.SessionQueryLimit(
-            request.Limit ?? settings.DefaultQueryLimit ?? new SessionSettings().DefaultQueryLimit!.Value);
+            request.Limit
+            ?? settings.DefaultQueryLimit
+            ?? ArcanumRuntimeDefaults.Sessions.DefaultQueryLimit!.Value);
 
         string statusFilter = string.IsNullOrWhiteSpace(request.Status) ? "active" : request.Status.Trim();
 
@@ -72,7 +74,7 @@ public sealed class SessionRepository(
             string search = request.Search.Trim();
 
             int maxQueryLen = ArcanumSettingClamps.ArchiveSearchMaxQueryLength(
-                optionsMonitor.CurrentValue.Intelligence.ArchiveSearchMaxQueryLength);
+                optionsMonitor.CurrentValue.ResolveIntelligence().ArchiveSearchMaxQueryLength);
 
             if (search.Length > maxQueryLen)
             {
@@ -339,7 +341,7 @@ public sealed class SessionRepository(
 
         int entryCount = await _entryPersistence.GetEntryCountAsync(sessionId, ct).ConfigureAwait(false);
 
-        SessionSettings sessionSettings = optionsMonitor.CurrentValue.Sessions ?? new SessionSettings();
+        SessionSettings sessionSettings = optionsMonitor.CurrentValue.ResolveSessions();
 
         Error? limitError = SessionEntryPersistence.CheckEntryLimits(entryCount, entriesToAdd: 1, sessionSettings, entry.Content);
 
@@ -419,7 +421,7 @@ public sealed class SessionRepository(
 
         }
 
-        SessionSettings sessionSettings = optionsMonitor.CurrentValue.Sessions ?? new SessionSettings();
+        SessionSettings sessionSettings = optionsMonitor.CurrentValue.ResolveSessions();
 
         int maxForkDepth = ArcanumSettingClamps.MaxForkDepth(sessionSettings.MaxForkDepth);
 

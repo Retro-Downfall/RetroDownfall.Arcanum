@@ -14,7 +14,7 @@ public sealed class SessionAttachmentRequestValidatorTests
 
         Guid attachmentId = Guid.NewGuid();
         StubSessionAttachmentStore store = new();
-        AttachmentsSettings settings = new();
+        AttachmentsSettings settings = ResolveAttachments(enabled: true);
 
         PingRequest request = new(
             Prompt: "hi",
@@ -37,19 +37,25 @@ public sealed class SessionAttachmentRequestValidatorTests
 
         Guid sessionId = Guid.NewGuid();
         StubSessionAttachmentStore store = new();
-        AttachmentsSettings settings = new() { MaxReferencesPerTurn = 2 };
+        AttachmentsSettings settings = ResolveAttachments(enabled: true);
+        int maxReferences = ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn(
+            ArcanumRuntimeDefaults.Attachments.MaxReferencesPerTurn);
 
         PingRequest request = new(
             Prompt: "hi",
             SessionId: sessionId,
-            AttachmentReferences: [Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()]);
+            AttachmentReferences: Enumerable.Range(0, maxReferences + 1)
+                .Select(static _ => Guid.NewGuid())
+                .ToList());
 
         string? error = await SessionAttachmentRequestValidator.ValidateAsync(
             request,
             store,
             settings);
 
-        Assert.Equal("At most 2 attachment references are allowed per request.", error);
+        Assert.Equal(
+            $"At most {maxReferences} attachment references are allowed per request.",
+            error);
         Assert.Equal(0, store.ValidateCallCount);
 
     }
@@ -61,7 +67,7 @@ public sealed class SessionAttachmentRequestValidatorTests
         Guid sessionId = Guid.NewGuid();
         Guid attachmentId = Guid.NewGuid();
         StubSessionAttachmentStore store = new() { ValidIds = [attachmentId] };
-        AttachmentsSettings settings = new();
+        AttachmentsSettings settings = ResolveAttachments(enabled: true);
 
         PingRequest request = new(
             Prompt: "hi",
@@ -86,7 +92,7 @@ public sealed class SessionAttachmentRequestValidatorTests
 
         Guid sessionId = Guid.NewGuid();
         StubSessionAttachmentStore store = new();
-        AttachmentsSettings settings = new() { Enabled = false };
+        AttachmentsSettings settings = ResolveAttachments(enabled: false);
 
         PingRequest request = new(
             Prompt: "hi",
@@ -108,7 +114,7 @@ public sealed class SessionAttachmentRequestValidatorTests
     {
 
         StubSessionAttachmentStore store = new();
-        AttachmentsSettings settings = new() { Enabled = false };
+        AttachmentsSettings settings = ResolveAttachments(enabled: false);
 
         string? nullRefs = await SessionAttachmentRequestValidator.ValidateAsync(
             new PingRequest(Prompt: "hi", AttachmentReferences: null),
@@ -125,6 +131,12 @@ public sealed class SessionAttachmentRequestValidatorTests
         Assert.Equal(0, store.ValidateCallCount);
 
     }
+
+    private static AttachmentsSettings ResolveAttachments(bool enabled) =>
+        new ArcanumSettings
+        {
+            Features = new FeatureSettings { Attachments = enabled },
+        }.ResolveAttachments();
 
     private sealed class StubSessionAttachmentStore : ISessionAttachmentStore
     {

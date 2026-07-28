@@ -13,7 +13,7 @@ public sealed class SseConnectionGatePerTypeCapTests
 
         ArcanumSettings settings = new()
         {
-            EventBus = new EventBusSettings { MaxSseConnectionsPerType = 1 },
+            Execution = new ExecutionSettings { MaxSseConnectionsPerType = 1 },
         };
 
         SseConnectionGate gate = new(new SseConnectionCounter(), new TestOptionsMonitor<ArcanumSettings>(settings));
@@ -44,7 +44,7 @@ public sealed class SseConnectionGatePerTypeCapTests
 
         ArcanumSettings settings = new()
         {
-            EventBus = new EventBusSettings { MaxSseConnectionsPerType = 1 },
+            Execution = new ExecutionSettings { MaxSseConnectionsPerType = 1 },
         };
 
         SseConnectionGate gate = new(new SseConnectionCounter(), new TestOptionsMonitor<ArcanumSettings>(settings));
@@ -75,7 +75,7 @@ public sealed class SseConnectionGatePerTypeCapTests
 
         ArcanumSettings settings = new()
         {
-            EventBus = new EventBusSettings { MaxSseConnectionsPerType = 1 },
+            Execution = new ExecutionSettings { MaxSseConnectionsPerType = 1 },
         };
 
         SseConnectionGate gate = new(new SseConnectionCounter(), new TestOptionsMonitor<ArcanumSettings>(settings));
@@ -110,7 +110,7 @@ public sealed class SseConnectionGatePerTypeCapTests
         // per-type cap would trigger PerType denial first and mask the global-cap behavior.
         ArcanumSettings settings = new()
         {
-            EventBus = new EventBusSettings { MaxSseConnections = 1, MaxSseConnectionsPerType = 5 },
+            Execution = new ExecutionSettings { MaxSseConnections = 1, MaxSseConnectionsPerType = 5 },
         };
 
         SseConnectionGate gate = new(new SseConnectionCounter(), new TestOptionsMonitor<ArcanumSettings>(settings));

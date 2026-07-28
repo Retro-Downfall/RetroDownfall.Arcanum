@@ -217,47 +217,10 @@ public sealed class ProvingGroundsArbiterTests
 
     }
 
-    [Fact]
-    public async Task AdjudicateAsync_ExceedsMaxInquisitors_ReturnsFailedVerdict()
-    {
-
-        ProvingGroundsArbiter arbiter = CreateArbiter(
-            new FakeIntelligenceProvider(),
-            maxInquisitorsPerTrial: 2);
-
-        List<Inquisitor> many =
-        [
-            new RegexInquisitor("a"),
-            new RegexInquisitor("b"),
-            new RegexInquisitor("c"),
-        ];
-
-        // W4.1: over-limit now returns a single failed verdict instead of throwing, so direct
-        // arbiter callers get the same Result-shaped outcome as the pre-validating API runner.
-        IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync("text", many, judgeModel: null);
-
-        InquisitorVerdict verdict = Assert.Single(verdicts);
-
-        Assert.False(verdict.Passed);
-
-        Assert.Contains("maximum is 2", verdict.Detail, StringComparison.Ordinal);
-
-    }
-
     private static ProvingGroundsArbiter CreateArbiter(
-        IArcanumIntelligenceProvider intelligence,
-        int maxInquisitorsPerTrial = 20)
+        IArcanumIntelligenceProvider intelligence)
     {
-
-        ArcanumSettings settings = new()
-        {
-            ProvingGrounds = new ProvingGroundsSettings
-            {
-                MaxInquisitorsPerTrial = maxInquisitorsPerTrial,
-            },
-        };
-
-        return new ProvingGroundsArbiter(intelligence, new TestOptionsMonitor(settings));
+        return new ProvingGroundsArbiter(intelligence);
 
     }
 

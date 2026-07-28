@@ -21,7 +21,7 @@ public sealed class SessionAttachmentPendingGcHostedService(
     public async Task StartAsync(CancellationToken cancellationToken)
     {
 
-        AttachmentsSettings attachments = options.Value.Attachments ?? new AttachmentsSettings();
+        AttachmentsSettings attachments = options.Value.ResolveAttachments();
 
         int retentionHours = ArcanumSettingClamps.AttachmentsPendingRetentionHours(attachments.PendingRetentionHours);
 

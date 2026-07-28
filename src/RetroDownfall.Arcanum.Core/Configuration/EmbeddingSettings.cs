@@ -1,25 +1,23 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// RAG Phase 1 — The Weave &amp; Divination shared foundation. Bound from <c>Arcanum:Embeddings</c>.
+/// The Weave and Divination runtime projection. Feature activation comes from
+/// <c>Arcanum:Features</c>; provider/model/dimensions come from
+/// <c>Arcanum:Integrations:Embeddings</c>; remaining mechanics are code-owned defaults.
 ///
 /// "The Weave" is Arcanum's embedding and vector substrate; "Divination" is semantic search over it.
-/// This record carries the shared embedding-generation knobs plus the per-phase feature flags. Every
+/// This record carries shared embedding-generation mechanics plus projected feature flags. Every
 /// RAG code path must check <see cref="Enabled"/> (and, for its own feature, the matching flag below)
-/// before doing any embedding or vector work — when either is <c>false</c>, behavior is unchanged from
-/// pre-RAG Arcanum (graceful degradation, never a functional regression).
-///
-/// Phases 1–5 are all implemented: shared foundation, session semantic search, semantic codebase
-/// retrieval (see <see cref="Codebase"/>), Saga long-term associative memory (see <see cref="Saga"/>),
-/// and embedding-based semantic spell routing (see <see cref="SpellRoutingHybridMode"/> and
-/// <see cref="SpellRoutingHybridTopK"/>).
+/// before doing any embedding or vector work; when either is <c>false</c>, the path degrades
+/// gracefully without embedding or vector I/O.
 /// </summary>
 public sealed record EmbeddingSettings
 {
 
     /// <summary>
-    /// Master toggle for all RAG features. When <c>false</c> (default), every RAG code path
-    /// short-circuits to existing (pre-RAG) behavior.
+    /// Shared substrate activation for all RAG features. Derived from the direct embeddings opt-in
+    /// or any embedding-backed child opt-in; when <c>false</c>, every RAG code path short-circuits
+    /// to existing (pre-RAG) behavior.
     /// </summary>
     public bool Enabled { get; set; }
 
@@ -38,7 +36,8 @@ public sealed record EmbeddingSettings
     /// <summary>
     /// Expected embedding vector dimension. Must match the configured model's output. Used for the
     /// vec0 acceleration table schema. Default <c>768</c>; clamped 64–4,096 at runtime. Changing this
-    /// after data exists requires an operator-triggered re-index (see DESIGN.md §21).
+    /// after data exists requires an operator-triggered re-index (see
+    /// <c>docs/Arcanum.DESIGN.md</c> §21).
     /// </summary>
     public int Dimensions { get; set; } = 768;
 
@@ -84,14 +83,13 @@ public sealed record EmbeddingSettings
     public int MaxEmbeddingInputChars { get; set; } = 1_000_000;
 
     /// <summary>
-    /// Feature flag for Phase 2 (session semantic search / Divination over the Grimoire). When
-    /// <c>true</c>, <see cref="Enabled"/> must also be <c>true</c> (enforced by
-    /// <see cref="ConfigurationValidator"/>).
+    /// Runtime projection of <c>Arcanum:Features:SessionSearch</c>. Enabling it derives
+    /// <see cref="Enabled"/>.
     /// </summary>
     public bool SessionSearchEnabled { get; set; }
 
     /// <summary>
-    /// RAG Phase 2 — interval, in seconds, between <c>EntryWeavingService</c> embedding queue
+    /// Code-owned interval, in seconds, between <c>EntryWeavingService</c> embedding queue
     /// processing ticks (imprinting not-yet-embedded Grimoire entries into <c>entry_embeddings</c>).
     /// Default <c>10</c>; clamped 1–300 at runtime. Only relevant when <see cref="SessionSearchEnabled"/>
     /// is <c>true</c> — the service idles otherwise.
@@ -99,39 +97,39 @@ public sealed record EmbeddingSettings
     public int EmbeddingQueueIntervalSeconds { get; set; } = 10;
 
     /// <summary>
-    /// Feature flag for Phase 3 (semantic codebase retrieval). When <c>true</c>, <see cref="Enabled"/>
-    /// must also be <c>true</c> (enforced by <see cref="ConfigurationValidator"/>).
+    /// Runtime projection of <c>Arcanum:Features:CodebaseRetrieval</c>. Enabling it derives
+    /// <see cref="Enabled"/>.
     /// </summary>
     public bool CodebaseRetrievalEnabled { get; set; }
 
     /// <summary>
-    /// RAG Phase 3 — semantic codebase retrieval tuning (file indexing bounds, extensions, background
+    /// Code-owned semantic codebase retrieval mechanics (file indexing bounds, extensions, background
     /// re-index interval, and per-turn retrieval cap). Only relevant when
     /// <see cref="CodebaseRetrievalEnabled"/> is <c>true</c>.
     /// </summary>
     public CodebaseEmbeddingSettings Codebase { get; set; } = new();
 
     /// <summary>
-    /// Feature flag for Phase 4 (Saga — long-term associative memory). When <c>true</c>,
-    /// <see cref="Enabled"/> must also be <c>true</c> (enforced by <see cref="ConfigurationValidator"/>).
+    /// Runtime projection derived from <c>Arcanum:Features:Saga</c> or
+    /// <c>Arcanum:Features:SagaExtraction</c>; either opt-in also derives <see cref="Enabled"/>.
     /// </summary>
     public bool SagaEnabled { get; set; }
 
     /// <summary>
-    /// RAG Phase 4 — Saga (long-term associative memory) tuning (extraction cadence, caps, model, and
+    /// Code-owned Saga mechanics (extraction cadence, caps, model, and
     /// window size). Only relevant when <see cref="SagaEnabled"/> is <c>true</c>.
     /// </summary>
     public SagaEmbeddingSettings Saga { get; set; } = new();
 
     /// <summary>
-    /// Feature flag for Phase 5 (embedding-based spell routing pre-filter). When <c>false</c> (default),
-    /// the existing LLM-based <c>SemanticRouter</c> is used unchanged. When <c>true</c>,
-    /// <see cref="Enabled"/> must also be <c>true</c> (enforced by <see cref="ConfigurationValidator"/>).
+    /// Runtime projection of <c>Arcanum:Features:SemanticSpellRouting</c>. When <c>false</c>
+    /// (default), the LLM-based <c>SemanticRouter</c> uses the full catalog. Enabling it derives
+    /// <see cref="Enabled"/>.
     /// </summary>
     public bool SemanticSpellRoutingEnabled { get; set; }
 
     /// <summary>
-    /// RAG Phase 5 — when <c>true</c> and <see cref="SemanticSpellRoutingEnabled"/> is also <c>true</c>,
+    /// Code-owned routing mode. When <c>true</c> and <see cref="SemanticSpellRoutingEnabled"/> is also <c>true</c>,
     /// embedding similarity pre-filters the spell catalog to the top
     /// <see cref="SpellRoutingHybridTopK"/> candidates before the existing LLM-based
     /// <c>SemanticRouter</c> picks from that reduced set (hybrid mode). When <c>false</c> (default),
@@ -141,7 +139,7 @@ public sealed record EmbeddingSettings
     public bool SpellRoutingHybridMode { get; set; }
 
     /// <summary>
-    /// RAG Phase 5 — number of top candidates passed to the LLM router in hybrid mode. Default
+    /// Code-owned number of top candidates passed to the LLM router in hybrid mode. Default
     /// <c>3</c>; clamped 1–20 at runtime. Only relevant when <see cref="SemanticSpellRoutingEnabled"/>
     /// and <see cref="SpellRoutingHybridMode"/> are both <c>true</c>.
     /// </summary>

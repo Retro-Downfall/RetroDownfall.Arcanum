@@ -26,7 +26,7 @@ internal sealed class TurnEngine(
         RunTurnCoreAsync(request, auditContext: null, executionToken);
 
     /// <summary>
-    /// Runs a turn with an explicit audit context (Wizard facade / tests).
+    /// Runs a turn with an explicit audit context (Master facade / tests).
     /// </summary>
     public IAsyncEnumerable<TurnEvent> RunTurnAsync(
         TurnExecutionRequest request,

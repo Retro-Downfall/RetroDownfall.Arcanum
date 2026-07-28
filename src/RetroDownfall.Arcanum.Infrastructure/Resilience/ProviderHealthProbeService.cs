@@ -9,10 +9,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 
 /// <summary>
 /// Periodically probes every configured provider and feeds the result into
-/// <see cref="IProviderHealthTracker"/>. Idles (1s poll of <c>Arcanum:Resilience:Enabled</c>) when
-/// resilience is disabled — the default. Hot-reload friendly: reads
-/// <see cref="IOptionsMonitor{TOptions}.CurrentValue"/> on every tick so newly added providers, and
-/// an Enabled flip, are picked up without a restart.
+/// <see cref="IProviderHealthTracker"/>. Provider health and fallback are automatic; the options
+/// monitor is read on every tick so newly added providers are picked up without a restart.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: IHostedService provider health probe scheduler
 internal sealed class ProviderHealthProbeService(
@@ -21,8 +19,6 @@ internal sealed class ProviderHealthProbeService(
     IProviderHealthTracker tracker,
     ILogger<ProviderHealthProbeService> logger) : BackgroundService
 {
-
-    private bool _wasEnabled;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -35,44 +31,16 @@ internal sealed class ProviderHealthProbeService(
             try
             {
 
-                bool enabled = options.CurrentValue.Resilience?.Enabled ?? false;
-
-                if (!enabled)
-                {
-
-                    if (_wasEnabled)
-                    {
-
-                        foreach (ProviderHealthStatus status in tracker.GetAllStatuses())
-                        {
-                            tracker.MarkHealthy(status.ProviderName);
-                        }
-
-                        logger.LogInformation("Resilience disabled — all provider health statuses reset.");
-
-                    }
-
-                    _wasEnabled = false;
-
-                    await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
-
-                    continue;
-
-                }
-
-                _wasEnabled = true;
-
                 await ProbeAllProvidersAsync(stoppingToken).ConfigureAwait(false);
 
                 bool anyUnhealthy = tracker.GetAllStatuses().Any(static status => !status.IsHealthy);
+                ResilienceSettings defaults = ArcanumRuntimeDefaults.Resilience;
 
                 int intervalSeconds = anyUnhealthy
                     ? ArcanumSettingClamps.HealthRecoveryProbeIntervalSeconds(
-                        options.CurrentValue.Resilience?.HealthRecoveryProbeIntervalSeconds
-                            ?? new ResilienceSettings().HealthRecoveryProbeIntervalSeconds)
+                        defaults.HealthRecoveryProbeIntervalSeconds)
                     : ArcanumSettingClamps.HealthProbeIntervalSeconds(
-                        options.CurrentValue.Resilience?.HealthProbeIntervalSeconds
-                            ?? new ResilienceSettings().HealthProbeIntervalSeconds);
+                        defaults.HealthProbeIntervalSeconds);
 
                 await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), stoppingToken).ConfigureAwait(false);
 

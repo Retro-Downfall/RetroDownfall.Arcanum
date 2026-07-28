@@ -244,10 +244,13 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         DenyingWard ward = new();
         ArcanumSettings settings = new()
         {
-            Ward = new WardSettings
+            Security = new SecuritySettings
             {
-                Enabled = true,
-                ForbiddenArts = [],
+                Ward = new WardPolicySettings
+                {
+                    Enabled = true,
+                    ForbiddenArts = [],
+                },
             },
         };
         ToolExecutionPipeline pipeline = new(

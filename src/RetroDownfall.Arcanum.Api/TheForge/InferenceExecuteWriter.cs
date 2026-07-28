@@ -20,13 +20,6 @@ internal static class InferenceExecuteWriter
 {
 
     /// <summary>
-    /// Client-visible NDJSON Error text for wall-clock inference timeout (aligned with
-    /// WizardIntelligenceProvider.PublicInferenceTimeoutMessage / Hub.Timeout).
-    /// </summary>
-    internal const string PublicStreamTimeoutMessage =
-        PublicInferenceErrorMessages.NativeTimeout;
-
-    /// <summary>
     /// Client-visible NDJSON Error text for caught streaming exceptions (not intentional
     /// provider Error events). Uses the centralized native inference-failure contract.
     /// </summary>
@@ -91,7 +84,7 @@ internal static class InferenceExecuteWriter
 
         DisconnectPolicy disconnectPolicy = services
             ?.GetService<IOptionsSnapshot<ArcanumSettings>>()
-            ?.Value.Intelligence.DisconnectPolicy
+            ?.Value.ResolveIntelligence().DisconnectPolicy
             ?? DisconnectPolicy.Auto;
 
         bool continueThenReplay = TurnContextGuards.ResolveContinueThenReplay(httpContext, disconnectPolicy);
@@ -190,15 +183,11 @@ internal static class InferenceExecuteWriter
                 return;
             }
 
-            string publicMessage = cancellationToken.IsCancellationRequested
-                ? PublicStreamFailureMessage
-                : PublicStreamTimeoutMessage;
-
             try
             {
                 IntelligenceEvent cancelEvent = new(
                     IntelligenceEventType.Error,
-                    publicMessage);
+                    PublicStreamFailureMessage);
 
                 eventBuffer.ResetWrittenCount();
                 jsonWriter.Reset();

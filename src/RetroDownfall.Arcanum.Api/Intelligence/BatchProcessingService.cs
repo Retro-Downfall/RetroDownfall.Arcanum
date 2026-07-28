@@ -17,7 +17,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
-/// Background processor for <c>/v1/batches</c> (DESIGN.md §11.21) — modeled on
+/// Background processor for <c>/v1/batches</c> (<c>docs/Arcanum.DESIGN.md</c> §11.21) — modeled on
 /// <c>EntryWeavingService</c>'s poll-and-process shape, but lives in the Api project (not
 /// Infrastructure) because it needs the <c>/v1</c> OpenAI DTOs and
 /// <see cref="OpenAiV1Endpoints.ExecuteChatRequestForBatchAsync"/>, which Infrastructure must not
@@ -161,7 +161,7 @@ internal sealed class BatchProcessingService(
 
         }
 
-        BatchesSettings settings = optionsMonitor.CurrentValue.Batches ?? new BatchesSettings();
+        BatchesSettings settings = optionsMonitor.CurrentValue.ResolveBatches();
 
         int expiryHours = ArcanumSettingClamps.BatchesBatchExpiryHours(settings.BatchExpiryHours);
 
@@ -434,7 +434,7 @@ internal sealed class BatchProcessingService(
 
         ArcanumSettings settings = optionsMonitor.CurrentValue;
 
-        BatchesSettings batchesSettings = settings.Batches ?? new BatchesSettings();
+        BatchesSettings batchesSettings = settings.ResolveBatches();
 
         int maxRequests = ArcanumSettingClamps.BatchesMaxRequestsPerBatch(batchesSettings.MaxRequestsPerBatch);
 
@@ -470,7 +470,7 @@ internal sealed class BatchProcessingService(
                 Result<TurnAccountingHandle> batchAccountingBegin = await TurnAccountingHandle.BeginBatchAsync(
                         turnRunWriter,
                         budgetReservations,
-                        settings.Pricing ?? new PricingSettings(),
+                        settings.ResolvePricing(),
                         requestLines
                             .Where(static line => line.Request?.Body is not null)
                             .Select(static line => new BatchReservationLine(

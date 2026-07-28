@@ -1,19 +1,17 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// RAG Phase 4 — Saga (long-term associative memory) sub-settings. Bound from
-/// <c>Arcanum:Embeddings:Saga</c>. Only relevant when <c>Arcanum:Embeddings:SagaEnabled</c> is
-/// <c>true</c> (which itself requires <c>Arcanum:Embeddings:Enabled</c>) — see
-/// <see cref="EmbeddingSettings"/>.
+/// RAG Phase 4 — code-owned Saga (long-term associative memory) mechanics. Only relevant when
+/// Saga is enabled directly or derived from <c>Arcanum:Features:SagaExtraction</c>; either opt-in
+/// also derives the embeddings substrate — see <see cref="EmbeddingSettings"/>.
 /// </summary>
 public sealed record SagaEmbeddingSettings
 {
 
     /// <summary>
-    /// When <see cref="EmbeddingSettings.SagaEnabled"/> is <c>true</c>, controls whether the
-    /// background <c>SagaExtractionService</c> runs. Setting this to <c>false</c> allows
-    /// retrieval-only mode — existing memories are still surfaced during inference, but no new
-    /// memories are extracted. Default <c>true</c>.
+    /// Controls whether the background <c>SagaExtractionService</c> runs. Enabling extraction
+    /// derives <see cref="EmbeddingSettings.SagaEnabled"/> and the embeddings substrate; leaving it
+    /// disabled allows retrieval-only mode when Saga is enabled directly.
     /// </summary>
     public bool ExtractionEnabled { get; set; } = true;
 

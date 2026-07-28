@@ -1,5 +1,6 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
+/// <summary>Code-owned CODEX storage envelope; this is not a public configuration root.</summary>
 public sealed record CodexSettings
 {
 

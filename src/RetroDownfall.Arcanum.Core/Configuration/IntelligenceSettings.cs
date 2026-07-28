@@ -1,5 +1,8 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
+/// <summary>
+/// Code-owned runtime projection for turn mechanics. This record is not a public configuration root.
+/// </summary>
 public sealed record IntelligenceSettings
 {
 
@@ -13,14 +16,6 @@ public sealed record IntelligenceSettings
 
     public int ListDirectoryMaxPaths { get; set; } = 500;
 
-    public bool EnableLoreSystem { get; set; } = true;
-
-    /// <summary>
-    /// Gates the <c>scribe_lexicon</c> / <c>delete_lexicon</c> MCP tools and the Lexicon retrieval /
-    /// DATA injection path. Default <c>true</c> (Option A): operators who previously disabled
-    /// model-writable memory via <c>EnableLoreSystem</c> must now set this to <c>false</c>. The legacy
-    /// <c>EnableLoreSystem</c> flag no longer gates any MCP tool — Lore tools are removed.
-    /// </summary>
     public bool EnableLexiconSystem { get; set; } = true;
 
     /// <summary>Maximum Lexicon entries returned per inference-turn <c>MatchEntitiesAsync</c> query.</summary>
@@ -55,25 +50,14 @@ public sealed record IntelligenceSettings
     public long ToolOutputCapBytes { get; set; } = 1L * 1024L * 1024L;
 
     /// <summary>
-    /// Maximum number of agentic tool rounds the hub will execute per inference turn.
-    /// A round = one model response containing tool calls + one server-side execution batch.
-    /// Beyond this cap, the hub fails the turn with <c>Hub.ToolLoop</c>.
-    /// Default follows <see cref="TurnLimitsDefaults.MaxToolRounds"/>.
-    /// </summary>
-    public int MaxToolInferenceRounds { get; set; } = TurnLimitsDefaults.MaxToolRounds;
-
-    /// <summary>
-    /// When <see langword="true"/> (default), an unexpected exception from a single tool
+    /// Internal mode switch. When <see langword="true"/>, an unexpected exception from a single tool
     /// invocation during a <em>buffered</em> (<c>/api/intelligence/ping</c>, forge execute)
     /// inference turn is caught and synthesized into a tool result
     /// (<c>ToolExecutionPipeline.PublicToolFailureMessage</c>) so the model can see the failure and
     /// decide how to proceed, instead of the whole turn failing with <c>Hub.Error</c>. Only
     /// unexpected (infrastructure-fault) exceptions are affected — expected tool errors (validation,
-    /// ward/Sanctum denial) already return a structured tool result regardless of this setting.
-    /// Set to <see langword="false"/> to restore the strict pre-existing behavior (fail the whole
-    /// turn on any tool exception). The streaming path (<c>/api/intelligence/ping-stream</c>,
-    /// <c>/v1</c> streaming) already tolerates tool failures unconditionally and is not affected by
-    /// this setting.
+    /// ward/Sanctum denial) already return a structured tool result regardless of this switch. The
+    /// retained public projection fixes the tolerant policy on both buffered and streaming paths.
     /// </summary>
     public bool TolerateToolFailures { get; set; } = true;
 
@@ -90,8 +74,8 @@ public sealed record IntelligenceSettings
     public int PerMessageTemplateOverheadTokens { get; set; } = 4;
 
     /// <summary>
-    /// Linker-safe fallback tokenizer for calibrated and unknown model profiles. Known and
-    /// explicitly configured exact profiles resolve their own tokenizer id.
+    /// Linker-safe fallback tokenizer for calibrated and unknown model profiles. Known built-in
+    /// exact profiles resolve their own tokenizer id.
     /// </summary>
     public string TokenizerEncoding { get; set; } = "o200k_base";
 
@@ -115,17 +99,10 @@ public sealed record IntelligenceSettings
 
     public int MaxPingPromptChars { get; set; } = 32_768;
 
-    public int MaxPlanSteps { get; set; } = 30;
-
     /// <summary>
-    /// Wall-clock timeout (seconds) for a single inference turn (buffered or streaming), including tool rounds.
-    /// Default 600. Linked to the caller cancellation token.
-    /// </summary>
-    public int InferenceTimeoutSeconds { get; set; } = 600;
-
-    /// <summary>
-    /// Client-disconnect policy for streaming inference. Default <see cref="DisconnectPolicy.Auto"/>:
-    /// continue-then-replay when an <c>Idempotency-Key</c> is present; otherwise cancel → abandoned.
+    /// Code-owned client-disconnect policy for streaming inference. <see cref="DisconnectPolicy.Auto"/>
+    /// continues then replays when an <c>Idempotency-Key</c> is present; otherwise it cancels and
+    /// abandons the claim.
     /// </summary>
     public DisconnectPolicy DisconnectPolicy { get; set; } = DisconnectPolicy.Auto;
 

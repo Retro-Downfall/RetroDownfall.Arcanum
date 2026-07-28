@@ -118,7 +118,7 @@ public sealed class ArcanumHealthChecker(
                 "Workspace-check capability reporter is unavailable.")
             : await workspaceCheckCapabilityReporter
                 .GetStatusAsync(
-                    settings.CurrentValue.Host?.Workspace,
+                    settings.CurrentValue.ResolveDefaultWorkspace(),
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -130,7 +130,9 @@ public sealed class ArcanumHealthChecker(
             $"available={workspaceCheck.IsAvailable}. {workspaceCheck.Reason}"));
 
         (bool embeddingsEnabled, string vectorMode, string vectorDiagnostic, int managedBudget) =
-            EmbeddingsVectorStatus.Resolve(settings.CurrentValue.Embeddings, weaveIndexAvailability);
+            EmbeddingsVectorStatus.Resolve(
+                settings.CurrentValue.ResolveEmbeddings(),
+                weaveIndexAvailability);
 
         HealthStatus embeddingsHealth = vectorMode switch
         {
@@ -156,17 +158,6 @@ public sealed class ArcanumHealthChecker(
     {
         ProviderSettings[] providers = arcanumSettings.Providers ?? [];
         int providerCount = providers.Length;
-        bool resilienceEnabled = arcanumSettings.Resilience?.Enabled == true;
-
-        if (!resilienceEnabled)
-        {
-            return new HealthComponentDto(
-                "Providers",
-                providerCount > 0 ? HealthStatus.Healthy : HealthStatus.Degraded,
-                providerCount > 0
-                    ? $"{providerCount} providers configured; reachability is not actively probed."
-                    : "No providers configured.");
-        }
 
         if (providerCount == 0)
         {
@@ -178,11 +169,17 @@ public sealed class ArcanumHealthChecker(
 
         int healthy = 0;
         int unhealthy = 0;
+        int credentialBacked = 0;
         foreach (ProviderSettings provider in providers)
         {
             if (string.IsNullOrWhiteSpace(provider.Name))
             {
                 continue;
+            }
+
+            if (EnvironmentCredentialResolver.ResolveProviderApiKey(provider) is not null)
+            {
+                credentialBacked++;
             }
 
             // Unobserved providers are assumed healthy per IProviderHealthTracker contract.
@@ -214,7 +211,8 @@ public sealed class ArcanumHealthChecker(
         return new HealthComponentDto(
             "Providers",
             status,
-            $"{healthy}/{observed} providers healthy (resilience probes).");
+            $"{healthy}/{observed} providers healthy (resilience probes); "
+            + $"{credentialBacked}/{observed} provider credentials available from environment.");
     }
 
     /// <summary>

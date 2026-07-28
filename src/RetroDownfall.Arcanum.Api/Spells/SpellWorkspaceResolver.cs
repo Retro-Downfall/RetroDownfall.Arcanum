@@ -42,7 +42,7 @@ public sealed class SpellWorkspaceResolver(
             return Result<string?>.Success(fromContext);
         }
 
-        string? configured = settings.Value.Host.Workspace;
+        string? configured = settings.Value.ResolveDefaultWorkspace();
 
         if (!string.IsNullOrWhiteSpace(configured))
         {
@@ -111,13 +111,13 @@ public sealed class SpellWorkspaceResolver(
 
     private Result<string?> EnforceAllowlist(string normalizedWorkspace)
     {
-        string[] allowedRoots = settings.Value.Spells?.AllowedWorkspaceRoots ?? [];
+        string[] allowedRoots = settings.Value.ResolveSpellRoots();
 
         Result<string> allowed = WorkspaceRootPolicy.EnforceAllowedRoots(
             normalizedWorkspace,
             allowedRoots,
             ErrorCodes.Spell.PathNotAllowed,
-            "The specified workspace is outside the configured Spells.AllowedWorkspaceRoots.");
+            "The specified workspace is outside Arcanum:Security:SpellWorkspaceRoots.");
 
         if (allowed.IsFailure)
         {

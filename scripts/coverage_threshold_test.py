@@ -7,6 +7,7 @@ Coverlet emits Cobertura XML with:
 These tests pin that format so parser regressions are caught by `python -m unittest`.
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -85,6 +87,36 @@ class CoverageThresholdParserTests(unittest.TestCase):
         )
         path = self._write_xml(xml)
         self.assertEqual(coverage_threshold.main([str(path)]), 1)
+
+    def test_platform_targets_can_be_overridden_by_valid_percentages(self) -> None:
+        xml = self._coverage_xml(
+            line_rate="0.83",
+            branch_rate="0.7345",
+        )
+        path = self._write_xml(xml)
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "COVERAGE_LINE_TARGET": "83",
+                "COVERAGE_BRANCH_TARGET": "73",
+            },
+        ):
+            self.assertEqual(coverage_threshold.main([str(path)]), 0)
+
+    def test_invalid_platform_target_fails_closed(self) -> None:
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<coverage line-rate="1.00" branch-rate="1.00">
+  <packages />
+</coverage>
+"""
+        path = self._write_xml(xml)
+
+        with mock.patch.dict(
+            os.environ,
+            {"COVERAGE_LINE_TARGET": "not-a-percentage"},
+        ):
+            self.assertEqual(coverage_threshold.main([str(path)]), 2)
 
     def test_missing_required_security_type_is_reported(self) -> None:
         xml = self._coverage_xml(

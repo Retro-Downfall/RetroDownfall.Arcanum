@@ -29,9 +29,8 @@ public static class ArcanumEnvironment
     }
 
     /// <summary>
-    /// Returns whether the fixed-window rate limiter should be active. Explicit
-    /// <c>Arcanum:Host:RateLimit:Enabled</c> enables it; otherwise binding to all interfaces
-    /// (<see cref="IsHostAnyEnabled"/>) turns it on automatically.
+    /// Returns whether the fixed-window rate limiter should be active. Binding to all interfaces
+    /// (<see cref="IsHostAnyEnabled"/>) always turns it on.
     /// </summary>
     public static bool IsRateLimitEnabled(bool rateLimitConfigEnabled, bool listenAnyConfigValue) =>
         rateLimitConfigEnabled || IsHostAnyEnabled(listenAnyConfigValue);

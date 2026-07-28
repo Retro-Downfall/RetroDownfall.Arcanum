@@ -7,7 +7,7 @@ namespace RetroDownfall.TheForge.Core.Models;
 /// Re-declared mirror of <c>RetroDownfall.Arcanum.Api.Models.McpToolInvokeResponse</c> (result of
 /// <c>POST /api/mcp/tools/invoke</c> — Diagnostic MCP Invocation). <c>Result</c> is the tool's
 /// formatted output parsed as JSON when possible, else a JSON string. <c>Truncated</c> is true when
-/// the output hit the configured <c>ToolOutputCapBytes</c>. camelCase wire via
+/// the output hit the code-owned MCP bridge cap. camelCase wire via
 /// <c>TheForgeJsonContext</c>.
 /// </summary>
 public sealed record McpToolInvokeResponse

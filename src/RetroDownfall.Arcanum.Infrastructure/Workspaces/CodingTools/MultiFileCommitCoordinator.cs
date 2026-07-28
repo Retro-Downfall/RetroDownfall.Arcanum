@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 
+using Microsoft.Win32.SafeHandles;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
@@ -613,9 +615,10 @@ internal sealed class MultiFileCommitCoordinator
             if (!WorkspacePathPolicy.RevalidatePathBeforeIo(
                     _workspaceRoot,
                     stagingPath)
-                || !WorkspaceFileFingerprintService.TryGetDirectoryIdentity(
+                || !FileHandleIdentityInterop.TryOpenDirectoryMetadata(
                     stagingPath,
-                    out stagingIdentity))
+                    out SafeFileHandle stagingLease,
+                    out FileHandleMetadata stagingMetadata))
             {
 
                 throw new WorkspaceMutationRejectedException(
@@ -624,7 +627,9 @@ internal sealed class MultiFileCommitCoordinator
 
             }
 
+            stagingIdentity = stagingMetadata.Identity;
             stagingDirectory.Identity = stagingIdentity;
+            stagingDirectory.IdentityLease = stagingLease;
 
             string relative =
                 WorkspaceRelativePath.FromAbsolute(_workspaceRoot, directory);
@@ -656,14 +661,7 @@ internal sealed class MultiFileCommitCoordinator
 
             moved = true;
 
-            _ = createdDirectories.Remove(stagingDirectory);
-
-            CreatedDirectory createdDirectory = new(relative, directory)
-            {
-                Identity = stagingIdentity,
-            };
-
-            createdDirectories.Add(createdDirectory);
+            stagingDirectory.Relocate(relative, directory);
 
             _options.AfterRequiredDirectoryMove?.Invoke(relative);
 
@@ -1310,6 +1308,15 @@ internal sealed class MultiFileCommitCoordinator
                     staged));
 
         }
+        finally
+        {
+
+            foreach (CreatedDirectory directory in createdDirectories)
+            {
+                directory.DisposeIdentityLease();
+            }
+
+        }
 
     }
 
@@ -1491,11 +1498,27 @@ internal sealed class MultiFileCommitCoordinator
         string absolutePath)
     {
 
-        internal string RelativePath { get; } = relativePath;
+        internal string RelativePath { get; private set; } = relativePath;
 
-        internal string AbsolutePath { get; } = absolutePath;
+        internal string AbsolutePath { get; private set; } = absolutePath;
 
         internal FileHandleIdentity? Identity { get; set; }
+
+        internal SafeFileHandle? IdentityLease { get; set; }
+
+        internal void Relocate(
+            string relocatedRelativePath,
+            string relocatedAbsolutePath)
+        {
+            RelativePath = relocatedRelativePath;
+            AbsolutePath = relocatedAbsolutePath;
+        }
+
+        internal void DisposeIdentityLease()
+        {
+            IdentityLease?.Dispose();
+            IdentityLease = null;
+        }
 
     }
 
@@ -1552,10 +1575,11 @@ internal sealed class ReversibleWorkspaceCommit
         try
         {
 
-            if (_state == TransactionState.Irreversible)
+            if (_state is TransactionState.Irreversible
+                or TransactionState.Abandoned)
             {
 
-                throw new InvalidOperationException("An irreversible workspace commit cannot be rolled back.");
+                throw new InvalidOperationException("A terminal workspace commit cannot be rolled back.");
 
             }
 
@@ -1596,6 +1620,8 @@ internal sealed class ReversibleWorkspaceCommit
             {
 
                 _state = TransactionState.RolledBack;
+
+                DisposeCreatedDirectoryLeases();
 
             }
 
@@ -1641,10 +1667,11 @@ internal sealed class ReversibleWorkspaceCommit
         try
         {
 
-            if (_state == TransactionState.RolledBack)
+            if (_state is TransactionState.RolledBack
+                or TransactionState.Abandoned)
             {
 
-                throw new InvalidOperationException("A rolled-back workspace commit cannot become irreversible.");
+                throw new InvalidOperationException("A terminal workspace commit cannot become irreversible.");
 
             }
 
@@ -1720,6 +1747,8 @@ internal sealed class ReversibleWorkspaceCommit
 
             _state = TransactionState.Irreversible;
 
+            DisposeCreatedDirectoryLeases();
+
             callerCancelled |= cancellationToken.IsCancellationRequested;
 
             if (callerCancelled)
@@ -1758,6 +1787,39 @@ internal sealed class ReversibleWorkspaceCommit
 
         }
 
+    }
+
+    internal async Task AbandonAsync()
+    {
+        await _stateGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            if (_state != TransactionState.Reversible)
+            {
+                return;
+            }
+
+            _state = TransactionState.Abandoned;
+            DisposeCreatedDirectoryLeases();
+        }
+        finally
+        {
+            _stateGate.Release();
+        }
+    }
+
+    internal bool HasOpenDirectoryLeasesForTests =>
+        _createdDirectories.Any(
+            static directory =>
+                directory.IdentityLease is { IsClosed: false, IsInvalid: false });
+
+    private void DisposeCreatedDirectoryLeases()
+    {
+        foreach (MultiFileCommitCoordinator.CreatedDirectory directory in _createdDirectories)
+        {
+            directory.DisposeIdentityLease();
+        }
     }
 
     internal static async Task<WorkspaceRollbackResult> RollbackCoreAsync(
@@ -2570,6 +2632,15 @@ internal sealed class ReversibleWorkspaceCommit
             {
 
                 if (directory.Identity is not FileHandleIdentity expectedIdentity
+                    || directory.IdentityLease is not SafeFileHandle directoryLease
+                    || directoryLease.IsInvalid
+                    || !FileHandleIdentityInterop.TryGetHandleMetadata(
+                        directoryLease,
+                        out FileHandleMetadata leasedMetadata)
+                    || leasedMetadata.Kind != FileSystemObjectKind.Directory
+                    || !FileHandleIdentity.IdentitiesMatch(
+                        expectedIdentity,
+                        leasedMetadata.Identity)
                     || !WorkspaceFileFingerprintService.TryGetDirectoryIdentity(
                         directory.AbsolutePath,
                         out FileHandleIdentity currentIdentity)
@@ -2682,7 +2753,6 @@ internal sealed class ReversibleWorkspaceCommit
                             : directory.RelativePath);
 
             }
-
         }
 
     }
@@ -2730,6 +2800,7 @@ internal sealed class ReversibleWorkspaceCommit
         Reversible,
         RolledBack,
         Irreversible,
+        Abandoned,
     }
 
 }

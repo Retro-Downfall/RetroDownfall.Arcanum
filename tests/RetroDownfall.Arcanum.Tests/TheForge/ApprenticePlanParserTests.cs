@@ -180,20 +180,16 @@ public sealed class ApprenticePlanParserTests
     }
 
     [Fact]
-    public void ParsePlan_ExceedsMaxSteps_Throws()
+    public void Master_plan_accepts_more_than_former_step_ceiling()
     {
+        const int stepCount = 201;
+        string json = System.Text.Json.JsonSerializer.Serialize(
+            Enumerable.Range(1, stepCount)
+                .Select(static index => new { description = $"Step {index}" }));
 
-        string json = """
-            [
-              { "description": "one", "status": "pending" },
-              { "description": "two", "status": "pending" }
-            ]
-            """;
+        List<PlanStep> steps = ApprenticePlanParser.ParsePlan(json);
 
-        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(
-            () => ApprenticePlanParser.ParsePlan(json, maxSteps: 1));
-
-        Assert.Contains("maximum allowed is 1", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(stepCount, steps.Count);
 
     }
 

@@ -19,18 +19,15 @@ public sealed class WardGate : IWard
     /// <see cref="System.Threading.Tasks.TaskCompletionSource{TResult}"/> is correlated to one in-flight
     /// inference turn in one process. <see cref="WardGate"/> is a fresh, empty singleton on every process
     /// start (there are no active wards to iterate and deny), so no code path sets this value today — it
-    /// exists so future callers/clients have a stable string to compare against if that changes.
-    /// See docs/DESIGN.md §11.14 and docs/persistence.md §7.
+    /// remains a stable contract string for clients. See <c>docs/Arcanum.DESIGN.md</c> §5.4.4 and
+    /// §11.14.
     /// </summary>
     private const string HostRestartedReason = "Host restarted — ward timed out";
 
-    // W3.3 Fix 1: atomic active-ward counter via AdmissionGate. The counter is
-    // incremented BEFORE the TryAdd; if it exceeds MaxActiveWards it is rolled back
-    // and the acquire is denied. The TryAdd-failure path (duplicate ward id) also
-    // rolls back. Every terminal removal from _pending disposes the ward lease
-    // exactly once — ConcurrentDictionary.TryRemove returns true only for the first
-    // remover, so a double-resolve/late-timeout cannot double-release. _pending.Count
-    // is no longer used for cap enforcement (it was a non-atomic check-then-add).
+    // AdmissionGate atomically enforces the active-ward cap. The counter is incremented before
+    // TryAdd and rolled back when the cap or a duplicate ward id rejects admission. Every terminal
+    // removal from _pending disposes the lease exactly once because ConcurrentDictionary.TryRemove
+    // succeeds for only the first remover.
     private readonly AdmissionGate _activeWards = new();
 
     private readonly ConcurrentDictionary<string, WardEntry> _pending = new();
@@ -65,7 +62,7 @@ public sealed class WardGate : IWard
         var entryCts = new CancellationTokenSource();
 
         int maxActiveWards = ArcanumSettingClamps.MaxActiveWards(
-            _settings.CurrentValue.Ward?.MaxActiveWards ?? new WardSettings().MaxActiveWards);
+            ResolveRuntimeSettings().MaxActiveWards);
 
         if (!_activeWards.TryEnter(maxActiveWards, out IDisposable? wardLease))
         {
@@ -240,10 +237,13 @@ public sealed class WardGate : IWard
         PruneResolvedTombstones();
     }
 
+    private WardSettings ResolveRuntimeSettings() =>
+        _settings.CurrentValue.ResolveWard();
+
     private void PruneResolvedTombstones()
     {
         int timeoutSeconds = ArcanumSettingClamps.WardTimeoutSeconds(
-            _settings.CurrentValue.Ward?.TimeoutSeconds ?? new WardSettings().TimeoutSeconds);
+            ResolveRuntimeSettings().TimeoutSeconds);
 
         DateTimeOffset cutoff = _timeProvider.GetUtcNow().AddSeconds(-(timeoutSeconds + 60));
 

@@ -397,7 +397,7 @@ internal static class ApprenticeEndpoints
 
                 // Subscribe before synthetic plan replay so chronicle events emitted during replay are not lost.
                 int channelCapacity = ArcanumSettingClamps.EventBusChannelCapacity(
-                    settings.CurrentValue.EventBus?.ChannelCapacity ?? new EventBusSettings().ChannelCapacity);
+                    settings.CurrentValue.ResolveEventBus().ChannelCapacity);
 
                 Channel<ApprenticeEvent> liveBuffer = Channel.CreateBounded<ApprenticeEvent>(
                     new BoundedChannelOptions(channelCapacity)
@@ -416,7 +416,7 @@ internal static class ApprenticeEndpoints
 
                 TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
                     ArcanumSettingClamps.EventBusHeartbeatSeconds(
-                        settings.CurrentValue.EventBus?.HeartbeatSeconds ?? new EventBusSettings().HeartbeatSeconds));
+                        settings.CurrentValue.ResolveEventBus().HeartbeatSeconds));
 
                 try
                 {
@@ -580,9 +580,13 @@ internal static class ApprenticeEndpoints
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(settings.Host?.Workspace))
+        string? defaultWorkspace = settings.ResolveDefaultWorkspace();
+
+        if (!string.IsNullOrWhiteSpace(defaultWorkspace))
         {
-            return Core.Configuration.CampaignPathPolicy.ValidateAndNormalizePath(settings.Host.Workspace, settings);
+            return Core.Configuration.CampaignPathPolicy.ValidateAndNormalizePath(
+                defaultWorkspace,
+                settings);
         }
 
         return Core.Configuration.CampaignPathPolicy.ValidateAndNormalizePath(Directory.GetCurrentDirectory(), settings);

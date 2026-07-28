@@ -98,7 +98,7 @@ public class SetupWizardViewModelTests
             Health = new ApiResponse<HealthReportDto>(new HealthReportDto(HealthStatus.Healthy, []), true, null),
             Meta = new ApiResponse<InstanceMetadataDto>(SampleMeta(embeddingsEnabled: true), true, null),
             Providers = new ApiResponse<ProviderInfoDto[]>(
-                [new ProviderInfoDto("local", "OpenAICompatible", "http://x", null, ["m"], 8)],
+                [new ProviderInfoDto("local", "OpenAICompatible", "http://x", "ARCANUM_PROVIDER_LOCAL_API_KEY", ["m"], 8)],
                 true,
                 null),
             Models = new ApiResponse<ModelInfoDto[]>(

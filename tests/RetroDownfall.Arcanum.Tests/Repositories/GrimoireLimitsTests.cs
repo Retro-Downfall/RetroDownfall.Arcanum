@@ -14,13 +14,15 @@ public sealed class GrimoireLimitsTests
     public void EnforceEntryLimits_WithinBounds_ReturnsNull()
     {
 
-        SessionSettings settings = new()
-        {
-            MaxEntriesPerSession = 100,
-            MaxEntryContentBytes = 1024,
-        };
+        SessionSettings settings = ArcanumRuntimeDefaults.Sessions;
+        int maxEntries = ArcanumSettingClamps.MaxEntriesPerSession(
+            settings.MaxEntriesPerSession);
 
-        Error? result = GrimoireLimits.EnforceEntryLimits(98, entriesToAdd: 2, settings, "hello");
+        Error? result = GrimoireLimits.EnforceEntryLimits(
+            maxEntries - 2,
+            entriesToAdd: 2,
+            settings,
+            "hello");
 
         Assert.Null(result);
 
@@ -30,13 +32,15 @@ public sealed class GrimoireLimitsTests
     public void EnforceEntryLimits_TooManyEntries_ReturnsError()
     {
 
-        SessionSettings settings = new()
-        {
-            MaxEntriesPerSession = 100,
-            MaxEntryContentBytes = 1024,
-        };
+        SessionSettings settings = ArcanumRuntimeDefaults.Sessions;
+        int maxEntries = ArcanumSettingClamps.MaxEntriesPerSession(
+            settings.MaxEntriesPerSession);
 
-        Error? result = GrimoireLimits.EnforceEntryLimits(100, entriesToAdd: 1, settings, "hello");
+        Error? result = GrimoireLimits.EnforceEntryLimits(
+            maxEntries,
+            entriesToAdd: 1,
+            settings,
+            "hello");
 
         Assert.NotNull(result);
 
@@ -50,13 +54,10 @@ public sealed class GrimoireLimitsTests
     public void EnforceEntryLimits_EntryTooLarge_ReturnsError()
     {
 
-        SessionSettings settings = new()
-        {
-            MaxEntriesPerSession = 100,
-            MaxEntryContentBytes = 1024,
-        };
-
-        string oversized = new('x', 1025);
+        SessionSettings settings = ArcanumRuntimeDefaults.Sessions;
+        int maxEntryBytes = ArcanumSettingClamps.MaxEntryContentBytes(
+            settings.MaxEntryContentBytes);
+        string oversized = new('x', maxEntryBytes + 1);
 
         Error? result = GrimoireLimits.EnforceEntryLimits(0, entriesToAdd: 1, settings, oversized);
 

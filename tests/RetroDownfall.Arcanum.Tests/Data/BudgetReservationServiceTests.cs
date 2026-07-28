@@ -82,7 +82,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     {
         RequireSqlCipher();
 
-        BudgetReservationService service = CreateService(new BudgetSettings
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
         {
             Enabled = true,
             DailyLimitUsd = 0m,
@@ -108,7 +108,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     {
         RequireSqlCipher();
 
-        BudgetReservationService service = CreateService(new BudgetSettings
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
         {
             Enabled = true,
             DailyLimitUsd = 100m,
@@ -145,7 +145,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         await InsertBillableOperationAsync(runId, dayStart.AddDays(1).AddTicks(-1), 0.30m);
         await InsertBillableOperationAsync(runId, dayStart.AddDays(1), 75m);
 
-        BudgetReservationService service = CreateService(new BudgetSettings
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
         {
             Enabled = true,
             DailyLimitUsd = 1m,
@@ -179,7 +179,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     {
         RequireSqlCipher();
 
-        BudgetReservationService service = CreateService(new BudgetSettings
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
         {
             Enabled = true,
             DailyLimitUsd = 100m,
@@ -220,7 +220,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     public async Task AdjustAsync_AtomicallyRaisesWithoutLoweringOrExceedingDailyLimit()
     {
         RequireSqlCipher();
-        BudgetReservationService service = CreateService(new BudgetSettings
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
         {
             Enabled = true,
             DailyLimitUsd = 10m,
@@ -249,7 +249,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         double dailyLimit)
     {
         RequireSqlCipher();
-        BudgetReservationService service = CreateService(new BudgetSettings
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
         {
             Enabled = enabled,
             DailyLimitUsd = (decimal)dailyLimit,
@@ -276,11 +276,16 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-    private BudgetReservationService CreateService(BudgetSettings? budget)
+    private BudgetReservationService CreateService(BudgetPolicySettings? budget)
     {
         ArcanumSettings settings = new()
         {
-            Budget = budget!,
+            Cost = new CostSettings
+            {
+                Budget = budget is null
+                    ? null!
+                    : budget,
+            },
         };
 
         return new BudgetReservationService(

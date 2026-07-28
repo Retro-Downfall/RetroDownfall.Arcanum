@@ -514,7 +514,7 @@ internal sealed partial class ArcanumInternalToolServer
             WriteIntegerProperty(
                 w,
                 "limit",
-                "Optional maximum number of memories to return (defaults to Arcanum:Embeddings:MaxResults).");
+                "Optional maximum number of memories to return (omission uses the code-owned default).");
 
             w.WriteEndObject();
 
@@ -590,7 +590,7 @@ internal sealed partial class ArcanumInternalToolServer
         });
     }
 
-    private static JsonElement BuildUseCommlinkSchema()
+    private static JsonElement BuildSendCommLinkAlertSchema()
     {
 
         return BuildSchema(static w =>

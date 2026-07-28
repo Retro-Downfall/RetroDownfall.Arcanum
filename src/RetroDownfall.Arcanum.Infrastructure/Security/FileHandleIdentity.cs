@@ -363,6 +363,73 @@ internal static partial class FileHandleIdentityInterop
 
     }
 
+    internal static bool TryOpenDirectoryMetadata(
+        string path,
+        out SafeFileHandle handle,
+        out FileHandleMetadata metadata)
+    {
+        handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
+        metadata = default;
+
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                handle = CreateFile(
+                    path,
+                    FileReadAttributes,
+                    FileShare.Read | FileShare.Write | FileShare.Delete,
+                    IntPtr.Zero,
+                    OpenExisting,
+                    FileFlagBackupSemantics | FileFlagOpenReparsePoint,
+                    IntPtr.Zero);
+            }
+            else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+            {
+                int flags = OperatingSystem.IsMacOS()
+                    ? MacOsOpenDirectory | MacOsOpenNoFollow | MacOsOpenCloseOnExec
+                    : LinuxOpenDirectory | LinuxOpenNoFollow | LinuxOpenCloseOnExec;
+                int fileDescriptor = OpenUnix(path, flags, mode: 0);
+                if (fileDescriptor < 0)
+                {
+                    return false;
+                }
+
+                handle.Dispose();
+                handle = new SafeFileHandle(
+                    new IntPtr(fileDescriptor),
+                    ownsHandle: true);
+            }
+            else
+            {
+                return false;
+            }
+
+            if (handle.IsInvalid
+                || !TryGetHandleMetadata(handle, out metadata)
+                || metadata.Kind != FileSystemObjectKind.Directory)
+            {
+                handle.Dispose();
+                handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
+                metadata = default;
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException
+                or ArgumentException
+                or NotSupportedException)
+        {
+            handle.Dispose();
+            handle = new SafeFileHandle(new IntPtr(-1), ownsHandle: true);
+            metadata = default;
+            return false;
+        }
+    }
+
     internal static SecureFileOpenStatus TryOpenReadOnlyNoFollow(
         string path,
         out SafeFileHandle? handle)
@@ -779,11 +846,15 @@ internal static partial class FileHandleIdentityInterop
 
     private const int ErrorAccessDenied = 5;
 
+    private const int LinuxOpenDirectory = 0x00010000;
+
     private const int LinuxOpenNonBlocking = 0x00000800;
 
     private const int LinuxOpenCloseOnExec = 0x00080000;
 
     private const int LinuxOpenNoFollow = 0x00020000;
+
+    private const int MacOsOpenDirectory = 0x00100000;
 
     private const int MacOsOpenNonBlocking = 0x00000004;
 

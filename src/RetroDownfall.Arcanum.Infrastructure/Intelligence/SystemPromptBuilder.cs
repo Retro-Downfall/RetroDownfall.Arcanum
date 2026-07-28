@@ -856,8 +856,9 @@ public static class SystemPromptBuilder
     }
 
     /// <summary>
-    /// RAG Phase 3 — renders semantic codebase retrieval hits (see <see cref="SemanticContextChunk"/>).
-    /// Positioned after Attached Files and before Data Streams in the DATA block (DESIGN.md §10.5).
+    /// Renders semantic codebase retrieval hits (see <see cref="SemanticContextChunk"/>).
+    /// Positioned after Attached Files and before Data Streams in the DATA block
+    /// (<c>docs/Arcanum.DESIGN.md</c> §10.5).
     /// Retrieved content is adaptively fenced as DATA so headings inside source files cannot alter
     /// prompt structure or token-source attribution.
     /// </summary>
@@ -909,8 +910,9 @@ public static class SystemPromptBuilder
     }
 
     /// <summary>
-    /// RAG Phase 4 — renders Saga memories retrieved via Divination (see <see cref="SagaMemory"/>).
-    /// Positioned after Semantic Context and before Data Streams in the DATA block (DESIGN.md §10.5) —
+    /// Renders Saga memories retrieved via Divination (see <see cref="SagaMemory"/>).
+    /// Positioned after Semantic Context and before Data Streams in the DATA block
+    /// (<c>docs/Arcanum.DESIGN.md</c> §10.5) —
     /// Saga is Arcanum's long-term associative memory, cross-session and auto-extracted, distinct from
     /// the operator-authored Lore key-value pairs surfaced elsewhere. Retrieved content is fenced so
     /// embedded headings cannot escape its DATA source category.
@@ -965,8 +967,8 @@ public static class SystemPromptBuilder
     /// Lexicon is model-writable and potentially stale or adversarial, so it is treated strictly as
     /// DATA — never instructions. Facts are hardened: raw newlines/control characters are stripped,
     /// whitespace is collapsed, and exactly one plain markdown bullet is emitted per entity, so facts
-    /// cannot create headings or break the DCI prompt structure. Total rendered bytes are capped
-    /// (configured via <c>Arcanum:Intelligence:LexiconMaxInjectedBytes</c>).
+    /// cannot create headings or break the DCI prompt structure. Total rendered bytes use a
+    /// code-owned cap.
     /// </summary>
     private static void AppendLexicon(StringBuilder sb, IReadOnlyList<LexiconEntryDto> entries, int maxBytes)
     {

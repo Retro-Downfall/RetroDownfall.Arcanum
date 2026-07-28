@@ -18,8 +18,6 @@ public sealed class SemanticSpellRouterTests
 
     private static readonly SpellMetadata BetaSpell = new("Beta", "beta description", "/b/SPELL.md");
 
-    private static readonly SpellMetadata GammaSpell = new("Gamma", "gamma description", "/g/SPELL.md");
-
     private static SemanticSpellRouter CreateRouter(FakeWeaveService weave, ArcanumSettings settings) =>
         new(
             new SpellWeaveCache(weave, new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SpellWeaveCache>.Instance),
@@ -27,15 +25,12 @@ public sealed class SemanticSpellRouterTests
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<SemanticSpellRouter>.Instance);
 
-    private static ArcanumSettings BaseSettings(bool enabled, bool hybrid = false, int topK = 3, float threshold = 0.5f) => new()
+    private static ArcanumSettings BaseSettings(bool enabled) => new()
     {
-        Embeddings = new EmbeddingSettings
+        Features = new FeatureSettings
         {
-            Enabled = enabled,
-            SemanticSpellRoutingEnabled = enabled,
-            SpellRoutingHybridMode = hybrid,
-            SpellRoutingHybridTopK = topK,
-            SimilarityThreshold = threshold,
+            Embeddings = enabled,
+            SemanticSpellRouting = enabled,
         },
     };
 
@@ -44,7 +39,14 @@ public sealed class SemanticSpellRouterTests
     {
         FakeWeaveService weave = new();
 
-        ArcanumSettings settings = new() { Embeddings = new EmbeddingSettings { Enabled = false, SemanticSpellRoutingEnabled = false } };
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings
+            {
+                Embeddings = false,
+                SemanticSpellRouting = false,
+            },
+        };
 
         SemanticSpellRouter router = CreateRouter(weave, settings);
 
@@ -82,7 +84,7 @@ public sealed class SemanticSpellRouterTests
 
         weave.BatchVectorsByText["beta description"] = [0f, 1f];
 
-        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true, hybrid: false, threshold: 0.5f));
+        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true));
 
         SpellRoutingDecision decision = await router.ResolveAsync([AlphaSpell, BetaSpell], "prompt", CancellationToken.None);
 
@@ -104,7 +106,7 @@ public sealed class SemanticSpellRouterTests
 
         weave.BatchVectorsByText["beta description"] = [-1f, 0f];
 
-        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true, hybrid: false, threshold: 0.9f));
+        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true));
 
         SpellRoutingDecision decision = await router.ResolveAsync([AlphaSpell, BetaSpell], "prompt", CancellationToken.None);
 
@@ -128,54 +130,7 @@ public sealed class SemanticSpellRouterTests
 
         weave.BatchVectorsByText["beta description"] = [0f, 1f];
 
-        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true, hybrid: false, threshold: 0f));
-
-        SpellRoutingDecision decision = await router.ResolveAsync([AlphaSpell, BetaSpell], "prompt", CancellationToken.None);
-
-        Assert.Equal(SpellRoutingDecisionMode.FullGrimoire, decision.Mode);
-
-    }
-
-    [Fact]
-    public async Task ResolveAsync_HybridMode_AppliesSimilarityThreshold_ExcludesBelowThresholdCandidates()
-    {
-
-        // Alpha is a strong match (similarity ~1.0); Beta and Gamma are near-orthogonal (similarity
-        // ~0). A threshold of 0.5 must exclude Beta/Gamma from the candidate list purely by rank
-        // (top-K alone would otherwise still hand the LLM router irrelevant candidates).
-        FakeWeaveService weave = new() { QueryVector = [1f, 0f, 0f] };
-
-        weave.BatchVectorsByText["alpha description"] = [1f, 0f, 0f];
-
-        weave.BatchVectorsByText["beta description"] = [0f, 1f, 0f];
-
-        weave.BatchVectorsByText["gamma description"] = [0f, 0f, 1f];
-
-        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true, hybrid: true, topK: 3, threshold: 0.5f));
-
-        SpellRoutingDecision decision = await router.ResolveAsync([AlphaSpell, BetaSpell, GammaSpell], "prompt", CancellationToken.None);
-
-        Assert.Equal(SpellRoutingDecisionMode.FilteredDivination, decision.Mode);
-
-        Assert.NotNull(decision.Candidates);
-
-        SpellMetadata onlyCandidate = Assert.Single(decision.Candidates!);
-
-        Assert.Equal("Alpha", onlyCandidate.Name);
-
-    }
-
-    [Fact]
-    public async Task ResolveAsync_HybridMode_NoCandidateClearsThreshold_FallsBackToFullGrimoire()
-    {
-
-        FakeWeaveService weave = new() { QueryVector = [1f, 0f, 0f] };
-
-        weave.BatchVectorsByText["alpha description"] = [0f, 1f, 0f];
-
-        weave.BatchVectorsByText["beta description"] = [0f, 0f, 1f];
-
-        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true, hybrid: true, topK: 2, threshold: 0.5f));
+        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true));
 
         SpellRoutingDecision decision = await router.ResolveAsync([AlphaSpell, BetaSpell], "prompt", CancellationToken.None);
 
@@ -203,46 +158,6 @@ public sealed class SemanticSpellRouterTests
         SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true));
 
         SpellRoutingDecision decision = await router.ResolveAsync([AlphaSpell], "prompt", CancellationToken.None);
-
-        Assert.Equal(SpellRoutingDecisionMode.FullGrimoire, decision.Mode);
-    }
-
-    [Fact]
-    public async Task ResolveAsync_HybridMode_ReturnsFilteredTopKCandidates()
-    {
-        FakeWeaveService weave = new() { QueryVector = [1f, 0f, 0f] };
-
-        weave.BatchVectorsByText["alpha description"] = [1f, 0f, 0f];
-
-        weave.BatchVectorsByText["beta description"] = [0.9f, 0.1f, 0f];
-
-        weave.BatchVectorsByText["gamma description"] = [0f, 1f, 0f];
-
-        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true, hybrid: true, topK: 2, threshold: 0f));
-
-        SpellRoutingDecision decision = await router.ResolveAsync([AlphaSpell, BetaSpell, GammaSpell], "prompt", CancellationToken.None);
-
-        Assert.Equal(SpellRoutingDecisionMode.FilteredDivination, decision.Mode);
-
-        Assert.NotNull(decision.Candidates);
-
-        Assert.Equal(2, decision.Candidates!.Count);
-
-        Assert.Equal("Alpha", decision.Candidates[0].Name);
-
-        Assert.Equal("Beta", decision.Candidates[1].Name);
-
-        Assert.DoesNotContain(decision.Candidates, static s => s.Name == "Gamma");
-    }
-
-    [Fact]
-    public async Task ResolveAsync_HybridMode_CacheUnavailable_FallsBackToFullGrimoire()
-    {
-        FakeWeaveService weave = new() { Available = false };
-
-        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true, hybrid: true));
-
-        SpellRoutingDecision decision = await router.ResolveAsync([AlphaSpell, BetaSpell], "prompt", CancellationToken.None);
 
         Assert.Equal(SpellRoutingDecisionMode.FullGrimoire, decision.Mode);
     }

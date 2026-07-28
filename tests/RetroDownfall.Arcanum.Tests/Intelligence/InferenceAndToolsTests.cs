@@ -195,7 +195,7 @@ public sealed class ArcanumBuiltInToolsTests
     {
         ArcanumSettings settings = new()
         {
-            WebBrowsing = new WebBrowsingSettings { Enabled = true },
+            Features = new FeatureSettings { WebBrowsing = true },
         };
         BuiltInToolRegistry registry = new(
             new StubHttpClientFactory(new CancellingHandler()),
@@ -218,7 +218,7 @@ public sealed class ArcanumBuiltInToolsTests
         const string canary = "CANARY_BROWSE_PROVIDER_RESPONSE_AND_URL";
         ArcanumSettings settings = new()
         {
-            WebBrowsing = new WebBrowsingSettings { Enabled = true },
+            Features = new FeatureSettings { WebBrowsing = true },
         };
         TestCapturingLogger<ArcanumBrowseWebTool> logger = new();
         BuiltInToolRegistry registry = new(

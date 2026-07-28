@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// <c>attach_session_file</c>: re-attach a bound session attachment into the next model turn.
 /// Session id comes from <see cref="SessionAttachmentToolAmbient"/> only — never from tool args.
-/// Multimodal bytes are injected by the Wizard post-tool path, not returned in the tool result text.
+/// Multimodal bytes are injected by the Master post-tool path, not returned in the tool result text.
 /// </summary>
 internal sealed partial class ArcanumInternalToolServer
 {

@@ -20,7 +20,7 @@ namespace RetroDownfall.Arcanum.Api.Telemetry;
 /// Maps <c>GET /metrics</c> — Prometheus text format (<c>0.0.4</c>). Always registered at the
 /// canonical <c>/metrics</c> path (not under <c>/api</c>). <c>ApiBootstrapper.MapArcanumEndpoints</c>
 /// attaches <c>ApiKeyEndpointFilter</c> (and the active rate limiter when enabled) when the effective
-/// <c>Arcanum:Metrics:RequireApiKey</c> gate is on.
+/// <c>Arcanum:Security:MetricsRequireApiKey</c> gate is on.
 /// </summary>
 internal static class MetricsEndpoints
 {
@@ -36,7 +36,7 @@ internal static class MetricsEndpoints
             CancellationToken cancellationToken) =>
         {
 
-            if (!settings.Value.Metrics.Enabled)
+            if (!settings.Value.ResolveMetrics().Enabled)
             {
 
                 httpContext.Response.StatusCode = StatusCodes.Status404NotFound;

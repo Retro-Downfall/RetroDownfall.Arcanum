@@ -190,8 +190,8 @@ internal static class EntryTemporalQueries
 
     /// <summary>
     /// Count entries at or before an inclusive <c>(CreatedAt, Id)</c> cursor — used by session
-    /// fork's "up to and including this entry" cutoff to pre-check
-    /// <c>Arcanum:Sessions:MaxEntriesPerSession</c> before copying anything.
+    /// fork's "up to and including this entry" cutoff to pre-check the code-owned per-session entry
+    /// limit before copying anything.
     /// </summary>
     public static IQueryable<int> CountAtOrBeforeKeyset(
         ArcanumDbContext db,

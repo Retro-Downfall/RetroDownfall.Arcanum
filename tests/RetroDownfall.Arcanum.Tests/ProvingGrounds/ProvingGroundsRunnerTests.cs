@@ -31,23 +31,6 @@ public sealed class ProvingGroundsRunnerTests
     }
 
     [Fact]
-    public async Task RunAsync_TooManyInquisitors_Fails()
-    {
-        ProvingGroundsRunner runner = CreateRunner(new FakeIntelligenceProvider());
-
-        Trial trial = new(
-            TargetKind: TrialTargetKind.ApprenticeGoal,
-            Target: "goal",
-            Inquisitors: Enumerable.Range(0, 5).Select(static _ => new RegexInquisitor("x")).ToList());
-
-        Result<TrialResult> result = await runner.RunAsync(trial, CancellationToken.None);
-
-        Assert.True(result.IsFailure);
-
-        Assert.Equal("ProvingGrounds.TooManyInquisitors", result.Error.Code);
-    }
-
-    [Fact]
     public async Task RunAsync_ApprenticeGoal_BuildsPlanPrompt()
     {
         FakeIntelligenceProvider intelligence = new() { NextText = "plan output" };
@@ -122,8 +105,11 @@ public sealed class ProvingGroundsRunnerTests
     {
         ArcanumSettings settings = new()
         {
-            ProvingGrounds = new ProvingGroundsSettings { MaxInquisitorsPerTrial = 3 },
-            Spells = new SpellSettings { AllowedWorkspaceRoots = allowedWorkspaceRoots ?? [Path.GetTempPath(), System.Environment.CurrentDirectory] },
+            Security = new SecuritySettings
+            {
+                SpellWorkspaceRoots =
+                    allowedWorkspaceRoots ?? [Path.GetTempPath(), System.Environment.CurrentDirectory],
+            },
         };
 
         SpellWorkspaceResolver workspaceResolver = new(
@@ -134,7 +120,7 @@ public sealed class ProvingGroundsRunnerTests
             new FakeSpellRepository(),
             new FakePromptRepository(),
             intelligence,
-            new ProvingGroundsArbiter(intelligence, new TestOptionsMonitor<ArcanumSettings>(settings)),
+            new ProvingGroundsArbiter(intelligence),
             new PromptRenderer(new FakeTokenCounter(), new TestOptionsMonitor<ArcanumSettings>(settings)),
             workspaceResolver,
             new TestOptionsSnapshot<ArcanumSettings>(settings));

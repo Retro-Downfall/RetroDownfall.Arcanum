@@ -81,6 +81,10 @@ public sealed class DoctorCommand(
 
         AnsiConsole.WriteLine();
 
+        WriteProviderCredentialsPanel();
+
+        AnsiConsole.WriteLine();
+
         healthy &= WriteMcpConfigPanel();
 
         AnsiConsole.WriteLine();
@@ -126,6 +130,8 @@ public sealed class DoctorCommand(
 
         healthy &= configHealthy;
         checks.Add(configCheck);
+
+        checks.Add(BuildProviderCredentialsCheck());
 
         (bool mcpHealthy, DoctorCheck mcpCheck) = BuildMcpConfigCheck();
 
@@ -380,6 +386,93 @@ public sealed class DoctorCommand(
 
     }
 
+    private void WriteProviderCredentialsPanel()
+    {
+        IReadOnlyList<CredentialReferenceStatus> references =
+            BuildCredentialReferenceStatuses();
+        Table table = new();
+        table.Border(TableBorder.None);
+        table.HideHeaders();
+        table.AddColumn(new TableColumn(string.Empty).NoWrap());
+        table.AddColumn(new TableColumn(string.Empty));
+        table.AddColumn(new TableColumn(string.Empty));
+
+        if (references.Count == 0)
+        {
+            table.AddRow(
+                themePalette.MutedMarkup(Markup.Escape(" ")),
+                themePalette.MutedMarkup(Markup.Escape("References:")),
+                themePalette.MutedMarkup(Markup.Escape("No provider or PFX credential references are active.")));
+        }
+        else
+        {
+            foreach (CredentialReferenceStatus reference in references)
+            {
+                table.AddRow(
+                    reference.IsPresent
+                        ? themePalette.HighlightMarkup(Markup.Escape(OkGlyph))
+                        : themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
+                    themePalette.MutedMarkup(Markup.Escape(reference.Label + ":")),
+                    themePalette.TextMarkup(Markup.Escape(
+                        $"{reference.EnvironmentVariable} — "
+                        + (reference.IsPresent ? "set (value not shown)" : "not set"))));
+            }
+        }
+
+        WritePanel("Provider / HTTPS Credentials", table);
+    }
+
+    private DoctorCheck BuildProviderCredentialsCheck()
+    {
+        IReadOnlyList<CredentialReferenceStatus> references =
+            BuildCredentialReferenceStatuses();
+        int present = references.Count(static reference => reference.IsPresent);
+        int missingExplicit = references.Count(
+            static reference => reference.IsExplicit && !reference.IsPresent);
+
+        return new DoctorCheck(
+            "ProviderCredentials",
+            missingExplicit == 0 ? "ok" : "warn",
+            $"{present}/{references.Count} referenced environment credential(s) are set; "
+            + $"{missingExplicit} explicit reference(s) are missing; values are never shown.");
+    }
+
+    private IReadOnlyList<CredentialReferenceStatus> BuildCredentialReferenceStatuses()
+    {
+        List<CredentialReferenceStatus> references = [];
+
+        foreach (ProviderSettings provider in options.Value.Providers ?? [])
+        {
+            string environmentVariable =
+                EnvironmentCredentialResolver
+                    .GetProviderApiKeyEnvironmentVariableName(provider);
+            references.Add(new CredentialReferenceStatus(
+                string.IsNullOrWhiteSpace(provider.Name)
+                    ? "Unnamed provider"
+                    : provider.Name,
+                environmentVariable,
+                EnvironmentCredentialResolver.ResolveProviderApiKey(provider) is not null,
+                !string.IsNullOrWhiteSpace(provider.CredentialEnvironmentVariable)));
+        }
+
+        HttpsSettings https = options.Value.Host?.Https ?? new HttpsSettings();
+
+        if (https.Enabled && string.IsNullOrWhiteSpace(https.PrivateKeyPath))
+        {
+            string environmentVariable =
+                EnvironmentCredentialResolver
+                    .GetHttpsCertificatePasswordEnvironmentVariableName(https);
+            references.Add(new CredentialReferenceStatus(
+                "HTTPS PFX",
+                environmentVariable,
+                EnvironmentCredentialResolver.ResolveHttpsCertificatePassword(https) is not null,
+                !string.IsNullOrWhiteSpace(
+                    https.CertificatePasswordEnvironmentVariable)));
+        }
+
+        return references;
+    }
+
     private bool WriteMcpConfigPanel()
     {
 
@@ -536,9 +629,10 @@ public sealed class DoctorCommand(
     private (bool Healthy, Table Table) BuildTokenizerPanelCore()
     {
 
-        string encoding = string.IsNullOrWhiteSpace(options.Value.Intelligence.TokenizerEncoding)
+        string encoding = string.IsNullOrWhiteSpace(
+            options.Value.ResolveIntelligence().TokenizerEncoding)
             ? "o200k_base"
-            : options.Value.Intelligence.TokenizerEncoding.Trim();
+            : options.Value.ResolveIntelligence().TokenizerEncoding.Trim();
 
         Table table = new();
 
@@ -588,9 +682,10 @@ public sealed class DoctorCommand(
     private (bool Healthy, DoctorCheck Check) BuildTokenizerCheck()
     {
 
-        string encoding = string.IsNullOrWhiteSpace(options.Value.Intelligence.TokenizerEncoding)
+        string encoding = string.IsNullOrWhiteSpace(
+            options.Value.ResolveIntelligence().TokenizerEncoding)
             ? "o200k_base"
-            : options.Value.Intelligence.TokenizerEncoding.Trim();
+            : options.Value.ResolveIntelligence().TokenizerEncoding.Trim();
 
         try
         {
@@ -755,7 +850,7 @@ public sealed class DoctorCommand(
     private (bool InformationalOk, Table Table) BuildEmbeddingsPanelCore()
     {
 
-        EmbeddingSettings embeddings = options.Value.Embeddings ?? new EmbeddingSettings();
+        EmbeddingSettings embeddings = options.Value.ResolveEmbeddings();
 
         bool enabled = embeddings.Enabled;
 
@@ -775,8 +870,8 @@ public sealed class DoctorCommand(
               + $"(preview/performance-limited; row budget {WeaveIndexAvailability.ManagedSearchRowBudget}). "
               + "Confirm live mode via GET /api/meta embeddingsVectorMode."
             : mode == "disabled"
-                ? "Set Arcanum:Embeddings:Enabled=true (and provider/model) to enable The Weave."
-                : "Configure Arcanum:Embeddings:Provider and Model.";
+                ? "Set Arcanum:Features:Embeddings=true and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model to enable The Weave."
+                : "Configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model.";
 
         Table table = BuildLabelTable(
             ("Enabled", enabled ? "yes" : "no"),
@@ -795,7 +890,7 @@ public sealed class DoctorCommand(
 
         (_, Table _) = BuildEmbeddingsPanelCore();
 
-        EmbeddingSettings embeddings = options.Value.Embeddings ?? new EmbeddingSettings();
+        EmbeddingSettings embeddings = options.Value.ResolveEmbeddings();
 
         string mode = !embeddings.Enabled
             ? "disabled"
@@ -829,7 +924,7 @@ public sealed class DoctorCommand(
         bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(host.ListenAny);
 
         int timeoutSeconds = ArcanumSettingClamps.DoctorHealthTimeoutSeconds(
-            options.Value.Cli.DoctorHealthTimeoutSeconds);
+            ArcanumRuntimeDefaults.CliDoctorHealthTimeoutSeconds);
 
         string targetUrl = ArcanumLocalApiAddress.ResolveHealthProbeUrl(host);
 
@@ -915,7 +1010,7 @@ public sealed class DoctorCommand(
                     themePalette.MutedMarkup(Markup.Escape("Status:")),
                     themePalette.MutedMarkup(
                         Markup.Escape(
-                            $"Timed out after {timeoutSeconds}s. Raise Arcanum:Cli:DoctorHealthTimeoutSeconds if startup is slow.")));
+                            $"Timed out after {timeoutSeconds}s while waiting for the host health endpoint.")));
                 break;
 
             case DoctorProbeKind.Unreachable:
@@ -949,7 +1044,7 @@ public sealed class DoctorCommand(
         bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(host.ListenAny);
 
         int timeoutSeconds = ArcanumSettingClamps.DoctorHealthTimeoutSeconds(
-            options.Value.Cli.DoctorHealthTimeoutSeconds);
+            ArcanumRuntimeDefaults.CliDoctorHealthTimeoutSeconds);
 
         string targetUrl = ArcanumLocalApiAddress.ResolveHealthProbeUrl(host);
 
@@ -1147,6 +1242,12 @@ public sealed class DoctorCommand(
         AnsiConsole.Write(panel);
 
     }
+
+    private readonly record struct CredentialReferenceStatus(
+        string Label,
+        string EnvironmentVariable,
+        bool IsPresent,
+        bool IsExplicit);
 
     private enum DoctorProbeKind
     {

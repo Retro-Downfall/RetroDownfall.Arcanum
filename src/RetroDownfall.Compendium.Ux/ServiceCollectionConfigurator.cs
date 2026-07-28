@@ -16,8 +16,6 @@ internal static class ServiceCollectionConfigurator
 
         services.AddLogging(builder => builder.AddDebug());
 
-        services.AddSingleton<IArcanumSecretProtector, ArcanumDataProtectionSecretProtector>();
-
         services.AddSingleton<IArcanumConfigurationStore, ArcanumConfigurationStore>();
 
         services.AddSingleton<IMainWindowProvider, MainWindowProvider>();

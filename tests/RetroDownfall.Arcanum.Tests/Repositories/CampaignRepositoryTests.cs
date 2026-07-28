@@ -266,18 +266,9 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        CampaignRepository repository = CreateRepository(maxCampaigns: 10);
+        CampaignRepository repository = CreateRepository();
 
-        for (int i = 0; i < 10; i++)
-        {
-
-            Result<Campaign> seeded = await repository.AddAsync(
-                NewCampaign($"seed-{i}"),
-                CancellationToken.None);
-
-            Assert.True(seeded.IsSuccess, seeded.Error.Code);
-
-        }
+        await SeedCampaignsAsync(CodeOwnedMaxCampaigns, "seed");
 
         Result<Campaign> result = await repository.AddAsync(
             NewCampaign("over-limit"),
@@ -287,7 +278,9 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         Assert.Equal(ErrorCodes.Campaign.MaxReached, result.Error.Code);
 
-        Assert.Equal(10, await repository.CountAsync(CancellationToken.None));
+        Assert.Equal(
+            CodeOwnedMaxCampaigns,
+            await repository.CountAsync(CancellationToken.None));
 
     }
 
@@ -297,28 +290,15 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        const int maxCampaigns = 10;
-
-        CampaignRepository seedRepository = CreateRepository(maxCampaigns: maxCampaigns);
-
-        for (int i = 0; i < maxCampaigns - 1; i++)
-        {
-
-            Result<Campaign> seeded = await seedRepository.AddAsync(
-                NewCampaign($"concurrent-seed-{i}"),
-                CancellationToken.None);
-
-            Assert.True(seeded.IsSuccess, seeded.Error.Code);
-
-        }
+        await SeedCampaignsAsync(CodeOwnedMaxCampaigns - 1, "concurrent-seed");
 
         await using ArcanumDbContext firstContext = _fixture.CreateContext(_dbPath);
 
         await using ArcanumDbContext secondContext = _fixture.CreateContext(_dbPath);
 
-        CampaignRepository firstRepository = CreateRepository(firstContext, maxCampaigns);
+        CampaignRepository firstRepository = CreateRepository(firstContext);
 
-        CampaignRepository secondRepository = CreateRepository(secondContext, maxCampaigns);
+        CampaignRepository secondRepository = CreateRepository(secondContext);
 
         TaskCompletionSource firstTransactionBegan = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -365,7 +345,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
         await using ArcanumDbContext verificationContext = _fixture.CreateContext(_dbPath);
 
         Assert.Equal(
-            maxCampaigns,
+            CodeOwnedMaxCampaigns,
             await verificationContext.Campaigns.CountAsync(CancellationToken.None));
 
     }
@@ -376,7 +356,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        CampaignRepository repository = CreateRepository(maxCampaigns: 10);
+        CampaignRepository repository = CreateRepository();
 
         Result<Campaign> first = await repository.AddAsync(
             NewCampaign("duplicate-name"),
@@ -424,7 +404,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         Campaign campaign = NewCampaign("locked-campaign");
 
-        CampaignRepository repository = CreateRepository(maxCampaigns: 10);
+        CampaignRepository repository = CreateRepository();
 
         SqliteException failure;
 
@@ -478,7 +458,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
             _ = await begin.ExecuteNonQueryAsync(CancellationToken.None);
         }
 
-        CampaignRepository repository = CreateRepository(maxCampaigns: 10);
+        CampaignRepository repository = CreateRepository();
 
         using CancellationTokenSource cancellation = new();
 
@@ -523,12 +503,15 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
     }
 
-    private Campaign NewCampaign(string suffix)
+    private Campaign NewCampaign(string suffix, bool createDirectory = true)
     {
 
         string campaignDir = Path.Combine(_workspaceRoot, suffix);
 
-        Directory.CreateDirectory(campaignDir);
+        if (createDirectory)
+        {
+            _ = Directory.CreateDirectory(campaignDir);
+        }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -546,20 +529,38 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
     }
 
-    private CampaignRepository CreateRepository(
-        ArcanumDbContext? db = null,
-        int maxCampaigns = 500)
+    /// <summary>
+    /// Registry capacity is a code-owned invariant, so capacity tests must fill the real ceiling.
+    /// </summary>
+    private static int CodeOwnedMaxCampaigns =>
+        ArcanumSettingClamps.MaxCampaigns(ArcanumRuntimeDefaults.Campaigns.MaxCampaigns);
+
+    private async Task SeedCampaignsAsync(int count, string namePrefix)
     {
 
-        ArcanumSettings settings = new()
-        {
-            Campaigns = new CampaignsSettings { MaxCampaigns = maxCampaigns },
-        };
+        await using ArcanumDbContext seedContext = _fixture.CreateContext(_dbPath);
 
+        for (int i = 0; i < count; i++)
+        {
+
+            Campaign campaign = NewCampaign($"{namePrefix}-{i}", createDirectory: false);
+
+            campaign.NameLower = campaign.Name.ToLowerInvariant();
+
+            _ = seedContext.Campaigns.Add(campaign);
+
+        }
+
+        _ = await seedContext.SaveChangesAsync(CancellationToken.None);
+
+    }
+
+    private CampaignRepository CreateRepository(ArcanumDbContext? db = null)
+    {
         return new CampaignRepository(
             db ?? _db!,
             NullLogger<CampaignRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(settings));
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
     }
 

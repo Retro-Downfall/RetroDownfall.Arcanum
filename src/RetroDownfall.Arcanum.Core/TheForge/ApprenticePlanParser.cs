@@ -6,11 +6,11 @@ namespace RetroDownfall.Arcanum.Core.TheForge;
 public static class ApprenticePlanParser
 {
 
-    // W3.6: cap raw plan text before parsing so a runaway LLM response cannot force an unbounded
-    // JSON parse/allocation. Generous relative to MaxPlanSteps × per-step size.
+    // Physical payload guard: cap raw plan text before parsing so a runaway response cannot force
+    // an unbounded JSON allocation. The number of steps is not independently limited.
     public const int MaxResponseChars = 256 * 1024;
 
-    public static List<PlanStep> ParsePlan(string responseText, int maxSteps = 200)
+    public static List<PlanStep> ParsePlan(string responseText)
     {
 
         ArgumentNullException.ThrowIfNull(responseText);
@@ -49,14 +49,6 @@ public static class ApprenticePlanParser
 
         }
 
-        if (steps.Count > maxSteps)
-        {
-
-            throw new InvalidOperationException(
-                $"Plan generation returned {steps.Count} steps; the maximum allowed is {maxSteps}.");
-
-        }
-
         List<PlanStep> normalized = new(steps.Count);
 
         for (int i = 0; i < steps.Count; i++)
@@ -76,7 +68,7 @@ public static class ApprenticePlanParser
 
     }
 
-    public static bool TryParseRevisedPlan(string responseText, out List<PlanStep>? steps, int maxSteps = 200)
+    public static bool TryParseRevisedPlan(string responseText, out List<PlanStep>? steps)
     {
 
         steps = null;
@@ -86,6 +78,11 @@ public static class ApprenticePlanParser
 
             return false;
 
+        }
+
+        if (responseText.Length > MaxResponseChars)
+        {
+            return false;
         }
 
         string trimmed = StripMarkdownFences(responseText.Trim());
@@ -103,13 +100,6 @@ public static class ApprenticePlanParser
             List<PlanStep>? parsed = JsonSerializer.Deserialize(trimmed, TheForgeJsonContext.Default.ListPlanStep);
 
             if (parsed is null || parsed.Count == 0)
-            {
-
-                return false;
-
-            }
-
-            if (parsed.Count > maxSteps)
             {
 
                 return false;

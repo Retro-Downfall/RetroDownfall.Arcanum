@@ -42,7 +42,7 @@ internal static class ConfigurationEndpoints
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            (ArcanumSettings? request, IResult? jsonError) = await ReadSettingsRejectingObsoleteKeysAsync(
+            (ArcanumSettings? request, IResult? jsonError) = await ReadAndValidateSettingsJsonAsync(
                 httpContext,
                 validator,
                 cancellationToken).ConfigureAwait(false);
@@ -62,8 +62,8 @@ internal static class ConfigurationEndpoints
 
             ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, currentSettings.Value);
 
-            // W3.5: a residual "***" after merge means a new provider whose masked value could not be
-            // restored — reject it instead of persisting the literal mask.
+            // A residual endpoint mask after merge means a new provider could not be matched to the
+            // current configuration; reject it instead of persisting the literal mask.
             Result residualMask = ConfigurationRedactor.ValidateNoResidualMask(merged);
 
             if (residualMask.IsFailure)
@@ -113,7 +113,7 @@ internal static class ConfigurationEndpoints
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            (ArcanumSettings? request, IResult? jsonError) = await ReadSettingsRejectingObsoleteKeysAsync(
+            (ArcanumSettings? request, IResult? jsonError) = await ReadAndValidateSettingsJsonAsync(
                 httpContext,
                 validator,
                 cancellationToken).ConfigureAwait(false);
@@ -174,7 +174,8 @@ internal static class ConfigurationEndpoints
                     p.Name,
                     p.Type.ToString(),
                     RedactRequired(p.Endpoint),
-                    RedactOptional(p.ApiKey),
+                    EnvironmentCredentialResolver
+                        .GetProviderApiKeyEnvironmentVariableName(p),
                     p.Models.Select(static m => m.Name).ToArray(),
                     p.ContextWindowLimit))
                 .ToArray();
@@ -190,7 +191,7 @@ internal static class ConfigurationEndpoints
         return apiGroup;
     }
 
-    private static async Task<(ArcanumSettings? Request, IResult? Error)> ReadSettingsRejectingObsoleteKeysAsync(
+    private static async Task<(ArcanumSettings? Request, IResult? Error)> ReadAndValidateSettingsJsonAsync(
         HttpContext httpContext,
         ConfigurationValidator validator,
         CancellationToken cancellationToken)
@@ -219,13 +220,13 @@ internal static class ConfigurationEndpoints
         using (document)
         {
 
-            Result obsolete = validator.RejectObsoleteJsonKeys(document.RootElement);
+            Result rawTree = validator.RejectObsoleteJsonKeys(document.RootElement);
 
-            if (obsolete.IsFailure)
+            if (rawTree.IsFailure)
             {
 
                 return (null, Results.BadRequest(ApiResponse<bool>.FromResult(
-                    Result<bool>.Failure(obsolete.Error),
+                    Result<bool>.Failure(rawTree.Error),
                     traceId)));
 
             }
@@ -256,6 +257,4 @@ internal static class ConfigurationEndpoints
     private static string RedactRequired(string value) =>
         string.IsNullOrEmpty(value) ? value : "***";
 
-    private static string? RedactOptional(string? value) =>
-        string.IsNullOrEmpty(value) ? value : "***";
 }

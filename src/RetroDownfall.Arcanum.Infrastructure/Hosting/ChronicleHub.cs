@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.TheForge;
 
@@ -10,25 +9,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 /// <summary>
 /// Fan-out hub for apprentice Chronicle events, one bounded channel per subscriber per apprentice.
 /// </summary>
-/// <remarks>
-/// Per-apprentice hub capacity is read from <see cref="IOptionsMonitor{ArcanumSettings}.CurrentValue"/> each
-/// time a hub is first created. Existing hubs retain their original capacity; a config reload affects only
-/// apprentices whose Chronicle hub has not been created yet. To pick up a new
-/// <c>Apprentices.ChronicleChannelCapacity</c> for an existing apprentice, a restart is required.
-/// </remarks>
 public sealed class ChronicleHub
 {
 
     private readonly ConcurrentDictionary<Guid, PerApprenticeHub> _hubs = new();
 
     private readonly Lock _lifecycleLock = new();
-
-    private readonly IOptionsMonitor<ArcanumSettings> _options;
-
-    public ChronicleHub(IOptionsMonitor<ArcanumSettings> options)
-    {
-        _options = options;
-    }
 
     public void Publish(Guid apprenticeId, ApprenticeEvent @event)
     {
@@ -98,7 +84,7 @@ public sealed class ChronicleHub
     private PerApprenticeHub GetOrCreateHub(Guid apprenticeId)
     {
         int capacity = ArcanumSettingClamps.ChronicleChannelCapacity(
-            _options.CurrentValue.Apprentices?.ChronicleChannelCapacity ?? new ApprenticeSettings().ChronicleChannelCapacity);
+            ArcanumRuntimeDefaults.Apprentices.ChronicleChannelCapacity);
 
         return _hubs.GetOrAdd(apprenticeId, _ => new PerApprenticeHub(capacity));
     }

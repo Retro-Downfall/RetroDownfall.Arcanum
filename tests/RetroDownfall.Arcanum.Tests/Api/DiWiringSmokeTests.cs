@@ -92,7 +92,7 @@ public sealed class DiWiringSmokeTests
             new ThrowingChatClient(canary),
             [new ChatMessage(ChatRole.User, "ping")],
             new ChatOptions(),
-            new TurnBudget(maxModelCalls: 1),
+            new TurnBudget(),
             ModelCallPurpose.MainInference,
             CancellationToken.None,
             new ModelCallContext(

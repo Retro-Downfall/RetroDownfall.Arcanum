@@ -26,11 +26,13 @@ public sealed class ToolExecutionObserverTimingTests
         ToolExecutionPipeline pipeline = new(
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings
             {
-                Ward = new WardSettings
+                Security = new SecuritySettings
                 {
-                    Enabled = true,
-                    TimeoutSeconds = 30,
-                    ForbiddenArts = ["write_file"],
+                    Ward = new WardPolicySettings
+                    {
+                        Enabled = true,
+                        ForbiddenArts = ["write_file"],
+                    },
                 },
             }),
             new GatingWard(wardEntered, wardRelease),
@@ -84,10 +86,13 @@ public sealed class ToolExecutionObserverTimingTests
         ToolExecutionPipeline pipeline = new(
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings
             {
-                Ward = new WardSettings
+                Security = new SecuritySettings
                 {
-                    Enabled = true,
-                    ForbiddenArts = [],
+                    Ward = new WardPolicySettings
+                    {
+                        Enabled = true,
+                        ForbiddenArts = [],
+                    },
                 },
             }),
             ward,

@@ -18,7 +18,7 @@ internal sealed class HostWorkspaceContext : IHostWorkspaceContext
     {
         get
         {
-            string? configured = _settings.CurrentValue.Host.Workspace;
+            string? configured = _settings.CurrentValue.ResolveDefaultWorkspace();
 
             if (string.IsNullOrWhiteSpace(configured))
             {

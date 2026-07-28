@@ -85,7 +85,8 @@ public static class SessionAttachmentToolInjection
         }
         else
         {
-            long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(settings.Cli.MaxAttachFileSizeBytes);
+            long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
+                ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
 
             string text;
 
@@ -140,7 +141,7 @@ public static class SessionAttachmentToolInjection
         string? requestModel)
     {
 
-        ScryingSettings scrying = settings.Scrying ?? new ScryingSettings();
+        ScryingSettings scrying = settings.ResolveScrying();
 
         if (!scrying.Enabled)
         {
@@ -152,7 +153,8 @@ public static class SessionAttachmentToolInjection
             return $"Model '{requestModel ?? "(default)"}' does not support vision. Use a vision-capable model.";
         }
 
-        long maxImageBytes = ArcanumSettingClamps.ScryingMaxImageBytes(scrying.MaxImageBytes);
+        long maxImageBytes = ArcanumSettingClamps.ScryingMaxImageBytes(
+            ArcanumRuntimeDefaults.Scrying.MaxImageBytes);
 
         if (byteLength > maxImageBytes)
         {

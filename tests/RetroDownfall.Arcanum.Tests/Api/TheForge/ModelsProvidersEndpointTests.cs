@@ -83,12 +83,7 @@ public sealed class ModelsProvidersEndpointTests
         {
             Name = "vision-provider",
             Type = AiProviderKind.OpenAICompatible,
-            Endpoint = "https://example.test/v1",
-            PromptCaching = new PromptCachingProfile
-            {
-                ControlMode = PromptCachingControlMode.ProviderManaged,
-                ReportsCachedInputUsage = true,
-            },
+            Endpoint = "https://api.openai.com/v1",
             Models =
             [
                 new ModelEntry("vision-model", SupportsVision: true)
@@ -104,12 +99,9 @@ public sealed class ModelsProvidersEndpointTests
                         WireDialect = ReasoningWireDialect.OpenRouter,
                         MaxBudgetTokens = 65_536,
                     },
-                    PromptCaching = new PromptCachingProfile
-                    {
-                        ControlMode = PromptCachingControlMode.None,
-                    },
                 },
                 new ModelEntry("text-model"),
+                new ModelEntry("gpt-5"),
             ],
         };
 
@@ -131,9 +123,15 @@ public sealed class ModelsProvidersEndpointTests
                     {
                         DefaultModel = "vision-model",
                         Providers = [visionProvider],
-                        Spells = built.Spells with { AllowedWorkspaceRoots = [isolatedFactory.TempHome] },
-                        Campaigns = built.Campaigns with { AllowedRoots = [isolatedFactory.TempHome] },
-                        Host = built.Host with { Workspace = isolatedFactory.TempHome },
+                        Security = built.Security with
+                        {
+                            SpellWorkspaceRoots = [isolatedFactory.TempHome],
+                            CampaignRoots = [isolatedFactory.TempHome],
+                        },
+                        Workspaces = built.Workspaces with
+                        {
+                            DefaultRoot = isolatedFactory.TempHome,
+                        },
                     };
 
                     return new TestOptionsMonitor<ArcanumSettings>(patched);
@@ -182,14 +180,13 @@ public sealed class ModelsProvidersEndpointTests
         Assert.True(reasoner.Reasoning.AllowsClientOutput);
         Assert.Equal(ReasoningWireDialect.OpenRouter, reasoner.Reasoning.WireDialect);
         Assert.Equal(65_536, reasoner.Reasoning.MaxBudgetTokens);
-        Assert.Equal(PromptCachingControlMode.None, reasoner.PromptCaching?.ControlMode);
+        Assert.Null(reasoner.PromptCaching);
 
         Assert.Null(body.Data!.Single(m => m.Model == "text-model").Reasoning);
+        Assert.Null(body.Data.Single(m => m.Model == "text-model").PromptCaching);
         Assert.Equal(
-            PromptCachingControlMode.ProviderManaged,
-            body.Data.Single(m => m.Model == "text-model").PromptCaching?.ControlMode);
-        Assert.True(
-            body.Data.Single(m => m.Model == "text-model").PromptCaching?.ReportsCachedInputUsage);
+            PromptCachingControlMode.Explicit,
+            body.Data.Single(m => m.Model == "gpt-5").PromptCaching?.ControlMode);
 
     }
 
@@ -216,7 +213,7 @@ public sealed class ModelsProvidersEndpointTests
     }
 
     [SkippableFact]
-    public async Task GetProviders_redacts_apikey()
+    public async Task GetProviders_redacts_endpoint_and_returns_only_credential_reference()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -234,6 +231,13 @@ public sealed class ModelsProvidersEndpointTests
         Assert.NotNull(body?.Data);
 
         Assert.All(body!.Data!, p => Assert.Equal("***", p.Endpoint));
+
+        Assert.All(
+            body.Data!,
+            p => Assert.StartsWith(
+                "ARCANUM_PROVIDER_",
+                p.CredentialEnvironmentVariable,
+                StringComparison.Ordinal));
 
     }
 
