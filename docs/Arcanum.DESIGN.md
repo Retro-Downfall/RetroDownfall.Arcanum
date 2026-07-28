@@ -2010,11 +2010,19 @@ Run `scripts/coverage.sh --threshold` from Git Bash for the normal parallel cove
 evaluation prefers Python and falls back to Windows PowerShell on Windows; the xUnit run itself
 remains parallel.
 
-| Post-exclusion metric | Required target |
-|-----------------------|-----------------|
-| Line coverage | ≥ 85% |
-| Branch coverage | ≥ 75% |
-| Security-critical branch coverage | 100% for `ApiKeyEndpointFilter`, `ApiKeyDigestCache`, `DataProtectionSecretStore`, `GrimoireKeyDerivation`, `McpSecurityLimits`, `SandboxedFileIo`, `SanctumGuard`, `ToolHelpers`, `OutboundUrlGuard`, `HostProcessToolPolicy`, `IdempotencyClaimStore`, `BudgetReservationService`, and `WardGate` |
+| Post-exclusion metric | Default/local target | Ubuntu CI target |
+|-----------------------|----------------------|------------------|
+| Line coverage | ≥ 85% | ≥ 83% |
+| Branch coverage | ≥ 75% | ≥ 73% |
+| Security-critical branch coverage | 100% | 100% |
+
+The security-critical set is `ApiKeyEndpointFilter`, `ApiKeyDigestCache`,
+`DataProtectionSecretStore`, `GrimoireKeyDerivation`, `McpSecurityLimits`, `SandboxedFileIo`,
+`SanctumGuard`, `ToolHelpers`, `OutboundUrlGuard`, `HostProcessToolPolicy`,
+`IdempotencyClaimStore`, `BudgetReservationService`, and `WardGate`. Ubuntu executes a different
+set of OS-specific branches while the denominator still includes all shipping assemblies, so CI
+sets `COVERAGE_LINE_TARGET=83` and `COVERAGE_BRANCH_TARGET=73`; the script defaults remain 85/75.
+Both environment values are validated as finite percentages from 0 through 100.
 
 The coverage denominator includes Core, Infrastructure, and Api. Cli interactive behavior is
 scenario-tested but excluded from coverlet's Include filters; Terminal.Gui Command Center UX is not
@@ -2022,10 +2030,15 @@ line-covered. The Forge and Compendium run as separate test projects. Configurat
 `tests/RetroDownfall.Arcanum.Tests/coverage.runsettings`, `scripts/coverage.sh`, and
 `scripts/coverage_threshold.py`; HTML is written to `.tmp/coverage/report/index.html`.
 
-CI's authoritative Arcanum gate is exactly:
+CI's authoritative Arcanum gate is:
 
 ```yaml
-- run: ./scripts/coverage.sh --threshold
+env:
+  COVERAGE_LINE_TARGET: "83"
+  COVERAGE_BRANCH_TARGET: "73"
+- run: |
+    python3 -m unittest scripts/coverage_threshold_test.py
+    ./scripts/coverage.sh --threshold
 ```
 
 Do not publish a historical test count or coverage percentage as a release claim. GitHub Actions
