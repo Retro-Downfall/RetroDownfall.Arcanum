@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
+using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Daemons;
@@ -346,6 +347,9 @@ public static class ApiBootstrapper
 
         services.AddSingleton<TelemetryService>();
 
+        services.AddSingleton<ISubagentTelemetrySink>(
+            static sp => sp.GetRequiredService<TelemetryService>());
+
         services.AddSingleton<PromptRenderer>();
 
         services.AddScoped<GrimoireTurnWriter>();
@@ -362,6 +366,12 @@ public static class ApiBootstrapper
         services.AddScoped<SemanticSpellRouter>();
 
         services.AddSingleton<GuardrailsPipeline>();
+
+        services.AddScoped<ISubagentRunner>(static sp =>
+            ActivatorUtilities.CreateInstance<SubagentRunner>(
+                sp,
+                new Lazy<ITurnExecutionFacade>(
+                    sp.GetRequiredService<ITurnExecutionFacade>)));
 
         services.AddScoped<WizardIntelligenceProvider>(static sp =>
             ActivatorUtilities.CreateInstance<WizardIntelligenceProvider>(

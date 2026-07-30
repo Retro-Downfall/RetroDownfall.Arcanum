@@ -13,6 +13,8 @@ public static class ArcanumBuiltInToolNames
 
     public const string RunSpellScript = "run_spell_script";
 
+    public const string DelegateTask = "delegate_task";
+
     public const string WebSearch = "web_search";
 
     public const string ReadUrl = "read_url";
@@ -59,5 +61,9 @@ public static class ArcanumBuiltInToolNames
         || string.Equals(
             toolName,
             RunSpellScript,
+            StringComparison.OrdinalIgnoreCase)
+        || string.Equals(
+            toolName,
+            DelegateTask,
             StringComparison.OrdinalIgnoreCase);
 }

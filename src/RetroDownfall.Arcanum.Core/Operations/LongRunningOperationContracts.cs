@@ -30,6 +30,7 @@ public enum LongRunningOperationRecoveryPolicy
 public static class LongRunningOperationKinds
 {
     public const string InferenceRun = "inference-run";
+    public const string Subagent = "subagent";
     public const string BudgetReservation = "budget-reservation";
     public const string Batch = "batch";
     public const string Apprentice = "apprentice";
@@ -56,6 +57,7 @@ public static class LongRunningOperationPolicyCatalog
         new Dictionary<string, LongRunningOperationRecoveryPolicy>(StringComparer.Ordinal)
         {
             [LongRunningOperationKinds.InferenceRun] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            [LongRunningOperationKinds.Subagent] = LongRunningOperationRecoveryPolicy.AbandonSafely,
             [LongRunningOperationKinds.BudgetReservation] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
             [LongRunningOperationKinds.Batch] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
             [LongRunningOperationKinds.Apprentice] = LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,

@@ -61,7 +61,7 @@ Arcanum exposes a **Chat Completions compatibility subset** so common OpenAI cli
 Inference flows through one hub behind a single `IChatClient` abstraction. See [DESIGN.md §10](Arcanum.DESIGN.md#10-intelligence-pipeline); the exact turn order is [§10.7](Arcanum.DESIGN.md#107-end-to-end-turn-lifecycle-and-chat-loop).
 
 - **`WizardIntelligenceProvider`** + **`ToolExecutionPipeline`** + **`IChatClientFactory`**; providers are **`OpenAICompatible` only** (including Ollama via `/v1`). No managed local inference.
-- **`TurnEngine` is a bounded semantic shell** over Wizard's `ITurnPipelineRunner`; Wizard still owns the one mode-parameterized model/tool loop. There is no second loop, and full orchestration extraction remains deferred.
+- **`TurnEngine` is a bounded semantic shell** over Wizard's `ITurnPipelineRunner`; Wizard still owns the one mode-parameterized model/tool loop. The primary loop can call native `delegate_task` to start exactly one fresh buffered child TurnEngine with a sterile stateless context, explicit file values, and a delegated token/cost/turn ceiling. Only the child summary or structured failure returns to the parent.
 - **`ProviderResolver`** maps model → provider from `Arcanum:Providers` (no hard-coded model names).
 - Agentic layers: MCP tool loops, semantic spell routing, read-time context compression, Wards, Sanctum.
 - **Structured output / pricing / budgets / capability-driven provider prompt caching / guardrails** — see [DESIGN.md §22](Arcanum.DESIGN.md#22-structured-output-cost-tracking-and-prompt-caching) and [§8.27](Arcanum.DESIGN.md#827-content-guardrails-pii--toxicity--topics). Arcanum never caches or replays inference responses.
@@ -537,6 +537,10 @@ Full distribution contracts are in [DESIGN §19.12](Arcanum.DESIGN.md#1912-build
 - Durable recovery is single-host and handler-driven, not a distributed workflow engine. Live
   streams and Wards remain ephemeral. A deferred or unsupported/corrupt checkpoint is explicit
   `ReconciliationRequired`/Degraded health and is repaired with `arcanum operation ...`.
+- Subagents are intentionally one level deep and model-only. They inherit no parent transcript,
+  session memory, workspace/Codex/RAG context, or tools; the parent must pass self-contained
+  instructions and any file content explicitly. A crashed `subagent` durable operation is
+  abandoned safely rather than replayed.
 
 ---
 

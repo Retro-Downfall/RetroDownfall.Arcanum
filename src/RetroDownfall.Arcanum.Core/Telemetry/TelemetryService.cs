@@ -21,6 +21,12 @@ public sealed record TelemetrySnapshot(
     /// original snapshot constructor remains source-compatible with pane clients.
     /// </summary>
     public WebResearchTelemetrySnapshot WebResearch { get; init; } = new();
+
+    /// <summary>
+    /// Isolated child-run roll-up. A child terminal transition updates this as one unified
+    /// snapshot rather than exposing its internal conversational turns.
+    /// </summary>
+    public SubagentTelemetrySnapshot Subagents { get; init; } = new();
 }
 
 /// <summary>Process-local aggregates for native web-research provider calls.</summary>
@@ -41,7 +47,7 @@ public sealed record WebResearchTelemetrySnapshot(
 /// Subscribes to <see cref="ArcanumMetrics"/> instruments and exposes
 /// debounced snapshot updates for TelemetryPane.
 /// </summary>
-public sealed class TelemetryService : IDisposable
+public sealed class TelemetryService : ISubagentTelemetrySink, IDisposable
 {
     private readonly MeterListener _listener;
     private readonly object _decimalGate = new();
@@ -63,6 +69,14 @@ public sealed class TelemetryService : IDisposable
     private long _webSearchQueries;
     private long _webCumulativeLatencyTicks;
     private decimal _webCostUsd;
+
+    private long _subagentRuns;
+    private long _subagentCompleted;
+    private long _subagentFailed;
+    private long _subagentBudgetExhausted;
+    private long _subagentTokens;
+    private long _subagentLatencyTicks;
+    private decimal _subagentCostUsd;
     private int _started;
     private int _disposed;
 
@@ -105,10 +119,12 @@ public sealed class TelemetryService : IDisposable
         long outputTokens = Interlocked.Read(ref _outputTokens);
         long reasoningTokens = Interlocked.Read(ref _outputReasoningTokens);
         decimal webCost;
+        decimal subagentCost;
 
         lock (_decimalGate)
         {
             webCost = _webCostUsd;
+            subagentCost = _subagentCostUsd;
         }
 
         WebResearchTelemetrySnapshot webResearch = new(
@@ -125,6 +141,16 @@ public sealed class TelemetryService : IDisposable
             CumulativeLatency: TimeSpan.FromTicks(
                 Interlocked.Read(ref _webCumulativeLatencyTicks)));
 
+        SubagentTelemetrySnapshot subagents = new(
+            Runs: Interlocked.Read(ref _subagentRuns),
+            Completed: Interlocked.Read(ref _subagentCompleted),
+            Failed: Interlocked.Read(ref _subagentFailed),
+            BudgetExhausted: Interlocked.Read(ref _subagentBudgetExhausted),
+            Tokens: Interlocked.Read(ref _subagentTokens),
+            CostUsd: subagentCost,
+            CumulativeLatency: TimeSpan.FromTicks(
+                Interlocked.Read(ref _subagentLatencyTicks)));
+
         return new TelemetrySnapshot(
             InputTokens: inputTokens,
             InputCacheHits: cacheHits,
@@ -138,7 +164,43 @@ public sealed class TelemetryService : IDisposable
             TimeToFirstToken: TimeSpan.Zero)
         {
             WebResearch = webResearch,
+            Subagents = subagents,
         };
+    }
+
+    public void RecordSubagentRun(SubagentTelemetryEvent telemetryEvent)
+    {
+        ArgumentNullException.ThrowIfNull(telemetryEvent);
+
+        Interlocked.Increment(ref _subagentRuns);
+        Interlocked.Add(
+            ref _subagentTokens,
+            Math.Max(0L, telemetryEvent.Tokens));
+        Interlocked.Add(
+            ref _subagentLatencyTicks,
+            Math.Max(0L, telemetryEvent.Latency.Ticks));
+
+        lock (_decimalGate)
+        {
+            _subagentCostUsd += Math.Max(0m, telemetryEvent.CostUsd);
+        }
+
+        switch (telemetryEvent.Outcome)
+        {
+            case SubagentRunOutcome.Completed:
+                Interlocked.Increment(ref _subagentCompleted);
+                break;
+            case SubagentRunOutcome.BudgetExhausted:
+                Interlocked.Increment(ref _subagentFailed);
+                Interlocked.Increment(ref _subagentBudgetExhausted);
+                break;
+            case SubagentRunOutcome.Failed:
+            case SubagentRunOutcome.Cancelled:
+                Interlocked.Increment(ref _subagentFailed);
+                break;
+        }
+
+        RaiseSnapshotUpdated();
     }
 
     public void Dispose()

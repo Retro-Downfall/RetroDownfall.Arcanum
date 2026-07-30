@@ -168,6 +168,9 @@ valid provider and model. A model's optional `reasoning` object defaults to
 Feature flags are capability policy. Edition, dependency, security, provider,
 and platform eligibility still apply.
 
+The native `delegate_task` subagent tool has no operator configuration key: its one-level
+recursion cap and per-call token/cost/turn delegation are code-owned safety requirements.
+
 ### Integrations, execution, cost, daemon, and CLI
 
 | Descriptor key | Type and default | Bounds | Semantics |

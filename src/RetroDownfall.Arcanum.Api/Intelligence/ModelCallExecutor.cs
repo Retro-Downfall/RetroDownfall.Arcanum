@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Telemetry;
+using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -112,6 +113,8 @@ public sealed class ModelCallExecutor : IModelCallExecutor
 
         try
         {
+            SubagentExecutionAmbient.Tracker?.BeginModelCall();
+
             ChatResponse response = await chatClient
                 .GetResponseAsync(
                     providerPayload.Messages,
@@ -126,6 +129,7 @@ public sealed class ModelCallExecutor : IModelCallExecutor
                 effectiveOutput);
             breakdown = ReconcileAndRecord(breakdown, response.Usage, context);
             RecordPromptCacheMetrics(context, purpose, response.Usage);
+            RecordDelegatedUsage(context, response.Usage);
 
             return ModelCallOutcome.Success(
                 new ModelCallResult(
@@ -215,6 +219,9 @@ public sealed class ModelCallExecutor : IModelCallExecutor
         }
 
         UsageDetails? finalUsage = null;
+
+        SubagentExecutionAmbient.Tracker?.BeginModelCall();
+
         await foreach (ChatResponseUpdate update in chatClient
             .GetStreamingResponseAsync(
                 providerPayload.Messages,
@@ -276,6 +283,39 @@ public sealed class ModelCallExecutor : IModelCallExecutor
 
         RecordReconciliationMetrics(breakdown, finalUsage, context);
         RecordPromptCacheMetrics(context, purpose, finalUsage);
+        RecordDelegatedUsage(context, finalUsage);
+    }
+
+    private void RecordDelegatedUsage(
+        ModelCallContext? context,
+        UsageDetails? usage)
+    {
+        DelegatedManaTracker? tracker = SubagentExecutionAmbient.Tracker;
+
+        if (tracker is null)
+        {
+            return;
+        }
+
+        decimal costUsd = 0m;
+
+        if (usage is not null
+            && context is not null
+            && _settings is not null)
+        {
+            ModelPricingEntry pricing = _settings.CurrentValue
+                .ResolvePricing()
+                .ResolveForModel(context.Model);
+
+            costUsd = CostCalculator.CalculateCost(
+                usage.InputTokenCount ?? 0L,
+                usage.OutputTokenCount ?? 0L,
+                usage.CachedInputTokenCount ?? 0L,
+                usage.ReasoningTokenCount ?? 0L,
+                pricing);
+        }
+
+        tracker.RecordUsageDeferred(usage, costUsd);
     }
 
     private void RecordPromptCacheMetrics(

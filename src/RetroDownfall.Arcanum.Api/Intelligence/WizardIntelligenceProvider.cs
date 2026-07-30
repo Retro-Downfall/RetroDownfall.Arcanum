@@ -34,6 +34,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
+using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -83,7 +84,8 @@ public sealed class WizardIntelligenceProvider(
     Lazy<ITurnExecutionFacade>? turnCoordinator = null,
     IModelTokenEstimator? modelTokenEstimator = null,
     IWebResearchProviderCatalog? webResearchProviderCatalog = null,
-    SessionContextPinMaterializer? sessionContextPinMaterializer = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
+    SessionContextPinMaterializer? sessionContextPinMaterializer = null,
+    ISubagentRunner? subagentRunner = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
 {
     private readonly TokenAccountingDependencies _tokenAccounting =
         TokenAccountingDependencies.Create(
@@ -2038,6 +2040,8 @@ public sealed class WizardIntelligenceProvider(
                                     CancellationToken.None)
                                 .ConfigureAwait(false);
 
+                            SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
+
                             string bufferedText = bufferedRoundResponse.Text ?? string.Empty;
 
                             if (bufferedText.Length > 0)
@@ -2287,6 +2291,8 @@ public sealed class WizardIntelligenceProvider(
                             streamPurpose,
                             CancellationToken.None)
                         .ConfigureAwait(false);
+
+                    SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
 
                     streamAccumulatedUsage = AccumulateUsage(streamAccumulatedUsage, streamingUsage);
                 }
@@ -2549,6 +2555,11 @@ public sealed class WizardIntelligenceProvider(
                                 processed.ResultText,
                                 toolCallIndex == 0 ? rawRoundReasoning : null);
 
+                            SubagentParentContextInjector.AppendBudgetFailureIfRequired(
+                                chatMessages,
+                                processed.ToolName,
+                                processed.ResultText);
+
                             if (processed.AdditionalContextContents is { Count: > 0 } extras)
                             {
                                 // Defer User extras until every tool result in this round is appended
@@ -2785,6 +2796,8 @@ public sealed class WizardIntelligenceProvider(
                                     ModelCallPurpose.StructuredOutputRetry,
                                     CancellationToken.None)
                                 .ConfigureAwait(false);
+
+                            SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
 
                             if (ProviderAttemptCommitTracker.CommitsProviderAttempt(retryResult.Reasoning))
                             {
@@ -3777,6 +3790,11 @@ public sealed class WizardIntelligenceProvider(
     /// </summary>
     private async Task<Embedding<float>?> ResolveRagQueryEmbeddingAsync(PingRequest request, CancellationToken cancellationToken)
     {
+        if (SubagentExecutionAmbient.IsIsolated)
+        {
+            return null;
+        }
+
         EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
 
         bool needsCodebaseEmbedding = embeddings.Enabled
@@ -4249,6 +4267,14 @@ public sealed class WizardIntelligenceProvider(
 
         List<AITool> tools = [_localTimeTool, _systemInfoTool];
 
+        if (subagentRunner is not null
+            && SubagentExecutionAmbient.CanDelegate)
+        {
+            tools.Add(new ArcanumDelegateTaskTool(
+                subagentRunner,
+                request.Model));
+        }
+
         List<string> scriptRoots = CollectScriptRoots(resolvedSpell);
 
         bool hostProcessToolsAllowed = HostProcessToolPolicy.AreAllowed(
@@ -4511,6 +4537,7 @@ public sealed class WizardIntelligenceProvider(
         "petition_dungeon_master",
         ArcanumLocalTimeTool.ToolName,
         ArcanumSystemInfoTool.ToolName,
+        ArcanumBuiltInToolNames.DelegateTask,
     };
 
     private static IReadOnlyList<AITool> FilterToolsToAllowlist(IReadOnlyList<AITool> tools, HashSet<string> allowlist)

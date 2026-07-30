@@ -1,0 +1,109 @@
+using System.Text.Json;
+using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
+using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Intelligence;
+
+namespace RetroDownfall.Arcanum.Tests.Intelligence;
+
+public sealed class ArcanumDelegateTaskToolTests
+{
+    [Fact]
+    public async Task InvokeAsync_PassesOnlyExplicitPromptFilesAndBudget()
+    {
+        CapturingSubagentRunner runner = new(
+            new SubagentRunResult(
+                Success: true,
+                Summary: "The child summary.",
+                RunId: Guid.NewGuid(),
+                Usage: new DelegatedManaUsage(750, 0.01m, 1, Exhausted: false),
+                FailureCode: null));
+        ArcanumDelegateTaskTool tool = new(runner, inheritedModel: "test-model");
+        JsonElement files = JsonSerializer.SerializeToElement(
+            new[]
+            {
+                new { path = "src/A.cs", content = "sealed class A {}" },
+            });
+        AIFunctionArguments arguments = new(
+            new Dictionary<string, object?>
+            {
+                ["prompt"] = "Review A.",
+                ["files"] = files,
+                ["max_tokens"] = 1_000,
+                ["max_turns"] = 2,
+            });
+
+        object? output = await tool.InvokeAsync(arguments, CancellationToken.None);
+
+        Assert.Equal("The child summary.", output);
+        Assert.NotNull(runner.Request);
+        Assert.Equal("Review A.", runner.Request.Prompt);
+        Assert.Equal("test-model", runner.Request.Model);
+        Assert.Equal(1_000, runner.Request.MaxTokens);
+        Assert.Equal(2, runner.Request.MaxTurns);
+        AttachedFileDto file = Assert.Single(runner.Request.Files);
+        Assert.Equal("src/A.cs", file.RelativePath);
+        Assert.Equal("sealed class A {}", file.Content);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_WhenBudgetIsExhausted_ReturnsRequiredParentMessage()
+    {
+        CapturingSubagentRunner runner = new(
+            new SubagentRunResult(
+                Success: false,
+                Summary: string.Empty,
+                RunId: Guid.NewGuid(),
+                Usage: new DelegatedManaUsage(1_001, 0.01m, 1, Exhausted: true),
+                FailureCode: SubagentFailureCodes.BudgetExhausted));
+        ArcanumDelegateTaskTool tool = new(runner, inheritedModel: null);
+        AIFunctionArguments arguments = new(
+            new Dictionary<string, object?>
+            {
+                ["prompt"] = "Do bounded work.",
+                ["max_tokens"] = 1_000,
+            });
+
+        object? output = await tool.InvokeAsync(arguments, CancellationToken.None);
+
+        Assert.Equal(
+            "Subagent task failed: Delegated budget exhausted.",
+            output);
+    }
+
+    [Fact]
+    public void ParentContextInjector_AddsExactSystemMessageForBudgetFailureOnly()
+    {
+        List<ChatMessage> messages =
+        [
+            new(ChatRole.User, "parent request"),
+        ];
+
+        SubagentParentContextInjector.AppendBudgetFailureIfRequired(
+            messages,
+            ArcanumBuiltInToolNames.DelegateTask,
+            SubagentParentContextInjector.BudgetExhaustedMessage);
+
+        ChatMessage injected = Assert.Single(
+            messages,
+            static message => message.Role == ChatRole.System);
+        Assert.Equal(
+            "Subagent task failed: Delegated budget exhausted.",
+            injected.Text);
+    }
+
+    private sealed class CapturingSubagentRunner(SubagentRunResult result) : ISubagentRunner
+    {
+        public SubagentRunRequest? Request { get; private set; }
+
+        public Task<SubagentRunResult> RunAsync(
+            SubagentRunRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Request = request;
+            return Task.FromResult(result);
+        }
+    }
+}
