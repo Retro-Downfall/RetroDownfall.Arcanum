@@ -160,7 +160,7 @@ valid provider and model. A model's optional `reasoning` object defaults to
 | `features.scrying` | `bool`, `true` | — | Accepts images for vision-capable models. |
 | `features.attachments` | `bool`, `true` | — | Persists session attachments and exposes the attachment tool. |
 | `features.clientTools` | `bool`, `false` | — | Forwards client-declared tools to compatible providers. |
-| `features.webBrowsing` | `bool`, `false` | — | Advertises the guarded `browse_web` tool. |
+| `features.webBrowsing` | `bool`, `false` | — | Advertises the native `web_search` and `read_url` tools. The deprecated `browse_web` name remains available only as a compatibility surface. |
 | `features.guardrails` | `bool`, `false` | — | Runs configured input/output guardrails. |
 | `features.workspaceChecks` | `bool`, `true` | — | Allows `workspace_check` advertisement when all platform and trust checks pass. |
 | `features.memoryManagement` | `bool`, `false` | — | Enables session deletion, pinning, and compaction. |
@@ -184,6 +184,9 @@ and platform eligibility still apply.
 | `integrations.embeddings.model` | `string?`, `null` | provider-advertised model | Embedding model ID. |
 | `integrations.embeddings.dimensions` | `int`, `768` | 64–4,096 | Expected vector dimensions. Changing this value requires clearing and re-indexing embeddings or reinstalling the local database. |
 | `integrations.mcp.allowedHttpHosts` | `string[]`, `[]` | hostnames | Explicit plaintext-HTTP MCP exceptions; empty permits none and HTTPS remains the default. |
+| `integrations.webResearch.searchProvider` | `string`, `"perplexity"` | nonblank registered provider name | Provider used by `web_search`. |
+| `integrations.webResearch.perplexityModel` | `string`, `"sonar"` | `sonar` or `sonar-pro` | Perplexity Sonar model used for synthesized search. |
+| `integrations.webResearch.credentialEnvironmentVariable` | `string?`, `null` | portable, case-insensitively unique environment name | Exact Perplexity credential reference. Omission checks `ARCANUM_PERPLEXITY_API_KEY`, then the secure local provider-key store. |
 | `integrations.workspaceChecks.executableCatalog.dotNet.path` | `string`, `""` | canonical absolute path | Optional trusted native `dotnet`; empty delegates to trusted runtime resolution. |
 | `integrations.workspaceChecks.customProfiles` | `Dictionary<string, WorkspaceCheckProfileSettings>`, `{}` | closed shape described below | Case-insensitive operator-authored build, test, and lint profiles; models never supply raw commands. |
 | `execution.maxConcurrentApprentices` | `int`, `5` | 1–50 | Host-wide concurrent Apprentices. |

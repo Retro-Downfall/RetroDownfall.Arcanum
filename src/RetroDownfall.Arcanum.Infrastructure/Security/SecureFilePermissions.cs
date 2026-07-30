@@ -365,6 +365,15 @@ public static class SecureFilePermissions
 
         }
 
+        string perplexityKeyFile = ArcanumPaths.PerplexityApiKeyStoreFile;
+
+        if (File.Exists(perplexityKeyFile))
+        {
+
+            ApplyOwnerOnlyFile(perplexityKeyFile);
+
+        }
+
         string logDirectory = ArcanumPaths.LogDirectory;
 
         if (Directory.Exists(logDirectory))
@@ -461,7 +470,11 @@ public static class SecureFilePermissions
     }
 
     private static IReadOnlyList<string> DefaultSecretFilePaths() =>
-        [ArcanumPaths.ApiKeyStoreFile, ArcanumPaths.GrimoireKeyStoreFile];
+        [
+            ArcanumPaths.ApiKeyStoreFile,
+            ArcanumPaths.GrimoireKeyStoreFile,
+            ArcanumPaths.PerplexityApiKeyStoreFile,
+        ];
 
     private static void CheckPath(ILogger logger, string path, bool isDirectory)
     {

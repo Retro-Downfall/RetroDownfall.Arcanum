@@ -229,6 +229,10 @@ public static class OutboundUrlGuard
 
             AllowAutoRedirect = false,
 
+            // A system proxy would move DNS resolution outside this handler and
+            // defeat address validation/pinning for the original destination.
+            UseProxy = false,
+
             ConnectCallback = (context, cancellationToken) =>
                 EgressConnectCallbackAsync(context, allowPrivateAndLoopback, cancellationToken),
 
@@ -282,6 +286,16 @@ public static class OutboundUrlGuard
                 connectErrors.Add(ex);
 
                 socket.Dispose();
+
+            }
+            catch
+            {
+
+                // ConnectAsync throws OperationCanceledException for the caller's
+                // deadline. Do not leave that unconnected socket for finalization.
+                socket.Dispose();
+
+                throw;
 
             }
 

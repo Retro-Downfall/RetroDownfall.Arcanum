@@ -260,7 +260,7 @@ Summaries only — full contracts live in DESIGN.
 - **First-class reasoning:** native requests use `reasoning:{effort?,budgetTokens?,output?}` where effort is `none|minimal|low|medium|high|extraHigh`, output is `none|summary|full`, and effort/budget are mutually exclusive. OpenAI requests use `reasoning_effort` (`xhigh` maps to native `extraHigh`), additive `reasoning_budget`, and `reasoning_output`. `reasoning_output` is an Arcanum-local exposure preference plus a Microsoft.Extensions.AI best-effort hint, not a guaranteed provider wire control; Arcanum never invents an unsupported provider field. When output is omitted, a full-capable model defaults to `full`, otherwise a summary-only model defaults to `summary` (subject to `allowsClientOutput`, and `supportsStreaming` on streams). Reasoning and capability/dialect enums are string-only; numeric or unknown enum JSON fails strict binding. Model objects opt in with `reasoning:{controlSupport,supportsSummary,supportsFull,supportsStreaming,reportsReasoningTokens,allowsClientOutput,wireDialect,maxBudgetTokens?}`; control support is `none|effort|budget|effortAndBudget`, and the closed dialects are `standard|openRouter|topLevelReasoningBudget|anthropicThinking`. No dialect is inferred from provider/model names.
 - **OpenAI reasoning errors:** semantic validation is identical for buffered and `stream:true` requests and returns HTTP 400, `type:"invalid_request_error"`, `param:"reasoning"`, with `invalid_reasoning_options`, `invalid_reasoning_budget`, `unsupported_reasoning_control`, `reasoning_budget_exceeds_model_limit`, or `unsupported_reasoning_output`. Unknown enum strings and defined/undefined integer enum values fail earlier as strict JSON binding: HTTP 400, code `invalid_json`, no `param`.
 - **Reasoning separation:** native buffered responses expose an ordered `reasoning` array; NDJSON uses typed `reasoning` frames; OpenAI buffered/SSE uses additive `reasoning_summary` / `reasoning_content`; native usage exposes additive `cached_tokens` and `reasoning_tokens`, while OpenAI usage uses `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`. Answer fields remain answer-only. Visible reasoning is ephemeral, provider `ProtectedData` stays in memory only for same-provider tool continuation, and no reasoning body enters Grimoire, logs/audit, trace export, Master/Apprentice handoff, checkpoints, or Chronicles. The Forge Tome renders a live reasoning role and traces retain only redacted type/output/count metadata.
-- **Agentic layers:** spell routing (+ optional embedding pre-filter), Arcane Resonance, Artifact Attunement, MCP tool loops, read-time compression, Wards, Sanctum. Artifact Attunement applies to MCP tools and `browse_web`; exactly local time, system info, and spell-script tools are exempt. Spell validation and dry-run preview use the same browse decision. See [DESIGN §10](Arcanum.DESIGN.md#10-intelligence-pipeline), especially the canonical [turn lifecycle in §10.7](Arcanum.DESIGN.md#107-end-to-end-turn-lifecycle-and-chat-loop).
+- **Agentic layers:** spell routing (+ optional embedding pre-filter), Arcane Resonance, Artifact Attunement, MCP tool loops, read-time compression, Wards, Sanctum. Artifact Attunement applies to MCP tools plus native `web_search` / `read_url`; exactly local time, system info, and spell-script tools are exempt. Legacy spell declarations of `browse_web` canonicalize to `read_url`. Spell validation and dry-run preview use the same web-tool decision. See [DESIGN §10](Arcanum.DESIGN.md#10-intelligence-pipeline), especially the canonical [turn lifecycle in §10.7](Arcanum.DESIGN.md#107-end-to-end-turn-lifecycle-and-chat-loop).
 - **Reliable workspace tools:** `search_workspace` performs strict-UTF-8, deterministic, line-scoped literal or bounded runtime-regex search directly over the workspace (non-backtracking first, interpreted fallback, no `RegexOptions.Compiled`, no Weave). `apply_patch` separates pure unified-diff parsing from all-file filesystem planning, then uses one reversible **sequential, observable, non-isolated** transaction per call; it requires a persisted assistant turn and deterministically persists the exact arguments/result before the result reaches the model. It offers rollback and relative recovery artifacts, not process-wide isolation or crash atomicity. `workspace_check` runs closed `.NET` build/test/lint profiles with `--no-restore`, read-only source/package/SDK roots, and owner-only per-run outputs. Repository tasks/generators/analyzers/tests still execute arbitrary code, so it always Wards while Wards are on. It is advertised only with eligible macOS Seatbelt + trusted `dotnet`/SDK/launch chain; Linux/Windows are unavailable. Network remains open and intentionally detached-descendant cleanup is best effort. Full status/recovery contract: [DESIGN §10.2.1](Arcanum.DESIGN.md#1021-built-in-tools-and-mcp-workspace-tools).
 - **Bounded tool results / Apprentice denials:** result materialization normalizes malformed UTF-16 and bounds retained text plus its marker with shared surrogate-safe UTF-8 helpers. Ward/Sanctum denial is carried to Apprentice orchestration through an internal non-wire `ToolDenied` bit, never phrase matching; reasoning frames never count as denial evidence.
 - **Idempotency:** same-process requests coordinate locally before durable acquire; live foreign-process ownership returns 409 `Security.IdempotencyInProgress` (OpenAI `idempotency_in_progress`). The current renewable lease is five minutes. Only terminal in-cap responses replay; explicitly terminal empty bodies replay empty, while partial/over-cap responses do not. [DESIGN §11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
@@ -294,7 +294,7 @@ binding; there are no compatibility aliases or silent ignores.
 | `Security` | Ward/guardrail policy, metrics authentication, path authority, MIME allowlists, and the unsandboxed-child acknowledgement. |
 | `Workspaces` | Default root and explicit write permission. |
 | `Features` | Capability opt-ins including Conclave/A2A, Apprentices, The Weave, Scrying, attachments, browsing, guardrails, workspace checks, and memory management. |
-| `Integrations` | A2A identity/allowlist, CommLink reference/allowlists, embedding facts, MCP plaintext-host exceptions, and workspace-check profiles. |
+| `Integrations` | A2A identity/allowlist, CommLink reference/allowlists, embedding facts, native web-research provider facts, MCP plaintext-host exceptions, and workspace-check profiles. |
 | `Execution` | Host concurrency/backpressure for Apprentices, SSE, and batches. |
 | `Cost` | Default/per-model pricing and daily budget policy. |
 | `Daemon` | Unseen Servant schedules and concurrency. |
@@ -364,6 +364,49 @@ export OPENAI_API_KEY='your-key-here'
 ```
 
 PowerShell: `$env:OPENAI_API_KEY = "your-key-here"`.
+
+### Native web research
+
+Native web tools are off by default. Enable the family and select the synthesized-search model in
+`arcanum.json`:
+
+```json
+{
+  "Arcanum": {
+    "features": {
+      "webBrowsing": true
+    },
+    "integrations": {
+      "webResearch": {
+        "searchProvider": "perplexity",
+        "perplexityModel": "sonar"
+      }
+    }
+  }
+}
+```
+
+Store a Perplexity key without putting it in configuration:
+
+```bash
+arcanum key provider set perplexity
+arcanum key provider status perplexity
+```
+
+The secure prompt stores the key in the OS credential manager with an owner-only,
+Data Protection-encrypted fallback. For unattended hosts, set `ARCANUM_PERPLEXITY_API_KEY`, or set
+`integrations.webResearch.credentialEnvironmentVariable` to another exact environment-variable
+name. The environment reference takes precedence at invocation time; key values are never returned
+by status, provider-list, logs, or telemetry. Remove local copies with
+`arcanum key provider delete perplexity`.
+
+When enabled, models receive `web_search` for current, synthesized answers with ordered citations
+and `read_url` for bounded static HTTP/HTTPS pages converted to Markdown. `read_url` does not launch
+or embed a browser and does not execute JavaScript; bot-protected and empty JavaScript shells return
+a structured error suggesting `web_search`. Both operations have a strict 15-second overall
+deadline, bounded bodies/results, SSRF protection, untrusted-content framing, and aggregate-only
+usage/token/cost/latency telemetry. The old `browse_web` direct-invoke/CLI behavior remains for
+compatibility but is not advertised in new model toolsets.
 
 Use only keys in [Compendium's retained reference](Compendium.README.md#complete-configuration-reference).
 After changing `arcanum.json`, restart Arcanum. Configuration-only changes do not require deleting
@@ -529,6 +572,7 @@ All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDow
 | `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer panels) + API health probe. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
 | `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Argument or stdin / interactive secret prompt. |
+| `key provider set\|status\|delete perplexity` | Manage the Perplexity key used by native `web_search`. Status never prints the secret; all operations are CLI-only and perform no HTTP. |
 | `lore list\|get\|set\|delete` | Operator key-value memory via `/api/lore` (needs `serve`). Args: `get <KEY>`, `set <KEY> <VALUE>`, `delete <KEY>`. |
 | `daemon install\|uninstall\|status` | OS background-service lifecycle. |
 | `daemon jobs\|initiative\|alert` | Unseen Servant inspection + Comm Link smoke test (needs `serve`). `daemon jobs` shows **Last run** / interval from persisted watermarks (survive restart), **Next due** reconstructed from watermark + interval, and **Last result** (process-local diagnostic text). `daemon initiative <JOB_NAME> <MINUTES>` sets adaptive interval. `daemon alert <MESSAGE>` options: `--title`/`-t` (default `"Arcanum alert"`), `--severity`/`-s` (`Info`\|`Warning`\|`Critical`, default `Warning`), `--source`. |
@@ -543,6 +587,6 @@ All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDow
 | `apprentice list\|get\|create\|delete\|start\|pause\|resume\|cancel\|reweave\|intervene\|cast\|chronicle` | The Forge Apprentice orchestration via `/api/apprentices` (needs `serve`). `create --goal <text\|@file>`; `reweave --plan <json\|@file>`; `cast` reports 409 `Apprentice.ConclaveDisabled` when `Arcanum:Features:Conclave` is off; `chronicle <id>` streams live SSE events (Ctrl+C exits 130). |
 | `model list` | List configured models across all providers via `GET /api/models` (needs `serve`); endpoint redacted. |
 | `provider list` | List configured providers via `GET /api/providers` (needs `serve`); endpoint redacted and only the credential environment-variable reference returned. |
-| `browse <url>` | Fetch a web page via the built-in `browse_web` tool (requires `Arcanum:Features:WebBrowsing`; needs `serve`). Renders title, content preview, and link list. |
+| `browse <url>` | Compatibility CLI for the legacy `browse_web` direct-invoke surface (requires `Arcanum:Features:WebBrowsing`; needs `serve`). New inference toolsets use `read_url`. |
 
 **Inference flags** (`ask`/`chat`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format`, penalties, `-c`/`--campaign`. Scrying: `ask --image` / chat `@path`. Full slash-command suite and error formatting: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).

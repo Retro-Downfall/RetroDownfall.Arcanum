@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -354,8 +355,9 @@ internal static class IntelligenceEndpoints
         IModelTokenEstimator modelTokenEstimator,
         IMcpConnectionManager mcp,
         IOptionsSnapshot<ArcanumSettings> settings,
-        IHttpClientFactory httpClientFactory,
-        ILogger<ArcanumBrowseWebTool> browseWebLogger,
+        IWebResearchProviderCatalog webResearchProviders,
+        ILogger<ArcanumWebSearchTool> webSearchLogger,
+        ILogger<ArcanumReadUrlTool> readUrlLogger,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
@@ -415,11 +417,26 @@ internal static class IntelligenceEndpoints
 
         if (body.Tools)
         {
-            ArcanumBrowseWebTool? browseTool = settings.Value.ResolveWebBrowsing().Enabled
-                ? new ArcanumBrowseWebTool(httpClientFactory, settings, browseWebLogger)
+            bool webBrowsingEnabled = settings.Value.ResolveWebBrowsing().Enabled;
+            ArcanumWebSearchTool? webSearchTool = webBrowsingEnabled
+                ? new ArcanumWebSearchTool(
+                    webResearchProviders,
+                    settings,
+                    webSearchLogger)
+                : null;
+            ArcanumReadUrlTool? readUrlTool = webBrowsingEnabled
+                ? new ArcanumReadUrlTool(
+                    webResearchProviders,
+                    settings,
+                    readUrlLogger)
                 : null;
             chatOptions.Tools = await ManaToolCatalog
-                .CollectAsync(mcp, workingDirectory: null, browseTool, cancellationToken)
+                .CollectAsync(
+                    mcp,
+                    workingDirectory: null,
+                    webSearchTool,
+                    readUrlTool,
+                    cancellationToken)
                 .ConfigureAwait(false);
         }
 

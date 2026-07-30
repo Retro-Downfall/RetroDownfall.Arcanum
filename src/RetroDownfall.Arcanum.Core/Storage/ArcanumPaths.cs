@@ -57,6 +57,13 @@ public static class ArcanumPaths
     public static string GrimoireKeyStoreFile => Path.Combine(SecretStoreDirectory, "grimoire-key.dat");
 
     /// <summary>
+    /// Data Protection-encrypted fallback for the Perplexity web-research API key.
+    /// The OS credential store remains the primary store when it is available.
+    /// </summary>
+    public static string PerplexityApiKeyStoreFile =>
+        Path.Combine(SecretStoreDirectory, "perplexity-key.dat");
+
+    /// <summary>
     /// Built-in (global) spell catalog root: <c>~/.config/arcanum/spells/</c>.
     /// Distinct from <see cref="GrimoireDirectory"/> (config/DB) and from per-project workspace roots.
     /// </summary>

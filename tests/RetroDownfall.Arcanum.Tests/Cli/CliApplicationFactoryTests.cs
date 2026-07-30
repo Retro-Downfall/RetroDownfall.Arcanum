@@ -1,10 +1,12 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
 
@@ -70,7 +72,7 @@ public sealed class CliApplicationFactoryTests
 
         CliTestResult result = await CliTestHarness.RunAsync(services, []);
 
-        Assert.Equal(0, result.ExitCode);
+            Assert.Equal(0, result.ExitCode);
         Assert.Equal(0, host.RunCount);
         Assert.Contains("Command Center", result.Output, StringComparison.OrdinalIgnoreCase);
     }
@@ -135,6 +137,96 @@ public sealed class CliApplicationFactoryTests
     }
 
     [Fact]
+    public void Key_provider_help_lists_secret_safe_management_commands()
+    {
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult result =
+            CliTestHarness.Run(services, "key", "provider", "--help");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("set", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("status", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("delete", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Key_provider_set_does_not_accept_secret_as_command_line_argument()
+    {
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult result =
+            CliTestHarness.Run(
+                services,
+                "key",
+                "provider",
+                "set",
+                "--help");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("api-key", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("secure prompt", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Key_provider_status_recognizes_environment_credential_without_disclosing_it()
+    {
+        const string EnvironmentName = "ARCANUM_TEST_PERPLEXITY_STATUS_KEY";
+        const string Secret = "perplexity-status-secret";
+        string? previous =
+            global::System.Environment.GetEnvironmentVariable(EnvironmentName);
+
+        try
+        {
+            global::System.Environment.SetEnvironmentVariable(
+                EnvironmentName,
+                Secret);
+            ConfigurationManager configuration = new();
+            ServiceCollection services = new();
+            CliApplicationFactory.ConfigureCliServices(services, configuration);
+            services.AddSingleton<IOptions<ArcanumSettings>>(
+                Options.Create(
+                    new ArcanumSettings
+                    {
+                        Integrations = new IntegrationSettings
+                        {
+                            WebResearch = new WebResearchIntegrationSettings
+                            {
+                                CredentialEnvironmentVariable =
+                                    EnvironmentName,
+                            },
+                        },
+                    }));
+            services.AddSingleton<IWebResearchCredentialStore>(
+                new ThrowingWebResearchCredentialStore());
+
+            CliTestResult result =
+                CliTestHarness.Run(
+                    services,
+                    "key",
+                    "provider",
+                    "status",
+                    "perplexity");
+
+            Assert.True(
+                result.ExitCode == 0,
+                "Output: " + result.Output + "\nError: " + result.Error);
+            Assert.Contains(EnvironmentName, result.Output, StringComparison.Ordinal);
+            Assert.DoesNotContain(Secret, result.Output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable(
+                EnvironmentName,
+                previous);
+        }
+    }
+
+    [Fact]
     public void ConfigureCliServices_registers_streaming_and_bounded_request_clients()
     {
         ServiceCollection services = new();
@@ -159,7 +251,10 @@ public sealed class CliApplicationFactoryTests
 
         using ServiceProvider provider = services.BuildServiceProvider();
         IApiKeyDigestCache digestCache = provider.GetRequiredService<IApiKeyDigestCache>();
+        IWebResearchCredentialStore webResearchCredentials =
+            provider.GetRequiredService<IWebResearchCredentialStore>();
         Assert.NotNull(digestCache);
+        Assert.NotNull(webResearchCredentials);
         AskCommand askCommand = provider.GetRequiredService<AskCommand>();
         Assert.NotNull(askCommand);
     }
@@ -210,5 +305,23 @@ public sealed class CliApplicationFactoryTests
         public bool ColorEnabled { get; } = colorEnabled;
 
         public bool ShouldShowManaBar => IsInteractive && ColorEnabled;
+    }
+
+    private sealed class ThrowingWebResearchCredentialStore
+        : IWebResearchCredentialStore
+    {
+        public Task<SecretStoreReadResult> GetPerplexityApiKeyReadResultAsync(
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException(
+                "Environment credentials must take precedence.");
+
+        public Task SavePerplexityApiKeyAsync(
+            string apiKey,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task DeletePerplexityApiKeyAsync(
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

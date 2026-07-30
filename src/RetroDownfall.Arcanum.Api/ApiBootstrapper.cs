@@ -343,6 +343,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<IManaMeter, TheForge.ManaMeter>();
 
+        services.AddSingleton<TelemetryService>();
+
         services.AddSingleton<PromptRenderer>();
 
         services.AddScoped<GrimoireTurnWriter>();
@@ -475,6 +477,10 @@ public static class ApiBootstrapper
 
     public static void MapArcanumEndpoints(this WebApplication app)
     {
+        // TelemetryService owns the MeterListener that projects process metrics
+        // into live snapshots. Resolve it before any endpoint can emit metrics.
+        _ = app.Services.GetRequiredService<TelemetryService>();
+
         bool rateLimitEnabled = IsRateLimitEnabled(app.Configuration);
 
         RouteGroupBuilder openAiV1 = app.MapGroup("/v1").AddEndpointFilter<ApiKeyEndpointFilter>();

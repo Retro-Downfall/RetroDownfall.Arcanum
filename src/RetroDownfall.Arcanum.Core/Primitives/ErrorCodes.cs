@@ -473,6 +473,47 @@ public static class ErrorCodes
 
     }
 
+    /// <summary>WebResearch — native synthesized search and direct URL-reading failures.</summary>
+    public static class WebResearch
+    {
+
+        public const string MissingCredential = "WebResearch.MissingCredential";
+
+        public const string AuthenticationOrCreditsFailed =
+            "WebResearch.AuthenticationOrCreditsFailed";
+
+        public const string QuotaExhausted = "WebResearch.QuotaExhausted";
+
+        public const string RateLimited = "WebResearch.RateLimited";
+
+        public const string RequestRejected = "WebResearch.RequestRejected";
+
+        public const string ProviderUnavailable = "WebResearch.ProviderUnavailable";
+
+        public const string InvalidResponse = "WebResearch.InvalidResponse";
+
+        public const string Timeout = "WebResearch.Timeout";
+
+        public const string InvalidUrl = "WebResearch.InvalidUrl";
+
+        public const string SsrfBlocked = "WebResearch.SsrfBlocked";
+
+        public const string RedirectLimitExceeded = "WebResearch.RedirectLimitExceeded";
+
+        public const string BotProtected = "WebResearch.BotProtected";
+
+        public const string JavaScriptRequired = "WebResearch.JavaScriptRequired";
+
+        public const string EmptyContent = "WebResearch.EmptyContent";
+
+        public const string UnsupportedContent = "WebResearch.UnsupportedContent";
+
+        public const string ResponseTooLarge = "WebResearch.ResponseTooLarge";
+
+        public const string UnsupportedOperation = "WebResearch.UnsupportedOperation";
+
+    }
+
     /// <summary>ClientTools — client-supplied tool forwarding errors.</summary>
     public static class ClientTools
     {

@@ -154,6 +154,24 @@ public sealed class ArcanumBuiltInToolsTests
     }
 
     [Fact]
+    public void BuiltInToolRegistry_AdvertisesCanonicalWebToolsButNotLegacyAlias()
+    {
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { WebBrowsing = true },
+        };
+        BuiltInToolRegistry registry = new(
+            new StubHttpClientFactory(),
+            new TestOptionsSnapshot<ArcanumSettings>(settings));
+
+        IReadOnlyList<string> names = registry.GetToolNames();
+
+        Assert.Contains(ArcanumBuiltInToolNames.WebSearch, names);
+        Assert.Contains(ArcanumBuiltInToolNames.ReadUrl, names);
+        Assert.DoesNotContain(ArcanumBuiltInToolNames.BrowseWeb, names);
+    }
+
+    [Fact]
     public async Task BuiltInToolRegistry_UnexpectedFailure_UsesModelSafeToolContract()
     {
         const string canary = "CANARY_TOOL_ARGUMENT_FILE_CONTENT";

@@ -392,10 +392,19 @@ public static class ArcanumRuntimeSettings
     {
         WebBrowsingSettings defaults = ArcanumRuntimeDefaults.WebBrowsing;
         FeatureSettings features = settings.Features ?? new FeatureSettings();
+        WebResearchIntegrationSettings integration =
+            settings.Integrations?.WebResearch ?? new WebResearchIntegrationSettings();
 
         return defaults with
         {
             Enabled = features.WebBrowsing,
+            SearchProvider = string.IsNullOrWhiteSpace(integration.SearchProvider)
+                ? defaults.SearchProvider
+                : integration.SearchProvider.Trim(),
+            PerplexityModel = string.IsNullOrWhiteSpace(integration.PerplexityModel)
+                ? defaults.PerplexityModel
+                : integration.PerplexityModel.Trim().ToLowerInvariant(),
+            CredentialEnvironmentVariable = integration.CredentialEnvironmentVariable,
         };
     }
 

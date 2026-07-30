@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Resilience;
 using RetroDownfall.Arcanum.Core.Security;
@@ -43,6 +44,7 @@ using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -140,6 +142,8 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IOsCredentialStore>(static _ => new OsCredentialStore());
 
         services.AddSingleton<DataProtectionSecretStore>();
+
+        services.AddSingleton<IWebResearchCredentialStore, WebResearchCredentialStore>();
 
         services.AddSingleton<ISecretStore>(static sp => new OsKeychainSecretStore(
             sp.GetRequiredService<IOsCredentialStore>(),
@@ -258,6 +262,44 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
         services.AddArcanumSecretStore();
+
+        services.AddSingleton<IWebResearchApiKeyResolver, WebResearchApiKeyResolver>();
+
+        services.AddSingleton<WebPageContentExtractor>();
+
+        services.AddSingleton<IWebResearchProvider, PerplexityWebProvider>();
+
+        services.AddSingleton<IWebResearchProvider, LocalHttpWebProvider>();
+
+        services.AddSingleton<IWebResearchProviderCatalog, WebResearchProviderCatalog>();
+
+        services.AddHttpClient(
+                WebResearchConstants.PerplexityHttpClientName,
+                static client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .RemoveAllLoggers()
+            .ConfigurePrimaryHttpMessageHandler(static () =>
+            {
+                SocketsHttpHandler handler =
+                    OutboundUrlGuard.CreateUntrustedEgressHandler();
+                handler.AutomaticDecompression =
+                    global::System.Net.DecompressionMethods.All;
+                return handler;
+            });
+
+        services.AddHttpClient(
+                WebResearchConstants.LocalHttpClientName,
+                static client => client.Timeout = Timeout.InfiniteTimeSpan)
+            // Direct-read URLs can contain secret query data. Provider-owned logs
+            // intentionally report only bounded outcome codes and never raw URLs.
+            .RemoveAllLoggers()
+            .ConfigurePrimaryHttpMessageHandler(static () =>
+            {
+                SocketsHttpHandler handler =
+                    OutboundUrlGuard.CreateUntrustedEgressHandler();
+                handler.AutomaticDecompression =
+                    global::System.Net.DecompressionMethods.All;
+                return handler;
+            });
 
         services.AddSingleton<IWard, WardGate>();
         services.AddScoped<ISanctumGuard, SanctumGuard>();
@@ -391,6 +433,9 @@ public static class ServiceCollectionExtensions
 
                 client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
             })
+            // Legacy embedder fallback only. URLs may contain credentials in
+            // path/query data, so suppress IHttpClientFactory URI logging.
+            .RemoveAllLoggers()
             .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
 
         services.AddSingleton<WebhookCommLinkDispatcher>();

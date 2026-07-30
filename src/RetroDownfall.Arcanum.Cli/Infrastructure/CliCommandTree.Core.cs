@@ -68,7 +68,7 @@ internal static partial class CliCommandTree
     private static Command BuildKey(IServiceProvider sp)
     {
         KeyCommands handler = sp.GetRequiredService<KeyCommands>();
-        Command key = new("key", "Master API key utilities (OS credential store / security.dat fallback; no HTTP).");
+        Command key = new("key", "Master and native-provider API key utilities (secure local stores; no HTTP).");
         Command show = new("show", "Print the stored master API key to stderr (stdout piping does not capture the secret).");
         Command set = new("set", "Store a master API key in the OS credential store (mirrors to security.dat when possible).");
         Argument<string?> apiKey = new("api-key")
@@ -82,7 +82,44 @@ internal static partial class CliCommandTree
         show.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Show(ct).ConfigureAwait(false));
         set.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Set(ct, pr.GetValue(apiKey)).ConfigureAwait(false));
 
-        key.Add(show); key.Add(set);
+        Command provider = new(
+            "provider",
+            "Manage native provider credentials. Stored values are never displayed.");
+        Command providerSet = new(
+            "set",
+            "Store a native provider credential from redirected stdin or a secure prompt.");
+        Command providerStatus = new("status", "Report whether a native provider credential is configured.");
+        Command providerDelete = new("delete", "Delete a native provider credential from local secure stores.");
+        Argument<string> providerForSet = new("provider")
+        {
+            Description = "Native provider name (currently: perplexity).",
+        };
+        Argument<string> providerForStatus = new("provider")
+        {
+            Description = "Native provider name (currently: perplexity).",
+        };
+        Argument<string> providerForDelete = new("provider")
+        {
+            Description = "Native provider name (currently: perplexity).",
+        };
+        providerSet.Add(providerForSet);
+        providerStatus.Add(providerForStatus);
+        providerDelete.Add(providerForDelete);
+
+        providerSet.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.SetProvider(
+                pr.GetValue(providerForSet)!,
+                ct).ConfigureAwait(false));
+        providerStatus.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.ProviderStatus(pr.GetValue(providerForStatus)!, ct).ConfigureAwait(false));
+        providerDelete.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.DeleteProvider(pr.GetValue(providerForDelete)!, ct).ConfigureAwait(false));
+
+        provider.Add(providerSet);
+        provider.Add(providerStatus);
+        provider.Add(providerDelete);
+
+        key.Add(show); key.Add(set); key.Add(provider);
         return key;
     }
 

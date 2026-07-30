@@ -3,6 +3,7 @@ using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 
@@ -94,7 +95,7 @@ public sealed class ConfigurationValidator(
         ("spells", "Spell path authority moved to Security.SpellWorkspaceRoots; file and resonance limits are internal."),
         ("structuredOutput", "Structured output validation and provider-constrained decoding are automatic."),
         ("ward", "Ward policy moved to Security.Ward; approval capacity and timeout are internal."),
-        ("webBrowsing", "Web-browsing enablement moved to Features.WebBrowsing; fetch limits are internal."),
+        ("webBrowsing", "Web-tool enablement moved to Features.WebBrowsing and provider facts moved to Integrations.WebResearch; fetch and output limits are internal."),
     ];
 
     /// <summary>
@@ -960,6 +961,9 @@ public sealed class ConfigurationValidator(
 
         HttpsSettings https = settings.Host?.Https ?? new HttpsSettings();
         CommLinkSettings commLink = settings.ResolveCommLink();
+        WebResearchIntegrationSettings webResearch =
+            settings.Integrations?.WebResearch ?? new WebResearchIntegrationSettings();
+        WebBrowsingSettings webBrowsing = settings.ResolveWebBrowsing();
 
         AddEnvironmentVariableReference(
             EnvironmentCredentialResolver.GetHttpsCertificatePasswordEnvironmentVariableName(https),
@@ -973,6 +977,15 @@ public sealed class ConfigurationValidator(
             EnvironmentCredentialResolver.GetCommLinkWebhookUrlEnvironmentVariableName(commLink),
             "integrations.commLink.webhookUrlEnvironmentVariable",
             environmentReferences);
+        ValidateOptionalEnvironmentVariableName(
+            webResearch.CredentialEnvironmentVariable,
+            "integrations.webResearch.credentialEnvironmentVariable",
+            errors);
+        AddEnvironmentVariableReference(
+            EnvironmentCredentialResolver.GetWebResearchApiKeyEnvironmentVariableName(webBrowsing),
+            "integrations.webResearch.credentialEnvironmentVariable",
+            environmentReferences);
+        ValidateWebResearch(webResearch, errors);
         ValidateUniqueEnvironmentVariableReferences(environmentReferences, errors);
 
         if (!string.IsNullOrWhiteSpace(settings.DefaultModel))
@@ -1667,6 +1680,25 @@ public sealed class ConfigurationValidator(
         errors.Add(new ConfigurationValidationError(
             pointer,
             "Environment-variable references must use portable names: an ASCII letter or '_' followed by ASCII letters, digits, or '_' only."));
+    }
+
+    private static void ValidateWebResearch(
+        WebResearchIntegrationSettings settings,
+        List<ConfigurationValidationError> errors)
+    {
+        if (string.IsNullOrWhiteSpace(settings.SearchProvider))
+        {
+            errors.Add(new ConfigurationValidationError(
+                "integrations.webResearch.searchProvider",
+                "Web-research SearchProvider must not be blank."));
+        }
+
+        if (!WebResearchModels.IsSupportedPerplexityModel(settings.PerplexityModel))
+        {
+            errors.Add(new ConfigurationValidationError(
+                "integrations.webResearch.perplexityModel",
+                "PerplexityModel must be 'sonar' or 'sonar-pro'."));
+        }
     }
 
     private static void AddEnvironmentVariableReference(

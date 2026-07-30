@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
+
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
@@ -43,6 +45,9 @@ public sealed record FeatureSettings
 
     public bool ClientTools { get; set; }
 
+    /// <summary>
+    /// Enables the native web-tool family, including <c>web_search</c> and <c>read_url</c>.
+    /// </summary>
     public bool WebBrowsing { get; set; }
 
     /// <summary>
@@ -79,6 +84,8 @@ public sealed record IntegrationSettings
     public EmbeddingIntegrationSettings Embeddings { get; set; } = new();
 
     public McpIntegrationSettings Mcp { get; set; } = new();
+
+    public WebResearchIntegrationSettings WebResearch { get; set; } = new();
 
     public WorkspaceCheckIntegrationSettings WorkspaceChecks { get; set; } = new();
 
@@ -130,6 +137,24 @@ public sealed record McpIntegrationSettings
 
     public string[] AllowedHttpHosts { get; set; } = [];
 
+}
+
+public sealed record WebResearchIntegrationSettings
+{
+    /// <summary>Stable name of the provider used by <c>web_search</c>.</summary>
+    public string SearchProvider { get; set; } = WebResearchProviderNames.Perplexity;
+
+    /// <summary>
+    /// Perplexity model used for synthesized search. Only <c>sonar</c> and <c>sonar-pro</c> are
+    /// supported.
+    /// </summary>
+    public string PerplexityModel { get; set; } = WebResearchModels.Sonar;
+
+    /// <summary>
+    /// Optional exact environment-variable name containing the Perplexity API key. When omitted,
+    /// unattended operation uses <c>ARCANUM_PERPLEXITY_API_KEY</c>.
+    /// </summary>
+    public string? CredentialEnvironmentVariable { get; set; }
 }
 
 public sealed record WorkspaceCheckIntegrationSettings

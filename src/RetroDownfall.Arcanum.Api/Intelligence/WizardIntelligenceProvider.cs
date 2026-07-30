@@ -20,6 +20,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Resilience;
@@ -80,7 +81,8 @@ public sealed class WizardIntelligenceProvider(
     ITurnRunWriter? turnRunWriter = null,
     IBudgetReservationService? budgetReservationService = null,
     Lazy<ITurnExecutionFacade>? turnCoordinator = null,
-    IModelTokenEstimator? modelTokenEstimator = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
+    IModelTokenEstimator? modelTokenEstimator = null,
+    IWebResearchProviderCatalog? webResearchProviderCatalog = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
 {
     private readonly TokenAccountingDependencies _tokenAccounting =
         TokenAccountingDependencies.Create(
@@ -4263,11 +4265,44 @@ public sealed class WizardIntelligenceProvider(
 
         IReadOnlyList<string>? declaredTools = activeSpell?.SkillMetadata?.DeclaredTools;
 
-        bool browseWebAttuned = declaredTools is not { Count: > 0 }
-            || declaredTools.Contains(ArcanumBrowseWebTool.ToolName, StringComparer.OrdinalIgnoreCase);
+        bool unrestrictedWebTools = declaredTools is not { Count: > 0 };
+        bool webSearchAttuned = unrestrictedWebTools
+            || declaredTools!.Contains(
+                ArcanumWebSearchTool.ToolName,
+                StringComparer.OrdinalIgnoreCase);
+        bool readUrlAttuned = unrestrictedWebTools
+            || declaredTools!.Contains(
+                ArcanumReadUrlTool.ToolName,
+                StringComparer.OrdinalIgnoreCase)
+            || declaredTools!.Contains(
+                ArcanumBrowseWebTool.ToolName,
+                StringComparer.OrdinalIgnoreCase);
 
-        if (settings.Value.ResolveWebBrowsing().Enabled && browseWebAttuned)
+        if (settings.Value.ResolveWebBrowsing().Enabled
+            && webResearchProviderCatalog is not null)
         {
+            if (webSearchAttuned)
+            {
+                tools.Add(
+                    new ArcanumWebSearchTool(
+                        webResearchProviderCatalog,
+                        settings,
+                        logger));
+            }
+
+            if (readUrlAttuned)
+            {
+                tools.Add(
+                    new ArcanumReadUrlTool(
+                        webResearchProviderCatalog,
+                        settings,
+                        logger));
+            }
+        }
+        else if (settings.Value.ResolveWebBrowsing().Enabled && readUrlAttuned)
+        {
+            // Constructor compatibility for embedders that have not yet registered the
+            // provider catalog. The production host always registers the native catalog.
             tools.Add(new ArcanumBrowseWebTool(httpClientFactory, settings, logger));
         }
 

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -164,11 +165,15 @@ public sealed class ArcanumBrowseWebToolTests
 
         object? result = await tool.InvokeAsync(args, CancellationToken.None);
 
-        BrowseWebResult? dto = Deserialize(result);
+        string json = Assert.IsType<string>(result);
+        BrowseWebResult? dto = Deserialize(json);
 
         Assert.NotNull(dto);
         Assert.Contains("...(truncated)", dto.Content);
         Assert.True(dto.Content.Length < longText.Length + 200);
+        Assert.True(
+            Encoding.UTF8.GetByteCount(json)
+            <= WebToolResultSerializer.MaxUtf8Bytes);
     }
 
     [Fact]

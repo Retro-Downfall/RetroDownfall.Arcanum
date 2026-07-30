@@ -486,6 +486,8 @@ public sealed class OutboundUrlGuardTests : IDisposable
 
         Assert.False(handler.AllowAutoRedirect);
 
+        Assert.False(handler.UseProxy);
+
         Assert.NotNull(handler.ConnectCallback);
 
     }
@@ -497,6 +499,8 @@ public sealed class OutboundUrlGuardTests : IDisposable
         using SocketsHttpHandler handler = OutboundUrlGuard.CreateProviderEgressHandler();
 
         Assert.False(handler.AllowAutoRedirect);
+
+        Assert.False(handler.UseProxy);
 
         Assert.NotNull(handler.ConnectCallback);
 

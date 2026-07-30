@@ -123,16 +123,32 @@ internal sealed class SpellCastPreviewService(
                 ArcanumBuiltInToolNames.RunSpellScript);
         }
 
-        bool browseWebAttuned =
-            declaredTools is not { Count: > 0 }
-            || declaredTools.Contains(
+        bool unrestrictedWebTools =
+            declaredTools is not { Count: > 0 };
+        bool webSearchAttuned =
+            unrestrictedWebTools
+            || declaredTools!.Contains(
+                ArcanumBuiltInToolNames.WebSearch,
+                StringComparer.OrdinalIgnoreCase);
+        bool readUrlAttuned =
+            unrestrictedWebTools
+            || declaredTools!.Contains(
+                ArcanumBuiltInToolNames.ReadUrl,
+                StringComparer.OrdinalIgnoreCase)
+            || declaredTools!.Contains(
                 ArcanumBuiltInToolNames.BrowseWeb,
                 StringComparer.OrdinalIgnoreCase);
 
-        if (settings.ResolveWebBrowsing().Enabled && browseWebAttuned)
+        if (settings.ResolveWebBrowsing().Enabled && webSearchAttuned)
         {
             availableTools.Add(
-                ArcanumBuiltInToolNames.BrowseWeb);
+                ArcanumBuiltInToolNames.WebSearch);
+        }
+
+        if (settings.ResolveWebBrowsing().Enabled && readUrlAttuned)
+        {
+            availableTools.Add(
+                ArcanumBuiltInToolNames.ReadUrl);
         }
 
         availableTools.AddRange(

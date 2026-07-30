@@ -13,4 +13,7 @@ public static class ArcanumCredentialIdentity
     /// <summary>OS credential account / username distinguishing the master API key from future secrets.</summary>
     public const string MasterApiKeyAccount = "master-api-key";
 
+    /// <summary>OS credential account used by the native Perplexity web-research provider.</summary>
+    public const string PerplexityApiKeyAccount = "provider-perplexity-api-key";
+
 }

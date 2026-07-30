@@ -134,4 +134,52 @@ public static class ArcanumMetrics
         "{rejections}",
         "Context-budget rejections before provider calls");
 
+    /// <summary>
+    /// Completed web-research provider operations. Labels: <c>provider</c>, <c>operation</c>
+    /// (<c>search</c> | <c>read_url</c>), and a closed <c>outcome</c> value. Query text, URLs, and
+    /// provider error text must never be attached.
+    /// </summary>
+    public static readonly Counter<long> WebResearchRequestsTotal = Meter.CreateCounter<long>(
+        "arcanum_web_research_requests_total",
+        "{requests}",
+        "Completed native web-research provider operations");
+
+    /// <summary>
+    /// Web-research operation duration in seconds. Labels: <c>provider</c>, <c>operation</c>, and
+    /// closed <c>outcome</c>.
+    /// </summary>
+    public static readonly Histogram<double> WebResearchDuration = Meter.CreateHistogram<double>(
+        "arcanum_web_research_duration_seconds",
+        "s",
+        "Native web-research operation duration");
+
+    /// <summary>
+    /// Provider-reported web-research tokens. Labels: <c>provider</c>, <c>model</c>, and closed
+    /// <c>kind</c> (<c>prompt</c>, <c>completion</c>, <c>total</c>, <c>reasoning</c>, or
+    /// <c>citation</c>). Total is reported separately and must not be summed with its component
+    /// kinds.
+    /// </summary>
+    public static readonly Counter<long> WebResearchTokensTotal = Meter.CreateCounter<long>(
+        "arcanum_web_research_tokens_total",
+        "{tokens}",
+        "Tokens reported by native web-research providers");
+
+    /// <summary>
+    /// Search queries reported by a web-research provider. Labels: <c>provider</c> and
+    /// <c>model</c>.
+    /// </summary>
+    public static readonly Counter<long> WebResearchSearchQueriesTotal = Meter.CreateCounter<long>(
+        "arcanum_web_research_search_queries_total",
+        "{queries}",
+        "Search queries reported by native web-research providers");
+
+    /// <summary>
+    /// Provider-reported web-research cost. Labels: <c>provider</c> and <c>model</c>.
+    /// Recorded only when the provider response includes cost.
+    /// </summary>
+    public static readonly Counter<double> WebResearchCostUsdTotal = Meter.CreateCounter<double>(
+        "arcanum_web_research_cost_usd_total",
+        "USD",
+        "Cost reported by native web-research providers");
+
 }

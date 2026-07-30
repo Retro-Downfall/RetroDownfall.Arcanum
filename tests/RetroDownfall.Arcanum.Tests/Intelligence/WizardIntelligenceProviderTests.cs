@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -30,6 +31,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
@@ -1035,7 +1037,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Attunement_NonEmptyDeclaredToolsWithoutBrowseWeb_OmitsBrowseWeb(
+    public async Task Attunement_NonEmptyDeclaredToolsWithoutWebTools_OmitsWebTools(
         bool disableMcpTools)
     {
         await CreateSpellWithDeclaredToolsAsync("browse-restricted", ["allowed_tool"]);
@@ -1072,17 +1074,20 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
 
         Assert.DoesNotContain(ArcanumBrowseWebTool.ToolName, toolNames);
+        Assert.DoesNotContain(ArcanumBuiltInToolNames.WebSearch, toolNames);
+        Assert.DoesNotContain(ArcanumBuiltInToolNames.ReadUrl, toolNames);
         Assert.Contains(ArcanumLocalTimeTool.ToolName, toolNames);
         Assert.Contains(ArcanumSystemInfoTool.ToolName, toolNames);
         Assert.Equal(!disableMcpTools, toolNames.Contains("allowed_tool"));
     }
 
     [Theory]
-    [InlineData("browse-declared", true)]
-    [InlineData("browse-open", false)]
-    public async Task Attunement_DeclaredOrUnrestrictedBrowseWeb_AdvertisesBrowseWeb(
+    [InlineData("browse-declared", true, false)]
+    [InlineData("browse-open", false, true)]
+    public async Task Attunement_LegacyBrowseOrUnrestricted_AdvertisesCanonicalWebTools(
         string folderName,
-        bool declareBrowseWeb)
+        bool declareBrowseWeb,
+        bool expectWebSearch)
     {
         await CreateSpellWithDeclaredToolsAsync(
             folderName,
@@ -1115,7 +1120,11 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         HashSet<string> toolNames = ToolNames(chat.LastChatOptions);
 
-        Assert.Contains(ArcanumBrowseWebTool.ToolName, toolNames);
+        Assert.DoesNotContain(ArcanumBrowseWebTool.ToolName, toolNames);
+        Assert.Contains(ArcanumBuiltInToolNames.ReadUrl, toolNames);
+        Assert.Equal(
+            expectWebSearch,
+            toolNames.Contains(ArcanumBuiltInToolNames.WebSearch));
     }
 
     [Fact]
@@ -6711,7 +6720,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             healthTracker: null,
             guardrailsPipeline: guardrailsPipeline,
             turnRunWriter: turnRunWriter,
-            budgetReservationService: budgetReservationService);
+            budgetReservationService: budgetReservationService,
+            webResearchProviderCatalog: new WebResearchProviderCatalog([]));
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>

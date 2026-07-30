@@ -1456,6 +1456,7 @@ public sealed class ToolExecutionPipeline(
             }
 
             case "browse_web":
+            case "read_url":
             {
 
                 if (!TryGetJsonStringProperty(argsRoot, "url", out string? targetUrl)

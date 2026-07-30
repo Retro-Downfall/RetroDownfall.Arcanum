@@ -3,8 +3,8 @@ using System.Text;
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
-/// Resolves provider, HTTPS, and CommLink secrets from environment variables without copying
-/// secret material into the bindable configuration graph.
+/// Resolves inference-provider, HTTPS, CommLink, and web-research secrets from environment
+/// variables without copying secret material into the bindable configuration graph.
 /// </summary>
 public static class EnvironmentCredentialResolver
 {
@@ -13,6 +13,9 @@ public static class EnvironmentCredentialResolver
 
     public const string DefaultCommLinkWebhookUrlEnvironmentVariable =
         "ARCANUM_COMMLINK_WEBHOOK_URL";
+
+    public const string DefaultPerplexityApiKeyEnvironmentVariable =
+        "ARCANUM_PERPLEXITY_API_KEY";
 
     private const string ProviderPrefix = "ARCANUM_PROVIDER_";
     private const string ProviderSuffix = "_API_KEY";
@@ -68,6 +71,36 @@ public static class EnvironmentCredentialResolver
     public static string? ResolveCommLinkWebhookUrl(CommLinkSettings commLink) =>
         ReadEnvironmentVariable(
             GetCommLinkWebhookUrlEnvironmentVariableName(commLink));
+
+    /// <summary>
+    /// Returns the exact configured web-research credential reference, or the deterministic
+    /// Perplexity default. An explicit reference replaces the default rather than falling through
+    /// to it.
+    /// </summary>
+    public static string GetWebResearchApiKeyEnvironmentVariableName(
+        WebBrowsingSettings webResearch)
+    {
+        ArgumentNullException.ThrowIfNull(webResearch);
+
+        return !string.IsNullOrWhiteSpace(webResearch.CredentialEnvironmentVariable)
+            ? webResearch.CredentialEnvironmentVariable.Trim()
+            : DefaultPerplexityApiKeyEnvironmentVariable;
+    }
+
+    public static string? ResolveWebResearchApiKey(WebBrowsingSettings webResearch) =>
+        ReadEnvironmentVariable(
+            GetWebResearchApiKeyEnvironmentVariableName(webResearch));
+
+    /// <summary>
+    /// Perplexity-specific alias retained for callers that name the currently supported search
+    /// integration explicitly.
+    /// </summary>
+    public static string GetPerplexityApiKeyEnvironmentVariableName(
+        WebBrowsingSettings webResearch) =>
+        GetWebResearchApiKeyEnvironmentVariableName(webResearch);
+
+    public static string? ResolvePerplexityApiKey(WebBrowsingSettings webResearch) =>
+        ResolveWebResearchApiKey(webResearch);
 
     /// <summary>
     /// Converts a provider display name into a stable ASCII environment-variable segment:

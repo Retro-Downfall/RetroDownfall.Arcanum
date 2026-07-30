@@ -4,7 +4,9 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
@@ -19,7 +21,13 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
 
     private readonly IOptionsSnapshot<ArcanumSettings> _settings;
 
+    private readonly IWebResearchProviderCatalog _webResearchProviders;
+
     private readonly ILogger<ArcanumBrowseWebTool>? _browseWebLogger;
+
+    private readonly ILogger<ArcanumWebSearchTool>? _webSearchLogger;
+
+    private readonly ILogger<ArcanumReadUrlTool>? _readUrlLogger;
 
     private readonly ILogger<BuiltInToolRegistry>? _logger;
 
@@ -27,7 +35,14 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
         IHttpClientFactory httpClientFactory,
         IOptionsSnapshot<ArcanumSettings> settings,
         ILogger<ArcanumBrowseWebTool>? browseWebLogger = null)
-        : this(httpClientFactory, settings, browseWebLogger, logger: null)
+        : this(
+            httpClientFactory,
+            settings,
+            CreateCompatibilityCatalog(httpClientFactory, settings),
+            browseWebLogger,
+            webSearchLogger: null,
+            readUrlLogger: null,
+            logger: null)
     {
     }
 
@@ -36,12 +51,37 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
         IOptionsSnapshot<ArcanumSettings> settings,
         ILogger<ArcanumBrowseWebTool>? browseWebLogger,
         ILogger<BuiltInToolRegistry>? logger)
+        : this(
+            httpClientFactory,
+            settings,
+            CreateCompatibilityCatalog(httpClientFactory, settings),
+            browseWebLogger,
+            webSearchLogger: null,
+            readUrlLogger: null,
+            logger)
+    {
+    }
+
+    public BuiltInToolRegistry(
+        IHttpClientFactory httpClientFactory,
+        IOptionsSnapshot<ArcanumSettings> settings,
+        IWebResearchProviderCatalog webResearchProviders,
+        ILogger<ArcanumBrowseWebTool>? browseWebLogger,
+        ILogger<ArcanumWebSearchTool>? webSearchLogger,
+        ILogger<ArcanumReadUrlTool>? readUrlLogger,
+        ILogger<BuiltInToolRegistry>? logger)
     {
         _httpClientFactory = httpClientFactory;
 
         _settings = settings;
 
+        _webResearchProviders = webResearchProviders;
+
         _browseWebLogger = browseWebLogger;
+
+        _webSearchLogger = webSearchLogger;
+
+        _readUrlLogger = readUrlLogger;
 
         _logger = logger;
     }
@@ -56,7 +96,8 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
 
         if (_settings.Value.ResolveWebBrowsing().Enabled)
         {
-            names.Add(ArcanumBrowseWebTool.ToolName);
+            names.Add(ArcanumWebSearchTool.ToolName);
+            names.Add(ArcanumReadUrlTool.ToolName);
         }
 
         return names;
@@ -148,10 +189,65 @@ public sealed class BuiltInToolRegistry : IBuiltInToolRegistry
         if (string.Equals(toolName, ArcanumBrowseWebTool.ToolName, StringComparison.Ordinal)
             && _settings.Value.ResolveWebBrowsing().Enabled)
         {
-            return new ArcanumBrowseWebTool(_httpClientFactory, _settings, _browseWebLogger);
+            return new ArcanumBrowseWebTool(
+                _httpClientFactory,
+                _settings,
+                _browseWebLogger);
+        }
+
+        if (string.Equals(toolName, ArcanumWebSearchTool.ToolName, StringComparison.Ordinal)
+            && _settings.Value.ResolveWebBrowsing().Enabled)
+        {
+            return new ArcanumWebSearchTool(
+                _webResearchProviders,
+                _settings,
+                _webSearchLogger);
+        }
+
+        if (string.Equals(toolName, ArcanumReadUrlTool.ToolName, StringComparison.Ordinal)
+            && _settings.Value.ResolveWebBrowsing().Enabled)
+        {
+            return new ArcanumReadUrlTool(
+                _webResearchProviders,
+                _settings,
+                _readUrlLogger);
         }
 
         return null;
+    }
+
+    private static IWebResearchProviderCatalog CreateCompatibilityCatalog(
+        IHttpClientFactory httpClientFactory,
+        IOptionsSnapshot<ArcanumSettings> settings) =>
+        new WebResearchProviderCatalog(
+            [
+                new PerplexityWebProvider(
+                    httpClientFactory,
+                    new EnvironmentOnlyWebResearchApiKeyResolver(settings)),
+                new LocalHttpWebProvider(
+                    httpClientFactory,
+                    new WebPageContentExtractor()),
+            ]);
+
+    private sealed class EnvironmentOnlyWebResearchApiKeyResolver(
+        IOptionsSnapshot<ArcanumSettings> settings) : IWebResearchApiKeyResolver
+    {
+        public ValueTask<string?> ResolveApiKeyAsync(
+            string providerName,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string? apiKey = string.Equals(
+                    providerName,
+                    WebResearchProviderNames.Perplexity,
+                    StringComparison.OrdinalIgnoreCase)
+                ? EnvironmentCredentialResolver.ResolveWebResearchApiKey(
+                    settings.Value.ResolveWebBrowsing())
+                : null;
+
+            return ValueTask.FromResult(apiKey);
+        }
     }
 
 }

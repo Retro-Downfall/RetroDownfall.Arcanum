@@ -13,14 +13,20 @@ internal static class ManaToolCatalog
     public static async Task<List<AITool>> CollectAsync(
         IMcpConnectionManager mcp,
         string? workingDirectory,
-        ArcanumBrowseWebTool? browseTool,
+        ArcanumWebSearchTool? webSearchTool,
+        ArcanumReadUrlTool? readUrlTool,
         CancellationToken cancellationToken)
     {
         List<AITool> tools = [new ArcanumLocalTimeTool(), new ArcanumSystemInfoTool()];
 
-        if (browseTool is not null)
+        if (webSearchTool is not null)
         {
-            tools.Add(browseTool);
+            tools.Add(webSearchTool);
+        }
+
+        if (readUrlTool is not null)
+        {
+            tools.Add(readUrlTool);
         }
 
         IReadOnlyList<AITool> mcpTools = await mcp

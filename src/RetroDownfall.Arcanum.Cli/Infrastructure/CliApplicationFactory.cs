@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
@@ -68,6 +69,8 @@ internal static class CliApplicationFactory
         });
 
         services.AddSingleton<CliSessionManager>();
+
+        services.AddSingleton<TelemetryService>();
 
         services.AddSingleton<MarkdigSpectreRenderer>();
 

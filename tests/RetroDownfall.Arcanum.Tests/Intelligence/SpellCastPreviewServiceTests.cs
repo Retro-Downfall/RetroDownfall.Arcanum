@@ -20,14 +20,15 @@ public sealed class SpellCastPreviewServiceTests : IAsyncLifetime
     public Task DisposeAsync() => _workspace.DisposeAsync();
 
     [Theory]
-    [InlineData(true, "browse_web", true, false)]
-    [InlineData(true, "mcp_tool", false, true)]
-    [InlineData(false, "browse_web", false, false)]
-    [InlineData(true, null, true, true)]
+    [InlineData(true, "browse_web", false, true, false)]
+    [InlineData(true, "mcp_tool", false, false, true)]
+    [InlineData(false, "browse_web", false, false, false)]
+    [InlineData(true, null, true, true, true)]
     public async Task CastAsync_ReportsCoherentAttunedBuiltinAndMcpTools(
         bool webBrowsingEnabled,
         string? declaredTool,
-        bool expectBrowseWeb,
+        bool expectWebSearch,
+        bool expectReadUrl,
         bool expectMcpTool)
     {
         string spellName = $"preview-{Guid.NewGuid():N}";
@@ -62,10 +63,18 @@ public sealed class SpellCastPreviewServiceTests : IAsyncLifetime
             ArcanumBuiltInToolNames.GetArcanumSystemInfo,
             result.Value.AvailableTools);
         Assert.Equal(
-            expectBrowseWeb,
+            expectWebSearch,
             result.Value.AvailableTools.Contains(
-                ArcanumBuiltInToolNames.BrowseWeb,
+                ArcanumBuiltInToolNames.WebSearch,
                 StringComparer.Ordinal));
+        Assert.Equal(
+            expectReadUrl,
+            result.Value.AvailableTools.Contains(
+                ArcanumBuiltInToolNames.ReadUrl,
+                StringComparer.Ordinal));
+        Assert.DoesNotContain(
+            ArcanumBuiltInToolNames.BrowseWeb,
+            result.Value.AvailableTools);
         Assert.Equal(
             expectMcpTool,
             result.Value.AvailableTools.Contains(

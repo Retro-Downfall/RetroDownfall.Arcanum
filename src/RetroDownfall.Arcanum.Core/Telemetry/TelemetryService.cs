@@ -14,29 +14,323 @@ public sealed record TelemetrySnapshot(
     long OutputStandardTokens,
     decimal EstimatedCostUsd,
     TimeSpan CumulativeLatency,
-    TimeSpan TimeToFirstToken);
+    TimeSpan TimeToFirstToken)
+{
+    /// <summary>
+    /// Native web-research aggregates. This is a non-positional property so the
+    /// original snapshot constructor remains source-compatible with pane clients.
+    /// </summary>
+    public WebResearchTelemetrySnapshot WebResearch { get; init; } = new();
+}
+
+/// <summary>Process-local aggregates for native web-research provider calls.</summary>
+public sealed record WebResearchTelemetrySnapshot(
+    long Requests = 0,
+    long SuccessfulRequests = 0,
+    long FailedRequests = 0,
+    long PromptTokens = 0,
+    long CompletionTokens = 0,
+    long TotalTokens = 0,
+    long ReasoningTokens = 0,
+    long CitationTokens = 0,
+    long SearchQueries = 0,
+    decimal CostUsd = 0,
+    TimeSpan CumulativeLatency = default);
 
 /// <summary>
 /// Subscribes to <see cref="ArcanumMetrics"/> instruments and exposes
 /// debounced snapshot updates for TelemetryPane.
 /// </summary>
-public sealed class TelemetryService
+public sealed class TelemetryService : IDisposable
 {
     private readonly MeterListener _listener;
+    private readonly object _decimalGate = new();
+
+    private long _inputTokens;
+    private long _inputCacheHits;
+    private long _outputTokens;
+    private long _outputReasoningTokens;
+    private long _cumulativeLatencyTicks;
+
+    private long _webRequests;
+    private long _webSuccessfulRequests;
+    private long _webFailedRequests;
+    private long _webPromptTokens;
+    private long _webCompletionTokens;
+    private long _webTotalTokens;
+    private long _webReasoningTokens;
+    private long _webCitationTokens;
+    private long _webSearchQueries;
+    private long _webCumulativeLatencyTicks;
+    private decimal _webCostUsd;
+    private int _started;
+    private int _disposed;
 
     public event EventHandler<TelemetrySnapshot>? SnapshotUpdated;
 
     public TelemetryService()
     {
         _listener = new MeterListener();
-        _listener.InstrumentPublished = (instrument, listener) => { };
-        _listener.MeasurementsCompleted = (instrument, state) => { };
-        // Event wired for future TelemetryPane subscription.
-        _ = SnapshotUpdated; // suppress warning; consumed by pane host
+        _listener.InstrumentPublished = static (instrument, listener) =>
+        {
+            if (string.Equals(
+                    instrument.Meter.Name,
+                    ArcanumMetrics.Meter.Name,
+                    StringComparison.Ordinal))
+            {
+                listener.EnableMeasurementEvents(instrument);
+            }
+        };
+        _listener.SetMeasurementEventCallback<long>(OnLongMeasurement);
+        _listener.SetMeasurementEventCallback<double>(OnDoubleMeasurement);
+        Start();
     }
 
     public void Start()
     {
-        _listener.Start();
+        ObjectDisposedException.ThrowIf(
+            Volatile.Read(ref _disposed) != 0,
+            this);
+
+        if (Interlocked.Exchange(ref _started, 1) == 0)
+        {
+            _listener.Start();
+        }
+    }
+
+    public TelemetrySnapshot GetSnapshot()
+    {
+        long inputTokens = Interlocked.Read(ref _inputTokens);
+        long cacheHits = Interlocked.Read(ref _inputCacheHits);
+        long outputTokens = Interlocked.Read(ref _outputTokens);
+        long reasoningTokens = Interlocked.Read(ref _outputReasoningTokens);
+        decimal webCost;
+
+        lock (_decimalGate)
+        {
+            webCost = _webCostUsd;
+        }
+
+        WebResearchTelemetrySnapshot webResearch = new(
+            Requests: Interlocked.Read(ref _webRequests),
+            SuccessfulRequests: Interlocked.Read(ref _webSuccessfulRequests),
+            FailedRequests: Interlocked.Read(ref _webFailedRequests),
+            PromptTokens: Interlocked.Read(ref _webPromptTokens),
+            CompletionTokens: Interlocked.Read(ref _webCompletionTokens),
+            TotalTokens: Interlocked.Read(ref _webTotalTokens),
+            ReasoningTokens: Interlocked.Read(ref _webReasoningTokens),
+            CitationTokens: Interlocked.Read(ref _webCitationTokens),
+            SearchQueries: Interlocked.Read(ref _webSearchQueries),
+            CostUsd: webCost,
+            CumulativeLatency: TimeSpan.FromTicks(
+                Interlocked.Read(ref _webCumulativeLatencyTicks)));
+
+        return new TelemetrySnapshot(
+            InputTokens: inputTokens,
+            InputCacheHits: cacheHits,
+            InputCacheMisses: Math.Max(0, inputTokens - cacheHits),
+            OutputTokens: outputTokens,
+            OutputReasoningTokens: reasoningTokens,
+            OutputStandardTokens: Math.Max(0, outputTokens - reasoningTokens),
+            EstimatedCostUsd: 0,
+            CumulativeLatency: TimeSpan.FromTicks(
+                Interlocked.Read(ref _cumulativeLatencyTicks)),
+            TimeToFirstToken: TimeSpan.Zero)
+        {
+            WebResearch = webResearch,
+        };
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
+            _listener.Dispose();
+        }
+    }
+
+    private void OnLongMeasurement(
+        Instrument instrument,
+        long measurement,
+        ReadOnlySpan<KeyValuePair<string, object?>> tags,
+        object? state)
+    {
+        _ = state;
+
+        switch (instrument.Name)
+        {
+            case "arcanum_inference_tokens_total":
+                if (TagEquals(tags, "direction", "prompt"))
+                {
+                    Interlocked.Add(ref _inputTokens, measurement);
+                }
+                else if (TagEquals(tags, "direction", "completion"))
+                {
+                    Interlocked.Add(ref _outputTokens, measurement);
+                }
+
+                break;
+
+            case "arcanum_inference_reasoning_tokens_total":
+                Interlocked.Add(ref _outputReasoningTokens, measurement);
+                break;
+
+            case "arcanum_prompt_cache_tokens_total":
+                Interlocked.Add(ref _inputCacheHits, measurement);
+                break;
+
+            case "arcanum_web_research_requests_total":
+                Interlocked.Add(ref _webRequests, measurement);
+
+                if (TagEquals(tags, "outcome", "success"))
+                {
+                    Interlocked.Add(ref _webSuccessfulRequests, measurement);
+                }
+                else
+                {
+                    Interlocked.Add(ref _webFailedRequests, measurement);
+                }
+
+                break;
+
+            case "arcanum_web_research_tokens_total":
+                AddWebTokens(measurement, tags);
+                break;
+
+            case "arcanum_web_research_search_queries_total":
+                Interlocked.Add(ref _webSearchQueries, measurement);
+                break;
+        }
+
+        RaiseSnapshotUpdated();
+    }
+
+    private void OnDoubleMeasurement(
+        Instrument instrument,
+        double measurement,
+        ReadOnlySpan<KeyValuePair<string, object?>> tags,
+        object? state)
+    {
+        _ = tags;
+        _ = state;
+
+        if (!double.IsFinite(measurement))
+        {
+            return;
+        }
+
+        switch (instrument.Name)
+        {
+            case "arcanum_inference_duration_seconds":
+                Interlocked.Add(
+                    ref _cumulativeLatencyTicks,
+                    SecondsToTicks(measurement));
+                break;
+
+            case "arcanum_web_research_duration_seconds":
+                Interlocked.Add(
+                    ref _webCumulativeLatencyTicks,
+                    SecondsToTicks(measurement));
+                break;
+
+            case "arcanum_web_research_cost_usd_total":
+                lock (_decimalGate)
+                {
+                    _webCostUsd += (decimal)measurement;
+                }
+
+                break;
+
+        }
+
+        RaiseSnapshotUpdated();
+    }
+
+    private void AddWebTokens(
+        long measurement,
+        ReadOnlySpan<KeyValuePair<string, object?>> tags)
+    {
+        if (TagEquals(tags, "kind", "prompt"))
+        {
+            Interlocked.Add(ref _webPromptTokens, measurement);
+        }
+        else if (TagEquals(tags, "kind", "completion"))
+        {
+            Interlocked.Add(ref _webCompletionTokens, measurement);
+        }
+        else if (TagEquals(tags, "kind", "total"))
+        {
+            Interlocked.Add(ref _webTotalTokens, measurement);
+        }
+        else if (TagEquals(tags, "kind", "reasoning"))
+        {
+            Interlocked.Add(ref _webReasoningTokens, measurement);
+        }
+        else if (TagEquals(tags, "kind", "citation"))
+        {
+            Interlocked.Add(ref _webCitationTokens, measurement);
+        }
+    }
+
+    private void RaiseSnapshotUpdated()
+    {
+        EventHandler<TelemetrySnapshot>? handler = SnapshotUpdated;
+
+        if (handler is null)
+        {
+            return;
+        }
+
+        TelemetrySnapshot snapshot = GetSnapshot();
+
+        foreach (Delegate subscriber in handler.GetInvocationList())
+        {
+            try
+            {
+                ((EventHandler<TelemetrySnapshot>)subscriber)(this, snapshot);
+            }
+            catch
+            {
+                // Telemetry observers are best-effort and must never break the
+                // operation that recorded a metric.
+            }
+        }
+    }
+
+    private static bool TagEquals(
+        ReadOnlySpan<KeyValuePair<string, object?>> tags,
+        string name,
+        string expected)
+    {
+        foreach (KeyValuePair<string, object?> tag in tags)
+        {
+            if (string.Equals(tag.Key, name, StringComparison.Ordinal)
+                && string.Equals(
+                    tag.Value?.ToString(),
+                    expected,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static long SecondsToTicks(double seconds)
+    {
+        double ticks = seconds * TimeSpan.TicksPerSecond;
+
+        if (ticks >= long.MaxValue)
+        {
+            return long.MaxValue;
+        }
+
+        if (ticks <= long.MinValue)
+        {
+            return long.MinValue;
+        }
+
+        return (long)ticks;
     }
 }

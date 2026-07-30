@@ -48,4 +48,16 @@ public sealed class ArcanumPathsTests
 
     }
 
+    [Fact]
+    public void PerplexityApiKeyStoreFile_IsUnderSecretStoreDirectory()
+    {
+
+        string expected = Path.Combine(
+            ArcanumPaths.SecretStoreDirectory,
+            "perplexity-key.dat");
+
+        Assert.Equal(expected, ArcanumPaths.PerplexityApiKeyStoreFile);
+
+    }
+
 }

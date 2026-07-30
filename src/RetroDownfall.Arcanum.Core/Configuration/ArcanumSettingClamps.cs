@@ -493,6 +493,21 @@ public static class ArcanumSettingClamps
 
     public static int WebBrowsingMaxLinks(int value) => Math.Clamp(value, 0, 100);
 
+    public static int WebBrowsingMaxQueryChars(int value) => Math.Clamp(value, 1, 20_000);
+
+    public static int WebBrowsingMaxUrlChars(int value) => Math.Clamp(value, 1, 16_384);
+
+    public static int WebBrowsingMaxResponseBytes(int value) =>
+        Math.Clamp(value, 1_000, 10_000_000);
+
+    public static int WebBrowsingMaxLinkUrlChars(int value) => Math.Clamp(value, 128, 16_384);
+
+    public static int WebBrowsingMaxCitations(int value) => Math.Clamp(value, 0, 100);
+
+    public static int WebBrowsingMaxCitationUrlChars(int value) => Math.Clamp(value, 128, 16_384);
+
+    public static int WebBrowsingMaxRedirects(int value) => Math.Clamp(value, 0, 20);
+
     public static int ClientToolForwardingMaxClientTools(int value) => Math.Clamp(value, 1, 100);
 
     /// <summary>
@@ -502,4 +517,3 @@ public static class ArcanumSettingClamps
     public static GuardrailsStreamingMode GuardrailsStreamingMode(GuardrailsStreamingMode value) => value;
 
 }
-

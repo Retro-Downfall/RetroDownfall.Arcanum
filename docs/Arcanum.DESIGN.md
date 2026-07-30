@@ -1084,7 +1084,7 @@ The intelligence layer follows a **provider pattern**: `Core` defines `IArcanumI
 
 **Forbidden Arts (wards):** After the hub emits `toolCall` for a gated tool, `ExecuteToolCallWithWardAsync` may emit `warded`, block on **`IWard.WardAsync`** until the operator resolves via **`POST /api/wards/{id}`** or the code-owned wait expires, then emit `wardResolved` and either execute the tool or feed a synthetic denial as `toolResult`. Per-campaign, **`CampaignSettings.RequireWardForForbiddenArts`** defaults to **`true`** on newly registered campaigns; set `false` via `PUT /api/campaigns/{id}` to opt out. When no campaign matches `WorkingDirectory`, wards apply when `Arcanum:Security:Ward:Enabled` is true.
 
-**Sanctum (execution boundary):** After a tool call passes the Ward gate (or bypasses it), **`EnforceSanctumAsync`** runs before **`InvokeToolCallAsync`** when the request **`WorkingDirectory`** matches a campaign with **`SanctumConfig.Enabled`**. **`SanctumGuard`** validates disabled tools, filesystem paths (canonical resolution with symlink checks via **`WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck`**), and model-supplied network targets such as `browse_web`. CommLink has no model-supplied URL: its secret environment value is resolved and SSRF-validated inside the dispatcher. **`SanctumMode.Strict`** blocks with a synthetic tool result; **`AuditOnly`** logs a breach and allows execution.
+**Sanctum (execution boundary):** After a tool call passes the Ward gate (or bypasses it), **`EnforceSanctumAsync`** runs before **`InvokeToolCallAsync`** when the request **`WorkingDirectory`** matches a campaign with **`SanctumConfig.Enabled`**. **`SanctumGuard`** validates disabled tools, filesystem paths (canonical resolution with symlink checks via **`WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck`**), and model-supplied network targets such as `read_url` (and its legacy `browse_web` alias). CommLink has no model-supplied URL: its secret environment value is resolved and SSRF-validated inside the dispatcher. **`SanctumMode.Strict`** blocks with a synthetic tool result; **`AuditOnly`** logs a breach and allows execution.
 
 **Operator-safe errors:** Inference failures use fixed generic strings for clients and Grimoire; changed failure paths log safe operation metadata and exception type rather than raw provider exception text.
 
@@ -1099,9 +1099,9 @@ Tool registration is built in `WizardIntelligenceProvider` per inference attempt
 3. `ArcanumSpellScriptTool` (`run_spell_script`) — registered only when the active spell (or any **Arcane Resonance** dependency) has `scripts/` files **and** host-process tools are enabled by `Arcanum:Edition=Development` plus `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1` (even when `DisableMcpTools` is true). Local edition does not advertise it. Scripts are resolved across the primary spell and all resonant dependencies; duplicate filenames across spells return a tool-result error (not a host exception).
 4. MCP tools — merged from `McpConnectionManager.GetAvailableToolsAsync` unless `DisableMcpTools` is true.
 
-**Artifact Attunement:** When the active spell's **`SPELL.json`** `declaredTools` array is non-empty, **`WizardIntelligenceProvider`** restricts the attunable set to that allowlist. That set covers in-process **`arcanum-internal`** and external **`mcp.json`** tools **and `browse_web`**. Exactly three hub-native tools are exempt: `get_local_system_time`, `get_arcanum_system_info`, and `run_spell_script`; `browse_web` is built in but is **not** a fourth exemption. Empty or absent `declaredTools` leaves every otherwise-enabled tool available. Excluded MCP names are logged at **Debug**. A dependency spell's `declaredTools` describe the tools it needs when invoked directly; when pulled in as a dependency it does **not** widen the allowlist — the **primary** spell retains control over which tools the Master may wield.
+**Artifact Attunement:** When the active spell's **`SPELL.json`** `declaredTools` array is non-empty, **`WizardIntelligenceProvider`** restricts the attunable set to that allowlist. That set covers in-process **`arcanum-internal`** and external **`mcp.json`** tools plus **`web_search` / `read_url`**. Exactly three hub-native tools are exempt: `get_local_system_time`, `get_arcanum_system_info`, and `run_spell_script`; native web tools are built in but are not additional exemptions. Empty or absent `declaredTools` leaves every otherwise-enabled tool available. Excluded MCP names are logged at **Debug**. A dependency spell's `declaredTools` describe the tools it needs when invoked directly; when pulled in as a dependency it does **not** widen the allowlist — the **primary** spell retains control over which tools the Master may wield.
 
-Spell validation recognizes all four built-in names, so declaring `browse_web` does not produce a false "not found in configured MCP servers" warning. Dry-run cast preview applies the same browse enablement and attunement decision as live inference, plus the existing MCP `ArtifactAttunement` intersection.
+Spell validation recognizes all canonical built-in names plus the legacy `browse_web` alias, so web-tool declarations do not produce false "not found in configured MCP servers" warnings. Dry-run cast preview canonicalizes the alias to `read_url` and applies the same web enablement and attunement decision as live inference, plus the existing MCP `ArtifactAttunement` intersection.
 
 **Attunement × Forbidden Arts invariant:** Artifact Attunement only **intersects** the host MCP toolset with `declaredTools` — it never widens it or introduces tools the host does not already expose. **`ToolPolicy.NoForbiddenArts`** (request-driven) may strip Forbidden Arts from the *advertised* set, but a spell that lists a Forbidden Art in `declaredTools` still receives that tool in the advertisement when the request does not use `NoForbiddenArts`. The **Ward** gate runs at **execution** time (after advertisement) and is orthogonal: a tool may be advertised yet blocked until an operator resolves the ward (or unattended mode auto-denies). While Wards are enabled, `execute_command`, `apply_patch`, and `workspace_check` are intrinsic Ward candidates regardless of attunement or operator additions under `Arcanum:Security:Ward:ForbiddenArts`.
 
@@ -1775,7 +1775,7 @@ Sensitive paths are restricted to the current user at creation time via `SecureF
 - **Breach recording:** a detected kill, or a failure to apply/assign limits, records a `ResourceLimit` breach (**`ISanctumGuard.RecordResourceLimitBreachAsync`**, resolving the campaign by workspace path) and returns a sanitized denial (**`ResourceLimitDenialFormatter`**) — e.g. *"Execution blocked: this tool exceeded the CPU time limit (30s). The invocation has been terminated and recorded as a breach."* The message never contains signal numbers, PIDs, cgroup paths, Job Object handles, or stack traces; that detail is available only in the breach audit log via the Sanctum breaches API.
 - **Known gap:** cgroups v2 covers the entire process subtree (grandchildren included), but the `ulimit`/setrlimit path only bounds the direct child — a grandchild spawned by a tool script is not rlimit-bound on macOS (or on Linux when cgroups fell back to setrlimit). On Windows, Job Objects cover the job's process tree once assigned, subject to the post-start assign race above.
 
-**OS filesystem jail (macOS-ARM beta posture):** The same **`CappedChildProcessRunner`** composes env scrub → resource limits → **filesystem jail** → cwd / output caps / cancellation. This is a **filesystem sandbox only** — it does **not** prevent network use by network-capable binaries. Sanctum network policy still applies to model-supplied network targets such as `browse_web`; CommLink enforces its URL policy at dispatch. `execute_command` network behavior is **not** solved by the FS jail.
+**OS filesystem jail (macOS-ARM beta posture):** The same **`CappedChildProcessRunner`** composes env scrub → resource limits → **filesystem jail** → cwd / output caps / cancellation. This is a **filesystem sandbox only** — it does **not** prevent network use by network-capable binaries. Sanctum network policy still applies to model-supplied network targets such as `read_url`; CommLink enforces its URL policy at dispatch. `execute_command` network behavior is **not** solved by the FS jail.
 - **macOS (active):** wraps the child with deprecated **`/usr/bin/sandbox-exec`** and an owner-only Seatbelt profile (deny-default + explicit allows). Access classes: workspace / Sanctum `AllowedPaths` → read+write; spell script roots (incl. global spells) → **read+execute** (no write unless also an AllowedPath/workspace); system runtime (`/bin`, `/usr`, `/System`, …) → read+execute, **no write**; per-invocation owner-only **`TMPDIR`** → read+write (no broad `/tmp`). Directory walk uses `(allow file-read* (vnode-type DIRECTORY))` for getcwd/dyld path resolution — **not** whole-volume file-content read. **Critical invariant:** no `(subpath "/")` / `(literal "/")` for file content. Network is explicitly allowed in the filesystem-only profile. Apple may remove the deprecated tool; absence or profile setup failure fail-closes unless `Arcanum:Security:AllowUnsandboxedToolChildren=true`. Distinct from the Linux internal helper argv `__sandbox-exec`.
 - **Linux (inactive for this beta):** Landlock / internal **`__sandbox-exec`** helper code remains **in-tree but is not invoked** (probe-first: not activated until Landlock-backed end-to-end wiring is validated). Default is fail-closed with the public message: *"Linux filesystem jail is not active in this beta. Set Arcanum:Security:AllowUnsandboxedToolChildren=true to run without FS confinement, or use macOS for sandboxed command tools."* Escape hatch runs unsandboxed with a warning; resource limits still apply where available. Do **not** conflate this helper with macOS `/usr/bin/sandbox-exec`.
 - **Windows (no FS jail):** never described as filesystem-sandboxed. Result status is `NoFilesystemJail` (Job Objects only) when Sanctum path-boundary is off. Health/`arcanum doctor` report this as **Degraded** (documented ≠ Healthy). When Sanctum is **`Enabled` and `EnforcePathBoundary`**, `execute_command` / `run_spell_script` return `DeniedByWindowsSanctum` (*"Child process filesystem sandbox is unavailable on Windows while Sanctum path-boundary enforcement is enabled…"*). The escape hatch **does not** bypass that Sanctum denial.
@@ -1968,31 +1968,64 @@ Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight
 
 **Key types:** `BatchesSettings`, `IBatchRepository`, `BatchRecord`, `BatchStatuses`, `BatchRepository` (Infrastructure), `BatchProcessingService`, `IBatchRecoveryService` / `BatchRecoveryService`, `BatchRequestCounter`, `OpenAiBatchRequest`, `OpenAiBatchObject`, `OpenAiBatchRequestCounts`, `OpenAiBatchListResponse`, `BatchJsonlRequestLine`, `BatchJsonlResponseLine`, `BatchJsonlResponseBody`, `BatchJsonlError`, `BatchJsonlParseError`.
 
-### 11.27 Built-in web browsing tool (`browse_web`)
+### 11.27 Native web research (`web_search` / `read_url`)
 
-**Purpose:** gives the inference toolset and the CLI a way to fetch a web page and extract its title, visible text, and top absolute links — for fact-checking, doc lookup, and link discovery — without an external MCP server. Disabled by default; gated by `Arcanum:Features:WebBrowsing`.
+**Purpose and gate:** the provider-neutral `IWebResearchProvider` contract supports synthesized
+search and direct URL reading without an MCP server or embedded browser. The family is disabled by
+default and gated by `Arcanum:Features:WebBrowsing`. `Arcanum:Integrations:WebResearch` selects the
+search provider and `sonar` / `sonar-pro` model; timeouts, redirect counts, body caps, result caps,
+and citation/link limits remain code-owned.
 
-**Surface:**
+**Tool surface:** new inference catalogs advertise `web_search({query})` and
+`read_url({url})`. Both are hand-authored `AIFunction` schemas and return source-generated,
+structured JSON envelopes bounded below the generic tool-result materializer ceiling.
+`web_search` returns a synthesized, untrusted-framed answer, ordered one-based citations, truncation
+metadata, and provider usage. `read_url` returns untrusted-framed Markdown, final URL, title, and
+bounded links. Artifact Attunement applies to both. A legacy spell declaration of `browse_web`
+canonicalizes to `read_url`; `browse_web` remains on direct invoke and the existing CLI only for
+compatibility and is not advertised in new model toolsets.
 
-- Inference toolset: when enabled, `WizardIntelligenceProvider.BuildToolSetWithMcpAsync` appends an `ArcanumBrowseWebTool` only when the primary spell has no non-empty `declaredTools` allowlist or explicitly declares `browse_web`. It is built in but attunable; only local time, system info, and spell-script tools are exempt (§10.2.1).
-- Diagnostic endpoint: `POST /api/tools/invoke` (§4.3) takes `{ "toolName": "browse_web", "arguments": { "url": "...", "maxLinks": 10 } }` and returns the raw tool output as JSON. The CLI `arcanum browse <url>` command calls this endpoint and renders the title, a content preview, and the link list with `Spectre.Console`.
+**Providers:** `PerplexityWebProvider` performs one non-streaming
+`POST https://api.perplexity.ai/v1/sonar` call and preserves provider citation indices/order,
+search-result metadata, token counts, query counts, and reported cost. It performs no automatic
+retry of the billable POST. `LocalHttpWebProvider` follows a bounded number of manually validated
+redirects, accepts static textual content, and uses `HtmlAgilityPack` to remove active/hidden
+content and convert headings, prose, lists, links, quotes, and code to bounded Markdown. It never
+executes JavaScript and no Playwright/Puppeteer/Chromium dependency is permitted.
 
-**Tool contract (`ArcanumBrowseWebTool : AIFunction`):** hand-authored `JsonDocument` schema (AOT-safe — no `AIFunctionFactory.Create` reflection), `ToolName = "browse_web"`. Parameters: `url` (string, required), `maxLinks` (int, optional, default `10`). Returns a `BrowseWebResult` JSON object: `{ "title", "content", "links": [...] }`.
+**Credential boundary:** Perplexity keys are resolved at invocation time. An exact configured
+environment reference (default `ARCANUM_PERPLEXITY_API_KEY`) takes precedence; otherwise
+`IWebResearchCredentialStore` reads the OS credential manager with an owner-only,
+Data Protection-encrypted fallback. `arcanum key provider set|status|delete perplexity` manages the
+local credential without an HTTP call, and no command, configuration DTO, log, or metric exposes
+the key value.
 
-**Egress security (two layers, both always on):**
+**Egress and campaign policy:** both named clients use
+`OutboundUrlGuard.CreateUntrustedEgressHandler()`, so DNS-rebind, loopback, private, link-local, and
+CGNAT targets are rejected at connection time. `read_url` also validates the initial URL and every
+redirect before sending. `ToolExecutionPipeline` applies the campaign Sanctum network policy to
+model-supplied `read_url` targets and the legacy alias before egress.
 
-1. **`OutboundUrlGuard.ValidateUntrustedUrlAsync`** runs before the fetch — rejects loopback, private (RFC 1918), link-local (169.254/10), CGNAT (100.64/10), and `::1`/`fe80::` hosts, with DNS-rebind IP pinning on the actual `SocketsHttpHandler` connection (§11.11). The named `HttpClient(ArcanumBrowseWeb)` is built with `OutboundUrlGuard.CreateUntrustedEgressHandler()` as its primary handler, so even a guard-bypassing redirect target is still connection-pinned to a public IP.
-2. **Sanctum campaign network policy** — `ToolExecutionPipeline.ValidateToolPathsAndNetworkAsync` has a `case "browse_web":` arm that calls `ISanctumGuard.ValidateNetworkAsync(campaignId, targetUrl, toolName, ct)` against the active campaign's `NetworkPolicy` (`AllowAll` / `AllowList` / `DenyAll`). A non-allowed URL surfaces as a Sanctum breach and short-circuits the tool call before any egress (§11.15).
+**Deadlines and errors:** each complete provider operation has a strict 15-second linked deadline,
+including credential resolution, redirects, headers, and bounded body reading; caller cancellation
+is propagated rather than relabeled. Stable `WebResearch.*` errors distinguish missing credential,
+authentication-or-credits failure, provider-declared quota exhaustion, rate limiting, invalid
+response, timeout, invalid/blocked URL, redirect overflow, unsupported content, bot protection,
+JavaScript-only shells, and empty content. HTTP 403 and effectively empty application shells return
+a structured `read_url` error with `suggestedTool:"web_search"`.
 
-**Content capping:** the response body is read through `ReadCappedStringAsync` up to a code-owned byte cap. The cap is applied at the read loop, not on `Content-Length`, so chunked/streaming responses are bounded too. Content beyond the cap is truncated with a `...(truncated)` marker and still returned to the model (partial content is more useful than a hard reject).
+**Telemetry and DI:** providers record aggregate-only request outcome, duration, prompt/completion/
+total/reasoning/citation tokens, search-query count, and reported cost through `ArcanumMetrics`;
+query text, URLs, response bodies, and credentials never become tags. Endpoint mapping eagerly
+starts `TelemetryService` before traffic is accepted. `WebResearchProviderCatalog` rejects
+duplicate names and is injected into the tools. Separate Perplexity and local HTTP named clients
+use the untrusted-egress handler with system proxies disabled (so DNS validation/pinning cannot be
+bypassed) and infinite client timeout because the linked operation-level deadline is authoritative.
 
-**HTML parsing:** uses `HtmlAgilityPack` (added to `RetroDownfall.Arcanum.Api.csproj`). The extractor walks `//body` (falling back to the document root), skips `script`/`style`/`noscript`/`nav`/`header`/`footer` subtrees (including nested text), and concatenates visible text nodes with whitespace normalization. Link extraction resolves relative `href`s against the page's base URI, deduplicates, filters to `http(s)` only, and caps at `maxLinks` (clamped 0–100). `AOT` cleanliness is verified by `./scripts/verify-aot-il-warnings.sh`; `HtmlAgilityPack` 1.12.x ships AOT-compatible assemblies.
-
-**Timeouts and errors:** the named `HttpClient` uses a code-owned timeout. On timeout the tool returns `WebBrowsing.Timeout` (504 via the `/api/tools/invoke` error path); on SSRF block `WebBrowsing.SsrfBlocked` (403); on a missing/malformed/non-`http(s)` URL `WebBrowsing.InvalidUrl` (400). Non-success HTTP statuses are returned as a `BrowseWebResult` with the status code in `content` (the model can react to a 404/500), not as a tool exception — keeping the turn resilient. Unexpected exceptions are logged and surfaced to the model as a generic `[Tool error: ...]` string so the turn continues.
-
-**DI registration:** `AddHttpClient(ArcanumBrowseWebConstants.HttpClientName, ...)` in `ServiceCollectionExtensions.AddArcanumInfrastructure`, configured with the clamped timeout and `OutboundUrlGuard.CreateUntrustedEgressHandler()` as the primary handler. `IBuiltInToolRegistry` (default `BuiltInToolRegistry`) is registered `AddScoped` and resolves `browse_web` only when `WebBrowsing.Enabled` is true.
-
-**Key types:** `WebBrowsingSettings`, `ArcanumBrowseWebTool` (`Api/Intelligence/Tools/`), `ArcanumBrowseWebConstants` (`Infrastructure/Intelligence/`), `BrowseWebResult` (`Api/Models/`), `IBuiltInToolRegistry` / `BuiltInToolRegistry` (`Api/Intelligence/Tools/`), `ToolInvokeRequest` / `ToolInvokeResponse` (`Api/Models/`), `ToolInvokeEndpoints` (`Api/Intelligence/Tools/`), `BrowseCommand` (`Cli/Commands/`).
+**Key types:** `IWebResearchProvider`, `IWebResearchProviderCatalog`, `WebResearchProviderCatalog`,
+`PerplexityWebProvider`, `LocalHttpWebProvider`, `WebResearchCredentialStore`,
+`ArcanumWebSearchTool`, `ArcanumReadUrlTool`, `WebToolResultSerializer`, and
+`WebResearchTelemetry`.
 
 ---
 
@@ -2024,7 +2057,7 @@ Collision behavior is fail-closed and provenance-preserving: blocked names remai
 
 **Invoke path:** after external-only discovery (statuses + optional `serverName` disambiguation; `arcanum-internal` excluded **before** candidate counting so an internal name collision never yields `AmbiguousTool`), the service calls **`IMcpConnectionManager.GetToolAsync(serverName, toolName, workingDirectory)`** to obtain the `AIFunction` bound to that managed server's own client — **never** re-resolving by bare name on the merged `GetAvailableToolsAsync` inference surface. `McpBridgeTool` remains `internal` to Infrastructure; the API project treats the result as `AIFunction`. The result text is parsed as JSON when possible (else wrapped as a JSON string) and returned as `McpToolInvokeResponse` { `result`, `serverName`, `toolName`, `durationMs`, `truncated` }. A tool that returns `isError: true` makes `McpBridgeTool` throw `InvalidOperationException`, which the service maps to **400** `Mcp.ToolError`.
 
-**Built-ins unchanged:** `POST /api/tools/invoke` (§11.27) continues to expose only the low-risk built-in tools (`get_local_system_time`, `get_arcanum_system_info`, `browse_web` when enabled) and does **not** go through Ward/Sanctum — acceptable only because that registry is deliberately limited. The two endpoints are complementary: `/api/tools/invoke` for built-ins, `/api/mcp/tools/invoke` for external MCP.
+**Built-ins unchanged:** `POST /api/tools/invoke` (§11.27) exposes only the bounded built-in tools (`get_local_system_time`, `get_arcanum_system_info`, and `web_search` / `read_url` when enabled); it also accepts `browse_web` as an invocation-only compatibility alias. It does **not** go through Ward/Sanctum — acceptable only because the registry is deliberately limited and web egress retains the unconditional SSRF guard. The two endpoints are complementary: `/api/tools/invoke` for built-ins, `/api/mcp/tools/invoke` for external MCP.
 
 **Key types:** `McpToolInvokeRequest` / `McpToolInvokeResponse` (`Api/Models/`), `DiagnosticMcpInvocationService` / `DiagnosticMcpInvocationOutcome` (`Api/Mcp/`), `DiagnosticMcpInvocationEndpoints` (`Api/Mcp/`), mirrored The Forge DTOs `McpToolInvokeRequest` / `McpToolInvokeResponse` (`TheForge.Core/Models/`) + `TheForgeJsonContext` registrations.
 

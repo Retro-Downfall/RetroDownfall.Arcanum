@@ -74,14 +74,13 @@ public sealed class ArcanumBrowseWebTool : AIFunction
     {
         if (!TryGetStringArgument(arguments, "url", out string? url) || string.IsNullOrWhiteSpace(url))
         {
-            return JsonSerializer.Serialize(
+            return WebToolResultSerializer.Serialize(
                 new BrowseWebResult
                 {
                     Title = string.Empty,
                     Content = $"[{ErrorCodes.WebBrowsing.InvalidUrl}] URL is required.",
                     Links = [],
-                },
-                ArcanumJsonContext.Default.BrowseWebResult);
+                });
         }
 
         WebBrowsingSettings settings = _options.Value.ResolveWebBrowsing();
@@ -100,26 +99,24 @@ public sealed class ArcanumBrowseWebTool : AIFunction
                 "browse_web SSRF guard blocked a request ({ErrorCode}).",
                 validation.Error.Code);
 
-            return JsonSerializer.Serialize(
+            return WebToolResultSerializer.Serialize(
                 new BrowseWebResult
                 {
                     Title = string.Empty,
                     Content = $"[{ErrorCodes.WebBrowsing.SsrfBlocked}] {validation.Error.Message}",
                     Links = [],
-                },
-                ArcanumJsonContext.Default.BrowseWebResult);
+                });
         }
 
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out Uri? targetUri))
         {
-            return JsonSerializer.Serialize(
+            return WebToolResultSerializer.Serialize(
                 new BrowseWebResult
                 {
                     Title = string.Empty,
                     Content = $"[{ErrorCodes.WebBrowsing.InvalidUrl}] URL is malformed.",
                     Links = [],
-                },
-                ArcanumJsonContext.Default.BrowseWebResult);
+                });
         }
 
         HttpClient client = _httpClientFactory.CreateClient(ArcanumBrowseWebConstants.HttpClientName);
@@ -132,14 +129,13 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
             if (!response.IsSuccessStatusCode)
             {
-                return JsonSerializer.Serialize(
+                return WebToolResultSerializer.Serialize(
                     new BrowseWebResult
                     {
                         Title = string.Empty,
                         Content = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}.",
                         Links = [],
-                    },
-                    ArcanumJsonContext.Default.BrowseWebResult);
+                    });
             }
 
             MediaTypeHeaderValue? contentType = response.Content.Headers.ContentType;
@@ -166,18 +162,17 @@ public sealed class ArcanumBrowseWebTool : AIFunction
 
             BrowseWebResult result = Extract(html, targetUri, maxLinks);
 
-            return JsonSerializer.Serialize(result, ArcanumJsonContext.Default.BrowseWebResult);
+            return WebToolResultSerializer.Serialize(result);
         }
         catch (OperationCanceledException ex) when (ex.InnerException is TimeoutException)
         {
-            return JsonSerializer.Serialize(
+            return WebToolResultSerializer.Serialize(
                 new BrowseWebResult
                 {
                     Title = string.Empty,
                     Content = $"[{ErrorCodes.WebBrowsing.Timeout}] Request timed out.",
                     Links = [],
-                },
-                ArcanumJsonContext.Default.BrowseWebResult);
+                });
         }
         catch (OperationCanceledException)
         {
@@ -185,14 +180,13 @@ public sealed class ArcanumBrowseWebTool : AIFunction
         }
         catch (HttpRequestException ex) when (IsBlockedByOutboundUrlGuard(ex.Message))
         {
-            return JsonSerializer.Serialize(
+            return WebToolResultSerializer.Serialize(
                 new BrowseWebResult
                 {
                     Title = string.Empty,
                     Content = $"[{ErrorCodes.WebBrowsing.SsrfBlocked}] Outbound URL is not permitted.",
                     Links = [],
-                },
-                ArcanumJsonContext.Default.BrowseWebResult);
+                });
         }
         catch (Exception ex)
         {
@@ -200,14 +194,13 @@ public sealed class ArcanumBrowseWebTool : AIFunction
                 "browse_web failed; exception type {ExceptionType}.",
                 ex.GetType().FullName);
 
-            return JsonSerializer.Serialize(
+            return WebToolResultSerializer.Serialize(
                 new BrowseWebResult
                 {
                     Title = string.Empty,
                     Content = ToolExecutionPipeline.PublicToolFailureMessage(ToolName),
                     Links = [],
-                },
-                ArcanumJsonContext.Default.BrowseWebResult);
+                });
         }
     }
 
