@@ -127,14 +127,14 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
 
         bool filtered = !string.IsNullOrEmpty(relativePath);
 
-        List<(string ChunkId, string RelativePath, int ChunkIndex, string Content, int CharOffset, int CharLength, string IndexedAtRaw, string FileLastWriteTimeRaw)> rows = [];
+        List<(string ChunkId, string RelativePath, int ChunkIndex, string Content, int CharOffset, int CharLength, string IndexedAtRaw, string FileLastWriteTimeRaw, int StartLine, int EndLine)> rows = [];
 
         await using (DbCommand cmd = connection.CreateCommand())
         {
 
             cmd.CommandText =
                 """
-                SELECT "ChunkId", "RelativePath", "ChunkIndex", "Content", "CharOffset", "CharLength", "IndexedAt", "FileLastWriteTime"
+                SELECT "ChunkId", "RelativePath", "ChunkIndex", "Content", "CharOffset", "CharLength", "IndexedAt", "FileLastWriteTime", "StartLine", "EndLine"
                 FROM "workspace_file_chunks"
                 WHERE "WorkspacePath" = @workspacePath
                 """;
@@ -169,7 +169,9 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
                     reader.GetInt32(4),
                     reader.GetInt32(5),
                     reader.GetString(6),
-                    reader.GetString(7)));
+                    reader.GetString(7),
+                    reader.GetInt32(8),
+                    reader.GetInt32(9)));
 
             }
 
@@ -193,7 +195,9 @@ public sealed class WorkspaceIndexInspectorService : IWorkspaceIndexInspectorSer
                 r.CharOffset,
                 r.CharLength,
                 ParseIsoOrMin(r.IndexedAtRaw),
-                ParseIsoOrMin(r.FileLastWriteTimeRaw)))
+                ParseIsoOrMin(r.FileLastWriteTimeRaw),
+                r.StartLine,
+                r.EndLine))
             .ToArray();
 
         return new WorkspaceFileChunkPage(

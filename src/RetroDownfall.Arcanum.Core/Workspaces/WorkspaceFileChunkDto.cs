@@ -16,4 +16,6 @@ public sealed record WorkspaceFileChunkDto(
     int CharOffset,
     int CharLength,
     DateTimeOffset IndexedAt,
-    DateTimeOffset FileLastWriteTime);
+    DateTimeOffset FileLastWriteTime,
+    int StartLine = 1,
+    int EndLine = 1);

@@ -50,6 +50,7 @@ internal static class WorkspaceIndexInspectorEndpoints
         string id,
         IWorkspaceRegistry registry,
         IWorkspaceIndexInspectorService inspector,
+        IWorkspaceIndexRuntimeStatusProvider runtimeStatusProvider,
         IOptionsMonitor<ArcanumSettings> options,
         WeaveIndexAvailability weaveIndexAvailability,
         HttpContext ctx)
@@ -81,6 +82,18 @@ internal static class WorkspaceIndexInspectorEndpoints
         WorkspaceIndexStatusDto dto = await inspector
             .GetStatusAsync(workspace, vectorMode, vectorDiagnostic, indexingEnabled, ctx.RequestAborted)
             .ConfigureAwait(false);
+
+        WorkspaceIndexRuntimeStatus runtime = runtimeStatusProvider.GetRuntimeStatus(workspace.Path);
+
+        dto = dto with
+        {
+            Watching = runtime.Watching,
+            Degraded = runtime.Degraded,
+            Overflowed = runtime.Overflowed,
+            Reconciling = runtime.Reconciling,
+            LastEventAt = runtime.LastEventAt,
+            LastSuccessfulIndexAt = runtime.LastSuccessfulIndexAt,
+        };
 
         return Results.Ok(
             ApiResponse<WorkspaceIndexStatusDto>.FromResult(Result<WorkspaceIndexStatusDto>.Success(dto), traceId));

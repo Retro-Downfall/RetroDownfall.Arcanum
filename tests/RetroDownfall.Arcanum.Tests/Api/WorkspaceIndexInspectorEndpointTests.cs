@@ -128,6 +128,14 @@ public sealed class WorkspaceIndexInspectorEndpointTests
 
         Assert.Contains("not currently persisted", status.SkippedFilesNote, StringComparison.Ordinal);
 
+        Assert.True(status.Watching);
+
+        Assert.False(status.Degraded);
+
+        Assert.False(status.Overflowed);
+
+        Assert.False(status.Reconciling);
+
     }
 
     [SkippableFact]

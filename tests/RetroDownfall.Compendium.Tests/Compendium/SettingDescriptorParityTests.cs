@@ -192,6 +192,35 @@ public sealed class SettingDescriptorParityTests
         Assert.Equal(clampName, descriptor.ClampName);
     }
 
+    [Theory]
+    [InlineData(
+        "integrations.embeddings.codebaseIndexing.watcherDebounceMilliseconds",
+        50,
+        5_000,
+        nameof(ArcanumSettingClamps.EmbeddingsCodebaseWatcherDebounceMilliseconds))]
+    [InlineData(
+        "integrations.embeddings.codebaseIndexing.maxWatchers",
+        0,
+        128,
+        nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxWatchers))]
+    [InlineData(
+        "integrations.embeddings.codebaseIndexing.reconciliationIntervalMinutes",
+        1,
+        1_440,
+        nameof(ArcanumSettingClamps.EmbeddingsCodebaseReconciliationIntervalMinutes))]
+    public void Codebase_watcher_descriptor_matches_contract_bounds(
+        string key,
+        double min,
+        double max,
+        string clampName)
+    {
+        SettingDescriptor descriptor = Assert.Single(SettingDescriptors.All, d => d.Key == key);
+
+        Assert.Equal(min, descriptor.Min);
+        Assert.Equal(max, descriptor.Max);
+        Assert.Equal(clampName, descriptor.ClampName);
+    }
+
     private static object GetMinValue(Type type)
     {
 

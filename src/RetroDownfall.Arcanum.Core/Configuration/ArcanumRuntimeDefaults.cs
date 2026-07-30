@@ -286,6 +286,8 @@ public static class ArcanumRuntimeSettings
         FeatureSettings features = settings.Features ?? new FeatureSettings();
         EmbeddingIntegrationSettings integration =
             settings.Integrations?.Embeddings ?? new EmbeddingIntegrationSettings();
+        CodebaseIndexingIntegrationSettings codebaseIndexing =
+            integration.CodebaseIndexing ?? new CodebaseIndexingIntegrationSettings();
         bool sagaEnabled = features.Saga || features.SagaExtraction;
         bool enabled =
             features.Embeddings
@@ -300,6 +302,12 @@ public static class ArcanumRuntimeSettings
             Provider = integration.Provider,
             Model = integration.Model,
             Dimensions = integration.Dimensions,
+            Codebase = defaults.Codebase with
+            {
+                WatcherDebounceMilliseconds = codebaseIndexing.WatcherDebounceMilliseconds,
+                MaxWatchers = codebaseIndexing.MaxWatchers,
+                ReconciliationIntervalMinutes = codebaseIndexing.ReconciliationIntervalMinutes,
+            },
             SessionSearchEnabled = features.SessionSearch,
             CodebaseRetrievalEnabled = features.CodebaseRetrieval,
             SagaEnabled = sagaEnabled,

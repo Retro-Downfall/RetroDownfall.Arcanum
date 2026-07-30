@@ -365,8 +365,8 @@ Single-host failure behavior:
 | POST | `/api/workspaces/{id}/files/directory` | Create a directory, including parents (`ApiResponse<DirectoryCreateResult>`; **201**; required `relativePath`; §8.17). |
 | POST | `/api/workspaces/{id}/files/divine` | Semantic search over a workspace's indexed files (`ApiResponse<WorkspaceSearchResult[]>`; body `WorkspaceSemanticSearchRequest` {. |
 | POST | `/api/workspaces/{id}/files/index` | Kick off an immediate background re-index of the workspace via `WorkspaceIndexingService.IndexNowAsync` (`ApiResponse<bool>`; **202**. |
-| GET | `/api/workspaces/{id}/files/index/status` | Read-only indexing status for a workspace (`ApiResponse<WorkspaceIndexStatusDto>`: vector mode/diagnostic, `IndexingEnabled`, total. |
-| GET | `/api/workspaces/{id}/files/chunks` | Bounded, paginated chunk previews for a workspace (`ApiResponse<WorkspaceFileChunkPage>`; optional `relativePath` filter, clamped. |
+| GET | `/api/workspaces/{id}/files/index/status` | Read-only indexing status for a workspace (`ApiResponse<WorkspaceIndexStatusDto>`): vector mode/diagnostic, `IndexingEnabled`, durable file/chunk counts, and volatile `Watching`/`Degraded`/`Overflowed`/`Reconciling` plus last-event/last-success timestamps. |
+| GET | `/api/workspaces/{id}/files/chunks` | Bounded, paginated chunk previews for a workspace (`ApiResponse<WorkspaceFileChunkPage>`; optional `relativePath` filter, clamped) including character offsets and one-based source line ranges. |
 | GET | `/api/unseen-servant/jobs` | List Unseen Servant jobs with base and effective polling intervals (**canonical** Unseen Servant pacer API; §8.15). |
 | POST | `/api/unseen-servant/jobs/{name}/initiative` | Set adaptive initiative (dynamic interval) for a job by name; returns updated status. |
 | GET | `/api/daemons` | List registered daemon jobs (`ApiResponse<DaemonJobInfo[]>`; **plural** `daemons` — registry; §8.15). |
@@ -628,7 +628,7 @@ The Grimoire is the primary persistence authority, but not every durable byte be
 | Session attachment metadata | `SessionAttachments` | Raw SQL through `ISessionAttachmentStore`; bytes and lifecycle are in §10.2.5. |
 | Session context pins | `SessionContextPins` | Raw SQL through `ISessionContextPinStore`; durable metadata only. Content is revalidated and materialized from its authoritative source on every turn (§10.2.6). |
 | OpenAI batch metadata | `Batches` | No request-count columns; `GET` derives counts from input/output/error files (§11.21). |
-| Embedding and Saga state | `entry_embeddings`[+`_vec`], `workspace_file_chunks`, `workspace_file_embeddings`[+`_vec`], `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks` | Created by `WeaveSchemaInitializer`; reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
+| Embedding and Saga state | `entry_embeddings`[+`_vec`], `workspace_file_chunks`, `workspace_file_embeddings`[+`_vec`], `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks` | Created and additively reconciled by `WeaveSchemaInitializer`; workspace chunks persist stable content-derived IDs, character offsets, and one-based line ranges. Reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
 | Entry pinning | `Entries.IsPinned` | Pinned entries survive read-time compression and remain available to inference. |
 | Mandatory `apply_patch` receipt | deterministic `Entries` rows | Exact assistant `ToolCall` then system `ToolResult`; no receipt table (§10.7.4). |
 | Daemon execution history | process memory | `InMemoryDaemonExecutionRepository`; restart clears it. |
@@ -3015,7 +3015,7 @@ All five capabilities are implemented (§21.1–§21.2 foundation; §21.6–§21
 
 **Layering:** `IWeaveService` / `WeaveService` (**Api** — depends on `IEmbeddingGeneratorFactory` / OpenAI SDK packages, mirroring `ChatClientFactory`). `IDivinationService` / `DivinationService` + `WeaveSchemaInitializer` + `SqliteVecExtensionLoader` + `WeaveIndexAvailability` (**Infrastructure**). `EmbeddingBlobCodec` (**Core**).
 
-**`IWeaveService`:** `IsAvailable` from live `IOptionsMonitor` (`Enabled` + Provider + Model). Disabled → `Embeddings.FeatureDisabled` (no HTTP). Provider/timeout → sanitized `Embeddings.ProviderUnavailable`. `EmbedBatchAsync` sequential by `BatchSize`. `ChunkAsync` naive sliding window (always runs).
+**`IWeaveService`:** `IsAvailable` from live `IOptionsMonitor` (`Enabled` + Provider + Model). Disabled → `Embeddings.FeatureDisabled` (no HTTP). Provider/timeout → sanitized `Embeddings.ProviderUnavailable`. `EmbedBatchAsync` sequential by `BatchSize`. General embedding inputs retain `ChunkAsync` sliding windows; workspace files use the deterministic line-preserving `WorkspaceCodeChunker` described in §21.7.
 
 **Factory:** resolves `Arcanum:Integrations:Embeddings:Provider`/`Model` as `OpenAICompatible` (including Ollama `/v1`); leases are cached for the process lifetime.
 
@@ -3034,9 +3034,13 @@ Per feature: durable **BLOB** table (always) + optional **`vec0`** virtual table
 Public opt-ins are `Arcanum:Features:Embeddings`, `Arcanum:Features:SessionSearch`,
 `Arcanum:Features:CodebaseRetrieval`, `Arcanum:Features:Saga`,
 `Arcanum:Features:SagaExtraction`, and `Arcanum:Features:SemanticSpellRouting`; provider/model/dimensions are under
-`Arcanum:Integrations:Embeddings` (§3.4). Retrieval thresholds, batching, chunking, queue cadence,
-and extraction/routing mechanics are code-owned. Validation requires provider/model facts whenever
-an embedding-backed feature is enabled.
+`Arcanum:Integrations:Embeddings` (§3.4). The same section exposes
+`CodebaseIndexing:WatcherDebounceMilliseconds` (default 300, clamp 50–5,000),
+`CodebaseIndexing:MaxWatchers` (default 32, clamp 0–128; zero disables watchers), and
+`CodebaseIndexing:ReconciliationIntervalMinutes` (default 60, clamp 1–1,440). File eligibility,
+traversal limits, chunk size, retrieval thresholds, batching, queue cadence, and extraction/routing
+mechanics remain code-owned. Validation requires provider/model facts whenever an embedding-backed
+feature is enabled.
 
 ### 21.4 Graceful degradation matrix
 
@@ -3049,6 +3053,8 @@ an embedding-backed feature is enabled.
 | `Dimensions` changed after data | Warning only; no auto-truncate |
 | `Arcanum:Features:SessionSearch` = `false` | `EntryWeavingService` idles; `POST /api/sessions/divine` → **503** `Embeddings.FeatureDisabled` |
 | `Arcanum:Features:CodebaseRetrieval` = `false` | `WorkspaceIndexingService` idles; no prompt injection; divine/index → **503** |
+| Watcher unavailable or watcher cap reached | Workspace status is `Watching=false`, `Degraded=true`; bounded periodic reconciliation remains active |
+| Watcher overflow/error or pending-event cap reached | Mark potentially stale, expose `Overflowed` for real/cap overflow, discard the lossy event set, and schedule a bounded full reconciliation; polling never stops |
 | No indexed chunks / empty WorkingDirectory | Empty results / skip retrieval — inference continues with `[None]` |
 | `Arcanum:Features:Saga` = `false` | Saga retrieval/divine/read_saga are gated; **browse/delete/stats are not gated** |
 | `Arcanum:Features:SagaExtraction` = `false` | Extraction drops; retrieval/API reads are unaffected |
@@ -3060,7 +3066,7 @@ an embedding-backed feature is enabled.
 
 ### 21.5 Known limitations
 
-Naive chunking; no auto re-index on model/dimension change (use `/api/embeddings/reset`); managed scan budgeted at 50k rows; workspace indexing polls (no `FileSystemWatcher`); Session Divination has no cursor pagination; workspace index is sequential in-process; Saga extraction is naive (no dedupe); pure spell-routing ties break by stable sort only.
+No auto re-index on model/dimension change (use `/api/embeddings/reset`); managed scan budgeted at 50k rows; watcher delivery is advisory and periodic reconciliation remains required; Session Divination has no cursor pagination; workspace index work is sequential per service instance; the parser-free language boundary heuristics are deterministic but not full syntax trees; Saga extraction is naive (no dedupe); pure spell-routing ties break by stable sort only.
 
 **Reset scopes:** `POST /api/embeddings/reset?confirm=true` with optional `scope=all|entry|workspaceFile|saga` (default `all`); unknown scope → **400** `Validation.InvalidBody`.
 
@@ -3072,11 +3078,15 @@ Naive chunking; no auto re-index on model/dimension change (use `/api/embeddings
 
 ### 21.7 Semantic Codebase Retrieval
 
-**Service:** `WorkspaceIndexingService` — idle unless `Arcanum:Features:CodebaseRetrieval` is enabled; registers workspaces from inference `WorkingDirectory`; a code-owned interval plus `IndexNowAsync` drive `POST .../files/index` (**202**). Change detection uses `FileLastWriteTime`; file-count/size/extension limits are code-owned; symlinks are pruned, and orphan cleanup runs only on non-truncated walks. Tables: `workspace_file_chunks` plus embedding BLOB/vec0 companions (§5.4.4).
+**Service:** `WorkspaceIndexingService` — idle unless `Arcanum:Features:CodebaseRetrieval` is enabled. Workspace API registration and inference `WorkingDirectory` registration each request one recursive `FileSystemWatcher`; the registry is clamped by `MaxWatchers` and never creates one watcher per directory. Workspace update/unregister and host shutdown dispose obsolete watchers. Create/change/delete/rename callbacks enter a per-workspace, 4,096-path bounded coalescer. After the clamped debounce window, final filesystem state wins: editor temporary-file rename replacement and out-of-order delete notifications become one target upsert, storms on one path become one action, deleted/renamed-away paths remove chunks and embeddings, and directory events request reconciliation.
+
+Watchers are latency hints, never a security or correctness boundary. Every incremental upsert repeats lexical containment, symlink-component resolution, stable path identity capture, opened-handle identity comparison, extension/ignored-folder checks, and byte/character size caps before reading. A symlink replacement removes previously indexed content without embedding the outside target. Watcher error, native buffer overflow, or pending-path overflow marks the volatile status degraded/potentially stale, discards the lossy action set, and schedules a bounded full scan. `ReconciliationIntervalMinutes` keeps full polling active even with healthy watchers; when watchers cannot be created or the cap is reached, reconciliation is the complete fallback. `IndexNowAsync` and `POST .../files/index` also run the same bounded reconciliation. Full walks retain `MaxFilesToIndex`, `MaxFileSizeChars`, extension, 200,000-step traversal, ignored-directory, cancellation, and symlink limits; orphan cleanup runs only after a non-truncated walk.
+
+**Stable chunks:** `WorkspaceCodeChunker` preserves exact source slices, character offsets, and one-based line ranges; it prefers Markdown headings and common code declaration shapes without a reflection-heavy parser, falls back to bounded line-aware splits, and never separates a UTF-16 surrogate pair. `ChunkId` is deterministic from normalized workspace/path, chunk content, and repeated-content occurrence. A small edit embeds only newly identified chunks; unchanged IDs retain their BLOB/vec0 embeddings while positional/file-time metadata is refreshed. Rename to a different path rebuilds under the new identity and deletes the old path. Tables: `workspace_file_chunks` (`StartLine`/`EndLine` are additively ensured by `WeaveSchemaInitializer`) plus embedding BLOB/vec0 companions (§5.4.4).
 
 **Inference:** `RetrieveSemanticContextAsync` injects `### Semantic Context (Retrieved Codebase)` (DATA); failures → `null` (never fail turn).
 
-**API:** `.../files/divine`, `.../files/index`, read-only inspector `.../index/status` + `.../chunks` (no mutate; preview capped). Errors §4.3.
+**API:** `.../files/divine`, `.../files/index`, read-only inspector `.../index/status` + `.../chunks` (no mutate; preview capped). Status merges durable counts with process-local `Watching`, `Degraded`, `Overflowed`, `Reconciling`, `LastEventAt`, and `LastSuccessfulIndexAt`; chunk previews include line ranges. These workspace-scoped diagnostics intentionally stay on the index-status route rather than changing global health/`doctor`. Errors §4.3.
 
 ### 21.8 Saga (long-term associative memory)
 

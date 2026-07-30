@@ -130,6 +130,29 @@ public sealed record EmbeddingIntegrationSettings
 
     public int Dimensions { get; set; } = 768;
 
+    public CodebaseIndexingIntegrationSettings CodebaseIndexing { get; set; } = new();
+
+}
+
+/// <summary>
+/// Operator-tunable event-driven workspace indexing controls. File eligibility and traversal limits
+/// remain code-owned in <see cref="CodebaseEmbeddingSettings"/>.
+/// </summary>
+public sealed record CodebaseIndexingIntegrationSettings
+{
+
+    /// <summary>Watcher event debounce window in milliseconds. Clamped to 50–5,000.</summary>
+    public int WatcherDebounceMilliseconds { get; set; } = 300;
+
+    /// <summary>
+    /// Maximum active recursive workspace watchers. Zero disables watchers while retaining polling.
+    /// Clamped to 0–128.
+    /// </summary>
+    public int MaxWatchers { get; set; } = 32;
+
+    /// <summary>Periodic correctness reconciliation cadence in minutes. Clamped to 1–1,440.</summary>
+    public int ReconciliationIntervalMinutes { get; set; } = 60;
+
 }
 
 public sealed record McpIntegrationSettings

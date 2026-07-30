@@ -150,6 +150,10 @@ public sealed class GrimoireFixture : IDisposable
 
         StringBuilder combined = new();
 
+        combined.Append("WeaveSchemaInitializer:")
+            .Append(WeaveSchemaInitializer.SchemaVersion)
+            .Append('\n');
+
         foreach (string resourceName in assembly.GetManifestResourceNames()
             .Where(name => name.EndsWith(".sql", StringComparison.Ordinal))
             .OrderBy(name => name, StringComparer.Ordinal))

@@ -5,6 +5,69 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 public sealed class ArcanumSettingClampsTests
 {
 
+    [Theory]
+    [InlineData(-1, 50)]
+    [InlineData(300, 300)]
+    [InlineData(10_000, 5_000)]
+    public void EmbeddingsCodebaseWatcherDebounceMilliseconds_ClampsToSafeRange(int value, int expected)
+    {
+
+        Assert.Equal(expected, ArcanumSettingClamps.EmbeddingsCodebaseWatcherDebounceMilliseconds(value));
+
+    }
+
+    [Theory]
+    [InlineData(-1, 0)]
+    [InlineData(32, 32)]
+    [InlineData(10_000, 128)]
+    public void EmbeddingsCodebaseMaxWatchers_ClampsToSafeRange(int value, int expected)
+    {
+
+        Assert.Equal(expected, ArcanumSettingClamps.EmbeddingsCodebaseMaxWatchers(value));
+
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(60, 60)]
+    [InlineData(10_000, 1_440)]
+    public void EmbeddingsCodebaseReconciliationIntervalMinutes_ClampsToSafeRange(int value, int expected)
+    {
+
+        Assert.Equal(expected, ArcanumSettingClamps.EmbeddingsCodebaseReconciliationIntervalMinutes(value));
+
+    }
+
+    [Fact]
+    public void ResolveEmbeddings_ProjectsCodebaseIndexingConfiguration()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Integrations = new IntegrationSettings
+            {
+                Embeddings = new EmbeddingIntegrationSettings
+                {
+                    CodebaseIndexing = new CodebaseIndexingIntegrationSettings
+                    {
+                        WatcherDebounceMilliseconds = 450,
+                        MaxWatchers = 12,
+                        ReconciliationIntervalMinutes = 90,
+                    },
+                },
+            },
+        };
+
+        CodebaseEmbeddingSettings codebase = settings.ResolveEmbeddings().Codebase;
+
+        Assert.Equal(450, codebase.WatcherDebounceMilliseconds);
+
+        Assert.Equal(12, codebase.MaxWatchers);
+
+        Assert.Equal(90, codebase.ReconciliationIntervalMinutes);
+
+    }
+
     [Fact]
     public void EffectiveInProcessToolOutputCapBytes_respects_json_rpc_margin()
     {

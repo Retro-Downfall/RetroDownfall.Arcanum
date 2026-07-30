@@ -334,8 +334,10 @@ public static class ServiceCollectionExtensions
         // before either service's first tick can run any query.
         services.AddHostedService<EntryWeavingService>();
 
+        services.AddSingleton<IWorkspaceFileWatcherFactory, WorkspaceFileWatcherFactory>();
         services.AddSingleton<WorkspaceIndexingService>();
         services.AddSingleton<IWorkspaceIndexingService>(static sp => sp.GetRequiredService<WorkspaceIndexingService>());
+        services.AddSingleton<IWorkspaceIndexRuntimeStatusProvider>(static sp => sp.GetRequiredService<WorkspaceIndexingService>());
         services.AddHostedService(static sp => sp.GetRequiredService<WorkspaceIndexingService>());
 
         // RAG Phase 4 — Saga extraction is event-driven (enqueued by WizardIntelligenceProvider after a

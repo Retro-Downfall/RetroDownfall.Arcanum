@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -61,7 +62,7 @@ internal static class WorkspaceEndpoints
 
         apiGroup.MapPost(
             "/workspaces",
-            async (IWorkspaceRegistry registry, HttpContext ctx) =>
+            async (IWorkspaceRegistry registry, IWorkspaceIndexingService indexingService, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
@@ -98,6 +99,9 @@ internal static class WorkspaceEndpoints
 
                 if (result.IsSuccess)
                 {
+
+                    indexingService.RegisterWorkspace(result.Value.Path);
+
                     return Results.Created(
                         $"/api/workspaces/{result.Value.Id}",
                         ApiResponse<WorkspaceInfo>.FromResult(result, traceId));
@@ -125,9 +129,17 @@ internal static class WorkspaceEndpoints
 
         apiGroup.MapPut(
             "/workspaces/{id}",
-            async (string id, IWorkspaceRegistry registry, HttpContext ctx) =>
+            async (
+                string id,
+                IWorkspaceRegistry registry,
+                IWorkspaceIndexingService indexingService,
+                HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                WorkspaceInfo? previousWorkspace = await registry
+                    .GetAsync(id, ctx.RequestAborted)
+                    .ConfigureAwait(false);
 
                 UpdateWorkspaceRequest? request;
 
@@ -168,9 +180,24 @@ internal static class WorkspaceEndpoints
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Workspace.NotFound));
                 }
 
-                return result.IsSuccess
-                    ? Results.Ok(ApiResponse<WorkspaceInfo>.FromResult(result, traceId))
-                    : Results.BadRequest(
+                if (result.IsSuccess)
+                {
+
+                    if (previousWorkspace is not null
+                        && !string.Equals(previousWorkspace.Path, result.Value.Path, StringComparison.Ordinal))
+                    {
+
+                        indexingService.UnregisterWorkspace(previousWorkspace.Path);
+
+                    }
+
+                    indexingService.RegisterWorkspace(result.Value.Path);
+
+                    return Results.Ok(ApiResponse<WorkspaceInfo>.FromResult(result, traceId));
+
+                }
+
+                return Results.BadRequest(
                         ApiResponse<WorkspaceInfo>.FromResult(
                             Result<WorkspaceInfo>.Failure(result.Error),
                             traceId));
@@ -180,9 +207,17 @@ internal static class WorkspaceEndpoints
 
         apiGroup.MapDelete(
             "/workspaces/{id}",
-            async (string id, IWorkspaceRegistry registry, HttpContext ctx) =>
+            async (
+                string id,
+                IWorkspaceRegistry registry,
+                IWorkspaceIndexingService indexingService,
+                HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                WorkspaceInfo? workspace = await registry
+                    .GetAsync(id, ctx.RequestAborted)
+                    .ConfigureAwait(false);
 
                 Result<bool> result = await registry
                     .UnregisterAsync(id, ctx.RequestAborted)
@@ -196,9 +231,21 @@ internal static class WorkspaceEndpoints
                         statusCode: ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Workspace.NotFound));
                 }
 
-                return result.IsSuccess
-                    ? Results.NoContent()
-                    : Results.BadRequest(
+                if (result.IsSuccess)
+                {
+
+                    if (workspace is not null)
+                    {
+
+                        indexingService.UnregisterWorkspace(workspace.Path);
+
+                    }
+
+                    return Results.NoContent();
+
+                }
+
+                return Results.BadRequest(
                         ApiResponse<bool>.FromResult(
                             Result<bool>.Failure(result.Error),
                             traceId));

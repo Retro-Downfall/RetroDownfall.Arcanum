@@ -451,6 +451,12 @@ public static class ArcanumSettingClamps
 
     public static int EmbeddingsCodebaseIndexingIntervalMinutes(int value) => Math.Clamp(value, 5, 1_440);
 
+    public static int EmbeddingsCodebaseWatcherDebounceMilliseconds(int value) => Math.Clamp(value, 50, 5_000);
+
+    public static int EmbeddingsCodebaseMaxWatchers(int value) => Math.Clamp(value, 0, 128);
+
+    public static int EmbeddingsCodebaseReconciliationIntervalMinutes(int value) => Math.Clamp(value, 1, 1_440);
+
     public static int EmbeddingsCodebaseMaxRetrievedChunks(int value) => Math.Clamp(value, 1, 50);
 
     public static int EmbeddingsSagaMaxMemoriesPerSession(int value) => Math.Clamp(value, 1, 1_000);

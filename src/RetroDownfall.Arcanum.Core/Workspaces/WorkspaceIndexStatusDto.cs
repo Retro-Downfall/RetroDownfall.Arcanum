@@ -19,4 +19,10 @@ public sealed record WorkspaceIndexStatusDto(
     DateTimeOffset? OldestIndexedAt,
     DateTimeOffset? NewestIndexedAt,
     int? EmbeddingsDimensions,
-    string SkippedFilesNote);
+    string SkippedFilesNote,
+    bool Watching = false,
+    bool Degraded = false,
+    bool Overflowed = false,
+    bool Reconciling = false,
+    DateTimeOffset? LastEventAt = null,
+    DateTimeOffset? LastSuccessfulIndexAt = null);

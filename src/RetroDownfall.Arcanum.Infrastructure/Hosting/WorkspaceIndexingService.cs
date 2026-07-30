@@ -3,6 +3,8 @@ using System.Data;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -41,7 +43,11 @@ internal sealed class WorkspaceIndexingService(
     IWeaveService weaveService,
     WeaveIndexAvailability weaveIndexAvailability,
     IServiceScopeFactory scopeFactory,
-    ILogger<WorkspaceIndexingService> logger) : BackgroundService, IWorkspaceIndexingService
+    IWorkspaceFileWatcherFactory watcherFactory,
+    ILogger<WorkspaceIndexingService> logger) :
+    BackgroundService,
+    IWorkspaceIndexingService,
+    IWorkspaceIndexRuntimeStatusProvider
 {
 
     private static readonly HashSet<string> IgnoredDirectorySegments = new(StringComparer.OrdinalIgnoreCase)
@@ -65,6 +71,8 @@ internal sealed class WorkspaceIndexingService(
     /// </summary>
     private const int MaxUtf8BytesPerChar = 4;
 
+    private const int MaxPendingPathsPerWorkspace = 4_096;
+
     /// <summary>
     /// Hard cap on total filesystem entries (files + directories combined) visited by a single
     /// indexing tick's walk of a workspace, independent of <c>CodebaseEmbeddingSettings.MaxFilesToIndex</c>
@@ -78,6 +86,42 @@ internal sealed class WorkspaceIndexingService(
     private const int MaxWalkEntries = 200_000;
 
     private readonly ConcurrentDictionary<string, byte> _knownWorkspaces = new(StringComparer.Ordinal);
+
+    private readonly ConcurrentDictionary<string, IWorkspaceFileWatcher> _watchers = new(StringComparer.Ordinal);
+
+    private readonly ConcurrentDictionary<string, PendingWorkspaceChanges> _pendingChanges = new(StringComparer.Ordinal);
+
+    private readonly ConcurrentDictionary<string, RuntimeStatusState> _runtimeStatuses = new(StringComparer.Ordinal);
+
+    private readonly SemaphoreSlim _watcherSignal = new(0, 1);
+
+    private readonly object _watcherRegistryGate = new();
+
+    internal int ActiveWatcherCount => _watchers.Count;
+
+    public WorkspaceIndexRuntimeStatus GetRuntimeStatus(string workspacePath)
+    {
+
+        string normalized;
+
+        try
+        {
+
+            normalized = Path.GetFullPath(workspacePath);
+
+        }
+        catch (Exception)
+        {
+
+            return WorkspaceIndexRuntimeStatus.NotWatching;
+
+        }
+
+        return _runtimeStatuses.TryGetValue(normalized, out RuntimeStatusState? state)
+            ? state.Snapshot()
+            : WorkspaceIndexRuntimeStatus.NotWatching;
+
+    }
 
     public void RegisterWorkspace(string workspacePath)
     {
@@ -105,6 +149,60 @@ internal sealed class WorkspaceIndexingService(
 
         _knownWorkspaces[validated.Value] = 0;
 
+        _runtimeStatuses.GetOrAdd(validated.Value, static _ => new RuntimeStatusState());
+
+        EnsureWatcher(validated.Value);
+
+    }
+
+    public void UnregisterWorkspace(string workspacePath)
+    {
+
+        if (string.IsNullOrWhiteSpace(workspacePath))
+        {
+
+            return;
+
+        }
+
+        string normalized;
+
+        try
+        {
+
+            normalized = Path.GetFullPath(workspacePath);
+
+        }
+        catch (Exception)
+        {
+
+            return;
+
+        }
+
+        _knownWorkspaces.TryRemove(normalized, out _);
+
+        _pendingChanges.TryRemove(normalized, out _);
+
+        lock (_watcherRegistryGate)
+        {
+
+            if (_watchers.TryRemove(normalized, out IWorkspaceFileWatcher? watcher))
+            {
+
+                watcher.Dispose();
+
+            }
+
+        }
+
+        if (_runtimeStatuses.TryGetValue(normalized, out RuntimeStatusState? state))
+        {
+
+            state.SetWatching(false);
+
+        }
+
     }
 
     public async Task IndexNowAsync(string workspacePath, CancellationToken cancellationToken)
@@ -128,6 +226,10 @@ internal sealed class WorkspaceIndexingService(
 
         _knownWorkspaces[normalized] = 0;
 
+        _runtimeStatuses.GetOrAdd(normalized, static _ => new RuntimeStatusState());
+
+        EnsureWatcher(normalized);
+
         try
         {
 
@@ -142,7 +244,7 @@ internal sealed class WorkspaceIndexingService(
 
             }
 
-            await IndexWorkspaceAsync(normalized, embeddings, cancellationToken).ConfigureAwait(false);
+            await ReconcileWorkspaceAsync(normalized, embeddings, cancellationToken).ConfigureAwait(false);
 
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -179,61 +281,482 @@ internal sealed class WorkspaceIndexingService(
 
         bool wasEnabled = false;
 
-        while (!stoppingToken.IsCancellationRequested)
+        DateTimeOffset nextReconciliation = DateTimeOffset.UtcNow;
+
+        try
         {
+
+            while (!stoppingToken.IsCancellationRequested)
+            {
+
+                try
+                {
+
+                    EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
+
+                    bool enabled = embeddings.Enabled && embeddings.CodebaseRetrievalEnabled;
+
+                    if (!enabled)
+                    {
+
+                        wasEnabled = false;
+
+                        DisposeAllWatchers();
+
+                        await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
+
+                        continue;
+
+                    }
+
+                    if (!wasEnabled)
+                    {
+
+                        logger.LogInformation("Workspace Indexing started tracking known workspaces for semantic codebase retrieval.");
+
+                        wasEnabled = true;
+
+                    }
+
+                    foreach (string workspacePath in _knownWorkspaces.Keys.ToArray())
+                    {
+
+                        EnsureWatcher(workspacePath);
+
+                    }
+
+                    DateTimeOffset now = DateTimeOffset.UtcNow;
+
+                    if (now >= nextReconciliation)
+                    {
+
+                        foreach (string workspacePath in _knownWorkspaces.Keys.ToArray())
+                        {
+
+                            stoppingToken.ThrowIfCancellationRequested();
+
+                            await ReconcileWorkspaceAsync(workspacePath, embeddings, stoppingToken).ConfigureAwait(false);
+
+                        }
+
+                        int intervalMinutes = ArcanumSettingClamps.EmbeddingsCodebaseReconciliationIntervalMinutes(
+                            embeddings.Codebase.ReconciliationIntervalMinutes);
+
+                        nextReconciliation = DateTimeOffset.UtcNow.AddMinutes(intervalMinutes);
+
+                    }
+
+                    int debounceMilliseconds = ArcanumSettingClamps.EmbeddingsCodebaseWatcherDebounceMilliseconds(
+                        embeddings.Codebase.WatcherDebounceMilliseconds);
+
+                    TimeSpan untilReconciliation = nextReconciliation - DateTimeOffset.UtcNow;
+
+                    TimeSpan wait = untilReconciliation <= TimeSpan.Zero
+                        ? TimeSpan.Zero
+                        : untilReconciliation;
+
+                    bool signaled = await _watcherSignal.WaitAsync(wait, stoppingToken).ConfigureAwait(false);
+
+                    if (signaled)
+                    {
+
+                        await Task.Delay(TimeSpan.FromMilliseconds(debounceMilliseconds), stoppingToken).ConfigureAwait(false);
+
+                    }
+
+                    foreach (string workspacePath in _pendingChanges.Keys.ToArray())
+                    {
+
+                        await ProcessPendingWatcherEventsAsync(workspacePath, stoppingToken).ConfigureAwait(false);
+
+                    }
+
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+
+                    break;
+
+                }
+                catch (Exception ex)
+                {
+
+                    logger.LogError(ex, "Workspace Indexing tick failed; continuing.");
+
+                }
+
+            }
+
+        }
+        finally
+        {
+
+            DisposeAllWatchers();
+
+        }
+
+    }
+
+    internal async Task ProcessPendingWatcherEventsAsync(
+        string workspacePath,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!_pendingChanges.TryGetValue(workspacePath, out PendingWorkspaceChanges? pending))
+        {
+
+            return;
+
+        }
+
+        PendingWorkspaceSnapshot snapshot = pending.TakeSnapshot();
+
+        if (!snapshot.ReconciliationRequested && snapshot.Actions.Count == 0)
+        {
+
+            return;
+
+        }
+
+        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
+
+        if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled)
+        {
+
+            return;
+
+        }
+
+        if (snapshot.ReconciliationRequested)
+        {
+
+            await ReconcileWorkspaceAsync(workspacePath, embeddings, cancellationToken).ConfigureAwait(false);
+
+            return;
+
+        }
+
+        RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
+            workspacePath,
+            static _ => new RuntimeStatusState());
+
+        bool succeeded = await ProcessIncrementalChangesAsync(
+            workspacePath,
+            snapshot.Actions,
+            embeddings,
+            cancellationToken).ConfigureAwait(false);
+
+        if (succeeded)
+        {
+
+            status.MarkSuccessfulIndex();
+
+        }
+        else
+        {
+
+            status.MarkDegraded(overflowed: false);
+
+            pending.RequestReconciliation();
+
+            SignalWatcherWork();
+
+        }
+
+    }
+
+    private async Task<bool> ProcessIncrementalChangesAsync(
+        string workspacePath,
+        IReadOnlyDictionary<string, PendingPathAction> actions,
+        EmbeddingSettings embeddings,
+        CancellationToken cancellationToken)
+    {
+
+        if (!weaveService.IsAvailable || !Directory.Exists(workspacePath))
+        {
+
+            return false;
+
+        }
+
+        CodebaseEmbeddingSettings codebase = embeddings.Codebase ?? new CodebaseEmbeddingSettings();
+
+        HashSet<string> extensions = new(codebase.FileExtensions, StringComparer.OrdinalIgnoreCase);
+
+        int maxFileSizeChars = ArcanumSettingClamps.EmbeddingsCodebaseMaxFileSizeChars(codebase.MaxFileSizeChars);
+
+        int maxFilesToIndex = ArcanumSettingClamps.EmbeddingsCodebaseMaxFilesToIndex(codebase.MaxFilesToIndex);
+
+        int filesIndexed = 0;
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        foreach ((string fullPath, PendingPathAction action) in actions
+                     .OrderBy(static pair => pair.Value == PendingPathAction.Delete ? 0 : 1)
+                     .ThenBy(static pair => pair.Key, StringComparer.Ordinal))
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string normalizedPath;
 
             try
             {
 
-                EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
+                normalizedPath = Path.GetFullPath(fullPath);
 
-                bool enabled = embeddings.Enabled && embeddings.CodebaseRetrievalEnabled;
+            }
+            catch (Exception)
+            {
 
-                if (!enabled)
+                continue;
+
+            }
+
+            if (!WorkspacePathPolicy.IsPathUnderWorkspace(workspacePath, normalizedPath))
+            {
+
+                continue;
+
+            }
+
+            string relativePath = Path.GetRelativePath(workspacePath, normalizedPath);
+
+            if (ContainsIgnoredDirectorySegment(relativePath))
+            {
+
+                await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+
+                continue;
+
+            }
+
+            if (action == PendingPathAction.Delete)
+            {
+
+                if (Directory.Exists(normalizedPath))
                 {
 
-                    wasEnabled = false;
+                    return false;
 
-                    await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
+                }
+
+                if (!File.Exists(normalizedPath))
+                {
+
+                    await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
 
                     continue;
 
                 }
 
-                if (!wasEnabled)
+            }
+
+            if (Directory.Exists(normalizedPath))
+            {
+
+                return false;
+
+            }
+
+            bool ignored = !extensions.Contains(Path.GetExtension(normalizedPath));
+
+            if (ignored || !File.Exists(normalizedPath))
+            {
+
+                await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+
+                continue;
+
+            }
+
+            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                    workspacePath,
+                    normalizedPath,
+                    out string? resolvedFinalPath))
+            {
+
+                await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+
+                continue;
+
+            }
+
+            string identityPath = Path.GetFullPath(resolvedFinalPath ?? normalizedPath);
+
+            if (!FileHandleIdentityInterop.TryGetPathIdentity(identityPath, out FileHandleIdentity expectedIdentity))
+            {
+
+                return false;
+
+            }
+
+            FileInfo info = new(normalizedPath);
+
+            if (info.Length > (long)maxFileSizeChars * MaxUtf8BytesPerChar)
+            {
+
+                await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+
+                continue;
+
+            }
+
+            if (filesIndexed >= maxFilesToIndex)
+            {
+
+                return false;
+
+            }
+
+            bool indexed = await IndexFileAsync(
+                db,
+                workspacePath,
+                relativePath,
+                normalizedPath,
+                expectedIdentity,
+                info.LastWriteTimeUtc,
+                maxFileSizeChars,
+                cancellationToken).ConfigureAwait(false);
+
+            if (!indexed)
+            {
+
+                return false;
+
+            }
+
+            filesIndexed++;
+
+        }
+
+        return true;
+
+    }
+
+    private async Task<bool> ReconcileWorkspaceAsync(
+        string workspacePath,
+        EmbeddingSettings embeddings,
+        CancellationToken cancellationToken)
+    {
+
+        RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
+            workspacePath,
+            static _ => new RuntimeStatusState());
+
+        status.SetReconciling(true);
+
+        try
+        {
+
+            bool completed = await IndexWorkspaceAsync(workspacePath, embeddings, cancellationToken).ConfigureAwait(false);
+
+            if (completed)
+            {
+
+                status.MarkReconciled();
+
+                EnsureWatcher(workspacePath);
+
+            }
+            else
+            {
+
+                status.MarkDegraded(overflowed: status.Snapshot().Overflowed);
+
+            }
+
+            return completed;
+
+        }
+        finally
+        {
+
+            status.SetReconciling(false);
+
+        }
+
+    }
+
+    private void EnsureWatcher(string workspacePath)
+    {
+
+        EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
+
+        if (!embeddings.Enabled || !embeddings.CodebaseRetrievalEnabled)
+        {
+
+            return;
+
+        }
+
+        RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
+            workspacePath,
+            static _ => new RuntimeStatusState());
+
+        int maxWatchers = ArcanumSettingClamps.EmbeddingsCodebaseMaxWatchers(
+            embeddings.Codebase.MaxWatchers);
+
+        lock (_watcherRegistryGate)
+        {
+
+            if (_watchers.ContainsKey(workspacePath))
+            {
+
+                status.SetWatching(true);
+
+                return;
+
+            }
+
+            if (maxWatchers == 0 || _watchers.Count >= maxWatchers)
+            {
+
+                status.SetWatching(false);
+
+                status.MarkDegraded(overflowed: false);
+
+                return;
+
+            }
+
+            try
+            {
+
+                IWorkspaceFileWatcher watcher = watcherFactory.Create(
+                    workspacePath,
+                    QueueWatcherChange,
+                    exception => HandleWatcherError(workspacePath, exception));
+
+                if (_watchers.TryAdd(workspacePath, watcher))
                 {
 
-                    logger.LogInformation("Workspace Indexing started tracking known workspaces for semantic codebase retrieval.");
+                    status.SetWatching(true);
 
-                    wasEnabled = true;
+                }
+                else
+                {
+
+                    watcher.Dispose();
 
                 }
 
-                foreach (string workspacePath in _knownWorkspaces.Keys.ToArray())
-                {
-
-                    stoppingToken.ThrowIfCancellationRequested();
-
-                    await IndexWorkspaceAsync(workspacePath, embeddings, stoppingToken).ConfigureAwait(false);
-
-                }
-
-                int intervalMinutes = ArcanumSettingClamps.EmbeddingsCodebaseIndexingIntervalMinutes(
-                    embeddings.Codebase.IndexingIntervalMinutes);
-
-                await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken).ConfigureAwait(false);
-
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
             {
 
-                break;
+                logger.LogWarning(
+                    ex,
+                    "Workspace watcher is unavailable for {WorkspacePath}; periodic reconciliation remains active.",
+                    workspacePath);
 
-            }
-            catch (Exception ex)
-            {
+                status.SetWatching(false);
 
-                logger.LogError(ex, "Workspace Indexing tick failed; continuing.");
+                status.MarkDegraded(overflowed: false);
 
             }
 
@@ -241,7 +764,174 @@ internal sealed class WorkspaceIndexingService(
 
     }
 
-    internal async Task IndexWorkspaceAsync(string workspacePath, EmbeddingSettings embeddings, CancellationToken cancellationToken)
+    private void QueueWatcherChange(WorkspaceFileChange change)
+    {
+
+        if (!_knownWorkspaces.ContainsKey(change.WorkspacePath))
+        {
+
+            return;
+
+        }
+
+        RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
+            change.WorkspacePath,
+            static _ => new RuntimeStatusState());
+
+        status.MarkEvent();
+
+        PendingWorkspaceChanges pending = _pendingChanges.GetOrAdd(
+            change.WorkspacePath,
+            static _ => new PendingWorkspaceChanges());
+
+        bool overflowed = false;
+
+        if (change.Kind == WorkspaceFileChangeKind.Renamed && change.OldFullPath is not null)
+        {
+
+            overflowed |= pending.Add(change.OldFullPath, PendingPathAction.Delete);
+
+            overflowed |= pending.Add(change.FullPath, PendingPathAction.Upsert);
+
+        }
+        else
+        {
+
+            PendingPathAction action = change.Kind == WorkspaceFileChangeKind.Deleted
+                ? PendingPathAction.Delete
+                : PendingPathAction.Upsert;
+
+            overflowed = pending.Add(change.FullPath, action);
+
+        }
+
+        if (overflowed)
+        {
+
+            status.MarkDegraded(overflowed: true);
+
+        }
+
+        SignalWatcherWork();
+
+    }
+
+    private void HandleWatcherError(string workspacePath, Exception exception)
+    {
+
+        bool overflowed = exception is InternalBufferOverflowException;
+
+        logger.LogWarning(
+            exception,
+            "Workspace watcher failed for {WorkspacePath}; marking the index stale and scheduling reconciliation.",
+            workspacePath);
+
+        lock (_watcherRegistryGate)
+        {
+
+            if (_watchers.TryRemove(workspacePath, out IWorkspaceFileWatcher? watcher))
+            {
+
+                watcher.Dispose();
+
+            }
+
+        }
+
+        RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
+            workspacePath,
+            static _ => new RuntimeStatusState());
+
+        status.SetWatching(false);
+
+        status.MarkDegraded(overflowed);
+
+        _pendingChanges.GetOrAdd(workspacePath, static _ => new PendingWorkspaceChanges())
+            .RequestReconciliation();
+
+        SignalWatcherWork();
+
+    }
+
+    private void SignalWatcherWork()
+    {
+
+        if (_watcherSignal.CurrentCount == 0)
+        {
+
+            try
+            {
+
+                _watcherSignal.Release();
+
+            }
+            catch (ObjectDisposedException)
+            {
+
+                // Host shutdown raced the callback; the watcher is being disposed.
+
+            }
+
+        }
+
+    }
+
+    private void DisposeAllWatchers()
+    {
+
+        lock (_watcherRegistryGate)
+        {
+
+            foreach ((string workspacePath, IWorkspaceFileWatcher watcher) in _watchers.ToArray())
+            {
+
+                watcher.Dispose();
+
+                _watchers.TryRemove(workspacePath, out _);
+
+                if (_runtimeStatuses.TryGetValue(workspacePath, out RuntimeStatusState? status))
+                {
+
+                    status.SetWatching(false);
+
+                }
+
+            }
+
+        }
+
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+
+        DisposeAllWatchers();
+
+    }
+
+    public override void Dispose()
+    {
+
+        DisposeAllWatchers();
+
+        _watcherSignal.Dispose();
+
+        base.Dispose();
+
+    }
+
+    internal ValueTask DisposeAsync()
+    {
+
+        Dispose();
+
+        return ValueTask.CompletedTask;
+
+    }
+
+    internal async Task<bool> IndexWorkspaceAsync(string workspacePath, EmbeddingSettings embeddings, CancellationToken cancellationToken)
     {
 
         if (!weaveService.IsAvailable)
@@ -251,7 +941,7 @@ internal sealed class WorkspaceIndexingService(
                 "Workspace indexing tick skipped for {WorkspacePath}: The Weave is unavailable (enable an embedding-backed Arcanum:Features option and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model).",
                 workspacePath);
 
-            return;
+            return false;
 
         }
 
@@ -262,7 +952,7 @@ internal sealed class WorkspaceIndexingService(
 
             logger.LogDebug("Workspace indexing tick skipped for {WorkspacePath}: no file extensions configured.", workspacePath);
 
-            return;
+            return false;
 
         }
 
@@ -271,7 +961,7 @@ internal sealed class WorkspaceIndexingService(
 
             logger.LogWarning("Workspace indexing skipped: {WorkspacePath} does not exist or is not a directory.", workspacePath);
 
-            return;
+            return false;
 
         }
 
@@ -302,7 +992,7 @@ internal sealed class WorkspaceIndexingService(
 
             logger.LogWarning(ex, "Workspace indexing could not enumerate {WorkspacePath}.", workspacePath);
 
-            return;
+            return false;
 
         }
 
@@ -430,6 +1120,8 @@ internal sealed class WorkspaceIndexingService(
             await DeleteOrphanedChunksAsync(db, workspacePath, seenRelativePaths, cancellationToken).ConfigureAwait(false);
 
         }
+
+        return !truncated;
 
     }
 
@@ -709,66 +1401,313 @@ internal sealed class WorkspaceIndexingService(
         if (content.Length == 0 || content.Length > maxFileSizeChars)
         {
 
-            return false;
+            await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+
+            return true;
 
         }
 
-        Result<(string Chunk, int Offset)[]> chunkResult = await weaveService.ChunkAsync(content, cancellationToken).ConfigureAwait(false);
+        int maxChunkChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
+            optionsMonitor.CurrentValue.ResolveEmbeddings().ChunkSizeChars);
 
-        if (chunkResult.IsFailure || chunkResult.Value.Length == 0)
+        WorkspaceCodeChunker.Chunk[] chunks = WorkspaceCodeChunker.ChunkText(
+            content,
+            Path.GetExtension(relativePath),
+            maxChunkChars);
+
+        if (chunks.Length == 0)
         {
 
-            return false;
+            await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+
+            return true;
 
         }
 
-        (string Chunk, int Offset)[] chunks = chunkResult.Value;
+        Dictionary<string, int> occurrences = new(StringComparer.Ordinal);
 
-        Result<Embedding<float>[]> embedResult = await weaveService
-            .EmbedBatchAsync(chunks.Select(static c => c.Chunk).ToList(), cancellationToken)
-            .ConfigureAwait(false);
-
-        if (embedResult.IsFailure)
-        {
-
-            logger.LogWarning(
-                "Workspace indexing embed batch failed for {FullPath} ({Code}): {Message}",
-                fullPath,
-                embedResult.Error.Code,
-                embedResult.Error.Message);
-
-            return false;
-
-        }
-
-        await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
-
-        Embedding<float>[] generated = embedResult.Value;
-
-        DateTimeOffset indexedAt = DateTimeOffset.UtcNow;
+        IndexedChunk[] indexedChunks = new IndexedChunk[chunks.Length];
 
         for (int i = 0; i < chunks.Length; i++)
         {
 
-            string chunkId = Guid.NewGuid().ToString("N");
+            WorkspaceCodeChunker.Chunk chunk = chunks[i];
+
+            int occurrence = occurrences.GetValueOrDefault(chunk.Content);
+
+            occurrences[chunk.Content] = occurrence + 1;
+
+            indexedChunks[i] = new IndexedChunk(
+                CreateStableChunkId(workspacePath, relativePath, chunk.Content, occurrence),
+                chunk);
+
+        }
+
+        HashSet<string> existingIds = await LoadExistingChunkIdsAsync(
+            db,
+            workspacePath,
+            relativePath,
+            cancellationToken).ConfigureAwait(false);
+
+        IndexedChunk[] missing = indexedChunks
+            .Where(chunk => !existingIds.Contains(chunk.ChunkId))
+            .ToArray();
+
+        Embedding<float>[] generated = [];
+
+        if (missing.Length > 0)
+        {
+
+            Result<Embedding<float>[]> embedResult = await weaveService
+                .EmbedBatchAsync(missing.Select(static c => c.Chunk.Content).ToList(), cancellationToken)
+                .ConfigureAwait(false);
+
+            if (embedResult.IsFailure || embedResult.Value.Length != missing.Length)
+            {
+
+                logger.LogWarning(
+                    "Workspace indexing embed batch failed for {FullPath} ({Code}): {Message}",
+                    fullPath,
+                    embedResult.IsFailure ? embedResult.Error.Code : ErrorCodes.Embeddings.ProviderUnavailable,
+                    embedResult.IsFailure ? embedResult.Error.Message : "Embedding provider returned an unexpected result count.");
+
+                return false;
+
+            }
+
+            generated = embedResult.Value;
+
+        }
+
+        HashSet<string> nextIds = indexedChunks
+            .Select(static chunk => chunk.ChunkId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (string obsoleteId in existingIds.Where(id => !nextIds.Contains(id)))
+        {
+
+            await DeleteChunkByIdAsync(db, obsoleteId, cancellationToken).ConfigureAwait(false);
+
+        }
+
+        DateTimeOffset indexedAt = DateTimeOffset.UtcNow;
+
+        Dictionary<string, float[]> vectorsByChunkId = new(StringComparer.Ordinal);
+
+        for (int i = 0; i < missing.Length; i++)
+        {
+
+            vectorsByChunkId[missing[i].ChunkId] = generated[i].Vector.ToArray();
+
+        }
+
+        for (int i = 0; i < indexedChunks.Length; i++)
+        {
+
+            IndexedChunk indexedChunk = indexedChunks[i];
+
+            WorkspaceCodeChunker.Chunk chunk = indexedChunk.Chunk;
+
+            if (existingIds.Contains(indexedChunk.ChunkId))
+            {
+
+                await UpdateChunkMetadataAsync(
+                    db,
+                    indexedChunk.ChunkId,
+                    chunkIndex: i,
+                    charOffset: chunk.CharOffset,
+                    charLength: chunk.Content.Length,
+                    startLine: chunk.StartLine,
+                    endLine: chunk.EndLine,
+                    fileLastWriteTimeUtc: lastWriteUtc,
+                    cancellationToken).ConfigureAwait(false);
+
+                continue;
+
+            }
 
             await InsertChunkAsync(
                 db,
-                chunkId,
+                indexedChunk.ChunkId,
                 workspacePath,
                 relativePath,
                 chunkIndex: i,
-                content: chunks[i].Chunk,
-                charOffset: chunks[i].Offset,
-                charLength: chunks[i].Chunk.Length,
+                content: chunk.Content,
+                charOffset: chunk.CharOffset,
+                charLength: chunk.Content.Length,
+                startLine: chunk.StartLine,
+                endLine: chunk.EndLine,
                 fileLastWriteTimeUtc: lastWriteUtc,
                 indexedAt: indexedAt,
-                vector: generated[i].Vector.ToArray(),
+                vector: vectorsByChunkId[indexedChunk.ChunkId],
                 cancellationToken).ConfigureAwait(false);
 
         }
 
         return true;
+
+    }
+
+    private static string CreateStableChunkId(
+        string workspacePath,
+        string relativePath,
+        string content,
+        int occurrence)
+    {
+
+        string identity = string.Concat(
+            workspacePath,
+            "\0",
+            relativePath,
+            "\0",
+            occurrence.ToString(CultureInfo.InvariantCulture),
+            "\0",
+            content);
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
+
+    }
+
+    private static Task<HashSet<string>> LoadExistingChunkIdsAsync(
+        ArcanumDbContext db,
+        string workspacePath,
+        string relativePath,
+        CancellationToken cancellationToken)
+    {
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                cmd.CommandText =
+                    """
+                    SELECT "ChunkId"
+                    FROM "workspace_file_chunks"
+                    WHERE "WorkspacePath" = @workspacePath AND "RelativePath" = @relativePath
+                    """;
+
+                AddParameter(cmd, "@workspacePath", workspacePath);
+
+                AddParameter(cmd, "@relativePath", relativePath);
+
+                HashSet<string> ids = new(StringComparer.Ordinal);
+
+                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    ids.Add(reader.GetString(0));
+
+                }
+
+                return ids;
+
+            },
+            cancellationToken);
+
+    }
+
+    private Task UpdateChunkMetadataAsync(
+        ArcanumDbContext db,
+        string chunkId,
+        int chunkIndex,
+        int charOffset,
+        int charLength,
+        int startLine,
+        int endLine,
+        DateTime fileLastWriteTimeUtc,
+        CancellationToken cancellationToken)
+    {
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                cmd.CommandText =
+                    """
+                    UPDATE "workspace_file_chunks"
+                    SET "ChunkIndex" = @chunkIndex,
+                        "CharOffset" = @charOffset,
+                        "CharLength" = @charLength,
+                        "StartLine" = @startLine,
+                        "EndLine" = @endLine,
+                        "FileLastWriteTime" = @fileLastWriteTime
+                    WHERE "ChunkId" = @chunkId
+                    """;
+
+                AddParameter(cmd, "@chunkIndex", chunkIndex);
+
+                AddParameter(cmd, "@charOffset", charOffset);
+
+                AddParameter(cmd, "@charLength", charLength);
+
+                AddParameter(cmd, "@startLine", startLine);
+
+                AddParameter(cmd, "@endLine", endLine);
+
+                AddParameter(cmd, "@fileLastWriteTime", fileLastWriteTimeUtc.ToString("o", CultureInfo.InvariantCulture));
+
+                AddParameter(cmd, "@chunkId", chunkId);
+
+                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            },
+            cancellationToken);
+
+    }
+
+    private Task DeleteChunkByIdAsync(
+        ArcanumDbContext db,
+        string chunkId,
+        CancellationToken cancellationToken)
+    {
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
+
+                if (weaveIndexAvailability.IsVecAvailable)
+                {
+
+                    await using DbCommand vecCmd = connection.CreateCommand();
+
+                    vecCmd.CommandText = """DELETE FROM "workspace_file_embeddings_vec" WHERE "ChunkId" = @chunkId""";
+
+                    AddParameter(vecCmd, "@chunkId", chunkId);
+
+                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                }
+
+                await using DbCommand embeddingCmd = connection.CreateCommand();
+
+                embeddingCmd.CommandText = """DELETE FROM "workspace_file_embeddings" WHERE "ChunkId" = @chunkId""";
+
+                AddParameter(embeddingCmd, "@chunkId", chunkId);
+
+                _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand chunkCmd = connection.CreateCommand();
+
+                chunkCmd.CommandText = """DELETE FROM "workspace_file_chunks" WHERE "ChunkId" = @chunkId""";
+
+                AddParameter(chunkCmd, "@chunkId", chunkId);
+
+                _ = await chunkCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            },
+            cancellationToken);
 
     }
 
@@ -907,6 +1846,8 @@ internal sealed class WorkspaceIndexingService(
         string content,
         int charOffset,
         int charLength,
+        int startLine,
+        int endLine,
         DateTime fileLastWriteTimeUtc,
         DateTimeOffset indexedAt,
         float[] vector,
@@ -924,9 +1865,9 @@ internal sealed class WorkspaceIndexingService(
                 chunkCmd.CommandText =
                     """
                     INSERT INTO "workspace_file_chunks"
-                        ("ChunkId", "WorkspacePath", "RelativePath", "ChunkIndex", "Content", "CharOffset", "CharLength", "FileLastWriteTime", "IndexedAt")
+                        ("ChunkId", "WorkspacePath", "RelativePath", "ChunkIndex", "Content", "CharOffset", "CharLength", "StartLine", "EndLine", "FileLastWriteTime", "IndexedAt")
                     VALUES
-                        (@chunkId, @workspacePath, @relativePath, @chunkIndex, @content, @charOffset, @charLength, @fileLastWriteTime, @indexedAt)
+                        (@chunkId, @workspacePath, @relativePath, @chunkIndex, @content, @charOffset, @charLength, @startLine, @endLine, @fileLastWriteTime, @indexedAt)
                     """;
 
                 AddParameter(chunkCmd, "@chunkId", chunkId);
@@ -942,6 +1883,10 @@ internal sealed class WorkspaceIndexingService(
                 AddParameter(chunkCmd, "@charOffset", charOffset);
 
                 AddParameter(chunkCmd, "@charLength", charLength);
+
+                AddParameter(chunkCmd, "@startLine", startLine);
+
+                AddParameter(chunkCmd, "@endLine", endLine);
 
                 AddParameter(chunkCmd, "@fileLastWriteTime", fileLastWriteTimeUtc.ToString("o", CultureInfo.InvariantCulture));
 
@@ -1021,5 +1966,234 @@ internal sealed class WorkspaceIndexingService(
         cmd.Parameters.Add(parameter);
 
     }
+
+    private static bool ContainsIgnoredDirectorySegment(string relativePath)
+    {
+
+        foreach (string segment in relativePath.Split(
+                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+
+            if (IgnoredDirectorySegments.Contains(segment))
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
+
+    }
+
+    private enum PendingPathAction
+    {
+
+        Upsert,
+        Delete,
+
+    }
+
+    private sealed class PendingWorkspaceChanges
+    {
+
+        private readonly object _gate = new();
+
+        private readonly Dictionary<string, PendingPathAction> _actions = new(StringComparer.Ordinal);
+
+        private bool _reconciliationRequested;
+
+        public bool Add(string fullPath, PendingPathAction action)
+        {
+
+            lock (_gate)
+            {
+
+                if (_reconciliationRequested)
+                {
+
+                    return false;
+
+                }
+
+                if (!_actions.ContainsKey(fullPath) && _actions.Count >= MaxPendingPathsPerWorkspace)
+                {
+
+                    _actions.Clear();
+
+                    _reconciliationRequested = true;
+
+                    return true;
+
+                }
+
+                _actions[fullPath] = action;
+
+                return false;
+
+            }
+
+        }
+
+        public void RequestReconciliation()
+        {
+
+            lock (_gate)
+            {
+
+                _actions.Clear();
+
+                _reconciliationRequested = true;
+
+            }
+
+        }
+
+        public PendingWorkspaceSnapshot TakeSnapshot()
+        {
+
+            lock (_gate)
+            {
+
+                Dictionary<string, PendingPathAction> actions = new(_actions, StringComparer.Ordinal);
+
+                bool reconciliationRequested = _reconciliationRequested;
+
+                _actions.Clear();
+
+                _reconciliationRequested = false;
+
+                return new PendingWorkspaceSnapshot(actions, reconciliationRequested);
+
+            }
+
+        }
+
+    }
+
+    private sealed record PendingWorkspaceSnapshot(
+        IReadOnlyDictionary<string, PendingPathAction> Actions,
+        bool ReconciliationRequested);
+
+    private sealed class RuntimeStatusState
+    {
+
+        private readonly object _gate = new();
+
+        private bool _watching;
+
+        private bool _degraded;
+
+        private bool _overflowed;
+
+        private bool _reconciling;
+
+        private DateTimeOffset? _lastEventAt;
+
+        private DateTimeOffset? _lastSuccessfulIndexAt;
+
+        public WorkspaceIndexRuntimeStatus Snapshot()
+        {
+
+            lock (_gate)
+            {
+
+                return new WorkspaceIndexRuntimeStatus(
+                    _watching,
+                    _degraded,
+                    _overflowed,
+                    _reconciling,
+                    _lastEventAt,
+                    _lastSuccessfulIndexAt);
+
+            }
+
+        }
+
+        public void SetWatching(bool watching)
+        {
+
+            lock (_gate)
+            {
+
+                _watching = watching;
+
+            }
+
+        }
+
+        public void MarkEvent()
+        {
+
+            lock (_gate)
+            {
+
+                _lastEventAt = DateTimeOffset.UtcNow;
+
+            }
+
+        }
+
+        public void MarkDegraded(bool overflowed)
+        {
+
+            lock (_gate)
+            {
+
+                _degraded = true;
+
+                _overflowed |= overflowed;
+
+            }
+
+        }
+
+        public void SetReconciling(bool reconciling)
+        {
+
+            lock (_gate)
+            {
+
+                _reconciling = reconciling;
+
+            }
+
+        }
+
+        public void MarkSuccessfulIndex()
+        {
+
+            lock (_gate)
+            {
+
+                _lastSuccessfulIndexAt = DateTimeOffset.UtcNow;
+
+            }
+
+        }
+
+        public void MarkReconciled()
+        {
+
+            lock (_gate)
+            {
+
+                _degraded = false;
+
+                _overflowed = false;
+
+                _lastSuccessfulIndexAt = DateTimeOffset.UtcNow;
+
+            }
+
+        }
+
+    }
+
+    private sealed record IndexedChunk(
+        string ChunkId,
+        WorkspaceCodeChunker.Chunk Chunk);
 
 }

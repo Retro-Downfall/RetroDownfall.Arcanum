@@ -5279,6 +5279,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         }
 
+        public void UnregisterWorkspace(string workspacePath)
+        {
+        }
+
         public Task IndexNowAsync(string workspacePath, CancellationToken cancellationToken) => Task.CompletedTask;
 
     }

@@ -183,6 +183,9 @@ and platform eligibility still apply.
 | `integrations.embeddings.provider` | `string?`, `null` | configured provider name | Provider used for embeddings. |
 | `integrations.embeddings.model` | `string?`, `null` | provider-advertised model | Embedding model ID. |
 | `integrations.embeddings.dimensions` | `int`, `768` | 64–4,096 | Expected vector dimensions. Changing this value requires clearing and re-indexing embeddings or reinstalling the local database. |
+| `integrations.embeddings.codebaseIndexing.watcherDebounceMilliseconds` | `int`, `300` | 50–5,000 | Debounce window for coalescing editor save/create/change/delete/rename events before incremental semantic indexing. |
+| `integrations.embeddings.codebaseIndexing.maxWatchers` | `int`, `32` | 0–128 | Maximum recursively watched workspaces. `0` disables watchers but retains bounded periodic reconciliation. |
+| `integrations.embeddings.codebaseIndexing.reconciliationIntervalMinutes` | `int`, `60` | 1–1,440 | Full workspace reconciliation cadence used even when watchers are healthy and as the complete fallback when they are unavailable. |
 | `integrations.mcp.allowedHttpHosts` | `string[]`, `[]` | hostnames | Explicit plaintext-HTTP MCP exceptions; empty permits none and HTTPS remains the default. |
 | `integrations.webResearch.searchProvider` | `string`, `"perplexity"` | nonblank registered provider name | Provider used by `web_search`. |
 | `integrations.webResearch.perplexityModel` | `string`, `"sonar"` | `sonar` or `sonar-pro` | Perplexity Sonar model used for synthesized search. |
