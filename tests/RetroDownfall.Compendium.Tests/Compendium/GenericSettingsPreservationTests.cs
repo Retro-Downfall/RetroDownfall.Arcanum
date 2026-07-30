@@ -201,8 +201,11 @@ public sealed class GenericSettingsPreservationTests : IDisposable
                         new ModelEntry(
                             "reasoner",
                             SupportsVision: true,
-                            WireDialect: ReasoningWireDialect.OpenRouter,
-                            MaxBudgetTokens: 32768),
+                            Reasoning: new ModelReasoningSettings
+                            {
+                                WireDialect = ReasoningWireDialect.OpenRouter,
+                                MaxBudgetTokens = 32768,
+                            }),
                     ],
                 },
             ],
@@ -231,8 +234,8 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         ModelEntry builtModel = Assert.Single(builtProvider.Models);
 
         Assert.Equal("reasoner-v2", builtModel.Name);
-        Assert.Equal(ReasoningWireDialect.TopLevelReasoningBudget, builtModel.WireDialect);
-        Assert.Equal(65536, builtModel.MaxBudgetTokens);
+        Assert.Equal(ReasoningWireDialect.TopLevelReasoningBudget, builtModel.Reasoning?.WireDialect);
+        Assert.Equal(65536, builtModel.Reasoning?.MaxBudgetTokens);
         Assert.Equal(
             "REASONING_PROVIDER_API_KEY",
             builtProvider.CredentialEnvironmentVariable);
@@ -248,8 +251,8 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         ModelEntry savedModel = Assert.Single(savedProvider.Models);
 
         Assert.Equal("reasoner-v2", savedModel.Name);
-        Assert.Equal(ReasoningWireDialect.TopLevelReasoningBudget, savedModel.WireDialect);
-        Assert.Equal(65536, savedModel.MaxBudgetTokens);
+        Assert.Equal(ReasoningWireDialect.TopLevelReasoningBudget, savedModel.Reasoning?.WireDialect);
+        Assert.Equal(65536, savedModel.Reasoning?.MaxBudgetTokens);
         Assert.Equal(
             "REASONING_PROVIDER_API_KEY",
             savedProvider.CredentialEnvironmentVariable);

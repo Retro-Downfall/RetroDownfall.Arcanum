@@ -83,8 +83,8 @@ public sealed class ArcanumSettingsBindingTests
 
         Assert.True(settings.Providers[0].Models[0].SupportsVision);
 
-        Assert.Equal(ReasoningWireDialect.OpenRouter, settings.Providers[0].Models[0].WireDialect);
-        Assert.Equal(32768, settings.Providers[0].Models[0].MaxBudgetTokens);
+        Assert.Equal(ReasoningWireDialect.OpenRouter, settings.Providers[0].Models[0].Reasoning?.WireDialect);
+        Assert.Equal(32768, settings.Providers[0].Models[0].Reasoning?.MaxBudgetTokens);
 
     }
 

@@ -3939,7 +3939,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 },
             },
         };
-        settings.Providers[0].Models[0].WireDialect = ReasoningWireDialect.OpenRouter;
+        settings.Providers[0].Models[0].Reasoning = new ModelReasoningSettings
+        {
+            WireDialect = ReasoningWireDialect.OpenRouter,
+        };
         RecordingTurnRunWriter turnRuns = new();
         RecordingBudgetReservationService reservations = new();
         WizardIntelligenceProvider wizard = CreateWizard(
@@ -5388,7 +5391,15 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             [
                 DefaultProvider() with
                 {
-                    Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)],
+                    Models =
+                    [
+                        new ModelEntry(
+                            ModelName,
+                            Reasoning: new ModelReasoningSettings
+                            {
+                                WireDialect = ReasoningWireDialect.OpenRouter,
+                            }),
+                    ],
                 },
             ],
         };
@@ -5428,7 +5439,15 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             [
                 DefaultProvider() with
                 {
-                    Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)],
+                    Models =
+                    [
+                        new ModelEntry(
+                            ModelName,
+                            Reasoning: new ModelReasoningSettings
+                            {
+                                WireDialect = ReasoningWireDialect.OpenRouter,
+                            }),
+                    ],
                 },
             ],
         };
@@ -5562,7 +5581,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         {
             ReasoningContentSegment projected = Assert.Single(result.Value.Reasoning);
             Assert.Equal("provider-default reasoning", projected.Text);
-            Assert.Equal(ReasoningOutputMode.Full, projected.Output);
+            Assert.Equal(ReasoningOutputMode.Summary, projected.Output);
         }
         Assert.Equal("answer", result.Value.Text);
     }
@@ -5596,16 +5615,26 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Reasoning_StreamingModelWithoutStreamingSupport_SuppressesReasoningFrames()
+    public async Task Reasoning_StreamingWithSummariesDisabled_SuppressesReasoningFrames()
     {
-        
+
+        // DefaultSettings leaves Features.ReasoningSummaries off, so client-safe reasoning is not
+        // projected even though the model declares reasoning and the request asks for a summary.
         ArcanumSettings settings = DefaultSettings() with
         {
             Providers =
             [
                 DefaultProvider() with
                 {
-                    Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)],
+                    Models =
+                    [
+                        new ModelEntry(
+                            ModelName,
+                            Reasoning: new ModelReasoningSettings
+                            {
+                                WireDialect = ReasoningWireDialect.OpenRouter,
+                            }),
+                    ],
                 },
             ],
         };
@@ -6851,7 +6880,15 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             [
                 DefaultProvider() with
                 {
-                    Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)],
+                    Models =
+                    [
+                        new ModelEntry(
+                            ModelName,
+                            Reasoning: new ModelReasoningSettings
+                            {
+                                WireDialect = ReasoningWireDialect.OpenRouter,
+                            }),
+                    ],
                 },
             ],
             Features = DefaultSettings().Features with

@@ -88,8 +88,11 @@ public sealed class ModelsProvidersEndpointTests
             [
                 new ModelEntry("vision-model", SupportsVision: true)
                 {
-                    WireDialect = ReasoningWireDialect.OpenRouter,
-                    MaxBudgetTokens = 65_536,
+                    Reasoning = new ModelReasoningSettings
+                    {
+                        WireDialect = ReasoningWireDialect.OpenRouter,
+                        MaxBudgetTokens = 65_536,
+                    },
                 },
                 new ModelEntry("text-model"),
                 new ModelEntry("gpt-5"),

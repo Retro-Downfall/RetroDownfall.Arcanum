@@ -24,17 +24,14 @@ public sealed record ModelEntry
     public ModelEntry(
         string Name,
         bool SupportsVision = false,
-        ReasoningWireDialect? WireDialect = null,
-        int? MaxBudgetTokens = null)
+        ModelReasoningSettings? Reasoning = null)
     {
 
         this.Name = Name;
 
         this.SupportsVision = SupportsVision;
 
-        this.WireDialect = WireDialect;
-
-        this.MaxBudgetTokens = MaxBudgetTokens;
+        this.Reasoning = Reasoning;
 
     }
 
@@ -43,21 +40,13 @@ public sealed record ModelEntry
     public bool SupportsVision { get; set; }
 
     /// <summary>
-    /// Optional wire-shape hint for nonstandard reasoning budgets. <see langword="null"/> means the
-    /// standard OpenAI-compatible wire dialect is sufficient; set only for third-party endpoints
-    /// that require <c>openRouter</c>, <c>topLevelReasoningBudget</c>, or <c>anthropicThinking</c>.
-    /// The adapter enforces this at request time: a numeric budget requires a nonstandard dialect,
-    /// and standard rejects numeric budgets.
+    /// Optional reasoning declaration for nonstandard third-party endpoints. <see langword="null"/>
+    /// means reasoning is not configured for this model; when declared, only
+    /// <see cref="ModelReasoningSettings.WireDialect"/> and
+    /// <see cref="ModelReasoningSettings.MaxBudgetTokens"/> are retained facts.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public ReasoningWireDialect? WireDialect { get; set; }
-
-    /// <summary>
-    /// Optional per-single-turn reasoning budget ceiling (1–2,097,152 tokens). Only meaningful
-    /// alongside a nonstandard wire dialect.
-    /// </summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? MaxBudgetTokens { get; set; }
+    public ModelReasoningSettings? Reasoning { get; set; }
 
     /// <summary>
     /// Implicit conversion from a bare model name — mirrors the JSON string-or-object back-compat
@@ -164,7 +153,16 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                     }
                 }
 
-                return new ModelEntry(name, supportsVision, wireDialect, maxBudgetTokens);
+                ModelReasoningSettings? reasoning =
+                    wireDialect is not null || maxBudgetTokens is not null
+                        ? new ModelReasoningSettings
+                        {
+                            WireDialect = wireDialect,
+                            MaxBudgetTokens = maxBudgetTokens,
+                        }
+                        : null;
+
+                return new ModelEntry(name, supportsVision, reasoning);
 
             default:
                 throw new JsonException(
@@ -180,25 +178,25 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 
         writer.WriteBoolean("supportsVision", value.SupportsVision);
 
-        if (value.WireDialect is not null || value.MaxBudgetTokens is not null)
+        if (value.Reasoning?.WireDialect is not null || value.Reasoning?.MaxBudgetTokens is not null)
         {
             writer.WritePropertyName("reasoning");
 
             writer.WriteStartObject();
 
-            if (value.WireDialect is not null)
+            if (value.Reasoning.WireDialect is { } wireDialect)
             {
                 writer.WritePropertyName("wireDialect");
 
                 JsonSerializer.Serialize(
                     writer,
-                    value.WireDialect,
+                    wireDialect,
                     ConfigurationJsonContext.Default.ReasoningWireDialect);
             }
 
-            if (value.MaxBudgetTokens is not null)
+            if (value.Reasoning.MaxBudgetTokens is { } maxBudgetTokens)
             {
-                writer.WriteNumber("maxBudgetTokens", value.MaxBudgetTokens.Value);
+                writer.WriteNumber("maxBudgetTokens", maxBudgetTokens);
             }
 
             writer.WriteEndObject();

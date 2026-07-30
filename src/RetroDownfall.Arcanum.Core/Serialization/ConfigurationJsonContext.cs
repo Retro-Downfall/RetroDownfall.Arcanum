@@ -19,6 +19,7 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(ProviderSettings[]))]
 [JsonSerializable(typeof(AiProviderKind))]
 [JsonSerializable(typeof(ModelEntry))]
+[JsonSerializable(typeof(ModelReasoningSettings))]
 [JsonSerializable(typeof(ReasoningCapabilities))]
 [JsonSerializable(typeof(ReasoningControlSupport))]
 [JsonSerializable(typeof(ReasoningWireDialect))]

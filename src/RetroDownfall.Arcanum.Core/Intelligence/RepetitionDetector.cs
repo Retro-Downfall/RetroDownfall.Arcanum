@@ -90,8 +90,10 @@ public sealed class RepetitionDetector
         var round = new RoundSignature(roundIndex, toolCallCount, textHash, toolCalls);
         _recentRounds.Add(round);
 
+        // Window includes the round just recorded: the verdict fires when the trailing
+        // _maxNoProgressRounds rounds (current included) all show no new evidence.
         int noProgressCount = 0;
-        for (int i = Math.Max(0, _recentRounds.Count - _maxNoProgressRounds - 1); i < _recentRounds.Count - 1; i++)
+        for (int i = Math.Max(0, _recentRounds.Count - _maxNoProgressRounds); i < _recentRounds.Count; i++)
         {
             var prev = _recentRounds[i];
             if (prev.ToolCallCount == 0 && (prev.TextHash == null || prev.TextHash == textHash))

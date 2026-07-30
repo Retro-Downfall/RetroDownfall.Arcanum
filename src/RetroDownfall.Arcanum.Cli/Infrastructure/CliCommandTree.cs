@@ -21,7 +21,6 @@ internal static partial class CliCommandTree
         Command saga = BuildSaga(serviceProvider);
         Command spell = BuildSpell(serviceProvider);
         spell.Add(BuildSpellVersion(serviceProvider));
-        Command spellVersion = BuildSpellVersion(serviceProvider);
         Command prompt = BuildPrompt(serviceProvider);
         Command ward = BuildWard(serviceProvider);
         Command trial = BuildTrial(serviceProvider);

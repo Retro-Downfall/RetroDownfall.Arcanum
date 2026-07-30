@@ -730,17 +730,13 @@ public sealed class ConfigurationValidator(
                 return true;
             }
 
-            if (string.Equals(suppliedName, "wireDialect", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(suppliedName, "reasoning", StringComparison.OrdinalIgnoreCase))
             {
-                propertyName = "wireDialect";
-                propertyType = typeof(ReasoningWireDialect);
-                return true;
-            }
-
-            if (string.Equals(suppliedName, "maxBudgetTokens", StringComparison.OrdinalIgnoreCase))
-            {
-                propertyName = "maxBudgetTokens";
-                propertyType = typeof(int?);
+                // The JSON reasoning block keeps the historical ReasoningCapabilities shape: removed
+                // facts (controlSupport, supportsSummary, …) stay "known" here so they are reported by
+                // the precise obsolete-key check against IConfiguration instead of as unknown paths.
+                propertyName = "reasoning";
+                propertyType = typeof(ReasoningCapabilities);
                 return true;
             }
 
@@ -921,7 +917,7 @@ public sealed class ConfigurationValidator(
             for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
             {
                 ValidateReasoningFacts(
-                    models[modelIndex],
+                    models[modelIndex].Reasoning,
                     $"{providerPointer}.models[{modelIndex}].reasoning",
                     errors);
             }
@@ -1603,25 +1599,25 @@ public sealed class ConfigurationValidator(
     }
 
     private static void ValidateReasoningFacts(
-        ModelEntry model,
+        ModelReasoningSettings? reasoning,
         string pointer,
         List<ConfigurationValidationError> errors)
     {
-        if (model.WireDialect is null && model.MaxBudgetTokens is null)
+        if (reasoning is null || (reasoning.WireDialect is null && reasoning.MaxBudgetTokens is null))
         {
             return;
         }
 
-        bool validWireDialect = model.WireDialect is null || Enum.IsDefined(model.WireDialect.Value);
+        bool validWireDialect = reasoning.WireDialect is null || Enum.IsDefined(reasoning.WireDialect.Value);
 
         if (!validWireDialect)
         {
             errors.Add(new ConfigurationValidationError(
                 $"{pointer}.wireDialect",
-                $"Reasoning WireDialect '{model.WireDialect}' is not defined."));
+                $"Reasoning WireDialect '{reasoning.WireDialect}' is not defined."));
         }
 
-        if (model.MaxBudgetTokens is { } maxBudgetTokens)
+        if (reasoning.MaxBudgetTokens is { } maxBudgetTokens)
         {
             if (maxBudgetTokens != ArcanumSettingClamps.ReasoningBudgetTokens(maxBudgetTokens))
             {
@@ -1634,8 +1630,8 @@ public sealed class ConfigurationValidator(
         // The adapter enforces this at request time; validating it at config load gives a clearer
         // operator-facing error and rejects a silently unusable combination.
         if (validWireDialect
-            && model.MaxBudgetTokens is not null
-            && model.WireDialect == ReasoningWireDialect.Standard)
+            && reasoning.MaxBudgetTokens is not null
+            && reasoning.WireDialect == ReasoningWireDialect.Standard)
         {
             errors.Add(new ConfigurationValidationError(
                 $"{pointer}.wireDialect",

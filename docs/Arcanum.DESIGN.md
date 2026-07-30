@@ -65,9 +65,11 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
   mapper but force all tools off.
 - Streaming guardrails use the code-owned buffered policy: answer and projectable reasoning are
   withheld until accepted.
-- Agentic workflows have no hidden model-call, tool-call, tool-round, correction-attempt, step, or
-  duration count ceiling. Progress continues while evidence changes and stops on terminal output,
-  deterministic no-progress, cancellation, context admission, or cost admission.
+- Agentic workflows run under code-owned `TurnLimits` hard caps (model calls, tool rounds, tool
+  calls, tool-result tokens/bytes, elapsed time, and estimated/reserved cost per turn; see
+  `TurnAccountingHandle` for the current defaults). Progress continues while evidence changes and
+  stops on terminal output, deterministic no-progress, cancellation, context admission, a
+  `TurnBudget` cap, or cost admission. There is no operator-configurable count ceiling.
 
 ### 2.2 Current policy constraints
 

@@ -431,7 +431,10 @@ public sealed class ReasoningProjectionEndpointTests
                     [
                         new ModelEntry(
                             "reasoner",
-                            WireDialect: ReasoningWireDialect.Standard),
+                            Reasoning: new ModelReasoningSettings
+                            {
+                                WireDialect = ReasoningWireDialect.Standard,
+                            }),
                     ],
                 },
             ],

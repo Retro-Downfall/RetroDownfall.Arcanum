@@ -38,8 +38,8 @@ internal static class ModelInfoBuilder
                     redactedEndpoint,
                     provider.ContextWindowLimit,
                     model.SupportsVision,
-                    model.WireDialect,
-                    model.MaxBudgetTokens,
+                    model.Reasoning?.WireDialect,
+                    model.Reasoning?.MaxBudgetTokens,
                     ModelCapabilityCatalog.ResolvePromptCaching(provider, model.Name)));
 
             }

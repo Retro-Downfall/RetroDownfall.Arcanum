@@ -235,14 +235,14 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             SupportsVision = snapshot.SupportsVision;
 
-            HasReasoning = snapshot.WireDialect is not null;
+            HasReasoning = snapshot.Reasoning?.WireDialect is not null;
 
-            ReasoningDialect = snapshot.WireDialect
+            ReasoningDialect = snapshot.Reasoning?.WireDialect
                 ?? ReasoningWireDialect.Standard;
 
-            HasReasoningMaxBudgetTokens = snapshot.MaxBudgetTokens is not null;
+            HasReasoningMaxBudgetTokens = snapshot.Reasoning?.MaxBudgetTokens is not null;
 
-            ReasoningMaxBudgetTokens = snapshot.MaxBudgetTokens ?? 1;
+            ReasoningMaxBudgetTokens = snapshot.Reasoning?.MaxBudgetTokens ?? 1;
 
         }
 
@@ -250,10 +250,15 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         {
             Name = Name,
             SupportsVision = SupportsVision,
-            WireDialect = HasReasoning ? ReasoningDialect : null,
-            MaxBudgetTokens = HasReasoning && HasReasoningMaxBudgetTokens
-                ? ReasoningMaxBudgetTokens
-                : null,
+            Reasoning = !HasReasoning
+                ? null
+                : new ModelReasoningSettings
+                {
+                    WireDialect = ReasoningDialect,
+                    MaxBudgetTokens = HasReasoningMaxBudgetTokens
+                        ? ReasoningMaxBudgetTokens
+                        : null,
+                },
         };
 
     }

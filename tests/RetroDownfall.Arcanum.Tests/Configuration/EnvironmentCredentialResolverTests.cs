@@ -23,10 +23,9 @@ public sealed class EnvironmentCredentialResolverTests : IDisposable
             PublicPropertyNames<ProviderSettings>());
         Assert.Equal(
             [
-                nameof(ModelEntry.MaxBudgetTokens),
                 nameof(ModelEntry.Name),
+                nameof(ModelEntry.Reasoning),
                 nameof(ModelEntry.SupportsVision),
-                nameof(ModelEntry.WireDialect),
             ],
             PublicPropertyNames<ModelEntry>());
         Assert.Equal(

@@ -270,7 +270,10 @@ public sealed class PingRequestBoundsValidatorTests
 
         Result result = ReasoningRequestValidator.ValidateForModel(
             new ReasoningRequestOptions(BudgetTokens: 2048),
-            new ModelEntry("reasoner") { WireDialect = ReasoningWireDialect.Standard },
+            new ModelEntry("reasoner")
+            {
+                Reasoning = new ModelReasoningSettings { WireDialect = ReasoningWireDialect.Standard },
+            },
             true,
             modelName: "reasoner",
             providerName: "test");
@@ -286,7 +289,14 @@ public sealed class PingRequestBoundsValidatorTests
 
         Result result = ReasoningRequestValidator.ValidateForModel(
             new ReasoningRequestOptions(BudgetTokens: 4097),
-            new ModelEntry("reasoner") { WireDialect = ReasoningWireDialect.OpenRouter, MaxBudgetTokens = 4096 },
+            new ModelEntry("reasoner")
+            {
+                Reasoning = new ModelReasoningSettings
+                {
+                    WireDialect = ReasoningWireDialect.OpenRouter,
+                    MaxBudgetTokens = 4096,
+                },
+            },
             true,
             modelName: "reasoner",
             providerName: "test");
@@ -340,7 +350,10 @@ public sealed class PingRequestBoundsValidatorTests
             new ReasoningRequestOptions(
                 Effort: ReasoningEffortLevel.High,
                 Output: ReasoningOutputMode.Summary),
-            new ModelEntry("reasoner") { WireDialect = ReasoningWireDialect.OpenRouter },
+            new ModelEntry("reasoner")
+            {
+                Reasoning = new ModelReasoningSettings { WireDialect = ReasoningWireDialect.OpenRouter },
+            },
             true,
             modelName: "reasoner",
             providerName: "test");
@@ -358,7 +371,15 @@ public sealed class PingRequestBoundsValidatorTests
                 new ProviderSettings
                 {
                     Name = "test",
-                    Models = [new ModelEntry("reasoner") { WireDialect = wireDialect }],
+                    Models =
+                    [
+                        new ModelEntry("reasoner")
+                        {
+                            Reasoning = wireDialect is null
+                                ? null
+                                : new ModelReasoningSettings { WireDialect = wireDialect },
+                        },
+                    ],
                 },
             ],
         };

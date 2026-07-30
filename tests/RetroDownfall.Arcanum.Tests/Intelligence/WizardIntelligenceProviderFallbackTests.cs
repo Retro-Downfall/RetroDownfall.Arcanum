@@ -359,10 +359,14 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         ProviderSettings provider = MakeProvider("provider-a");
 
+        // Standard dialect: effort is supported, but a numeric budget is not — the request must be
+        // rejected as unsupported before any provider I/O.
         provider.Models =
         [
             new ModelEntry(ModelName)
-            { WireDialect = ReasoningWireDialect.OpenRouter },
+            {
+                Reasoning = new ModelReasoningSettings { WireDialect = ReasoningWireDialect.Standard },
+            },
         ];
 
         ScriptingChatClient chat = new();
@@ -403,11 +407,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         ProviderSettings provider = MakeProvider("provider-a");
 
-        provider.Models =
-        [
-            new ModelEntry(ModelName)
-            { WireDialect = ReasoningWireDialect.OpenRouter },
-        ];
+        // No declared reasoning block: an explicit effort request is unsupported and must be
+        // rejected before any provider I/O.
+        provider.Models = [new ModelEntry(ModelName)];
 
         ScriptingChatClient chat = new();
 
@@ -451,7 +453,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         providerA.Models =
         [
             new ModelEntry(ModelName)
-            { WireDialect = ReasoningWireDialect.OpenRouter },
+            {
+                Reasoning = new ModelReasoningSettings { WireDialect = ReasoningWireDialect.OpenRouter },
+            },
         ];
 
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -494,7 +498,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         providerA.Models =
         [
             new ModelEntry(ModelName)
-            { WireDialect = ReasoningWireDialect.OpenRouter },
+            {
+                Reasoning = new ModelReasoningSettings { WireDialect = ReasoningWireDialect.OpenRouter },
+            },
         ];
 
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -523,7 +529,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IntelligenceEvent error = Assert.Single(events, static e => e.Type == IntelligenceEventType.Error);
 
         Assert.Equal(ErrorCodes.Validation.UnsupportedReasoningControl, error.Data);
-        Assert.Contains("does not declare support", error.Message, StringComparison.Ordinal);
+        Assert.Contains("does not declare reasoning capability", error.Message, StringComparison.Ordinal);
         Assert.Contains(providerB.Name, error.Message, StringComparison.Ordinal);
         Assert.Contains(ModelName, error.Message, StringComparison.Ordinal);
         Assert.Equal([providerA.Name], factory.CandidateCallOrder);
@@ -541,7 +547,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         providerB.Models =
         [
             new ModelEntry(ModelName)
-            { WireDialect = ReasoningWireDialect.OpenRouter },
+            {
+                Reasoning = new ModelReasoningSettings { WireDialect = ReasoningWireDialect.OpenRouter },
+            },
         ];
 
         RecordingChatClientFactory factory = new();
@@ -582,7 +590,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         providerB.Models =
         [
             new ModelEntry(ModelName)
-            { WireDialect = ReasoningWireDialect.OpenRouter },
+            {
+                Reasoning = new ModelReasoningSettings { WireDialect = ReasoningWireDialect.OpenRouter },
+            },
         ];
 
         RecordingChatClientFactory factory = new();
@@ -620,9 +630,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     {
         
         ProviderSettings providerA = MakeProvider("provider-a");
-        providerA.Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)];
+        providerA.Models = [ReasoningModelEntry()];
         ProviderSettings providerB = MakeProvider("provider-b");
-        providerB.Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)];
+        providerB.Models = [ReasoningModelEntry()];
 
         TextReasoningContent reasoning = new(protectedOnly ? string.Empty : "visible reasoning");
         if (protectedOnly)
@@ -690,7 +700,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         [
             new ModelEntry(
                 ModelName,
-                WireDialect: supportsStreaming ? ReasoningWireDialect.OpenRouter : null),
+                Reasoning: supportsStreaming
+                    ? new ModelReasoningSettings { WireDialect = ReasoningWireDialect.OpenRouter }
+                    : null),
         ];
         ScriptingChatClient chatB = new();
         chatB.EnqueueStreamUpdates(new ChatResponseUpdate(
@@ -736,9 +748,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     {
         
         ProviderSettings providerA = MakeProvider("provider-a");
-        providerA.Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)];
+        providerA.Models = [ReasoningModelEntry()];
         ProviderSettings providerB = MakeProvider("provider-b");
-        providerB.Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)];
+        providerB.Models = [ReasoningModelEntry()];
         TextReasoningContent reasoning = new(protectedOnly ? string.Empty : "visible reasoning");
         if (protectedOnly)
         {
@@ -797,6 +809,14 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         ContextWindowLimit = 8192,
     };
 
+    private static ModelEntry ReasoningModelEntry() =>
+        new(
+            ModelName,
+            Reasoning: new ModelReasoningSettings
+            {
+                WireDialect = ReasoningWireDialect.OpenRouter,
+            });
+
     private static ChatClientLease MakeLease(ScriptingChatClient chatClient, ProviderSettings provider) =>
         new(chatClient, provider, ModelName, ownedHttpClient: null);
 
@@ -844,7 +864,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
             Providers = providers,
 
-            Features = new FeatureSettings { Lexicon = false },
+            Features = new FeatureSettings { Lexicon = false, ReasoningSummaries = true },
 
         };
 

@@ -212,7 +212,15 @@ public sealed class OpenAiV1EndpointTests
                         Name = "explicitly-configured",
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = "https://example.test/v1",
-                        Models = [new ModelEntry("reasoner", WireDialect: ReasoningWireDialect.OpenRouter)],
+                        Models =
+                        [
+                            new ModelEntry(
+                                "reasoner",
+                                Reasoning: new ModelReasoningSettings
+                                {
+                                    WireDialect = ReasoningWireDialect.OpenRouter,
+                                }),
+                        ],
                     },
                 ],
             },
@@ -262,7 +270,15 @@ public sealed class OpenAiV1EndpointTests
                         Name = "explicitly-configured",
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = "https://example.test/v1",
-                        Models = [new ModelEntry("reasoner", WireDialect: ReasoningWireDialect.OpenRouter)],
+                        Models =
+                        [
+                            new ModelEntry(
+                                "reasoner",
+                                Reasoning: new ModelReasoningSettings
+                                {
+                                    WireDialect = ReasoningWireDialect.OpenRouter,
+                                }),
+                        ],
                     },
                 ],
             },
@@ -319,7 +335,16 @@ public sealed class OpenAiV1EndpointTests
                         Name = "reasoning-validation",
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = "https://example.test/v1",
-                        Models = [new ModelEntry("reasoner", WireDialect: ReasoningWireDialect.OpenRouter, MaxBudgetTokens: 64)],
+                        Models =
+                        [
+                            new ModelEntry(
+                                "reasoner",
+                                Reasoning: new ModelReasoningSettings
+                                {
+                                    WireDialect = ReasoningWireDialect.OpenRouter,
+                                    MaxBudgetTokens = 64,
+                                }),
+                        ],
                     },
                 ],
             },
@@ -723,8 +748,11 @@ public sealed class OpenAiV1EndpointTests
                         [
                             new ModelEntry("gpt-5", SupportsVision: true)
                             {
-                                WireDialect = ReasoningWireDialect.AnthropicThinking,
-                                MaxBudgetTokens = 32_768,
+                                Reasoning = new ModelReasoningSettings
+                                {
+                                    WireDialect = ReasoningWireDialect.AnthropicThinking,
+                                    MaxBudgetTokens = 32_768,
+                                },
                             },
                         ],
                     },

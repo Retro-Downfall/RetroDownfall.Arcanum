@@ -4533,7 +4533,7 @@ public sealed class WizardIntelligenceProvider(
 
     private static ReasoningWireDialect ResolveReasoningWireDialect(ChatClientLease lease) =>
         ProviderResolver.TryResolveModelEntry(lease.Provider, lease.ResolvedModel, out ModelEntry? modelEntry)
-            ? modelEntry?.WireDialect ?? ReasoningWireDialect.Standard
+            ? modelEntry?.Reasoning?.WireDialect ?? ReasoningWireDialect.Standard
             : ReasoningWireDialect.Standard;
 
     private static bool ResolveReasoningEnabled(ChatClientLease lease) =>
@@ -4541,7 +4541,7 @@ public sealed class WizardIntelligenceProvider(
             lease.Provider,
             lease.ResolvedModel,
             out ModelEntry? modelEntry)
-            ? modelEntry?.WireDialect is not null
+            ? modelEntry?.Reasoning?.WireDialect is not null
             : false;
 
     private static IReadOnlyList<ReasoningContentSegment> ProjectClientReasoningSegments(

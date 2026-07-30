@@ -32,7 +32,7 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(entry.SupportsVision);
 
-        Assert.Null(entry.WireDialect);
+        Assert.Null(entry.Reasoning);
 
     }
 
@@ -70,7 +70,7 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(entry.SupportsVision);
 
-        Assert.Null(entry.WireDialect);
+        Assert.Null(entry.Reasoning);
 
     }
 
@@ -132,8 +132,8 @@ public sealed class ModelEntryJsonConverterTests
 
         ModelEntry? entry = _converter.Read(ref reader, typeof(ModelEntry), Options);
 
-        Assert.Equal(ReasoningWireDialect.OpenRouter, entry?.WireDialect);
-        Assert.Equal(65_536, entry?.MaxBudgetTokens);
+        Assert.Equal(ReasoningWireDialect.OpenRouter, entry?.Reasoning?.WireDialect);
+        Assert.Equal(65_536, entry?.Reasoning?.MaxBudgetTokens);
 
     }
 
@@ -210,8 +210,11 @@ public sealed class ModelEntryJsonConverterTests
 
         ModelEntry entry = new("reasoner")
         {
-            WireDialect = ReasoningWireDialect.TopLevelReasoningBudget,
-            MaxBudgetTokens = 32_768,
+            Reasoning = new ModelReasoningSettings
+            {
+                WireDialect = ReasoningWireDialect.TopLevelReasoningBudget,
+                MaxBudgetTokens = 32_768,
+            },
         };
 
         using MemoryStream stream = new();
@@ -241,7 +244,7 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(entry.SupportsVision);
 
-        Assert.Null(entry.WireDialect);
+        Assert.Null(entry.Reasoning);
 
     }
 
@@ -282,9 +285,9 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(provider.Models[1].SupportsVision);
 
-        Assert.Null(provider.Models[1].WireDialect);
+        Assert.Null(provider.Models[1].Reasoning);
 
-        Assert.Equal(ReasoningWireDialect.Standard, provider.Models[0].WireDialect);
+        Assert.Equal(ReasoningWireDialect.Standard, provider.Models[0].Reasoning?.WireDialect);
 
         string roundTripped = JsonSerializer.Serialize(provider, ConfigurationJsonContext.Default.ProviderSettings);
 
@@ -296,8 +299,8 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(reparsed.Models[1].SupportsVision);
 
-        Assert.Equal(provider.Models[0].WireDialect, reparsed.Models[0].WireDialect);
-        Assert.Null(reparsed.Models[1].WireDialect);
+        Assert.Equal(provider.Models[0].Reasoning?.WireDialect, reparsed.Models[0].Reasoning?.WireDialect);
+        Assert.Null(reparsed.Models[1].Reasoning);
 
     }
 

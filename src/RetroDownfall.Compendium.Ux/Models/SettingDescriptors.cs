@@ -39,6 +39,8 @@ public static class SettingDescriptors
         new("providers.credentialEnvironmentVariable", ConfigSection.Providers, "API key variable name", "Name of the environment variable containing your API key. Leave blank for automatic naming.", SettingKind.String, Placeholder: "OPENAI_API_KEY"),
         new("providers.models.name", ConfigSection.Providers, "Model name", "The exact name of the AI model as provided by the service.", SettingKind.String, Placeholder: "gpt-4-turbo-preview"),
         new("providers.models.supportsVision", ConfigSection.Providers, "Can analyze images", "Check if this model can understand and describe images.", SettingKind.Bool),
+        new("providers.models.reasoning.wireDialect", ConfigSection.Providers, "Reasoning format", "Technical format for AI thinking. Only change if your provider requires a special format.", SettingKind.Enum, EnumType: typeof(ReasoningWireDialect), Group: "Advanced reasoning"),
+        new("providers.models.reasoning.maxBudgetTokens", ConfigSection.Providers, "Maximum thinking tokens", "Limit how many tokens the AI can use for thinking per response. Leave blank for unlimited.", SettingKind.Int, 1, 2_097_152, 1, ClampName: nameof(ArcanumSettingClamps.ReasoningBudgetTokens), Group: "Advanced reasoning", AllowUnset: true, Placeholder: "4096"),
         new("providers.contextWindowLimit", ConfigSection.Providers, "Memory size", "How much text the AI can remember in a single conversation.", SettingKind.Int, 256, 2_097_152, 128, ClampName: nameof(ArcanumSettingClamps.ContextWindowLimit), Placeholder: "128000"),
 
         // Security policy

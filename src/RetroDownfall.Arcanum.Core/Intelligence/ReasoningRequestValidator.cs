@@ -72,7 +72,7 @@ public static class ReasoningRequestValidator
 
         string model = DescribeCandidate(providerName, modelName);
 
-        bool reasoningCapable = modelEntry?.WireDialect is not null;
+        bool reasoningCapable = modelEntry?.Reasoning?.WireDialect is not null;
 
         if (options.Effort is not null && !reasoningCapable)
         {
@@ -83,7 +83,7 @@ public static class ReasoningRequestValidator
 
         if (options.BudgetTokens is { } budgetTokens)
         {
-            bool budgetCapable = modelEntry?.WireDialect is ReasoningWireDialect.OpenRouter
+            bool budgetCapable = modelEntry?.Reasoning?.WireDialect is ReasoningWireDialect.OpenRouter
                 or ReasoningWireDialect.TopLevelReasoningBudget
                 or ReasoningWireDialect.AnthropicThinking;
 
@@ -94,7 +94,7 @@ public static class ReasoningRequestValidator
                     $"{model} does not support numeric reasoning budgets."));
             }
 
-            if (modelEntry?.MaxBudgetTokens is { } maxBudgetTokens && budgetTokens > maxBudgetTokens)
+            if (modelEntry?.Reasoning?.MaxBudgetTokens is { } maxBudgetTokens && budgetTokens > maxBudgetTokens)
             {
                 return Result.Failure(new Error(
                     ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit,

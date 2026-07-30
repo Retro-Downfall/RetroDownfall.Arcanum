@@ -2320,7 +2320,19 @@ public sealed class ConfigurationValidatorTests
                 {
                     Name = "reasoning-provider",
                     Type = AiProviderKind.OpenAICompatible,
-                    Models = [new ModelEntry("reasoner") { WireDialect = wireDialect, MaxBudgetTokens = maxBudgetTokens }],
+                    Models =
+                    [
+                        new ModelEntry("reasoner")
+                        {
+                            Reasoning = wireDialect is null && maxBudgetTokens is null
+                                ? null
+                                : new ModelReasoningSettings
+                                {
+                                    WireDialect = wireDialect,
+                                    MaxBudgetTokens = maxBudgetTokens,
+                                },
+                        },
+                    ],
                 },
             ],
         };
