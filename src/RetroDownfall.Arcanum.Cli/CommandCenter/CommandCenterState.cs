@@ -44,6 +44,8 @@ internal sealed class CommandCenterState
 
     public string? Model { get; set; }
 
+    public bool ShowTelemetryPane { get; set; } = true;
+
     public Guid? CampaignId { get; set; }
 
     public ServeLaunchResult? ServeLaunch { get; set; }

@@ -866,6 +866,11 @@ internal sealed class CommandCenterHost(
 
                 break;
 
+            case CommandCenterAction.ToggleTelemetryPane:
+                state.ShowTelemetryPane = !state.ShowTelemetryPane;
+                app.Invoke(() => window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter));
+                break;
+
             case CommandCenterAction.SessionSelectUp:
                 window.MoveSessionSelection(-1, state);
                 break;
@@ -1961,6 +1966,7 @@ internal sealed class CommandCenterHost(
             IsCtrlN: key == Key.N.WithCtrl || (ctrl && (key.KeyCode & ~KeyCode.CtrlMask) == KeyCode.N),
             IsCtrlR: key == Key.R.WithCtrl || (ctrl && (key.KeyCode & ~KeyCode.CtrlMask) == KeyCode.R),
             IsCtrlQ: key == Key.Q.WithCtrl || (ctrl && (key.KeyCode & ~KeyCode.CtrlMask) == KeyCode.Q),
+            IsCtrlT: key == Key.T.WithCtrl || (ctrl && (key.KeyCode & ~KeyCode.CtrlMask) == KeyCode.T),
             IsF1: key == Key.F1,
             IsF5: key == Key.F5,
             IsUp: key == Key.CursorUp,

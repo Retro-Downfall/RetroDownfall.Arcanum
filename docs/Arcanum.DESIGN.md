@@ -1255,7 +1255,11 @@ the Compendium reference linked from §3.4.
 
 `IArcanumIntelligenceProvider` / `WizardIntelligenceProvider` are **scoped** (one instance per request scope). `IChatClientFactory` is **singleton**; each call to **`ResolveClientAsync`** returns a **`ChatClientLease`** that owns a fresh `IChatClient` for that inference turn over the named OpenAI-compatible `HttpClient` pipeline.
 
-### 10.4 Grimoire integration
+### 10.4 Telemetry and observability
+
+`TelemetryService` subscribes to `ArcanumMetrics` (`Meter` from `System.Diagnostics.Metrics`) and produces `TelemetrySnapshot` aggregates for `TelemetryPane`. The Command Center (`Cli`) displays real-time session-level aggregates—input/output tokens, cache hits/misses, reasoning tokens, estimated cost (from `PricingSettings.ResolveForModel`), cumulative latency, and time-to-first-token—via a non-focusable `TelemetryPane`. Updates are coalesced (~50ms) and never block the inference loop. Toggle (`Ctrl+T`) persists visibility in `CommandCenterState` (`ShowTelemetryPane`). Dynamic pricing is read from `CostSettings.Pricing`; no hardcoded pricing is permitted in the pane.
+
+### 10.4.1 Grimoire integration
 
 The provider persists through `IGrimoireRepository`. When `sessionId` is set, prior turns are loaded for `IChatClient`. A dynamic `ChatRole.System` message from `SystemPromptBuilder` is prepended in memory (not persisted to Grimoire). Tool rounds are persisted as bracket-formatted `Entry` rows. Assistant entries contain **answer text only**: raw, visible, protected, and summarized reasoning are never written to Grimoire. After every successful buffered or streamed turn with a bound session, the code-owned tracking policy makes **`IncrementSessionTokensAsync`** atomically add the provider-authoritative reported **`total_tokens`** to **`Session.TotalTokensUsed`**. Persistence failures on the buffered path are logged as warnings only.
 

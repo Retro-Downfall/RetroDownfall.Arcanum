@@ -28,6 +28,7 @@ internal enum CommandCenterAction
     Refresh,
     CycleFocusNext,
     CycleFocusPrev,
+    ToggleTelemetryPane,
     CloseOverlayOrFocusComposer,
     SessionSelectUp,
     SessionSelectDown,
@@ -84,6 +85,11 @@ internal static class CommandCenterKeymap
         if (chord.IsCtrlR || chord.IsF5)
         {
             return CommandCenterAction.Refresh;
+        }
+
+        if (chord.IsCtrlT)
+        {
+            return CommandCenterAction.ToggleTelemetryPane;
         }
 
         if (chord.IsCtrlQ)
@@ -312,6 +318,7 @@ internal readonly record struct KeyChord(
     bool IsCtrlN = false,
     bool IsCtrlR = false,
     bool IsCtrlQ = false,
+    bool IsCtrlT = false,
     bool IsF1 = false,
     bool IsF5 = false,
     bool IsUp = false,
