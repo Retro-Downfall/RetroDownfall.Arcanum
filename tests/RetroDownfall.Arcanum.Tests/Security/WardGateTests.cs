@@ -587,6 +587,22 @@ public sealed class WardGateTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wardTask);
 
+        // The caller-cancel callback disposes the arguments; on heavily loaded runners the
+        // callback can lag the observed task completion, so wait for the disposal rather than
+        // assuming it is synchronously visible.
+        for (int i = 0; i < 200; i++)
+        {
+            try
+            {
+                _ = arguments.RootElement.ValueKind;
+                await Task.Delay(25);
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+        }
+
         Assert.Throws<ObjectDisposedException>(() => arguments.RootElement.ValueKind);
 
     }
