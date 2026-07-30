@@ -4,8 +4,9 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
-public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyProvider, IDisposable
+public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposable
 {
+    private const string KeyRingHeader = "ARCANUM-KEYRING-1";
     private const string MissingRecoveryMessage =
         "The dedicated file-encryption secret is missing. Restore the OS credential "
         + "'file-encryption-master-key', or restore file-encryption-key.dat and the matching "
@@ -15,7 +16,8 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyProvider, IDis
     private readonly ISecretStore _secretStore;
     private readonly Func<bool> _encryptedBlobsExist;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private FileEncryptionKeyMaterial? _cached;
+    private Dictionary<string, FileEncryptionKeyMaterial>? _keys;
+    private string? _activeKeyId;
 
     public FileEncryptionKeyProvider(
         ISecretStore secretStore,
@@ -27,60 +29,29 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyProvider, IDis
 
     public void Dispose()
     {
-        _cached?.Dispose();
+        if (_keys is not null)
+        {
+            foreach (FileEncryptionKeyMaterial material in _keys.Values)
+            {
+                material.Dispose();
+            }
+        }
+
         _gate.Dispose();
     }
 
     public async ValueTask<FileEncryptionKeyMaterial> GetForWriteAsync(
         CancellationToken cancellationToken = default)
     {
-        if (_cached is { } cached)
-        {
-            return cached;
-        }
-
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_cached is not null)
+            if (_keys is null)
             {
-                return _cached;
+                await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            SecretStoreReadResult result = await _secretStore
-                .GetFileEncryptionSecretReadResultAsync()
-                .ConfigureAwait(false);
-            if (result.Status == SecretStoreReadStatus.Corrupted)
-            {
-                throw new EncryptedBlobKeyException(
-                    result.Message ?? MissingRecoveryMessage);
-            }
-
-            if (result.Status == SecretStoreReadStatus.Missing)
-            {
-                if (_encryptedBlobsExist())
-                {
-                    throw new EncryptedBlobKeyException(MissingRecoveryMessage);
-                }
-
-                byte[] generated = RandomNumberGenerator.GetBytes(32);
-                string encoded = Convert.ToBase64String(generated);
-                try
-                {
-                    await _secretStore.SaveFileEncryptionSecretAsync(encoded)
-                        .ConfigureAwait(false);
-                    _cached = FileEncryptionKeyMaterial.Create(generated);
-                }
-                finally
-                {
-                    CryptographicOperations.ZeroMemory(generated);
-                }
-
-                return _cached;
-            }
-
-            _cached = Decode(result.Value);
-            return _cached;
+            return _keys![_activeKeyId!];
         }
         finally
         {
@@ -93,57 +64,311 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyProvider, IDis
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(keyId);
-        FileEncryptionKeyMaterial material = _cached
-            ?? await LoadExistingAsync(cancellationToken).ConfigureAwait(false);
-        byte[] expected = System.Text.Encoding.ASCII.GetBytes(material.KeyId);
-        byte[] actual = System.Text.Encoding.ASCII.GetBytes(keyId);
-        bool matches = expected.Length == actual.Length
-            && CryptographicOperations.FixedTimeEquals(expected, actual);
-        CryptographicOperations.ZeroMemory(expected);
-        CryptographicOperations.ZeroMemory(actual);
-        if (!matches)
-        {
-            throw new EncryptedBlobKeyException(
-                $"Encrypted blob key '{keyId}' is unavailable. Restore the matching "
-                + "file-encryption-key.dat and Data Protection key ring from backup.");
-        }
-
-        return material;
-    }
-
-    private async ValueTask<FileEncryptionKeyMaterial> LoadExistingAsync(
-        CancellationToken cancellationToken)
-    {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_cached is not null)
+            if (_keys is null)
             {
-                return _cached;
+                await LoadExistingCoreAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            SecretStoreReadResult result = await _secretStore
-                .GetFileEncryptionSecretReadResultAsync()
-                .ConfigureAwait(false);
-            if (result.Status == SecretStoreReadStatus.Missing)
+            if (TryFindKey(keyId, out FileEncryptionKeyMaterial? material))
             {
-                throw new EncryptedBlobKeyException(MissingRecoveryMessage);
+                return material!;
             }
 
-            if (result.Status == SecretStoreReadStatus.Corrupted)
-            {
-                throw new EncryptedBlobKeyException(
-                    result.Message ?? MissingRecoveryMessage);
-            }
-
-            _cached = Decode(result.Value);
-            return _cached;
+            throw UnknownKey(keyId);
         }
         finally
         {
             _gate.Release();
         }
     }
+
+    public async Task<FileEncryptionKeyMaterial> RotateAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_keys is null)
+            {
+                await LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            byte[] generated = RandomNumberGenerator.GetBytes(32);
+            FileEncryptionKeyMaterial next;
+            try
+            {
+                next = FileEncryptionKeyMaterial.Create(generated);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(generated);
+            }
+
+            Dictionary<string, FileEncryptionKeyMaterial> updated =
+                new(_keys!, StringComparer.Ordinal)
+                {
+                    [next.KeyId] = next,
+                };
+            try
+            {
+                await PersistAsync(updated, next.KeyId).ConfigureAwait(false);
+            }
+            catch
+            {
+                next.Dispose();
+                throw;
+            }
+
+            _keys = updated;
+            _activeKeyId = next.KeyId;
+            return next;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task RetireAsync(
+        string keyId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyId);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_keys is null)
+            {
+                await LoadExistingCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (string.Equals(keyId, _activeKeyId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("The active file-encryption write key cannot be retired.");
+            }
+
+            if (!TryFindKey(keyId, out FileEncryptionKeyMaterial? retired))
+            {
+                throw UnknownKey(keyId);
+            }
+
+            Dictionary<string, FileEncryptionKeyMaterial> updated =
+                new(_keys!, StringComparer.Ordinal);
+            _ = updated.Remove(retired!.KeyId);
+            await PersistAsync(updated, _activeKeyId!).ConfigureAwait(false);
+            _keys = updated;
+            retired.Dispose();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<string>> GetActiveKeyIdsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_keys is null)
+            {
+                await LoadExistingCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return _keys!.Keys.Order(StringComparer.Ordinal).ToArray();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task LoadOrCreateAsync(CancellationToken cancellationToken)
+    {
+        SecretStoreReadResult result = await _secretStore
+            .GetFileEncryptionSecretReadResultAsync()
+            .ConfigureAwait(false);
+        if (result.Status == SecretStoreReadStatus.Corrupted)
+        {
+            throw new EncryptedBlobKeyException(result.Message ?? MissingRecoveryMessage);
+        }
+
+        if (result.Status != SecretStoreReadStatus.Missing)
+        {
+            Load(result.Value);
+            return;
+        }
+
+        if (_encryptedBlobsExist())
+        {
+            throw new EncryptedBlobKeyException(MissingRecoveryMessage);
+        }
+
+        byte[] generated = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            FileEncryptionKeyMaterial material = FileEncryptionKeyMaterial.Create(generated);
+            string legacyEncoded = Convert.ToBase64String(generated);
+            try
+            {
+                await _secretStore.SaveFileEncryptionSecretAsync(legacyEncoded)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                material.Dispose();
+                throw;
+            }
+
+            _keys = new Dictionary<string, FileEncryptionKeyMaterial>(StringComparer.Ordinal)
+            {
+                [material.KeyId] = material,
+            };
+            _activeKeyId = material.KeyId;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(generated);
+        }
+    }
+
+    private async Task LoadExistingCoreAsync(
+        CancellationToken cancellationToken)
+    {
+        SecretStoreReadResult result = await _secretStore
+            .GetFileEncryptionSecretReadResultAsync()
+            .ConfigureAwait(false);
+        if (result.Status == SecretStoreReadStatus.Missing)
+        {
+            throw new EncryptedBlobKeyException(MissingRecoveryMessage);
+        }
+
+        if (result.Status == SecretStoreReadStatus.Corrupted)
+        {
+            throw new EncryptedBlobKeyException(result.Message ?? MissingRecoveryMessage);
+        }
+
+        Load(result.Value);
+    }
+
+    private void Load(string? encoded)
+    {
+        if (encoded?.StartsWith(KeyRingHeader + "\n", StringComparison.Ordinal) == true)
+        {
+            LoadKeyRing(encoded);
+            return;
+        }
+
+        FileEncryptionKeyMaterial material = Decode(encoded);
+        _keys = new Dictionary<string, FileEncryptionKeyMaterial>(StringComparer.Ordinal)
+        {
+            [material.KeyId] = material,
+        };
+        _activeKeyId = material.KeyId;
+    }
+
+    private void LoadKeyRing(string encoded)
+    {
+        string[] lines = encoded.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length < 3
+            || !string.Equals(lines[0], KeyRingHeader, StringComparison.Ordinal)
+            || !lines[1].StartsWith("active=", StringComparison.Ordinal))
+        {
+            throw new EncryptedBlobKeyException("The file-encryption key ring is malformed; restore backup.");
+        }
+
+        string active = lines[1]["active=".Length..];
+        Dictionary<string, FileEncryptionKeyMaterial> loaded = new(StringComparer.Ordinal);
+        try
+        {
+            foreach (string line in lines[2..])
+            {
+                int separator = line.IndexOf('=');
+                if (separator <= 0)
+                {
+                    throw new EncryptedBlobKeyException(
+                        "The file-encryption key ring is malformed; restore backup.");
+                }
+
+                string declaredId = line[..separator];
+                FileEncryptionKeyMaterial material = Decode(line[(separator + 1)..]);
+                if (!string.Equals(declaredId, material.KeyId, StringComparison.Ordinal)
+                    || !loaded.TryAdd(material.KeyId, material))
+                {
+                    material.Dispose();
+                    throw new EncryptedBlobKeyException(
+                        "The file-encryption key ring contains invalid key identifiers; restore backup.");
+                }
+            }
+
+            if (!loaded.ContainsKey(active))
+            {
+                throw new EncryptedBlobKeyException(
+                    "The active file-encryption key is missing from the key ring; restore backup.");
+            }
+        }
+        catch
+        {
+            foreach (FileEncryptionKeyMaterial material in loaded.Values)
+            {
+                material.Dispose();
+            }
+
+            throw;
+        }
+
+        _keys = loaded;
+        _activeKeyId = active;
+    }
+
+    private async Task PersistAsync(
+        IReadOnlyDictionary<string, FileEncryptionKeyMaterial> keys,
+        string activeKeyId)
+    {
+        System.Text.StringBuilder encoded = new();
+        _ = encoded.AppendLine(KeyRingHeader);
+        _ = encoded.Append("active=").AppendLine(activeKeyId);
+        foreach ((string keyId, FileEncryptionKeyMaterial material) in
+                 keys.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
+        {
+            _ = encoded.Append(keyId)
+                .Append('=')
+                .AppendLine(Convert.ToBase64String(material.MasterKey.Span));
+        }
+
+        await _secretStore.SaveFileEncryptionSecretAsync(encoded.ToString())
+            .ConfigureAwait(false);
+    }
+
+    private bool TryFindKey(string requestedKeyId, out FileEncryptionKeyMaterial? material)
+    {
+        foreach ((string keyId, FileEncryptionKeyMaterial candidate) in _keys!)
+        {
+            byte[] expected = System.Text.Encoding.ASCII.GetBytes(keyId);
+            byte[] actual = System.Text.Encoding.ASCII.GetBytes(requestedKeyId);
+            bool matches = expected.Length == actual.Length
+                && CryptographicOperations.FixedTimeEquals(expected, actual);
+            CryptographicOperations.ZeroMemory(expected);
+            CryptographicOperations.ZeroMemory(actual);
+            if (matches)
+            {
+                material = candidate;
+                return true;
+            }
+        }
+
+        material = null;
+        return false;
+    }
+
+    private static EncryptedBlobKeyException UnknownKey(string keyId) =>
+        new(
+            $"Encrypted blob key '{keyId}' is unavailable. Restore the matching "
+            + "portable file-encryption key ring and Data Protection key ring from backup.");
 
     private static FileEncryptionKeyMaterial Decode(string? encoded)
     {

@@ -486,6 +486,7 @@ internal sealed class BatchProcessingService(
                 List<PreparedBatchRequestLine> requestLines = await CollectRequestLinesAsync(
                     inputPath,
                     blobStore,
+                    inputFile.EncryptionVersion,
                     maxRequests,
                     stoppingToken).ConfigureAwait(false);
 
@@ -604,6 +605,7 @@ internal sealed class BatchProcessingService(
                         "batch_output.jsonl",
                         "batch_output",
                         files,
+                        blobStore,
                         outputDescriptor!,
                         CancellationToken.None)
                     .ConfigureAwait(false)
@@ -615,6 +617,7 @@ internal sealed class BatchProcessingService(
                         "batch_errors.jsonl",
                         "error",
                         files,
+                        blobStore,
                         errorDescriptor!,
                         CancellationToken.None)
                     .ConfigureAwait(false)
@@ -668,6 +671,7 @@ internal sealed class BatchProcessingService(
     private static async Task<List<PreparedBatchRequestLine>> CollectRequestLinesAsync(
         string inputPath,
         IEncryptedBlobStore blobStore,
+        int encryptionVersion,
         int maxRequests,
         CancellationToken cancellationToken)
     {
@@ -676,6 +680,7 @@ internal sealed class BatchProcessingService(
         await foreach ((int Line, string Text) item in EnumerateRequestLinesAsync(
                            inputPath,
                            blobStore,
+                           encryptionVersion,
                            maxRequests,
                            cancellationToken)
             .ConfigureAwait(false))
@@ -706,14 +711,16 @@ internal sealed class BatchProcessingService(
     private static async IAsyncEnumerable<(int Line, string Text)> EnumerateRequestLinesAsync(
         string inputPath,
         IEncryptedBlobStore blobStore,
+        int encryptionVersion,
         int maxRequests,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
 
         await using Stream stream = await blobStore
-            .OpenReadAsync(
+            .OpenCompatibleReadAsync(
                 inputPath,
                 EncryptedBlobPurpose.UploadedFile,
+                encryptionVersion,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -915,6 +922,7 @@ internal sealed class BatchProcessingService(
         string filename,
         string purpose,
         IUploadedFileRepository files,
+        IEncryptedBlobStore blobStore,
         EncryptedBlobDescriptor descriptor,
         CancellationToken cancellationToken)
     {
@@ -927,6 +935,15 @@ internal sealed class BatchProcessingService(
         {
             File.Move(tempPath, path, overwrite: true);
             SecureFilePermissions.ApplyOwnerOnlyFile(path);
+            await using Stream plaintext = await blobStore.OpenReadAsync(
+                    path,
+                    EncryptedBlobPurpose.BatchArtifact,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            string plaintextSha256 = Convert.ToHexString(
+                await System.Security.Cryptography.SHA256
+                    .HashDataAsync(plaintext, cancellationToken)
+                    .ConfigureAwait(false));
             UploadedFileRecord record = new(
                 id,
                 filename,
@@ -935,7 +952,8 @@ internal sealed class BatchProcessingService(
                 "application/jsonl",
                 DateTimeOffset.UtcNow,
                 descriptor.Version,
-                descriptor.KeyId);
+                descriptor.KeyId,
+                plaintextSha256);
             await files.CreateAsync(record, cancellationToken).ConfigureAwait(false);
         }
         catch

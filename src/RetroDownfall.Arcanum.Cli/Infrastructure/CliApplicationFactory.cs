@@ -174,6 +174,7 @@ internal static class CliApplicationFactory
         services.AddTransient<ProviderCommands>();
 
         services.AddTransient<OperationCommands>();
+        services.AddTransient<DataEncryptionCommands>();
 
     }
 

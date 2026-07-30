@@ -292,6 +292,22 @@ public sealed class CliApplicationFactoryTests
     }
 
     [Fact]
+    public void Data_encryption_help_exposes_all_lifecycle_commands_without_opening_grimoire()
+    {
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult result = CliTestHarness.Run(services, "data", "encryption", "--help");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("status", result.Output, StringComparison.Ordinal);
+        Assert.Contains("migrate", result.Output, StringComparison.Ordinal);
+        Assert.Contains("verify", result.Output, StringComparison.Ordinal);
+        Assert.Contains("rotate-key", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ConfigureCliServices_registers_command_center_host()
     {
         ServiceCollection services = new();

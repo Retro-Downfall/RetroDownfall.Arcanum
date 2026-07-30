@@ -675,9 +675,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         }
 
         await using Stream decrypted = await _blobStore
-            .OpenReadAsync(
+            .OpenCompatibleReadAsync(
                 absolutePath,
                 EncryptedBlobPurpose.SessionAttachment,
+                record.EncryptionVersion,
                 cancellationToken)
             .ConfigureAwait(false);
         if (decrypted.Length != record.ByteLength)

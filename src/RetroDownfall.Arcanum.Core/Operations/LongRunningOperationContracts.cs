@@ -37,6 +37,8 @@ public static class LongRunningOperationKinds
     public const string AttachmentPromotion = "attachment-promotion";
     public const string WorkspaceIndex = "workspace-index";
     public const string IdempotencyClaim = "idempotency-claim";
+    public const string BlobEncryptionMigration = "blob-encryption-migration";
+    public const string BlobEncryptionKeyRotation = "blob-encryption-key-rotation";
 }
 
 public static class LongRunningOperationErrorCodes
@@ -64,6 +66,8 @@ public static class LongRunningOperationPolicyCatalog
             [LongRunningOperationKinds.AttachmentPromotion] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
             [LongRunningOperationKinds.WorkspaceIndex] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
             [LongRunningOperationKinds.IdempotencyClaim] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            [LongRunningOperationKinds.BlobEncryptionMigration] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            [LongRunningOperationKinds.BlobEncryptionKeyRotation] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
         };
 
     public static IReadOnlyDictionary<string, LongRunningOperationRecoveryPolicy> Registered => Policies;

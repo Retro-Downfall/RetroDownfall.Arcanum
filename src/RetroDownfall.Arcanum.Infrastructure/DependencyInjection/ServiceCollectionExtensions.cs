@@ -129,6 +129,13 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
 
         services.AddSingleton<IGrimoireCliInitialization, GrimoireCliInitialization>();
+        services.AddScoped<ILongRunningOperationStore, LongRunningOperationStore>();
+        services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
+        services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();
+        services.AddScoped<BlobEncryptionFileProcessor>();
+        services.AddScoped<BlobEncryptionLifecycleService>();
+        services.AddScoped<IBlobEncryptionLifecycleService>(
+            static sp => sp.GetRequiredService<BlobEncryptionLifecycleService>());
 
         return services;
     }
@@ -156,7 +163,11 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IApiKeyDigestCache>(),
             sp.GetService<ILogger<OsKeychainSecretStore>>()));
 
-        services.AddSingleton<IFileEncryptionKeyProvider, FileEncryptionKeyProvider>();
+        services.AddSingleton<FileEncryptionKeyProvider>();
+        services.AddSingleton<IFileEncryptionKeyProvider>(
+            static sp => sp.GetRequiredService<FileEncryptionKeyProvider>());
+        services.AddSingleton<IFileEncryptionKeyRing>(
+            static sp => sp.GetRequiredService<FileEncryptionKeyProvider>());
 
         services.AddSingleton<IEncryptedBlobStore, EncryptedBlobStore>();
 
@@ -383,6 +394,13 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
         services.AddScoped<LongRunningOperationReconciler>();
         services.AddScoped<ILongRunningOperationRecoveryHandler, BudgetReservationRecoveryHandler>();
+        services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();
+        services.AddScoped<BlobEncryptionFileProcessor>();
+        services.AddScoped<BlobEncryptionLifecycleService>();
+        services.AddScoped<IBlobEncryptionLifecycleService>(
+            static sp => sp.GetRequiredService<BlobEncryptionLifecycleService>());
+        services.AddScoped<ILongRunningOperationRecoveryHandler, BlobEncryptionMigrationRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, BlobEncryptionKeyRotationRecoveryHandler>();
 
         services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
 

@@ -87,6 +87,9 @@ public sealed class EncryptedBlobDiagnostics(
         string detail =
             $"{secretDetail}; encrypted={encrypted}; legacyPlaintext={legacy}; corrupt={corrupt}"
             + (truncated ? $"; scan limited to {ScanLimit} files" : string.Empty)
+            + (legacy > 0
+                ? "; run 'arcanum data encryption migrate' followed by 'verify'"
+                : string.Empty)
             + ".";
         return new FileEncryptionDiagnostics(
             secretStatus,

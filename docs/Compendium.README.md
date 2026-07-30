@@ -2,7 +2,9 @@
 
 Compendium is Arcanum's desktop `arcanum.json` editor. It is a .NET 10 Avalonia
 application (`RetroDownfall.Compendium.Ux`) and does not run inference, open the
-Grimoire database, execute tools, or manage the daemon.
+Grimoire database, execute tools, manage the daemon, or perform blob migration/key rotation.
+Persistence operators use `arcanum data encryption status|migrate|verify|rotate-key`; those
+code-owned safety limits are intentionally not editable configuration.
 
 ## Documentation authority
 

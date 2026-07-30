@@ -82,7 +82,11 @@ internal static class BatchRequestCounter
             int count = 0;
 
             await using Stream plaintext = await blobStore
-                .OpenReadAsync(path, purpose, cancellationToken)
+                .OpenCompatibleReadAsync(
+                    path,
+                    purpose,
+                    blobStore.HasEnvelope(path) ? EncryptedBlobFormat.CurrentVersion : 0,
+                    cancellationToken)
                 .ConfigureAwait(false);
             using StreamReader reader = new(plaintext);
 
@@ -133,9 +137,10 @@ internal static class BatchRequestCounter
         {
 
             await using Stream plaintext = await blobStore
-                .OpenReadAsync(
+                .OpenCompatibleReadAsync(
                     path,
                     EncryptedBlobPurpose.BatchArtifact,
+                    blobStore.HasEnvelope(path) ? EncryptedBlobFormat.CurrentVersion : 0,
                     cancellationToken)
                 .ConfigureAwait(false);
             using StreamReader reader = new(plaintext);

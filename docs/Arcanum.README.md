@@ -493,13 +493,31 @@ recovery mirror. The mirror is not a substitute for OS key storage during normal
 file-encryption key is separate from both `master-api-key` and the Grimoire encryption secret;
 `arcanum key show` never displays it and API-key rotation does not rotate it.
 
+Existing version-zero attachment/upload rows can be migrated in place without a startup rewrite:
+
+```text
+arcanum data encryption status
+arcanum data encryption migrate
+arcanum data encryption verify
+arcanum data encryption rotate-key
+```
+
+Migration and rotation are resumable durable operations. They use bounded concurrency (default 2,
+maximum 8), an aggregate 64 MiB/s default throttle, and observe cancellation between files. Every
+file is length/hash checked before encryption, the temporary encrypted copy is authenticated before
+atomic replacement, and the replacement is decrypted and checked before metadata commits. A crash
+between replacement and metadata commit is reconciled on retry. `verify` reports aggregate
+missing/corrupt/unknown-key/metadata-mismatch/hash-mismatch categories and never prints filenames.
+New writes remain encrypted throughout the mixed-mode window.
+
 Stop every Arcanum host/daemon before copying the persistence tree. A recoverable backup must
 capture one consistent generation of:
 
 - `arcanum.db`, its `-wal`/`-shm` files when present, and `arcanum.db.kdf`;
 - `attachments/` and `files/`;
 - the OS credential `arcanum/file-encryption-master-key`, or
-  `file-encryption-key.dat` as its portable recovery copy; and
+  `file-encryption-key.dat` as its portable recovery copy (during rotation this wrapped value is a
+  multi-key ring; do not export only the newest key); and
 - the matching `~/.config/arcanum/keys/` Data Protection key ring when relying on that mirror.
 
 Restore the key or mirror+key-ring before starting against restored ciphertext. If encrypted blobs
@@ -507,8 +525,10 @@ exist but the key is missing, corrupt, or has the wrong key id, Arcanum fails cl
 generates a replacement. `/api/health` and `arcanum doctor` expose a `FileEncryption` check with
 key availability plus bounded encrypted/legacy-plaintext/corrupt counts, but never key or content
 data. Legacy plaintext blobs are detected and never silently served; before upgrading an old
-installation, export needed content with the old version and re-upload/re-attach it under the new
-version, or remove the legacy files after backing them up. Full format and atomicity details:
+installation, use `arcanum data encryption migrate` and then `verify`. Version-zero metadata permits
+legacy reads only during this supported window; encrypted metadata never falls back to plaintext.
+Restore accepts archives containing all retained key ids from an in-progress rotation. Full format,
+rotation, and atomicity details:
 [DESIGN §5.4.6](Arcanum.DESIGN.md#546-versioned-authenticated-blob-storage).
 
 ### Optional HTTPS
@@ -657,6 +677,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `chat` | Interactive multi-turn REPL (Figlet banner, Markdig rendering, mana bar, live multi-panel layout on wide color terminals). Flags: `-n` / `--new`, `-m`, `-c` / `--campaign <id>` (shown in the startup banner when set), `--no-tools`, `--unattended`, plus inference flags. **Slash commands:** `/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`. Stage text files inline with `@path`; an `@path` whose extension is an image type (`.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.bmp`) stages a **Scrying focus** instead (prints `Scrying focus: <name> (<size>)`; requires a vision-capable model). The mana bar shows a persistent **(Memory Compressed)** suffix after read-time compression until `/new`. Auto-starts `serve` when needed (see above). Narrow / redirected / `NO_COLOR` sessions keep the simple streaming path. |
 | `look` | Print the Eye of the World workspace snapshot (no HTTP). |
 | `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer / File Encryption panels) + API health probe, including key availability, encrypted/legacy/corrupt blob counts, and the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0 unless another check fails). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
+| `data encryption status\|migrate\|verify\|rotate-key` | Inspect mixed-mode state; resumably encrypt legacy blobs; authenticate/decrypt/hash-check every blob; or create a new key and incrementally rotate before retiring unreferenced old keys. Worker commands accept `--max-concurrency` and `--max-bytes-per-second`; output contains aggregate files/bytes and issue categories, never names or paths. |
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
 | `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Argument or stdin / interactive secret prompt. |
 | `key provider set\|status\|delete perplexity` | Manage the Perplexity key used by native `web_search`. Status never prints the secret; all operations are CLI-only and perform no HTTP. |

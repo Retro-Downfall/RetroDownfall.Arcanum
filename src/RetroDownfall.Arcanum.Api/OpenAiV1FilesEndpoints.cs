@@ -150,6 +150,13 @@ internal static partial class OpenAiV1Endpoints
                     file.Length,
                     cancellationToken)
                 .ConfigureAwait(false);
+            await using Stream verification = await blobStore.OpenReadAsync(
+                    path,
+                    EncryptedBlobPurpose.UploadedFile,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            string plaintextSha256 = Convert.ToHexString(
+                await SHA256.HashDataAsync(verification, cancellationToken).ConfigureAwait(false));
 
             UploadedFileRecord record = new(
                 id,
@@ -159,7 +166,8 @@ internal static partial class OpenAiV1Endpoints
                 declaredMimeType,
                 DateTimeOffset.UtcNow,
                 descriptor.Version,
-                descriptor.KeyId);
+                descriptor.KeyId,
+                plaintextSha256);
 
             await repository.CreateAsync(record, cancellationToken).ConfigureAwait(false);
 
@@ -301,9 +309,10 @@ internal static partial class OpenAiV1Endpoints
 
         try
         {
-            Stream plaintext = await blobStore.OpenReadAsync(
+            Stream plaintext = await blobStore.OpenCompatibleReadAsync(
                     path,
                     UploadedFileStorage.ResolveEncryptionPurpose(record.Purpose),
+                    record.EncryptionVersion,
                     cancellationToken)
                 .ConfigureAwait(false);
             return Results.Stream(

@@ -30,10 +30,10 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
                     """
                     INSERT INTO "UploadedFiles"
                         ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
-                         "EncryptionVersion", "EncryptionKeyId")
+                         "EncryptionVersion", "EncryptionKeyId", "PlaintextSha256")
                     VALUES
                         (@id, @filename, @bytes, @purpose, @mimeType, @createdAt,
-                         @encryptionVersion, @encryptionKeyId)
+                         @encryptionVersion, @encryptionKeyId, @plaintextSha256)
                     """;
 
                 AddParameter(cmd, "@id", record.Id.ToString());
@@ -54,6 +54,10 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
                     cmd,
                     "@encryptionKeyId",
                     (object?)record.EncryptionKeyId ?? DBNull.Value);
+                AddParameter(
+                    cmd,
+                    "@plaintextSha256",
+                    (object?)record.PlaintextSha256 ?? DBNull.Value);
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
@@ -74,7 +78,7 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
                 cmd.CommandText =
                     """
                     SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
-                           "EncryptionVersion", "EncryptionKeyId"
+                           "EncryptionVersion", "EncryptionKeyId", "PlaintextSha256"
                     FROM "UploadedFiles"
                     WHERE "Id" = @id
                     LIMIT 1
@@ -111,7 +115,7 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
                     cmd.CommandText =
                         """
                         SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
-                               "EncryptionVersion", "EncryptionKeyId"
+                               "EncryptionVersion", "EncryptionKeyId", "PlaintextSha256"
                         FROM "UploadedFiles"
                         ORDER BY "CreatedAt" DESC
                         """;
@@ -123,7 +127,7 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
                     cmd.CommandText =
                         """
                         SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
-                               "EncryptionVersion", "EncryptionKeyId"
+                               "EncryptionVersion", "EncryptionKeyId", "PlaintextSha256"
                         FROM "UploadedFiles"
                         WHERE "Purpose" = @purpose
                         ORDER BY "CreatedAt" DESC
@@ -220,6 +224,9 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
         string? encryptionKeyId = reader.FieldCount > 7 && !reader.IsDBNull(7)
             ? reader.GetString(7)
             : null;
+        string? plaintextSha256 = reader.FieldCount > 8 && !reader.IsDBNull(8)
+            ? reader.GetString(8)
+            : null;
 
         return new UploadedFileRecord(
             id,
@@ -229,7 +236,8 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
             mimeType,
             createdAt,
             encryptionVersion,
-            encryptionKeyId);
+            encryptionKeyId,
+            plaintextSha256);
 
     }
 

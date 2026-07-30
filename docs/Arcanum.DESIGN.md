@@ -741,6 +741,32 @@ silently returned by the encrypted reader. Health and `arcanum doctor` report OS
 encrypted, legacy-plaintext, and corrupt blob counts. A corrupt tag, wrong purpose, unsupported
 version, missing key, wrong key id, truncation, or trailing data fails closed.
 
+Upgrade compatibility is explicit and metadata-led. `EncryptionVersion = 0` permits a legacy
+plaintext read only during the migration window. The same metadata state also accepts a valid
+`ARCABLOB` envelope so a process failure after atomic replacement but before the metadata
+transaction does not break an active reader. `EncryptionVersion > 0` never downgrades to
+plaintext. `BlobEncryptionMetadataStore` inventories both SQL-backed blob tables, and
+`BlobEncryptionFileProcessor` verifies the recorded plaintext length/SHA-256, writes and verifies a
+same-directory ciphertext replacement, atomically replaces the source, then commits envelope
+version/key/hash metadata. A retry reconciles the replace-before-metadata state idempotently; no
+only-valid copy is removed before the encrypted replacement authenticates.
+
+`arcanum data encryption status|migrate|verify|rotate-key` is the operator lifecycle. Migration and
+rotation are restart-idempotent `LongRunningOperations`; checkpoints contain counts and byte totals,
+not file identifiers. Workers clamp concurrency to 1–8 and share an aggregate bytes/second throttle.
+Cancellation is observed between files; an active file finishes its atomic transition before work
+stops. Verification classifies missing files, corrupt envelopes, unknown keys, plaintext/envelope
+metadata disagreement, and plaintext length/hash disagreement without deleting or naming the
+affected file in output or metrics.
+
+The file secret is backward-compatible with the original single Base64 key and upgrades on rotation
+to one DP-wrapped key-ring document with an active write key plus retained read keys. Rotation
+creates and durably saves the new active key before rewriting files, re-encrypts incrementally,
+verifies every candidate, and retires an old key only when verification succeeds and no metadata row
+references it. The complete key-ring value is mirrored to `file-encryption-key.dat`, so a backup
+taken during migration/rotation carries every active key; restore accepts either the legacy
+single-key value or the multi-key ring.
+
 First startup creates the master key only when the OS secret is missing and no encrypted blobs
 exist. If ciphertext already exists, missing/corrupt key state never generates a replacement:
 restore the OS credential, or restore `file-encryption-key.dat` together with the matching
@@ -1794,6 +1820,8 @@ The code-owned recovery-policy inventory is:
 | `attachment-promotion` | `ReconcileAndComplete` | Inspect durable file/row state and finish or roll back promotion. |
 | `workspace-index` | `RestartIdempotently` | Re-enumerate deterministically; durable indexed rows remain the authority. |
 | `idempotency-claim` | `ReconcileAndComplete` | Complete, fail, or explicitly abandon the linked claim so it cannot stay stranded. |
+| `blob-encryption-migration` | `RestartIdempotently` | Re-scan metadata and reconcile plaintext, envelope, and replace-before-metadata states. |
+| `blob-encryption-key-rotation` | `RestartIdempotently` | Continue toward the active write key while retaining every still-referenced prior key. |
 
 `LongRunningOperationReconciler` selects only expired `Running`/`Waiting` leases, acquires a fresh
 two-minute recovery lease, dispatches by bounded kind, rejects unsupported checkpoint versions
@@ -2134,8 +2162,10 @@ Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight
 filename collisions are structurally impossible. The bytes are a purpose-bound `ARCABLOB`
 authenticated-encryption envelope (§5.4.6). The original filename is retained only as SQLCipher row
 metadata (`UploadedFileRecord.Filename`), used for `Content-Disposition` on download and echoed back
-in the wire `file` object. `EncryptionVersion` and `EncryptionKeyId` identify the envelope without
-exposing key material.
+in the wire `file` object. `EncryptionVersion`, `EncryptionKeyId`, and `PlaintextSha256` identify
+and verify the envelope without exposing key material. During the supported migration window,
+version-zero rows use the mixed-mode rules in §5.4.6; new uploads always record version one, key id,
+length, and SHA-256.
 
 **Endpoints:**
 - **`POST /v1/files`** — `multipart/form-data`: `file` (binary, required) + `purpose` (string,
@@ -2595,6 +2625,7 @@ reinstall.
 | `ClientToolForwardingTests` | Duplicate names, named-choice membership, auto/none with forwarding disabled, and per-tool `strict` preservation. |
 | `OpenAiV1EndpointTests` / `OpenAiV1BatchesEndpointTests` | Structured-output maps to `validation_failed`/`invalid_schema`, not generic inference failure; batch reset removes orphan output/error files. |
 | `EncryptedBlobStoreTests` / `FileEncryptionKeyProviderTests` / attachment-file-batch tests | Empty/boundary/large streaming round trips; random nonces; purpose/key separation; bit flips, truncation, trailing data, cancellation cleanup, and concurrent readers; OS/DP key persistence and missing/corrupt fail-closed behavior; no plaintext attachment/upload/batch artifact at rest. |
+| `EncryptedBlobCompatibilityTests` / `BlobEncryptionFileProcessorTests` / `BlobEncryptionOperationPolicyTests` | Metadata-led legacy reads; no encrypted-to-plaintext downgrade; crash retry after atomic replace but before metadata commit; reconciliation classifications; retained-key rotation; durable migration/rotation policy registration. |
 | `SessionEndpointTests` | `since` 404 emits no leaked SSE headers; stable `Session.EntryNotFound` / `Session.InvalidStatus` constants. |
 | `CostCalculatorTests` | Cached tokens clamp to the prompt subset and use `CachedPer1M` (zero or nonzero); potential/actual savings use the nonnegative input-minus-cached rate delta. |
 | `PromptCachingChatOptionsAdapterTests` / `PromptCachePlannerTests` | Golden buffered/streaming root fields (`prompt_cache_key`, exact `in_memory`/`24h` retention), reasoning composition, unchanged ineligible bodies, contiguous-prefix planning, deterministic tool digests, stable keys, and plaintext exclusion. |
@@ -2741,7 +2772,11 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   `file-encryption-key.dat` plus the matching Data Protection `keys/` directory. A restored
   database without blobs loses attachment/file content; restored ciphertext without the matching
   key is intentionally unrecoverable; restoring only blobs without matching database metadata
-  leaves unreferenced ciphertext.
+  leaves unreferenced ciphertext. During migration or rotation the portable
+  `file-encryption-key.dat` value is a wrapped multi-key ring containing the active write key and
+  every retained read key; copying only one extracted key is not a valid backup. Restore installs
+  that mirror plus its matching Data Protection ring before startup, and the provider accepts
+  archives with multiple active key ids.
 
 ### 16.3 Security and identity
 
@@ -2757,10 +2792,14 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   store write. If encrypted blobs exist and the credential/mirror is missing, corrupt, or has the
   wrong key id, startup and reads fail closed and never generate a replacement. Restore the OS
   credential, or restore both `file-encryption-key.dat` and its matching `keys/key-*.xml` ring.
-  Deleting the ciphertext is the only start-fresh option and permanently loses those blob bytes.
+  Rotation changes this value to a versioned multi-key ring: one active write key plus old read keys
+  that remain until no metadata row references them and a complete verification passes. Deleting
+  the ciphertext is the only start-fresh option and permanently loses those blob bytes.
 - **Diagnostics:** `/api/health` component `FileEncryption` and `arcanum doctor` report key
   availability and bounded counts of valid encrypted, legacy plaintext, and corrupt blobs. They
   never expose key material, authenticated metadata, plaintext hashes, filenames, or content.
+  `arcanum data encryption status` adds complete Grimoire-backed counts; `verify` reports only
+  bounded issue categories and aggregate file/byte progress.
 
 ### 16.4 Testing
 

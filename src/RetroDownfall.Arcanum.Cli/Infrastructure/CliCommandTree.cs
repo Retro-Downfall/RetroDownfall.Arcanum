@@ -28,6 +28,7 @@ internal static partial class CliCommandTree
         Command modelCmd = BuildModel(serviceProvider);
         Command provider = BuildProvider(serviceProvider);
         Command operation = BuildOperation(serviceProvider);
+        Command data = BuildData(serviceProvider);
 
         root.Add(serve);
         root.Add(ask);
@@ -48,6 +49,7 @@ internal static partial class CliCommandTree
         root.Add(modelCmd);
         root.Add(provider);
         root.Add(operation);
+        root.Add(data);
 
         return root;
     }

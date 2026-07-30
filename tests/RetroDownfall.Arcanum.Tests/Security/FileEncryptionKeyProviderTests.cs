@@ -69,6 +69,45 @@ public sealed class FileEncryptionKeyProviderTests
         Assert.Equal(0, secrets.SaveCount);
     }
 
+    [Fact]
+    public async Task Rotate_retains_prior_key_for_reads_until_explicit_retirement()
+    {
+        string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Ok(secret));
+        FileEncryptionKeyProvider provider = new(secrets);
+        FileEncryptionKeyMaterial prior = await provider.GetForWriteAsync();
+
+        FileEncryptionKeyMaterial current = await provider.RotateAsync();
+
+        Assert.NotEqual(prior.KeyId, current.KeyId);
+        Assert.Equal(current.KeyId, (await provider.GetForWriteAsync()).KeyId);
+        Assert.Equal(prior.KeyId, (await provider.GetForReadAsync(prior.KeyId)).KeyId);
+        Assert.Contains(prior.KeyId, await provider.GetActiveKeyIdsAsync());
+        Assert.Contains(current.KeyId, await provider.GetActiveKeyIdsAsync());
+
+        FileEncryptionKeyProvider restored = new(secrets);
+        Assert.Equal(current.KeyId, (await restored.GetForWriteAsync()).KeyId);
+        Assert.Equal(prior.KeyId, (await restored.GetForReadAsync(prior.KeyId)).KeyId);
+
+        await restored.RetireAsync(prior.KeyId);
+
+        await Assert.ThrowsAsync<EncryptedBlobKeyException>(
+            () => restored.GetForReadAsync(prior.KeyId).AsTask());
+        Assert.Equal([current.KeyId], await restored.GetActiveKeyIdsAsync());
+    }
+
+    [Fact]
+    public async Task Active_write_key_cannot_be_retired()
+    {
+        string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        FileEncryptionKeyProvider provider = new(
+            new RecordingSecretStore(SecretStoreReadResult.Ok(secret)));
+        FileEncryptionKeyMaterial current = await provider.GetForWriteAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => provider.RetireAsync(current.KeyId));
+    }
+
     private sealed class RecordingSecretStore(SecretStoreReadResult readResult) : ISecretStore
     {
         public int SaveCount { get; private set; }

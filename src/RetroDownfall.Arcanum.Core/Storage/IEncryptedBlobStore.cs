@@ -125,6 +125,59 @@ public interface IFileEncryptionKeyProvider
         CancellationToken cancellationToken = default);
 }
 
+public interface IFileEncryptionKeyRing : IFileEncryptionKeyProvider
+{
+    Task<FileEncryptionKeyMaterial> RotateAsync(
+        CancellationToken cancellationToken = default);
+
+    Task RetireAsync(
+        string keyId,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<string>> GetActiveKeyIdsAsync(
+        CancellationToken cancellationToken = default);
+}
+
+public static class EncryptedBlobStoreCompatibilityExtensions
+{
+    public static Task<Stream> OpenCompatibleReadAsync(
+        this IEncryptedBlobStore blobStore,
+        string path,
+        EncryptedBlobPurpose purpose,
+        int encryptionVersion,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(blobStore);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (encryptionVersion < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(encryptionVersion));
+        }
+
+        if (encryptionVersion > 0 || blobStore.HasEnvelope(path))
+        {
+            if (!blobStore.HasEnvelope(path))
+            {
+                throw new InvalidDataException(
+                    "Blob metadata identifies encrypted content, but the file has no encrypted envelope.");
+            }
+
+            return blobStore.OpenReadAsync(path, purpose, cancellationToken);
+        }
+
+        Stream plaintext = new FileStream(
+            path,
+            new FileStreamOptions
+            {
+                Mode = FileMode.Open,
+                Access = FileAccess.Read,
+                Share = FileShare.Read,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+            });
+        return Task.FromResult(plaintext);
+    }
+}
+
 public enum FileEncryptionSecretStatus
 {
     Available,

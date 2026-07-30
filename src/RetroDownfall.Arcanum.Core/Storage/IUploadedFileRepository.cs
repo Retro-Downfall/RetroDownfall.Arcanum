@@ -29,7 +29,8 @@ public sealed record UploadedFileRecord(
     string MimeType,
     DateTimeOffset CreatedAt,
     int EncryptionVersion = 0,
-    string? EncryptionKeyId = null);
+    string? EncryptionKeyId = null,
+    string? PlaintextSha256 = null);
 
 /// <summary>
 /// Pure path computation for uploaded file bytes — no DB or disk access. Safe to call from any

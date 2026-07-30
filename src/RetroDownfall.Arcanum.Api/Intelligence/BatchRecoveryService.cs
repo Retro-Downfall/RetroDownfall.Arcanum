@@ -219,12 +219,13 @@ internal sealed class BatchRecoveryService(
 
         try
         {
-            _ = await blobStore.InspectAsync(
+            await using Stream input = await blobStore.OpenCompatibleReadAsync(
                     path,
                     EncryptedBlobPurpose.UploadedFile,
-                    verifyAllChunks: true,
+                    inputFile.EncryptionVersion,
                     cancellationToken)
                 .ConfigureAwait(false);
+            await input.CopyToAsync(Stream.Null, cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException
