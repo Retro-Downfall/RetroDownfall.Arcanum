@@ -49,6 +49,10 @@ public sealed class MetricsEndpointTests
 
         Assert.Contains("arcanum_", body, StringComparison.Ordinal);
 
+        Assert.Contains("arcanum_operations", body, StringComparison.Ordinal);
+
+        Assert.Contains("kind=\"workspace-index\"", body, StringComparison.Ordinal);
+
     }
 
     [SkippableFact]

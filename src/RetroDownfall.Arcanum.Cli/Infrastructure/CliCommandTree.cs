@@ -27,6 +27,7 @@ internal static partial class CliCommandTree
         Command apprentice = BuildApprentice(serviceProvider);
         Command modelCmd = BuildModel(serviceProvider);
         Command provider = BuildProvider(serviceProvider);
+        Command operation = BuildOperation(serviceProvider);
 
         root.Add(serve);
         root.Add(ask);
@@ -46,6 +47,7 @@ internal static partial class CliCommandTree
         root.Add(apprentice);
         root.Add(modelCmd);
         root.Add(provider);
+        root.Add(operation);
 
         return root;
     }

@@ -1,7 +1,11 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Authentication;
+using System.Text.Json;
+using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
@@ -32,7 +36,8 @@ public sealed record HealthProbeResult(
     HealthProbeState State,
     int? StatusCode,
     TimeSpan Latency,
-    string? Error);
+    string? Error,
+    string? DurableOperationsDetail = null);
 
 /// <summary>
 /// Authenticated probe of <c>GET /api/health</c>. Distinguishes auth failure from
@@ -80,7 +85,15 @@ internal static class ArcanumHealthProbe
 
             if (response.IsSuccessStatusCode)
             {
-                return new HealthProbeResult(HealthProbeState.Healthy, statusCode, sw.Elapsed, null);
+                string? durableOperations = await TryReadDurableOperationsDetailAsync(
+                    response,
+                    cts.Token).ConfigureAwait(false);
+                return new HealthProbeResult(
+                    HealthProbeState.Healthy,
+                    statusCode,
+                    sw.Elapsed,
+                    null,
+                    durableOperations);
             }
 
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -111,6 +124,33 @@ internal static class ArcanumHealthProbe
             return new HealthProbeResult(ClassifyHttpRequestException(ex), null, sw.Elapsed, ex.Message);
         }
 
+    }
+
+    private static async Task<string?> TryReadDurableOperationsDetailAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using Stream stream = await response.Content
+                .ReadAsStreamAsync(cancellationToken)
+                .ConfigureAwait(false);
+            ApiResponse<HealthReportDto>? envelope = await JsonSerializer.DeserializeAsync(
+                stream,
+                ArcanumJsonContext.Default.ApiResponseHealthReportDto,
+                cancellationToken).ConfigureAwait(false);
+            return envelope?.Data?.Components
+                .FirstOrDefault(static component => component.Name == "DurableOperations")
+                ?.Detail;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private static HealthProbeState ClassifyHttpRequestException(HttpRequestException ex)

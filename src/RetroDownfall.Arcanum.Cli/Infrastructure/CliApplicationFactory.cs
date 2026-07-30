@@ -173,6 +173,8 @@ internal static class CliApplicationFactory
 
         services.AddTransient<ProviderCommands>();
 
+        services.AddTransient<OperationCommands>();
+
     }
 
     /// <summary>

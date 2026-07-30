@@ -177,6 +177,11 @@ These are the recurring shapes. Matching them is what makes a change "fit."
 - **New inference provider:** add an `AiProviderKind` and extend `IChatClientFactory`; keep the `WizardIntelligenceProvider` contract intact.
 - **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema via `McpJsonSerializerContext`; honor unconditional `WorkspacePathPolicy` containment and `ToolOutputCapBytes`; decide whether it belongs in `ToolRiskClassifier.IntrinsicWardToolNames`. Do not treat campaign Sanctum as the primary filesystem boundary.
 - **Treat all wire types as versioned contracts.** Casing is fixed at the context level; don't add `[JsonPropertyName]` except on OpenAI `/v1` and MCP JSON-RPC types (see [DESIGN.md §8.2](Arcanum.DESIGN.md#82-arcanumjsoncontext--source-generated-public)).
+- **Register long-running work.** Use the scoped `ILongRunningOperationCoordinator`; add the kind
+  and exactly one recovery policy to `LongRunningOperationPolicyCatalog`, implement an idempotent
+  recovery handler, store only minimum encrypted checkpoint state, and expose only a bounded safe
+  summary. Never persist a live Task/token/enumerator/process/DI object. See
+  [DESIGN §10.8](Arcanum.DESIGN.md#108-durable-operation-ledger-and-restart-reconciliation).
 
 ---
 
@@ -230,6 +235,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 |------|--------|-------------------|
 | Metrics | `GET /metrics` | Prometheus text; API key on by default (forced on ListenAny). [§8.22](Arcanum.DESIGN.md#822-metrics-endpoint-get-metrics) |
 | Health & meta | `/api/health`, `/meta`, `/grimoire/stats`, `/budget` | Readiness + spend snapshot; 503 mainly when Grimoire Unhealthy |
+| Durable operations | `/api/operations*` | Safe list/show plus CAS cancel/retry and bounded manual reconciliation; checkpoint bytes/references never leave SQLCipher |
 | Config | `/api/config`, `/config/validate` | GET redacts secrets; PUT preserves `"***"` placeholders |
 | Models / providers | `GET /api/models`, `/providers`, `/providers/test` | Listings + connectivity probe (no persist) |
 | Inference (native) | `/api/intelligence/ping(-stream)`, `/human-response`, `/arsenal`, `/mana` | Buffered / NDJSON `IntelligenceEvent`; model-aware Mana/source breakdown |
@@ -525,6 +531,9 @@ Full distribution contracts are in [DESIGN §19.12](Arcanum.DESIGN.md#1912-build
   50,000 rows; `/api/meta`, health, and `arcanum doctor` report the active mode and budget.
 - OpenAI support is a compatibility subset. Moderation, image-generation/editing, and audio routes
   return `501 not_supported`; batch processing supports `/v1/chat/completions` and forces tools off.
+- Durable recovery is single-host and handler-driven, not a distributed workflow engine. Live
+  streams and Wards remain ephemeral. A deferred or unsupported/corrupt checkpoint is explicit
+  `ReconciliationRequired`/Degraded health and is repaired with `arcanum operation ...`.
 
 ---
 
@@ -588,7 +597,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `ask <prompt>` | Single-turn inference (NDJSON stream). Flags: `-n` / `--new` (new session), `-m <model>`, `-c` / `--campaign <id>`, `--unattended`, `--image <path>` (repeatable — attach a Scrying focus; requires a vision-capable model), plus inference flags (below). Use `--` to pass a prompt that starts with a flag. Ctrl+C cancels the in-flight turn (exit 130). Running `ask` before a key is stored exits **1** with a friendly "run `arcanum serve` once" message (no crash). Interactive sessions auto-start `serve` when the API is unreachable (see above). |
 | `chat` | Interactive multi-turn REPL (Figlet banner, Markdig rendering, mana bar, live multi-panel layout on wide color terminals). Flags: `-n` / `--new`, `-m`, `-c` / `--campaign <id>` (shown in the startup banner when set), `--no-tools`, `--unattended`, plus inference flags. **Slash commands:** `/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`. Stage text files inline with `@path`; an `@path` whose extension is an image type (`.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.bmp`) stages a **Scrying focus** instead (prints `Scrying focus: <name> (<size>)`; requires a vision-capable model). The mana bar shows a persistent **(Memory Compressed)** suffix after read-time compression until `/new`. Auto-starts `serve` when needed (see above). Narrow / redirected / `NO_COLOR` sessions keep the simple streaming path. |
 | `look` | Print the Eye of the World workspace snapshot (no HTTP). |
-| `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer panels) + API health probe. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
+| `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer panels) + API health probe, including the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
 | `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Argument or stdin / interactive secret prompt. |
 | `key provider set\|status\|delete perplexity` | Manage the Perplexity key used by native `web_search`. Status never prints the secret; all operations are CLI-only and perform no HTTP. |
@@ -606,6 +615,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `apprentice list\|get\|create\|delete\|start\|pause\|resume\|cancel\|reweave\|intervene\|cast\|chronicle` | The Forge Apprentice orchestration via `/api/apprentices` (needs `serve`). `create --goal <text\|@file>`; `reweave --plan <json\|@file>`; `cast` reports 409 `Apprentice.ConclaveDisabled` when `Arcanum:Features:Conclave` is off; `chronicle <id>` streams live SSE events (Ctrl+C exits 130). |
 | `model list` | List configured models across all providers via `GET /api/models` (needs `serve`); endpoint redacted. |
 | `provider list` | List configured providers via `GET /api/providers` (needs `serve`); endpoint redacted and only the credential environment-variable reference returned. |
+| `operation list\|show\|cancel\|retry\|reconcile` | Inspect and repair the durable operation ledger via authenticated `/api/operations*` routes (needs `serve`). `list` accepts `--kind` / `--state`; `show <id>` returns only safe checkpoint presence/version/summary; `cancel <id>` requests `Cancelling`; `retry <id>` resets failed/abandoned/repair-required work; `reconcile` runs a bounded pass and exits 2 when operator attention remains. |
 | `browse <url>` | Compatibility CLI for the legacy `browse_web` direct-invoke surface (requires `Arcanum:Features:WebBrowsing`; needs `serve`). New inference toolsets use `read_url`. |
 
 **Inference flags** (`ask`/`chat`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format`, penalties, `-c`/`--campaign`. Scrying: `ask --image` / chat `@path`. Full slash-command suite and error formatting: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).

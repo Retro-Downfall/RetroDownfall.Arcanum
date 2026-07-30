@@ -22,6 +22,7 @@ internal static class GrimoireSqlSchemaMigrator
         "20260719190000_AddSessionAttachmentUniqueIndexes",
         "20260721010000_AddInferenceAccountingAndIdempotencyClaims",
         "20260730010000_AddSessionContextPins",
+        "20260730020000_AddLongRunningOperations",
     ];
 
     private const string ResourcePrefix = "RetroDownfall.Arcanum.Infrastructure.Data.SqlMigrations.";

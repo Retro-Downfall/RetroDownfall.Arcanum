@@ -22,6 +22,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Lexicon;
@@ -35,6 +36,7 @@ using RetroDownfall.Arcanum.Infrastructure.Daemons;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Pattern;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -315,7 +317,12 @@ public static class ServiceCollectionExtensions
         // because it depends on the scoped ArcanumDbContext; never triggers indexing or mutates state.
         services.AddScoped<IWorkspaceIndexInspectorService, WorkspaceIndexInspectorService>();
         services.AddSingleton<SpellWeaveCache>();
+        services.AddSingleton<LongRunningOperationReconciliationStatus>();
         services.AddHostedService<GrimoireDatabaseHostedService>();
+
+        // Must run after the encrypted Grimoire is migrated and before durable workloads below
+        // begin accepting potentially conflicting work.
+        services.AddHostedService<LongRunningOperationStartupHostedService>();
 
         // One-shot pending attachment GC; runs after Grimoire schema bootstrap above.
         services.AddHostedService<SessionAttachmentPendingGcHostedService>();
@@ -360,6 +367,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ITurnRunWriter, TurnRunWriter>();
 
         services.AddScoped<IBudgetReservationService, BudgetReservationService>();
+
+        services.AddScoped<ILongRunningOperationStore, LongRunningOperationStore>();
+        services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
+        services.AddScoped<LongRunningOperationReconciler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, BudgetReservationRecoveryHandler>();
 
         services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
 

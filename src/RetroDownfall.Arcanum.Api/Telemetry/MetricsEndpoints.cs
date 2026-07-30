@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Operations;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -31,6 +32,7 @@ internal static class MetricsEndpoints
         return endpoints.MapGet("/metrics", async (
             PrometheusMetricsExporter exporter,
             ArcanumDbContext db,
+            ILongRunningOperationStore operationStore,
             IOptionsSnapshot<ArcanumSettings> settings,
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
@@ -53,7 +55,13 @@ internal static class MetricsEndpoints
                 .CountAsync(s => s.Status == "active", cancellationToken)
                 .ConfigureAwait(false);
 
-            string body = await exporter.RenderMetricsAsync(activeSessions, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<LongRunningOperationCount> operationCounts = await operationStore
+                .GetCountsAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            string body = await exporter
+                .RenderMetricsAsync(activeSessions, cancellationToken, operationCounts)
+                .ConfigureAwait(false);
 
             httpContext.Response.ContentType = "text/plain; version=0.0.4; charset=utf-8";
 

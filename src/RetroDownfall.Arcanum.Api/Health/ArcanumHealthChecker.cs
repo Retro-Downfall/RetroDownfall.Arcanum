@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Resilience;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Api.Health;
@@ -18,7 +19,8 @@ public sealed class ArcanumHealthChecker(
     IOptionsMonitor<ArcanumSettings> settings,
     WeaveIndexAvailability weaveIndexAvailability,
     IProviderHealthTracker providerHealthTracker,
-    IWorkspaceCheckCapabilityReporter? workspaceCheckCapabilityReporter = null)
+    IWorkspaceCheckCapabilityReporter? workspaceCheckCapabilityReporter = null,
+    LongRunningOperationReconciliationStatus? operationReconciliationStatus = null)
 {
 
     public async Task<HealthReportDto> BuildReportAsync(CancellationToken cancellationToken)
@@ -145,6 +147,22 @@ public sealed class ArcanumHealthChecker(
             : $"disabled. {vectorDiagnostic}";
 
         components.Add(new HealthComponentDto("Embeddings", embeddingsHealth, embeddingsDetail));
+
+        LongRunningOperationReconciliationSnapshot operationSnapshot =
+            operationReconciliationStatus?.Snapshot
+            ?? new LongRunningOperationReconciliationSnapshot(
+                StartupCompleted: false,
+                Deferred: true,
+                LastRunAt: null,
+                LastSummary: null,
+                PublicDetail: "Durable operation reconciliation status is unavailable.");
+        bool operationAttention = operationSnapshot.Deferred
+            || !operationSnapshot.StartupCompleted
+            || operationSnapshot.LastSummary?.RequiresAttention > 0;
+        components.Add(new HealthComponentDto(
+            "DurableOperations",
+            operationAttention ? HealthStatus.Degraded : HealthStatus.Healthy,
+            operationSnapshot.PublicDetail ?? "Durable operation reconciliation completed."));
 
         HealthStatus overall = AggregateOverall(components);
 

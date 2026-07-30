@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
@@ -42,6 +43,14 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(GrimoireStatsDto))]
 [JsonSerializable(typeof(ApiResponse<GrimoireStatsDto>))]
 [JsonSerializable(typeof(Result<GrimoireStatsDto>))]
+[JsonSerializable(typeof(LongRunningOperationDto))]
+[JsonSerializable(typeof(LongRunningOperationDto[]))]
+[JsonSerializable(typeof(LongRunningOperationState))]
+[JsonSerializable(typeof(LongRunningOperationRecoveryPolicy))]
+[JsonSerializable(typeof(LongRunningOperationReconciliationSummary))]
+[JsonSerializable(typeof(ApiResponse<LongRunningOperationDto>))]
+[JsonSerializable(typeof(ApiResponse<LongRunningOperationDto[]>))]
+[JsonSerializable(typeof(ApiResponse<LongRunningOperationReconciliationSummary>))]
 [JsonSerializable(typeof(ConfigurationValidationError))]
 [JsonSerializable(typeof(ConfigurationValidationError[]))]
 [JsonSerializable(typeof(ApiResponse<bool>))]

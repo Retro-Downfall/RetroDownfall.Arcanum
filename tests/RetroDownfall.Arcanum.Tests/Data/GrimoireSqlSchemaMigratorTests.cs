@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 {
 
-    private const int ExpectedMigrationCount = 8;
+    private const int ExpectedMigrationCount = 9;
 
     private readonly GrimoireFixture _fixture;
 
@@ -72,6 +72,17 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
             static entityType => string.Equals(
                 entityType.GetTableName(),
                 "SessionContextPins",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CompiledEfModel_DoesNotMapRawSqlLongRunningOperationsTable()
+    {
+        Assert.DoesNotContain(
+            ArcanumDbContextModel.Instance.GetEntityTypes(),
+            static entityType => string.Equals(
+                entityType.GetTableName(),
+                "LongRunningOperations",
                 StringComparison.Ordinal));
     }
 
@@ -157,6 +168,32 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
             "SourceRelativePath",
             CancellationToken.None));
 
+    }
+
+    [SkippableFact]
+    public async Task ApplyPendingAsync_creates_durable_operation_ledger()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using SqliteConnection connection = await OpenConnectionAsync();
+
+        await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
+
+        Assert.True(await TableExistsAsync(connection, "LongRunningOperations", CancellationToken.None));
+        Assert.True(await ColumnExistsAsync(
+            connection,
+            "LongRunningOperations",
+            "CheckpointPayload",
+            CancellationToken.None));
+        Assert.True(await ColumnExistsAsync(
+            connection,
+            "LongRunningOperations",
+            "Revision",
+            CancellationToken.None));
+        Assert.True(await IndexExistsAsync(
+            connection,
+            "IX_LongRunningOperations_State_LeaseExpiresAt",
+            CancellationToken.None));
     }
 
     [SkippableFact]

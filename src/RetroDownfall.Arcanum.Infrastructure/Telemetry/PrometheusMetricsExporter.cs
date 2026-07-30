@@ -5,6 +5,7 @@ using System.Diagnostics.Metrics;
 using System.Globalization;
 
 using System.Text;
+using RetroDownfall.Arcanum.Core.Operations;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Telemetry;
 
@@ -85,7 +86,10 @@ public sealed class PrometheusMetricsExporter : IDisposable
     /// scoped <c>ArcanumDbContext</c>) as <c>arcanum_sessions_active</c> — this exporter is a singleton and
     /// deliberately does no database access or caching of its own.
     /// </summary>
-    public Task<string> RenderMetricsAsync(long activeSessions = 0, CancellationToken cancellationToken = default)
+    public Task<string> RenderMetricsAsync(
+        long activeSessions = 0,
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<LongRunningOperationCount>? operationCounts = null)
     {
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -99,6 +103,38 @@ public sealed class PrometheusMetricsExporter : IDisposable
             "arcanum_sessions_active",
             "Number of sessions with Status = active",
             activeSessions);
+
+        const string operationMetric = "arcanum_operations";
+        const string operationHelp = "Current durable operations by registered kind and lifecycle state";
+        foreach (string kind in LongRunningOperationPolicyCatalog.Registered.Keys)
+        {
+            foreach (LongRunningOperationState state in Enum.GetValues<LongRunningOperationState>())
+            {
+                RegisterManualGauge(
+                    operationMetric,
+                    operationHelp,
+                    0,
+                    [
+                        new("kind", kind),
+                        new("state", state.ToString().ToLowerInvariant()),
+                    ]);
+            }
+        }
+
+        if (operationCounts is not null)
+        {
+            foreach (LongRunningOperationCount count in operationCounts)
+            {
+                RegisterManualGauge(
+                    operationMetric,
+                    operationHelp,
+                    count.Count,
+                    [
+                        new("kind", count.Kind),
+                        new("state", count.State.ToString().ToLowerInvariant()),
+                    ]);
+            }
+        }
 
         StringBuilder output = new(4096);
 
@@ -273,6 +309,13 @@ public sealed class PrometheusMetricsExporter : IDisposable
     }
 
     private void RegisterManualGauge(string metricName, string help, double value)
+        => RegisterManualGauge(metricName, help, value, []);
+
+    private void RegisterManualGauge(
+        string metricName,
+        string help,
+        double value,
+        ReadOnlySpan<KeyValuePair<string, object?>> tags)
     {
 
         _instrumentInfo.GetOrAdd(
@@ -283,7 +326,8 @@ public sealed class PrometheusMetricsExporter : IDisposable
             metricName,
             static _ => new ConcurrentDictionary<string, MetricValueState>(StringComparer.Ordinal));
 
-        MetricValueState valueState = series.GetOrAdd(string.Empty, static _ => new MetricValueState());
+        string labelKey = BuildLabelString(tags);
+        MetricValueState valueState = series.GetOrAdd(labelKey, static _ => new MetricValueState());
 
         valueState.Set(value);
 

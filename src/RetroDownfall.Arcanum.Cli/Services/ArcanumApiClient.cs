@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
@@ -362,6 +363,71 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
         return parts.Count == 0 ? path : $"{path}?{string.Join('&', parts)}";
     }
+
+    #region Durable operations
+
+    public Task<Result<LongRunningOperationDto[]>> GetOperationsAsync(
+        string? kind = null,
+        string? state = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            "api/operations",
+            ("kind", kind),
+            ("state", state));
+        return SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseLongRunningOperationDtoArray,
+            cancellationToken);
+    }
+
+    public Task<Result<LongRunningOperationDto>> GetOperationAsync(
+        Guid id,
+        CancellationToken cancellationToken = default) =>
+        SendRequestAsync(
+            HttpMethod.Get,
+            $"api/operations/{id:D}",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto,
+            cancellationToken);
+
+    public Task<Result<LongRunningOperationDto>> CancelOperationAsync(
+        Guid id,
+        CancellationToken cancellationToken = default) =>
+        SendRequestAsync(
+            HttpMethod.Post,
+            $"api/operations/{id:D}/cancel",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto,
+            cancellationToken);
+
+    public Task<Result<LongRunningOperationDto>> RetryOperationAsync(
+        Guid id,
+        CancellationToken cancellationToken = default) =>
+        SendRequestAsync(
+            HttpMethod.Post,
+            $"api/operations/{id:D}/retry",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto,
+            cancellationToken);
+
+    public Task<Result<LongRunningOperationReconciliationSummary>> ReconcileOperationsAsync(
+        CancellationToken cancellationToken = default) =>
+        SendRequestAsync(
+            HttpMethod.Post,
+            "api/operations/reconcile",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseLongRunningOperationReconciliationSummary,
+            cancellationToken);
+
+    #endregion
 
     public async Task<Result<string>> AskAsync(PingRequest body, CancellationToken cancellationToken)
     {

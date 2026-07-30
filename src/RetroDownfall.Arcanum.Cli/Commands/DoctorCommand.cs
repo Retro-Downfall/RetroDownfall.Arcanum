@@ -1060,7 +1060,11 @@ public sealed class DoctorCommand(
 
         return probe.Kind switch
         {
-            DoctorProbeKind.Ok => (true, new DoctorCheck("API Health", "ok", $"Reachable: {targetUrl} (HTTP {probe.HttpStatus})")),
+            DoctorProbeKind.Ok => (true, new DoctorCheck(
+                "API Health",
+                "ok",
+                $"Reachable: {targetUrl} (HTTP {probe.HttpStatus}); "
+                + $"DurableOperations: {probe.Detail ?? "status unavailable"}")),
             DoctorProbeKind.Unauthorized => (false, new DoctorCheck("API Health", "fail", $"Reached {targetUrl} but auth failed (HTTP {probe.HttpStatus})")),
             DoctorProbeKind.UnexpectedStatus => (false, new DoctorCheck("API Health", "fail", $"{targetUrl} returned HTTP {probe.HttpStatus}")),
             DoctorProbeKind.Timeout => (true, new DoctorCheck("API Health", "warn", $"Timed out after {timeoutSeconds}s: {targetUrl}")),
@@ -1145,7 +1149,7 @@ public sealed class DoctorCommand(
             HealthProbeState.Healthy => new DoctorProbeResult(
                 DoctorProbeKind.Ok,
                 probe.StatusCode ?? 200,
-                null),
+                probe.DurableOperationsDetail),
             HealthProbeState.Unauthorized => new DoctorProbeResult(
                 DoctorProbeKind.Unauthorized,
                 probe.StatusCode ?? 401,

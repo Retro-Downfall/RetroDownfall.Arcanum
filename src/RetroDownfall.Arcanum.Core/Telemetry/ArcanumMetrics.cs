@@ -174,6 +174,15 @@ public static class ArcanumMetrics
         "Search queries reported by native web-research providers");
 
     /// <summary>
+    /// Startup and manual durable-operation recovery outcomes. Labels are bounded to the registered
+    /// operation <c>kind</c> and a closed <c>outcome</c> vocabulary.
+    /// </summary>
+    public static readonly Counter<long> OperationReconciliationTotal = Meter.CreateCounter<long>(
+        "arcanum_operation_reconciliation_total",
+        "{operations}",
+        "Durable operation reconciliation outcomes");
+
+    /// <summary>
     /// Provider-reported web-research cost. Labels: <c>provider</c> and <c>model</c>.
     /// Recorded only when the provider response includes cost.
     /// </summary>

@@ -134,6 +134,24 @@ public sealed class CliApplicationFactoryTests
         Assert.Contains("daemon", result.Output, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("lore", result.Output, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("campaign", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("operation", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Operation_help_lists_operator_recovery_commands()
+    {
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult result = CliTestHarness.Run(services, "operation", "--help");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("list", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("show", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cancel", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("retry", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("reconcile", result.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

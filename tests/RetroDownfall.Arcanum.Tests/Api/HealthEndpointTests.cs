@@ -75,6 +75,8 @@ public sealed class HealthEndpointTests
 
         Assert.Contains(body.Data.Components, static c => c.Name == "Providers");
 
+        Assert.Contains(body.Data.Components, static c => c.Name == "DurableOperations");
+
     }
 
     [SkippableFact]

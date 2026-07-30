@@ -88,7 +88,7 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
 | First-run key output | Interactive `serve` prints the generated key; auto-launched serve suppresses it. |
 | Native CLI diagnostics | Authenticated clients receive bounded tool-result diagnostics. |
 | Provider probes | Loopback/LAN provider endpoints are allowed; link-local/metadata targets remain blocked. |
-| Readiness | Provider failures yield overall Degraded/HTTP 200; Grimoire Unhealthy is the primary HTTP 503 gate. |
+| Readiness | Provider failures yield overall Degraded/HTTP 200; Grimoire Unhealthy is the primary HTTP 503 gate. Durable-operation reconciliation that is deferred or requires operator repair yields Degraded/HTTP 200. |
 
 ### 2.3 Naming conventions
 
@@ -378,6 +378,11 @@ Single-host failure behavior:
 | GET | `/api/logs` | Paginated in-memory log query (`ApiResponse<LogQueryResult>`; optional `minLevel`, `category`, `from`, `to`, `search`, `limit`, `beforeSequence`; §8.16). |
 | GET | `/api/audit` | Persisted inference audit log query (`ApiResponse<InferenceAuditRecord[]>`; optional `from`, `to`, `model`, `sessionId`, `limit`; §8.26). |
 | GET | `/api/guardrails/audit` | Persisted guardrails violation audit log query (`ApiResponse<GuardrailAuditRecord[]>`; optional `from`, `to`, `stage`, `violationType`, `sessionId`, `limit`; §8.27). |
+| GET | `/api/operations` | List durable operations with optional `kind`, `state`, `limit`, and `offset` filters. Returns safe summaries only; encrypted checkpoint payloads and references are never serialized (§10.8). |
+| GET | `/api/operations/{id}` | Show one durable operation's lifecycle, links, lease, attempt, checkpoint version/presence, safe summary, and terminal error code. |
+| POST | `/api/operations/{id}/cancel` | CAS-protected transition to `Cancelling`; **404** unknown, **409** stale/terminal. |
+| POST | `/api/operations/{id}/retry` | CAS-protected reset of `Failed`, `Abandoned`, or `ReconciliationRequired` to `Pending`; checkpoint remains available to the recovery policy. |
+| POST | `/api/operations/reconcile` | Run a bounded authenticated recovery pass and return `LongRunningOperationReconciliationSummary`. |
 | GET | `/api/events/daemon` | SSE stream of `DaemonEvent` frames (daemon job lifecycle for scheduled and on-demand runs); **not** wrapped in `ApiResponse<T>`. |
 | GET | `/api/events/mcp` | SSE stream of `McpServerEvent` frames (MCP server lifecycle); **not** wrapped in `ApiResponse<T>`. |
 | GET | `/api/events/logs` | SSE stream of `LogEntry` frames (live log tail from ring buffer); **not** wrapped in `ApiResponse<T>`. |
@@ -1687,6 +1692,65 @@ It is independent of the inference stream.
 | Streaming chunk pump | Consume `ExecuteStreamingAsync` updates | End of provider stream or read failure |
 | Structured-output correction | Replace invalid JSON-schema candidates while state changes | Valid output, repeated state, cancellation, context rejection, or cost rejection |
 
+### 10.8 Durable operation ledger and restart reconciliation
+
+Long-running work may not treat an in-memory `Task`, enumerator, process handle,
+`CancellationToken`, live stream, Ward, or DI object as recovery state. The shared lifecycle is
+`ILongRunningOperationStore` plus the scoped `ILongRunningOperationCoordinator`, backed by the
+raw-SQL `LongRunningOperations` table in the SQLCipher-encrypted Grimoire. Migration
+`20260730020000_AddLongRunningOperations` is append-only in `GrimoireSqlSchemaMigrator`.
+
+Each row contains operation kind and policy; `Pending`, `Running`, `Waiting`, `Cancelling`,
+`Completed`, `Failed`, `Abandoned`, or `ReconciliationRequired`; root/parent, Session, inference
+run, budget reservation, and idempotency-claim links; created/started/heartbeat/completed times;
+lease owner/expiry; attempt count; checkpoint version plus encrypted payload or reference; a
+bounded public-safe summary; terminal error code; and a monotonically increasing revision.
+Checkpoint payloads and references remain inside SQLCipher. API/CLI responses project only
+`HasCheckpoint`, its version, and `PublicSummary`.
+
+Lifecycle writes use SQL compare-and-swap:
+
+- lease acquisition changes `Pending`, expired `Running`, or expired `Waiting` to `Running`,
+  records the owner/expiry, increments attempt and revision, and succeeds for only one worker;
+- heartbeats renew only a live lease still owned by that worker; operation authors use bounded
+  leases (5 seconds through 15 minutes) and stop immediately after renewal failure;
+- checkpoints require the owner and exact previous checkpoint version, so duplicate/out-of-order
+  writes cannot overwrite newer recovery state;
+- cancellation, retry, and terminal transitions require the exact row revision. Terminal and
+  repair-required transitions release the lease.
+
+The code-owned recovery-policy inventory is:
+
+| Kind | Policy | Recovery intent |
+|------|--------|-----------------|
+| `inference-run` | `ReconcileAndComplete` | Reconcile accounting/reservation evidence; never replay a live stream. |
+| `budget-reservation` | `ReconcileAndComplete` | Idempotently release a stranded reservation when actual cost cannot be established. |
+| `batch` | `RestartIdempotently` | Restart from durable batch/input/output status; do not duplicate completed lines. |
+| `apprentice` | `ResumeFromCheckpoint` | Resume from its versioned durable checkpoint and parent/child lineage. |
+| `attachment-promotion` | `ReconcileAndComplete` | Inspect durable file/row state and finish or roll back promotion. |
+| `workspace-index` | `RestartIdempotently` | Re-enumerate deterministically; durable indexed rows remain the authority. |
+| `idempotency-claim` | `ReconcileAndComplete` | Complete, fail, or explicitly abandon the linked claim so it cannot stay stranded. |
+
+`LongRunningOperationReconciler` selects only expired `Running`/`Waiting` leases, acquires a fresh
+two-minute recovery lease, dispatches by bounded kind, rejects unsupported checkpoint versions
+before handler code, maps corrupt checkpoints to `operation.checkpoint_corrupt`, and applies the
+handler result with the acquired revision. Missing handlers and unexpected recovery failures
+become `ReconciliationRequired`, never guessed success. `BudgetReservationRecoveryHandler` is the
+first concrete shared handler and calls the reservation service's idempotent release transition.
+
+Host startup runs reconciliation after Grimoire migration and before subsequently registered
+durable workloads. It examines at most 100 operations with concurrency 4 and a 10-second total
+budget. If optional recovery exceeds that budget, startup continues in explicit degraded mode and
+operators run `arcanum operation reconcile`; the host never claims that deferred work completed.
+Manual reconciliation examines at most 500 operations with concurrency 4.
+
+All `/api/operations*` routes inherit `/api` API-key authentication and rate limiting. Operator
+commands are `arcanum operation list [--kind …] [--state …]`, `show <id>`, `cancel <id>`,
+`retry <id>`, and `reconcile`. `GET /api/health` includes `DurableOperations`; `arcanum doctor`
+reports that component's safe detail. Prometheus exposes `arcanum_operations{kind,state}` gauges
+and `arcanum_operation_reconciliation_total{kind,outcome}`. Kind/state/outcome labels come from
+closed vocabularies; operation IDs, summaries, and user content are never metric labels.
+
 ---
 
 ## 11. Local API security
@@ -2547,6 +2611,12 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 - **`UnseenServantWatermarks`** (§5.5.5) is deliberately **not** part of the compiled EF model — it is accessed entirely via raw SQL through the scoped **`ArcanumDbContext`**'s connection (`GetDbConnection()`), following the FTS query pattern (**`ResolveFtsSessionIdsAsync`**/**`SearchArchivesAsync`**), so adding it required no `dotnet ef dbcontext optimize` regeneration.
 - **Schema-install safety and configuration impact:** `UnseenServantWatermarks` and `SanctumBreaches` are folded into the `InitialCreate.sql` baseline (no production databases in the wild); neither adds a public configuration element. Installation/reinstall policy is §5.4.5.
 - **`SanctumBreaches`** (§11.15): raw SQL via `SanctumBreachRepository` (not in the compiled EF model); FK to `Campaigns` (`ON DELETE CASCADE`); retention enforced on every insert (`SanctumConfig.MaxBreachCount`, clamp 100 – 100,000).
+- **`LongRunningOperations`** (§10.8): raw SQL via `LongRunningOperationStore`, encrypted by the
+  same SQLCipher Grimoire, with self-referencing root/parent foreign keys and indexes on
+  state/lease, kind/state, parent, session, run, and reservation. Its checkpoint blob/reference is
+  recovery-private; the wire DTO intentionally omits both. This is the durable framework for
+  operation lifecycle, not a promise that live streams, Wards, process handles, or in-memory Tasks
+  can resume.
 
 ### 16.3 Security and identity
 
