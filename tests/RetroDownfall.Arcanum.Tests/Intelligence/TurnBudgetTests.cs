@@ -17,7 +17,7 @@ public class TurnBudgetTests
         Assert.True(budget.TryConsumeModelCall(
             new ContextTokenBreakdown
             {
-                Provider = "test", Model = "test", Profile = new RetroDownfall.Arcanum.Core.Intelligence.ResolvedModelTokenizationProfile(),
+                Provider = "test", Model = "test", Profile = new RetroDownfall.Arcanum.Core.Intelligence.ResolvedModelTokenizationProfile { ProfileId = "test", Type = RetroDownfall.Arcanum.Core.Configuration.ModelTokenizationProfileType.UnknownFallback, TokenizerId = "o200k_base", SafetyMarginPercent = 15, PerMessageOverheadTokens = 4, PerToolOverheadTokens = 8, ProviderFramingTokens = 3, StopTokenOverheadTokens = 1, UnknownImageReserveTokens = 2048, Confidence = 0.5 },
                 Components = new System.Collections.ObjectModel.ReadOnlyCollection<RetroDownfall.Arcanum.Core.Intelligence.ContextTokenComponent>(new List<RetroDownfall.Arcanum.Core.Intelligence.ContextTokenComponent>()), InputTokens = 100, ReservedTokens = 10, TotalTokens = 110,
                 OverallClassification = RetroDownfall.Arcanum.Core.Intelligence.TokenEstimateClassification.Estimated, SafetyMarginTokens = 5
             }, out var violation));

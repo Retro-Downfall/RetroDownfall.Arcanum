@@ -10,7 +10,6 @@ public sealed class TurnBudget : ITurnBudget
     private int _modelCalls;
     private int _toolRounds;
     private int _toolCalls;
-    private int _toolResultTokens;
     private int _toolResultBytes;
     private readonly DateTimeOffset _startedAt;
     private decimal _reservedCostUsd;
