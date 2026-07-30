@@ -25,6 +25,7 @@ public sealed class DoctorCommand(
     IOptions<ArcanumSettings> options,
     IHttpClientFactory httpClientFactory,
     ISecretStore secretStore,
+    IEncryptedBlobDiagnostics encryptedBlobDiagnostics,
     IThemePalette themePalette,
     ICliEnvironment cliEnvironment)
 {
@@ -100,6 +101,10 @@ public sealed class DoctorCommand(
 
         AnsiConsole.WriteLine();
 
+        healthy &= await WriteFileEncryptionPanelAsync(cancellationToken).ConfigureAwait(false);
+
+        AnsiConsole.WriteLine();
+
         WriteEmbeddingsPanel();
 
         AnsiConsole.WriteLine();
@@ -144,6 +149,12 @@ public sealed class DoctorCommand(
         checks.Add(BuildToolChildSandboxCheck());
 
         checks.Add(BuildMasterKeyCheck());
+
+        (bool fileEncryptionHealthy, DoctorCheck fileEncryptionCheck) =
+            await BuildFileEncryptionCheckAsync(cancellationToken).ConfigureAwait(false);
+
+        healthy &= fileEncryptionHealthy;
+        checks.Add(fileEncryptionCheck);
 
         checks.Add(BuildEmbeddingsCheck());
 
@@ -781,6 +792,43 @@ public sealed class DoctorCommand(
             present ? "ok" : "warn",
             $"{detail} {guidance}");
 
+    }
+
+    private async Task<bool> WriteFileEncryptionPanelAsync(CancellationToken cancellationToken)
+    {
+        (bool healthy, DoctorCheck check) = await BuildFileEncryptionCheckAsync(cancellationToken)
+            .ConfigureAwait(false);
+        Table table = BuildLabelTable(
+            ("Healthy", healthy ? "yes" : "no"),
+            ("Detail", check.Detail ?? "No diagnostic detail was provided."));
+        WritePanel("File Encryption", table);
+        return healthy;
+    }
+
+    private async Task<(bool Healthy, DoctorCheck Check)> BuildFileEncryptionCheckAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            FileEncryptionDiagnostics result = await encryptedBlobDiagnostics
+                .InspectAsync(cancellationToken)
+                .ConfigureAwait(false);
+            return (
+                result.IsHealthy,
+                new DoctorCheck(
+                    "FileEncryption",
+                    result.IsHealthy ? "ok" : "fail",
+                    result.Detail));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return (
+                false,
+                new DoctorCheck(
+                    "FileEncryption",
+                    "fail",
+                    $"File-encryption diagnostics failed ({ex.GetType().Name})."));
+        }
     }
 
     private (bool Present, string Detail, string Guidance) ProbeMasterKeyPresence()

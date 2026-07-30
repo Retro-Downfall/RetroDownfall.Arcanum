@@ -180,6 +180,7 @@ Single-host failure behavior:
 | Grimoire SQLITE_BUSY / locked | Bounded exponential backoff on writes (`SqliteBusyRetry`); the delay budget counts only code-scheduled backoff, never action time, profiler suspension, scheduler starvation, or retry-observer work. Persistent contention is then surfaced as API/CLI failure. |
 | Disk full / partial `security.dat` write | Atomic temp+rename on `security.dat`; corrupt store fails with recovery guidance (§16.3) instead of silent key regen when a Grimoire DB exists. |
 | Data Protection keyring corrupt | See §16.3 rotate-or-restore steps; **`arcanum key show`** reads the local store only (no HTTP). |
+| File-encryption key missing/corrupt or blob authentication fails | Startup/read fails closed; no replacement key is generated while ciphertext exists. `FileEncryption` health and `arcanum doctor` identify key/legacy/corrupt state; restore the OS credential or DP mirror + key ring (§5.4.6, §16.3). |
 
 ---
 
@@ -609,8 +610,9 @@ The Grimoire is the primary persistence authority, but not every durable byte be
   cancellations, timeouts, and interrupted streams create no row. Tool names/counts may be retained,
   raw arguments are omitted by default, and tool results plus prompt/answer/reasoning bodies are
   never fields (§8.26).
-- `/v1/files` and session-attachment metadata are Grimoire rows, while their bytes are owner-only
-  files under `files/` and `attachments/` respectively. Those bytes are not SQLCipher-encrypted.
+- `/v1/files` and session-attachment metadata are Grimoire rows, while their bytes are owner-only,
+  versioned authenticated-encryption envelopes under `files/` and `attachments/` respectively.
+  SQLCipher protects the metadata; `IEncryptedBlobStore` independently protects the external blobs.
 - Weave, Saga, workspace-imprint, and Lexicon tables are raw-SQL schemas initialized after the
   embedded install scripts. Optional `vec0` tables are acceleration only; BLOB tables remain the
   durable fallback (§21).
@@ -624,8 +626,8 @@ The Grimoire is the primary persistence authority, but not every durable byte be
 | Idempotency claims | `IdempotencyClaims` | Raw-SQL lease/state machine; legacy `IdempotencyKeys` may remain for expiry compatibility (§11.17). |
 | Inference accounting | `InferenceRuns`, `BillableOperations`, `BudgetReservations`, `CostAdjustments` | Parameterized raw SQL through `ITurnRunWriter` / `IBudgetReservationService`; outside the compiled EF model (§22.2). |
 | Budget alert deduplication | `BudgetAlerts` | Unique `(Threshold, date(AlertedAt))`; insert-before-dispatch is the concurrency authority (§22.2). |
-| OpenAI file metadata | `UploadedFiles` | Bytes use a fresh GUID path under `ArcanumPaths.FilesDirectory`, never the client filename (§11.20). |
-| Session attachment metadata | `SessionAttachments` | Raw SQL through `ISessionAttachmentStore`; bytes and lifecycle are in §10.2.5. |
+| OpenAI file metadata | `UploadedFiles` | Bytes use a fresh GUID path under `ArcanumPaths.FilesDirectory`, never the client filename; `EncryptionVersion` and `EncryptionKeyId` identify the external envelope (§11.20). |
+| Session attachment metadata | `SessionAttachments` | Raw SQL through `ISessionAttachmentStore`; `EncryptionVersion`/`EncryptionKeyId`, encrypted bytes, and lifecycle are in §10.2.5. |
 | Session context pins | `SessionContextPins` | Raw SQL through `ISessionContextPinStore`; durable metadata only. Content is revalidated and materialized from its authoritative source on every turn (§10.2.6). |
 | OpenAI batch metadata | `Batches` | No request-count columns; `GET` derives counts from input/output/error files (§11.21). |
 | Embedding and Saga state | `entry_embeddings`[+`_vec`], `workspace_file_chunks`, `workspace_file_embeddings`[+`_vec`], `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks` | Created idempotently from canonical definitions in `WeaveSchemaInitializer`; workspace chunks persist stable content-derived IDs, character offsets, and one-based line ranges. While Arcanum has no users, schema changes replace those definitions directly and local/test databases are recreated; no compatibility upgrade path is maintained. Reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
@@ -700,6 +702,52 @@ definitive persistence failure rolls it back; an ambiguous readback retains appl
 relative recovery artifacts and fails the turn. This is bounded rollback/recovery, not isolation or
 crash atomicity: a process/power failure may leave `.arcanum-*` artifacts for operator inspection,
 and cleanup removes an artifact only after identity revalidation.
+
+#### 5.4.6 Versioned authenticated blob storage
+
+`IEncryptedBlobStore` is the single storage boundary for session attachments, `/v1/files` uploads,
+and batch input/output/error artifacts. `EncryptedBlobStore` writes the version-1 `ARCABLOB`
+envelope with an explicit format version, AES-256-GCM algorithm id, bounded chunk size, purpose,
+plaintext length, key id, random nonce prefix, and bounded authenticated metadata. Every plaintext
+chunk is authenticated independently with a 16-byte GCM tag and a nonce formed from the random
+per-file prefix plus a monotonically increasing chunk index. The canonical envelope header, chunk
+index, chunk length, and caller metadata are authenticated; the plaintext-length field is enforced
+by an exact monotonic envelope-length calculation so any alteration, truncation, or appended
+ciphertext is rejected.
+
+The store derives separate 256-bit keys for `SessionAttachment`, `UploadedFile`, and
+`BatchArtifact` with HKDF-SHA256 labels from one random 256-bit file-encryption master key. That
+master key is independent of both the API key and the SQLCipher Grimoire secret. Its primary
+location is the OS credential store under service/account
+`arcanum/file-encryption-master-key` (macOS Keychain, Windows Credential Manager, or Linux Secret
+Service). `file-encryption-key.dat`, sealed by ASP.NET Core Data Protection purpose
+`Arcanum.Core.FileEncryption.v1`, is a best-effort recovery mirror; it is not the primary store.
+The key id is the first 64 bits of SHA-256 over the master key and is safe to persist for lookup.
+
+Writes create an owner-only temporary ciphertext file in the destination directory, stream and
+authenticate the content in bounded memory, flush it to durable storage, reopen and verify the
+complete envelope, then atomically rename it over the destination and reapply owner-only
+permissions. Cancellation or failure removes the ciphertext temp. Batch writers use the streaming
+writer directly, so no plaintext JSONL staging file exists. Reads are sequential/non-seekable:
+each complete chunk is authenticated before any byte from that chunk reaches the caller.
+`/v1/files/{id}/content` streams decrypted bytes while preserving stored MIME type and forced
+attachment disposition; attachment materialization, refresh/index validation, forks, batch
+processing/counting, and reconciliation all pass through the same authenticated boundary.
+
+`UploadedFiles` and `SessionAttachments` retain plaintext MIME, size, SHA-256, and lifecycle facts
+inside SQLCipher while recording the envelope version and key id. Plaintext is never written to
+logs or recovery artifacts. A file without `ARCABLOB` magic is legacy plaintext and is never
+silently returned by the encrypted reader. Health and `arcanum doctor` report OS-key status plus
+encrypted, legacy-plaintext, and corrupt blob counts. A corrupt tag, wrong purpose, unsupported
+version, missing key, wrong key id, truncation, or trailing data fails closed.
+
+First startup creates the master key only when the OS secret is missing and no encrypted blobs
+exist. If ciphertext already exists, missing/corrupt key state never generates a replacement:
+restore the OS credential, or restore `file-encryption-key.dat` together with the matching
+Data Protection `keys/` directory. A complete backup therefore includes the SQLCipher database and
+sidecars, `attachments/`, `files/`, the OS credential (or its DP recovery mirror), and the
+Data Protection key ring. Copy ciphertext and database metadata from the same backup generation;
+restoring only one side can leave key ids or file pointers inconsistent.
 
 ### 5.5 Unseen Servant
 
@@ -1207,7 +1255,12 @@ Closed audit items (writer reuse, scan/cache bounds, Loremaster counter, MCP lin
 
 **Ownership:** host-only `ISessionAttachmentStore` (serve process). CLI stages content via `PingRequest.AttachedFiles` / `ScryingFoci` / `AttachmentReferences`; the host re-validates and persists **before** inference (failure aborts the turn — the model never sees an attachment that did not persist). Listing: `GET /api/sessions/{id}/attachments` returns **bound** rows only.
 
-**On-disk layout** (`ArcanumPaths.AttachmentsDirectory` → `{GrimoireDirectory}/attachments/`): `_pending/{turnId}/{logicalKey}/v1/{originalFileName}` until session-bound; then `{sessionId:N}/{logicalKey}/vN/{originalFileName}`. Owner-only permissions on the tree. Dedupe against the latest version hash (identical bytes → reuse id, no new `vN`).
+**On-disk layout** (`ArcanumPaths.AttachmentsDirectory` → `{GrimoireDirectory}/attachments/`):
+`_pending/{turnId}/{logicalKey}/v1/{originalFileName}` until session-bound; then
+`{sessionId:N}/{logicalKey}/vN/{originalFileName}`. The filename is a metadata-derived locator;
+the file content is an `ARCABLOB` authenticated-encryption envelope, not plaintext. Owner-only
+permissions remain defense in depth. Dedupe uses the plaintext SHA-256 retained inside SQLCipher
+(identical bytes → reuse id, no new `vN`).
 
 **System prompt index:** metadata-only `### Session Attachments Index` (bounded by `MaxIndexItemsInPrompt` / `MaxIndexBytesInPrompt`); no bytes. Model pulls content via MCP `attach_session_file` (or the operator via `/attachments add`).
 
@@ -1229,6 +1282,7 @@ Closed audit items (writer reuse, scan/cache bounds, Loremaster counter, MCP lin
 | `LogicalKey`, `OriginalFileName`, `Version`, `RelativePath`, `ContentSha256`, `MimeType`, `ByteLength`, `Kind`, `CreatedAt` | populated | populated |
 | `SourceKind`, `SourceStatus` | `SnapshotOnly`/`NotApplicable` unless host-verified | same |
 | `SourceWorkspaceIdentity`, `SourceRelativePath`, `SourceCanonicalPath`, `SourceContentSha256`, `SourceFileIdentity`, `SourceLastWriteAt`, `SourceByteLength`, `SourceDiagnosticReason` | optional encrypted provenance | optional encrypted provenance |
+| `EncryptionVersion`, `EncryptionKeyId` | current envelope version/key id | current envelope version/key id |
 
 **Source provenance and refreshability:** attachment bytes always remain a durable snapshot; the
 existing attachment-store `RelativePath` always points to that snapshot and is never reinterpreted
@@ -1262,9 +1316,9 @@ Grimoire schema must recreate the database when installing the latest version.
   `SessionBound` / the first persisted user Entry promotes by copying bytes into the Session tree,
   then updates the rows to Bound in a DB transaction. This is not an atomic filesystem move.
 - Persistence completes before model inference; failure closes the turn before the model sees bytes.
-- Fork pre-copies and hash-verifies bytes, then inserts the new Session, Entries, and attachment rows
-  in one EF ambient transaction with raw SQL enlisted. A failed DB transaction deletes the partial
-  fork tree.
+- Fork pre-copies ciphertext, authenticates every chunk, and verifies the decrypted plaintext hash,
+  then inserts the new Session, Entries, and attachment rows in one EF ambient transaction with raw
+  SQL enlisted. A failed DB transaction deletes the partial fork tree.
 - Hard purge deletes attachment rows with Session/Entry rows in one DB transaction, then
   best-effort removes the Session attachment tree under an independent cleanup token. A failed
   filesystem delete is logged and left for reconcile.
@@ -1279,20 +1333,25 @@ warned and left untouched rather than passed to an identity-unsafe delete. Code-
 byte and per-logical-key version caps reject new writes; Bound files are not background-pruned.
 Reconciliation also fails closed when source metadata is malformed or no longer resolves, updating
 only its availability/status fields and preserving an otherwise valid attachment snapshot.
+Encrypted-file validation authenticates every referenced snapshot; legacy plaintext and corrupt
+envelopes are logged and surfaced by health/doctor rather than ever being returned as attachment
+content.
 
 **Privacy:**
 
 | Layer | Protection |
 |-------|------------|
 | Grimoire metadata (`SessionAttachments`) | SQLCipher-encrypted (same as other Grimoire tables) |
-| Attachment **bytes** on disk | Owner-permission-protected under `~/.config/arcanum/attachments` — **not** SQLCipher-encrypted |
+| Attachment **bytes** on disk | Chunk-authenticated AES-256-GCM `ARCABLOB` envelope plus owner-only permissions under `~/.config/arcanum/attachments` |
+| File-encryption master key | OS credential store `arcanum/file-encryption-master-key`; DP-sealed recovery mirror in `file-encryption-key.dat` |
 | OS disk encryption / backup | Operator responsibility |
-| Full conversation continuity | Copy/restore `~/.config/arcanum/attachments` together with the DB |
+| Full conversation continuity | Copy/restore attachments, DB, file-encryption key or recovery mirror, and DP key ring as one generation |
 
-Deleting or reinstalling only `arcanum.db` leaves orphan attachment bytes. A full backup, restore,
-reset, or uninstall must copy/remove `~/.config/arcanum/attachments` with the database. This tree is
-distinct from `/v1/files`, whose opaque bytes use `files/{guid}`. Configuration authority remains
-the Compendium reference linked from §3.4.
+Deleting or reinstalling only `arcanum.db` leaves orphan encrypted attachment bytes. A full backup,
+restore, reset, or uninstall must copy/remove `~/.config/arcanum/attachments` with the database and
+must preserve the matching file-encryption key material described in §5.4.6. This tree is distinct
+from `/v1/files`, whose encrypted envelopes use `files/{guid}`. Configuration authority remains the
+Compendium reference linked from §3.4.
 
 ### 10.2.6 Structured mentions and durable context pins
 
@@ -1873,7 +1932,10 @@ Sensitive paths are restricted to the current user at creation time via `SecureF
 - **Unix:** `File.SetUnixFileMode` — files `600` (`UserRead | UserWrite`), directories `700` (`UserRead | UserWrite | UserExecute`).
 - **Windows:** `File.SetUnixFileMode` throws; owner-only ACL via `FileSystemAccessRule` (`Modify` for files, `FullControl` with inheritance for directories).
 
-**Applied on create:** Grimoire `.db`, `arcanum.json`, `cli-session.txt`, Serilog rolling logs (`SecureSerilogFileHooks`), Data Protection secret files, and owner-only creation of `~/.config/arcanum` and `%ApplicationData%/arcanum/logs/`.
+**Applied on create:** Grimoire `.db`, `arcanum.json`, `cli-session.txt`, Serilog rolling logs
+(`SecureSerilogFileHooks`), Data Protection secret files, encrypted attachment/upload/batch
+envelopes and their same-directory ciphertext temps, and owner-only creation of
+`~/.config/arcanum` and `%ApplicationData%/arcanum/logs/`.
 
 **Startup self-check:** `ArcanumSecurityStartupChecks` warns (does not fail) when any checked path is group/other-readable on Unix or grants read to `Everyone`/`Users` on Windows. Pre-existing files are not modified automatically — operators must fix permissions manually after the warning.
 
@@ -2066,14 +2128,31 @@ Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight
 
 **Purpose:** OpenAI-compatible standalone file upload storage — primarily feeds `/v1/batches` (§11.21) `input_file_id`, but usable standalone. File bytes live on disk under `ArcanumPaths.FilesDirectory` (`~/.config/arcanum/files/`); the `UploadedFiles` Grimoire row is metadata only.
 
-**Storage naming (security):** every uploaded file is stored under a **fresh `Guid`-named path** (`{FilesDirectory}/{id:N}`, computed by `UploadedFileStorage.ResolvePath`), never the client-supplied filename — path traversal and filename collisions are structurally impossible. The original filename is retained only as row metadata (`UploadedFileRecord.Filename`), used for `Content-Disposition` on download and echoed back in the wire `file` object.
+**Storage naming and encryption (security):** every uploaded file is stored under a **fresh
+`Guid`-named path** (`{FilesDirectory}/{id:N}`, computed by
+`UploadedFileStorage.ResolvePath`), never the client-supplied filename — path traversal and
+filename collisions are structurally impossible. The bytes are a purpose-bound `ARCABLOB`
+authenticated-encryption envelope (§5.4.6). The original filename is retained only as SQLCipher row
+metadata (`UploadedFileRecord.Filename`), used for `Content-Disposition` on download and echoed back
+in the wire `file` object. `EncryptionVersion` and `EncryptionKeyId` identify the envelope without
+exposing key material.
 
 **Endpoints:**
-- **`POST /v1/files`** — `multipart/form-data`: `file` (binary, required) + `purpose` (string, required — any non-empty value; Arcanum does not enforce OpenAI's specific purpose enum because it has no per-purpose behavior beyond what `/v1/batches` expects for `purpose: "batch"`). Returns **201** + `OpenAiFileObject`.
+- **`POST /v1/files`** — `multipart/form-data`: `file` (binary, required) + `purpose` (string,
+  required — any non-empty value; Arcanum does not enforce OpenAI's specific purpose enum because
+  it has no per-purpose behavior beyond what `/v1/batches` expects for `purpose: "batch"`).
+  Plaintext is streamed directly into an atomic encrypted write. Returns **201** +
+  `OpenAiFileObject`.
 - **`GET /v1/files?purpose=`** — list, optionally filtered; **200** + `OpenAiFileListResponse`.
 - **`GET /v1/files/{id}`** — metadata; **404** `not_found` for an unknown or malformed id.
 - **`DELETE /v1/files/{id}`** — deletes the Grimoire row and the on-disk file (best-effort on the disk side — a failed disk delete never blocks the metadata delete); **200** + `OpenAiFileDeleteResponse`.
-- **`GET /v1/files/{id}/content`** — raw bytes. **`Content-Type`** is the file's stored MIME type (falling back to `application/octet-stream` only if none was recorded — not hardcoded to octet-stream). **`Content-Disposition: attachment`** always — **never `inline`** — this is the primary XSS mitigation against an uploaded `.html`/`.svg` payload being rendered if a browser hits this URL directly; the extension/MIME cross-check below is secondary defense-in-depth, not the primary one.
+- **`GET /v1/files/{id}/content`** — authenticates and streams decrypted bytes; it never buffers
+  the complete file. **`Content-Type`** is the file's stored MIME type (falling back to
+  `application/octet-stream` only if none was recorded — not hardcoded to octet-stream).
+  **`Content-Disposition: attachment`** always — **never `inline`** — this is the primary XSS
+  mitigation against an uploaded `.html`/`.svg` payload being rendered if a browser hits this URL
+  directly; the extension/MIME cross-check below is secondary defense-in-depth, not the primary
+  one. A missing/wrong key or invalid envelope fails closed; ciphertext is never returned.
 
 **Wire id scheme:** `id` is `"file-{guid:N}"` (32 hex chars, no dashes). `GET`/`DELETE`/`.../content` parse this back to a `Guid`; a malformed id (wrong prefix, not valid hex) is treated as "not found" (**404**), never a **500**.
 
@@ -2084,7 +2163,9 @@ Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight
 4. Extension/declared-Content-Type cross-check (`UploadedFileMimeValidator.IsExtensionMimeMismatch`) — a *known* extension (`.png`, `.jsonl`, etc.) paired with an unexpected declared type is rejected (**400** `invalid_value`); an *unrecognized* extension is always allowed through (nothing to cross-check against).
 5. If `Arcanum:Security:AllowedUploadMimeTypes` is non-empty, the declared type must be in that operator allowlist → else **400** `invalid_value`.
 
-**Permissions:** the files directory and every stored file get owner-only permissions via the existing `SecureFilePermissions` helper (600 Unix / owner ACL Windows) — no new permission logic.
+**Permissions:** the files directory, every encrypted envelope, and same-directory ciphertext temp
+get owner-only permissions via `SecureFilePermissions` (600 Unix / owner ACL Windows). Atomic
+flush/verify/rename behavior is §5.4.6.
 
 **Error codes:** `Files.NotFound` (404), `Files.TooLarge` (413), `Files.InvalidMimeType` (400) — registered in the shared catalog (§8.23) for consistency and reuse by `/v1/batches`, even though the `/v1/files` handlers themselves construct their OpenAI-shaped error envelopes directly (matching every other `/v1` endpoint) rather than routing through `ArcanumErrorMapper`.
 
@@ -2105,18 +2186,49 @@ Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight
 
 **Wire id scheme:** `"batch_{guid:N}"` (underscore, matching OpenAI's real batch ids — distinct from `/v1/files`' hyphenated `"file-{guid:N}"`).
 
-**`request_counts` computation:** there are no dedicated count columns on `Batches` (`Id, InputFileId, Endpoint, Status, CreatedAt, CompletedAt, OutputFileId, ErrorFileId`). `BatchRequestCounter` computes `{total, completed, failed}` on every `GET` by reading the input/output/error files directly off disk: `total` = non-empty line count in the input file; `completed`/`failed` = outcome counts parsed from the output file's `BatchJsonlResponseLine.Error` (`null` → completed, populated → failed) plus any parse-failure lines recorded in the error file. Best-effort — a file that is missing or fails to read contributes `0` rather than erroring the `GET`.
+**`request_counts` computation:** there are no dedicated count columns on `Batches` (`Id,
+InputFileId, Endpoint, Status, CreatedAt, CompletedAt, OutputFileId, ErrorFileId`).
+`BatchRequestCounter` computes `{total, completed, failed}` on every `GET` by opening authenticated
+plaintext streams for the encrypted input/output/error artifacts: `total` = non-empty input line
+count; `completed`/`failed` = outcome counts parsed from the output file's
+`BatchJsonlResponseLine.Error` (`null` → completed, populated → failed) plus parse-failure lines in
+the error file. Best-effort — a missing, unreadable, unauthenticated, or undecryptable file
+contributes `0` rather than erroring the metadata `GET`.
 
-**Startup recovery:** `BatchProcessingService.StartAsync` calls `IBatchRecoveryService.ReconcileStrandedAsync` before Kestrel accepts work. Every DB-stranded `in_progress` batch is CAS-transitioned: → `validating` when input metadata + on-disk file exist; else → `failed` (reason logged only — no failure-reason column). Same recovery path powers `/reset`.
+**Startup recovery:** `BatchProcessingService.StartAsync` calls
+`IBatchRecoveryService.ReconcileStrandedAsync` before Kestrel accepts work. Every DB-stranded
+`in_progress` batch is CAS-transitioned: → `validating` only when input metadata exists and the
+complete encrypted input authenticates; else → `failed` (reason logged only — no failure-reason
+column). Same recovery path powers `/reset`.
 
 **`BatchProcessingService` (background processor):**
 - Polls every 5 seconds via `PeriodicTimer` (same shape as `UnseenServantService`/`EntryWeavingService`).
 - **Expiry sweep (every tick):** any non-terminal batch (`validating`/`in_progress`) older than the code-owned expiry is expired. If the batch is **not** currently in-flight in the processor, it is force-marked `status: "expired"` and its input/output/error files are deleted from disk (best-effort — a delete failure is logged and does not block the status update). If the batch **is** in-flight, the expiry sweep signals that batch's processing cancellation token and does **not** delete files; the processor/finalizer marks `expired` and performs file cleanup after cancel completes.
 - **Dispatch:** picks up `validating` batches, bounded by `Arcanum:Execution:MaxConcurrentBatches` across the whole server (tracked in an in-process `ConcurrentDictionary`). Crash mid-batch leaves `in_progress` until startup reconcile or `/reset`.
-- **Per-batch processing:** sets `status: "in_progress"`, **streams** the input file line-by-line (does not load the entire JSONL into memory), parses each as a `BatchJsonlRequestLine` (OpenAI's real wrapper shape: `{custom_id, method, url, body: OpenAiChatRequest}` — not a bare chat request). A line that fails to parse is recorded to the **error file** as `{"line": N, "error": "..."}` (`BatchJsonlParseError`) and does not consume an inference call. A line that parses successfully is executed via `OpenAiV1Endpoints.ExecuteChatRequestForBatchAsync` (reuses the same `OpenAiChatCompletionMapper.ToPingRequest` mapping and buffered `OpenAiChatResponse` shape as live `POST /v1/chat/completions`, minus that endpoint's HTTP-layer pre-checks like multimodal part limits or `tools`/`tool_choice` rejection — a line that would trip one of those still gets a clean per-line failure via the intelligence provider's own validation) — the **outcome always goes to the output file** as a `BatchJsonlResponseLine`, whether it succeeded (`response` populated, `error: null`) or the inference call itself failed (`response: null`, `error` populated) — only JSON-parse failures go to the error file, matching OpenAI's own input-file-vs-per-request-error distinction.
+- **Per-batch processing:** sets `status: "in_progress"`, authenticates and **streams** the decrypted
+  input line-by-line (does not load the entire JSONL into memory), and parses each as a
+  `BatchJsonlRequestLine` (OpenAI's real wrapper shape:
+  `{custom_id, method, url, body: OpenAiChatRequest}` — not a bare chat request). A line that fails
+  to parse is recorded to the **error file** as `{"line": N, "error": "..."}`
+  (`BatchJsonlParseError`) and does not consume an inference call. A line that parses successfully
+  is executed via `OpenAiV1Endpoints.ExecuteChatRequestForBatchAsync` (reuses the same
+  `OpenAiChatCompletionMapper.ToPingRequest` mapping and buffered `OpenAiChatResponse` shape as live
+  `POST /v1/chat/completions`, minus that endpoint's HTTP-layer pre-checks like multimodal part
+  limits or `tools`/`tool_choice` rejection — a line that would trip one of those still gets a clean
+  per-line failure via the intelligence provider's own validation) — the **outcome always goes to
+  the output file** as a `BatchJsonlResponseLine`, whether it succeeded (`response` populated,
+  `error: null`) or the inference call itself failed (`response: null`, `error` populated) — only
+  JSON-parse failures go to the error file, matching OpenAI's own input-file-vs-per-request-error
+  distinction.
 - **Bounded per-batch concurrency:** valid lines within one batch run through `Parallel.ForEachAsync` bounded by `Arcanum:Execution:MaxConcurrentRequestsPerBatch`, so one large batch can never monopolize the shared inference hub.
 - **Mid-batch cancellation:** a side task polls the Grimoire every 2 seconds for this batch's `status` flipping to `"cancelled"` (set by `POST .../cancel`) and, if seen, cancels a linked `CancellationTokenSource` so `Parallel.ForEachAsync` stops promptly instead of draining every remaining line first; whatever output/error accumulated up to that point is still written and attached.
-- **Finalization:** writes output/error JSONL **incrementally to temp files** as lines complete (bounded per-line memory), then moves non-empty temps into the uploaded-files directory via the same files repository as `/v1/files` (`purpose: "batch_output"` / `"error"`), then sets the batch's terminal status (`completed` or `cancelled`) plus `CompletedAt`/`OutputFileId`/`ErrorFileId`. An unhandled exception anywhere in this pipeline is caught at the top level and marks the batch `failed`.
+- **Finalization:** writes output/error JSONL **incrementally into owner-only encrypted stage
+  envelopes** as lines complete (bounded per-line/chunk memory; no plaintext temp), verifies and
+  moves non-empty ciphertext into the uploaded-files directory via the same repository as
+  `/v1/files` (`purpose: "batch_output"` / `"error"` and the distinct `BatchArtifact` derived key),
+  then sets the terminal status (`completed` or `cancelled`) plus
+  `CompletedAt`/`OutputFileId`/`ErrorFileId`. An unhandled exception anywhere in this pipeline is
+  caught at the top level and marks the batch `failed`.
 
 **Error codes:** `Batches.NotFound` (404), `Batches.InvalidEndpoint` (400), `Batches.InputFileNotFound` (404) — registered in the shared catalog (§8.23) for consistency, even though the `/v1/batches` handlers construct their OpenAI-shaped error envelopes directly like every other `/v1` endpoint.
 
@@ -2482,6 +2594,7 @@ reinstall.
 | `RequestAugmentingHandlerTests` | Replaced `HttpContent` disposal, content-header restoration on retry, and non-object JSON guard. |
 | `ClientToolForwardingTests` | Duplicate names, named-choice membership, auto/none with forwarding disabled, and per-tool `strict` preservation. |
 | `OpenAiV1EndpointTests` / `OpenAiV1BatchesEndpointTests` | Structured-output maps to `validation_failed`/`invalid_schema`, not generic inference failure; batch reset removes orphan output/error files. |
+| `EncryptedBlobStoreTests` / `FileEncryptionKeyProviderTests` / attachment-file-batch tests | Empty/boundary/large streaming round trips; random nonces; purpose/key separation; bit flips, truncation, trailing data, cancellation cleanup, and concurrent readers; OS/DP key persistence and missing/corrupt fail-closed behavior; no plaintext attachment/upload/batch artifact at rest. |
 | `SessionEndpointTests` | `since` 404 emits no leaked SSE headers; stable `Session.EntryNotFound` / `Session.InvalidStatus` constants. |
 | `CostCalculatorTests` | Cached tokens clamp to the prompt subset and use `CachedPer1M` (zero or nonzero); potential/actual savings use the nonnegative input-minus-cached rate delta. |
 | `PromptCachingChatOptionsAdapterTests` / `PromptCachePlannerTests` | Golden buffered/streaming root fields (`prompt_cache_key`, exact `in_memory`/`24h` retention), reasoning composition, unchanged ineligible bodies, contiguous-prefix planning, deterministic tool digests, stable keys, and plaintext exclusion. |
@@ -2622,6 +2735,13 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   recovery-private; the wire DTO intentionally omits both. This is the durable framework for
   operation lifecycle, not a promise that live streams, Wards, process handles, or in-memory Tasks
   can resume.
+- **External encrypted blobs:** `attachments/` and `files/` are not standalone backups. Preserve
+  them with `arcanum.db` plus WAL/SHM/KDF sidecars and the file-encryption key from the same backup
+  generation. The primary key is an OS credential; the portable recovery set is
+  `file-encryption-key.dat` plus the matching Data Protection `keys/` directory. A restored
+  database without blobs loses attachment/file content; restored ciphertext without the matching
+  key is intentionally unrecoverable; restoring only blobs without matching database metadata
+  leaves unreferenced ciphertext.
 
 ### 16.3 Security and identity
 
@@ -2629,6 +2749,18 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 - **Grimoire KDF:** New databases derive the SQLCipher passphrase via `GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret` using **PBKDF2-HMAC-SHA256** with **600,000 iterations** and a unique 16-byte salt stored in `{grimoire.db}.kdf`. Legacy databases (created before this change) are opened with the prior HKDF path and transparently re-encrypted to PBKDF2 on unlock. The dedicated encryption secret is stored alongside the master API key; rotating the API key alone does not break the Grimoire.
 - **API key rotation:** For **legacy** databases that were still encrypted with the master API key, rotating the key was destructive. For **new** databases, the Grimoire is independent of the API key, so rotating the key only invalidates API authentication. To rotate the key on a new database, run `arcanum key set` (or replace the OS credential + `security.dat` mirror) and restart; the Grimoire `.db` and `.kdf` files can stay in place. If the Grimoire encryption secret itself is lost, the database is unrecoverable — there is no automatic key recovery or backdoor. When `grimoire-key.dat` exists but Data Protection cannot decrypt it (missing `key-*.xml` under `~/.config/arcanum/keys/`), bootstrap **FailFast**s with an explicit recovery message and does **not** fall back to the API key (that path previously produced a misleading “key verification failed”). Recovery is restore the matching DP key from backup, or delete `arcanum.db` + `arcanum.db.kdf` + `grimoire-key.dat` and start fresh.
 - **`arcanum key show`** / **`arcanum key set`** read/write the master key via CLI DI (`ISecretStore` → OS keychain with `security.dat` fallback); no HTTP endpoint. Shared identity: `arcanum` / `master-api-key`. Linux requires `libsecret` and a running Secret Service for the primary path.
+- **Attachment/upload/batch key:** a separate random 256-bit master key lives primarily in OS key
+  storage at `arcanum` / `file-encryption-master-key`; it is never derived from, displayed by, or
+  rotated with the API key. A DP-sealed best-effort mirror lives at
+  `file-encryption-key.dat`. Purpose-specific HKDF keys prevent an attachment envelope from being
+  accepted as an upload or batch artifact. First install creates this key only after a successful OS
+  store write. If encrypted blobs exist and the credential/mirror is missing, corrupt, or has the
+  wrong key id, startup and reads fail closed and never generate a replacement. Restore the OS
+  credential, or restore both `file-encryption-key.dat` and its matching `keys/key-*.xml` ring.
+  Deleting the ciphertext is the only start-fresh option and permanently loses those blob bytes.
+- **Diagnostics:** `/api/health` component `FileEncryption` and `arcanum doctor` report key
+  availability and bounded counts of valid encrypted, legacy plaintext, and corrupt blobs. They
+  never expose key material, authenticated metadata, plaintext hashes, filenames, or content.
 
 ### 16.4 Testing
 

@@ -28,8 +28,12 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
 
                 cmd.CommandText =
                     """
-                    INSERT INTO "UploadedFiles" ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt")
-                    VALUES (@id, @filename, @bytes, @purpose, @mimeType, @createdAt)
+                    INSERT INTO "UploadedFiles"
+                        ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
+                         "EncryptionVersion", "EncryptionKeyId")
+                    VALUES
+                        (@id, @filename, @bytes, @purpose, @mimeType, @createdAt,
+                         @encryptionVersion, @encryptionKeyId)
                     """;
 
                 AddParameter(cmd, "@id", record.Id.ToString());
@@ -43,6 +47,13 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
                 AddParameter(cmd, "@mimeType", record.MimeType);
 
                 AddParameter(cmd, "@createdAt", record.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
+
+                AddParameter(cmd, "@encryptionVersion", record.EncryptionVersion);
+
+                AddParameter(
+                    cmd,
+                    "@encryptionKeyId",
+                    (object?)record.EncryptionKeyId ?? DBNull.Value);
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             },
@@ -62,7 +73,8 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
 
                 cmd.CommandText =
                     """
-                    SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt"
+                    SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
+                           "EncryptionVersion", "EncryptionKeyId"
                     FROM "UploadedFiles"
                     WHERE "Id" = @id
                     LIMIT 1
@@ -98,7 +110,8 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
 
                     cmd.CommandText =
                         """
-                        SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt"
+                        SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
+                               "EncryptionVersion", "EncryptionKeyId"
                         FROM "UploadedFiles"
                         ORDER BY "CreatedAt" DESC
                         """;
@@ -109,7 +122,8 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
 
                     cmd.CommandText =
                         """
-                        SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt"
+                        SELECT "Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt",
+                               "EncryptionVersion", "EncryptionKeyId"
                         FROM "UploadedFiles"
                         WHERE "Purpose" = @purpose
                         ORDER BY "CreatedAt" DESC
@@ -200,7 +214,22 @@ internal sealed class UploadedFileRepository(ArcanumDbContext db) : IUploadedFil
 
         DateTimeOffset createdAt = DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture);
 
-        return new UploadedFileRecord(id, filename, bytes, purpose, mimeType, createdAt);
+        int encryptionVersion = reader.FieldCount > 6
+            ? Convert.ToInt32(reader.GetValue(6), CultureInfo.InvariantCulture)
+            : 0;
+        string? encryptionKeyId = reader.FieldCount > 7 && !reader.IsDBNull(7)
+            ? reader.GetString(7)
+            : null;
+
+        return new UploadedFileRecord(
+            id,
+            filename,
+            bytes,
+            purpose,
+            mimeType,
+            createdAt,
+            encryptionVersion,
+            encryptionKeyId);
 
     }
 

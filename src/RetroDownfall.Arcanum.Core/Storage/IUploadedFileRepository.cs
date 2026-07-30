@@ -3,9 +3,9 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 /// <summary>
 /// Grimoire-backed metadata for <c>POST /v1/files</c> uploads
 /// (<c>docs/Arcanum.DESIGN.md</c> §11.20). The row is
-/// metadata only — file bytes live on disk under <see cref="ArcanumPaths.FilesDirectory"/>, named by
-/// <see cref="UploadedFileRecord.Id"/> (never the client-supplied filename), resolved via
-/// <see cref="UploadedFileStorage.ResolvePath"/>.
+/// metadata only — authenticated encrypted file envelopes live on disk under
+/// <see cref="ArcanumPaths.FilesDirectory"/>, named by <see cref="UploadedFileRecord.Id"/> (never
+/// the client-supplied filename), resolved via <see cref="UploadedFileStorage.ResolvePath"/>.
 /// </summary>
 public interface IUploadedFileRepository
 {
@@ -27,17 +27,24 @@ public sealed record UploadedFileRecord(
     long Bytes,
     string Purpose,
     string MimeType,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    int EncryptionVersion = 0,
+    string? EncryptionKeyId = null);
 
 /// <summary>
 /// Pure path computation for uploaded file bytes — no DB or disk access. Safe to call from any
 /// layer, including <c>/v1/batches</c>' processor, which reads uploaded input files directly off
-/// disk rather than through the files HTTP API.
+/// disk through <see cref="IEncryptedBlobStore"/> rather than through the files HTTP API.
 /// </summary>
 public static class UploadedFileStorage
 {
 
     /// <summary><c>{ArcanumPaths.FilesDirectory}/{id:N}</c> — never the client-supplied filename.</summary>
     public static string ResolvePath(Guid id) => Path.Combine(ArcanumPaths.FilesDirectory, id.ToString("N"));
+
+    public static EncryptedBlobPurpose ResolveEncryptionPurpose(string purpose) =>
+        purpose is "batch_output" or "error"
+            ? EncryptedBlobPurpose.BatchArtifact
+            : EncryptedBlobPurpose.UploadedFile;
 
 }

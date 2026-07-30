@@ -8,7 +8,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// Master API key store that prefers the OS credential store (shared with The Forge), with a
 /// one-time migrate from legacy Data Protection <c>security.dat</c> and an emergency DP fallback
 /// when the OS store is unavailable.
-/// Grimoire encryption secrets remain Data Protection–only.
+/// The dedicated file-encryption key also uses the OS credential store and keeps a best-effort
+/// Data Protection recovery mirror. Grimoire encryption secrets remain Data Protection–only.
 /// </summary>
 public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
 {
@@ -223,5 +224,105 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
 
     public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
         _dataProtectionStore.SaveGrimoireEncryptionSecretAsync(encryptionSecret);
+
+    public async Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            OsCredentialStoreResult os = _osStore.TryGet(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.FileEncryptionKeyAccount);
+            if (os.Status == OsCredentialStoreStatus.Ok
+                && !string.IsNullOrWhiteSpace(os.Value))
+            {
+                return SecretStoreReadResult.Ok(os.Value);
+            }
+
+            if (os.Status == OsCredentialStoreStatus.Failed)
+            {
+                _logger?.LogWarning(
+                    "OS credential store file-encryption key read failed: {Message}",
+                    os.Message);
+            }
+
+            SecretStoreReadResult mirror = await _dataProtectionStore
+                .GetFileEncryptionSecretReadResultAsync()
+                .ConfigureAwait(false);
+            if (mirror.Status == SecretStoreReadStatus.Ok
+                && !string.IsNullOrWhiteSpace(mirror.Value))
+            {
+                if (os.Status is OsCredentialStoreStatus.NotFound
+                    or OsCredentialStoreStatus.Ok)
+                {
+                    OsCredentialStoreResult migrate = _osStore.Set(
+                        ArcanumCredentialIdentity.Service,
+                        ArcanumCredentialIdentity.FileEncryptionKeyAccount,
+                        mirror.Value);
+                    if (migrate.Status != OsCredentialStoreStatus.Ok)
+                    {
+                        return SecretStoreReadResult.Corrupted(
+                            "The file-encryption key mirror exists, but it could not be restored "
+                            + $"to OS key storage: {migrate.Message}");
+                    }
+                }
+
+                return mirror;
+            }
+
+            if (mirror.Status == SecretStoreReadStatus.Corrupted)
+            {
+                return mirror;
+            }
+
+            if (os.Status == OsCredentialStoreStatus.Failed)
+            {
+                return SecretStoreReadResult.Corrupted(
+                    "OS key storage failed while reading the file-encryption master key. "
+                    + (os.Message ?? "Restore the OS credential and backup before retrying."));
+            }
+
+            return SecretStoreReadResult.Missing();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task SaveFileEncryptionSecretAsync(string encryptionSecret)
+    {
+        ArgumentNullException.ThrowIfNull(encryptionSecret);
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            OsCredentialStoreResult os = _osStore.Set(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.FileEncryptionKeyAccount,
+                encryptionSecret);
+            if (os.Status != OsCredentialStoreStatus.Ok)
+            {
+                throw new InvalidOperationException(
+                    "The dedicated file-encryption key could not be saved to OS key storage: "
+                    + (os.Message ?? os.Status.ToString()));
+            }
+
+            try
+            {
+                await _dataProtectionStore.SaveFileEncryptionSecretAsync(encryptionSecret)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(
+                    ex,
+                    "OS file-encryption key save succeeded but the Data Protection recovery mirror failed.");
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 
 }

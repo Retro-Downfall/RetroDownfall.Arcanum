@@ -13,4 +13,11 @@ public interface ISecretStore
 
     Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret);
 
+    Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>
+        Task.FromResult(SecretStoreReadResult.Missing());
+
+    Task SaveFileEncryptionSecretAsync(string encryptionSecret) =>
+        throw new NotSupportedException(
+            "This secret store does not support the dedicated file-encryption secret.");
+
 }

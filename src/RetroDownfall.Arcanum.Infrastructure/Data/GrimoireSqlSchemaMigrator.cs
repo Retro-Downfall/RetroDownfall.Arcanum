@@ -23,11 +23,15 @@ internal static class GrimoireSqlSchemaMigrator
         "20260721010000_AddInferenceAccountingAndIdempotencyClaims",
         "20260730010000_AddSessionContextPins",
         "20260730020000_AddLongRunningOperations",
+        "20260730030000_AddEncryptedBlobMetadata",
     ];
 
     private const string ResourcePrefix = "RetroDownfall.Arcanum.Infrastructure.Data.SqlMigrations.";
 
     private const string ProductVersion = "10.0.8";
+
+    internal static string CanonicalMigrationOrder =>
+        string.Join('\n', MigrationOrder);
 
     public static async Task ApplyPendingAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {

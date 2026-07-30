@@ -39,6 +39,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     private readonly IAttachmentSourceResolver? _sourceResolver;
 
+    private readonly IEncryptedBlobStore _blobStore;
+
     /// <summary>
     /// Test seam: runs after bytes are on disk at the destination, before the DB write that
     /// records them. Used to simulate exhausted DB failure without holding FS work inside
@@ -50,6 +52,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         ArcanumDbContext db,
         IOptions<ArcanumSettings> options,
         string? attachmentsRoot = null,
+        IEncryptedBlobStore? blobStore = null,
         ILogger<SessionAttachmentStore>? logger = null,
         IAttachmentSourceResolver? sourceResolver = null)
     {
@@ -60,6 +63,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         _logger = logger ?? NullLogger<SessionAttachmentStore>.Instance;
         _sourceResolver = sourceResolver;
+        _blobStore = blobStore
+            ?? throw new ArgumentNullException(
+                nameof(blobStore),
+                "Session attachment storage requires encrypted blob storage.");
 
         _attachmentsRoot = Path.GetFullPath(attachmentsRoot ?? ArcanumPaths.AttachmentsDirectory);
 
@@ -216,11 +223,19 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         string absolutePath = ResolveUnderRoot(relativePath);
 
-        await AtomicWriteBytesAsync(absolutePath, bytes, cancellationToken).ConfigureAwait(false);
-
         Guid id = Guid.NewGuid();
 
         DateTimeOffset createdAt = DateTimeOffset.UtcNow;
+
+        await using MemoryStream plaintext = new(bytes.ToArray(), writable: false);
+        EncryptedBlobDescriptor descriptor = await _blobStore.WriteAsync(
+                absolutePath,
+                plaintext,
+                EncryptedBlobPurpose.SessionAttachment,
+                id.ToByteArray(),
+                bytes.Length,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         SessionAttachmentState state = sessionId is null
             ? SessionAttachmentState.Pending
@@ -240,7 +255,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             mimeType,
             bytes.Length,
             kind,
-            createdAt);
+            createdAt,
+            Source: null,
+            EncryptionVersion: descriptor.Version,
+            EncryptionKeyId: descriptor.KeyId);
 
         try
         {
@@ -444,7 +462,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                            "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                            "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
                            "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                           "SourceStatus", "SourceDiagnosticReason"
+                           "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
                     FROM "SessionAttachments"
                     WHERE "Id" = @id
                     LIMIT 1
@@ -499,7 +517,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                                "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                                "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
                                "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                               "SourceStatus", "SourceDiagnosticReason"
+                               "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
                         FROM "SessionAttachments"
                         WHERE "SessionId" = @sessionId
                           AND "LogicalKey" = @logicalKey
@@ -518,7 +536,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                                "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                                "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
                                "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                               "SourceStatus", "SourceDiagnosticReason"
+                               "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
                         FROM "SessionAttachments"
                         WHERE "SessionId" = @sessionId
                           AND "LogicalKey" = @logicalKey
@@ -572,7 +590,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                            "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                            "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
                            "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                           "SourceStatus", "SourceDiagnosticReason"
+                           "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
                     FROM "SessionAttachments"
                     WHERE "SessionId" = @sessionId
                       AND "State" = @state
@@ -656,9 +674,22 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         }
 
-        byte[] bytes = await File.ReadAllBytesAsync(absolutePath, cancellationToken).ConfigureAwait(false);
+        await using Stream decrypted = await _blobStore
+            .OpenReadAsync(
+                absolutePath,
+                EncryptedBlobPurpose.SessionAttachment,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (decrypted.Length != record.ByteLength)
+        {
+            throw new InvalidDataException(
+                $"Attachment plaintext length mismatch for '{record.Id}'.");
+        }
 
-        return bytes;
+        using MemoryStream output = new(
+            record.ByteLength <= int.MaxValue ? checked((int)record.ByteLength) : 0);
+        await decrypted.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+        return output.ToArray();
 
     }
 
@@ -843,13 +874,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                  "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                  "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
                  "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                 "SourceStatus", "SourceDiagnosticReason")
+                 "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId")
             VALUES
                 (@id, @sessionId, @entryId, @pendingTurnId, @state, @logicalKey, @originalFileName,
                  @version, @relativePath, @contentSha256, @mimeType, @byteLength, @kind, @createdAt,
                  @sourceKind, @sourceWorkspaceIdentity, @sourceRelativePath, @sourceCanonicalPath,
                  @sourceContentSha256, @sourceFileIdentity, @sourceLastWriteAt, @sourceByteLength,
-                 @sourceStatus, @sourceDiagnosticReason)
+                 @sourceStatus, @sourceDiagnosticReason, @encryptionVersion, @encryptionKeyId)
             """;
 
         AddParameter(cmd, "@id", record.Id.ToString());
@@ -881,6 +912,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         AddParameter(cmd, "@createdAt", record.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
 
         AddSourceParameters(cmd, record.Source ?? AttachmentSourceMetadata.SnapshotOnly);
+
+        AddParameter(cmd, "@encryptionVersion", record.EncryptionVersion);
+
+        AddParameter(
+            cmd,
+            "@encryptionKeyId",
+            (object?)record.EncryptionKeyId ?? DBNull.Value);
 
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -951,7 +989,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                        "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                        "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
                        "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                       "SourceStatus", "SourceDiagnosticReason"
+                       "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
                 FROM "SessionAttachments"
                 WHERE "SessionId" = @sessionId
                   AND "LogicalKey" = @logicalKey
@@ -971,7 +1009,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                        "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                        "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
                        "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                       "SourceStatus", "SourceDiagnosticReason"
+                       "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
                 FROM "SessionAttachments"
                 WHERE "PendingTurnId" = @pendingTurnId
                   AND "LogicalKey" = @logicalKey
@@ -1056,7 +1094,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                    "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                    "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
                    "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                   "SourceStatus", "SourceDiagnosticReason"
+                   "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
             FROM "SessionAttachments"
             WHERE "PendingTurnId" = @pendingTurnId
               AND "State" = @state
@@ -1364,56 +1402,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     }
 
-    private static async Task AtomicWriteBytesAsync(
-        string destination,
-        ReadOnlyMemory<byte> bytes,
-        CancellationToken cancellationToken)
-    {
-
-        string? parentDir = Path.GetDirectoryName(destination);
-
-        if (string.IsNullOrEmpty(parentDir))
-        {
-
-            throw new InvalidOperationException("Could not resolve attachment parent directory.");
-
-        }
-
-        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(parentDir);
-
-        string tempPath = destination + ".tmp";
-
-        if (File.Exists(tempPath))
-        {
-
-            File.Delete(tempPath);
-
-        }
-
-        await using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
-        {
-
-            await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-
-            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-
-        }
-
-        SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
-
-        if (File.Exists(destination))
-        {
-
-            File.Delete(destination);
-
-        }
-
-        File.Move(tempPath, destination);
-
-        SecureFilePermissions.ApplyOwnerOnlyFile(destination);
-
-    }
-
     private static async Task AtomicCopyFileAsync(
         string source,
         string destination,
@@ -1613,6 +1601,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 reader.IsDBNull(23) ? null : reader.GetString(23));
         }
 
+        int encryptionVersion = reader.FieldCount >= 26
+            ? Convert.ToInt32(reader.GetValue(24), CultureInfo.InvariantCulture)
+            : 0;
+        string? encryptionKeyId = reader.FieldCount >= 26 && !reader.IsDBNull(25)
+            ? reader.GetString(25)
+            : null;
+
         return new SessionAttachmentRecord(
             id,
             sessionId,
@@ -1628,7 +1623,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             byteLength,
             kind,
             createdAt,
-            source);
+            source,
+            encryptionVersion,
+            encryptionKeyId);
 
     }
 

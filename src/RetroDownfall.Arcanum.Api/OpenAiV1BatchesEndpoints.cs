@@ -50,6 +50,7 @@ internal static partial class OpenAiV1Endpoints
     private static async Task<IResult> HandleResetBatchAsync(
         string id,
         IBatchRecoveryService batchRecovery,
+        IEncryptedBlobStore blobStore,
         CancellationToken cancellationToken)
     {
 
@@ -108,7 +109,9 @@ internal static partial class OpenAiV1Endpoints
 
         BatchRecord record = result.Record!;
 
-        OpenAiBatchRequestCounts counts = await BatchRequestCounter.ComputeAsync(record, cancellationToken).ConfigureAwait(false);
+        OpenAiBatchRequestCounts counts = await BatchRequestCounter
+            .ComputeAsync(record, blobStore, cancellationToken)
+            .ConfigureAwait(false);
 
         return Results.Json(OpenAiBatchObject.FromRecord(record, counts), ArcanumJsonContext.Default.OpenAiBatchObject);
 
@@ -184,6 +187,7 @@ internal static partial class OpenAiV1Endpoints
     private static async Task<IResult> HandleGetBatchAsync(
         string id,
         IBatchRepository batches,
+        IEncryptedBlobStore blobStore,
         CancellationToken cancellationToken)
     {
 
@@ -203,7 +207,9 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
-        OpenAiBatchRequestCounts counts = await BatchRequestCounter.ComputeAsync(record, cancellationToken).ConfigureAwait(false);
+        OpenAiBatchRequestCounts counts = await BatchRequestCounter
+            .ComputeAsync(record, blobStore, cancellationToken)
+            .ConfigureAwait(false);
 
         return Results.Json(OpenAiBatchObject.FromRecord(record, counts), ArcanumJsonContext.Default.OpenAiBatchObject);
 
@@ -212,6 +218,7 @@ internal static partial class OpenAiV1Endpoints
     private static async Task<IResult> HandleListBatchesAsync(
         string? status,
         IBatchRepository batches,
+        IEncryptedBlobStore blobStore,
         CancellationToken cancellationToken)
     {
 
@@ -222,7 +229,9 @@ internal static partial class OpenAiV1Endpoints
         foreach (BatchRecord record in records)
         {
 
-            OpenAiBatchRequestCounts counts = await BatchRequestCounter.ComputeAsync(record, cancellationToken).ConfigureAwait(false);
+            OpenAiBatchRequestCounts counts = await BatchRequestCounter
+                .ComputeAsync(record, blobStore, cancellationToken)
+                .ConfigureAwait(false);
 
             data.Add(OpenAiBatchObject.FromRecord(record, counts));
 
@@ -235,6 +244,7 @@ internal static partial class OpenAiV1Endpoints
     private static async Task<IResult> HandleCancelBatchAsync(
         string id,
         IBatchRepository batches,
+        IEncryptedBlobStore blobStore,
         CancellationToken cancellationToken)
     {
 
@@ -271,7 +281,9 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
-        OpenAiBatchRequestCounts counts = await BatchRequestCounter.ComputeAsync(record, cancellationToken).ConfigureAwait(false);
+        OpenAiBatchRequestCounts counts = await BatchRequestCounter
+            .ComputeAsync(record, blobStore, cancellationToken)
+            .ConfigureAwait(false);
 
         return Results.Json(OpenAiBatchObject.FromRecord(record, counts), ArcanumJsonContext.Default.OpenAiBatchObject);
 

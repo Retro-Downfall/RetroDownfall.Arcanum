@@ -208,17 +208,6 @@ internal sealed partial class SessionAttachmentStore
 
                 }
 
-                FileInfo info = new(sourceAbsolute);
-
-                if (info.Length != plan.Source.ByteLength)
-                {
-
-                    throw new InvalidOperationException(
-                        $"Source attachment length mismatch for '{plan.Source.Id}' "
-                        + $"(expected {plan.Source.ByteLength}, found {info.Length}).");
-
-                }
-
                 string newRelative = BuildRelativePath(
                     forkSessionId,
                     pendingTurnId: null,
@@ -287,7 +276,9 @@ internal sealed partial class SessionAttachmentStore
                 plan.Source.ByteLength,
                 plan.Source.Kind,
                 plan.Source.CreatedAt,
-                plan.Source.Source);
+                plan.Source.Source,
+                plan.Source.EncryptionVersion,
+                plan.Source.EncryptionKeyId);
 
             await InsertRowAsync(row, cancellationToken).ConfigureAwait(false);
 
@@ -304,10 +295,63 @@ internal sealed partial class SessionAttachmentStore
 
         await SweepMissingFileRowsAsync(cancellationToken).ConfigureAwait(false);
 
+        await ValidateEncryptedFilesAsync(cancellationToken).ConfigureAwait(false);
+
         await RevalidateAttachmentSourcesAsync(cancellationToken).ConfigureAwait(false);
 
         await SweepOrphanAttachmentFilesAsync(cancellationToken).ConfigureAwait(false);
 
+    }
+
+    private async Task ValidateEncryptedFilesAsync(CancellationToken cancellationToken)
+    {
+        List<SessionAttachmentRecord> rows = await ListAllRowsAsync(cancellationToken)
+            .ConfigureAwait(false);
+        foreach (SessionAttachmentRecord row in rows)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string absolute;
+            try
+            {
+                absolute = ResolveUnderRoot(row.RelativePath);
+            }
+            catch (InvalidOperationException)
+            {
+                continue;
+            }
+
+            if (!File.Exists(absolute))
+            {
+                continue;
+            }
+
+            if (!_blobStore.HasEnvelope(absolute))
+            {
+                _logger.LogError(
+                    "Legacy plaintext attachment requires migration: {AttachmentId} ({RelativePath}).",
+                    row.Id,
+                    row.RelativePath);
+                continue;
+            }
+
+            try
+            {
+                _ = await _blobStore.InspectAsync(
+                        absolute,
+                        EncryptedBlobPurpose.SessionAttachment,
+                        verifyAllChunks: true,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is CryptographicException or InvalidDataException)
+            {
+                _logger.LogError(
+                    ex,
+                    "Corrupt encrypted attachment detected: {AttachmentId} ({RelativePath}).",
+                    row.Id,
+                    row.RelativePath);
+            }
+        }
     }
 
     private async Task RevalidateAttachmentSourcesAsync(CancellationToken cancellationToken)
@@ -556,33 +600,39 @@ internal sealed partial class SessionAttachmentStore
 
     }
 
-    private static async Task VerifyCopiedFileAsync(
+    private async Task VerifyCopiedFileAsync(
         string absolutePath,
         SessionAttachmentRecord source,
         CancellationToken cancellationToken)
     {
-
-        byte[] bytes = await File.ReadAllBytesAsync(absolutePath, cancellationToken).ConfigureAwait(false);
-
-        if (bytes.LongLength != source.ByteLength)
+        await using Stream plaintext = await _blobStore
+            .OpenReadAsync(
+                absolutePath,
+                EncryptedBlobPurpose.SessionAttachment,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (plaintext.Length != source.ByteLength)
         {
-
             throw new InvalidOperationException(
                 $"Fork copy length mismatch for '{source.Id}' "
-                + $"(expected {source.ByteLength}, found {bytes.LongLength}).");
-
+                + $"(expected {source.ByteLength}, found {plaintext.Length}).");
         }
 
-        string hash = Convert.ToHexString(SHA256.HashData(bytes));
+        using IncrementalHash hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        byte[] buffer = new byte[64 * 1024];
+        int read;
+        while ((read = await plaintext.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) != 0)
+        {
+            hasher.AppendData(buffer, 0, read);
+        }
+
+        string hash = Convert.ToHexString(hasher.GetHashAndReset());
 
         if (!string.Equals(hash, source.ContentSha256, StringComparison.OrdinalIgnoreCase))
         {
-
             throw new InvalidOperationException(
                 $"Fork copy hash mismatch for '{source.Id}'.");
-
         }
-
     }
 
     private async Task<HashSet<Guid>> ListLiveSessionIdsAsync(CancellationToken cancellationToken)
@@ -655,7 +705,7 @@ internal sealed partial class SessionAttachmentStore
                    "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
                    "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
                    "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                   "SourceStatus", "SourceDiagnosticReason"
+                   "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId"
             FROM "SessionAttachments"
             """;
 

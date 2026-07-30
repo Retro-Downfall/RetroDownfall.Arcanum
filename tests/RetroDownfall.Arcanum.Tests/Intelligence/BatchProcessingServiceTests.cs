@@ -46,6 +46,8 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     private string? _originalTestHome;
 
+    private readonly IEncryptedBlobStore _blobStore = TestEncryptedBlobStore.Create();
+
     public BatchProcessingServiceTests(GrimoireFixture fixture)
     {
 
@@ -183,7 +185,8 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         Assert.True(File.Exists(outputPath));
 
-        string outputContent = await File.ReadAllTextAsync(outputPath);
+        Assert.True((await File.ReadAllBytesAsync(outputPath)).AsSpan().StartsWith("ARCABLOB"u8));
+        string outputContent = await ReadArtifactTextAsync(outputPath);
 
         Assert.Contains("req-1", outputContent, StringComparison.Ordinal);
 
@@ -231,11 +234,11 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         _createdFilePaths.Add(errorPath);
 
-        string outputContent = await File.ReadAllTextAsync(outputPath);
+        string outputContent = await ReadArtifactTextAsync(outputPath);
 
         Assert.Contains("req-good", outputContent, StringComparison.Ordinal);
 
-        string errorContent = await File.ReadAllTextAsync(errorPath);
+        string errorContent = await ReadArtifactTextAsync(errorPath);
 
         Assert.Contains("\"line\":1", errorContent, StringComparison.Ordinal);
 
@@ -368,7 +371,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         _createdFilePaths.Add(outputPath);
 
-        string outputContent = await File.ReadAllTextAsync(outputPath);
+        string outputContent = await ReadArtifactTextAsync(outputPath);
 
         Assert.Contains("req-fail", outputContent, StringComparison.Ordinal);
 
@@ -550,6 +553,8 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
         services.AddScoped<IBatchRepository, BatchRepository>();
 
         services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
+
+        services.AddSingleton(_blobStore);
 
         services.AddSingleton(intelligence);
 
@@ -749,16 +754,39 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         string path = UploadedFileStorage.ResolvePath(id);
 
-        await File.WriteAllTextAsync(path, jsonlContent);
+        byte[] plaintext = System.Text.Encoding.UTF8.GetBytes(jsonlContent);
+        EncryptedBlobDescriptor descriptor = await _blobStore.WriteAsync(
+            path,
+            new MemoryStream(plaintext),
+            EncryptedBlobPurpose.UploadedFile,
+            id.ToByteArray(),
+            plaintext.Length);
 
         _createdFilePaths.Add(path);
 
         await _files!.CreateAsync(
-            new UploadedFileRecord(id, "batch-input.jsonl", jsonlContent.Length, "batch", "application/jsonl", DateTimeOffset.UtcNow),
+            new UploadedFileRecord(
+                id,
+                "batch-input.jsonl",
+                plaintext.Length,
+                "batch",
+                "application/jsonl",
+                DateTimeOffset.UtcNow,
+                descriptor.Version,
+                descriptor.KeyId),
             CancellationToken.None);
 
         return id;
 
+    }
+
+    private async Task<string> ReadArtifactTextAsync(string path)
+    {
+        await using Stream plaintext = await _blobStore.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.BatchArtifact);
+        using StreamReader reader = new(plaintext);
+        return await reader.ReadToEndAsync();
     }
 
     private async Task<int> CountBillableOperationsAsync(string requestId)

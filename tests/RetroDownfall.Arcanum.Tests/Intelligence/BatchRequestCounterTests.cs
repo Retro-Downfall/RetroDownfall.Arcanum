@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
@@ -18,6 +19,8 @@ public sealed class BatchRequestCounterTests : IDisposable
         $"batch-request-counter-{Guid.NewGuid():N}");
 
     private readonly Dictionary<string, string?> _originalEnvironment = new(StringComparer.Ordinal);
+
+    private readonly IEncryptedBlobStore _blobStore = TestEncryptedBlobStore.Create();
 
     public BatchRequestCounterTests()
     {
@@ -78,17 +81,20 @@ public sealed class BatchRequestCounterTests : IDisposable
 
             {not-json
             {"id":"response-2","custom_id":"failed","response":null,"error":{"code":"bad_request","message":"failed"}}
-            """);
+            """,
+            EncryptedBlobPurpose.BatchArtifact);
         Guid errorFileId = await WriteFileAsync(
             """
             {"line":1,"error":"invalid"}
                
             {"line":2,"error":"also invalid"}
-            """);
+            """,
+            EncryptedBlobPurpose.BatchArtifact);
         BatchRecord record = CreateRecord(inputFileId, outputFileId, errorFileId);
 
         OpenAiBatchRequestCounts counts = await BatchRequestCounter.ComputeAsync(
             record,
+            _blobStore,
             CancellationToken.None);
 
         Assert.Equal(2, counts.Total);
@@ -108,6 +114,7 @@ public sealed class BatchRequestCounterTests : IDisposable
 
         OpenAiBatchRequestCounts counts = await BatchRequestCounter.ComputeAsync(
             record,
+            _blobStore,
             CancellationToken.None);
 
         Assert.Equal(OpenAiBatchRequestCounts.Empty, counts);
@@ -126,6 +133,7 @@ public sealed class BatchRequestCounterTests : IDisposable
 
         OpenAiBatchRequestCounts counts = await BatchRequestCounter.ComputeAsync(
             record,
+            _blobStore,
             CancellationToken.None);
 
         Assert.Equal(new OpenAiBatchRequestCounts(Total: 1, Completed: 0, Failed: 0), counts);
@@ -138,14 +146,18 @@ public sealed class BatchRequestCounterTests : IDisposable
 
         Guid inputFileId = await WriteFileAsync("""{"custom_id":"input"}""");
         Guid outputFileId = await WriteFileAsync(
-            """{"id":"response","custom_id":"ok","response":null,"error":null}""");
-        Guid errorFileId = await WriteFileAsync("""{"line":1,"error":"invalid"}""");
+            """{"id":"response","custom_id":"ok","response":null,"error":null}""",
+            EncryptedBlobPurpose.BatchArtifact);
+        Guid errorFileId = await WriteFileAsync(
+            """{"line":1,"error":"invalid"}""",
+            EncryptedBlobPurpose.BatchArtifact);
         using FileStream inputLock = LockFile(inputFileId);
         using FileStream outputLock = LockFile(outputFileId);
         using FileStream errorLock = LockFile(errorFileId);
 
         OpenAiBatchRequestCounts counts = await BatchRequestCounter.ComputeAsync(
             CreateRecord(inputFileId, outputFileId, errorFileId),
+            _blobStore,
             CancellationToken.None);
 
         Assert.Equal(OpenAiBatchRequestCounts.Empty, counts);
@@ -163,17 +175,26 @@ public sealed class BatchRequestCounterTests : IDisposable
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             BatchRequestCounter.ComputeAsync(
                 CreateRecord(inputFileId, outputFileId: null, errorFileId: null),
+                _blobStore,
                 cancellation.Token));
 
     }
 
-    private async Task<Guid> WriteFileAsync(string content)
+    private async Task<Guid> WriteFileAsync(
+        string content,
+        EncryptedBlobPurpose purpose = EncryptedBlobPurpose.UploadedFile)
     {
 
         Guid id = Guid.NewGuid();
         string path = ResolveOwnedPath(id);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        await File.WriteAllTextAsync(path, content);
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(content);
+        await _blobStore.WriteAsync(
+            path,
+            new MemoryStream(bytes),
+            purpose,
+            id.ToByteArray(),
+            bytes.Length);
         return id;
 
     }

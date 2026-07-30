@@ -1,0 +1,261 @@
+using System.Security.Cryptography;
+using System.Text;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Storage;
+
+namespace RetroDownfall.Arcanum.Tests.Storage;
+
+public sealed class EncryptedBlobStoreTests : IDisposable
+{
+    private readonly string _root = Path.Combine(
+        Path.GetTempPath(),
+        "arcanum-encrypted-blobs-" + Guid.NewGuid().ToString("N"));
+
+    public EncryptedBlobStoreTests() => Directory.CreateDirectory(_root);
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_root))
+        {
+            Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(31)]
+    [InlineData(32)]
+    [InlineData(33)]
+    [InlineData(95)]
+    [InlineData(96)]
+    [InlineData(97)]
+    [InlineData(1024 * 1024 + 7)]
+    public async Task Write_then_read_round_trips_empty_chunk_boundaries_and_large_payloads(int length)
+    {
+        byte[] plaintext = RandomNumberGenerator.GetBytes(length);
+        EncryptedBlobStore store = CreateStore(chunkSize: 32);
+        string path = Path.Combine(_root, "round-trip-" + length);
+
+        EncryptedBlobDescriptor descriptor = await store.WriteAsync(
+            path,
+            new MemoryStream(plaintext),
+            EncryptedBlobPurpose.UploadedFile,
+            Encoding.UTF8.GetBytes("record-id"));
+
+        Assert.Equal(EncryptedBlobFormat.CurrentVersion, descriptor.Version);
+        Assert.Equal(EncryptedBlobAlgorithm.Aes256Gcm, descriptor.Algorithm);
+        Assert.Equal(length, descriptor.PlaintextLength);
+        Assert.NotEqual(plaintext, await File.ReadAllBytesAsync(path));
+
+        await using Stream decrypted = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.UploadedFile);
+        using MemoryStream result = new();
+        await decrypted.CopyToAsync(result);
+
+        Assert.Equal(plaintext, result.ToArray());
+    }
+
+    [Fact]
+    public async Task Read_detects_single_byte_ciphertext_corruption_before_returning_that_chunk()
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 32);
+        string path = Path.Combine(_root, "corrupt");
+        byte[] plaintext = RandomNumberGenerator.GetBytes(96);
+        EncryptedBlobDescriptor descriptor = await store.WriteAsync(
+            path,
+            new MemoryStream(plaintext),
+            EncryptedBlobPurpose.SessionAttachment);
+
+        byte[] envelope = await File.ReadAllBytesAsync(path);
+        envelope[descriptor.HeaderLength + 5] ^= 0x01;
+        await File.WriteAllBytesAsync(path, envelope);
+
+        await using Stream decrypted = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.SessionAttachment);
+        byte[] firstChunk = new byte[32];
+
+        await Assert.ThrowsAnyAsync<CryptographicException>(
+            () => decrypted.ReadExactlyAsync(firstChunk).AsTask());
+    }
+
+    [Fact]
+    public async Task Read_rejects_truncation_wrong_key_and_wrong_purpose()
+    {
+        EncryptedBlobStore writer = CreateStore(chunkSize: 32);
+        string path = Path.Combine(_root, "invalid");
+        await writer.WriteAsync(
+            path,
+            new MemoryStream(RandomNumberGenerator.GetBytes(65)),
+            EncryptedBlobPurpose.BatchArtifact);
+
+        EncryptedBlobStore wrongKey = CreateStore(
+            chunkSize: 32,
+            RandomNumberGenerator.GetBytes(32));
+        await Assert.ThrowsAsync<EncryptedBlobKeyException>(
+            () => wrongKey.OpenReadAsync(path, EncryptedBlobPurpose.BatchArtifact));
+        await Assert.ThrowsAsync<CryptographicException>(
+            () => writer.OpenReadAsync(path, EncryptedBlobPurpose.UploadedFile));
+
+        await using (FileStream file = new(path, FileMode.Open, FileAccess.Write))
+        {
+            file.SetLength(file.Length - 1);
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => writer.OpenReadAsync(path, EncryptedBlobPurpose.BatchArtifact));
+    }
+
+    [Fact]
+    public async Task Identical_plaintext_uses_a_fresh_nonce_and_trailing_data_is_rejected()
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 32);
+        byte[] plaintext = Encoding.UTF8.GetBytes("same plaintext");
+        string firstPath = Path.Combine(_root, "nonce-first");
+        string secondPath = Path.Combine(_root, "nonce-second");
+
+        await store.WriteAsync(
+            firstPath,
+            new MemoryStream(plaintext),
+            EncryptedBlobPurpose.UploadedFile);
+        await store.WriteAsync(
+            secondPath,
+            new MemoryStream(plaintext),
+            EncryptedBlobPurpose.UploadedFile);
+
+        byte[] first = await File.ReadAllBytesAsync(firstPath);
+        byte[] second = await File.ReadAllBytesAsync(secondPath);
+        Assert.NotEqual(first, second);
+
+        await using (FileStream append = new(
+                         firstPath,
+                         FileMode.Append,
+                         FileAccess.Write,
+                         FileShare.None))
+        {
+            await append.WriteAsync(new byte[] { 0x42 });
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => store.OpenReadAsync(firstPath, EncryptedBlobPurpose.UploadedFile));
+    }
+
+    [Fact]
+    public async Task Failed_or_cancelled_write_leaves_existing_destination_and_no_temp_file()
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 32);
+        string path = Path.Combine(_root, "atomic");
+        byte[] original = Encoding.UTF8.GetBytes("existing ciphertext");
+        await File.WriteAllBytesAsync(path, original);
+        using CancellationTokenSource cts = new();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => store.WriteAsync(
+                path,
+                new MemoryStream(RandomNumberGenerator.GetBytes(128)),
+                EncryptedBlobPurpose.UploadedFile,
+                cancellationToken: cts.Token));
+
+        Assert.Equal(original, await File.ReadAllBytesAsync(path));
+        Assert.Empty(Directory.GetFiles(_root, ".atomic.tmp.*"));
+    }
+
+    [Fact]
+    public async Task Concurrent_readers_are_independent_and_sequential_reads_are_bounded()
+    {
+        byte[] plaintext = RandomNumberGenerator.GetBytes(4097);
+        EncryptedBlobStore store = CreateStore(chunkSize: 64);
+        string path = Path.Combine(_root, "concurrent");
+        await store.WriteAsync(
+            path,
+            new MemoryStream(plaintext),
+            EncryptedBlobPurpose.SessionAttachment);
+
+        Task<byte[]>[] reads = Enumerable.Range(0, 8)
+            .Select(async _ =>
+            {
+                await using Stream stream = await store.OpenReadAsync(
+                    path,
+                    EncryptedBlobPurpose.SessionAttachment);
+                using MemoryStream output = new();
+                byte[] buffer = new byte[17];
+                int read;
+                while ((read = await stream.ReadAsync(buffer)) != 0)
+                {
+                    await output.WriteAsync(buffer.AsMemory(0, read));
+                }
+
+                return output.ToArray();
+            })
+            .ToArray();
+
+        byte[][] results = await Task.WhenAll(reads);
+        Assert.All(results, result => Assert.Equal(plaintext, result));
+    }
+
+    [Fact]
+    public async Task Streaming_writer_encrypts_unknown_length_without_plaintext_staging()
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 32);
+        string path = Path.Combine(_root, "streaming");
+        byte[] plaintext = RandomNumberGenerator.GetBytes(205);
+        await using EncryptedBlobWriter writer = await store.CreateWriterAsync(
+            path,
+            EncryptedBlobPurpose.BatchArtifact);
+
+        Assert.False(File.Exists(path));
+        for (int offset = 0; offset < plaintext.Length; offset += 7)
+        {
+            int count = Math.Min(7, plaintext.Length - offset);
+            await writer.WriteAsync(plaintext.AsMemory(offset, count));
+        }
+
+        EncryptedBlobDescriptor descriptor = await writer.CompleteAsync();
+
+        Assert.Equal(plaintext.Length, descriptor.PlaintextLength);
+        byte[] stored = await File.ReadAllBytesAsync(path);
+        Assert.True(stored.AsSpan().StartsWith("ARCABLOB"u8));
+        Assert.NotEqual(plaintext, stored);
+        await using Stream reader = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.BatchArtifact);
+        using MemoryStream roundTrip = new();
+        await reader.CopyToAsync(roundTrip);
+        Assert.Equal(plaintext, roundTrip.ToArray());
+    }
+
+    private static EncryptedBlobStore CreateStore(int chunkSize, byte[]? key = null)
+    {
+        byte[] actualKey = key ?? Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();
+        return new EncryptedBlobStore(
+            new FixedFileEncryptionKeyProvider(actualKey),
+            new EncryptedBlobStoreOptions { ChunkSize = chunkSize });
+    }
+
+    private sealed class FixedFileEncryptionKeyProvider(byte[] masterKey) : IFileEncryptionKeyProvider
+    {
+        private readonly FileEncryptionKeyMaterial _material = FileEncryptionKeyMaterial.Create(masterKey);
+
+        public ValueTask<FileEncryptionKeyMaterial> GetForWriteAsync(
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(_material);
+
+        public ValueTask<FileEncryptionKeyMaterial> GetForReadAsync(
+            string keyId,
+            CancellationToken cancellationToken = default)
+        {
+            if (!CryptographicOperations.FixedTimeEquals(
+                    Encoding.ASCII.GetBytes(keyId),
+                    Encoding.ASCII.GetBytes(_material.KeyId)))
+            {
+                throw new EncryptedBlobKeyException(
+                    "The encrypted blob requires unavailable file-encryption key material.");
+            }
+
+            return ValueTask.FromResult(_material);
+        }
+    }
+}

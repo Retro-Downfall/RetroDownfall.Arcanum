@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Storage;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
@@ -82,7 +83,16 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     }
 
     private SessionAttachmentStore CreateStore(ArcanumSettings settings) =>
-        new(_db!, Options.Create(settings), _attachmentsRoot);
+        new(
+            _db!,
+            Options.Create(settings),
+            _attachmentsRoot,
+            CreateEncryptedBlobStore());
+
+    private static EncryptedBlobStore CreateEncryptedBlobStore() =>
+        new(
+            new FixedFileEncryptionKeyProvider(),
+            new EncryptedBlobStoreOptions { ChunkSize = 64 });
 
     [SkippableFact]
     public async Task PersistNewFromSourceAsync_round_trips_verified_provenance()
@@ -101,6 +111,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 _db!,
                 Options.Create(_settings),
                 _attachmentsRoot,
+                CreateEncryptedBlobStore(),
                 sourceResolver: resolver);
 
             SessionAttachmentRecord saved = await store.PersistNewFromSourceAsync(
@@ -164,6 +175,12 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         ReadOnlyMemory<byte> loaded = await _store.ReadBytesAsync(record);
 
         Assert.Equal(bytes, loaded.ToArray());
+        Assert.Equal(EncryptedBlobFormat.CurrentVersion, record.EncryptionVersion);
+        Assert.False(string.IsNullOrWhiteSpace(record.EncryptionKeyId));
+        byte[] stored = await File.ReadAllBytesAsync(
+            Path.Combine(_attachmentsRoot, record.RelativePath));
+        Assert.True(stored.AsSpan().StartsWith("ARCABLOB"u8));
+        Assert.DoesNotContain("hello attachment"u8.ToArray(), stored);
 
         SessionAttachmentRecord? byId = await _store.GetByIdAsync(record.Id);
 
@@ -171,6 +188,28 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         Assert.Equal(record.Id, byId!.Id);
 
+    }
+
+    private sealed class FixedFileEncryptionKeyProvider : IFileEncryptionKeyProvider
+    {
+        private readonly FileEncryptionKeyMaterial _material = FileEncryptionKeyMaterial.Create(
+            Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray());
+
+        public ValueTask<FileEncryptionKeyMaterial> GetForWriteAsync(
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(_material);
+
+        public ValueTask<FileEncryptionKeyMaterial> GetForReadAsync(
+            string keyId,
+            CancellationToken cancellationToken = default)
+        {
+            if (!string.Equals(keyId, _material.KeyId, StringComparison.Ordinal))
+            {
+                throw new EncryptedBlobKeyException("test key unavailable");
+            }
+
+            return ValueTask.FromResult(_material);
+        }
     }
 
     [SkippableFact]
@@ -681,9 +720,17 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         await using ArcanumDbContext gcDb = _fixture.CreateContext(_dbPath);
 
-        SessionAttachmentStore promoteStore = new(promoteDb, Options.Create(_settings), _attachmentsRoot);
+        SessionAttachmentStore promoteStore = new(
+            promoteDb,
+            Options.Create(_settings),
+            _attachmentsRoot,
+            CreateEncryptedBlobStore());
 
-        SessionAttachmentStore gcStore = new(gcDb, Options.Create(_settings), _attachmentsRoot);
+        SessionAttachmentStore gcStore = new(
+            gcDb,
+            Options.Create(_settings),
+            _attachmentsRoot,
+            CreateEncryptedBlobStore());
 
         Task promote;
         Task gc;

@@ -14,6 +14,8 @@ public sealed class DataProtectionSecretStore(
 
     private const string GrimoireProtectorPurpose = "Arcanum.Core.GrimoireEncryption";
 
+    private const string FileEncryptionProtectorPurpose = "Arcanum.Core.FileEncryption.v1";
+
     private const string CorruptApiKeyRecoveryMessage =
         "security.dat is present but could not be decrypted (corrupt or wrong Data Protection key ring). "
         + "Stop the host, then follow the \"Local Grimoire reinstall\" guidance in README.md (source: docs/Arcanum.README.md): remove both security.dat and the Grimoire .db under ~/.config/arcanum/, or restore from backup. "
@@ -23,11 +25,16 @@ public sealed class DataProtectionSecretStore(
 
     private readonly IDataProtector _grimoireProtector = dataProtectionProvider.CreateProtector(GrimoireProtectorPurpose);
 
+    private readonly IDataProtector _fileEncryptionProtector =
+        dataProtectionProvider.CreateProtector(FileEncryptionProtectorPurpose);
+
     private readonly SemaphoreSlim _fileLock = new(1, 1);
 
     private static string StorePath => ArcanumPaths.ApiKeyStoreFile;
 
     private static string GrimoireStorePath => ArcanumPaths.GrimoireKeyStoreFile;
+
+    private static string FileEncryptionStorePath => ArcanumPaths.FileEncryptionKeyStoreFile;
 
     public void Dispose() => _fileLock.Dispose();
 
@@ -107,6 +114,33 @@ public sealed class DataProtectionSecretStore(
 
         }
 
+    }
+
+    public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>
+        ReadProtectedResultAsync(
+            FileEncryptionStorePath,
+            _fileEncryptionProtector,
+            corruptMessage:
+                "file-encryption-key.dat is present but could not be decrypted. "
+                + "Restore the matching Data Protection key ring and file-encryption-key.dat from backup; "
+                + "encrypted attachments, uploads, and batch artifacts are otherwise unrecoverable.");
+
+    public async Task SaveFileEncryptionSecretAsync(string encryptionSecret)
+    {
+        ArgumentNullException.ThrowIfNull(encryptionSecret);
+        await _fileLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await WriteProtectedAsync(
+                    FileEncryptionStorePath,
+                    encryptionSecret,
+                    _fileEncryptionProtector)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _fileLock.Release();
+        }
     }
 
     private async Task<SecretStoreReadResult> ReadProtectedResultAsync(

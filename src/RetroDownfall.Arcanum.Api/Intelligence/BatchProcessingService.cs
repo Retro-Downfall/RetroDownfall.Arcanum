@@ -417,6 +417,8 @@ internal sealed class BatchProcessingService(
 
         IUploadedFileRepository files = scope.ServiceProvider.GetRequiredService<IUploadedFileRepository>();
 
+        IEncryptedBlobStore blobStore = scope.ServiceProvider.GetRequiredService<IEncryptedBlobStore>();
+
         IArcanumIntelligenceProvider intelligence = scope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
 
         await batches.UpdateStatusAsync(batch.Id, BatchStatuses.InProgress, null, batch.OutputFileId, batch.ErrorFileId, stoppingToken).ConfigureAwait(false);
@@ -432,6 +434,22 @@ internal sealed class BatchProcessingService(
 
         }
 
+        UploadedFileRecord? inputFile = await files
+            .GetByIdAsync(batch.InputFileId, stoppingToken)
+            .ConfigureAwait(false);
+        if (inputFile is null)
+        {
+            await batches.UpdateStatusAsync(
+                    batch.Id,
+                    BatchStatuses.Failed,
+                    DateTimeOffset.UtcNow,
+                    null,
+                    null,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            return;
+        }
+
         ArcanumSettings settings = optionsMonitor.CurrentValue;
 
         BatchesSettings batchesSettings = settings.ResolveBatches();
@@ -442,9 +460,13 @@ internal sealed class BatchProcessingService(
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.FilesDirectory);
 
-        string outputTempPath = Path.Combine(Path.GetTempPath(), $"arcanum-batch-{batch.Id:N}-out.jsonl");
+        string outputTempPath = Path.Combine(
+            ArcanumPaths.FilesDirectory,
+            $".batch-{batch.Id:N}-out.stage");
 
-        string errorTempPath = Path.Combine(Path.GetTempPath(), $"arcanum-batch-{batch.Id:N}-err.jsonl");
+        string errorTempPath = Path.Combine(
+            ArcanumPaths.FilesDirectory,
+            $".batch-{batch.Id:N}-err.stage");
 
         try
         {
@@ -455,10 +477,15 @@ internal sealed class BatchProcessingService(
 
             bool cancelledMidway;
 
+            EncryptedBlobDescriptor? outputDescriptor = null;
+
+            EncryptedBlobDescriptor? errorDescriptor = null;
+
             {
 
                 List<PreparedBatchRequestLine> requestLines = await CollectRequestLinesAsync(
                     inputPath,
+                    blobStore,
                     maxRequests,
                     stoppingToken).ConfigureAwait(false);
 
@@ -510,7 +537,14 @@ internal sealed class BatchProcessingService(
                     {
                         try
                         {
-                            await using BatchJsonlWriters writers = BatchJsonlWriters.Create(outputTempPath, errorTempPath);
+                            await using BatchJsonlWriters writers = await BatchJsonlWriters
+                                .CreateAsync(
+                                    blobStore,
+                                    outputTempPath,
+                                    errorTempPath,
+                                    batch.Id,
+                                    stoppingToken)
+                                .ConfigureAwait(false);
 
                             cancelledMidway = await RunRequestLinesAsync(
                                 requestLines,
@@ -527,6 +561,10 @@ internal sealed class BatchProcessingService(
                             outputLineCount = writers.OutputLineCount;
 
                             errorLineCount = writers.ErrorLineCount;
+
+                            (outputDescriptor, errorDescriptor) = await writers
+                                .CompleteAsync(CancellationToken.None)
+                                .ConfigureAwait(false);
 
                             if (cancelledMidway)
                             {
@@ -561,11 +599,25 @@ internal sealed class BatchProcessingService(
             }
 
             Guid? outputFileId = outputLineCount > 0
-                ? await FinalizeResultFileAsync(outputTempPath, "batch_output.jsonl", "batch_output", files, CancellationToken.None).ConfigureAwait(false)
+                ? await FinalizeResultFileAsync(
+                        outputTempPath,
+                        "batch_output.jsonl",
+                        "batch_output",
+                        files,
+                        outputDescriptor!,
+                        CancellationToken.None)
+                    .ConfigureAwait(false)
                 : null;
 
             Guid? errorFileId = errorLineCount > 0
-                ? await FinalizeResultFileAsync(errorTempPath, "batch_errors.jsonl", "error", files, CancellationToken.None).ConfigureAwait(false)
+                ? await FinalizeResultFileAsync(
+                        errorTempPath,
+                        "batch_errors.jsonl",
+                        "error",
+                        files,
+                        errorDescriptor!,
+                        CancellationToken.None)
+                    .ConfigureAwait(false)
                 : null;
 
             // Temps were moved (or never written); clear so the finally block does not delete finals.
@@ -615,12 +667,17 @@ internal sealed class BatchProcessingService(
     /// </summary>
     private static async Task<List<PreparedBatchRequestLine>> CollectRequestLinesAsync(
         string inputPath,
+        IEncryptedBlobStore blobStore,
         int maxRequests,
         CancellationToken cancellationToken)
     {
         List<PreparedBatchRequestLine> lines = [];
 
-        await foreach ((int Line, string Text) item in EnumerateRequestLinesAsync(inputPath, maxRequests, cancellationToken)
+        await foreach ((int Line, string Text) item in EnumerateRequestLinesAsync(
+                           inputPath,
+                           blobStore,
+                           maxRequests,
+                           cancellationToken)
             .ConfigureAwait(false))
         {
             try
@@ -648,17 +705,17 @@ internal sealed class BatchProcessingService(
     /// </summary>
     private static async IAsyncEnumerable<(int Line, string Text)> EnumerateRequestLinesAsync(
         string inputPath,
+        IEncryptedBlobStore blobStore,
         int maxRequests,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
 
-        await using FileStream stream = new(
-            inputPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 4096,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using Stream stream = await blobStore
+            .OpenReadAsync(
+                inputPath,
+                EncryptedBlobPurpose.UploadedFile,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         using StreamReader reader = new(stream);
 
@@ -851,13 +908,14 @@ internal sealed class BatchProcessingService(
     }
 
     /// <summary>
-    /// Moves a completed temp JSONL into the uploaded-files directory and registers it.
+    /// Moves a completed encrypted JSONL stage into the uploaded-files directory and registers it.
     /// </summary>
     private static async Task<Guid> FinalizeResultFileAsync(
         string tempPath,
         string filename,
         string purpose,
         IUploadedFileRepository files,
+        EncryptedBlobDescriptor descriptor,
         CancellationToken cancellationToken)
     {
 
@@ -865,13 +923,30 @@ internal sealed class BatchProcessingService(
 
         string path = UploadedFileStorage.ResolvePath(id);
 
-        File.Move(tempPath, path, overwrite: true);
-
-        SecureFilePermissions.ApplyOwnerOnlyFile(path);
-
-        UploadedFileRecord record = new(id, filename, new FileInfo(path).Length, purpose, "application/jsonl", DateTimeOffset.UtcNow);
-
-        await files.CreateAsync(record, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            File.Move(tempPath, path, overwrite: true);
+            SecureFilePermissions.ApplyOwnerOnlyFile(path);
+            UploadedFileRecord record = new(
+                id,
+                filename,
+                descriptor.PlaintextLength,
+                purpose,
+                "application/jsonl",
+                DateTimeOffset.UtcNow,
+                descriptor.Version,
+                descriptor.KeyId);
+            await files.CreateAsync(record, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            TryDeleteFile(path);
+            throw;
+        }
+        finally
+        {
+            TryDeleteFile(tempPath);
+        }
 
         return id;
 
@@ -888,6 +963,10 @@ internal sealed class BatchProcessingService(
 
         private readonly StreamWriter _error;
 
+        private readonly EncryptedBlobWriter _encryptedOutput;
+
+        private readonly EncryptedBlobWriter _encryptedError;
+
         private readonly SemaphoreSlim _outputLock = new(1, 1);
 
         private readonly SemaphoreSlim _errorLock = new(1, 1);
@@ -896,12 +975,22 @@ internal sealed class BatchProcessingService(
 
         private int _errorLineCount;
 
-        private BatchJsonlWriters(StreamWriter output, StreamWriter error)
+        private bool _textWritersDisposed;
+
+        private BatchJsonlWriters(
+            StreamWriter output,
+            StreamWriter error,
+            EncryptedBlobWriter encryptedOutput,
+            EncryptedBlobWriter encryptedError)
         {
 
             _output = output;
 
             _error = error;
+
+            _encryptedOutput = encryptedOutput;
+
+            _encryptedError = encryptedError;
 
         }
 
@@ -909,17 +998,64 @@ internal sealed class BatchProcessingService(
 
         public int ErrorLineCount => Volatile.Read(ref _errorLineCount);
 
-        public static BatchJsonlWriters Create(string outputTempPath, string errorTempPath)
+        public static async Task<BatchJsonlWriters> CreateAsync(
+            IEncryptedBlobStore blobStore,
+            string outputTempPath,
+            string errorTempPath,
+            Guid batchId,
+            CancellationToken cancellationToken)
         {
+            EncryptedBlobWriter output = await blobStore.CreateWriterAsync(
+                    outputTempPath,
+                    EncryptedBlobPurpose.BatchArtifact,
+                    batchId.ToByteArray(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            try
+            {
+                EncryptedBlobWriter error = await blobStore.CreateWriterAsync(
+                        errorTempPath,
+                        EncryptedBlobPurpose.BatchArtifact,
+                        batchId.ToByteArray(),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                return new BatchJsonlWriters(
+                    new StreamWriter(
+                        output,
+                        new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                        bufferSize: 1024,
+                        leaveOpen: true),
+                    new StreamWriter(
+                        error,
+                        new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                        bufferSize: 1024,
+                        leaveOpen: true),
+                    output,
+                    error);
+            }
+            catch
+            {
+                await output.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
 
-            StreamWriter output = new(
-                new FileStream(outputTempPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, FileOptions.Asynchronous | FileOptions.SequentialScan));
+        }
 
-            StreamWriter error = new(
-                new FileStream(errorTempPath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, FileOptions.Asynchronous | FileOptions.SequentialScan));
-
-            return new BatchJsonlWriters(output, error);
-
+        public async Task<(EncryptedBlobDescriptor? Output, EncryptedBlobDescriptor? Error)>
+            CompleteAsync(CancellationToken cancellationToken)
+        {
+            await _output.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await _error.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await _output.DisposeAsync().ConfigureAwait(false);
+            await _error.DisposeAsync().ConfigureAwait(false);
+            _textWritersDisposed = true;
+            EncryptedBlobDescriptor? output = OutputLineCount > 0
+                ? await _encryptedOutput.CompleteAsync(cancellationToken).ConfigureAwait(false)
+                : null;
+            EncryptedBlobDescriptor? error = ErrorLineCount > 0
+                ? await _encryptedError.CompleteAsync(cancellationToken).ConfigureAwait(false)
+                : null;
+            return (output, error);
         }
 
         public async Task WriteOutputLineAsync(string line, CancellationToken cancellationToken)
@@ -969,9 +1105,15 @@ internal sealed class BatchProcessingService(
         public async ValueTask DisposeAsync()
         {
 
-            await _output.DisposeAsync().ConfigureAwait(false);
+            if (!_textWritersDisposed)
+            {
+                await _output.DisposeAsync().ConfigureAwait(false);
+                await _error.DisposeAsync().ConfigureAwait(false);
+                _textWritersDisposed = true;
+            }
 
-            await _error.DisposeAsync().ConfigureAwait(false);
+            await _encryptedOutput.DisposeAsync().ConfigureAwait(false);
+            await _encryptedError.DisposeAsync().ConfigureAwait(false);
 
             _outputLock.Dispose();
 

@@ -14,10 +14,18 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 internal static class BatchRequestCounter
 {
 
-    public static async Task<OpenAiBatchRequestCounts> ComputeAsync(BatchRecord record, CancellationToken cancellationToken)
+    public static async Task<OpenAiBatchRequestCounts> ComputeAsync(
+        BatchRecord record,
+        IEncryptedBlobStore blobStore,
+        CancellationToken cancellationToken)
     {
 
-        int total = await CountNonEmptyLinesAsync(UploadedFileStorage.ResolvePath(record.InputFileId), cancellationToken).ConfigureAwait(false);
+        int total = await CountNonEmptyLinesAsync(
+                UploadedFileStorage.ResolvePath(record.InputFileId),
+                EncryptedBlobPurpose.UploadedFile,
+                blobStore,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         int completed = 0;
 
@@ -26,7 +34,11 @@ internal static class BatchRequestCounter
         if (record.OutputFileId is { } outputFileId)
         {
 
-            (int outputCompleted, int outputFailed) = await CountOutputOutcomesAsync(UploadedFileStorage.ResolvePath(outputFileId), cancellationToken).ConfigureAwait(false);
+            (int outputCompleted, int outputFailed) = await CountOutputOutcomesAsync(
+                    UploadedFileStorage.ResolvePath(outputFileId),
+                    blobStore,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             completed += outputCompleted;
 
@@ -37,7 +49,12 @@ internal static class BatchRequestCounter
         if (record.ErrorFileId is { } errorFileId)
         {
 
-            failed += await CountNonEmptyLinesAsync(UploadedFileStorage.ResolvePath(errorFileId), cancellationToken).ConfigureAwait(false);
+            failed += await CountNonEmptyLinesAsync(
+                    UploadedFileStorage.ResolvePath(errorFileId),
+                    EncryptedBlobPurpose.BatchArtifact,
+                    blobStore,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
         }
 
@@ -45,7 +62,11 @@ internal static class BatchRequestCounter
 
     }
 
-    private static async Task<int> CountNonEmptyLinesAsync(string path, CancellationToken cancellationToken)
+    private static async Task<int> CountNonEmptyLinesAsync(
+        string path,
+        EncryptedBlobPurpose purpose,
+        IEncryptedBlobStore blobStore,
+        CancellationToken cancellationToken)
     {
 
         if (!File.Exists(path))
@@ -60,7 +81,10 @@ internal static class BatchRequestCounter
 
             int count = 0;
 
-            using StreamReader reader = new(path);
+            await using Stream plaintext = await blobStore
+                .OpenReadAsync(path, purpose, cancellationToken)
+                .ConfigureAwait(false);
+            using StreamReader reader = new(plaintext);
 
             while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
             {
@@ -77,7 +101,9 @@ internal static class BatchRequestCounter
             return count;
 
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException
+                                   or System.Security.Cryptography.CryptographicException
+                                   or InvalidDataException)
         {
 
             return 0;
@@ -86,7 +112,10 @@ internal static class BatchRequestCounter
 
     }
 
-    private static async Task<(int Completed, int Failed)> CountOutputOutcomesAsync(string path, CancellationToken cancellationToken)
+    private static async Task<(int Completed, int Failed)> CountOutputOutcomesAsync(
+        string path,
+        IEncryptedBlobStore blobStore,
+        CancellationToken cancellationToken)
     {
 
         if (!File.Exists(path))
@@ -103,7 +132,13 @@ internal static class BatchRequestCounter
         try
         {
 
-            using StreamReader reader = new(path);
+            await using Stream plaintext = await blobStore
+                .OpenReadAsync(
+                    path,
+                    EncryptedBlobPurpose.BatchArtifact,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            using StreamReader reader = new(plaintext);
 
             while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
             {
@@ -148,7 +183,9 @@ internal static class BatchRequestCounter
             }
 
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException
+                                   or System.Security.Cryptography.CryptographicException
+                                   or InvalidDataException)
         {
 
             return (completed, failed);

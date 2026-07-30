@@ -177,6 +177,41 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveFileEncryptionSecretAsync_RoundTrip_UsesDedicatedProtectedFile()
+    {
+        using DataProtectionSecretStore store = CreateStore();
+        string secret = Convert.ToBase64String(
+            System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+
+        await store.SaveFileEncryptionSecretAsync(secret);
+        SecretStoreReadResult result = await store.GetFileEncryptionSecretReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Ok, result.Status);
+        Assert.Equal(secret, result.Value);
+        Assert.True(File.Exists(ArcanumPaths.FileEncryptionKeyStoreFile));
+        Assert.NotEqual(
+            ArcanumPaths.GrimoireKeyStoreFile,
+            ArcanumPaths.FileEncryptionKeyStoreFile);
+        Assert.NotEqual(
+            ArcanumPaths.ApiKeyStoreFile,
+            ArcanumPaths.FileEncryptionKeyStoreFile);
+    }
+
+    [Fact]
+    public async Task GetFileEncryptionSecretReadResultAsync_CorruptFile_FailsClosedWithRecovery()
+    {
+        using DataProtectionSecretStore store = CreateStore();
+        Directory.CreateDirectory(Path.GetDirectoryName(ArcanumPaths.FileEncryptionKeyStoreFile)!);
+        await File.WriteAllBytesAsync(ArcanumPaths.FileEncryptionKeyStoreFile, [1, 2, 3]);
+
+        SecretStoreReadResult result = await store.GetFileEncryptionSecretReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+        Assert.Contains("file-encryption-key.dat", result.Message, StringComparison.Ordinal);
+        Assert.Contains("restore", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task SaveApiKeyAsync_InvalidatesDigestCache()
     {
 

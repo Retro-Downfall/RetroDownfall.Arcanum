@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Resilience;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
@@ -20,7 +21,8 @@ public sealed class ArcanumHealthChecker(
     WeaveIndexAvailability weaveIndexAvailability,
     IProviderHealthTracker providerHealthTracker,
     IWorkspaceCheckCapabilityReporter? workspaceCheckCapabilityReporter = null,
-    LongRunningOperationReconciliationStatus? operationReconciliationStatus = null)
+    LongRunningOperationReconciliationStatus? operationReconciliationStatus = null,
+    IEncryptedBlobDiagnostics? encryptedBlobDiagnostics = null)
 {
 
     public async Task<HealthReportDto> BuildReportAsync(CancellationToken cancellationToken)
@@ -164,10 +166,46 @@ public sealed class ArcanumHealthChecker(
             operationAttention ? HealthStatus.Degraded : HealthStatus.Healthy,
             operationSnapshot.PublicDetail ?? "Durable operation reconciliation completed."));
 
+        components.Add(await BuildFileEncryptionComponentAsync(
+                encryptedBlobDiagnostics,
+                cancellationToken)
+            .ConfigureAwait(false));
+
         HealthStatus overall = AggregateOverall(components);
 
         return new HealthReportDto(overall, components.ToArray());
 
+    }
+
+    private static async Task<HealthComponentDto> BuildFileEncryptionComponentAsync(
+        IEncryptedBlobDiagnostics? diagnostics,
+        CancellationToken cancellationToken)
+    {
+        if (diagnostics is null)
+        {
+            return new HealthComponentDto(
+                "FileEncryption",
+                HealthStatus.Degraded,
+                "File-encryption diagnostics are unavailable.");
+        }
+
+        try
+        {
+            FileEncryptionDiagnostics result = await diagnostics
+                .InspectAsync(cancellationToken)
+                .ConfigureAwait(false);
+            return new HealthComponentDto(
+                "FileEncryption",
+                result.IsHealthy ? HealthStatus.Healthy : HealthStatus.Unhealthy,
+                result.Detail);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new HealthComponentDto(
+                "FileEncryption",
+                HealthStatus.Unhealthy,
+                $"File-encryption diagnostics failed ({ex.GetType().Name}).");
+        }
     }
 
     internal static HealthComponentDto BuildProvidersComponent(

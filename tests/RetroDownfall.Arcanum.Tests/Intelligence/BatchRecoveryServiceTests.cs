@@ -38,6 +38,8 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
     private string? _originalTestHome;
 
+    private readonly IEncryptedBlobStore _blobStore = TestEncryptedBlobStore.Create();
+
     public BatchRecoveryServiceTests(GrimoireFixture fixture)
     {
 
@@ -309,6 +311,8 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
         services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
 
+        services.AddSingleton(_blobStore);
+
         ServiceProvider root = services.BuildServiceProvider();
 
         BatchProcessingService processing = new(
@@ -320,6 +324,7 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
         return new BatchRecoveryService(
             root.GetRequiredService<IServiceScopeFactory>(),
             processing,
+            _blobStore,
             NullLogger<BatchRecoveryService>.Instance);
 
     }
@@ -333,12 +338,26 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
         string path = UploadedFileStorage.ResolvePath(id);
 
-        await File.WriteAllTextAsync(path, jsonlContent);
+        byte[] plaintext = System.Text.Encoding.UTF8.GetBytes(jsonlContent);
+        EncryptedBlobDescriptor descriptor = await _blobStore.WriteAsync(
+            path,
+            new MemoryStream(plaintext),
+            EncryptedBlobPurpose.UploadedFile,
+            id.ToByteArray(),
+            plaintext.Length);
 
         _createdFilePaths.Add(path);
 
         await _files!.CreateAsync(
-            new UploadedFileRecord(id, "batch_input.jsonl", jsonlContent.Length, "batch", "application/jsonl", DateTimeOffset.UtcNow),
+            new UploadedFileRecord(
+                id,
+                "batch_input.jsonl",
+                plaintext.Length,
+                "batch",
+                "application/jsonl",
+                DateTimeOffset.UtcNow,
+                descriptor.Version,
+                descriptor.KeyId),
             CancellationToken.None);
 
         return id;

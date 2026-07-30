@@ -133,6 +133,45 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task FileEncryptionSecret_RoundTripsThroughDedicatedOsCredential()
+    {
+        InMemoryOsCredentialStore os = new();
+        using OsKeychainSecretStore store = CreateStore(os);
+        string secret = Convert.ToBase64String(
+            System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+
+        await store.SaveFileEncryptionSecretAsync(secret);
+        SecretStoreReadResult loaded = await store.GetFileEncryptionSecretReadResultAsync();
+        OsCredentialStoreResult direct = os.TryGet(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.FileEncryptionKeyAccount);
+
+        Assert.Equal(SecretStoreReadStatus.Ok, loaded.Status);
+        Assert.Equal(secret, loaded.Value);
+        Assert.Equal(OsCredentialStoreStatus.Ok, direct.Status);
+        Assert.Equal(secret, direct.Value);
+    }
+
+    [Fact]
+    public async Task FileEncryptionSecret_MigratesDataProtectionMirrorIntoOsCredential()
+    {
+        InMemoryOsCredentialStore os = new();
+        using DataProtectionSecretStore dataProtection = CreateDataProtectionStore();
+        string secret = Convert.ToBase64String(
+            System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+        await dataProtection.SaveFileEncryptionSecretAsync(secret);
+        using OsKeychainSecretStore store = CreateStore(os, dataProtection);
+
+        SecretStoreReadResult loaded = await store.GetFileEncryptionSecretReadResultAsync();
+        OsCredentialStoreResult direct = os.TryGet(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.FileEncryptionKeyAccount);
+
+        Assert.Equal(secret, loaded.Value);
+        Assert.Equal(secret, direct.Value);
+    }
+
     private OsKeychainSecretStore CreateStore(IOsCredentialStore os, DataProtectionSecretStore? legacy = null)
     {
 

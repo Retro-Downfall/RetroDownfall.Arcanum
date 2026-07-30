@@ -51,6 +51,7 @@ internal sealed record BatchRecoveryResult(BatchRecoveryStatus Status, BatchReco
 internal sealed class BatchRecoveryService(
     IServiceScopeFactory scopeFactory,
     BatchProcessingService batchProcessing,
+    IEncryptedBlobStore blobStore,
     ILogger<BatchRecoveryService> logger) : IBatchRecoveryService
 {
 
@@ -195,7 +196,7 @@ internal sealed class BatchRecoveryService(
 
     }
 
-    private static async Task<bool> InputExistsAsync(
+    private async Task<bool> InputExistsAsync(
         BatchRecord batch,
         IUploadedFileRepository files,
         CancellationToken cancellationToken)
@@ -210,7 +211,27 @@ internal sealed class BatchRecoveryService(
 
         }
 
-        return File.Exists(UploadedFileStorage.ResolvePath(batch.InputFileId));
+        string path = UploadedFileStorage.ResolvePath(batch.InputFileId);
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            _ = await blobStore.InspectAsync(
+                    path,
+                    EncryptedBlobPurpose.UploadedFile,
+                    verifyAllChunks: true,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException
+                                   or InvalidDataException)
+        {
+            return false;
+        }
 
     }
 

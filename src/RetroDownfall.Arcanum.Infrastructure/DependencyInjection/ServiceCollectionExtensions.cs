@@ -42,6 +42,7 @@ using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Resilience;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Storage;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
@@ -154,6 +155,12 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<DataProtectionSecretStore>(),
             sp.GetRequiredService<IApiKeyDigestCache>(),
             sp.GetService<ILogger<OsKeychainSecretStore>>()));
+
+        services.AddSingleton<IFileEncryptionKeyProvider, FileEncryptionKeyProvider>();
+
+        services.AddSingleton<IEncryptedBlobStore, EncryptedBlobStore>();
+
+        services.AddSingleton<IEncryptedBlobDiagnostics, EncryptedBlobDiagnostics>();
 
         return services;
 
@@ -350,6 +357,8 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<ArcanumSettingsClampStartupLogger>();
 
         services.AddHostedService<ArcanumSecurityStartupChecks>();
+
+        services.AddHostedService<FileEncryptionKeyBootstrapHostedService>();
 
         // Options must be fully configured here — pooled contexts reject OnConfiguring mutations
         // (including AddInterceptors). Passphrase is set by GrimoireDatabaseHostedService before

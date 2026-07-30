@@ -4,6 +4,7 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 public sealed class TestApiKeySecretStore(string apiKey) : ISecretStore
 {
+    private string? _fileEncryptionSecret;
 
     public Task<string?> GetApiKeyAsync() =>
         Task.FromResult<string?>(apiKey);
@@ -22,5 +23,17 @@ public sealed class TestApiKeySecretStore(string apiKey) : ISecretStore
 
     public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
         Task.CompletedTask;
+
+    public Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>
+        Task.FromResult(
+            _fileEncryptionSecret is null
+                ? SecretStoreReadResult.Missing()
+                : SecretStoreReadResult.Ok(_fileEncryptionSecret));
+
+    public Task SaveFileEncryptionSecretAsync(string encryptionSecret)
+    {
+        _fileEncryptionSecret = encryptionSecret;
+        return Task.CompletedTask;
+    }
 
 }

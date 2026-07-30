@@ -74,7 +74,11 @@ Ephemeral Trials via `POST /api/proving-grounds/trials/run` (regex / jsonSchema 
 
 Single-user, loopback-by-default, secret-minimizing. See [DESIGN.md §11](Arcanum.DESIGN.md#11-local-api-security).
 
-- Kestrel binds **loopback only** unless explicitly opened; a **32-byte master API key** guards every `/api` and `/v1` route; the **Grimoire** is encrypted at rest (SQLCipher passphrase derived via PBKDF2-HMAC-SHA256 with a unique 16-byte salt stored in `{grimoire.db}.kdf`).
+- Kestrel binds **loopback only** unless explicitly opened; a **32-byte master API key** guards
+  every `/api` and `/v1` route; the **Grimoire** is encrypted at rest (SQLCipher passphrase derived
+  via PBKDF2-HMAC-SHA256 with a unique 16-byte salt stored in `{grimoire.db}.kdf`). Session
+  attachments, uploaded files, and batch artifacts outside SQLCipher are independently protected
+  by versioned, chunk-authenticated AES-256-GCM envelopes.
 - Sensitive files (`arcanum.json`, Grimoire `.db`, `cli-session.txt`, logs) are created **owner-only** (`chmod 600/700` on Unix; owner ACL on Windows). Startup warns if group/other can read them.
 - `Arcanum:Host:ListenAny` requires **first-run acknowledgement** in interactive `serve` (or `ARCANUM_LISTEN_ANY_ACK=1` / `ARCANUM_HOST_ANY` for automation) and emits a **security banner** when binding all interfaces over **HTTPS only** (plaintext any-IP HTTP is refused; `Arcanum:Host:Https:Enabled` + cert required).
 - `WorkspacePathPolicy` containment, symlink walking, and handle-identity revalidation are the primary boundary for file/search/patch tools; campaign Sanctum is an additional conditional allowlist. Shared `SecureFileReader` opens no-follow/nonblocking, accepts only regular single-link files, reads through cleared capped pools, and revalidates identity; FIFO/device/hardlink/symlink inputs fail closed. Host-process tools (`execute_command` / `run_spell_script`) use `ArgumentList` (no shell) with child-env scrubbing and are **gated by Local edition** unless Development + `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1`; workspace MCP requires trust bound to the exact approved bytes. **Tool-child FS jail** is filesystem-only: macOS uses Seatbelt, Linux remains inactive/fail-closed, and Windows uses a per-invocation AppContainer identity with explicit allowed-root ACLs plus Job Object process-tree/resource enforcement. The Windows broker confirms Job membership before resuming the suspended untrusted target; capability or setup failure fails closed, and health/doctor are Healthy only when AppContainer is genuinely available. Owner-only temp artifacts are deleted only after identity-safe quarantine checks. `workspace_check` is stricter and separate: advertised only on an eligible macOS Seatbelt host, never enabled by `AllowUnsandboxedToolChildren`, and unavailable on Linux/Windows. SSRF guard + DNS-rebind pinning on untrusted egress; sanitized public error envelopes. Details: [DESIGN §11](Arcanum.DESIGN.md#11-local-api-security).
@@ -115,7 +119,7 @@ testing, and packaging update `Arcanum.DESIGN.md`; the complete public configura
 | Project | Role | Owns | AOT |
 |---------|------|------|-----|
 | **`Core`** | Domain primitives, contracts, configuration | `Result`/`Result<T>`, `Error`, `ApiResponse<T>`, `ArcanumSettings`, `IArcanumIntelligenceProvider`, `PingRequest`, `IGrimoireRepository`, `IEyeOfTheWorld`, events, source-gen contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext`) | `IsAotCompatible` |
-| **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), workspace scanning, reliable `search_workspace` / `apply_patch` / `workspace_check` engines, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link | `IsTrimmable` + `PublishAot` (analysis signal) |
+| **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), authenticated encrypted blob storage + OS-backed file key, workspace scanning, reliable `search_workspace` / `apply_patch` / `workspace_check` engines, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link | `IsTrimmable` + `PublishAot` (analysis signal) |
 | **`Api`** | HTTP surface composition (class library, **not** executable) | `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `TurnExecutionCoordinator`/`TurnEngine`, `ToolExecutionPipeline`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, `/v1` OpenAI endpoints | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
 | **`Cli`** | Shipping CLI/host entry point | Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`) | `PublishAot` on Windows/Linux; self-contained folder on macOS |
 | **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | `PublishAot` + `IsAotCompatible` (analysis signal; not shipped) |
@@ -274,7 +278,15 @@ Summaries only — full contracts live in DESIGN.
 - **Bounded tool results / Apprentice denials:** result materialization normalizes malformed UTF-16 and bounds retained text plus its marker with shared surrogate-safe UTF-8 helpers. Ward/Sanctum denial is carried to Apprentice orchestration through an internal non-wire `ToolDenied` bit, never phrase matching; reasoning frames never count as denial evidence.
 - **Idempotency:** same-process requests coordinate locally before durable acquire; live foreign-process ownership returns 409 `Security.IdempotencyInProgress` (OpenAI `idempotency_in_progress`). The current renewable lease is five minutes. Only terminal in-cap responses replay; explicitly terminal empty bodies replay empty, while partial/over-cap responses do not. [DESIGN §11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
 - **Inference audit:** the opt-in JSONL log records successful completed turns only. Tool names/counts are retained; raw argument JSON is omitted by default (`Arcanum:Host:AuditLog:RedactToolArguments=true`); tool results and prompt/answer/reasoning bodies are not audit fields.
-- **Scrying / attachments:** persisted bytes are durable snapshots. Optional live-file provenance is accepted only from a host-trusted path beneath the active workspace after canonical, symlink, and file-handle identity checks; API-supplied paths remain snapshot-only. Attachment responses expose sanitized relative provenance/status/hash/time metadata and never absolute host paths. Missing or unsafe sources do not delete snapshots. This schema revision is folded into the canonical database creation script, so upgrading installations must recreate the database. Full contract: [§10.2.4](Arcanum.DESIGN.md#1024-scrying--the-visionmultimodality-capability-gate) / [§10.2.5](Arcanum.DESIGN.md#1025-session-attachments-disk--grimoire-pointers).
+- **Scrying / attachments:** persisted bytes are durable snapshots stored as authenticated encrypted
+  envelopes; plaintext hashes and lifecycle metadata remain inside SQLCipher. Optional live-file
+  provenance is accepted only from a host-trusted path beneath the active workspace after
+  canonical, symlink, and file-handle identity checks; API-supplied paths remain snapshot-only.
+  Attachment responses expose sanitized relative provenance/status/hash/time metadata and never
+  absolute host paths. Missing or unsafe sources do not delete snapshots. This schema revision is
+  folded into the canonical database creation script, so upgrading installations must recreate the
+  database. Full contract: [§10.2.4](Arcanum.DESIGN.md#1024-scrying--the-visionmultimodality-capability-gate) /
+  [§10.2.5](Arcanum.DESIGN.md#1025-session-attachments-disk--grimoire-pointers).
 - **A2A:** [§5.7.1](Arcanum.DESIGN.md#571-a2a-and-the-conclave) (disabled by default).
 - **RAG (Weave / Divination / Saga):** [§21](Arcanum.DESIGN.md#21-the-weave-divination-and-saga-rag) — capabilities are gated under `Arcanum:Features`; embedding provider/model/dimensions and the codebase watcher debounce/count/reconciliation controls live under `Arcanum:Integrations:Embeddings`. Semantic workspace indexing reacts to debounced recursive watcher events, revalidates paths and opened file identities before every read, retains bounded periodic reconciliation when events are lost/unavailable, and exposes watcher/reconciliation health through `/api/workspaces/{id}/files/index/status`.
 - **Lexicon:** agent memory via `scribe_lexicon` / `delete_lexicon`; gated by `Arcanum:Features:Lexicon`. [§10.6](Arcanum.DESIGN.md#106-the-lexicon--agent-directed-entity-memory).
@@ -459,6 +471,46 @@ There is intentionally no data migration or EF-model regeneration for this raw-S
 table. See [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)
 and [§22.2](Arcanum.DESIGN.md#222-cost-tracking-and-budget-enforcement-arcanumcost).
 
+### Encrypted blob key, backup, and recovery
+
+Session attachments, `/v1/files` uploads, and batch input/output/error files are never stored as
+plaintext under `attachments/` or `files/`. Arcanum streams them through a versioned `ARCABLOB`
+AES-256-GCM envelope with independently authenticated bounded chunks. Downloads and batch readers
+authenticate each chunk before returning plaintext, and batch output uses encrypted staging—there
+is no plaintext JSONL temp.
+
+The independent 256-bit file-encryption master key is stored primarily in the operating system's
+secret storage:
+
+- service `arcanum`, account `file-encryption-master-key`;
+- macOS Keychain on macOS;
+- Windows Credential Manager on Windows; and
+- Secret Service/libsecret on Linux.
+
+First startup creates the key only after the OS store accepts it. Arcanum also attempts to write
+`~/.config/arcanum/file-encryption-key.dat`, sealed with the local Data Protection key ring, as a
+recovery mirror. The mirror is not a substitute for OS key storage during normal writes. The
+file-encryption key is separate from both `master-api-key` and the Grimoire encryption secret;
+`arcanum key show` never displays it and API-key rotation does not rotate it.
+
+Stop every Arcanum host/daemon before copying the persistence tree. A recoverable backup must
+capture one consistent generation of:
+
+- `arcanum.db`, its `-wal`/`-shm` files when present, and `arcanum.db.kdf`;
+- `attachments/` and `files/`;
+- the OS credential `arcanum/file-encryption-master-key`, or
+  `file-encryption-key.dat` as its portable recovery copy; and
+- the matching `~/.config/arcanum/keys/` Data Protection key ring when relying on that mirror.
+
+Restore the key or mirror+key-ring before starting against restored ciphertext. If encrypted blobs
+exist but the key is missing, corrupt, or has the wrong key id, Arcanum fails closed and never
+generates a replacement. `/api/health` and `arcanum doctor` expose a `FileEncryption` check with
+key availability plus bounded encrypted/legacy-plaintext/corrupt counts, but never key or content
+data. Legacy plaintext blobs are detected and never silently served; before upgrading an old
+installation, export needed content with the old version and re-upload/re-attach it under the new
+version, or remove the legacy files after backing them up. Full format and atomicity details:
+[DESIGN §5.4.6](Arcanum.DESIGN.md#546-versioned-authenticated-blob-storage).
+
 ### Optional HTTPS
 
 HTTP remains the default on **loopback**. `Arcanum:Host:Https:Enabled` adds a TLS listener; with `Arcanum:Host:ListenAny` / `ARCANUM_HOST_ANY`, HTTPS is **required and exclusive**. A PFX password comes from the exact `CertificatePasswordEnvironmentVariable`, or `ARCANUM_HTTPS_CERTIFICATE_PASSWORD` when that reference is omitted; PEM ignores it. Values never enter configuration or API/Compendium responses. Clients do not bypass TLS validation. PFX vs PEM shapes and Compendium self-signed generation: [Compendium's complete configuration reference](Compendium.README.md#complete-configuration-reference) / [secrets and HTTPS](Compendium.README.md#secrets-and-https).
@@ -604,7 +656,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `ask <prompt>` | Single-turn inference (NDJSON stream). Flags: `-n` / `--new` (new session), `-m <model>`, `-c` / `--campaign <id>`, `--unattended`, `--image <path>` (repeatable — attach a Scrying focus; requires a vision-capable model), plus inference flags (below). Use `--` to pass a prompt that starts with a flag. Ctrl+C cancels the in-flight turn (exit 130). Running `ask` before a key is stored exits **1** with a friendly "run `arcanum serve` once" message (no crash). Interactive sessions auto-start `serve` when the API is unreachable (see above). |
 | `chat` | Interactive multi-turn REPL (Figlet banner, Markdig rendering, mana bar, live multi-panel layout on wide color terminals). Flags: `-n` / `--new`, `-m`, `-c` / `--campaign <id>` (shown in the startup banner when set), `--no-tools`, `--unattended`, plus inference flags. **Slash commands:** `/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`. Stage text files inline with `@path`; an `@path` whose extension is an image type (`.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.bmp`) stages a **Scrying focus** instead (prints `Scrying focus: <name> (<size>)`; requires a vision-capable model). The mana bar shows a persistent **(Memory Compressed)** suffix after read-time compression until `/new`. Auto-starts `serve` when needed (see above). Narrow / redirected / `NO_COLOR` sessions keep the simple streaming path. |
 | `look` | Print the Eye of the World workspace snapshot (no HTTP). |
-| `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer panels) + API health probe, including the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
+| `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer / File Encryption panels) + API health probe, including key availability, encrypted/legacy/corrupt blob counts, and the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0 unless another check fails). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
 | `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Argument or stdin / interactive secret prompt. |
 | `key provider set\|status\|delete perplexity` | Manage the Perplexity key used by native `web_search`. Status never prints the secret; all operations are CLI-only and perform no HTTP. |

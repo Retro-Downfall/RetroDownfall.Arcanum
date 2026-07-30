@@ -57,6 +57,14 @@ public static class ArcanumPaths
     public static string GrimoireKeyStoreFile => Path.Combine(SecretStoreDirectory, "grimoire-key.dat");
 
     /// <summary>
+    /// Data Protection-encrypted, dedicated 256-bit master secret for attachment, uploaded-file,
+    /// and batch-artifact blob encryption. This secret is independent of both the API key and the
+    /// SQLCipher passphrase.
+    /// </summary>
+    public static string FileEncryptionKeyStoreFile =>
+        Path.Combine(SecretStoreDirectory, "file-encryption-key.dat");
+
+    /// <summary>
     /// Data Protection-encrypted fallback for the Perplexity web-research API key.
     /// The OS credential store remains the primary store when it is available.
     /// </summary>

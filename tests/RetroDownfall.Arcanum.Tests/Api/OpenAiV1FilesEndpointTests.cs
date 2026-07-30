@@ -5,6 +5,7 @@ using System.Text.Json;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -44,6 +45,17 @@ public sealed class OpenAiV1FilesEndpointTests
         Assert.Equal("batch", uploaded.Purpose);
 
         Assert.Equal(contentBytes.Length, uploaded.Bytes);
+
+        Guid storedId = Guid.ParseExact(uploaded.Id["file-".Length..], "N");
+        byte[] storedBytes = await File.ReadAllBytesAsync(
+            Path.Combine(
+                _factory.TempHome,
+                ".config",
+                "arcanum",
+                "files",
+                storedId.ToString("N")));
+        Assert.True(storedBytes.AsSpan().StartsWith("ARCABLOB"u8));
+        Assert.NotEqual(contentBytes, storedBytes);
 
         // Retrieve metadata.
         HttpResponseMessage getResponse = await client.GetAsync($"/v1/files/{uploaded.Id}");

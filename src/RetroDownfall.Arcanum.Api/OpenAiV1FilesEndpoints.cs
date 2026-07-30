@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -53,6 +54,7 @@ internal static partial class OpenAiV1Endpoints
         IFormFile? file,
         [FromForm] string? purpose,
         IUploadedFileRepository repository,
+        IEncryptedBlobStore blobStore,
         IOptionsSnapshot<ArcanumSettings> settings,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -139,14 +141,32 @@ internal static partial class OpenAiV1Endpoints
         try
         {
 
-            await using (FileStream destination = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            {
+            await using Stream plaintext = file.OpenReadStream();
+            EncryptedBlobDescriptor descriptor = await blobStore.WriteAsync(
+                    path,
+                    plaintext,
+                    EncryptedBlobPurpose.UploadedFile,
+                    id.ToByteArray(),
+                    file.Length,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-                await file.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+            UploadedFileRecord record = new(
+                id,
+                filename,
+                file.Length,
+                purpose.Trim(),
+                declaredMimeType,
+                DateTimeOffset.UtcNow,
+                descriptor.Version,
+                descriptor.KeyId);
 
-            }
+            await repository.CreateAsync(record, cancellationToken).ConfigureAwait(false);
 
-            SecureFilePermissions.ApplyOwnerOnlyFile(path);
+            return Results.Json(
+                OpenAiFileObject.FromRecord(record),
+                ArcanumJsonContext.Default.OpenAiFileObject,
+                statusCode: StatusCodes.Status201Created);
 
         }
         catch (Exception ex)
@@ -161,12 +181,6 @@ internal static partial class OpenAiV1Endpoints
             return JsonError("Failed to store the uploaded file.", "server_error", "internal_error", param: null, StatusCodes.Status500InternalServerError);
 
         }
-
-        UploadedFileRecord record = new(id, filename, file.Length, purpose.Trim(), declaredMimeType, DateTimeOffset.UtcNow);
-
-        await repository.CreateAsync(record, cancellationToken).ConfigureAwait(false);
-
-        return Results.Json(OpenAiFileObject.FromRecord(record), ArcanumJsonContext.Default.OpenAiFileObject, statusCode: StatusCodes.Status201Created);
 
     }
 
@@ -248,7 +262,11 @@ internal static partial class OpenAiV1Endpoints
 
     }
 
-    private static async Task<IResult> HandleContentAsync(string id, IUploadedFileRepository repository, CancellationToken cancellationToken)
+    private static async Task<IResult> HandleContentAsync(
+        string id,
+        IUploadedFileRepository repository,
+        IEncryptedBlobStore blobStore,
+        CancellationToken cancellationToken)
     {
 
         if (!TryParseFileId(id, out Guid fileGuid))
@@ -281,7 +299,37 @@ internal static partial class OpenAiV1Endpoints
         // that happens to fetch this endpoint directly).
         string mimeType = string.IsNullOrWhiteSpace(record.MimeType) ? "application/octet-stream" : record.MimeType;
 
-        return Results.File(path, mimeType, fileDownloadName: record.Filename, enableRangeProcessing: false);
+        try
+        {
+            Stream plaintext = await blobStore.OpenReadAsync(
+                    path,
+                    UploadedFileStorage.ResolveEncryptionPurpose(record.Purpose),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return Results.Stream(
+                plaintext,
+                mimeType,
+                fileDownloadName: record.Filename,
+                enableRangeProcessing: false);
+        }
+        catch (EncryptedBlobKeyException ex)
+        {
+            return JsonError(
+                ex.Message,
+                "server_error",
+                "file_encryption_key_unavailable",
+                param: null,
+                StatusCodes.Status500InternalServerError);
+        }
+        catch (Exception ex) when (ex is CryptographicException or InvalidDataException)
+        {
+            return JsonError(
+                "Stored file authentication failed; the encrypted blob is corrupt.",
+                "server_error",
+                "encrypted_file_corrupt",
+                param: null,
+                StatusCodes.Status500InternalServerError);
+        }
 
     }
 

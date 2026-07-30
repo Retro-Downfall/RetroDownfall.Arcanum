@@ -154,6 +154,10 @@ public sealed class GrimoireFixture : IDisposable
             .Append(WeaveSchemaInitializer.CanonicalSchemaFingerprint)
             .Append('\n');
 
+        combined.Append("GrimoireSqlSchemaMigrator:")
+            .Append(GrimoireSqlSchemaMigrator.CanonicalMigrationOrder)
+            .Append('\n');
+
         foreach (string resourceName in assembly.GetManifestResourceNames()
             .Where(name => name.EndsWith(".sql", StringComparison.Ordinal))
             .OrderBy(name => name, StringComparer.Ordinal))

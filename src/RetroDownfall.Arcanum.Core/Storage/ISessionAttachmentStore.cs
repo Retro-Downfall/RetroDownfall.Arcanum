@@ -98,7 +98,9 @@ public sealed record SessionAttachmentRecord(
     long ByteLength,
     SessionAttachmentKind Kind,
     DateTimeOffset CreatedAt,
-    AttachmentSourceMetadata? Source = null);
+    AttachmentSourceMetadata? Source = null,
+    int EncryptionVersion = 0,
+    string? EncryptionKeyId = null);
 
 public sealed record SessionAttachmentIndexItem(
     string LogicalKey,
