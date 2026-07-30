@@ -25,7 +25,6 @@ SECURITY_TYPES = {
     "SecureFileReader",
     "IdentityOwnedFileSystemCleanup",
     "SanctumGuard",
-    "ToolHelpers",
     "OutboundUrlGuard",
     "HostProcessToolPolicy",
     "IdempotencyClaimStore",

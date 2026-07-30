@@ -2084,7 +2084,7 @@ remains parallel.
 The security-critical set is `ApiKeyEndpointFilter`, `ApiKeyDigestCache`,
 `DataProtectionSecretStore`, `GrimoireKeyDerivation`, `McpSecurityLimits`,
 `TrustedMcpWorkspaceStore`, `SandboxedFileIo`, `SecureFileReader`,
-`IdentityOwnedFileSystemCleanup`, `SanctumGuard`, `ToolHelpers`, `OutboundUrlGuard`,
+`IdentityOwnedFileSystemCleanup`, `SanctumGuard`, `OutboundUrlGuard`,
 `HostProcessToolPolicy`, `IdempotencyClaimStore`, `BudgetReservationService`, and `WardGate`. The
 Python and PowerShell gates hold the same set under a parity test, and both fail when a listed type
 is absent from the Cobertura report, so a rename or new exclusion cannot silently count as 100%.

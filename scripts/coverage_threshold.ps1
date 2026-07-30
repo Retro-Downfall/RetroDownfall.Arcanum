@@ -51,7 +51,6 @@ $securityTypes = [System.Collections.Generic.HashSet[string]]::new(
         "SecureFileReader",
         "IdentityOwnedFileSystemCleanup",
         "SanctumGuard",
-        "ToolHelpers",
         "OutboundUrlGuard",
         "HostProcessToolPolicy",
         "IdempotencyClaimStore",
