@@ -37,6 +37,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     private readonly string _attachmentsRoot;
 
+    private readonly IAttachmentSourceResolver? _sourceResolver;
+
     /// <summary>
     /// Test seam: runs after bytes are on disk at the destination, before the DB write that
     /// records them. Used to simulate exhausted DB failure without holding FS work inside
@@ -48,7 +50,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         ArcanumDbContext db,
         IOptions<ArcanumSettings> options,
         string? attachmentsRoot = null,
-        ILogger<SessionAttachmentStore>? logger = null)
+        ILogger<SessionAttachmentStore>? logger = null,
+        IAttachmentSourceResolver? sourceResolver = null)
     {
 
         _db = db;
@@ -56,11 +59,41 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         _options = options;
 
         _logger = logger ?? NullLogger<SessionAttachmentStore>.Instance;
+        _sourceResolver = sourceResolver;
 
         _attachmentsRoot = Path.GetFullPath(attachmentsRoot ?? ArcanumPaths.AttachmentsDirectory);
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(_attachmentsRoot);
 
+    }
+
+    public async Task<SessionAttachmentRecord> PersistNewFromSourceAsync(
+        Guid? sessionId,
+        string? pendingTurnId,
+        Guid? entryId,
+        string logicalNameHint,
+        string originalFileName,
+        ReadOnlyMemory<byte> bytes,
+        string mimeType,
+        SessionAttachmentKind kind,
+        AttachmentSourceClaim source,
+        CancellationToken cancellationToken = default)
+    {
+        AttachmentSourceResolution resolution = _sourceResolver is null
+            ? new(AttachmentSourceMetadata.SnapshotOnly with
+                {
+                    Status = AttachmentSourceStatus.WorkspaceUnavailable,
+                    DiagnosticReason = "No host attachment source resolver is available.",
+                }, ReadOnlyMemory<byte>.Empty)
+            : await _sourceResolver.ResolveForPersistenceAsync(source, bytes, cancellationToken).ConfigureAwait(false);
+
+        SessionAttachmentRecord record = await PersistNewAsync(
+            sessionId, pendingTurnId, entryId, logicalNameHint, originalFileName,
+            bytes, mimeType, kind, cancellationToken).ConfigureAwait(false);
+
+        AttachmentSourceMetadata metadata = resolution.Metadata;
+        await UpdateSourceAsync(record.Id, metadata, cancellationToken).ConfigureAwait(false);
+        return record with { Source = metadata };
     }
 
     public async Task<SessionAttachmentRecord> PersistNewAsync(
@@ -408,7 +441,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 cmd.CommandText =
                     """
                     SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                           "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt"
+                           "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                           "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                           "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                           "SourceStatus", "SourceDiagnosticReason"
                     FROM "SessionAttachments"
                     WHERE "Id" = @id
                     LIMIT 1
@@ -460,7 +496,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     cmd.CommandText =
                         """
                         SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                               "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt"
+                               "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                               "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                               "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                               "SourceStatus", "SourceDiagnosticReason"
                         FROM "SessionAttachments"
                         WHERE "SessionId" = @sessionId
                           AND "LogicalKey" = @logicalKey
@@ -476,7 +515,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     cmd.CommandText =
                         """
                         SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                               "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt"
+                               "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                               "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                               "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                               "SourceStatus", "SourceDiagnosticReason"
                         FROM "SessionAttachments"
                         WHERE "SessionId" = @sessionId
                           AND "LogicalKey" = @logicalKey
@@ -527,7 +569,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 cmd.CommandText =
                     """
                     SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                           "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt"
+                           "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                           "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                           "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                           "SourceStatus", "SourceDiagnosticReason"
                     FROM "SessionAttachments"
                     WHERE "SessionId" = @sessionId
                       AND "State" = @state
@@ -795,10 +840,16 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             """
             INSERT INTO "SessionAttachments"
                 ("Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                 "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt")
+                 "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                 "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                 "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                 "SourceStatus", "SourceDiagnosticReason")
             VALUES
                 (@id, @sessionId, @entryId, @pendingTurnId, @state, @logicalKey, @originalFileName,
-                 @version, @relativePath, @contentSha256, @mimeType, @byteLength, @kind, @createdAt)
+                 @version, @relativePath, @contentSha256, @mimeType, @byteLength, @kind, @createdAt,
+                 @sourceKind, @sourceWorkspaceIdentity, @sourceRelativePath, @sourceCanonicalPath,
+                 @sourceContentSha256, @sourceFileIdentity, @sourceLastWriteAt, @sourceByteLength,
+                 @sourceStatus, @sourceDiagnosticReason)
             """;
 
         AddParameter(cmd, "@id", record.Id.ToString());
@@ -829,8 +880,55 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         AddParameter(cmd, "@createdAt", record.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
 
+        AddSourceParameters(cmd, record.Source ?? AttachmentSourceMetadata.SnapshotOnly);
+
         _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
+    }
+
+    private async Task UpdateSourceAsync(
+        Guid id,
+        AttachmentSourceMetadata source,
+        CancellationToken cancellationToken)
+    {
+        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using DbCommand cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            UPDATE "SessionAttachments"
+            SET "SourceKind" = @sourceKind,
+                "SourceWorkspaceIdentity" = @sourceWorkspaceIdentity,
+                "SourceRelativePath" = @sourceRelativePath,
+                "SourceCanonicalPath" = @sourceCanonicalPath,
+                "SourceContentSha256" = @sourceContentSha256,
+                "SourceFileIdentity" = @sourceFileIdentity,
+                "SourceLastWriteAt" = @sourceLastWriteAt,
+                "SourceByteLength" = @sourceByteLength,
+                "SourceStatus" = @sourceStatus,
+                "SourceDiagnosticReason" = @sourceDiagnosticReason
+            WHERE "Id" = @id
+            """;
+        AddParameter(cmd, "@id", id.ToString());
+        AddSourceParameters(cmd, source);
+        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void AddSourceParameters(DbCommand cmd, AttachmentSourceMetadata source)
+    {
+        AddParameter(cmd, "@sourceKind", source.Kind.ToString());
+        AddParameter(cmd, "@sourceWorkspaceIdentity", (object?)source.WorkspaceIdentity ?? DBNull.Value);
+        AddParameter(cmd, "@sourceRelativePath", (object?)source.WorkspaceRelativePath ?? DBNull.Value);
+        AddParameter(cmd, "@sourceCanonicalPath", (object?)source.LastKnownCanonicalPath ?? DBNull.Value);
+        AddParameter(cmd, "@sourceContentSha256", (object?)source.LastObservedContentSha256 ?? DBNull.Value);
+        AddParameter(cmd, "@sourceFileIdentity", (object?)source.LastObservedFileIdentity ?? DBNull.Value);
+        AddParameter(cmd, "@sourceLastWriteAt", source.LastObservedWriteTime is null
+            ? DBNull.Value
+            : source.LastObservedWriteTime.Value.ToString("o", CultureInfo.InvariantCulture));
+        AddParameter(cmd, "@sourceByteLength", source.LastObservedByteLength is null
+            ? DBNull.Value
+            : source.LastObservedByteLength.Value);
+        AddParameter(cmd, "@sourceStatus", source.Status.ToString());
+        AddParameter(cmd, "@sourceDiagnosticReason", (object?)source.DiagnosticReason ?? DBNull.Value);
     }
 
     private async Task<SessionAttachmentRecord?> FindLatestAsync(
@@ -850,7 +948,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             cmd.CommandText =
                 """
                 SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                       "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt"
+                       "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                       "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                       "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                       "SourceStatus", "SourceDiagnosticReason"
                 FROM "SessionAttachments"
                 WHERE "SessionId" = @sessionId
                   AND "LogicalKey" = @logicalKey
@@ -867,7 +968,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             cmd.CommandText =
                 """
                 SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                       "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt"
+                       "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                       "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                       "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                       "SourceStatus", "SourceDiagnosticReason"
                 FROM "SessionAttachments"
                 WHERE "PendingTurnId" = @pendingTurnId
                   AND "LogicalKey" = @logicalKey
@@ -949,7 +1053,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         cmd.CommandText =
             """
             SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                   "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt"
+                   "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                   "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                   "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                   "SourceStatus", "SourceDiagnosticReason"
             FROM "SessionAttachments"
             WHERE "PendingTurnId" = @pendingTurnId
               AND "State" = @state
@@ -1482,6 +1589,30 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         DateTimeOffset createdAt = DateTimeOffset.Parse(reader.GetString(13), CultureInfo.InvariantCulture);
 
+        AttachmentSourceMetadata source = AttachmentSourceMetadata.SnapshotOnly;
+        if (reader.FieldCount >= 24)
+        {
+            AttachmentSourceKind sourceKind = Enum.TryParse(reader.GetString(14), out AttachmentSourceKind parsedKind)
+                ? parsedKind
+                : AttachmentSourceKind.SnapshotOnly;
+            AttachmentSourceStatus sourceStatus = Enum.TryParse(reader.GetString(22), out AttachmentSourceStatus parsedStatus)
+                ? parsedStatus
+                : AttachmentSourceStatus.CorruptMetadata;
+            source = new AttachmentSourceMetadata(
+                sourceKind,
+                reader.IsDBNull(15) ? null : reader.GetString(15),
+                reader.IsDBNull(16) ? null : reader.GetString(16),
+                reader.IsDBNull(17) ? null : reader.GetString(17),
+                reader.IsDBNull(18) ? null : reader.GetString(18),
+                reader.IsDBNull(19) ? null : reader.GetString(19),
+                reader.IsDBNull(20)
+                    ? null
+                    : DateTimeOffset.Parse(reader.GetString(20), CultureInfo.InvariantCulture),
+                reader.IsDBNull(21) ? null : reader.GetInt64(21),
+                sourceStatus,
+                reader.IsDBNull(23) ? null : reader.GetString(23));
+        }
+
         return new SessionAttachmentRecord(
             id,
             sessionId,
@@ -1496,7 +1627,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             mimeType,
             byteLength,
             kind,
-            createdAt);
+            createdAt,
+            source);
 
     }
 

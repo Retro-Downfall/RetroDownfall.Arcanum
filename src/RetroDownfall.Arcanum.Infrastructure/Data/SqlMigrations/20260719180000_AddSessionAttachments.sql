@@ -12,7 +12,17 @@ CREATE TABLE IF NOT EXISTS "SessionAttachments" (
     "MimeType" TEXT NOT NULL,
     "ByteLength" INTEGER NOT NULL,
     "Kind" TEXT NOT NULL,
-    "CreatedAt" TEXT NOT NULL
+    "CreatedAt" TEXT NOT NULL,
+    "SourceKind" TEXT NOT NULL DEFAULT 'SnapshotOnly',
+    "SourceWorkspaceIdentity" TEXT NULL,
+    "SourceRelativePath" TEXT NULL,
+    "SourceCanonicalPath" TEXT NULL,
+    "SourceContentSha256" TEXT NULL,
+    "SourceFileIdentity" TEXT NULL,
+    "SourceLastWriteAt" TEXT NULL,
+    "SourceByteLength" INTEGER NULL,
+    "SourceStatus" TEXT NOT NULL DEFAULT 'NotApplicable',
+    "SourceDiagnosticReason" TEXT NULL
 );
 
 CREATE INDEX IF NOT EXISTS "IX_SessionAttachments_Session_Logical_Version"
@@ -29,3 +39,6 @@ CREATE INDEX IF NOT EXISTS "IX_SessionAttachments_PendingTurnId"
 
 CREATE INDEX IF NOT EXISTS "IX_SessionAttachments_State"
   ON "SessionAttachments" ("State");
+
+CREATE INDEX IF NOT EXISTS "IX_SessionAttachments_SourceWorkspace_Path"
+  ON "SessionAttachments" ("SourceWorkspaceIdentity", "SourceRelativePath");

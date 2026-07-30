@@ -3,9 +3,11 @@ using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
@@ -81,6 +83,49 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
     private SessionAttachmentStore CreateStore(ArcanumSettings settings) =>
         new(_db!, Options.Create(settings), _attachmentsRoot);
+
+    [SkippableFact]
+    public async Task PersistNewFromSourceAsync_round_trips_verified_provenance()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string workspace = Path.Combine(Path.GetTempPath(), "arcanum-workspace-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes("workspace source");
+            string sourcePath = Path.Combine(workspace, "source.txt");
+            await File.WriteAllBytesAsync(sourcePath, bytes);
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            SessionAttachmentStore store = new(
+                _db!,
+                Options.Create(_settings),
+                _attachmentsRoot,
+                sourceResolver: resolver);
+
+            SessionAttachmentRecord saved = await store.PersistNewFromSourceAsync(
+                Guid.NewGuid(),
+                null,
+                null,
+                "source.txt",
+                "source.txt",
+                bytes,
+                "text/plain",
+                SessionAttachmentKind.Text,
+                new AttachmentSourceClaim(sourcePath));
+            SessionAttachmentRecord? reloaded = await store.GetByIdAsync(saved.Id);
+
+            Assert.NotNull(reloaded);
+            Assert.Equal(AttachmentSourceKind.WorkspaceFile, reloaded!.Source!.Kind);
+            Assert.Equal(AttachmentSourceStatus.Refreshable, reloaded.Source.Status);
+            Assert.Equal("source.txt", reloaded.Source.WorkspaceRelativePath);
+            Assert.DoesNotContain(workspace, reloaded.Source.WorkspaceRelativePath, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
 
     [SkippableFact]
     public async Task PersistNewAsync_bound_v1_writes_row_and_bytes_readable()
@@ -1036,6 +1081,11 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         await _db.SaveChangesAsync();
 
+    }
+
+    private sealed class TestWorkspaceContext(string workspacePath) : IHostWorkspaceContext
+    {
+        public string? WorkspacePath { get; } = workspacePath;
     }
 
     private static void AddParam(System.Data.Common.DbCommand cmd, string name, object value)

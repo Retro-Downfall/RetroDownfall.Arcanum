@@ -21,6 +21,68 @@ public enum SessionAttachmentState
 
 }
 
+public enum AttachmentSourceKind
+{
+    SnapshotOnly,
+    WorkspaceFile,
+}
+
+public enum AttachmentSourceStatus
+{
+    NotApplicable,
+    Refreshable,
+    PriorVersion,
+    Missing,
+    Moved,
+    Inaccessible,
+    Unsafe,
+    WorkspaceUnavailable,
+    WorkspaceChanged,
+    CorruptMetadata,
+}
+
+/// <summary>Encrypted-at-rest provenance for an attachment snapshot.</summary>
+public sealed record AttachmentSourceMetadata(
+    AttachmentSourceKind Kind,
+    string? WorkspaceIdentity,
+    string? WorkspaceRelativePath,
+    string? LastKnownCanonicalPath,
+    string? LastObservedContentSha256,
+    string? LastObservedFileIdentity,
+    DateTimeOffset? LastObservedWriteTime,
+    long? LastObservedByteLength,
+    AttachmentSourceStatus Status,
+    string? DiagnosticReason)
+{
+    public bool IsRefreshable => Kind == AttachmentSourceKind.WorkspaceFile
+        && Status == AttachmentSourceStatus.Refreshable;
+
+    public static AttachmentSourceMetadata SnapshotOnly { get; } = new(
+        AttachmentSourceKind.SnapshotOnly, null, null, null, null, null, null, null,
+        AttachmentSourceStatus.NotApplicable, null);
+}
+
+/// <summary>
+/// Host-trusted source claim. API clients must never construct this from an arbitrary path.
+/// </summary>
+public sealed record AttachmentSourceClaim(string AbsolutePath);
+
+public sealed record AttachmentSourceResolution(
+    AttachmentSourceMetadata Metadata,
+    ReadOnlyMemory<byte> VerifiedBytes);
+
+public interface IAttachmentSourceResolver
+{
+    Task<AttachmentSourceResolution> ResolveForPersistenceAsync(
+        AttachmentSourceClaim claim,
+        ReadOnlyMemory<byte> snapshotBytes,
+        CancellationToken cancellationToken = default);
+
+    Task<AttachmentSourceMetadata> RevalidateAsync(
+        AttachmentSourceMetadata source,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed record SessionAttachmentRecord(
     Guid Id,
     Guid? SessionId,
@@ -35,7 +97,8 @@ public sealed record SessionAttachmentRecord(
     string MimeType,
     long ByteLength,
     SessionAttachmentKind Kind,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    AttachmentSourceMetadata? Source = null);
 
 public sealed record SessionAttachmentIndexItem(
     string LogicalKey,
@@ -65,6 +128,28 @@ public interface ISessionAttachmentStore
         string mimeType,
         SessionAttachmentKind kind,
         CancellationToken cancellationToken = default);
+
+    Task<SessionAttachmentRecord> PersistNewFromSourceAsync(
+        Guid? sessionId,
+        string? pendingTurnId,
+        Guid? entryId,
+        string logicalNameHint,
+        string originalFileName,
+        ReadOnlyMemory<byte> bytes,
+        string mimeType,
+        SessionAttachmentKind kind,
+        AttachmentSourceClaim source,
+        CancellationToken cancellationToken = default) =>
+        PersistNewAsync(
+            sessionId,
+            pendingTurnId,
+            entryId,
+            logicalNameHint,
+            originalFileName,
+            bytes,
+            mimeType,
+            kind,
+            cancellationToken);
 
     Task PromotePendingAsync(string pendingTurnId, Guid sessionId, Guid? entryId, CancellationToken cancellationToken = default);
 

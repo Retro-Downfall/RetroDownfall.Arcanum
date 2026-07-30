@@ -262,7 +262,7 @@ Single-host failure behavior:
 | GET | `/api/sessions/{id}/export` | Export JSON or Markdown (`ApiResponse<SessionExportResult>`). |
 | POST | `/api/sessions/{id}/rest` | Enqueue Campaign Log consolidation (**202** + `ApiResponse<bool>` when accepted; **503** + `Session.RestQueueFull` when the bounded queue rejects). |
 | GET | `/api/sessions/{id}/stream` | SSE replay + live entry stream. |
-| GET | `/api/sessions/{id}/attachments` | List **bound** session attachments (`ApiResponse<SessionAttachmentDto[]>`; includes `RelativePath` for Reveal; §10.2.5). |
+| GET | `/api/sessions/{id}/attachments` | List **bound** session attachments (`ApiResponse<SessionAttachmentDto[]>`; includes the snapshot `RelativePath` for Reveal plus sanitized source provenance/refreshability; never an absolute source path; §10.2.5). |
 | POST | `/api/sessions/{id}/fork` | Create an independent branch of a session, optionally truncated at `upToEntryId` (**201**; §11.16.1). |
 | POST | `/api/embeddings/reset` | Truncate embedding tables for RAG dimension-change recovery (requires `?confirm=true`; optional `?scope=all\|entry\|workspaceFile\|saga`, default. |
 | DELETE | `/api/sessions/{id}/entries/{entryId}` | Delete a single entry from a session (**204**). |
@@ -1214,6 +1214,34 @@ Closed audit items (writer reuse, scan/cache bounds, Loremaster counter, MCP lin
 | `PendingTurnId` | null | non-null |
 | `State` | `Bound` | `Pending` |
 | `LogicalKey`, `OriginalFileName`, `Version`, `RelativePath`, `ContentSha256`, `MimeType`, `ByteLength`, `Kind`, `CreatedAt` | populated | populated |
+| `SourceKind`, `SourceStatus` | `SnapshotOnly`/`NotApplicable` unless host-verified | same |
+| `SourceWorkspaceIdentity`, `SourceRelativePath`, `SourceCanonicalPath`, `SourceContentSha256`, `SourceFileIdentity`, `SourceLastWriteAt`, `SourceByteLength`, `SourceDiagnosticReason` | optional encrypted provenance | optional encrypted provenance |
+
+**Source provenance and refreshability:** attachment bytes always remain a durable snapshot; the
+existing attachment-store `RelativePath` always points to that snapshot and is never reinterpreted
+as an original file locator. A host-trusted caller may supply an `AttachmentSourceClaim` to
+`PersistNewFromSourceAsync`. The scoped `IAttachmentSourceResolver` accepts it only when the active
+configured workspace exists and the source passes lexical containment, canonical/symlink
+containment, pre-open path identity, post-open handle identity, and immediate pre-I/O revalidation.
+It hashes the bytes read from the verified handle. Matching bytes produce `Refreshable`; differing
+bytes are retained as a safe `PriorVersion` snapshot. Ordinary native/API `AttachedFileDto` paths
+are untrusted labels and always persist as `SnapshotOnly`; remote clients cannot nominate a live
+host path.
+
+Public `SessionAttachmentDto` exposes only source kind/status, refreshability, opaque workspace
+identity, sanitized workspace-relative path, safe hash/time/length observations, and a bounded
+diagnostic reason. `SourceCanonicalPath` and file identity remain encrypted raw-SQL metadata and
+are never returned by the API. On restart reconciliation revalidates workspace identity,
+containment, file identity, availability, and observed content. Missing, moved, inaccessible,
+unsafe, changed-workspace, or corrupt metadata changes source status without deleting the row or
+snapshot bytes. Forks copy source metadata with the snapshot and revalidation applies in the fork.
+Watcher-based rename repair is an optional future optimization; correctness never depends on a
+watcher.
+
+The source columns are part of the canonical hand-authored
+`20260719180000_AddSessionAttachments.sql` table definition and remain outside the compiled EF
+model. This release intentionally does not ship an upgrade migration: installations with an older
+Grimoire schema must recreate the database when installing the latest version.
 
 **Lifecycle and consistency:**
 
@@ -1236,6 +1264,8 @@ Session no longer exists before best-effort directory cleanup; deletes rows for 
 files; and deletes unreferenced files under the attachment tree. Invalid `_pending` child names are
 warned and left untouched rather than passed to an identity-unsafe delete. Code-owned per-Session
 byte and per-logical-key version caps reject new writes; Bound files are not background-pruned.
+Reconciliation also fails closed when source metadata is malformed or no longer resolves, updating
+only its availability/status fields and preserving an otherwise valid attachment snapshot.
 
 **Privacy:**
 

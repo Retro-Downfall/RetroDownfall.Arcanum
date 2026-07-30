@@ -31,8 +31,11 @@ internal static class SessionMapping
             session.TotalTokensUsed,
             session.ForkedFromSessionId);
 
-    public static SessionAttachmentDto ToAttachmentDto(SessionAttachmentRecord record) =>
-        new(
+    public static SessionAttachmentDto ToAttachmentDto(SessionAttachmentRecord record)
+    {
+        AttachmentSourceMetadata source = record.Source ?? AttachmentSourceMetadata.SnapshotOnly;
+
+        return new(
             record.Id,
             record.LogicalKey,
             record.OriginalFileName,
@@ -42,6 +45,16 @@ internal static class SessionMapping
             record.ByteLength,
             record.Kind,
             record.ContentSha256,
-            record.CreatedAt);
+            record.CreatedAt,
+            source.Kind,
+            source.WorkspaceIdentity,
+            source.WorkspaceRelativePath,
+            source.IsRefreshable,
+            source.Status,
+            source.DiagnosticReason,
+            source.LastObservedContentSha256,
+            source.LastObservedWriteTime,
+            source.LastObservedByteLength);
+    }
 
 }

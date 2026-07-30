@@ -135,6 +135,16 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
         await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
 
         Assert.True(await TableExistsAsync(connection, "SessionAttachments", CancellationToken.None));
+        Assert.True(await ColumnExistsAsync(
+            connection,
+            "SessionAttachments",
+            "SourceKind",
+            CancellationToken.None));
+        Assert.True(await ColumnExistsAsync(
+            connection,
+            "SessionAttachments",
+            "SourceRelativePath",
+            CancellationToken.None));
 
     }
 
@@ -409,6 +419,26 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 
         return result is not null && result != DBNull.Value;
 
+    }
+
+    private static async Task<bool> ColumnExistsAsync(
+        SqliteConnection connection,
+        string tableName,
+        string columnName,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info(\"{tableName}\");";
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (string.Equals(reader.GetString(1), columnName, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async Task<(bool Exists, bool NotNull, string? DefaultValue)> ReadReasoningTokensColumnAsync(

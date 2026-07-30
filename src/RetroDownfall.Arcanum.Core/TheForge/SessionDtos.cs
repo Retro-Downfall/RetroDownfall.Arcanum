@@ -131,4 +131,13 @@ public sealed record SessionAttachmentDto(
     long ByteLength,
     SessionAttachmentKind Kind,
     string ContentSha256,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    AttachmentSourceKind SourceKind = AttachmentSourceKind.SnapshotOnly,
+    string? SourceWorkspaceIdentity = null,
+    string? SourceRelativePath = null,
+    bool IsRefreshable = false,
+    AttachmentSourceStatus SourceStatus = AttachmentSourceStatus.NotApplicable,
+    string? SourceDiagnosticReason = null,
+    string? LastObservedSourceContentSha256 = null,
+    DateTimeOffset? LastObservedSourceWriteTime = null,
+    long? LastObservedSourceByteLength = null);

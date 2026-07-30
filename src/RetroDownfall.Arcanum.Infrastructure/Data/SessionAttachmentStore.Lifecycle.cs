@@ -286,7 +286,8 @@ internal sealed partial class SessionAttachmentStore
                 plan.Source.MimeType,
                 plan.Source.ByteLength,
                 plan.Source.Kind,
-                plan.Source.CreatedAt);
+                plan.Source.CreatedAt,
+                plan.Source.Source);
 
             await InsertRowAsync(row, cancellationToken).ConfigureAwait(false);
 
@@ -303,8 +304,43 @@ internal sealed partial class SessionAttachmentStore
 
         await SweepMissingFileRowsAsync(cancellationToken).ConfigureAwait(false);
 
+        await RevalidateAttachmentSourcesAsync(cancellationToken).ConfigureAwait(false);
+
         await SweepOrphanAttachmentFilesAsync(cancellationToken).ConfigureAwait(false);
 
+    }
+
+    private async Task RevalidateAttachmentSourcesAsync(CancellationToken cancellationToken)
+    {
+        if (_sourceResolver is null)
+        {
+            return;
+        }
+
+        List<SessionAttachmentRecord> rows = await ListAllRowsAsync(cancellationToken).ConfigureAwait(false);
+        foreach (SessionAttachmentRecord row in rows)
+        {
+            if (row.Source is not { Kind: AttachmentSourceKind.WorkspaceFile } source)
+            {
+                continue;
+            }
+
+            AttachmentSourceMetadata revalidated;
+            try
+            {
+                revalidated = await _sourceResolver.RevalidateAsync(source, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                revalidated = source with
+                {
+                    Status = AttachmentSourceStatus.CorruptMetadata,
+                    DiagnosticReason = "Source metadata could not be safely revalidated.",
+                };
+            }
+
+            await UpdateSourceAsync(row.Id, revalidated, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task SweepMissingSessionRowsAndDirectoriesAsync(CancellationToken cancellationToken)
@@ -616,7 +652,10 @@ internal sealed partial class SessionAttachmentStore
         cmd.CommandText =
             """
             SELECT "Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                   "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt"
+                   "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                   "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                   "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                   "SourceStatus", "SourceDiagnosticReason"
             FROM "SessionAttachments"
             """;
 
