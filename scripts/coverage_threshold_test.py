@@ -90,16 +90,16 @@ class CoverageThresholdParserTests(unittest.TestCase):
 
     def test_platform_targets_can_be_overridden_by_valid_percentages(self) -> None:
         xml = self._coverage_xml(
-            line_rate="0.83",
-            branch_rate="0.7345",
+            line_rate="0.80",
+            branch_rate="0.70",
         )
         path = self._write_xml(xml)
 
         with mock.patch.dict(
             os.environ,
             {
-                "COVERAGE_LINE_TARGET": "83",
-                "COVERAGE_BRANCH_TARGET": "73",
+                "COVERAGE_LINE_TARGET": "80",
+                "COVERAGE_BRANCH_TARGET": "70",
             },
         ):
             self.assertEqual(coverage_threshold.main([str(path)]), 0)

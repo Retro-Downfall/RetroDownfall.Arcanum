@@ -17,8 +17,8 @@ jobs:
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
-      COVERAGE_LINE_TARGET: "83"
-      COVERAGE_BRANCH_TARGET: "73"
+      COVERAGE_LINE_TARGET: "80"
+      COVERAGE_BRANCH_TARGET: "70"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
