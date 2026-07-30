@@ -8,6 +8,22 @@ public sealed class SqliteBusyRetryTests
 {
 
     [Fact]
+    public void RetryBudget_CountsOnlyScheduledBackoff_AndRejectsOverflow()
+    {
+
+        SqliteRetryBudget budget = new(TimeSpan.FromSeconds(10));
+
+        Assert.True(budget.TryReserve(TimeSpan.FromSeconds(6)));
+
+        Assert.True(budget.TryReserve(TimeSpan.FromSeconds(4)));
+
+        Assert.False(budget.TryReserve(TimeSpan.FromTicks(1)));
+
+        Assert.Equal(TimeSpan.FromSeconds(10), budget.ReservedDelay);
+
+    }
+
+    [Fact]
     public async Task ExecuteAsync_SucceedsFirstTime_ReturnsValue()
     {
 

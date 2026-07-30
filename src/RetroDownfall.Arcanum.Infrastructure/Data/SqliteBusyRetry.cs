@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -42,7 +41,7 @@ internal static class SqliteBusyRetry
         CancellationToken cancellationToken = default,
         Func<int, Exception, CancellationToken, ValueTask>? retrying = null)
     {
-        Stopwatch stopwatch = Stopwatch.StartNew();
+        SqliteRetryBudget retryBudget = new(MaxTotalDelay);
 
         for (int attempt = 1; attempt <= MaxAttempts; attempt++)
         {
@@ -52,15 +51,21 @@ internal static class SqliteBusyRetry
             }
             catch (Exception ex) when (
                 IsBusyOrLocked(ex)
-                && attempt < MaxAttempts
-                && stopwatch.Elapsed < MaxTotalDelay)
+                && attempt < MaxAttempts)
             {
+                TimeSpan delay = ComputeDelay(attempt);
+
+                if (!retryBudget.TryReserve(delay))
+                {
+                    throw;
+                }
+
                 if (retrying is not null)
                 {
                     await retrying(attempt, ex, cancellationToken).ConfigureAwait(false);
                 }
 
-                await Task.Delay(ComputeDelay(attempt), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -110,4 +115,33 @@ internal static class SqliteBusyRetry
         return TimeSpan.FromMilliseconds(Math.Min(delayMs, 2_000));
     }
 
+}
+
+/// <summary>
+/// Tracks only code-scheduled SQLite backoff. Action execution, profiler suspension, scheduler
+/// starvation, and retry-observer work do not consume the delay budget.
+/// </summary>
+internal struct SqliteRetryBudget(TimeSpan limit)
+{
+    private readonly TimeSpan _limit = limit >= TimeSpan.Zero
+        ? limit
+        : throw new ArgumentOutOfRangeException(nameof(limit));
+
+    public TimeSpan ReservedDelay { get; private set; }
+
+    public bool TryReserve(TimeSpan delay)
+    {
+        if (delay < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(delay));
+        }
+
+        if (delay > _limit - ReservedDelay)
+        {
+            return false;
+        }
+
+        ReservedDelay += delay;
+        return true;
+    }
 }
