@@ -33,15 +33,12 @@ public static class SettingDescriptors
         // Providers and top-level model selections
         new("defaultModel", ConfigSection.Providers, "Default AI model", "The AI model to use when no specific model is chosen.", SettingKind.String, Placeholder: "gpt-4o"),
         new("fastModel", ConfigSection.Providers, "Fast AI model", "A quicker AI model for simple tasks. Optional.", SettingKind.String, Placeholder: "gpt-4o-mini"),
-        new("defaultReasoningEffort", ConfigSection.Providers, "Default thinking depth", "How carefully the AI should think before responding. Higher = slower but more accurate.", SettingKind.Enum, EnumType: typeof(ReasoningEffortLevel), Placeholder: "medium"),
         new("providers.name", ConfigSection.Providers, "Provider name", "A friendly name for this AI service (e.g., 'OpenAI', 'Anthropic').", SettingKind.String, Placeholder: "OpenAI"),
         new("providers.type", ConfigSection.Providers, "Provider type", "The type of AI service.", SettingKind.Enum, EnumType: typeof(AiProviderKind)),
         new("providers.endpoint", ConfigSection.Providers, "Service URL", "The web address of your AI service.", SettingKind.String, Placeholder: "https://api.openai.com/v1"),
         new("providers.credentialEnvironmentVariable", ConfigSection.Providers, "API key variable name", "Name of the environment variable containing your API key. Leave blank for automatic naming.", SettingKind.String, Placeholder: "OPENAI_API_KEY"),
         new("providers.models.name", ConfigSection.Providers, "Model name", "The exact name of the AI model as provided by the service.", SettingKind.String, Placeholder: "gpt-4-turbo-preview"),
         new("providers.models.supportsVision", ConfigSection.Providers, "Can analyze images", "Check if this model can understand and describe images.", SettingKind.Bool),
-        new("providers.models.reasoning.wireDialect", ConfigSection.Providers, "Reasoning format", "Technical format for AI thinking. Only change if your provider requires a special format.", SettingKind.Enum, EnumType: typeof(ReasoningWireDialect), Group: "Advanced reasoning"),
-        new("providers.models.reasoning.maxBudgetTokens", ConfigSection.Providers, "Maximum thinking tokens", "Limit how many tokens the AI can use for thinking per response. Leave blank for unlimited.", SettingKind.Int, 1, 2_097_152, 1, EnumType: null, ClampName: nameof(ArcanumSettingClamps.ReasoningBudgetTokens), Group: "Advanced reasoning", AllowUnset: true, Placeholder: "4096"),
         new("providers.contextWindowLimit", ConfigSection.Providers, "Memory size", "How much text the AI can remember in a single conversation.", SettingKind.Int, 256, 2_097_152, 128, ClampName: nameof(ArcanumSettingClamps.ContextWindowLimit), Placeholder: "128000"),
 
         // Security policy
