@@ -92,28 +92,48 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
     }
 
-    public HostSettings Build() => _snapshot with
+    public HostSettings Build()
     {
-        Port = Port,
-        ListenAny = ListenAny,
-        CorsAllowedOrigins = CorsAllowedOrigins.SplitCsv(),
-        AuditLog = _snapshot.AuditLog with
+        // Validate environment variable name
+        if (!ConfigurationInputValidator.TryValidateEnvironmentVariableName(
+            HttpsCertificatePasswordEnvironmentVariable,
+            out string? envVarError))
         {
-            Enabled = AuditLogEnabled,
-            RetentionDays = AuditLogRetentionDays,
-            RedactToolArguments = AuditLogRedactToolArguments,
-        },
-        Https = _snapshot.Https with
+            throw new InvalidOperationException(envVarError);
+        }
+
+        // Validate CORS origins
+        if (!ConfigurationInputValidator.TryValidateCorsOrigins(
+            CorsAllowedOrigins,
+            out var corsErrors))
         {
-            Enabled = HttpsEnabled,
-            Port = HttpsPort,
-            CertificatePath = NullIfWhiteSpace(HttpsCertificatePath),
-            PrivateKeyPath = NullIfWhiteSpace(HttpsPrivateKeyPath),
-            CertificatePasswordEnvironmentVariable =
-                NullIfWhiteSpace(HttpsCertificatePasswordEnvironmentVariable),
-        },
-        MinLogLevelInBuffer = MinLogLevelInBuffer,
-    };
+            throw new InvalidOperationException(
+                $"Invalid CORS origins: {string.Join(", ", corsErrors)}");
+        }
+
+        return _snapshot with
+        {
+            Port = Port,
+            ListenAny = ListenAny,
+            CorsAllowedOrigins = CorsAllowedOrigins.SplitCsv(),
+            AuditLog = _snapshot.AuditLog with
+            {
+                Enabled = AuditLogEnabled,
+                RetentionDays = AuditLogRetentionDays,
+                RedactToolArguments = AuditLogRedactToolArguments,
+            },
+            Https = _snapshot.Https with
+            {
+                Enabled = HttpsEnabled,
+                Port = HttpsPort,
+                CertificatePath = NullIfWhiteSpace(HttpsCertificatePath),
+                PrivateKeyPath = NullIfWhiteSpace(HttpsPrivateKeyPath),
+                CertificatePasswordEnvironmentVariable =
+                    NullIfWhiteSpace(HttpsCertificatePasswordEnvironmentVariable),
+            },
+            MinLogLevelInBuffer = MinLogLevelInBuffer,
+        };
+    }
 
     private async Task GenerateLocalCertificateAsync()
     {

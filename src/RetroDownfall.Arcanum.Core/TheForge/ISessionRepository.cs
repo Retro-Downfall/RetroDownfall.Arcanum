@@ -27,10 +27,14 @@ public interface ISessionRepository
 
     Task<List<Entry>> GetEntriesAscendingAsync(Guid sessionId, int takeLast, CancellationToken ct = default);
 
+    /// <summary>
+    /// Ascending entries after an exclusive <see cref="Entry.Sequence"/> cursor. Pass <c>0</c> to
+    /// start from the beginning. Sequence, not <c>CreatedAt</c>, is the cursor because a turn's
+    /// prompt and answer share one timestamp.
+    /// </summary>
     Task<List<Entry>> GetEntriesAfterAsync(
         Guid sessionId,
-        DateTimeOffset afterCreatedAt,
-        Guid afterId,
+        long afterSequence,
         int limit,
         CancellationToken ct = default);
 

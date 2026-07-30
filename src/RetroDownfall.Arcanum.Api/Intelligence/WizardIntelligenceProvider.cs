@@ -603,7 +603,8 @@ public sealed class WizardIntelligenceProvider(
                 Result reasoningValidation = ValidateReasoningForCandidate(
                     request,
                     singleLease.Provider,
-                    singleLease.ResolvedModel);
+                    singleLease.ResolvedModel,
+                    settings.Value.Features.Reasoning);
 
                 if (reasoningValidation.IsFailure)
                 {
@@ -660,7 +661,11 @@ public sealed class WizardIntelligenceProvider(
 
             bool isLastAttempt = attemptIndex == candidates.Count - 1;
 
-            Result reasoningValidation = ValidateReasoningForCandidate(request, provider, resolvedModel);
+            Result reasoningValidation = ValidateReasoningForCandidate(
+                request,
+                provider,
+                resolvedModel,
+                settings.Value.Features.Reasoning);
 
             if (reasoningValidation.IsFailure)
             {
@@ -769,16 +774,18 @@ public sealed class WizardIntelligenceProvider(
     private static Result ValidateReasoningForCandidate(
         PingRequest request,
         ProviderSettings provider,
-        string resolvedModel)
+        string resolvedModel,
+        bool featuresReasoningEnabled)
     {
-        ReasoningCapabilities? capabilities =
-            ProviderResolver.TryResolveModelEntry(provider, resolvedModel, out ModelEntry? modelEntry)
-                ? modelEntry!.Reasoning
+        ModelEntry? modelEntry =
+            ProviderResolver.TryResolveModelEntry(provider, resolvedModel, out ModelEntry? entry)
+                ? entry
                 : null;
 
         return ReasoningRequestValidator.ValidateForModel(
             request.Reasoning,
-            capabilities,
+            modelEntry,
+            featuresReasoningEnabled,
             resolvedModel,
             provider.Name);
     }
@@ -922,7 +929,8 @@ public sealed class WizardIntelligenceProvider(
             Result reasoningValidation = ValidateReasoningForCandidate(
                 request,
                 singleLease.Provider,
-                singleLease.ResolvedModel);
+                singleLease.ResolvedModel,
+                settings.Value.Features.Reasoning);
 
             if (reasoningValidation.IsFailure)
             {
@@ -1021,7 +1029,8 @@ public sealed class WizardIntelligenceProvider(
             Result reasoningValidation = ValidateReasoningForCandidate(
                 request,
                 candidateProvider,
-                candidateModel);
+                candidateModel,
+                settings.Value.Features.Reasoning);
 
             if (reasoningValidation.IsFailure)
             {
@@ -1404,10 +1413,11 @@ public sealed class WizardIntelligenceProvider(
         {
             string targetModel = lease.ResolvedModel;
 
-            ReasoningCapabilities? reasoningCapabilities = ResolveReasoningCapabilities(lease);
+            bool reasoningEnabled = ResolveReasoningEnabled(lease);
             ReasoningOutputMode clientReasoningOutput = ResolveClientReasoningOutput(
                 request.Reasoning?.Output,
-                reasoningCapabilities,
+                reasoningEnabled,
+                settings.Value.Features.ReasoningSummaries,
                 streaming);
 
             IChatClient chatClient = lease.ChatClient;
@@ -4523,17 +4533,16 @@ public sealed class WizardIntelligenceProvider(
 
     private static ReasoningWireDialect ResolveReasoningWireDialect(ChatClientLease lease) =>
         ProviderResolver.TryResolveModelEntry(lease.Provider, lease.ResolvedModel, out ModelEntry? modelEntry)
-        && modelEntry?.Reasoning is { } reasoning
-            ? reasoning.WireDialect
+            ? modelEntry?.WireDialect ?? ReasoningWireDialect.Standard
             : ReasoningWireDialect.Standard;
 
-    private static ReasoningCapabilities? ResolveReasoningCapabilities(ChatClientLease lease) =>
+    private static bool ResolveReasoningEnabled(ChatClientLease lease) =>
         ProviderResolver.TryResolveModelEntry(
             lease.Provider,
             lease.ResolvedModel,
             out ModelEntry? modelEntry)
-            ? modelEntry?.Reasoning
-            : null;
+            ? modelEntry?.WireDialect is not null
+            : false;
 
     private static IReadOnlyList<ReasoningContentSegment> ProjectClientReasoningSegments(
         IReadOnlyList<ModelCallReasoningSegment> segments,
@@ -4612,11 +4621,14 @@ public sealed class WizardIntelligenceProvider(
 
     private static ReasoningOutputMode ResolveClientReasoningOutput(
         ReasoningOutputMode? requestedOutput,
-        ReasoningCapabilities? capabilities,
+        bool reasoningCapable,
+        bool reasoningSummariesEnabled,
         bool streaming)
     {
-        if (capabilities?.AllowsClientOutput != true
-            || (streaming && !capabilities.SupportsStreaming))
+        // Projection is best-effort: the provider returns what it returns. The only hard gates are
+        // reasoning capability (declared reasoning block) and the operator display preference
+        // (features.reasoningSummaries).
+        if (!reasoningCapable || !reasoningSummariesEnabled)
         {
             return ReasoningOutputMode.None;
         }
@@ -4624,13 +4636,9 @@ public sealed class WizardIntelligenceProvider(
         return requestedOutput switch
         {
             ReasoningOutputMode.None => ReasoningOutputMode.None,
-            ReasoningOutputMode.Summary when capabilities.SupportsSummary =>
-                ReasoningOutputMode.Summary,
-            ReasoningOutputMode.Full when capabilities.SupportsFull =>
-                ReasoningOutputMode.Full,
-            null when capabilities.SupportsFull => ReasoningOutputMode.Full,
-            null when capabilities.SupportsSummary => ReasoningOutputMode.Summary,
-            _ => ReasoningOutputMode.None,
+            ReasoningOutputMode.Summary => ReasoningOutputMode.Summary,
+            ReasoningOutputMode.Full => ReasoningOutputMode.Full,
+            _ => ReasoningOutputMode.Summary,
         };
     }
 

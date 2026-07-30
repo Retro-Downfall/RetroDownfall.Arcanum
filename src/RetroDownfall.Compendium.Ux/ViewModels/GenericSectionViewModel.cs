@@ -22,21 +22,24 @@ public sealed class GenericSectionViewModel : ObservableObject
 
     public ConfigSection Section { get; }
 
-    public ObservableCollection<GenericSettingFieldViewModel> Fields { get; }
+    public ObservableCollection<GenericSettingFieldViewModel> Fields { get; set; }
 
     public void LoadFrom(IEnumerable<GenericSettingFieldViewModel> fields)
     {
 
-        Fields.Clear();
+        // Batch update: create new collection and replace to minimize UI notifications
+        ObservableCollection<GenericSettingFieldViewModel> newFields = new();
 
         foreach (GenericSettingFieldViewModel field in fields)
         {
 
-            Fields.Add(field);
+            newFields.Add(field);
 
             field.PropertyChanged += (_, _) => Root.MarkDirty();
 
         }
+
+        Fields = newFields;
 
     }
 

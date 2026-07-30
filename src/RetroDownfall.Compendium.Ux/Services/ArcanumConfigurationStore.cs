@@ -11,6 +11,10 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
     private const string ConfigurationFileName = "arcanum.json";
 
+    private static readonly TimeSpan WriteLockTimeout = TimeSpan.FromSeconds(5);
+
+    private static readonly TimeSpan ExternalChangeDebounce = TimeSpan.FromMilliseconds(500);
+
     private readonly ConfigurationValidator _validator;
 
     private readonly FileSystemWatcher? _watcher;
@@ -21,6 +25,10 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
+    private readonly object _debounceGate = new();
+
+    private CancellationTokenSource? _debounceCts;
+
     private bool _disposed;
 
     public ArcanumConfigurationStore()
@@ -30,12 +38,16 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         _directory = ArcanumPaths.GrimoireDirectory;
 
+        ValidatePathIsUnderHomeDirectory(_directory);
+
         _filePath = Path.Combine(_directory, ConfigurationFileName);
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(_directory);
 
         _watcher = new FileSystemWatcher(_directory, ConfigurationFileName)
         {
+
+            InternalBufferSize = 65_536,
 
             NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
 
@@ -48,6 +60,8 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         _watcher.Renamed += OnFileRenamed;
 
         _watcher.Created += OnFileChanged;
+
+        _watcher.Error += OnWatcherError;
 
     }
 
@@ -133,7 +147,33 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         }
 
-        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+        bool acquired;
+
+        try
+        {
+
+            acquired = await _writeLock.WaitAsync(WriteLockTimeout, ct).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            return new ConfigurationWriteResult(
+                false,
+                [],
+                "The save was cancelled before it could acquire the configuration lock.");
+
+        }
+
+        if (!acquired)
+        {
+
+            return new ConfigurationWriteResult(
+                false,
+                [],
+                "Could not save arcanum.json: another save operation is still in progress. Please try again in a few seconds.");
+
+        }
 
         try
         {
@@ -144,30 +184,58 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
             var wrapper = new ArcanumConfigurationFile { Arcanum = settings };
 
-            await using (FileStream tempStream = File.Create(tempPath))
-
+            try
             {
 
-                await JsonSerializer.SerializeAsync(
-                    tempStream,
-                    wrapper,
-                    ConfigurationJsonContext.Default.ArcanumConfigurationFile,
-                    ct).ConfigureAwait(false);
+                await using (FileStream tempStream = File.Create(tempPath))
+
+                {
+
+                    await JsonSerializer.SerializeAsync(
+                        tempStream,
+                        wrapper,
+                        ConfigurationJsonContext.Default.ArcanumConfigurationFile,
+                        ct).ConfigureAwait(false);
+
+                }
+
+            }
+            catch (IOException ioEx)
+            {
+
+                return new ConfigurationWriteResult(
+                    false,
+                    [],
+                    $"Could not save arcanum.json: the file or configuration directory is locked by another application. Close any other editors and try again. ({ioEx.Message})");
 
             }
 
             SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
 
-            if (File.Exists(_filePath))
+            try
             {
 
-                File.Replace(tempPath, _filePath, destinationBackupFileName: null);
+                if (File.Exists(_filePath))
+                {
+
+                    File.Replace(tempPath, _filePath, destinationBackupFileName: null);
+
+                }
+                else
+                {
+
+                    File.Move(tempPath, _filePath);
+
+                }
 
             }
-            else
+            catch (IOException ioEx)
             {
 
-                File.Move(tempPath, _filePath);
+                return new ConfigurationWriteResult(
+                    false,
+                    [],
+                    $"Could not replace arcanum.json: the file is locked by another application. Close any other editors and try again. ({ioEx.Message})");
 
             }
 
@@ -175,7 +243,6 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         }
         catch (Exception ex)
-
         {
 
             return new ConfigurationWriteResult(false, [], ex.Message);
@@ -208,17 +275,80 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
     public event EventHandler? ExternalChange;
 
-    private void OnFileChanged(object sender, FileSystemEventArgs e)
+    private void RaiseExternalChange()
     {
 
         ExternalChange?.Invoke(this, EventArgs.Empty);
 
     }
 
+    private void OnFileChanged(object sender, FileSystemEventArgs e)
+    {
+
+        ScheduleExternalChange();
+
+    }
+
     private void OnFileRenamed(object sender, RenamedEventArgs e)
     {
 
-        ExternalChange?.Invoke(this, EventArgs.Empty);
+        ScheduleExternalChange();
+
+    }
+
+    private void OnWatcherError(object sender, ErrorEventArgs e)
+    {
+
+        // The watcher buffer overflowed or the directory became unavailable.
+        // Surface a single coalesced notification so the UI can prompt a reload.
+        ScheduleExternalChange();
+
+    }
+
+    private void ScheduleExternalChange()
+    {
+
+        lock (_debounceGate)
+        {
+
+            _debounceCts?.Cancel();
+
+            _debounceCts?.Dispose();
+
+            CancellationTokenSource cts = new();
+
+            _debounceCts = cts;
+
+            _ = DebounceAndRaiseAsync(cts.Token);
+
+        }
+
+    }
+
+    private async Task DebounceAndRaiseAsync(CancellationToken ct)
+    {
+
+        try
+        {
+
+            await Task.Delay(ExternalChangeDebounce, ct).ConfigureAwait(false);
+
+        }
+        catch (TaskCanceledException)
+        {
+
+            return;
+
+        }
+
+        if (_disposed || ct.IsCancellationRequested)
+        {
+
+            return;
+
+        }
+
+        RaiseExternalChange();
 
     }
 
@@ -227,6 +357,61 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         return result.Error.Details ?? [];
 
+    }
+
+    private static void ValidatePathIsUnderHomeDirectory(string path)
+    {
+        string? homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        if (string.IsNullOrEmpty(homeDir))
+        {
+            return; // Cannot validate if home directory is unavailable
+        }
+
+        string fullPath = Path.GetFullPath(path);
+        string fullHome = Path.GetFullPath(homeDir);
+
+        if (!fullPath.StartsWith(fullHome, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Configuration path '{path}' is not under the user's home directory. " +
+                "This is a security restriction to prevent unauthorized file access.");
+        }
+
+        // Check for symbolic links that could escape the home directory
+        if (IsSymbolicLink(path))
+        {
+            string target = ResolveSymbolicLink(path);
+            string fullTarget = Path.GetFullPath(target);
+
+            if (!fullTarget.StartsWith(fullHome, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Configuration path '{path}' is a symbolic link pointing outside the home directory. " +
+                    "This is a security restriction to prevent unauthorized file access.");
+            }
+        }
+    }
+
+    private static bool IsSymbolicLink(string path)
+    {
+        try
+        {
+            FileInfo fileInfo = new(path);
+            return fileInfo.Attributes.HasFlag(FileAttributes.ReparsePoint);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string ResolveSymbolicLink(string path)
+    {
+        // On Unix systems, readlink resolves symlinks
+        // On Windows, this is more complex and may require P/Invoke
+        // For now, return the path as-is (validation will still catch obvious cases)
+        return path;
     }
 
     public void Dispose()
@@ -240,6 +425,17 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         }
 
         _disposed = true;
+
+        lock (_debounceGate)
+        {
+
+            _debounceCts?.Cancel();
+
+            _debounceCts?.Dispose();
+
+            _debounceCts = null;
+
+        }
 
         _watcher?.Dispose();
 

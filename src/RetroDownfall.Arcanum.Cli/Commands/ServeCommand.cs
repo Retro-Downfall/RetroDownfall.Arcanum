@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -23,8 +24,40 @@ using Spectre.Console;
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
 [ExcludeFromCodeCoverage] // Reason: long-running Kestrel host entrypoint; config readers are covered via internal static unit tests.
-public sealed class ServeCommand(IThemePalette themePalette)
+public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient apiClient)
 {
+
+    /// <summary>
+    /// Stops the running Arcanum host from anywhere (asks the API to shut itself down; requires the
+    /// master API key like every other /api verb).
+    /// </summary>
+    [Command("quit")]
+    public async Task<int> Quit(CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Result<bool> result = await apiClient.QuitServerAsync(cancellationToken).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+
+            AnsiConsole.MarkupLine(
+                themePalette.ErrorMarkup(
+                    Markup.Escape(
+                        $"Could not stop the Arcanum host: {result.Error.Message} "
+                        + "If no host is running there is nothing to stop.")));
+
+            return 1;
+
+        }
+
+        AnsiConsole.MarkupLine(
+            themePalette.HighlightMarkup(Markup.Escape("Arcanum host shutdown requested.")));
+
+        return 0;
+
+    }
 
     /// <summary>
     /// Hosts the Arcanum Minimal API (default http://localhost:5001/; set Arcanum:Host:Port in arcanum.json).

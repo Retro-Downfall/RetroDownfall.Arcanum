@@ -21,10 +21,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 "RetroDownfall.Arcanum.Core.Storage.Entities.Entry",
                 typeof(Entry),
                 baseEntityType,
-                propertyCount: 10,
+                propertyCount: 11,
                 navigationCount: 1,
                 foreignKeyCount: 1,
-                unnamedIndexCount: 3,
+                unnamedIndexCount: 4,
                 keyCount: 1);
 
             var id = runtimeEntityType.AddProperty(
@@ -73,6 +73,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
                 providerPropertyType: typeof(int));
             role.SetSentinelFromProviderValue(0);
 
+            var sequence = runtimeEntityType.AddProperty(
+                "Sequence",
+                typeof(long),
+                propertyInfo: typeof(Entry).GetProperty("Sequence", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(Entry).GetField("<Sequence>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                sentinel: 0L);
+
             var sessionId = runtimeEntityType.AddProperty(
                 "SessionId",
                 typeof(Guid),
@@ -115,6 +122,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
 
             var index1 = runtimeEntityType.AddIndex(
                 new[] { sessionId, isPinned });
+
+            var index2 = runtimeEntityType.AddIndex(
+                new[] { sessionId, sequence },
+                unique: true);
 
             return runtimeEntityType;
         }

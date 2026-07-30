@@ -33,12 +33,6 @@ public sealed class ArcanumSettingsBindingTests
                         "name": "accounts/fireworks/models/qwen3p7-plus",
                         "supportsVision": true,
                         "reasoning": {
-                          "controlSupport": "EffortAndBudget",
-                          "supportsSummary": true,
-                          "supportsFull": false,
-                          "supportsStreaming": true,
-                          "reportsReasoningTokens": true,
-                          "allowsClientOutput": true,
                           "wireDialect": "OpenRouter",
                           "maxBudgetTokens": 32768
                         }
@@ -89,17 +83,8 @@ public sealed class ArcanumSettingsBindingTests
 
         Assert.True(settings.Providers[0].Models[0].SupportsVision);
 
-        ReasoningCapabilities? reasoning = settings.Providers[0].Models[0].Reasoning;
-
-        Assert.NotNull(reasoning);
-        Assert.Equal(ReasoningControlSupport.EffortAndBudget, reasoning.ControlSupport);
-        Assert.True(reasoning.SupportsSummary);
-        Assert.False(reasoning.SupportsFull);
-        Assert.True(reasoning.SupportsStreaming);
-        Assert.True(reasoning.ReportsReasoningTokens);
-        Assert.True(reasoning.AllowsClientOutput);
-        Assert.Equal(ReasoningWireDialect.OpenRouter, reasoning.WireDialect);
-        Assert.Equal(32_768, reasoning.MaxBudgetTokens);
+        Assert.Equal(ReasoningWireDialect.OpenRouter, settings.Providers[0].Models[0].WireDialect);
+        Assert.Equal(32768, settings.Providers[0].Models[0].MaxBudgetTokens);
 
     }
 

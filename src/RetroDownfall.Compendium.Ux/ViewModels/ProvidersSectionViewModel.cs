@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Compendium.Ux.Services;
 
 namespace RetroDownfall.Compendium.Ux.ViewModels;
 
@@ -13,6 +14,13 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
     [ObservableProperty] private string _fastModel = string.Empty;
 
     public ObservableCollection<ProviderViewModel> Providers { get; } = [];
+
+    private readonly IDialogService _dialogService;
+
+    public ProvidersSectionViewModel(IDialogService dialogService)
+    {
+        _dialogService = dialogService;
+    }
 
     public void LoadFrom(
         ProviderSettings[] providers,
@@ -29,7 +37,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         foreach (ProviderSettings provider in providers)
         {
 
-            Providers.Add(new ProviderViewModel(provider));
+            Providers.Add(new ProviderViewModel(provider, _dialogService));
 
         }
 
@@ -40,18 +48,33 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
     [RelayCommand]
     private void AddProvider() =>
-        Providers.Add(new ProviderViewModel(new ProviderSettings()));
+        Providers.Add(new ProviderViewModel(new ProviderSettings(), _dialogService));
 
     [RelayCommand]
-    private void RemoveProvider(ProviderViewModel? provider)
+    private async Task RemoveProviderAsync(ProviderViewModel? provider)
     {
 
-        if (provider is not null)
+        if (provider is null)
         {
 
-            Providers.Remove(provider);
+            return;
 
         }
+
+        bool confirmed = await _dialogService.ShowConfirmAsync(
+            "Remove Provider",
+            $"Are you sure you want to remove the provider '{provider.Name}'? This action cannot be undone.",
+            "Remove",
+            "Cancel");
+
+        if (!confirmed)
+        {
+
+            return;
+
+        }
+
+        Providers.Remove(provider);
 
     }
 
@@ -72,10 +95,14 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         private ProviderSettings _snapshot;
 
-        public ProviderViewModel(ProviderSettings snapshot)
+        private readonly IDialogService _dialogService;
+
+        public ProviderViewModel(ProviderSettings snapshot, IDialogService dialogService)
         {
 
             _snapshot = snapshot;
+
+            _dialogService = dialogService;
 
             LoadFrom(snapshot);
 
@@ -102,37 +129,64 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
             foreach (ModelEntry model in snapshot.Models)
             {
 
-                Models.Add(new ModelEntryViewModel(model));
+                Models.Add(new ModelEntryViewModel(model, _dialogService));
 
             }
 
         }
 
-        public ProviderSettings Build() => _snapshot with
+        public ProviderSettings Build()
         {
-            Name = Name,
-            Type = Type,
-            Endpoint = Endpoint,
-            CredentialEnvironmentVariable =
-                NullIfWhiteSpace(CredentialEnvironmentVariable),
-            Models = [.. Models.Select(static model => model.Build())],
-            ContextWindowLimit = ContextWindowLimit,
-        };
+            // Validate environment variable name
+            if (!ConfigurationInputValidator.TryValidateEnvironmentVariableName(
+                CredentialEnvironmentVariable,
+                out string? envVarError))
+            {
+                throw new InvalidOperationException(
+                    $"Provider '{Name}': {envVarError}");
+            }
+
+            return _snapshot with
+            {
+                Name = Name,
+                Type = Type,
+                Endpoint = Endpoint,
+                CredentialEnvironmentVariable =
+                    NullIfWhiteSpace(CredentialEnvironmentVariable),
+                Models = [.. Models.Select(static model => model.Build())],
+                ContextWindowLimit = ContextWindowLimit,
+            };
+        }
 
         [RelayCommand]
         private void AddModel() =>
-            Models.Add(new ModelEntryViewModel(new ModelEntry()));
+            Models.Add(new ModelEntryViewModel(new ModelEntry(), _dialogService));
 
         [RelayCommand]
-        private void RemoveModel(ModelEntryViewModel? model)
+        private async Task RemoveModelAsync(ModelEntryViewModel? model)
         {
 
-            if (model is not null)
+            if (model is null)
             {
 
-                Models.Remove(model);
+                return;
 
             }
+
+            bool confirmed = await _dialogService.ShowConfirmAsync(
+                "Remove Model",
+                $"Are you sure you want to remove the model '{model.Name}'? This action cannot be undone.",
+                "Remove",
+                "Cancel");
+
+            if (!confirmed)
+            {
+
+                return;
+
+            }
+
+            Models.Remove(model);
 
         }
 
@@ -147,18 +201,6 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private bool _hasReasoning;
 
-        [ObservableProperty] private ReasoningControlSupport _reasoningControl;
-
-        [ObservableProperty] private bool _reasoningSupportsSummary;
-
-        [ObservableProperty] private bool _reasoningSupportsFull;
-
-        [ObservableProperty] private bool _reasoningSupportsStreaming;
-
-        [ObservableProperty] private bool _reasoningReportsReasoningTokens;
-
-        [ObservableProperty] private bool _reasoningAllowsClientOutput;
-
         [ObservableProperty] private ReasoningWireDialect _reasoningDialect =
             ReasoningWireDialect.Standard;
 
@@ -168,22 +210,21 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         private ModelEntry _snapshot;
 
-        public ModelEntryViewModel(ModelEntry snapshot)
+        private readonly IDialogService _dialogService;
+
+        public ModelEntryViewModel(ModelEntry snapshot, IDialogService dialogService)
         {
 
             _snapshot = snapshot;
+
+            _dialogService = dialogService;
 
             LoadFrom(snapshot);
 
         }
 
-        public IReadOnlyList<ReasoningControlSupport> ReasoningControlSupportValues { get; } =
-            Enum.GetValues<ReasoningControlSupport>();
-
         public IReadOnlyList<ReasoningWireDialect> ReasoningWireDialectValues { get; } =
             Enum.GetValues<ReasoningWireDialect>();
-
-        public ReasoningCapabilities? Reasoning => BuildReasoning();
 
         public void LoadFrom(ModelEntry snapshot)
         {
@@ -194,29 +235,14 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             SupportsVision = snapshot.SupportsVision;
 
-            ReasoningCapabilities? reasoning = snapshot.Reasoning;
+            HasReasoning = snapshot.WireDialect is not null;
 
-            HasReasoning = reasoning is not null;
-
-            ReasoningControl = reasoning?.ControlSupport
-                ?? ReasoningControlSupport.None;
-
-            ReasoningSupportsSummary = reasoning?.SupportsSummary == true;
-
-            ReasoningSupportsFull = reasoning?.SupportsFull == true;
-
-            ReasoningSupportsStreaming = reasoning?.SupportsStreaming == true;
-
-            ReasoningReportsReasoningTokens = reasoning?.ReportsReasoningTokens == true;
-
-            ReasoningAllowsClientOutput = reasoning?.AllowsClientOutput == true;
-
-            ReasoningDialect = reasoning?.WireDialect
+            ReasoningDialect = snapshot.WireDialect
                 ?? ReasoningWireDialect.Standard;
 
-            HasReasoningMaxBudgetTokens = reasoning?.MaxBudgetTokens is not null;
+            HasReasoningMaxBudgetTokens = snapshot.MaxBudgetTokens is not null;
 
-            ReasoningMaxBudgetTokens = reasoning?.MaxBudgetTokens ?? 1;
+            ReasoningMaxBudgetTokens = snapshot.MaxBudgetTokens ?? 1;
 
         }
 
@@ -224,34 +250,11 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         {
             Name = Name,
             SupportsVision = SupportsVision,
-            Reasoning = BuildReasoning(),
+            WireDialect = HasReasoning ? ReasoningDialect : null,
+            MaxBudgetTokens = HasReasoning && HasReasoningMaxBudgetTokens
+                ? ReasoningMaxBudgetTokens
+                : null,
         };
-
-        private ReasoningCapabilities? BuildReasoning()
-        {
-
-            if (!HasReasoning)
-            {
-
-                return null;
-
-            }
-
-            return (_snapshot.Reasoning ?? new ReasoningCapabilities()) with
-            {
-                ControlSupport = ReasoningControl,
-                SupportsSummary = ReasoningSupportsSummary,
-                SupportsFull = ReasoningSupportsFull,
-                SupportsStreaming = ReasoningSupportsStreaming,
-                ReportsReasoningTokens = ReasoningReportsReasoningTokens,
-                AllowsClientOutput = ReasoningAllowsClientOutput,
-                WireDialect = ReasoningDialect,
-                MaxBudgetTokens = HasReasoningMaxBudgetTokens
-                    ? ReasoningMaxBudgetTokens
-                    : null,
-            };
-
-        }
 
     }
 

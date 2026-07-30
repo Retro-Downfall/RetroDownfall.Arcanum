@@ -12,6 +12,7 @@ using Microsoft.Net.Http.Headers;
 using RetroDownfall.Arcanum.Api.A2A;
 using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Health;
+using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Api.Configuration;
@@ -560,6 +561,8 @@ public static class ApiBootstrapper
         }
 
         apiGroup.MapHealthEndpoints();
+
+        apiGroup.MapServerLifecycleEndpoints();
 
         apiGroup.MapBudgetEndpoints();
 

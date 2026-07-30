@@ -670,6 +670,12 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// Direct seeding bypasses the repository allocation of <see cref="Entry.Sequence"/>, and the
+    /// unique <c>(SessionId, Sequence)</c> index rejects duplicates, so stamp append order here.
+    /// </summary>
+    private long _seededSequence;
+
     private async Task<DateTimeOffset> CreateEntryAsync(Guid sessionId, string content)
     {
 
@@ -680,6 +686,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Role = MessageRole.User,
             Content = content,
             CreatedAt = DateTimeOffset.UtcNow,
+            Sequence = ++_seededSequence,
         };
 
         _db!.Entries.Add(entry);

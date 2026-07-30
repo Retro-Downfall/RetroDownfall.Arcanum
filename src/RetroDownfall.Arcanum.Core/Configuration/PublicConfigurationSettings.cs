@@ -45,6 +45,19 @@ public sealed record FeatureSettings
 
     public bool WebBrowsing { get; set; }
 
+    /// <summary>
+    /// Hard gate: when false, all reasoning controls and output are disabled regardless of model or
+    /// request. When true, reasoning is permitted but still only injected when an operator sets a
+    /// non-null default effort or the request carries explicit reasoning options.
+    /// </summary>
+    public bool Reasoning { get; set; } = true;
+
+    /// <summary>
+    /// Whether client-safe reasoning output is projected to the client. When false, reasoning may
+    /// still run internally for models that produce it, but nothing reaches the response.
+    /// </summary>
+    public bool ReasoningSummaries { get; set; }
+
     public bool Guardrails { get; set; }
 
     public bool WorkspaceChecks { get; set; } = true;

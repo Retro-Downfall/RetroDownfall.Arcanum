@@ -88,17 +88,8 @@ public sealed class ModelsProvidersEndpointTests
             [
                 new ModelEntry("vision-model", SupportsVision: true)
                 {
-                    Reasoning = new ReasoningCapabilities
-                    {
-                        ControlSupport = ReasoningControlSupport.EffortAndBudget,
-                        SupportsSummary = true,
-                        SupportsFull = true,
-                        SupportsStreaming = true,
-                        ReportsReasoningTokens = true,
-                        AllowsClientOutput = true,
-                        WireDialect = ReasoningWireDialect.OpenRouter,
-                        MaxBudgetTokens = 65_536,
-                    },
+                    WireDialect = ReasoningWireDialect.OpenRouter,
+                    MaxBudgetTokens = 65_536,
                 },
                 new ModelEntry("text-model"),
                 new ModelEntry("gpt-5"),
@@ -171,18 +162,11 @@ public sealed class ModelsProvidersEndpointTests
 
         ModelInfoDto reasoner = body.Data!.Single(m => m.Model == "vision-model");
 
-        Assert.NotNull(reasoner.Reasoning);
-        Assert.Equal(ReasoningControlSupport.EffortAndBudget, reasoner.Reasoning!.ControlSupport);
-        Assert.True(reasoner.Reasoning.SupportsSummary);
-        Assert.True(reasoner.Reasoning.SupportsFull);
-        Assert.True(reasoner.Reasoning.SupportsStreaming);
-        Assert.True(reasoner.Reasoning.ReportsReasoningTokens);
-        Assert.True(reasoner.Reasoning.AllowsClientOutput);
-        Assert.Equal(ReasoningWireDialect.OpenRouter, reasoner.Reasoning.WireDialect);
-        Assert.Equal(65_536, reasoner.Reasoning.MaxBudgetTokens);
+        Assert.Equal(ReasoningWireDialect.OpenRouter, reasoner.WireDialect);
+        Assert.Equal(65_536, reasoner.MaxBudgetTokens);
         Assert.Null(reasoner.PromptCaching);
 
-        Assert.Null(body.Data!.Single(m => m.Model == "text-model").Reasoning);
+        Assert.Null(body.Data!.Single(m => m.Model == "text-model").WireDialect);
         Assert.Null(body.Data.Single(m => m.Model == "text-model").PromptCaching);
         Assert.Equal(
             PromptCachingControlMode.Explicit,

@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Compendium.Ux.Models;
@@ -9,9 +11,15 @@ namespace RetroDownfall.Compendium.Ux.ViewModels;
 /// <summary>
 /// Applies generic descriptor field edits onto an <see cref="ArcanumSettings"/> snapshot.
 /// Uses reflection because Compendium is a desktop editor (not Native AOT-shipped).
+/// PropertyInfo lookups are cached per (Type, propertyName) pair to avoid repeated reflection.
 /// </summary>
 public static class GenericSettingsUpdater
 {
+
+    private static readonly ConcurrentDictionary<(Type Type, string Name), PropertyInfo?> PropertyCache = new();
+
+    private static readonly BindingFlags PropertyLookupFlags =
+        BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase;
 
     public static object? ReadValue(ArcanumSettings settings, string key)
     {
@@ -28,9 +36,7 @@ public static class GenericSettingsUpdater
 
             }
 
-            PropertyInfo? property = node.GetType().GetProperty(
-                ToPascal(part),
-                BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            PropertyInfo? property = GetCachedProperty(node.GetType(), ToPascal(part));
 
             if (property is null)
             {
@@ -47,7 +53,10 @@ public static class GenericSettingsUpdater
 
     }
 
-    public static ArcanumSettings ApplyFields(ArcanumSettings settings, IReadOnlyList<GenericSettingFieldViewModel> fields)
+    public static ArcanumSettings ApplyFields(
+        ArcanumSettings settings,
+        IReadOnlyList<GenericSettingFieldViewModel> fields,
+        ILogger? logger = null)
     {
 
         ArcanumSettings result = settings;
@@ -55,7 +64,21 @@ public static class GenericSettingsUpdater
         foreach (GenericSettingFieldViewModel field in fields)
         {
 
-            result = SetByPath(result, field.Descriptor.Key, Coerce(field)) ?? result;
+            ArcanumSettings? updated = SetByPath(result, field.Descriptor.Key, Coerce(field), logger);
+
+            if (updated is null)
+            {
+
+                logger?.LogWarning(
+                    "Failed to apply generic setting '{Key}' (kind {Kind}) to the configuration snapshot; the previous value was preserved.",
+                    field.Descriptor.Key,
+                    field.Descriptor.Kind);
+
+                continue;
+
+            }
+
+            result = updated;
 
         }
 
@@ -82,7 +105,7 @@ public static class GenericSettingsUpdater
 
     }
 
-    private static ArcanumSettings? SetByPath(ArcanumSettings root, string key, object? value)
+    private static ArcanumSettings? SetByPath(ArcanumSettings root, string key, object? value, ILogger? logger)
     {
 
         string[] parts = key.Split('.', StringSplitOptions.RemoveEmptyEntries);
@@ -94,21 +117,25 @@ public static class GenericSettingsUpdater
 
         }
 
-        return SetByPath(root, parts, 0, value) as ArcanumSettings;
+        return SetByPath(root, parts, 0, value, logger) as ArcanumSettings;
 
     }
 
-    private static object? SetByPath(object node, string[] parts, int index, object? value)
+    private static object? SetByPath(object node, string[] parts, int index, object? value, ILogger? logger)
     {
 
         string part = parts[index];
 
-        PropertyInfo? property = node.GetType().GetProperty(
-            ToPascal(part),
-            BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        PropertyInfo? property = GetCachedProperty(node.GetType(), ToPascal(part));
 
         if (property is null)
         {
+
+            logger?.LogWarning(
+                "Configuration property '{PropertyName}' was not found on type '{TypeName}' while applying path segment '{Segment}'.",
+                ToPascal(part),
+                node.GetType().Name,
+                part);
 
             return null;
 
@@ -126,7 +153,24 @@ public static class GenericSettingsUpdater
         if (child is null)
         {
 
-            child = Activator.CreateInstance(property.PropertyType);
+            try
+            {
+
+                child = Activator.CreateInstance(property.PropertyType);
+
+            }
+            catch (Exception ex)
+            {
+
+                logger?.LogWarning(
+                    ex,
+                    "Could not instantiate intermediate configuration type '{TypeName}' for path segment '{Segment}'.",
+                    property.PropertyType.Name,
+                    part);
+
+                return null;
+
+            }
 
             if (child is null)
             {
@@ -137,7 +181,7 @@ public static class GenericSettingsUpdater
 
         }
 
-        object? updatedChild = SetByPath(child, parts, index + 1, value);
+        object? updatedChild = SetByPath(child, parts, index + 1, value, logger);
 
         if (updatedChild is null)
         {
@@ -180,9 +224,7 @@ public static class GenericSettingsUpdater
 
         ConstructorInfo? ctor = type.GetConstructors()
             .Where(c => c.GetParameters().All(p =>
-                type.GetProperty(
-                    p.Name ?? string.Empty,
-                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase) is not null
+                GetCachedProperty(type, p.Name ?? string.Empty) is not null
                 || p.HasDefaultValue))
             .OrderByDescending(c => c.GetParameters().Length)
             .FirstOrDefault();
@@ -230,9 +272,7 @@ public static class GenericSettingsUpdater
 
             ParameterInfo parameter = parameters[i];
 
-            PropertyInfo? source = type.GetProperty(
-                parameter.Name ?? string.Empty,
-                BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            PropertyInfo? source = GetCachedProperty(type, parameter.Name ?? string.Empty);
 
             if (source is not null && source.Name.Equals(property.Name, StringComparison.OrdinalIgnoreCase))
             {
@@ -366,6 +406,13 @@ public static class GenericSettingsUpdater
             return value;
 
         }
+
+    }
+
+    private static PropertyInfo? GetCachedProperty(Type type, string name)
+    {
+
+        return PropertyCache.GetOrAdd((type, name), static key => key.Type.GetProperty(key.Name, PropertyLookupFlags));
 
     }
 

@@ -33,6 +33,9 @@ public sealed class ConfigurationValidator(
     internal const string ObsoleteProviderCapabilityProfileMessage =
         "Provider/model tokenization and prompt-caching overrides are no longer supported. Arcanum uses its built-in capability catalog and conservative unknown-model behavior.";
 
+    internal const string ObsoleteReasoningCapabilityMessage =
+        "Per-model reasoning capability declarations (controlSupport, supportsSummary, supportsFull, supportsStreaming, reportsReasoningTokens, allowsClientOutput) are no longer supported. Arcanum derives reasoning from the declared reasoning block and wire dialect; retain only wireDialect and maxBudgetTokens for nonstandard third-party endpoints.";
+
     internal const string ObsoleteProviderLlamaCppMessage =
         "Provider-level llamaCpp (including modelMap) is no longer supported. List models explicitly under Providers[].Models.";
 
@@ -215,6 +218,24 @@ public sealed class ConfigurationValidator(
                         errors.Add(new ConfigurationValidationError(
                             $"{modelPointer}.{char.ToLowerInvariant(removedCapability[0]) + removedCapability[1..]}",
                             ObsoleteProviderCapabilityProfileMessage));
+                    }
+                }
+
+                foreach (string removedReasoningFact in new[]
+                {
+                    "ControlSupport",
+                    "SupportsSummary",
+                    "SupportsFull",
+                    "SupportsStreaming",
+                    "ReportsReasoningTokens",
+                    "AllowsClientOutput",
+                })
+                {
+                    if (model.GetSection("Reasoning").GetSection(removedReasoningFact).Exists())
+                    {
+                        errors.Add(new ConfigurationValidationError(
+                            $"{modelPointer}.reasoning.{char.ToLowerInvariant(removedReasoningFact[0]) + removedReasoningFact[1..]}",
+                            ObsoleteReasoningCapabilityMessage));
                     }
                 }
             }
@@ -709,10 +730,17 @@ public sealed class ConfigurationValidator(
                 return true;
             }
 
-            if (string.Equals(suppliedName, "reasoning", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(suppliedName, "wireDialect", StringComparison.OrdinalIgnoreCase))
             {
-                propertyName = "reasoning";
-                propertyType = typeof(ReasoningCapabilities);
+                propertyName = "wireDialect";
+                propertyType = typeof(ReasoningWireDialect);
+                return true;
+            }
+
+            if (string.Equals(suppliedName, "maxBudgetTokens", StringComparison.OrdinalIgnoreCase))
+            {
+                propertyName = "maxBudgetTokens";
+                propertyType = typeof(int?);
                 return true;
             }
 
@@ -892,8 +920,8 @@ public sealed class ConfigurationValidator(
 
             for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
             {
-                ValidateReasoningCapabilities(
-                    models[modelIndex].Reasoning,
+                ValidateReasoningFacts(
+                    models[modelIndex],
                     $"{providerPointer}.models[{modelIndex}].reasoning",
                     errors);
             }
@@ -1574,55 +1602,26 @@ public sealed class ConfigurationValidator(
 
     }
 
-    private static void ValidateReasoningCapabilities(
-        ReasoningCapabilities? reasoning,
+    private static void ValidateReasoningFacts(
+        ModelEntry model,
         string pointer,
         List<ConfigurationValidationError> errors)
     {
-        if (reasoning is null)
+        if (model.WireDialect is null && model.MaxBudgetTokens is null)
         {
             return;
         }
 
-        bool validControlSupport = Enum.IsDefined(reasoning.ControlSupport);
-
-        if (!validControlSupport)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.controlSupport",
-                $"Reasoning ControlSupport '{reasoning.ControlSupport}' is not defined."));
-        }
-
-        bool validWireDialect = Enum.IsDefined(reasoning.WireDialect);
+        bool validWireDialect = model.WireDialect is null || Enum.IsDefined(model.WireDialect.Value);
 
         if (!validWireDialect)
         {
             errors.Add(new ConfigurationValidationError(
                 $"{pointer}.wireDialect",
-                $"Reasoning WireDialect '{reasoning.WireDialect}' is not defined."));
+                $"Reasoning WireDialect '{model.WireDialect}' is not defined."));
         }
 
-        bool supportsBudget = validControlSupport
-            && reasoning.ControlSupport is ReasoningControlSupport.Budget
-                or ReasoningControlSupport.EffortAndBudget;
-
-        if (validControlSupport && validWireDialect)
-        {
-            if (supportsBudget && reasoning.WireDialect == ReasoningWireDialect.Standard)
-            {
-                errors.Add(new ConfigurationValidationError(
-                    $"{pointer}.wireDialect",
-                    "Reasoning budget control requires an explicitly configured nonstandard numeric-budget WireDialect."));
-            }
-            else if (!supportsBudget && reasoning.WireDialect != ReasoningWireDialect.Standard)
-            {
-                errors.Add(new ConfigurationValidationError(
-                    $"{pointer}.wireDialect",
-                    "A nonstandard reasoning WireDialect requires Budget or EffortAndBudget control support."));
-            }
-        }
-
-        if (reasoning.MaxBudgetTokens is { } maxBudgetTokens)
+        if (model.MaxBudgetTokens is { } maxBudgetTokens)
         {
             if (maxBudgetTokens != ArcanumSettingClamps.ReasoningBudgetTokens(maxBudgetTokens))
             {
@@ -1630,29 +1629,17 @@ public sealed class ConfigurationValidator(
                     $"{pointer}.maxBudgetTokens",
                     $"Reasoning MaxBudgetTokens ({maxBudgetTokens}) must be within the 1-2,097,152 token clamp range."));
             }
-
-            if (validControlSupport && !supportsBudget)
-            {
-                errors.Add(new ConfigurationValidationError(
-                    $"{pointer}.maxBudgetTokens",
-                    "Reasoning MaxBudgetTokens requires Budget or EffortAndBudget control support."));
-            }
         }
 
-        bool supportsVisibleOutput = reasoning.SupportsSummary || reasoning.SupportsFull;
-
-        if (reasoning.AllowsClientOutput && !supportsVisibleOutput)
+        // The adapter enforces this at request time; validating it at config load gives a clearer
+        // operator-facing error and rejects a silently unusable combination.
+        if (validWireDialect
+            && model.MaxBudgetTokens is not null
+            && model.WireDialect == ReasoningWireDialect.Standard)
         {
             errors.Add(new ConfigurationValidationError(
-                $"{pointer}.allowsClientOutput",
-                "Reasoning AllowsClientOutput requires SupportsSummary or SupportsFull."));
-        }
-
-        if (reasoning.SupportsStreaming && !supportsVisibleOutput)
-        {
-            errors.Add(new ConfigurationValidationError(
-                $"{pointer}.supportsStreaming",
-                "Reasoning SupportsStreaming requires SupportsSummary or SupportsFull."));
+                $"{pointer}.wireDialect",
+                "A numeric reasoning budget requires an explicitly configured nonstandard wire dialect."));
         }
     }
 

@@ -73,6 +73,49 @@ internal sealed class SessionEntryPersistence
 
     }
 
+    /// <summary>
+    /// Reserves <paramref name="count"/> consecutive <see cref="Entry.Sequence"/> values for
+    /// <paramref name="sessionId"/> and returns the first. Callers assign them in append order.
+    /// Correct because every entry insert holds the per-session write lock, and the unique
+    /// <c>(SessionId, Sequence)</c> index turns any escape into a write failure rather than a
+    /// silently reordered transcript. Pending inserts already tracked on this context are included
+    /// so several batches inside one transaction cannot collide.
+    /// </summary>
+    public async Task<long> ReserveSequenceRangeAsync(
+        Guid sessionId,
+        int count,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (count < 1)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(count), count, "At least one sequence value is required.");
+
+        }
+
+        long persistedMax = await SqliteBusyRetry
+            .ExecuteAsync(
+                () => _db.Entries
+                    .Where(e => e.SessionId == sessionId)
+                    .MaxAsync(e => (long?)e.Sequence, cancellationToken),
+                cancellationToken)
+            .ConfigureAwait(false)
+            ?? 0L;
+
+        long pendingMax = _db.ChangeTracker
+            .Entries<Entry>()
+            .Where(tracked =>
+                tracked.State is EntityState.Added
+                && tracked.Entity.SessionId == sessionId)
+            .Select(tracked => tracked.Entity.Sequence)
+            .DefaultIfEmpty(0L)
+            .Max();
+
+        return Math.Max(persistedMax, pendingMax) + 1L;
+
+    }
+
     public Task BumpSessionUpdatedAtAsync(
         Guid sessionId,
         DateTimeOffset updatedAt,
@@ -406,6 +449,17 @@ internal sealed class SessionEntryPersistence
                     interaction.Receipt);
 
             }
+
+            // The call and its result share one CreatedAt, so the sequence is what keeps the result
+            // after its call.
+            long firstSequence = await ReserveSequenceRangeAsync(
+                interaction.SessionId,
+                count: 2,
+                cancellationToken).ConfigureAwait(false);
+
+            expectedCall.Sequence = firstSequence;
+
+            expectedResult.Sequence = firstSequence + 1L;
 
             _db.Entries.Add(expectedCall);
 

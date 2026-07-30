@@ -87,6 +87,7 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
             Content = "moonstone archive beneath observatory",
             ModelUsed = "test-model",
             CreatedAt = now,
+            Sequence = 1,
         });
 
         await _db.SaveChangesAsync(CancellationToken.None);

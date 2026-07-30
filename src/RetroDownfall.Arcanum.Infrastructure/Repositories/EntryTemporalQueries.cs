@@ -8,15 +8,22 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 /// <summary>
 /// Parameterized raw SQL for <c>Entries</c> temporal reads. EF Core's SQLite provider
-/// cannot translate <see cref="DateTimeOffset"/> in ORDER BY or comparisons, so these
-/// queries run against the sortable UTC <c>CreatedAt</c> text column. Keyset pages use
-/// <c>(CreatedAt, Id)</c> tie-breaks; watermark counts use exclusive <c>CreatedAt &gt;</c>.
+/// cannot translate <see cref="DateTimeOffset"/> in ORDER BY or comparisons, so watermark
+/// filters run against the sortable UTC <c>CreatedAt</c> text column.
 /// </summary>
+/// <remarks>
+/// Ordering and paging are authoritative on <see cref="Entry.Sequence"/>, never on
+/// <c>(CreatedAt, Id)</c>. A turn writes its prompt and answer — and a tool call with its result —
+/// under one identical <c>CreatedAt</c>, and <c>Id</c> is a random Guid, so a
+/// <c>(CreatedAt, Id)</c> order inverts those pairs about half the time. Watermark reads still
+/// filter on <c>CreatedAt</c> because <c>Session.LastSummarizedMessageAt</c> is a timestamp, but
+/// they order by <c>Sequence</c>.
+/// </remarks>
 internal static class EntryTemporalQueries
 {
 
     /// <summary>
-    /// Most-recent window: <c>ORDER BY "CreatedAt" DESC LIMIT</c>. Call sites reverse
+    /// Most-recent window: <c>ORDER BY "Sequence" DESC LIMIT</c>. Call sites reverse
     /// the result to obtain ascending chronological order.
     /// </summary>
     public static IQueryable<Entry> LoadRecentDescending(
@@ -24,39 +31,46 @@ internal static class EntryTemporalQueries
         Guid sessionId,
         int limit) =>
         db.Entries.FromSql(
-            $"""SELECT * FROM "Entries" WHERE "SessionId" = {sessionId} ORDER BY "CreatedAt" DESC LIMIT {limit}""");
+            $"""SELECT * FROM "Entries" WHERE "SessionId" = {sessionId} ORDER BY "Sequence" DESC LIMIT {limit}""");
 
     /// <summary>
-    /// Ascending keyset page after an exclusive cursor. Normalizes <paramref name="afterCreatedAt"/>
-    /// to UTC; uses <c>CreatedAt &gt;</c> or <c>(CreatedAt = AND Id &gt;)</c>.
+    /// Ascending page after an exclusive <see cref="Entry.Sequence"/> cursor. Pass
+    /// <c>0</c> to start from the beginning of the session.
     /// </summary>
-    public static IQueryable<Entry> LoadAfterKeyset(
+    public static IQueryable<Entry> LoadAfterSequence(
         ArcanumDbContext db,
         Guid sessionId,
-        DateTimeOffset afterCreatedAt,
-        Guid afterId,
-        int limit)
-    {
-
-        DateTimeOffset afterUtc = afterCreatedAt.ToUniversalTime();
-
-        return db.Entries.FromSql(
+        long afterSequence,
+        int limit) =>
+        db.Entries.FromSql(
             $"""
             SELECT * FROM "Entries"
-            WHERE "SessionId" = {sessionId}
-              AND ("CreatedAt" > {afterUtc} OR ("CreatedAt" = {afterUtc} AND "Id" > {afterId}))
-            ORDER BY "CreatedAt", "Id"
+            WHERE "SessionId" = {sessionId} AND "Sequence" > {afterSequence}
+            ORDER BY "Sequence"
             LIMIT {limit}
             """);
 
-    }
+    /// <summary>
+    /// Descending page before an exclusive <see cref="Entry.Sequence"/> cursor.
+    /// </summary>
+    public static IQueryable<Entry> LoadBeforeSequence(
+        ArcanumDbContext db,
+        Guid sessionId,
+        long beforeSequence,
+        int limit) =>
+        db.Entries.FromSql(
+            $"""
+            SELECT * FROM "Entries"
+            WHERE "SessionId" = {sessionId} AND "Sequence" < {beforeSequence}
+            ORDER BY "Sequence" DESC
+            LIMIT {limit}
+            """);
 
     /// <summary>
-    /// Descending keyset page before an exclusive cursor. Normalizes
-    /// <paramref name="beforeCreatedAt"/> to UTC; uses <c>CreatedAt &lt;</c> or
-    /// <c>(CreatedAt = AND Id &lt;)</c>.
+    /// Descending page before a <c>(CreatedAt, Id)</c> cursor whose entry no longer exists, so its
+    /// sequence cannot be resolved. Keeps "load older" working across a deleted cursor entry.
     /// </summary>
-    public static IQueryable<Entry> LoadBeforeKeyset(
+    public static IQueryable<Entry> LoadBeforeDeletedKeyset(
         ArcanumDbContext db,
         Guid sessionId,
         DateTimeOffset beforeCreatedAt,
@@ -71,14 +85,29 @@ internal static class EntryTemporalQueries
             SELECT * FROM "Entries"
             WHERE "SessionId" = {sessionId}
               AND ("CreatedAt" < {beforeUtc} OR ("CreatedAt" = {beforeUtc} AND "Id" < {beforeId}))
-            ORDER BY "CreatedAt" DESC, "Id" DESC
+            ORDER BY "Sequence" DESC
             LIMIT {limit}
             """);
 
     }
 
     /// <summary>
-    /// Descending offset page without a cursor: <c>ORDER BY "CreatedAt" DESC, "Id" DESC</c>.
+    /// Resolves an entry's <see cref="Entry.Sequence"/>, or <c>null</c> when the entry is not in
+    /// the session.
+    /// </summary>
+    public static IQueryable<long?> SequenceOf(
+        ArcanumDbContext db,
+        Guid sessionId,
+        Guid entryId) =>
+        db.Database.SqlQuery<long?>(
+            $"""
+            SELECT "Sequence" AS "Value" FROM "Entries"
+            WHERE "SessionId" = {sessionId} AND "Id" = {entryId}
+            LIMIT 1
+            """);
+
+    /// <summary>
+    /// Descending offset page without a cursor: <c>ORDER BY "Sequence" DESC</c>.
     /// </summary>
     public static IQueryable<Entry> LoadDescendingPaged(
         ArcanumDbContext db,
@@ -89,7 +118,7 @@ internal static class EntryTemporalQueries
             $"""
             SELECT * FROM "Entries"
             WHERE "SessionId" = {sessionId}
-            ORDER BY "CreatedAt" DESC, "Id" DESC
+            ORDER BY "Sequence" DESC
             LIMIT {limit} OFFSET {offset}
             """);
 
@@ -147,7 +176,7 @@ internal static class EntryTemporalQueries
             SELECT s.*
             FROM "Selected" AS s
             WHERE (SELECT COUNT(*) FROM "Selected") <= {maxRows}
-            ORDER BY s."CreatedAt", s."Id"
+            ORDER BY s."Sequence"
             LIMIT {maxRows}
             """);
 
@@ -189,26 +218,18 @@ internal static class EntryTemporalQueries
     }
 
     /// <summary>
-    /// Count entries at or before an inclusive <c>(CreatedAt, Id)</c> cursor — used by session
+    /// Count entries at or before an inclusive <see cref="Entry.Sequence"/> cutoff — used by session
     /// fork's "up to and including this entry" cutoff to pre-check the code-owned per-session entry
     /// limit before copying anything.
     /// </summary>
-    public static IQueryable<int> CountAtOrBeforeKeyset(
+    public static IQueryable<int> CountAtOrBeforeSequence(
         ArcanumDbContext db,
         Guid sessionId,
-        DateTimeOffset atOrBeforeCreatedAt,
-        Guid atOrBeforeId)
-    {
-
-        DateTimeOffset atOrBeforeUtc = atOrBeforeCreatedAt.ToUniversalTime();
-
-        return db.Database.SqlQuery<int>(
+        long atOrBeforeSequence) =>
+        db.Database.SqlQuery<int>(
             $"""
             SELECT COUNT(*) AS "Value" FROM "Entries"
-            WHERE "SessionId" = {sessionId}
-              AND ("CreatedAt" < {atOrBeforeUtc} OR ("CreatedAt" = {atOrBeforeUtc} AND "Id" <= {atOrBeforeId}))
+            WHERE "SessionId" = {sessionId} AND "Sequence" <= {atOrBeforeSequence}
             """);
-
-    }
 
 }

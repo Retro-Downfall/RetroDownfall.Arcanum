@@ -387,6 +387,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 Content = $"entry-{i}",
                 ModelUsed = "test-model",
                 CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
+                Sequence = i,
             });
 
         }
@@ -441,6 +442,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 Content = $"entry-{i}",
                 ModelUsed = "test-model",
                 CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
+                Sequence = i,
             });
 
         }
@@ -460,6 +462,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             Content = "[ToolCall: inspect({})]",
             ModelUsed = "test-model",
             CreatedAt = tiedTimestamp,
+            Sequence = 25,
             ToolCallId = "call-25",
             ToolName = "inspect",
             ToolArguments = "{}",
@@ -473,6 +476,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             Content = "[ToolResult: ok]",
             ModelUsed = "test-model",
             CreatedAt = tiedTimestamp,
+            Sequence = 26,
             ToolCallId = "call-25",
         });
 
@@ -790,6 +794,8 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 Content = $"before-watermark-{i}",
                 ModelUsed = "test-model",
                 CreatedAt = new DateTimeOffset(watermark.AddMinutes(-i), TimeSpan.Zero),
+                // Seeded newest-first, so invert the loop index to keep sequence chronological.
+                Sequence = 4 - i,
             });
 
         }
@@ -813,6 +819,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 Content = $"after-watermark-{i}",
                 ModelUsed = "test-model",
                 CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
+                Sequence = 3 + i,
             });
 
         }
@@ -1111,6 +1118,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
                 Content = $"entry-{i}",
                 ModelUsed = "test-model",
                 CreatedAt = new DateTimeOffset(watermark.AddMinutes(i), TimeSpan.Zero),
+                Sequence = i,
             });
         }
 

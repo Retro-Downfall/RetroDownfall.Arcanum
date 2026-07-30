@@ -198,13 +198,7 @@ public sealed class OpenAiV1EndpointTests
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        ReasoningCapabilities capabilities = new()
-        {
-            ControlSupport = ReasoningControlSupport.Effort,
-            SupportsSummary = true,
-            AllowsClientOutput = true,
-            WireDialect = ReasoningWireDialect.Standard,
-        };
+        
 
         using ArcanumWebApplicationFactory factory = new()
         {
@@ -218,7 +212,7 @@ public sealed class OpenAiV1EndpointTests
                         Name = "explicitly-configured",
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = "https://example.test/v1",
-                        Models = [new ModelEntry("reasoner", Reasoning: capabilities)],
+                        Models = [new ModelEntry("reasoner", WireDialect: ReasoningWireDialect.OpenRouter)],
                     },
                 ],
             },
@@ -254,11 +248,7 @@ public sealed class OpenAiV1EndpointTests
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        ReasoningCapabilities capabilities = new()
-        {
-            ControlSupport = ReasoningControlSupport.Effort,
-            WireDialect = ReasoningWireDialect.Standard,
-        };
+        
 
         using ArcanumWebApplicationFactory factory = new()
         {
@@ -272,7 +262,7 @@ public sealed class OpenAiV1EndpointTests
                         Name = "explicitly-configured",
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = "https://example.test/v1",
-                        Models = [new ModelEntry("reasoner", Reasoning: capabilities)],
+                        Models = [new ModelEntry("reasoner", WireDialect: ReasoningWireDialect.OpenRouter)],
                     },
                 ],
             },
@@ -316,13 +306,7 @@ public sealed class OpenAiV1EndpointTests
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        ReasoningCapabilities capabilities = new()
-        {
-            ControlSupport = ReasoningControlSupport.Budget,
-            AllowsClientOutput = false,
-            WireDialect = ReasoningWireDialect.OpenRouter,
-            MaxBudgetTokens = 64,
-        };
+        
         using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
@@ -335,7 +319,7 @@ public sealed class OpenAiV1EndpointTests
                         Name = "reasoning-validation",
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = "https://example.test/v1",
-                        Models = [new ModelEntry("reasoner", Reasoning: capabilities)],
+                        Models = [new ModelEntry("reasoner", WireDialect: ReasoningWireDialect.OpenRouter, MaxBudgetTokens: 64)],
                     },
                 ],
             },
@@ -355,12 +339,6 @@ public sealed class OpenAiV1EndpointTests
             (
                 "\"reasoning_budget\": 65",
                 ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit),
-            (
-                "\"reasoning_effort\": \"low\"",
-                ErrorCodes.Validation.UnsupportedReasoningControl),
-            (
-                "\"reasoning_output\": \"summary\"",
-                ErrorCodes.Validation.UnsupportedReasoningOutput),
         ];
 
         foreach ((string fields, string internalCode) in cases)
@@ -719,7 +697,7 @@ public sealed class OpenAiV1EndpointTests
 
         Assert.Equal("test", model.OwnedBy);
 
-        Assert.Null(model.Reasoning);
+        Assert.Null(model.WireDialect);
 
     }
 
@@ -745,16 +723,8 @@ public sealed class OpenAiV1EndpointTests
                         [
                             new ModelEntry("gpt-5", SupportsVision: true)
                             {
-                                Reasoning = new ReasoningCapabilities
-                                {
-                                    ControlSupport = ReasoningControlSupport.Budget,
-                                    SupportsSummary = true,
-                                    SupportsStreaming = true,
-                                    ReportsReasoningTokens = true,
-                                    AllowsClientOutput = true,
-                                    WireDialect = ReasoningWireDialect.AnthropicThinking,
-                                    MaxBudgetTokens = 32_768,
-                                },
+                                WireDialect = ReasoningWireDialect.AnthropicThinking,
+                                MaxBudgetTokens = 32_768,
                             },
                         ],
                     },
@@ -780,14 +750,8 @@ public sealed class OpenAiV1EndpointTests
 
         Assert.Equal("vision-provider", model.ProviderName);
 
-        Assert.NotNull(model.Reasoning);
-        Assert.Equal(ReasoningControlSupport.Budget, model.Reasoning!.ControlSupport);
-        Assert.True(model.Reasoning.SupportsSummary);
-        Assert.True(model.Reasoning.SupportsStreaming);
-        Assert.True(model.Reasoning.ReportsReasoningTokens);
-        Assert.True(model.Reasoning.AllowsClientOutput);
-        Assert.Equal(ReasoningWireDialect.AnthropicThinking, model.Reasoning.WireDialect);
-        Assert.Equal(32_768, model.Reasoning.MaxBudgetTokens);
+        Assert.Equal(ReasoningWireDialect.AnthropicThinking, model.WireDialect);
+        Assert.Equal(32_768, model.MaxBudgetTokens);
         Assert.Equal(PromptCachingControlMode.Explicit, model.PromptCaching?.ControlMode);
         Assert.Equal(
             PromptCachingWireDialect.OpenAiPromptCacheRetention,

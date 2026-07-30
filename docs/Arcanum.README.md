@@ -96,10 +96,10 @@ Arcanum uses Dungeons & Dragons and/or fantasy metaphors for domain concepts. Ne
 
 ### 9. Docs travel with code
 
-The repository maintains exactly four docs. Architecture, APIs, persistence, runtime behavior,
+The repository maintains exactly five docs (`Arcanum.DESIGN.md`, `Arcanum.README.md`, `Arcanum.Design.Human.md`, `Compendium.README.md`, `Arcanum.DEBUGGING.Human.md`). Architecture, APIs, persistence, runtime behavior,
 testing, and packaging update `Arcanum.DESIGN.md`; the complete public configuration contract updates
 `Compendium.README.md`; agent/operator orientation updates this file; human navigation updates
-`Arcanum.Design.Human.md`. Keep the owning documents current in the same change set. See
+`Arcanum.Design.Human.md`; debugging guides update `Arcanum.DEBUGGING.Human.md`. Keep the owning documents current in the same change set. See
 [DESIGN.md §18](Arcanum.DESIGN.md#18-document-maintenance).
 
 ---
@@ -378,9 +378,15 @@ endpoints, or models use conservative estimated accounting and no prompt-cache d
 ### Local Grimoire reinstall
 
 Arcanum has no supported user-data migration path between incompatible local schemas. A developer
-database created before the current inference-accounting schema must be recreated: stop every
-Arcanum host and daemon, back up anything needed, delete the database and its WAL/SHM sidecars, and
-restart. A database created by the current schema needs no reinstall.
+database created before the current schema must be recreated: stop every Arcanum host and daemon,
+back up anything needed, delete the database and its WAL/SHM sidecars, and restart. A database
+created by the current schema needs no reinstall.
+
+**A reinstall is required now.** `Entries` gained a `Sequence` column and a unique
+`(SessionId, Sequence)` index, which give a session's transcript an explicit append order instead of
+inferring one from timestamps that a prompt and its answer share. Existing rows never recorded that
+order, so there is nothing to backfill and the database is recreated instead
+([DESIGN §5.4.1](Arcanum.DESIGN.md#541-grimoire-data-model), [§5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)).
 
 macOS/Linux (Bash):
 

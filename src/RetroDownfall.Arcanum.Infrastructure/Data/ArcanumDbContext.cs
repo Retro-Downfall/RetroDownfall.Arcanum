@@ -90,9 +90,13 @@ public sealed class ArcanumDbContext(
             entity.Property(e => e.ToolCallId).HasMaxLength(256);
             entity.Property(e => e.ToolName).HasMaxLength(256);
             entity.Property(e => e.IsPinned).HasDefaultValue(false);
+            // Assigned by the repositories, never by the store: EF must always write the value it
+            // was given rather than treating 0 as "let the database decide".
+            entity.Property(e => e.Sequence).ValueGeneratedNever();
             entity.HasIndex(m => new { m.SessionId, m.CreatedAt });
             entity.HasIndex(m => m.Role);
             entity.HasIndex(m => new { m.SessionId, m.IsPinned });
+            entity.HasIndex(m => new { m.SessionId, m.Sequence }).IsUnique();
         });
 
         modelBuilder.Entity<MageSetting>(entity =>

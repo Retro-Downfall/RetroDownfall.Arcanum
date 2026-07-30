@@ -191,11 +191,7 @@ public sealed class PingRequestBoundsValidatorTests
     public void Validate_RejectsReasoningEffortAndBudgetTogether()
     {
 
-        ArcanumSettings settings = SettingsWithReasoning(new ReasoningCapabilities
-        {
-            ControlSupport = ReasoningControlSupport.EffortAndBudget,
-            WireDialect = ReasoningWireDialect.OpenRouter,
-        });
+        ArcanumSettings settings = SettingsWithReasoning(ReasoningWireDialect.OpenRouter);
 
         PingRequest request = new(
             Prompt: "hello",
@@ -239,11 +235,7 @@ public sealed class PingRequestBoundsValidatorTests
     public void Validate_RejectsReasoningBudgetOutsideGlobalBounds(int budgetTokens)
     {
 
-        ArcanumSettings settings = SettingsWithReasoning(new ReasoningCapabilities
-        {
-            ControlSupport = ReasoningControlSupport.Budget,
-            WireDialect = ReasoningWireDialect.OpenRouter,
-        });
+        ArcanumSettings settings = SettingsWithReasoning(ReasoningWireDialect.OpenRouter);
 
         PingRequest request = new(
             Prompt: "hello",
@@ -262,7 +254,8 @@ public sealed class PingRequestBoundsValidatorTests
 
         Result result = ReasoningRequestValidator.ValidateForModel(
             new ReasoningRequestOptions(Effort: ReasoningEffortLevel.Minimal),
-            capabilities: null,
+            modelEntry: null,
+            featuresReasoningEnabled: true,
             modelName: "reasoner",
             providerName: "test");
 
@@ -275,15 +268,10 @@ public sealed class PingRequestBoundsValidatorTests
     public void ValidateForModel_RejectsExplicitBudgetWhenModelSupportsOnlyEffort()
     {
 
-        ReasoningCapabilities capabilities = new()
-        {
-            ControlSupport = ReasoningControlSupport.Effort,
-            WireDialect = ReasoningWireDialect.Standard,
-        };
-
         Result result = ReasoningRequestValidator.ValidateForModel(
             new ReasoningRequestOptions(BudgetTokens: 2048),
-            capabilities,
+            new ModelEntry("reasoner") { WireDialect = ReasoningWireDialect.Standard },
+            true,
             modelName: "reasoner",
             providerName: "test");
 
@@ -296,16 +284,10 @@ public sealed class PingRequestBoundsValidatorTests
     public void ValidateForModel_RejectsBudgetAboveModelCapability()
     {
 
-        ReasoningCapabilities capabilities = new()
-        {
-            ControlSupport = ReasoningControlSupport.Budget,
-            WireDialect = ReasoningWireDialect.AnthropicThinking,
-            MaxBudgetTokens = 4096,
-        };
-
         Result result = ReasoningRequestValidator.ValidateForModel(
             new ReasoningRequestOptions(BudgetTokens: 4097),
-            capabilities,
+            new ModelEntry("reasoner") { WireDialect = ReasoningWireDialect.OpenRouter, MaxBudgetTokens = 4096 },
+            true,
             modelName: "reasoner",
             providerName: "test");
 
@@ -322,16 +304,10 @@ public sealed class PingRequestBoundsValidatorTests
     public void ValidateForModel_RejectsReasoningOutputThatModelMayNotReturn(ReasoningOutputMode output)
     {
 
-        ReasoningCapabilities capabilities = new()
-        {
-            SupportsSummary = true,
-            SupportsFull = true,
-            AllowsClientOutput = false,
-        };
-
         Result result = ReasoningRequestValidator.ValidateForModel(
             new ReasoningRequestOptions(Output: output),
-            capabilities,
+            modelEntry: null,
+            featuresReasoningEnabled: true,
             modelName: "reasoner",
             providerName: "test");
 
@@ -344,7 +320,7 @@ public sealed class PingRequestBoundsValidatorTests
     public void Validate_AllowsExplicitNoneOutputWithoutReasoningCapability()
     {
 
-        ArcanumSettings settings = SettingsWithReasoning(reasoning: null);
+        ArcanumSettings settings = SettingsWithReasoning(ReasoningWireDialect.Standard);
 
         PingRequest request = new(
             Prompt: "hello",
@@ -360,22 +336,12 @@ public sealed class PingRequestBoundsValidatorTests
     public void ValidateForModel_AllowsSupportedReasoningControlsAndOutput()
     {
 
-        ReasoningCapabilities capabilities = new()
-        {
-            ControlSupport = ReasoningControlSupport.EffortAndBudget,
-            SupportsSummary = true,
-            SupportsStreaming = true,
-            ReportsReasoningTokens = true,
-            AllowsClientOutput = true,
-            WireDialect = ReasoningWireDialect.OpenRouter,
-            MaxBudgetTokens = 16_384,
-        };
-
         Result result = ReasoningRequestValidator.ValidateForModel(
             new ReasoningRequestOptions(
                 Effort: ReasoningEffortLevel.High,
                 Output: ReasoningOutputMode.Summary),
-            capabilities,
+            new ModelEntry("reasoner") { WireDialect = ReasoningWireDialect.OpenRouter },
+            true,
             modelName: "reasoner",
             providerName: "test");
 
@@ -383,7 +349,7 @@ public sealed class PingRequestBoundsValidatorTests
 
     }
 
-    private static ArcanumSettings SettingsWithReasoning(ReasoningCapabilities? reasoning) =>
+    private static ArcanumSettings SettingsWithReasoning(ReasoningWireDialect? wireDialect) =>
         new()
         {
             DefaultModel = "reasoner",
@@ -392,7 +358,7 @@ public sealed class PingRequestBoundsValidatorTests
                 new ProviderSettings
                 {
                     Name = "test",
-                    Models = [new ModelEntry("reasoner") { Reasoning = reasoning }],
+                    Models = [new ModelEntry("reasoner") { WireDialect = wireDialect }],
                 },
             ],
         };

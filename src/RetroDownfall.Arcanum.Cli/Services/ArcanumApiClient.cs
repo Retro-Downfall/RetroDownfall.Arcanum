@@ -1370,6 +1370,21 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Asks the running host to shut down. The host acknowledges before stopping Kestrel, so a
+    /// success here means the request was accepted, not that the process has already exited.
+    /// </summary>
+    public async Task<Result<bool>> QuitServerAsync(CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/server/quit",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     // W4.1: include the error Code (not just the Message) when surfacing a pre-stream HTTP error
     // envelope, so the CLI shows the same "{code}: {message}" detail as in-band stream error events.
     private static string FormatApiError(Error error) =>

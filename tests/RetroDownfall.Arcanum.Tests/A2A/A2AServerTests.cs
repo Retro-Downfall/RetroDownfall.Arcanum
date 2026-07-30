@@ -179,8 +179,8 @@ public sealed class A2AServerTests
         {
             Entries =
             [
-                new Entry { Id = Guid.NewGuid(), SessionId = sessionId, Role = MessageRole.User, Content = "do the thing" },
-                new Entry { Id = Guid.NewGuid(), SessionId = sessionId, Role = MessageRole.Assistant, Content = "All done!" },
+                new Entry { Id = Guid.NewGuid(), SessionId = sessionId, Role = MessageRole.User, Content = "do the thing", Sequence = 1 },
+                new Entry { Id = Guid.NewGuid(), SessionId = sessionId, Role = MessageRole.Assistant, Content = "All done!", Sequence = 2 },
             ],
         };
 
@@ -555,8 +555,7 @@ public sealed class A2AServerTests
 
         public Task<List<Entry>> GetEntriesAfterAsync(
             Guid sessionId,
-            DateTimeOffset afterCreatedAt,
-            Guid afterId,
+            long afterSequence,
             int limit,
             CancellationToken ct = default) => throw new NotSupportedException();
 

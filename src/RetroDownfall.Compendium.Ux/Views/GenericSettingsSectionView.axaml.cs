@@ -46,8 +46,15 @@ public partial class GenericSettingsSectionView : UserControl
 
     }
 
+    private ConfigSection? _lastRebuiltSection;
+
     private void Rebuild()
     {
+        if (RootPanel is null || Section == _lastRebuiltSection)
+        {
+            return;
+        }
+        _lastRebuiltSection = Section;
 
         if (RootPanel is null)
         {
@@ -81,6 +88,8 @@ public partial class GenericSettingsSectionView : UserControl
         }
 
         GenericSectionViewModel sectionVm = root.GetOrCreateGenericSection(Section);
+
+        System.IO.File.AppendAllText("/tmp/compendium_rebuild.log", $"Rebuild: Section={Section}, Fields={sectionVm.Fields.Count}, Timestamp={System.DateTime.Now:O}\n");
 
         DataContext = sectionVm;
 

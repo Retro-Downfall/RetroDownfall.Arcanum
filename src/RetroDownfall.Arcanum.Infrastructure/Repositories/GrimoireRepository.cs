@@ -91,6 +91,10 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
                 }
 
+                long turnSequence = await _entryPersistence
+                    .ReserveSequenceRangeAsync(sid, count: 2, cancellationToken)
+                    .ConfigureAwait(false);
+
                 _db.Entries.Add(new Entry
                 {
                     Id = userEntryId,
@@ -99,6 +103,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
                     Content = prompt,
                     ModelUsed = model,
                     CreatedAt = now,
+                    Sequence = turnSequence,
                 });
 
                 _db.Entries.Add(new Entry
@@ -109,6 +114,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
                     Content = string.Empty,
                     ModelUsed = model,
                     CreatedAt = now,
+                    Sequence = turnSequence + 1L,
                 });
 
                 await _entryPersistence.BumpSessionUpdatedAtAsync(sid, now, cancellationToken).ConfigureAwait(false);
@@ -156,6 +162,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
             Content = prompt,
             ModelUsed = model,
             CreatedAt = now,
+            Sequence = 1L,
         });
         _db.Entries.Add(new Entry
         {
@@ -165,6 +172,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
             Content = string.Empty,
             ModelUsed = model,
             CreatedAt = now,
+            Sequence = 2L,
         });
         await _entryPersistence.SaveChangesWithRetryAsync(cancellationToken).ConfigureAwait(false);
 
@@ -299,6 +307,10 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
             }
 
+            long toolSequence = await _entryPersistence
+                .ReserveSequenceRangeAsync(sessionId, count: 2, cancellationToken)
+                .ConfigureAwait(false);
+
             _db.Entries.Add(new Entry
             {
                 Id = Guid.NewGuid(),
@@ -307,6 +319,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 Content = callLine,
                 ModelUsed = modelUsed,
                 CreatedAt = now,
+                Sequence = toolSequence,
                 ToolName = toolName,
                 ToolArguments = arguments,
             });
@@ -318,6 +331,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 Content = resultLine,
                 ModelUsed = modelUsed,
                 CreatedAt = now,
+                Sequence = toolSequence + 1L,
             });
             await _entryPersistence.BumpSessionUpdatedAtAsync(sessionId, now, cancellationToken).ConfigureAwait(false);
 
@@ -396,6 +410,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 Content = userPrompt,
                 ModelUsed = modelUsed,
                 CreatedAt = now,
+                Sequence = 1L,
             });
             _db.Entries.Add(new Entry
             {
@@ -405,6 +420,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
                 Content = assistantText,
                 ModelUsed = modelUsed,
                 CreatedAt = now,
+                Sequence = 2L,
             });
             await _entryPersistence.SaveChangesWithRetryAsync(cancellationToken).ConfigureAwait(false);
 

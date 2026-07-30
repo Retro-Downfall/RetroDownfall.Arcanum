@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -375,12 +376,13 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Guid e3 = Guid.NewGuid();
 
-        // Insert out of chronological order to prove ordering is by CreatedAt, not insertion.
-        _db.Entries.Add(NewEntry(e2, sessionId, "msg-2", baseline.AddMinutes(2)));
+        // Insert out of row order to prove ordering follows the recorded append sequence rather
+        // than the order rows happen to reach the table.
+        _db.Entries.Add(NewEntry(e2, sessionId, "msg-2", baseline.AddMinutes(2), sequence: 2));
 
-        _db.Entries.Add(NewEntry(e3, sessionId, "msg-3", baseline.AddMinutes(3)));
+        _db.Entries.Add(NewEntry(e3, sessionId, "msg-3", baseline.AddMinutes(3), sequence: 3));
 
-        _db.Entries.Add(NewEntry(e1, sessionId, "msg-1", baseline.AddMinutes(1)));
+        _db.Entries.Add(NewEntry(e1, sessionId, "msg-1", baseline.AddMinutes(1), sequence: 1));
 
         await _db.SaveChangesAsync(CancellationToken.None);
 
@@ -484,7 +486,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task GetEntriesAfterAsync_returns_entries_after_cursor_in_created_at_order()
+    public async Task GetEntriesAfterAsync_returns_entries_after_sequence_cursor_in_append_order()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -515,12 +517,15 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
 
+        Entry cursor = await _db.Entries
+            .AsNoTracking()
+            .SingleAsync(e => e.Id == e2, CancellationToken.None);
+
         List<Entry> after = await repository.GetEntriesAfterAsync(
             sessionId,
-            afterCreatedAt: baseline.AddMinutes(2),
-            afterId: e2,
+            afterSequence: cursor.Sequence,
             limit: 10,
-            CancellationToken.None);
+            ct: CancellationToken.None);
 
         Assert.Equal(new[] { e3, e4 }, after.Select(e => e.Id).ToArray());
 
@@ -577,6 +582,67 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             ct: CancellationToken.None);
 
         Assert.Equal(new[] { e2, e1 }, secondPage.Select(e => e.Id).ToArray());
+
+    }
+
+    [SkippableFact]
+    public async Task GetEntriesAsync_orders_same_instant_turn_by_append_order_not_entry_id()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionRepository repository = new(_db!, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
+
+        Session session = await repository.CreateAsync(campaignId: null, title: null, CancellationToken.None);
+
+        // A turn writes the prompt and the answer with one identical CreatedAt, so ordering may not
+        // fall back to Entry.Id: ids are random Guids and would invert the transcript roughly half
+        // the time. These ids force the adversarial case where the answer sorts before the prompt.
+        Guid promptId = Guid.Parse("ffffffff-ffff-4fff-8fff-ffffffffffff");
+
+        Guid answerId = Guid.Parse("00000000-0000-4000-8000-000000000001");
+
+        DateTimeOffset sameInstant = new(2026, 7, 28, 18, 0, 0, TimeSpan.Zero);
+
+        Result<Entry> prompt = await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = promptId,
+                Role = MessageRole.User,
+                Content = "What model is this?",
+                ModelUsed = "test-model",
+                CreatedAt = sameInstant,
+            },
+            CancellationToken.None);
+
+        Result<Entry> answer = await repository.AddEntryAsync(
+            session.Id,
+            new Entry
+            {
+                Id = answerId,
+                Role = MessageRole.Assistant,
+                Content = "I am Inkling.",
+                ModelUsed = "test-model",
+                CreatedAt = sameInstant,
+            },
+            CancellationToken.None);
+
+        Assert.True(prompt.IsSuccess, prompt.Error.Code);
+
+        Assert.True(answer.IsSuccess, answer.Error.Code);
+
+        List<Entry> newestFirst = await repository.GetEntriesAsync(
+            session.Id,
+            limit: 100,
+            ct: CancellationToken.None);
+
+        Assert.Equal(new[] { answerId, promptId }, newestFirst.Select(e => e.Id).ToArray());
+
+        // Transcript readers reverse the newest-first page to render chronologically.
+        Assert.Equal(
+            new[] { promptId, answerId },
+            newestFirst.AsEnumerable().Reverse().Select(e => e.Id).ToArray());
 
     }
 
@@ -654,6 +720,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             Content = "user turn",
             ModelUsed = "gpt-oracle",
             CreatedAt = baseline,
+            Sequence = 1,
         });
 
         _db.Entries.Add(new Entry
@@ -664,6 +731,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             Content = "assistant turn",
             ModelUsed = "llama-scribe",
             CreatedAt = baseline.AddMinutes(1),
+            Sequence = 1,
         });
 
         await _db.SaveChangesAsync(CancellationToken.None);
@@ -806,7 +874,20 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             UpdatedAt = updatedAt,
         };
 
-    private static Entry NewEntry(Guid id, Guid sessionId, string content, DateTimeOffset createdAt) =>
+    /// <summary>
+    /// Direct DbContext seeding bypasses <c>SessionEntryPersistence</c>, which normally allocates
+    /// <see cref="Entry.Sequence"/>, and the unique <c>(SessionId, Sequence)</c> index rejects
+    /// duplicates. Stamp sequences in call order so seeded entries carry the append order that
+    /// production would have assigned.
+    /// </summary>
+    private long _seededSequence;
+
+    private Entry NewEntry(
+        Guid id,
+        Guid sessionId,
+        string content,
+        DateTimeOffset createdAt,
+        long? sequence = null) =>
         new()
         {
             Id = id,
@@ -815,6 +896,7 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             Content = content,
             ModelUsed = "test-model",
             CreatedAt = createdAt,
+            Sequence = sequence ?? ++_seededSequence,
         };
 
 }

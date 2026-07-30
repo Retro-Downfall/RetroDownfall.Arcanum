@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
 public sealed record ArcanumSettings

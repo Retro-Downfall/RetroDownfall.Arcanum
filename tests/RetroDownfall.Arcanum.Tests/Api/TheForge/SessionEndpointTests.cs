@@ -225,6 +225,7 @@ public sealed class SessionEndpointTests
                 Role = MessageRole.User,
                 Content = $"entry {i}",
                 CreatedAt = DateTimeOffset.UtcNow.AddSeconds(-count + i),
+                Sequence = i + 1,
             };
 
             _ = db.Entries.Add(entry);

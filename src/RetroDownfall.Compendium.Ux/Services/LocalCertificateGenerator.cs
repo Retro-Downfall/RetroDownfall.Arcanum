@@ -67,13 +67,58 @@ public sealed class LocalCertificateGenerator
 
         string privateKeyPath = Path.Combine(certificatesDirectory, stem + ".key");
 
+        // Write certificate with default permissions, then restrict
         File.WriteAllText(certificatePath, certificate.ExportCertificatePem());
-
-        File.WriteAllText(privateKeyPath, rsa.ExportPkcs8PrivateKeyPem());
 
         SecureFilePermissions.ApplyOwnerOnlyFile(certificatePath);
 
-        SecureFilePermissions.ApplyOwnerOnlyFile(privateKeyPath);
+        // Write private key with restricted permissions atomically
+        // Create file first, then set permissions before writing content
+        using (FileStream keyStream = File.Create(privateKeyPath))
+        {
+
+            // Set owner-only permissions immediately after creation, before writing
+            SecureFilePermissions.ApplyOwnerOnlyFile(privateKeyPath);
+
+            byte[] keyBytes = System.Text.Encoding.ASCII.GetBytes(rsa.ExportPkcs8PrivateKeyPem());
+
+            keyStream.Write(keyBytes, 0, keyBytes.Length);
+
+        }
+
+        // Validate that both files were created successfully
+        if (!File.Exists(certificatePath))
+        {
+
+            throw new InvalidOperationException($"Failed to create certificate file at {certificatePath}");
+
+        }
+
+        if (!File.Exists(privateKeyPath))
+        {
+
+            throw new InvalidOperationException($"Failed to create private key file at {privateKeyPath}");
+
+        }
+
+        // Validate file sizes are reasonable
+        FileInfo certInfo = new(certificatePath);
+
+        FileInfo keyInfo = new(privateKeyPath);
+
+        if (certInfo.Length == 0)
+        {
+
+            throw new InvalidOperationException($"Certificate file at {certificatePath} is empty");
+
+        }
+
+        if (keyInfo.Length == 0)
+        {
+
+            throw new InvalidOperationException($"Private key file at {privateKeyPath} is empty");
+
+        }
 
         return new LocalCertificateResult(
             certificatePath,

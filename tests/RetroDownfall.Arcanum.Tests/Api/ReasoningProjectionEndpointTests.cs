@@ -431,13 +431,7 @@ public sealed class ReasoningProjectionEndpointTests
                     [
                         new ModelEntry(
                             "reasoner",
-                            Reasoning: new ReasoningCapabilities
-                            {
-                                SupportsSummary = true,
-                                SupportsFull = true,
-                                SupportsStreaming = true,
-                                AllowsClientOutput = true,
-                            }),
+                            WireDialect: ReasoningWireDialect.Standard),
                     ],
                 },
             ],

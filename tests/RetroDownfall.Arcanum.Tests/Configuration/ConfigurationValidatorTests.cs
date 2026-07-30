@@ -1238,42 +1238,23 @@ public sealed class ConfigurationValidatorTests
     public void Validate_ProviderModelWithReasoningDefaults_ReturnsSuccess()
     {
 
-        Result result = _validator.Validate(SettingsWithReasoning(new ReasoningCapabilities()));
+        Result result = _validator.Validate(SettingsWithReasoning(null, null));
 
         Assert.True(result.IsSuccess);
 
     }
 
     [Theory]
-    [InlineData(ReasoningControlSupport.None, ReasoningWireDialect.Standard, true)]
-    [InlineData(ReasoningControlSupport.None, ReasoningWireDialect.OpenRouter, false)]
-    [InlineData(ReasoningControlSupport.None, ReasoningWireDialect.TopLevelReasoningBudget, false)]
-    [InlineData(ReasoningControlSupport.None, ReasoningWireDialect.AnthropicThinking, false)]
-    [InlineData(ReasoningControlSupport.Effort, ReasoningWireDialect.Standard, true)]
-    [InlineData(ReasoningControlSupport.Effort, ReasoningWireDialect.OpenRouter, false)]
-    [InlineData(ReasoningControlSupport.Effort, ReasoningWireDialect.TopLevelReasoningBudget, false)]
-    [InlineData(ReasoningControlSupport.Effort, ReasoningWireDialect.AnthropicThinking, false)]
-    [InlineData(ReasoningControlSupport.Budget, ReasoningWireDialect.Standard, false)]
-    [InlineData(ReasoningControlSupport.Budget, ReasoningWireDialect.OpenRouter, true)]
-    [InlineData(ReasoningControlSupport.Budget, ReasoningWireDialect.TopLevelReasoningBudget, true)]
-    [InlineData(ReasoningControlSupport.Budget, ReasoningWireDialect.AnthropicThinking, true)]
-    [InlineData(ReasoningControlSupport.EffortAndBudget, ReasoningWireDialect.Standard, false)]
-    [InlineData(ReasoningControlSupport.EffortAndBudget, ReasoningWireDialect.OpenRouter, true)]
-    [InlineData(ReasoningControlSupport.EffortAndBudget, ReasoningWireDialect.TopLevelReasoningBudget, true)]
-    [InlineData(ReasoningControlSupport.EffortAndBudget, ReasoningWireDialect.AnthropicThinking, true)]
-    public void Validate_EveryReasoningControlAndDialectCombination(
-        ReasoningControlSupport controlSupport,
+    [InlineData(ReasoningWireDialect.Standard, true)]
+    [InlineData(ReasoningWireDialect.OpenRouter, true)]
+    [InlineData(ReasoningWireDialect.TopLevelReasoningBudget, true)]
+    [InlineData(ReasoningWireDialect.AnthropicThinking, true)]
+    public void Validate_EveryReasoningDialectCombination(
         ReasoningWireDialect wireDialect,
         bool expectedValid)
     {
 
-        ReasoningCapabilities reasoning = new()
-        {
-            ControlSupport = controlSupport,
-            WireDialect = wireDialect,
-        };
-
-        Result result = _validator.Validate(SettingsWithReasoning(reasoning));
+        Result result = _validator.Validate(SettingsWithReasoning(wireDialect, null));
 
         Assert.Equal(expectedValid, result.IsSuccess);
 
@@ -1286,14 +1267,9 @@ public sealed class ConfigurationValidatorTests
     public void Validate_ReasoningMaxBudgetOutsideClamp_ReturnsFailure(int maxBudgetTokens)
     {
 
-        ReasoningCapabilities reasoning = new()
-        {
-            ControlSupport = ReasoningControlSupport.Budget,
-            WireDialect = ReasoningWireDialect.OpenRouter,
-            MaxBudgetTokens = maxBudgetTokens,
-        };
+        
 
-        Result result = _validator.Validate(SettingsWithReasoning(reasoning));
+        Result result = _validator.Validate(SettingsWithReasoning(ReasoningWireDialect.OpenRouter, maxBudgetTokens));
 
         Assert.True(result.IsFailure);
         Assert.Contains(
@@ -1306,13 +1282,9 @@ public sealed class ConfigurationValidatorTests
     public void Validate_BudgetControlWithStandardDialect_ReturnsFailure()
     {
 
-        ReasoningCapabilities reasoning = new()
-        {
-            ControlSupport = ReasoningControlSupport.Budget,
-            WireDialect = ReasoningWireDialect.Standard,
-        };
+        
 
-        Result result = _validator.Validate(SettingsWithReasoning(reasoning));
+        Result result = _validator.Validate(SettingsWithReasoning(ReasoningWireDialect.Standard, 32768));
 
         Assert.True(result.IsFailure);
         Assert.Contains(
@@ -1321,17 +1293,12 @@ public sealed class ConfigurationValidatorTests
 
     }
 
+
     [Fact]
-    public void Validate_NonstandardDialectWithoutBudgetControl_ReturnsFailure()
+    public void Validate_MaxBudgetWithStandardDialect_ReturnsFailure()
     {
 
-        ReasoningCapabilities reasoning = new()
-        {
-            ControlSupport = ReasoningControlSupport.Effort,
-            WireDialect = ReasoningWireDialect.TopLevelReasoningBudget,
-        };
-
-        Result result = _validator.Validate(SettingsWithReasoning(reasoning));
+        Result result = _validator.Validate(SettingsWithReasoning(ReasoningWireDialect.Standard, 32768));
 
         Assert.True(result.IsFailure);
         Assert.Contains(
@@ -1340,61 +1307,7 @@ public sealed class ConfigurationValidatorTests
 
     }
 
-    [Fact]
-    public void Validate_MaxBudgetWithoutBudgetControl_ReturnsFailure()
-    {
 
-        ReasoningCapabilities reasoning = new()
-        {
-            ControlSupport = ReasoningControlSupport.Effort,
-            WireDialect = ReasoningWireDialect.Standard,
-            MaxBudgetTokens = 4096,
-        };
-
-        Result result = _validator.Validate(SettingsWithReasoning(reasoning));
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Pointer == "providers[0].models[0].reasoning.maxBudgetTokens");
-
-    }
-
-    [Fact]
-    public void Validate_ClientOutputWithoutSupportedOutputKind_ReturnsFailure()
-    {
-
-        ReasoningCapabilities reasoning = new()
-        {
-            AllowsClientOutput = true,
-        };
-
-        Result result = _validator.Validate(SettingsWithReasoning(reasoning));
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Pointer == "providers[0].models[0].reasoning.allowsClientOutput");
-
-    }
-
-    [Fact]
-    public void Validate_StreamingWithoutSupportedOutputKind_ReturnsFailure()
-    {
-
-        ReasoningCapabilities reasoning = new()
-        {
-            SupportsStreaming = true,
-        };
-
-        Result result = _validator.Validate(SettingsWithReasoning(reasoning));
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Pointer == "providers[0].models[0].reasoning.supportsStreaming");
-
-    }
 
     [Theory]
     [InlineData(ReasoningWireDialect.OpenRouter)]
@@ -1403,44 +1316,14 @@ public sealed class ConfigurationValidatorTests
     public void Validate_BudgetControlWithExplicitNumericDialect_ReturnsSuccess(ReasoningWireDialect dialect)
     {
 
-        ReasoningCapabilities reasoning = new()
-        {
-            ControlSupport = ReasoningControlSupport.EffortAndBudget,
-            SupportsSummary = true,
-            SupportsStreaming = true,
-            ReportsReasoningTokens = true,
-            AllowsClientOutput = true,
-            WireDialect = dialect,
-            MaxBudgetTokens = 65_536,
-        };
+        
 
-        Result result = _validator.Validate(SettingsWithReasoning(reasoning));
+        Result result = _validator.Validate(SettingsWithReasoning(dialect, 32768));
 
         Assert.True(result.IsSuccess);
 
     }
 
-    [Fact]
-    public void Validate_UndefinedReasoningEnums_ReturnsFailure()
-    {
-
-        ReasoningCapabilities reasoning = new()
-        {
-            ControlSupport = (ReasoningControlSupport)99,
-            WireDialect = (ReasoningWireDialect)99,
-        };
-
-        Result result = _validator.Validate(SettingsWithReasoning(reasoning));
-
-        Assert.True(result.IsFailure);
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Pointer == "providers[0].models[0].reasoning.controlSupport");
-        Assert.Contains(
-            result.Error.Details!,
-            static e => e.Pointer == "providers[0].models[0].reasoning.wireDialect");
-
-    }
 
     [Fact]
     public void Validate_ListenAnyWithoutHttps_ReturnsFailure()
@@ -2428,7 +2311,7 @@ public sealed class ConfigurationValidatorTests
         }
     }
 
-    private static ArcanumSettings SettingsWithReasoning(ReasoningCapabilities reasoning) =>
+    private static ArcanumSettings SettingsWithReasoning(ReasoningWireDialect? wireDialect, int? maxBudgetTokens) =>
         new()
         {
             Providers =
@@ -2437,7 +2320,7 @@ public sealed class ConfigurationValidatorTests
                 {
                     Name = "reasoning-provider",
                     Type = AiProviderKind.OpenAICompatible,
-                    Models = [new ModelEntry("reasoner") { Reasoning = reasoning }],
+                    Models = [new ModelEntry("reasoner") { WireDialect = wireDialect, MaxBudgetTokens = maxBudgetTokens }],
                 },
             ],
         };

@@ -109,7 +109,8 @@ internal static partial class OpenAiV1Endpoints
                 ModelInfoBuilder.ToSnakeCaseProviderType(model.ProviderType),
                 AllModelsSupportTools,
                 AllModelsSupportStreaming,
-                model.Reasoning,
+                model.WireDialect,
+                model.MaxBudgetTokens,
                 sharedPromptCaching.GetValueOrDefault(model.Model)));
         }
 

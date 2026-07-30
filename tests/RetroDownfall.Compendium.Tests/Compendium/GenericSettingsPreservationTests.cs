@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -182,20 +184,8 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     }
 
     [Fact]
-    public async Task Provider_factual_capabilities_and_credential_reference_round_trip()
+    public async Task Provider_reasoning_facts_and_credential_reference_round_trip()
     {
-        ReasoningCapabilities reasoning = new()
-        {
-            ControlSupport = ReasoningControlSupport.EffortAndBudget,
-            SupportsSummary = true,
-            SupportsFull = true,
-            SupportsStreaming = true,
-            ReportsReasoningTokens = true,
-            AllowsClientOutput = true,
-            WireDialect = ReasoningWireDialect.OpenRouter,
-            MaxBudgetTokens = 32768,
-        };
-
         await SeedAsync(new ArcanumSettings
         {
             Providers =
@@ -211,7 +201,8 @@ public sealed class GenericSettingsPreservationTests : IDisposable
                         new ModelEntry(
                             "reasoner",
                             SupportsVision: true,
-                            Reasoning: reasoning),
+                            WireDialect: ReasoningWireDialect.OpenRouter,
+                            MaxBudgetTokens: 32768),
                     ],
                 },
             ],
@@ -224,13 +215,15 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         ProvidersSectionViewModel.ProviderViewModel provider = Assert.Single(vm.Providers.Providers);
         ProvidersSectionViewModel.ModelEntryViewModel model = Assert.Single(provider.Models);
 
-        Assert.Equal(reasoning, model.Reasoning);
+        Assert.True(model.HasReasoning);
+        Assert.Equal(ReasoningWireDialect.OpenRouter, model.ReasoningDialect);
+        Assert.Equal(32768, model.ReasoningMaxBudgetTokens);
         Assert.Equal(
             "REASONING_PROVIDER_API_KEY",
             provider.CredentialEnvironmentVariable);
 
         model.Name = "reasoner-v2";
-        model.ReasoningSupportsFull = false;
+        model.ReasoningDialect = ReasoningWireDialect.TopLevelReasoningBudget;
         model.ReasoningMaxBudgetTokens = 65536;
 
         ArcanumSettings built = vm.BuildSettings();
@@ -238,8 +231,8 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         ModelEntry builtModel = Assert.Single(builtProvider.Models);
 
         Assert.Equal("reasoner-v2", builtModel.Name);
-        Assert.False(Assert.IsType<ReasoningCapabilities>(builtModel.Reasoning).SupportsFull);
-        Assert.Equal(65536, builtModel.Reasoning.MaxBudgetTokens);
+        Assert.Equal(ReasoningWireDialect.TopLevelReasoningBudget, builtModel.WireDialect);
+        Assert.Equal(65536, builtModel.MaxBudgetTokens);
         Assert.Equal(
             "REASONING_PROVIDER_API_KEY",
             builtProvider.CredentialEnvironmentVariable);
@@ -255,7 +248,8 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         ModelEntry savedModel = Assert.Single(savedProvider.Models);
 
         Assert.Equal("reasoner-v2", savedModel.Name);
-        Assert.Equal(65536, savedModel.Reasoning?.MaxBudgetTokens);
+        Assert.Equal(ReasoningWireDialect.TopLevelReasoningBudget, savedModel.WireDialect);
+        Assert.Equal(65536, savedModel.MaxBudgetTokens);
         Assert.Equal(
             "REASONING_PROVIDER_API_KEY",
             savedProvider.CredentialEnvironmentVariable);
@@ -375,7 +369,8 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         return new ConfigurationViewModel(
             store,
             new NoopDialogService(),
-            new SynchronousUiDispatcher());
+            new SynchronousUiDispatcher(),
+            NullLogger<ConfigurationViewModel>.Instance);
 
     }
 

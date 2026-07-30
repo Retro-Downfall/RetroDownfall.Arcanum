@@ -1,5 +1,7 @@
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 /// <summary>
 /// Code-owned runtime projection for turn mechanics. This record is not a public configuration root.
 /// </summary>
@@ -91,6 +93,7 @@ public sealed record IntelligenceSettings
     /// </summary>
     public int UnknownImageTokenReserve { get; set; } = 2048;
 
+    public ReasoningEffortLevel? DefaultReasoningEffort { get; set; } = ReasoningEffortLevel.Medium;
     public int MaxOpenApiMessages { get; set; } = 1_000;
 
     public int MaxStatelessMessages { get; set; } = 100;

@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -117,7 +119,11 @@ public sealed class SaveCommandCanExecuteTests : IDisposable
 
         ArcanumConfigurationStore store = new();
 
-        return new ConfigurationViewModel(store, new NoopDialogService(), new SynchronousUiDispatcher());
+        return new ConfigurationViewModel(
+            store,
+            new NoopDialogService(),
+            new SynchronousUiDispatcher(),
+            NullLogger<ConfigurationViewModel>.Instance);
 
     }
 

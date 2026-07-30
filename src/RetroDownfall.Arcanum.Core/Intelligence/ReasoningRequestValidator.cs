@@ -51,7 +51,8 @@ public static class ReasoningRequestValidator
 
     public static Result ValidateForModel(
         ReasoningRequestOptions? options,
-        ReasoningCapabilities? capabilities,
+        ModelEntry? modelEntry,
+        bool featuresReasoningEnabled,
         string? modelName = null,
         string? providerName = null)
     {
@@ -62,25 +63,38 @@ public static class ReasoningRequestValidator
             return intrinsic;
         }
 
-        string model = DescribeCandidate(providerName, modelName);
-
-        if (options.Effort is not null && !SupportsEffort(capabilities))
+        if (!featuresReasoningEnabled)
         {
             return Result.Failure(new Error(
                 ErrorCodes.Validation.UnsupportedReasoningControl,
-                $"{model} does not declare support for the explicit reasoning effort control."));
+                "Reasoning is disabled by Features.Reasoning."));
+        }
+
+        string model = DescribeCandidate(providerName, modelName);
+
+        bool reasoningCapable = modelEntry?.WireDialect is not null;
+
+        if (options.Effort is not null && !reasoningCapable)
+        {
+            return Result.Failure(new Error(
+                ErrorCodes.Validation.UnsupportedReasoningControl,
+                $"{model} does not declare reasoning capability."));
         }
 
         if (options.BudgetTokens is { } budgetTokens)
         {
-            if (!SupportsBudget(capabilities))
+            bool budgetCapable = modelEntry?.WireDialect is ReasoningWireDialect.OpenRouter
+                or ReasoningWireDialect.TopLevelReasoningBudget
+                or ReasoningWireDialect.AnthropicThinking;
+
+            if (!budgetCapable)
             {
                 return Result.Failure(new Error(
                     ErrorCodes.Validation.UnsupportedReasoningControl,
-                    $"{model} does not declare support for the explicit reasoning budget control."));
+                    $"{model} does not support numeric reasoning budgets."));
             }
 
-            if (capabilities!.MaxBudgetTokens is { } maxBudgetTokens && budgetTokens > maxBudgetTokens)
+            if (modelEntry?.MaxBudgetTokens is { } maxBudgetTokens && budgetTokens > maxBudgetTokens)
             {
                 return Result.Failure(new Error(
                     ErrorCodes.Validation.ReasoningBudgetExceedsModelLimit,
@@ -90,30 +104,18 @@ public static class ReasoningRequestValidator
 
         if (options.Output is ReasoningOutputMode.Summary or ReasoningOutputMode.Full)
         {
-            bool supportsRequestedOutput = capabilities is not null
-                && capabilities.AllowsClientOutput
-                && (options.Output == ReasoningOutputMode.Summary
-                    ? capabilities.SupportsSummary
-                    : capabilities.SupportsFull);
-
-            if (!supportsRequestedOutput)
+            // Best-effort: the provider returns what it returns; Arcanum projects only when
+            // features.reasoningSummaries is enabled (checked separately at projection time).
+            if (!reasoningCapable)
             {
                 return Result.Failure(new Error(
                     ErrorCodes.Validation.UnsupportedReasoningOutput,
-                    $"{model} does not permit the requested client reasoning output mode '{options.Output}'."));
+                    $"{model} does not declare reasoning capability."));
             }
         }
 
         return Result.Success();
     }
-
-    private static bool SupportsEffort(ReasoningCapabilities? capabilities) =>
-        capabilities?.ControlSupport is ReasoningControlSupport.Effort
-            or ReasoningControlSupport.EffortAndBudget;
-
-    private static bool SupportsBudget(ReasoningCapabilities? capabilities) =>
-        capabilities?.ControlSupport is ReasoningControlSupport.Budget
-            or ReasoningControlSupport.EffortAndBudget;
 
     private static string DescribeCandidate(string? providerName, string? modelName)
     {

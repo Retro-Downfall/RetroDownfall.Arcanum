@@ -56,6 +56,7 @@ public sealed class GrimoireStatsServiceTests
             Content = "Count me",
             ModelUsed = "test-model",
             CreatedAt = now,
+            Sequence = 1,
         };
         db.Campaigns.Add(campaign);
         db.Sessions.Add(session);

@@ -4,18 +4,17 @@ This document is the **technical architecture, design, API, persistence, runtime
 testing source of truth** for the Retro Downfall **Arcanum** solution. The intended audience is
 **senior C# / .NET engineers** who will extend, review, or operate the system.
 
-Arcanum's documentation contract contains exactly four files:
+Arcanum's documentation contract contains exactly five files:
 
-- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) — this technical source of truth;
-- [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) — the only complete
-  `arcanum.json` key/default/bounds reference;
-- [`Arcanum.README.md`](Arcanum.README.md) — concise agent and operator orientation; and
-- [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) — a non-authoritative human reading companion.
+- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) — **the source of truth for all of Arcanum's architecture and design details and decisions, plus a complete API reference**; nothing contradicts it, and when any other document disagrees it is the one corrected.
+- [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) — the human-readable companion to DESIGN (conceptual prose, navigation, turn-lifecycle and dependency-direction diagrams, and pointers into DESIGN for contracts).
+- [`Arcanum.README.md`](Arcanum.README.md) — the agent/operator primer for Cursor prompts (summarized architecture/design, repo layout, invariants, verification commands, brief CLI quick reference) plus the required reinstall instruction.
+- [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) — the only complete `arcanum.json` key/default/bounds and credential-reference listing.
+- [`Arcanum.DEBUGGING.md`](Arcanum.DEBUGGING.md) — the verified breakpoint map and task-based debugging recipes (new in this pass).
 
 When a change under `src/`, packaging scripts, or workflows alters a fact described here, update the
 owning section in the same change set. Pair operator-visible behavior with `Arcanum.README.md`,
-configuration-surface changes with `Compendium.README.md`, and navigation changes with
-`Arcanum.Design.Human.md`.
+configuration-surface changes with `Compendium.README.md`, navigation updates with `Arcanum.Design.Human.md`, and debugging guides with `Arcanum.DEBUGGING.md`.
 
 ---
 
@@ -525,7 +524,7 @@ Source-generated parsing (AOT-clean, no reflection). Spectre remains for renderi
 3. `UseWindowsService` / `UseSystemd` (cross-platform no-ops on other OSes).
 4. Kestrel: `ListenLocalhost(port)` unless `ARCANUM_HOST_ANY` is set (§7).
 5. `ClearProviders()` so Serilog replaces default logging.
-6. `AddArcanumConfiguration()` loads `arcanum.json` + env vars.
+6. `AddArcanumConfiguration()` loads `arcanum.json` (JSON file only). Explicit environment overrides `ARCANUM_EDITION` and `ARCANUM_HOST_ANY`, plus secret references (`ARCANUM_PROVIDER_*`, `ARCANUM_HTTPS_CERTIFICATE_PASSWORD`, `ARCANUM_COMMLINK_WEBHOOK_URL`, `ARCANUM_GRIMOIRE_DEV_KEY`, `ARCANUM_HTTPS_CERTIFICATE_PASSWORD`) remain environment-backed.
 7. `AddArcanumApiServices(configuration)` registers all services (§8.3), including `AddArcanumDaemonServices` for the Unseen Servant (§5.5).
 8. `ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync` **before** `Build()`.
 9. `Build()` → `MapArcanumEndpoints()` → `RunAsync()`. `PidFileService` writes the PID file during host `StartAsync` (§8.19). `Log.CloseAndFlush()` in `finally`.
@@ -551,11 +550,37 @@ Source-generated parsing (AOT-clean, no reflection). Spectre remains for renderi
 | Entity | Table | Primary key | Notable |
 |--------|-------|-------------|---------|
 | `Session` | `Sessions` | `Id` (Guid) | Optional `CampaignId`, `Status` (default `active`), `Title` (nullable), `CreatedAt`, `UpdatedAt`, nullable `Summary`, nullable `LastSummarizedMessageAt`, **`TotalTokensUsed`**, **`UnsummarizedEntryCount`** (entries after watermark; default `0`; `-1` reserved for lazy backfill if ever needed); indexes on `CreatedAt`, `Status`, `UpdatedAt`, `(CampaignId, Status, UpdatedAt)`, `UnsummarizedEntryCount`; cascade-deletes entries. |
-| `Entry` | `Entries` | `Id` (Guid) | FK to `Session`; composite index on `(SessionId, CreatedAt)`; index on `Role`; `Role` (enum → int); `ModelUsed` (non-null); optional tool columns; FTS5 virtual table `Entries_fts` + triggers for `search_archives`. |
+| `Entry` | `Entries` | `Id` (Guid) | FK to `Session`; composite index on `(SessionId, CreatedAt)`; **unique** index on `(SessionId, Sequence)`; index on `Role`; `Role` (enum → int); `ModelUsed` (non-null); `Sequence` (`INTEGER NOT NULL`, application-assigned); optional tool columns; FTS5 virtual table `Entries_fts` + triggers for `search_archives`. |
 | `MageSetting` | `MageSettings` | `Key` (string) | `Value`, `UpdatedAt`; operator key-value surface (`/api/lore`, `arcanum lore`). No longer model-directed memory — the Lore MCP tools are removed; agent memory is The Lexicon (§10.6). |
 | `WorkspaceContext` | `WorkspaceContexts` | `Id` (Guid) | `CreatedAt` (`DateTimeOffset`), `WorkspacePath` (mapped column `RootPath`, max 4096), `SerializedSnapshot` (JSON `PatternSnapshot` via `GrimoireJsonContext`). **Chronosync reporting** appends a row after each analysis; “latest” for a path is `ORDER BY CreatedAt DESC`. Composite index on `(RootPath, CreatedAt)`. |
 
 **Supporting DTOs (Core):** `GrimoireEntryDto`, `LoreDto`, `UpsertLoreRequest`, `ChronosyncReport`, `ArcanumPaths`, `ChatCompletionUsage` (OpenAI-shaped `usage` for NDJSON and `/v1` responses), `PromptTurnResult` (buffered inference text + usage). The Forge session DTOs live under **`Core.TheForge`** (`SessionDetailDto`, `EntryDto`, etc.).
+
+**Entry ordering authority (`Entries.Sequence`).** `Sequence` is a strictly increasing per-session
+append position and **the** intra-session chronological order. `CreatedAt` is not sufficient and
+must never be the sole sort key: one turn writes its prompt and its answer under a single identical
+`CreatedAt`, as does a tool call with its result, and `Id` is a random Guid that cannot break that
+tie in append order — a `(CreatedAt, Id)` sort inverts those pairs for roughly half of all turns.
+`CreatedAt` remains the wall-clock fact and the basis of the Campaign Logger watermark
+(`Session.LastSummarizedMessageAt`), so watermark reads still *filter* on `CreatedAt` while
+*ordering* by `Sequence`.
+
+Repositories allocate sequences through `SessionEntryPersistence.ReserveSequenceRangeAsync`, which
+reserves a consecutive range while holding the per-session write lock that already serializes every
+entry append; a batch assigns its reserved values in append order. Gaps are permitted (a rolled-back
+transaction burns its range), reuse is not: the **unique** `(SessionId, Sequence)` index turns a lost
+allocation into a write failure instead of a silently reordered transcript. `Sequence` is
+application-assigned (`ValueGeneratedNever`), so EF always writes the value the repository supplied.
+It is deliberately absent from `ToolInteractionReceipt` identity comparison (§10.2.1) because it is
+an ordering fact, not part of receipt identity. Fork copies carry the source sequence forward,
+preserving order without renumbering.
+
+Consequently `EntryTemporalQueries` orders and pages on `Sequence`: newest-first windows,
+offset pages, ascending export/fork batches, and the SSE replay cursor
+(`ISessionRepository.GetEntriesAfterAsync` takes an exclusive `Sequence`). The `GET
+/api/sessions/{id}/entries` wire contract still accepts a `(beforeCreatedAt, beforeId)` cursor; the
+repository resolves that entry's sequence and falls back to the timestamp/id predicate only when the
+cursor entry has since been deleted.
 
 #### 5.4.2 Temporal context: Session-Based Consolidation and Chronosync
 
@@ -619,11 +644,16 @@ Arcanum has no supported user-data migration program. Schema history may be squa
 `InitialCreate` baseline because there is no production installed base: replay the old chain against
 a scratch database and compare columns, indexes, triggers, and foreign keys before replacing it.
 When an already-recorded install script changes incompatibly, developers must stop every host/daemon,
-back up anything needed, delete `arcanum.db` plus `-wal`/`-shm`, and restart to reinstall. The current
-case is `20260721010000_AddInferenceAccountingAndIdempotencyClaims.sql`, whose original
-`BillableOperations` definition now includes `ReasoningTokens INTEGER NOT NULL DEFAULT 0`; there is
-intentionally no incremental/data migration. Copy-pastable developer commands are in
-[Arcanum.README, “Local Grimoire reinstall”](Arcanum.README.md#local-grimoire-reinstall).
+back up anything needed, delete `arcanum.db` plus `-wal`/`-shm`, and restart to reinstall. There is
+intentionally no incremental or data migration in either case below. Copy-pastable developer commands
+are in [Arcanum.README, “Local Grimoire reinstall”](Arcanum.README.md#local-grimoire-reinstall).
+
+- `20260705171559_InitialCreate.sql` now declares `Entries.Sequence INTEGER NOT NULL` and the unique
+  `IX_Entries_SessionId_Sequence` index (§5.4.1). Existing rows have no sequence to backfill
+  meaningfully — their append order was never recorded — so a Grimoire created before this baseline
+  **must** be deleted and reinstalled. The compiled EF model was regenerated for the new property.
+- `20260721010000_AddInferenceAccountingAndIdempotencyClaims.sql`, whose original
+  `BillableOperations` definition now includes `ReasoningTokens INTEGER NOT NULL DEFAULT 0`.
 
 Structured values must use a source-generated context:
 
@@ -2466,7 +2496,8 @@ surrogate-safe; SQLCipher contention uses `SqliteBusyRetry`; and
 
 ## 18. Document maintenance
 
-The repository maintains exactly the four documents named at the top of this file. Update:
+The repository maintains exactly the five-document contract. Any contradiction across them is resolved in
+`Arcanum.DESIGN.md` (see §18). Update the owning canonical file in every change set.
 
 - `Arcanum.DESIGN.md` for architecture, contracts, APIs, persistence, runtime behavior, testing, and
   packaging;
@@ -2928,6 +2959,8 @@ model-call or tool-round count, and their database transaction is never held acr
   the inference-accounting schema, so prompt caching itself requires no schema reinstall. The local
   accounting-schema reinstall rule remains §5.4.5.
 - **Metrics.** Per completed provider call, `arcanum_prompt_cache_calls_total` records bounded mode/eligibility/reason labels. Cached tokens and hits are observed only from provider-reported cached usage; a sent key is not a hit. `arcanum_prompt_cache_potential_savings_usd_total` prices the eligible prefix estimate and `arcanum_prompt_cache_actual_savings_usd_total` prices reported cached tokens using `max(0, InputPer1M - CachedPer1M)`. Labels are bounded to provider/model/purpose/mode/eligibility/reason—never keys, sessions, workspaces, environment names, or prompt fragments.
+
+**Per-turn budget semantics (not loop/session).** `ReasoningRequestOptions.BudgetTokens` limits reasoning spend on **one inference turn** (one `PingRequest`); `ReasoningCapabilities.MaxBudgetTokens` caps it per model. There is **no loop/session-level reasoning cap** — an agentic turn of N rounds spends the sum of each round's budget independently. The design states this explicitly (§22.2, `EstimateWorstCaseCallsUsd`, `SaturatingMultiply`, reservation reconciliation per turn) and treats it as docs-only clarification rather than a feature change.
 
 ---
 

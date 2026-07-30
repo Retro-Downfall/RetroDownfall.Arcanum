@@ -32,7 +32,7 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(entry.SupportsVision);
 
-        Assert.Null(entry.Reasoning);
+        Assert.Null(entry.WireDialect);
 
     }
 
@@ -70,7 +70,7 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(entry.SupportsVision);
 
-        Assert.Null(entry.Reasoning);
+        Assert.Null(entry.WireDialect);
 
     }
 
@@ -112,7 +112,7 @@ public sealed class ModelEntryJsonConverterTests
     }
 
     [Fact]
-    public void Read_ObjectForm_ReadsNestedReasoningCapabilities()
+    public void Read_ObjectForm_ReadsNestedReasoningFacts()
     {
 
         const string json =
@@ -120,12 +120,6 @@ public sealed class ModelEntryJsonConverterTests
             {
               "name": "reasoner",
               "reasoning": {
-                "controlSupport": "effortAndBudget",
-                "supportsSummary": true,
-                "supportsFull": true,
-                "supportsStreaming": true,
-                "reportsReasoningTokens": true,
-                "allowsClientOutput": true,
                 "wireDialect": "openRouter",
                 "maxBudgetTokens": 65536
               }
@@ -138,24 +132,15 @@ public sealed class ModelEntryJsonConverterTests
 
         ModelEntry? entry = _converter.Read(ref reader, typeof(ModelEntry), Options);
 
-        Assert.NotNull(entry?.Reasoning);
-        Assert.Equal(ReasoningControlSupport.EffortAndBudget, entry!.Reasoning!.ControlSupport);
-        Assert.True(entry.Reasoning.SupportsSummary);
-        Assert.True(entry.Reasoning.SupportsFull);
-        Assert.True(entry.Reasoning.SupportsStreaming);
-        Assert.True(entry.Reasoning.ReportsReasoningTokens);
-        Assert.True(entry.Reasoning.AllowsClientOutput);
-        Assert.Equal(ReasoningWireDialect.OpenRouter, entry.Reasoning.WireDialect);
-        Assert.Equal(65_536, entry.Reasoning.MaxBudgetTokens);
+        Assert.Equal(ReasoningWireDialect.OpenRouter, entry?.WireDialect);
+        Assert.Equal(65_536, entry?.MaxBudgetTokens);
 
     }
 
     [Theory]
-    [InlineData("""{"name":"reasoner","reasoning":{"controlSupport":0}}""")]
-    [InlineData("""{"name":"reasoner","reasoning":{"controlSupport":99}}""")]
     [InlineData("""{"name":"reasoner","reasoning":{"wireDialect":0}}""")]
     [InlineData("""{"name":"reasoner","reasoning":{"wireDialect":99}}""")]
-    public void Read_ObjectForm_RejectsNumericReasoningCapabilityEnums(string json)
+    public void Read_ObjectForm_RejectsNumericReasoningDialect(string json)
     {
         Assert.Throws<JsonException>(() =>
         {
@@ -220,21 +205,13 @@ public sealed class ModelEntryJsonConverterTests
     }
 
     [Fact]
-    public void Write_WithReasoning_WritesNestedCapabilityObject()
+    public void Write_WithReasoning_WritesNestedFactsObject()
     {
 
         ModelEntry entry = new("reasoner")
         {
-            Reasoning = new ReasoningCapabilities
-            {
-                ControlSupport = ReasoningControlSupport.Budget,
-                SupportsSummary = true,
-                SupportsStreaming = true,
-                ReportsReasoningTokens = true,
-                AllowsClientOutput = true,
-                WireDialect = ReasoningWireDialect.TopLevelReasoningBudget,
-                MaxBudgetTokens = 32_768,
-            },
+            WireDialect = ReasoningWireDialect.TopLevelReasoningBudget,
+            MaxBudgetTokens = 32_768,
         };
 
         using MemoryStream stream = new();
@@ -248,10 +225,9 @@ public sealed class ModelEntryJsonConverterTests
 
         JsonElement reasoning = document.RootElement.GetProperty("reasoning");
 
-        Assert.Equal("budget", reasoning.GetProperty("controlSupport").GetString());
-        Assert.True(reasoning.GetProperty("supportsSummary").GetBoolean());
         Assert.Equal("topLevelReasoningBudget", reasoning.GetProperty("wireDialect").GetString());
         Assert.Equal(32_768, reasoning.GetProperty("maxBudgetTokens").GetInt32());
+        Assert.False(reasoning.TryGetProperty("controlSupport", out _));
 
     }
 
@@ -265,7 +241,7 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(entry.SupportsVision);
 
-        Assert.Null(entry.Reasoning);
+        Assert.Null(entry.WireDialect);
 
     }
 
@@ -283,10 +259,6 @@ public sealed class ModelEntryJsonConverterTests
                   "name": "gpt-4o",
                   "supportsVision": true,
                   "reasoning": {
-                    "controlSupport": "effort",
-                    "supportsSummary": true,
-                    "reportsReasoningTokens": true,
-                    "allowsClientOutput": true,
                     "wireDialect": "standard"
                   }
                 },
@@ -310,12 +282,9 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(provider.Models[1].SupportsVision);
 
-        Assert.Null(provider.Models[1].Reasoning);
+        Assert.Null(provider.Models[1].WireDialect);
 
-        ReasoningCapabilities reasoning = Assert.IsType<ReasoningCapabilities>(provider.Models[0].Reasoning);
-        Assert.Equal(ReasoningControlSupport.Effort, reasoning.ControlSupport);
-        Assert.True(reasoning.SupportsSummary);
-        Assert.True(reasoning.ReportsReasoningTokens);
+        Assert.Equal(ReasoningWireDialect.Standard, provider.Models[0].WireDialect);
 
         string roundTripped = JsonSerializer.Serialize(provider, ConfigurationJsonContext.Default.ProviderSettings);
 
@@ -327,8 +296,8 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.False(reparsed.Models[1].SupportsVision);
 
-        Assert.Equal(provider.Models[0].Reasoning, reparsed.Models[0].Reasoning);
-        Assert.Null(reparsed.Models[1].Reasoning);
+        Assert.Equal(provider.Models[0].WireDialect, reparsed.Models[0].WireDialect);
+        Assert.Null(reparsed.Models[1].WireDialect);
 
     }
 

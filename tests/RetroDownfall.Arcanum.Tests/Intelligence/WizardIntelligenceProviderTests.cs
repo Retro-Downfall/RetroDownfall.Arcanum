@@ -3939,7 +3939,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 },
             },
         };
-        settings.Providers[0].Models[0].Reasoning!.WireDialect = ReasoningWireDialect.OpenRouter;
+        settings.Providers[0].Models[0].WireDialect = ReasoningWireDialect.OpenRouter;
         RecordingTurnRunWriter turnRuns = new();
         RecordingBudgetReservationService reservations = new();
         WizardIntelligenceProvider wizard = CreateWizard(
@@ -5380,14 +5380,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ReasoningOutputMode requestedOutput,
         ReasoningOutput expectedOutput)
     {
-        ReasoningCapabilities capabilities = new()
-        {
-            ControlSupport = ReasoningControlSupport.Effort,
-            SupportsSummary = true,
-            SupportsFull = true,
-            AllowsClientOutput = true,
-            WireDialect = ReasoningWireDialect.Standard,
-        };
+        
 
         ArcanumSettings settings = DefaultSettings() with
         {
@@ -5395,7 +5388,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             [
                 DefaultProvider() with
                 {
-                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
+                    Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)],
                 },
             ],
         };
@@ -5427,14 +5420,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     [Fact]
     public async Task ReasoningMapping_StreamingStandardDialect_MapsTypedOptions()
     {
-        ReasoningCapabilities capabilities = new()
-        {
-            ControlSupport = ReasoningControlSupport.Effort,
-            SupportsSummary = true,
-            SupportsStreaming = true,
-            AllowsClientOutput = true,
-            WireDialect = ReasoningWireDialect.Standard,
-        };
+        
 
         ArcanumSettings settings = DefaultSettings() with
         {
@@ -5442,7 +5428,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             [
                 DefaultProvider() with
                 {
-                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
+                    Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)],
                 },
             ],
         };
@@ -5540,24 +5526,17 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]
-    public async Task Reasoning_UnspecifiedOutput_RequiresActualModelClientOutputCapability(
-        bool allowsClientOutput,
+    public async Task Reasoning_UnspecifiedOutput_RequiresReasoningSummariesEnabled(
+        bool reasoningSummariesEnabled,
         bool expectReasoning)
     {
-        ReasoningCapabilities capabilities = new()
+        ArcanumSettings settings = SettingsWithReasoning() with
         {
-            SupportsFull = true,
-            AllowsClientOutput = allowsClientOutput,
-        };
-        ArcanumSettings settings = DefaultSettings() with
-        {
-            Providers =
-            [
-                DefaultProvider() with
-                {
-                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
-                },
-            ],
+            Features = DefaultSettings().Features with
+            {
+                Reasoning = true,
+                ReasoningSummaries = reasoningSummariesEnabled,
+            },
         };
         ScriptingChatClient chat = new();
         chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
@@ -5589,24 +5568,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Reasoning_UnspecifiedOutput_SummaryOnlyModelDefaultsToSummary()
+    public async Task Reasoning_UnspecifiedOutput_DefaultsToSummaryWhenReasoningSummariesEnabled()
     {
-        ReasoningCapabilities capabilities = new()
-        {
-            SupportsSummary = true,
-            SupportsFull = false,
-            AllowsClientOutput = true,
-        };
-        ArcanumSettings settings = DefaultSettings() with
-        {
-            Providers =
-            [
-                DefaultProvider() with
-                {
-                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
-                },
-            ],
-        };
+        ArcanumSettings settings = SettingsWithReasoning();
         ScriptingChatClient chat = new();
         chat.EnqueueResponse(new ChatResponse(new MeAiChatMessage(
             ChatRole.Assistant,
@@ -5634,19 +5598,14 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     [Fact]
     public async Task Reasoning_StreamingModelWithoutStreamingSupport_SuppressesReasoningFrames()
     {
-        ReasoningCapabilities capabilities = new()
-        {
-            SupportsSummary = true,
-            SupportsStreaming = false,
-            AllowsClientOutput = true,
-        };
+        
         ArcanumSettings settings = DefaultSettings() with
         {
             Providers =
             [
                 DefaultProvider() with
                 {
-                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
+                    Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)],
                 },
             ],
         };
@@ -6884,15 +6843,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     private static ArcanumSettings SettingsWithReasoning()
     {
-        ReasoningCapabilities capabilities = new()
-        {
-            ControlSupport = ReasoningControlSupport.EffortAndBudget,
-            SupportsSummary = true,
-            SupportsFull = true,
-            SupportsStreaming = true,
-            AllowsClientOutput = true,
-            WireDialect = ReasoningWireDialect.Standard,
-        };
+        
 
         return DefaultSettings() with
         {
@@ -6900,9 +6851,14 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             [
                 DefaultProvider() with
                 {
-                    Models = [new ModelEntry(ModelName, Reasoning: capabilities)],
+                    Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)],
                 },
             ],
+            Features = DefaultSettings().Features with
+            {
+                Reasoning = true,
+                ReasoningSummaries = true,
+            },
         };
     }
 
@@ -6962,6 +6918,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 Role = i % 2 == 0 ? MessageRole.User : MessageRole.Assistant,
                 Content = new string('x', 2000) + i,
                 CreatedAt = watermark.AddMinutes(i),
+                Sequence = i + 1,
             });
         }
 
@@ -6992,6 +6949,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 Role = i % 2 == 0 ? MessageRole.User : MessageRole.Assistant,
                 Content = new string('x', 2000) + i,
                 CreatedAt = watermark.AddMinutes(i),
+                Sequence = i + 1,
             });
         }
 

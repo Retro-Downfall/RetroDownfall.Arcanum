@@ -7,9 +7,10 @@ Grimoire database, execute tools, or manage the daemon.
 ## Documentation authority
 
 This file is the only complete public configuration listing. The other canonical
-documents are [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) for technical contracts,
-[`Arcanum.README.md`](Arcanum.README.md) for concise agent/operator orientation,
-and [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) for human navigation.
+documents are [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) for architecture and API contracts,
+[`Arcanum.README.md`](Arcanum.README.md) for agent/operator orientation,
+[`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) for conceptual navigation,
+and [`Arcanum.DEBUGGING.md`](Arcanum.DEBUGGING.md) for verified breakpoint and recipe guides.
 Configuration changes update this reference, `SettingDescriptors`, validation,
 source-generated metadata, and the editor together; other docs link here instead
 of reproducing the complete key table.

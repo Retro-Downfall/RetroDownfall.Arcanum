@@ -89,17 +89,8 @@ public sealed class DialogService(IMainWindowProvider mainWindowProvider) : IDia
                 MinWidth = 72,
             };
 
-            acceptButton.Click += (_, _) =>
-            {
-
-                tcs?.TrySetResult(true);
-
-                // Close via tag
-            };
-
             buttons.Children.Insert(0, acceptButton);
 
-            // Wire after dialog created below
         }
 
         StackPanel content = new()

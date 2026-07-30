@@ -17,6 +17,15 @@ public sealed class Entry
 
     public DateTimeOffset CreatedAt { get; set; }
 
+    /// <summary>
+    /// Strictly increasing per-session append position, and the authoritative chronological order
+    /// within a session. <see cref="CreatedAt"/> alone is not sufficient: a turn writes its prompt
+    /// and answer — and a tool call with its result — under one identical timestamp, and
+    /// <see cref="Id"/> is a random Guid that cannot break that tie in append order. Allocated by
+    /// the repositories under the per-session write lock; gaps are permitted, reuse is not.
+    /// </summary>
+    public long Sequence { get; set; }
+
     public string? ToolCallId { get; set; }
 
     public string? ToolName { get; set; }

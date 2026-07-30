@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Compendium.Ux.Models;
+using RetroDownfall.Compendium.Ux.Services;
 
 namespace RetroDownfall.Compendium.Ux.ViewModels;
 
@@ -27,6 +28,8 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
         }
 
+        Validate();
+
     }
 
     public SettingDescriptor Descriptor { get; }
@@ -37,6 +40,11 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
     [ObservableProperty]
     private object? _value;
+
+    [ObservableProperty]
+    private string? _errorMessage;
+
+    public bool HasError => !string.IsNullOrEmpty(ErrorMessage);
 
     public bool IsSet
     {
@@ -146,6 +154,76 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         {
             OnPropertyChanged(nameof(IsSet));
         }
+
+        Validate();
+    }
+
+    private void Validate()
+    {
+        var errors = new List<string>();
+
+        // Validate environment variable names
+        if (Descriptor.Key.EndsWith("EnvironmentVariable") && Value is string envVarName && !string.IsNullOrWhiteSpace(envVarName))
+        {
+            if (!ConfigurationInputValidator.TryValidateEnvironmentVariableName(envVarName, out string? error))
+            {
+                errors.Add(error ?? "Invalid environment variable name");
+            }
+        }
+
+        // Validate CORS origins
+        if (Descriptor.Key == "host.corsAllowedOrigins" && Value is string[] origins)
+        {
+            if (!ConfigurationInputValidator.TryValidateCorsOrigins(string.Join(", ", origins), out var corsErrors))
+            {
+                errors.AddRange(corsErrors);
+            }
+        }
+
+        // Validate numeric ranges
+        if (Descriptor.Kind is SettingKind.Int or SettingKind.Long or SettingKind.Float)
+        {
+            double numericValue = NumericValue;
+            if (numericValue < Descriptor.Min || numericValue > Descriptor.Max)
+            {
+                errors.Add($"Value must be between {Descriptor.Min} and {Descriptor.Max}");
+            }
+        }
+
+        // Validate required fields
+        if (Descriptor.Kind == SettingKind.String && Value is string strValue && string.IsNullOrWhiteSpace(strValue))
+        {
+            // Check if this is a required field (not allowing empty)
+            if (!Descriptor.AllowUnset && Descriptor.Key.Contains("name"))
+            {
+                errors.Add("This field is required");
+            }
+        }
+
+        // Validate URLs
+        if (Descriptor.Key.Contains("endpoint") || Descriptor.Key.Contains("url") || Descriptor.Key.Contains("origin"))
+        {
+            if (Value is string urlValue && !string.IsNullOrWhiteSpace(urlValue))
+            {
+                if (!Uri.TryCreate(urlValue, UriKind.Absolute, out Uri? uri) || 
+                    (uri.Scheme != "http" && uri.Scheme != "https"))
+                {
+                    errors.Add("Must be a valid HTTP or HTTPS URL");
+                }
+            }
+        }
+
+        // Validate file paths
+        if (Descriptor.Kind == SettingKind.Path && Value is string pathValue && !string.IsNullOrWhiteSpace(pathValue))
+        {
+            if (!ConfigurationInputValidator.TryValidatePath(pathValue, out string? pathError))
+            {
+                errors.Add(pathError ?? "Invalid file path");
+            }
+        }
+
+        ErrorMessage = errors.Count > 0 ? string.Join("; ", errors) : null;
+        OnPropertyChanged(nameof(HasError));
     }
 
     private static string DeriveGroup(string key)

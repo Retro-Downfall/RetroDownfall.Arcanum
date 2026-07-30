@@ -115,43 +115,17 @@
                             <StackPanel Margin="0,8,0,0"
                                         Spacing="8">
 
-                              <controls:LabeledPicker Label="Supported controls"
-                                                      Description="Effort, numeric budget, both, or none."
-                                                      PickerTitle="Select controls"
-                                                      ItemsSource="{Binding ReasoningControlSupportValues}"
-                                                      SelectedItem="{Binding ReasoningControl, Mode=TwoWay}" />
-
                               <controls:LabeledPicker Label="Wire dialect"
-                                                      Description="Exact request wire shape required by this provider/model."
+                                                      Description="Exact request wire shape required by this provider/model. Standard (OpenAI) is the default; set only for third-party endpoints needing a nonstandard numeric-budget shape."
                                                       PickerTitle="Select dialect"
                                                       ItemsSource="{Binding ReasoningWireDialectValues}"
                                                       SelectedItem="{Binding ReasoningDialect, Mode=TwoWay}" />
-
-                              <controls:LabeledToggle Label="Supports summaries"
-                                                      Description="Can return a client-safe reasoning summary."
-                                                      IsOn="{Binding ReasoningSupportsSummary, Mode=TwoWay}" />
-
-                              <controls:LabeledToggle Label="Supports full output"
-                                                      Description="Can return explicitly client-safe full reasoning output."
-                                                      IsOn="{Binding ReasoningSupportsFull, Mode=TwoWay}" />
-
-                              <controls:LabeledToggle Label="Streams reasoning"
-                                                      Description="Client-safe reasoning output may arrive incrementally."
-                                                      IsOn="{Binding ReasoningSupportsStreaming, Mode=TwoWay}" />
-
-                              <controls:LabeledToggle Label="Reports reasoning tokens"
-                                                      Description="Usage reports reasoning tokens as a completion-token subset."
-                                                      IsOn="{Binding ReasoningReportsReasoningTokens, Mode=TwoWay}" />
-
-                              <controls:LabeledToggle Label="Allow client output"
-                                                      Description="Permit projection of provider-returned client-safe reasoning."
-                                                      IsOn="{Binding ReasoningAllowsClientOutput, Mode=TwoWay}" />
 
                               <CheckBox Content="Set a maximum numeric reasoning budget"
                                         IsChecked="{Binding HasReasoningMaxBudgetTokens, Mode=TwoWay}" />
 
                               <controls:LabeledStepper Label="Maximum reasoning budget"
-                                                       Description="Maximum numeric reasoning budget accepted by this model."
+                                                       Description="Maximum numeric reasoning budget accepted by this model (per single turn)."
                                                        IsEnabled="{Binding HasReasoningMaxBudgetTokens}"
                                                        Value="{Binding ReasoningMaxBudgetTokens, Mode=TwoWay}"
                                                        Minimum="1"

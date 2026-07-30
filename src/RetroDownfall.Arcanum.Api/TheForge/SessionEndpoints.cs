@@ -553,7 +553,7 @@ internal static class SessionEndpoints
                 if (sinceEntry is not null)
                 {
                     List<Entry> catchUp = await repo
-                        .GetEntriesAfterAsync(id, sinceEntry.CreatedAt, sinceEntry.Id, replayLimit, httpContext.RequestAborted)
+                        .GetEntriesAfterAsync(id, sinceEntry.Sequence, replayLimit, httpContext.RequestAborted)
                         .ConfigureAwait(false);
 
                     foreach (Entry entry in catchUp)

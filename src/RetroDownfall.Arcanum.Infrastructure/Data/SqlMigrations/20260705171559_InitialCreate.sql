@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS "Entries" (
     "Content" TEXT NOT NULL,
     "ModelUsed" TEXT NOT NULL,
     "CreatedAt" TEXT NOT NULL,
+    "Sequence" INTEGER NOT NULL,
     "ToolCallId" TEXT NULL,
     "ToolName" TEXT NULL,
     "ToolArguments" TEXT NULL,
@@ -108,6 +109,10 @@ CREATE TABLE IF NOT EXISTS "Entries" (
 );
 
 CREATE INDEX IF NOT EXISTS "IX_Entries_SessionId_CreatedAt" ON "Entries" ("SessionId", "CreatedAt");
+
+-- Authoritative intra-session chronological order. Unique so a lost per-session allocation races
+-- into a write failure instead of silently reordering a transcript.
+CREATE UNIQUE INDEX IF NOT EXISTS "IX_Entries_SessionId_Sequence" ON "Entries" ("SessionId", "Sequence");
 
 CREATE INDEX IF NOT EXISTS "IX_Entries_Role" ON "Entries" ("Role");
 

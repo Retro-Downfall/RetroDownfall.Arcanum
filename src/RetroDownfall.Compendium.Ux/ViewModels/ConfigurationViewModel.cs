@@ -3,6 +3,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Compendium.Ux.Models;
@@ -19,9 +20,13 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     private readonly IUiDispatcher _uiDispatcher;
 
+    private readonly ILogger<ConfigurationViewModel> _logger;
+
     private readonly Dictionary<ConfigSection, GenericSectionViewModel> _genericSections = new();
 
     private readonly HashSet<INotifyPropertyChanged> _nestedDirtySubscriptions = [];
+
+    private readonly HashSet<ProvidersSectionViewModel.ProviderViewModel> _modelsSubscribedProviders = [];
 
     [ObservableProperty] private bool _isDirty;
 
@@ -41,9 +46,9 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     public HostSectionViewModel Host { get; } = new();
 
-    public ProvidersSectionViewModel Providers { get; } = new();
+    public ProvidersSectionViewModel Providers { get; }
 
-    public DaemonSectionViewModel Daemon { get; } = new();
+    public DaemonSectionViewModel Daemon { get; }
 
     public CliSectionViewModel Cli { get; } = new();
 
@@ -51,7 +56,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     public IReadOnlyList<ArcanumTheme> CliThemes { get; } = Enum.GetValues<ArcanumTheme>();
 
-    public IReadOnlyList<LogLevel> LogLevels { get; } = Enum.GetValues<LogLevel>();
+    public IReadOnlyList<RetroDownfall.Arcanum.Core.Logging.LogLevel> LogLevels { get; } = Enum.GetValues<RetroDownfall.Arcanum.Core.Logging.LogLevel>();
 
     public ObservableCollection<SectionDescriptor> Sections { get; } = new(SectionDescriptors.All);
 
@@ -67,6 +72,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         IArcanumConfigurationStore store,
         IDialogService dialogService,
         IUiDispatcher uiDispatcher,
+        ILogger<ConfigurationViewModel> logger,
         LocalCertificateGenerator? certificateGenerator = null)
     {
 
@@ -76,6 +82,11 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         _uiDispatcher = uiDispatcher;
 
+        _logger = logger;
+
+        // Initialize view models with dialog service for confirmation dialogs
+        Providers = new ProvidersSectionViewModel(dialogService);
+        Daemon = new DaemonSectionViewModel(dialogService);
         Host.AttachServices(certificateGenerator ?? new LocalCertificateGenerator(), dialogService);
 
         SaveCommand = new AsyncRelayCommand(SaveAsync, () => IsDirty && !IsSaving && !HasExternalChange);
@@ -194,6 +205,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+
+            _logger.LogError(ex, "Failed to load configuration from {Path}", _store.ConfigurationFilePath);
 
             string path = _store.ConfigurationFilePath;
 
@@ -431,7 +444,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
             .SelectMany(s => s.Fields)
             .ToList();
 
-        return GenericSettingsUpdater.ApplyFields(polished, genericFields);
+        return GenericSettingsUpdater.ApplyFields(polished, genericFields, _logger);
 
     }
 
@@ -601,7 +614,12 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         SubscribeNestedDirty(provider);
 
-        provider.Models.CollectionChanged += OnProviderModelsCollectionChanged;
+        if (_modelsSubscribedProviders.Add(provider))
+        {
+
+            provider.Models.CollectionChanged += OnProviderModelsCollectionChanged;
+
+        }
 
         foreach (ProvidersSectionViewModel.ModelEntryViewModel model in provider.Models)
         {
@@ -615,7 +633,12 @@ public sealed partial class ConfigurationViewModel : ObservableObject
     private void UnsubscribeProviderDirty(ProvidersSectionViewModel.ProviderViewModel provider)
     {
 
-        provider.Models.CollectionChanged -= OnProviderModelsCollectionChanged;
+        if (_modelsSubscribedProviders.Remove(provider))
+        {
+
+            provider.Models.CollectionChanged -= OnProviderModelsCollectionChanged;
+
+        }
 
         foreach (ProvidersSectionViewModel.ModelEntryViewModel model in provider.Models)
         {

@@ -601,7 +601,7 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             call: 0,
             DateTimeOffset.UtcNow.AddMinutes(1));
 
-        _db!.Entries.Add(BuildCallEntry(interaction));
+        _db!.Entries.Add(BuildCallEntry(interaction, sequence: 3));
 
         await _db.SaveChangesAsync(CancellationToken.None);
 
@@ -638,13 +638,13 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             call: 0,
             DateTimeOffset.UtcNow.AddMinutes(1));
 
-        Entry mismatchedCall = BuildCallEntry(interaction);
+        Entry mismatchedCall = BuildCallEntry(interaction, sequence: 3);
 
         mismatchedCall.Content = "[ToolCall: apply_patch({\"patch\":\"different\"})]";
 
         _db!.Entries.Add(mismatchedCall);
 
-        _db.Entries.Add(BuildResultEntry(interaction));
+        _db.Entries.Add(BuildResultEntry(interaction, sequence: 4));
 
         await _db.SaveChangesAsync(CancellationToken.None);
 
@@ -928,7 +928,7 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             "{\"status\":\"seed\"}",
             context.ModelUsed,
             context.CreatedAt);
-        _db!.Entries.Add(BuildCallEntry(partial));
+        _db!.Entries.Add(BuildCallEntry(partial, sequence: 3));
         await _db.SaveChangesAsync();
         _db.ChangeTracker.Clear();
 
@@ -1362,7 +1362,7 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
                                 return ValueTask.CompletedTask;
                             }
 
-                            _db!.Entries.Add(BuildCallEntry(partial));
+                            _db!.Entries.Add(BuildCallEntry(partial, sequence: 3));
                             _db.SaveChanges();
                             return ValueTask.FromException(
                                 new IOException("injected failure"));
@@ -1849,7 +1849,12 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
 
     }
 
-    private static Entry BuildCallEntry(MandatoryToolInteraction interaction) =>
+    /// <summary>
+    /// Mirrors the production builder. <paramref name="sequence"/> is only needed when the entry is
+    /// seeded directly, because direct seeding bypasses the repository's per-session allocation and
+    /// the unique <c>(SessionId, Sequence)</c> index rejects duplicates.
+    /// </summary>
+    private static Entry BuildCallEntry(MandatoryToolInteraction interaction, long sequence = 0L) =>
         new()
         {
             Id = interaction.Receipt.CallEntryId,
@@ -1858,12 +1863,13 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             Content = $"[ToolCall: {interaction.ToolName}({interaction.Arguments})]",
             ModelUsed = interaction.ModelUsed,
             CreatedAt = interaction.CreatedAt,
+            Sequence = sequence,
             ToolCallId = interaction.ToolCallId,
             ToolName = interaction.ToolName,
             ToolArguments = interaction.Arguments,
         };
 
-    private static Entry BuildResultEntry(MandatoryToolInteraction interaction) =>
+    private static Entry BuildResultEntry(MandatoryToolInteraction interaction, long sequence = 0L) =>
         new()
         {
             Id = interaction.Receipt.ResultEntryId,
@@ -1872,6 +1878,7 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             Content = $"[ToolResult: {interaction.Result}]",
             ModelUsed = interaction.ModelUsed,
             CreatedAt = interaction.CreatedAt,
+            Sequence = sequence,
         };
 
     private static async Task<Guid> CreateSessionAsync(

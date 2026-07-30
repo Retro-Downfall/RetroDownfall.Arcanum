@@ -363,6 +363,10 @@ public sealed class SessionRepository(
 
         }
 
+        entry.Sequence = await _entryPersistence
+            .ReserveSequenceRangeAsync(sessionId, count: 1, ct)
+            .ConfigureAwait(false);
+
         db.Entries.Add(entry);
 
         session.UpdatedAt = now;
@@ -441,7 +445,7 @@ public sealed class SessionRepository(
         int entriesToCopy = cutoffEntry is null
             ? await db.Entries.AsNoTracking().CountAsync(e => e.SessionId == sourceId, ct).ConfigureAwait(false)
             : await EntryTemporalQueries
-                .CountAtOrBeforeKeyset(db, sourceId, cutoffEntry.CreatedAt, cutoffEntry.Id)
+                .CountAtOrBeforeSequence(db, sourceId, cutoffEntry.Sequence)
                 .FirstAsync(ct)
                 .ConfigureAwait(false);
 
@@ -483,6 +487,7 @@ public sealed class SessionRepository(
                     Content = sourceEntry.Content,
                     ModelUsed = sourceEntry.ModelUsed,
                     CreatedAt = sourceEntry.CreatedAt,
+                    Sequence = sourceEntry.Sequence,
                     ToolCallId = sourceEntry.ToolCallId,
                     ToolName = sourceEntry.ToolName,
                     ToolArguments = sourceEntry.ToolArguments,
@@ -661,15 +666,14 @@ public sealed class SessionRepository(
 
     public async Task<List<Entry>> GetEntriesAfterAsync(
         Guid sessionId,
-        DateTimeOffset afterCreatedAt,
-        Guid afterId,
+        long afterSequence,
         int limit,
         CancellationToken ct = default)
     {
         int clampedLimit = ArcanumSettingClamps.SessionStreamReplayLimit(limit);
 
         return await EntryTemporalQueries
-            .LoadAfterKeyset(db, sessionId, afterCreatedAt, afterId, clampedLimit)
+            .LoadAfterSequence(db, sessionId, afterSequence, clampedLimit)
             .AsNoTracking()
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -688,8 +692,18 @@ public sealed class SessionRepository(
         if (beforeCreatedAt is DateTimeOffset beforeAt && beforeId is Guid beforeEntryId)
         {
 
-            return await EntryTemporalQueries
-                .LoadBeforeKeyset(db, sessionId, beforeAt, beforeEntryId, clampedLimit)
+            long? beforeSequence = await EntryTemporalQueries
+                .SequenceOf(db, sessionId, beforeEntryId)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+
+            // A cursor entry deleted since the client read it has no sequence to page from, so fall
+            // back to its timestamp/id position rather than reporting the end of the transcript.
+            IQueryable<Entry> page = beforeSequence is long cursorSequence
+                ? EntryTemporalQueries.LoadBeforeSequence(db, sessionId, cursorSequence, clampedLimit)
+                : EntryTemporalQueries.LoadBeforeDeletedKeyset(db, sessionId, beforeAt, beforeEntryId, clampedLimit);
+
+            return await page
                 .AsNoTracking()
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
@@ -808,14 +822,12 @@ public sealed class SessionRepository(
         Guid sessionId,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        DateTimeOffset cursorCreatedAt = DateTimeOffset.MinValue;
-
-        Guid cursorId = Guid.Empty;
+        long cursorSequence = 0L;
 
         while (true)
         {
             List<Entry> batch = await EntryTemporalQueries
-                .LoadAfterKeyset(db, sessionId, cursorCreatedAt, cursorId, ExportEntryBatchSize)
+                .LoadAfterSequence(db, sessionId, cursorSequence, ExportEntryBatchSize)
                 .AsNoTracking()
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
@@ -829,9 +841,7 @@ public sealed class SessionRepository(
 
             Entry last = batch[^1];
 
-            cursorCreatedAt = last.CreatedAt;
-
-            cursorId = last.Id;
+            cursorSequence = last.Sequence;
 
             if (batch.Count < ExportEntryBatchSize)
             {

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Compendium.Ux.Services;
 
 namespace RetroDownfall.Compendium.Ux.ViewModels;
 
@@ -13,6 +14,13 @@ public sealed partial class DaemonSectionViewModel : ObservableObject
     public ObservableCollection<UnseenServantJobViewModel> Jobs { get; } = [];
 
     private DaemonSettings _snapshot = new();
+
+    private readonly IDialogService _dialogService;
+
+    public DaemonSectionViewModel(IDialogService dialogService)
+    {
+        _dialogService = dialogService;
+    }
 
     public void LoadFrom(DaemonSettings daemon)
     {
@@ -26,7 +34,7 @@ public sealed partial class DaemonSectionViewModel : ObservableObject
         foreach (UnseenServantJob job in daemon.Jobs)
         {
 
-            Jobs.Add(new UnseenServantJobViewModel(job));
+            Jobs.Add(new UnseenServantJobViewModel(job, _dialogService));
 
         }
 
@@ -40,18 +48,33 @@ public sealed partial class DaemonSectionViewModel : ObservableObject
 
     [RelayCommand]
     private void AddJob() =>
-        Jobs.Add(new UnseenServantJobViewModel(new UnseenServantJob()));
+        Jobs.Add(new UnseenServantJobViewModel(new UnseenServantJob(), _dialogService));
 
     [RelayCommand]
-    private void RemoveJob(UnseenServantJobViewModel? job)
+    private async Task RemoveJobAsync(UnseenServantJobViewModel? job)
     {
 
-        if (job is not null)
+        if (job is null)
         {
 
-            Jobs.Remove(job);
+            return;
 
         }
+
+        bool confirmed = await _dialogService.ShowConfirmAsync(
+            "Remove Job",
+            $"Are you sure you want to remove the job '{job.Name}'? This action cannot be undone.",
+            "Remove",
+            "Cancel");
+
+        if (!confirmed)
+        {
+
+            return;
+
+        }
+
+        Jobs.Remove(job);
 
     }
 
@@ -68,10 +91,14 @@ public sealed partial class DaemonSectionViewModel : ObservableObject
 
         private UnseenServantJob _snapshot;
 
-        public UnseenServantJobViewModel(UnseenServantJob snapshot)
+        private readonly IDialogService _dialogService;
+
+        public UnseenServantJobViewModel(UnseenServantJob snapshot, IDialogService dialogService)
         {
 
             _snapshot = snapshot;
+
+            _dialogService = dialogService;
 
             LoadFrom(snapshot);
 

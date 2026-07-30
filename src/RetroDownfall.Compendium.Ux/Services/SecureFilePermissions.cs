@@ -66,22 +66,13 @@ internal static class SecureFilePermissions
         SecurityIdentifier owner = WindowsIdentity.GetCurrent().User
             ?? throw new InvalidOperationException("Could not resolve current Windows user.");
 
-        // Harden DACL only — SetOwner often requires elevation and is unnecessary for
-        // files/directories the current user just created.
-        DirectorySecurity security = directory.GetAccessControl();
+        // Create a new DACL with only the owner's access rule
+        DirectorySecurity security = new();
 
+        // Set protection to prevent inheritance and remove inherited rules
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
 
-        foreach (FileSystemAccessRule rule in security.GetAccessRules(
-                     includeExplicit: true,
-                     includeInherited: true,
-                     typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>())
-        {
-
-            _ = security.RemoveAccessRule(rule);
-
-        }
-
+        // Add owner's full control rule with inheritance for subdirectories and files
         security.AddAccessRule(new FileSystemAccessRule(
             owner,
             FileSystemRights.FullControl,
@@ -89,6 +80,7 @@ internal static class SecureFilePermissions
             PropagationFlags.None,
             AccessControlType.Allow));
 
+        // Apply the new ACL in a single operation
         directory.SetAccessControl(security);
 
     }
@@ -102,25 +94,19 @@ internal static class SecureFilePermissions
         SecurityIdentifier owner = WindowsIdentity.GetCurrent().User
             ?? throw new InvalidOperationException("Could not resolve current Windows user.");
 
-        FileSecurity security = file.GetAccessControl();
+        // Create a new DACL with only the owner's access rule
+        FileSecurity security = new();
 
+        // Set protection to prevent inheritance and remove inherited rules
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
 
-        foreach (FileSystemAccessRule rule in security.GetAccessRules(
-                     includeExplicit: true,
-                     includeInherited: true,
-                     typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>())
-        {
-
-            _ = security.RemoveAccessRule(rule);
-
-        }
-
+        // Add owner's read/write rule
         security.AddAccessRule(new FileSystemAccessRule(
             owner,
             FileSystemRights.Read | FileSystemRights.Write,
             AccessControlType.Allow));
 
+        // Apply the new ACL in a single operation
         file.SetAccessControl(security);
 
     }

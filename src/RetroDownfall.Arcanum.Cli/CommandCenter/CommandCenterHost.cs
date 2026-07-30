@@ -5,10 +5,10 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using Terminal.Gui.App;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
-using Terminal.Gui.Views;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -17,6 +17,7 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 /// </summary>
 internal sealed class CommandCenterHost(
     IArcanumServeLauncher serveLauncher,
+    ArcanumApiClient apiClient,
     ICliEnvironment cliEnvironment,
     IOptionsMonitor<ArcanumSettings> settingsMonitor,
     ShellCommandDispatcher dispatcher,
@@ -210,8 +211,7 @@ internal sealed class CommandCenterHost(
                     {
                         try
                         {
-                            await foreach (CommandCenterUiUpdate update in uiChannel.Reader.ReadAllAsync(runToken)
-                                               .ConfigureAwait(false))
+                            await foreach (CommandCenterUiUpdate update in uiChannel.Reader.ReadAllAsync(runToken).ConfigureAwait(false))
                             {
                                 app.Invoke(() => window.ApplyState(state, kind: update.Kind));
                             }
@@ -227,6 +227,7 @@ internal sealed class CommandCenterHost(
                     // Sole entry into HandleSubmitAsync for composer send (see Accepting no-op below).
                     // ClearComposer runs only after TryBeginTurn admits the turn (#10).
                     string text = window.GetComposerText();
+
                     _ = HandleSubmitAsync(text, state, uiChannel.Writer, app, window, linked);
                 }
 
@@ -612,7 +613,44 @@ internal sealed class CommandCenterHost(
         }
         finally
         {
+            await StopHostIfWeStartedItAsync(state).ConfigureAwait(false);
+
             _actionGate.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Stops the Arcanum host on exit, but only when this Command Center started it. A host that was
+    /// already running belongs to whoever started it; they can stop it with <c>arcanum serve quit</c>
+    /// or Ctrl+C in its own terminal. Runs on every exit path, including the terminal-too-small gate,
+    /// so a host launched for a session that never opened is not left orphaned. Never throws: failing
+    /// to stop the host must not change the CLI exit code.
+    /// </summary>
+    private async Task StopHostIfWeStartedItAsync(CommandCenterState state)
+    {
+        if (!ServeOwnershipPolicy.OwnsHost(state.ServeLaunch))
+        {
+            return;
+        }
+
+        try
+        {
+            Result<bool> quit = await apiClient
+                .QuitServerAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+
+            if (quit.IsFailure)
+            {
+                logger.LogWarning(
+                    "Could not stop the auto-launched Arcanum host: {ErrorCode}.",
+                    quit.Error.Code);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                "Could not stop the auto-launched Arcanum host; exception type {ExceptionType}.",
+                ex.GetType().FullName);
         }
     }
 

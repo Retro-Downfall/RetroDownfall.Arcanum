@@ -268,7 +268,8 @@ internal static partial class OpenAiV1Endpoints
             out ModelEntry? modelEntry);
         Result reasoningModel = ReasoningRequestValidator.ValidateForModel(
             mapped.Reasoning,
-            modelEntry?.Reasoning,
+            modelEntry,
+            settings.Features.Reasoning,
             resolvedModel,
             resolvedProvider.Name);
 

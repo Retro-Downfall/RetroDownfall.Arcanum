@@ -24,14 +24,17 @@ public sealed record ModelEntry
     public ModelEntry(
         string Name,
         bool SupportsVision = false,
-        ReasoningCapabilities? Reasoning = null)
+        ReasoningWireDialect? WireDialect = null,
+        int? MaxBudgetTokens = null)
     {
 
         this.Name = Name;
 
         this.SupportsVision = SupportsVision;
 
-        this.Reasoning = Reasoning;
+        this.WireDialect = WireDialect;
+
+        this.MaxBudgetTokens = MaxBudgetTokens;
 
     }
 
@@ -40,11 +43,21 @@ public sealed record ModelEntry
     public bool SupportsVision { get; set; }
 
     /// <summary>
-    /// Explicit provider/model reasoning metadata. <see langword="null"/> preserves legacy behavior
-    /// and means no reasoning controls or client output have been declared.
+    /// Optional wire-shape hint for nonstandard reasoning budgets. <see langword="null"/> means the
+    /// standard OpenAI-compatible wire dialect is sufficient; set only for third-party endpoints
+    /// that require <c>openRouter</c>, <c>topLevelReasoningBudget</c>, or <c>anthropicThinking</c>.
+    /// The adapter enforces this at request time: a numeric budget requires a nonstandard dialect,
+    /// and standard rejects numeric budgets.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public ReasoningCapabilities? Reasoning { get; set; }
+    public ReasoningWireDialect? WireDialect { get; set; }
+
+    /// <summary>
+    /// Optional per-single-turn reasoning budget ceiling (1–2,097,152 tokens). Only meaningful
+    /// alongside a nonstandard wire dialect.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxBudgetTokens { get; set; }
 
     /// <summary>
     /// Implicit conversion from a bare model name — mirrors the JSON string-or-object back-compat
@@ -57,9 +70,10 @@ public sealed record ModelEntry
 
 /// <summary>
 /// AOT-safe converter accepting either a bare JSON string (<c>"gpt-4o"</c>, back-compat form —
-/// <see cref="ModelEntry.SupportsVision"/> defaults to <c>false</c> and
-/// <see cref="ModelEntry.Reasoning"/> to <see langword="null"/>) or a factual object. Writes are
-/// always the object form and omit reasoning when it was not declared.
+/// <see cref="ModelEntry.SupportsVision"/> defaults to <c>false</c> and reasoning remains unconfigured)
+/// or a factual object with `name`/`supportsVision` and optional `reasoning` (only `wireDialect` and
+/// `maxBudgetTokens`). Writes are always the object form and include the reasoning object only when
+/// it was declared.
 /// </summary>
 public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 {
@@ -75,7 +89,9 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 
                 bool supportsVision = false;
 
-                ReasoningCapabilities? reasoning = null;
+                ReasoningWireDialect? wireDialect = null;
+
+                int? maxBudgetTokens = null;
 
                 while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
                 {
@@ -99,11 +115,48 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                     }
                     else if (string.Equals(propertyName, "reasoning", StringComparison.OrdinalIgnoreCase))
                     {
-                        reasoning = reader.TokenType == JsonTokenType.Null
-                            ? null
-                            : JsonSerializer.Deserialize(
-                                ref reader,
-                                ConfigurationJsonContext.Default.ReasoningCapabilities);
+                        if (reader.TokenType == JsonTokenType.Null)
+                        {
+                            wireDialect = null;
+                            maxBudgetTokens = null;
+                        }
+                        else if (reader.TokenType == JsonTokenType.StartObject)
+                        {
+                            while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+                            {
+                                if (reader.TokenType != JsonTokenType.PropertyName)
+                                {
+                                    continue;
+                                }
+
+                                string reasoningProperty = reader.GetString() ?? string.Empty;
+
+                                _ = reader.Read();
+
+                                if (string.Equals(reasoningProperty, "wireDialect", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    wireDialect = reader.TokenType switch
+                                    {
+                                        JsonTokenType.String => JsonSerializer.Deserialize(
+                                            ref reader,
+                                            ConfigurationJsonContext.Default.ReasoningWireDialect),
+                                        JsonTokenType.Null => null,
+                                        _ => throw new JsonException(
+                                            "Reasoning wireDialect must be a string enum value (standard, openRouter, topLevelReasoningBudget, anthropicThinking)."),
+                                    };
+                                }
+                                else if (string.Equals(reasoningProperty, "maxBudgetTokens", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    maxBudgetTokens = reader.TokenType == JsonTokenType.Number
+                                        ? reader.GetInt32()
+                                        : null;
+                                }
+                                else
+                                {
+                                    reader.Skip();
+                                }
+                            }
+                        }
                     }
                     else
                     {
@@ -111,7 +164,7 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
                     }
                 }
 
-                return new ModelEntry(name, supportsVision, reasoning);
+                return new ModelEntry(name, supportsVision, wireDialect, maxBudgetTokens);
 
             default:
                 throw new JsonException(
@@ -127,14 +180,28 @@ public sealed class ModelEntryJsonConverter : JsonConverter<ModelEntry>
 
         writer.WriteBoolean("supportsVision", value.SupportsVision);
 
-        if (value.Reasoning is not null)
+        if (value.WireDialect is not null || value.MaxBudgetTokens is not null)
         {
             writer.WritePropertyName("reasoning");
 
-            JsonSerializer.Serialize(
-                writer,
-                value.Reasoning,
-                ConfigurationJsonContext.Default.ReasoningCapabilities);
+            writer.WriteStartObject();
+
+            if (value.WireDialect is not null)
+            {
+                writer.WritePropertyName("wireDialect");
+
+                JsonSerializer.Serialize(
+                    writer,
+                    value.WireDialect,
+                    ConfigurationJsonContext.Default.ReasoningWireDialect);
+            }
+
+            if (value.MaxBudgetTokens is not null)
+            {
+                writer.WriteNumber("maxBudgetTokens", value.MaxBudgetTokens.Value);
+            }
+
+            writer.WriteEndObject();
         }
 
         writer.WriteEndObject();

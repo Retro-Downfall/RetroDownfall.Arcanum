@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
     public partial class ArcanumDbContextModel
     {
         private ArcanumDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("92ef4b0c-8888-454e-a7be-40819432e976"), entityTypeCount: 7)
+            : base(skipDetectChanges: false, modelId: new Guid("a95b6cca-d733-426b-a5d8-ded9cf98aa04"), entityTypeCount: 7)
         {
         }
 
@@ -38,7 +38,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Generated
             CampaignEntityType.CreateAnnotations(campaign);
             PromptEntityType.CreateAnnotations(prompt);
 
-            AddAnnotation("ProductVersion", "10.0.8");
+            AddAnnotation("ProductVersion", "10.0.10");
         }
     }
 }

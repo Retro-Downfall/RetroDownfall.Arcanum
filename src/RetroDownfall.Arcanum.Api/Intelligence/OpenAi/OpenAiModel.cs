@@ -23,7 +23,9 @@ public sealed record OpenAiModel(
     [property: JsonPropertyName("provider_type")] string ProviderType = "",
     [property: JsonPropertyName("supports_tools")] bool SupportsTools = true,
     [property: JsonPropertyName("supports_streaming")] bool SupportsStreaming = true,
-    [property: JsonPropertyName("reasoning"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    ReasoningCapabilities? Reasoning = null,
+    [property: JsonPropertyName("reasoning_wire_dialect"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    ReasoningWireDialect? WireDialect = null,
+    [property: JsonPropertyName("reasoning_max_budget_tokens"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? MaxBudgetTokens = null,
     [property: JsonPropertyName("prompt_caching"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     PromptCachingProfile? PromptCaching = null);

@@ -362,13 +362,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         provider.Models =
         [
             new ModelEntry(ModelName)
-            {
-                Reasoning = new ReasoningCapabilities
-                {
-                    ControlSupport = ReasoningControlSupport.Effort,
-                    WireDialect = ReasoningWireDialect.Standard,
-                },
-            },
+            { WireDialect = ReasoningWireDialect.OpenRouter },
         ];
 
         ScriptingChatClient chat = new();
@@ -412,13 +406,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         provider.Models =
         [
             new ModelEntry(ModelName)
-            {
-                Reasoning = new ReasoningCapabilities
-                {
-                    ControlSupport = ReasoningControlSupport.Budget,
-                    WireDialect = ReasoningWireDialect.OpenRouter,
-                },
-            },
+            { WireDialect = ReasoningWireDialect.OpenRouter },
         ];
 
         ScriptingChatClient chat = new();
@@ -463,13 +451,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         providerA.Models =
         [
             new ModelEntry(ModelName)
-            {
-                Reasoning = new ReasoningCapabilities
-                {
-                    ControlSupport = ReasoningControlSupport.Budget,
-                    WireDialect = ReasoningWireDialect.OpenRouter,
-                },
-            },
+            { WireDialect = ReasoningWireDialect.OpenRouter },
         ];
 
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -512,13 +494,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         providerA.Models =
         [
             new ModelEntry(ModelName)
-            {
-                Reasoning = new ReasoningCapabilities
-                {
-                    ControlSupport = ReasoningControlSupport.Effort,
-                    WireDialect = ReasoningWireDialect.Standard,
-                },
-            },
+            { WireDialect = ReasoningWireDialect.OpenRouter },
         ];
 
         ProviderSettings providerB = MakeProvider("provider-b");
@@ -565,13 +541,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         providerB.Models =
         [
             new ModelEntry(ModelName)
-            {
-                Reasoning = new ReasoningCapabilities
-                {
-                    ControlSupport = ReasoningControlSupport.Budget,
-                    WireDialect = ReasoningWireDialect.OpenRouter,
-                },
-            },
+            { WireDialect = ReasoningWireDialect.OpenRouter },
         ];
 
         RecordingChatClientFactory factory = new();
@@ -612,13 +582,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         providerB.Models =
         [
             new ModelEntry(ModelName)
-            {
-                Reasoning = new ReasoningCapabilities
-                {
-                    ControlSupport = ReasoningControlSupport.Effort,
-                    WireDialect = ReasoningWireDialect.Standard,
-                },
-            },
+            { WireDialect = ReasoningWireDialect.OpenRouter },
         ];
 
         RecordingChatClientFactory factory = new();
@@ -654,17 +618,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     public async Task StreamPromptAsync_does_not_fallback_after_visible_or_protected_reasoning_commit(
         bool protectedOnly)
     {
-        ReasoningCapabilities capabilities = new()
-        {
-            SupportsSummary = true,
-            SupportsStreaming = true,
-            AllowsClientOutput = true,
-            WireDialect = ReasoningWireDialect.Standard,
-        };
+        
         ProviderSettings providerA = MakeProvider("provider-a");
-        providerA.Models = [new ModelEntry(ModelName, Reasoning: capabilities)];
+        providerA.Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)];
         ProviderSettings providerB = MakeProvider("provider-b");
-        providerB.Models = [new ModelEntry(ModelName, Reasoning: capabilities)];
+        providerB.Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)];
 
         TextReasoningContent reasoning = new(protectedOnly ? string.Empty : "visible reasoning");
         if (protectedOnly)
@@ -732,14 +690,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         [
             new ModelEntry(
                 ModelName,
-                Reasoning: new ReasoningCapabilities
-                {
-                    SupportsSummary = true,
-                    SupportsFull = false,
-                    SupportsStreaming = supportsStreaming,
-                    AllowsClientOutput = true,
-                    WireDialect = ReasoningWireDialect.Standard,
-                }),
+                WireDialect: supportsStreaming ? ReasoningWireDialect.OpenRouter : null),
         ];
         ScriptingChatClient chatB = new();
         chatB.EnqueueStreamUpdates(new ChatResponseUpdate(
@@ -783,16 +734,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
     public async Task ExecutePromptAsync_does_not_fallback_after_buffered_reasoning_commit(
         bool protectedOnly)
     {
-        ReasoningCapabilities capabilities = new()
-        {
-            SupportsSummary = true,
-            AllowsClientOutput = true,
-            WireDialect = ReasoningWireDialect.Standard,
-        };
+        
         ProviderSettings providerA = MakeProvider("provider-a");
-        providerA.Models = [new ModelEntry(ModelName, Reasoning: capabilities)];
+        providerA.Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)];
         ProviderSettings providerB = MakeProvider("provider-b");
-        providerB.Models = [new ModelEntry(ModelName, Reasoning: capabilities)];
+        providerB.Models = [new ModelEntry(ModelName, WireDialect: ReasoningWireDialect.OpenRouter)];
         TextReasoningContent reasoning = new(protectedOnly ? string.Empty : "visible reasoning");
         if (protectedOnly)
         {
