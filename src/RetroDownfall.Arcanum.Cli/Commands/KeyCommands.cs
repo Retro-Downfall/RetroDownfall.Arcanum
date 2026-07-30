@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
@@ -17,7 +16,6 @@ public sealed class KeyCommands(ISecretStore secretStore, IThemePalette themePal
     /// <summary>
     /// Print the stored master API key to stderr (so stdout piping does not capture the secret).
     /// </summary>
-    [Command("show")]
     public async Task<int> Show(CancellationToken cancellationToken)
     {
 
@@ -65,8 +63,7 @@ public sealed class KeyCommands(ISecretStore secretStore, IThemePalette themePal
     /// Store a master API key in the OS credential store (and mirror to security.dat when possible).
     /// Pass the key as an argument, or omit it to read a single line from stdin.
     /// </summary>
-    [Command("set")]
-    public async Task<int> Set(CancellationToken cancellationToken, [Argument] string? apiKey = null)
+    public async Task<int> Set(CancellationToken cancellationToken, string? apiKey = null)
     {
 
         cancellationToken.ThrowIfCancellationRequested();

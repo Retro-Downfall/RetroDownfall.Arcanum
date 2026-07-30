@@ -1,5 +1,4 @@
 using System.Text.Json;
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -21,7 +20,6 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// <param name="campaignId">--campaignId, Filter by campaign GUID.</param>
     /// <param name="query">-q, Free-text query.</param>
     /// <param name="tag">Filter by tag.</param>
-    [Command("list")]
     public async Task<int> List(
         string? campaignId = null,
         string? query = null,
@@ -94,8 +92,7 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// Show prompt detail (GET /api/prompts/{id}).
     /// </summary>
     /// <param name="id">Prompt GUID.</param>
-    [Command("get")]
-    public async Task<int> Get([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Get(string id, CancellationToken cancellationToken)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid promptId))
@@ -170,8 +167,7 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// </summary>
     /// <param name="name">Prompt name.</param>
     /// <param name="campaignId">--campaignId, Filter by campaign GUID.</param>
-    [Command("versions")]
-    public async Task<int> Versions([Argument] string name, string? campaignId = null, CancellationToken cancellationToken = default)
+    public async Task<int> Versions(string name, string? campaignId = null, CancellationToken cancellationToken = default)
     {
 
         Guid? parsedCampaignId = null;
@@ -231,7 +227,6 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// <param name="campaignId">--campaignId, Campaign GUID to associate with.</param>
     /// <param name="description">Prompt description.</param>
     /// <param name="tag">Tag; pass multiple times for several tags.</param>
-    [Command("create")]
     public async Task<int> Create(
         string? name = null,
         string? version = null,
@@ -325,9 +320,8 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// <param name="id">Prompt GUID.</param>
     /// <param name="template">Prompt template: inline text, or @filename to read from a file.</param>
     /// <param name="tag">Tag; pass multiple times for several tags.</param>
-    [Command("update")]
     public async Task<int> Update(
-        [Argument] string id,
+        string id,
         string? template = null,
         string[]? tag = null,
         CancellationToken cancellationToken = default)
@@ -390,8 +384,7 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// Delete a prompt (DELETE /api/prompts/{id}).
     /// </summary>
     /// <param name="id">Prompt GUID.</param>
-    [Command("delete")]
-    public async Task<int> Delete([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Delete(string id, CancellationToken cancellationToken)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid promptId))
@@ -421,8 +414,7 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// </summary>
     /// <param name="id">Prompt GUID.</param>
     /// <param name="param">Template parameter as key=value; pass multiple times for several parameters.</param>
-    [Command("render")]
-    public async Task<int> Render([Argument] string id, string[]? param = null, CancellationToken cancellationToken = default)
+    public async Task<int> Render(string id, string[]? param = null, CancellationToken cancellationToken = default)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid promptId))
@@ -460,8 +452,7 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// Assemble the system prompt without LLM cost (POST /api/prompts/{id}/test).
     /// </summary>
     /// <param name="id">Prompt GUID.</param>
-    [Command("test")]
-    public async Task<int> Test([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Test(string id, CancellationToken cancellationToken)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid promptId))
@@ -500,9 +491,8 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// <param name="input">User message for the prompt turn: inline text, or @filename to read from a file.</param>
     /// <param name="param">Template parameter as key=value; pass multiple times for several parameters.</param>
     /// <param name="sessionId">--sessionId, Session GUID to bind context from.</param>
-    [Command("execute")]
     public async Task<int> Execute(
-        [Argument] string id,
+        string id,
         string? input = null,
         string[]? param = null,
         string? sessionId = null,
@@ -580,9 +570,8 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// <param name="newName">New prompt name.</param>
     /// <param name="newVersion">New prompt version label.</param>
     /// <param name="campaign">Campaign GUID to associate the clone with.</param>
-    [Command("clone")]
     public async Task<int> Clone(
-        [Argument] string id,
+        string id,
         string? newName = null,
         string? newVersion = null,
         string? campaign = null,
@@ -683,8 +672,7 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// </summary>
     /// <param name="id">Prompt GUID.</param>
     /// <param name="output">Write exported JSON to this file instead of stdout.</param>
-    [Command("export")]
-    public async Task<int> Export([Argument] string id, string? output = null, CancellationToken cancellationToken = default)
+    public async Task<int> Export(string id, string? output = null, CancellationToken cancellationToken = default)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid promptId))
@@ -728,7 +716,6 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// </summary>
     /// <param name="file">Path to a prompt export JSON file.</param>
     /// <param name="campaignId">--campaignId, Campaign GUID to associate the import with.</param>
-    [Command("import")]
     public async Task<int> Import(string? file = null, string? campaignId = null, CancellationToken cancellationToken = default)
     {
 

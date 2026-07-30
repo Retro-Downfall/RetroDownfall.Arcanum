@@ -1,4 +1,3 @@
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
@@ -98,7 +97,6 @@ public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette t
     /// List registered campaigns (GET /api/campaigns).
     /// </summary>
     /// <param name="type">Filter by workspace type: spell, campaign, data, custom.</param>
-    [Command("list")]
     public async Task<int> List(string? type = null, CancellationToken cancellationToken = default)
     {
 
@@ -166,8 +164,7 @@ public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette t
     /// Show campaign detail (GET /api/campaigns/{id}).
     /// </summary>
     /// <param name="id">Campaign GUID.</param>
-    [Command("get")]
-    public async Task<int> Get([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Get(string id, CancellationToken cancellationToken)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
@@ -199,7 +196,6 @@ public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette t
     /// <param name="path">Absolute filesystem path to register as the campaign root.</param>
     /// <param name="type">Workspace type: spell, campaign, data, custom. Defaults to campaign.</param>
     /// <param name="description">Optional campaign description.</param>
-    [Command("create")]
     public async Task<int> Create(
         string? name = null,
         string? path = null,
@@ -257,8 +253,7 @@ public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette t
     /// </summary>
     /// <param name="id">Campaign GUID.</param>
     /// <param name="name">New campaign display name.</param>
-    [Command("update")]
-    public async Task<int> Update([Argument] string id, string? name = null, CancellationToken cancellationToken = default)
+    public async Task<int> Update(string id, string? name = null, CancellationToken cancellationToken = default)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
@@ -290,8 +285,7 @@ public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette t
     /// Remove a campaign (DELETE /api/campaigns/{id}).
     /// </summary>
     /// <param name="id">Campaign GUID.</param>
-    [Command("delete")]
-    public async Task<int> Delete([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Delete(string id, CancellationToken cancellationToken)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
@@ -321,8 +315,7 @@ public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette t
     /// </summary>
     /// <param name="id">Campaign GUID.</param>
     /// <param name="output">Write exported JSON to this file instead of stdout.</param>
-    [Command("export")]
-    public async Task<int> Export([Argument] string id, string? output = null, CancellationToken cancellationToken = default)
+    public async Task<int> Export(string id, string? output = null, CancellationToken cancellationToken = default)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
@@ -366,8 +359,7 @@ public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette t
     /// </summary>
     /// <param name="id">Campaign GUID.</param>
     /// <param name="file">Path to a campaign export JSON file (as produced by 'campaign export').</param>
-    [Command("import")]
-    public async Task<int> Import([Argument] string id, string? file = null, CancellationToken cancellationToken = default)
+    public async Task<int> Import(string id, string? file = null, CancellationToken cancellationToken = default)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
@@ -453,9 +445,8 @@ public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette t
     /// <param name="query">-q, Free-text query.</param>
     /// <param name="tag">Filter by tag.</param>
     /// <param name="tool">Filter by declared tool.</param>
-    [Command("spells")]
     public async Task<int> Spells(
-        [Argument] string id,
+        string id,
         string? query = null,
         string? tag = null,
         string? tool = null,
@@ -492,9 +483,8 @@ public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette t
     /// <param name="id">Campaign GUID.</param>
     /// <param name="query">-q, Free-text query.</param>
     /// <param name="tag">Filter by tag.</param>
-    [Command("prompts")]
     public async Task<int> Prompts(
-        [Argument] string id,
+        string id,
         string? query = null,
         string? tag = null,
         CancellationToken cancellationToken = default)
@@ -557,9 +547,8 @@ public sealed class CampaignCommands(ArcanumApiClient apiClient, IThemePalette t
     /// <param name="search">Free-text search.</param>
     /// <param name="limit">Maximum number of sessions to return.</param>
     /// <param name="beforeUpdatedAt">Pagination cursor: only sessions updated before this timestamp.</param>
-    [Command("sessions")]
     public async Task<int> Sessions(
-        [Argument] string id,
+        string id,
         string? status = null,
         string? search = null,
         int? limit = null,
@@ -667,8 +656,7 @@ public sealed class CampaignCodexCommands(ArcanumApiClient apiClient, IThemePale
     /// Print CODEX.md (GET /api/campaigns/{id}/codex).
     /// </summary>
     /// <param name="id">Campaign GUID.</param>
-    [Command("get")]
-    public async Task<int> Get([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Get(string id, CancellationToken cancellationToken)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
@@ -705,8 +693,7 @@ public sealed class CampaignCodexCommands(ArcanumApiClient apiClient, IThemePale
     /// </summary>
     /// <param name="id">Campaign GUID.</param>
     /// <param name="file">Path to a file whose contents become CODEX.md.</param>
-    [Command("put")]
-    public async Task<int> Put([Argument] string id, string? file = null, CancellationToken cancellationToken = default)
+    public async Task<int> Put(string id, string? file = null, CancellationToken cancellationToken = default)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid campaignId))
@@ -749,8 +736,7 @@ public sealed class CampaignCodexCommands(ArcanumApiClient apiClient, IThemePale
     /// Delete CODEX.md (DELETE /api/campaigns/{id}/codex).
     /// </summary>
     /// <param name="id">Campaign GUID.</param>
-    [Command("delete")]
-    public async Task<int> Delete([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Delete(string id, CancellationToken cancellationToken)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid campaignId))

@@ -1,5 +1,4 @@
 using System.Text.Json;
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -24,7 +23,6 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
     /// <param name="name">Trial display name; defaults to '{targetKind}:{target}'.</param>
     /// <param name="inquisitor">Inquisitor spec: inline JSON, or @filename. Pass multiple times for several inquisitors.</param>
     /// <param name="var">Trial variable as key=value; pass multiple times for several variables.</param>
-    [Command("run")]
     public async Task<int> Run(
         string? target = null,
         string? targetValue = null,

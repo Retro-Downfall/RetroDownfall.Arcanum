@@ -1,4 +1,3 @@
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -16,7 +15,6 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// <summary>
     /// List active wards (GET /api/wards).
     /// </summary>
-    [Command("list")]
     public async Task<int> List(CancellationToken cancellationToken)
     {
 
@@ -67,8 +65,7 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// Show ward detail (GET /api/wards/{id}).
     /// </summary>
     /// <param name="id">Ward ID.</param>
-    [Command("get")]
-    public async Task<int> Get([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Get(string id, CancellationToken cancellationToken)
     {
 
         Result<WardDto> result = await apiClient.GetWardAsync(id, cancellationToken).ConfigureAwait(false);
@@ -133,9 +130,8 @@ public sealed class WardCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// <param name="allow">Allow the warded tool call to proceed.</param>
     /// <param name="deny">Deny the warded tool call.</param>
     /// <param name="reason">Optional reason recorded with the resolution.</param>
-    [Command("resolve")]
     public async Task<int> Resolve(
-        [Argument] string id,
+        string id,
         bool allow,
         bool deny,
         string? reason = null,

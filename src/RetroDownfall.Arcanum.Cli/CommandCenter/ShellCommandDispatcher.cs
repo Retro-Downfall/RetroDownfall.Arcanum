@@ -14,7 +14,7 @@ using RetroDownfall.Arcanum.Core.Wards;
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
 /// <summary>
-/// Explicit slash-command handlers. No reflection; no ConsoleAppFramework recursion.
+/// Explicit slash-command handlers. No reflection; no System.CommandLine recursion.
 /// UI-agnostic: mutates state / log / workspace only — never Terminal.Gui controls.
 /// </summary>
 internal sealed class ShellCommandDispatcher(

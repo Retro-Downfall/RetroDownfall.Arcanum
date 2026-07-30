@@ -16,7 +16,7 @@ folder-based self-contained publish because of the supported linker/toolchain li
 exposes an **OpenAI Chat Completions compatibility subset**, routes inference across OpenAI-compatible
 HTTP providers (including Ollama through `/v1`), and persists state in an encrypted SQLCipher store.
 
-- **Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT on Windows/Linux · `Microsoft.Extensions.AI` · EF Core 10 + SQLCipher · ConsoleAppFramework + Spectre.Console
+- **Stack:** .NET 10 · ASP.NET Core Minimal API · Native AOT on Windows/Linux · `Microsoft.Extensions.AI` · EF Core 10 + SQLCipher · System.CommandLine 2.0.10 + Spectre.Console
 - **Version:** `0.1.0-beta` (see [`Directory.Build.props`](../Directory.Build.props))
 - **Audience for the code:** senior C#/.NET engineers and coding agents extending an AOT-constrained, API-first system.
 
@@ -106,7 +106,7 @@ testing, and packaging update `Arcanum.DESIGN.md`; the complete public configura
 
 ## Architecture at a glance
 
-**One CLI/host entry point, hybrid process model.** A ConsoleAppFramework verb selects the role:
+**One CLI/host entry point, hybrid process model.** A System.CommandLine 2.0.10 verb selects the role:
 `serve` (long-running Kestrel host) vs. short-lived commands. See
 [DESIGN.md §5](Arcanum.DESIGN.md#5-hybrid-hosting-model).
 

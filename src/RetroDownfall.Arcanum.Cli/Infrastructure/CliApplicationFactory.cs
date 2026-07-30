@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Text.Json.Serialization;
-using ConsoleAppFramework;
+using System.CommandLine;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,7 +24,7 @@ using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
-[ExcludeFromCodeCoverage] // Reason: ConsoleAppFramework wiring factory; covered via CliApplicationFactoryTests and command smoke tests.
+[ExcludeFromCodeCoverage] // System.CommandLine wiring factory; covered via CliApplicationFactoryTests.
 internal static class CliApplicationFactory
 {
 
@@ -174,33 +173,13 @@ internal static class CliApplicationFactory
     }
 
     /// <summary>
-    /// Runs the CLI end-to-end: merges repeatable-flag occurrences (see
-    /// <see cref="RepeatableOptionMerger"/>), assigns the DI <paramref name="serviceProvider"/>,
-    /// disables ConsoleAppFramework's default 5s post-SIGINT force-kill (long streams like
-    /// <c>ask</c>/<c>chat</c>/<c>apprentice chronicle</c> manage their own graceful shutdown),
-    /// registers the command tree (paths and descriptions mirror the pre-migration
-    /// Spectre.Console.Cli tree byte-for-byte; only the parsing/dispatch framework changed), runs
-    /// it, and returns the resulting exit code. Used by both <c>Program.Main</c> and the CLI test
-    /// harness so both paths exercise the exact same dispatch logic.
+    /// Runs the CLI end-to-end with System.CommandLine 2.0.
+    /// Keeps the empty-args Command Center branch intact; non-empty args invoke CliCommandTree.
     /// </summary>
     public static async Task<int> RunAsync(string[] args, IServiceProvider serviceProvider)
     {
 
-        ConsoleApp.ServiceProvider = serviceProvider;
-
-        ConsoleApp.Timeout = Timeout.InfiniteTimeSpan;
-
-        // ConsoleAppFramework falls back to JsonSerializer.Deserialize<T> for a JSON-array-syntax
-        // option value (e.g. a repeated flag merged by RepeatableOptionMerger into --tag
-        // ["a","b","c"]). Under this project's PublishAot/IsAotCompatible settings, the runtime
-        // disables reflection-based JsonSerializer by default (IsReflectionEnabledByDefault=false),
-        // so that fallback throws unless an explicit source-generated JsonSerializerContext-backed
-        // JsonSerializerOptions is supplied.
-        ConsoleApp.JsonSerializerOptions = CliJsonArrayContext.Default.Options;
-
-        string[] merged = RepeatableOptionMerger.Merge(args);
-
-        if (merged.Length == 0)
+        if (args.Length == 0)
         {
             ICliEnvironment env = serviceProvider.GetRequiredService<ICliEnvironment>();
 
@@ -216,68 +195,10 @@ internal static class CliApplicationFactory
             return 0;
         }
 
-        string[] mergedArgs = ApplyDefaultCommand(merged);
-
-        var app = ConsoleApp.Create();
-
-        app.Add<ServeCommand>("serve");
-
-        app.Add<AskCommand>("ask");
-
-        app.Add<ChatCommand>("chat");
-
-        app.Add<LookCommand>("look");
-
-        app.Add<DoctorCommand>("doctor");
-
-        app.Add<KeyCommands>("key");
-
-        app.Add<LoreCommands>("lore");
-
-        app.Add<DaemonCommands>("daemon");
-
-        app.Add<CampaignCommands>("campaign");
-
-        app.Add<CampaignCodexCommands>("campaign codex");
-
-        app.Add<SessionCommands>("session");
-
-        app.Add<SagaCommands>("saga");
-
-        app.Add<SpellCommands>("spell");
-
-        app.Add<SpellVersionCommands>("spell version");
-
-        app.Add<PromptCommands>("prompt");
-
-        app.Add<WardCommands>("ward");
-
-        app.Add<TrialCommands>("trial");
-
-        app.Add<ApprenticeCommands>("apprentice");
-
-        app.Add<ModelCommands>("model");
-
-        app.Add<ProviderCommands>("provider");
-
-        Environment.ExitCode = 0;
-
-        await app.RunAsync(mergedArgs, startHost: true, stopHost: true, disposeServiceProvider: false).ConfigureAwait(false);
-
-        return Environment.ExitCode;
-
-    }
-
-    /// <summary>
-    /// Named empty-args default is retired: bare interactive <c>arcanum</c> opens the Command Center.
-    /// This method remains for non-empty arg rewriting only (identity today).
-    /// </summary>
-    internal static string[] ApplyDefaultCommand(string[] mergedArgs)
-    {
-
-        ArgumentNullException.ThrowIfNull(mergedArgs);
-
-        return mergedArgs;
+        RootCommand root = CliCommandTree.Build(serviceProvider);
+        System.CommandLine.InvocationConfiguration config = new System.CommandLine.InvocationConfiguration();
+        config.ProcessTerminationTimeout = System.Threading.Timeout.InfiniteTimeSpan;
+        return await root.Parse(args).InvokeAsync(config).ConfigureAwait(false);
 
     }
 
@@ -337,12 +258,3 @@ internal static class CliApplicationFactory
     }
 
 }
-
-/// <summary>
-/// Minimal AOT-safe (source-generated, reflection-free) JSON context for
-/// <see cref="ConsoleApp.JsonSerializerOptions"/>, covering the one CLR type
-/// ConsoleAppFramework needs JSON support for: JSON-array-syntax array-option values
-/// (e.g. <c>--tag ["a","b","c"]</c>, produced by <see cref="RepeatableOptionMerger"/>).
-/// </summary>
-[JsonSerializable(typeof(string[]))]
-internal sealed partial class CliJsonArrayContext : JsonSerializerContext;

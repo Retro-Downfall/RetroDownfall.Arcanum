@@ -1,5 +1,4 @@
 using System.Text.Json;
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -59,7 +58,6 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// List spells (GET /api/spells).
     /// </summary>
     /// <param name="workspace">Workspace root to scope the search (defaults to the host's default workspace).</param>
-    [Command("list")]
     public async Task<int> List(string? workspace = null, CancellationToken cancellationToken = default)
     {
 
@@ -83,8 +81,7 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// </summary>
     /// <param name="name">Spell name.</param>
     /// <param name="workspace">Workspace root to scope the lookup.</param>
-    [Command("get")]
-    public async Task<int> Get([Argument] string name, string? workspace = null, CancellationToken cancellationToken = default)
+    public async Task<int> Get(string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
 
         Result<SpellDetail> result = await apiClient.GetSpellAsync(name, workspace, cancellationToken).ConfigureAwait(false);
@@ -167,7 +164,6 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// <param name="tag">Tag; pass multiple times for several tags.</param>
     /// <param name="declaredTool">Restrict the spell's MCP toolset to these tools (writes SPELL.json); pass multiple times for several tools.</param>
     /// <param name="dependency">Resonant spell dependency name (writes SPELL.json); pass multiple times for several dependencies.</param>
-    [Command("create")]
     public async Task<int> Create(
         string? name = null,
         string? workspace = null,
@@ -240,9 +236,8 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// <param name="workspace">Workspace root to scope the update.</param>
     /// <param name="description">Spell description.</param>
     /// <param name="tag">Tag; pass multiple times for several tags.</param>
-    [Command("update")]
     public async Task<int> Update(
-        [Argument] string name,
+        string name,
         string? workspace = null,
         string? description = null,
         string[]? tag = null,
@@ -286,8 +281,7 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// </summary>
     /// <param name="name">Spell name.</param>
     /// <param name="workspace">Workspace root to scope the deletion.</param>
-    [Command("delete")]
-    public async Task<int> Delete([Argument] string name, string? workspace = null, CancellationToken cancellationToken = default)
+    public async Task<int> Delete(string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
 
         if (string.IsNullOrWhiteSpace(workspace))
@@ -320,7 +314,6 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// <param name="tool">Filter by declared tool.</param>
     /// <param name="source">Filter by source: builtin, workspace, campaign.</param>
     /// <param name="workspace">Workspace root to scope the search.</param>
-    [Command("search")]
     public async Task<int> Search(
         string? query = null,
         string? tag = null,
@@ -375,8 +368,7 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// </summary>
     /// <param name="name">Spell name.</param>
     /// <param name="workspace">Workspace root to scope the validation.</param>
-    [Command("validate")]
-    public async Task<int> Validate([Argument] string name, string? workspace = null, CancellationToken cancellationToken = default)
+    public async Task<int> Validate(string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
 
         Result<SpellValidationResultDto> result = await apiClient
@@ -444,9 +436,8 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// <param name="workspace">Workspace root to scope the execution.</param>
     /// <param name="version">Spell version label to execute.</param>
     /// <param name="input">Input text for the spell: inline text, or @filename to read from a file.</param>
-    [Command("execute")]
     public async Task<int> Execute(
-        [Argument] string name,
+        string name,
         string? workspace = null,
         string? version = null,
         string? input = null,
@@ -491,8 +482,7 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// </summary>
     /// <param name="name">Spell name.</param>
     /// <param name="workspace">Workspace root to scope the lookup.</param>
-    [Command("versions")]
-    public async Task<int> Versions([Argument] string name, string? workspace = null, CancellationToken cancellationToken = default)
+    public async Task<int> Versions(string name, string? workspace = null, CancellationToken cancellationToken = default)
     {
 
         Result<SpellVersionDto[]> result = await apiClient
@@ -538,9 +528,8 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// <param name="name">Spell name.</param>
     /// <param name="workspace">Workspace root to scope the export.</param>
     /// <param name="output">Write exported JSON to this file instead of stdout.</param>
-    [Command("export")]
     public async Task<int> Export(
-        [Argument] string name,
+        string name,
         string? workspace = null,
         string? output = null,
         CancellationToken cancellationToken = default)
@@ -582,7 +571,6 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// </summary>
     /// <param name="file">Path to a spell export JSON file.</param>
     /// <param name="workspace">Workspace root to import into.</param>
-    [Command("import")]
     public async Task<int> Import(string? file = null, string? workspace = null, CancellationToken cancellationToken = default)
     {
 
@@ -651,9 +639,8 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// <param name="workspace">Workspace root to scope the cast.</param>
     /// <param name="session">Session GUID to bind context from.</param>
     /// <param name="campaign">Campaign GUID to bind context from.</param>
-    [Command("cast")]
     public async Task<int> Cast(
-        [Argument] string name,
+        string name,
         string? workspace = null,
         string? session = null,
         string? campaign = null,
@@ -797,9 +784,8 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// <param name="name">Spell name.</param>
     /// <param name="newName">New spell name.</param>
     /// <param name="workspace">Workspace root to scope the clone.</param>
-    [Command("clone")]
     public async Task<int> Clone(
-        [Argument] string name,
+        string name,
         string? newName = null,
         string? workspace = null,
         CancellationToken cancellationToken = default)
@@ -847,9 +833,8 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
     /// <param name="version">Version label.</param>
     /// <param name="body">Version body: inline text, or @filename to read from a file.</param>
     /// <param name="workspace">Workspace root to scope the version.</param>
-    [Command("create")]
     public async Task<int> Create(
-        [Argument] string name,
+        string name,
         string? version = null,
         string? body = null,
         string? workspace = null,
@@ -902,9 +887,8 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
     /// <param name="version">Version label.</param>
     /// <param name="body">Version body: inline text, or @filename to read from a file.</param>
     /// <param name="workspace">Workspace root to scope the version.</param>
-    [Command("update")]
     public async Task<int> Update(
-        [Argument] string name,
+        string name,
         string? version = null,
         string? body = null,
         string? workspace = null,
@@ -958,9 +942,8 @@ public sealed class SpellVersionCommands(ArcanumApiClient apiClient, IThemePalet
     /// <param name="name">Spell name.</param>
     /// <param name="version">Version label.</param>
     /// <param name="workspace">Workspace root to scope the version.</param>
-    [Command("activate")]
     public async Task<int> Activate(
-        [Argument] string name,
+        string name,
         string? version = null,
         string? workspace = null,
         CancellationToken cancellationToken = default)

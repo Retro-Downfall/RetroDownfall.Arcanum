@@ -1,4 +1,3 @@
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.CommLink;
@@ -18,7 +17,6 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// <summary>
     /// Install and start the Arcanum background daemon.
     /// </summary>
-    [Command("install")]
     public async Task<int> Install(CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Installing launchd agent\u2026")));
@@ -40,7 +38,6 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// <summary>
     /// Stop and uninstall the Arcanum background daemon.
     /// </summary>
-    [Command("uninstall")]
     public async Task<int> Uninstall(CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Removing launchd agent\u2026")));
@@ -62,7 +59,6 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// <summary>
     /// Show whether the Arcanum daemon is running.
     /// </summary>
-    [Command("status")]
     public async Task<int> Status(CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Checking launchd status\u2026")));
@@ -84,7 +80,6 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// <summary>
     /// List Unseen Servant jobs (requires API: arcanum serve on Arcanum:Host:Port).
     /// </summary>
-    [Command("jobs")]
     public async Task<int> Jobs(CancellationToken cancellationToken)
     {
 
@@ -172,8 +167,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// </summary>
     /// <param name="jobName">The Unseen Servant job name.</param>
     /// <param name="minutes">The new polling interval in minutes (&gt;= 1).</param>
-    [Command("initiative")]
-    public async Task<int> Initiative([Argument] string jobName, [Argument] int minutes, CancellationToken cancellationToken)
+    public async Task<int> Initiative(string jobName, int minutes, CancellationToken cancellationToken)
     {
 
         // W4.1: validate the interval client-side so an obviously-invalid value fails fast with a
@@ -219,9 +213,8 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
     /// <param name="title">-t, Alert title.</param>
     /// <param name="severity">-s, Severity: Info, Warning, or Critical.</param>
     /// <param name="source">The alert source label.</param>
-    [Command("alert")]
     public async Task<int> Alert(
-        [Argument] string message,
+        string message,
         string title = "Arcanum alert",
         string severity = "Warning",
         string source = "cli:daemon alert",

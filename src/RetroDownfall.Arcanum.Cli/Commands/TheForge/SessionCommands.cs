@@ -1,5 +1,4 @@
 using System.Globalization;
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -23,9 +22,8 @@ public sealed class SessionCommands(ArcanumApiClient apiClient, IThemePalette th
     /// <param name="limit">Maximum number of results to return.</param>
     /// <param name="campaign">Filter by campaign GUID.</param>
     /// <param name="status">Filter by session status.</param>
-    [Command("divine")]
     public async Task<int> Divine(
-        [Argument] string query,
+        string query,
         int? limit = null,
         string? campaign = null,
         string? status = null,

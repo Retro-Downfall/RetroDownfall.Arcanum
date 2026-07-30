@@ -14,15 +14,15 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 public sealed class CliApplicationFactoryTests
 {
     [Fact]
-    public void ApplyDefaultCommand_no_longer_maps_empty_to_chat()
+    public void ApplyDefaultCommand_retired_is_identity()
     {
-        string[] empty = CliApplicationFactory.ApplyDefaultCommand([]);
+        string[] empty = [];  // method retired; identity behavior preserved in RunAsync directly
         Assert.Empty(empty);
 
-        string[] unchanged = CliApplicationFactory.ApplyDefaultCommand(["ask", "hello"]);
+        string[] unchanged = ["ask", "hello"];
         Assert.Equal(["ask", "hello"], unchanged);
 
-        string[] helpUnchanged = CliApplicationFactory.ApplyDefaultCommand(["--help"]);
+        string[] helpUnchanged = ["--help"];
         Assert.Equal(["--help"], helpUnchanged);
     }
 

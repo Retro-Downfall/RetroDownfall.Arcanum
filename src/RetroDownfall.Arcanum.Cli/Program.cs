@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Cli;
 
-[ExcludeFromCodeCoverage] // Reason: ConsoleAppFramework entrypoint; command wiring is covered via CliApplicationFactory and command unit tests.
+[ExcludeFromCodeCoverage] // Reason: System.CommandLine entrypoint; command wiring is covered via CliApplicationFactory and command unit tests.
 internal static class Program
 {
 

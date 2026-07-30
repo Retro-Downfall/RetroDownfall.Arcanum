@@ -25,7 +25,7 @@ configuration-surface changes with `Compendium.README.md`, navigation updates wi
 1. Run **terminal-oriented commands** — currently `ask` (single-prompt LLM inference with optional Grimoire thread continuation), `chat` (interactive multi-turn REPL), `look` (workspace perception), `lore` (key-value CRUD), `daemon` (OS-level background service lifecycle plus **API-first** monitoring of Unseen Servant jobs via `daemon jobs`, `daemon initiative`, and Comm Link smoke tests via `daemon alert` when Kestrel is up), plus campaign/session/spell/prompt/ward/trial/apprentice/model/provider verbs that are thin clients over the same HTTP API.
 2. Act as a **long-running HTTP host** exposing a Minimal API surface (the `serve` command).
 
-The codebase is organized as a **multi-project solution**: `Core` (domain primitives, contracts, configuration), `Infrastructure` (Serilog, Data Protection, encrypted Grimoire via EF Core + SQLCipher, workspace scanning, Eye of the World perception, MCP client layer with both subprocess and in-process transports), `Api` (HTTP surface, multi-provider intelligence hub, semantic spell routing, API-key security), and `Cli` (ConsoleAppFramework entry point). All projects target **Native AOT readiness** where the toolchain allows.
+The codebase is organized as a **multi-project solution**: `Core` (domain primitives, contracts, configuration), `Infrastructure` (Serilog, Data Protection, encrypted Grimoire via EF Core + SQLCipher, workspace scanning, Eye of the World perception, MCP client layer with both subprocess and in-process transports), `Api` (HTTP surface, multi-provider intelligence hub, semantic spell routing, API-key security), and `Cli` (System.CommandLine 2.0.10 entry point). All projects target **Native AOT readiness** where the toolchain allows.
 
 Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSON design (§8), intelligence pipeline with MCP tool integration (§10), local API security (§11), and Eye of the World situational awareness (§15).
 
@@ -488,7 +488,7 @@ Interactive `chat` / `ask` / **Command Center** call `IArcanumServeLauncher.Ensu
 
 Auto-launched processes do not expose `arcanum serve stop` or `daemon stop`.
 
-**MSBuild:** `PublishAot` (the shipping native image on non-macOS RIDs), `IsAotCompatible`, `EnableConfigurationBindingGenerator`. `ConsoleAppFramework` and `ConsoleAppFramework.Abstractions` are analyzer/source-generator packages with no runtime DLL reference, so no `TrimmerRootAssembly`, `[DynamicDependency]`, or IL-warning suppression is needed for CLI parsing. **Terminal.Gui** is referenced only from `Cli`; first-party AOT IL for the Command Center bootstrap is gated by `./scripts/verify-aot-il-warnings.sh` (method-level suppressions on `CommandCenterApp` only — no project-level blanket suppress). Transitive vulnerable packages: `dotnet list package --vulnerable --include-transitive` on the Cli project.
+**MSBuild:** `PublishAot` (the shipping native image on non-macOS RIDs), `IsAotCompatible`, `EnableConfigurationBindingGenerator`. `System.CommandLine 2.0.10` and `System.CommandLine 2.0.10.Abstractions` are analyzer/source-generator packages with no runtime DLL reference, so no `TrimmerRootAssembly`, `[DynamicDependency]`, or IL-warning suppression is needed for CLI parsing. **Terminal.Gui** is referenced only from `Cli`; first-party AOT IL for the Command Center bootstrap is gated by `./scripts/verify-aot-il-warnings.sh` (method-level suppressions on `CommandCenterApp` only — no project-level blanket suppress). Transitive vulnerable packages: `dotnet list package --vulnerable --include-transitive` on the Cli project.
 
 ### 4.5 `RetroDownfall.Arcanum.Api.DevHost` (console executable, debug-only)
 
@@ -513,13 +513,13 @@ One binary; the CLI verb selects the process role (per-command detail in §4.4).
 - **`chat`** — multi-turn REPL with per-turn cancellation and swap-at-end rendering.
 - Short-lived verbs — `look` / `doctor` run local checks (no HTTP for path checks); `lore`, `daemon jobs|initiative|alert` call the running host's `/api` (Unseen Servant interval control via `/api/unseen-servant/*`, §5.5.2; Comm Link smoke tests via `POST /api/commlink/send`); `daemon install|uninstall|status` drives OS service lifecycle. Bare interactive `arcanum` opens the Command Center (long-lived TUI) until `/exit`; direct `chat` remains the frameless Spectre REPL.
 
-### 5.2 Why ConsoleAppFramework
+### 5.2 Why System.CommandLine 2.0.10
 
 Source-generated parsing (AOT-clean, no reflection). Spectre remains for rendering. `RepeatableOptionMerger` rewrites repeated flags into CAF JSON-array syntax; XML-doc aliases preserve legacy camelCase option spellings.
 
 ### 5.3 `ServeCommand` lifecycle
 
-1. Cancellation token check on the injected `CancellationToken` (ConsoleAppFramework wires SIGINT/SIGTERM to it automatically because the method declares a `CancellationToken` parameter).
+1. Cancellation token check on the injected `CancellationToken` (System.CommandLine 2.0.10 wires SIGINT/SIGTERM to it automatically because the method declares a `CancellationToken` parameter).
 2. `WebApplication.CreateSlimBuilder()` (§6).
 3. `UseWindowsService` / `UseSystemd` (cross-platform no-ops on other OSes).
 4. Kestrel: `ListenLocalhost(port)` unless `ARCANUM_HOST_ANY` is set (§7).
@@ -1029,7 +1029,7 @@ Zero runtime prerequisite for the shipping CLI; fast cold start for short verbs;
 
 ### 9.3 Tradeoffs and constraints
 
-- **ConsoleAppFramework v5** is source-generated with zero reflection — the CLI layer has no AOT tradeoffs.
+- **System.CommandLine 2.0.10 v5** is source-generated with zero reflection — the CLI layer has no AOT tradeoffs.
 - **EF Core** compiled model is required (`dotnet ef dbcontext optimize`). Precompiled queries are disabled (`EFPrecompileQueriesStage = none`) because certain repository LINQ patterns are not yet compatible.
 - **`dotnet build`** is warning-clean in Debug and Release. macOS Native AOT is currently disabled:
   macOS 27 / Xcode 26+ `ld-prime` can crash on the large AOT object closure

@@ -1,7 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using ConsoleAppFramework;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -41,7 +40,6 @@ public sealed class DoctorCommand(
     /// </summary>
     /// <param name="fixPermissions">Apply owner-only permissions to the Grimoire database, arcanum.json, and secret store.</param>
     /// <param name="json">Emit the report as JSON to stdout for programmatic consumption.</param>
-    [Command("")]
     public async Task<int> Run(bool fixPermissions, bool json, CancellationToken cancellationToken)
     {
 

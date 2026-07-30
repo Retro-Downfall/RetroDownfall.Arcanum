@@ -289,7 +289,7 @@ public static class InferenceFlagBinder
 /// <summary>
 /// Surface that an <c>ask</c> / <c>chat</c> command adapts its method parameters to for
 /// <see cref="InferenceFlagBinder"/>. Strings are used so the binder doesn't need to round-trip
-/// through invariant-culture float parsing rules at the ConsoleAppFramework binding layer.
+/// through invariant-culture float parsing rules at the System.CommandLine binding layer.
 /// </summary>
 public interface IInferenceFlagInputs
 {

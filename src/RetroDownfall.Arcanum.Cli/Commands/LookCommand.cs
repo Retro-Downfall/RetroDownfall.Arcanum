@@ -1,4 +1,3 @@
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
@@ -11,7 +10,6 @@ public sealed class LookCommand(IEyeOfTheWorld eye, IThemePalette palette)
     /// <summary>
     /// Eye of the World: situational snapshot of the current directory (domain + TOC).
     /// </summary>
-    [Command("")]
     public async Task<int> Run(CancellationToken cancellationToken)
     {
         PatternSnapshot snapshot = await eye

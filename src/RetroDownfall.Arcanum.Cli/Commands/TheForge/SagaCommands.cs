@@ -1,5 +1,4 @@
 using System.Globalization;
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -23,7 +22,6 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// <param name="session">Filter by session GUID.</param>
     /// <param name="limit">Maximum number of memories to return.</param>
     /// <param name="offset">Pagination offset.</param>
-    [Command("list")]
     public async Task<int> List(
         string? query = null,
         string? session = null,
@@ -115,8 +113,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// </summary>
     /// <param name="query">Search query text.</param>
     /// <param name="limit">Maximum number of results to return.</param>
-    [Command("divine")]
-    public async Task<int> Divine([Argument] string query, int? limit = null, CancellationToken cancellationToken = default)
+    public async Task<int> Divine(string query, int? limit = null, CancellationToken cancellationToken = default)
     {
 
         if (string.IsNullOrWhiteSpace(query))
@@ -191,8 +188,7 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// Delete a single Saga memory (DELETE /api/saga/{id}).
     /// </summary>
     /// <param name="id">Saga memory ID.</param>
-    [Command("delete")]
-    public async Task<int> Delete([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Delete(string id, CancellationToken cancellationToken)
     {
 
         Result result = await apiClient.SagaDeleteAsync(id, cancellationToken).ConfigureAwait(false);
@@ -215,7 +211,6 @@ public sealed class SagaCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// <summary>
     /// Aggregate summary of Saga memory storage (GET /api/saga/stats).
     /// </summary>
-    [Command("stats")]
     public async Task<int> Stats(CancellationToken cancellationToken)
     {
 

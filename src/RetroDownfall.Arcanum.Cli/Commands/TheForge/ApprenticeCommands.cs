@@ -1,5 +1,4 @@
 using System.Text.Json;
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -112,7 +111,6 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// <param name="campaignId">--campaignId, Filter by campaign GUID.</param>
     /// <param name="status">Filter by status.</param>
     /// <param name="limit">Maximum number of Apprentices to return.</param>
-    [Command("list")]
     public async Task<int> List(
         string? campaignId = null,
         string? status = null,
@@ -190,8 +188,7 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// Show Apprentice detail (GET /api/apprentices/{id}).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    [Command("get")]
-    public async Task<int> Get([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Get(string id, CancellationToken cancellationToken)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
@@ -223,7 +220,6 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// <param name="name">Display name; defaults to a truncated form of the goal.</param>
     /// <param name="campaignId">--campaignId, Campaign GUID to associate with.</param>
     /// <param name="workspace">Workspace root to scope the Apprentice.</param>
-    [Command("create")]
     public async Task<int> Create(
         string? goal = null,
         string? name = null,
@@ -297,8 +293,7 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// Delete a terminal Apprentice (DELETE /api/apprentices/{id}).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    [Command("delete")]
-    public async Task<int> Delete([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Delete(string id, CancellationToken cancellationToken)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
@@ -327,32 +322,28 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// Start plan generation and execution (POST /api/apprentices/{id}/start).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    [Command("start")]
-    public Task<int> Start([Argument] string id, CancellationToken cancellationToken) =>
+    public Task<int> Start(string id, CancellationToken cancellationToken) =>
         RunLifecycleActionAsync(id, "started", apiClient.StartApprenticeAsync, cancellationToken);
 
     /// <summary>
     /// Pause at the next step boundary (POST /api/apprentices/{id}/pause).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    [Command("pause")]
-    public Task<int> Pause([Argument] string id, CancellationToken cancellationToken) =>
+    public Task<int> Pause(string id, CancellationToken cancellationToken) =>
         RunLifecycleActionAsync(id, "paused", apiClient.PauseApprenticeAsync, cancellationToken);
 
     /// <summary>
     /// Resume from checkpoint (POST /api/apprentices/{id}/resume).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    [Command("resume")]
-    public Task<int> Resume([Argument] string id, CancellationToken cancellationToken) =>
+    public Task<int> Resume(string id, CancellationToken cancellationToken) =>
         RunLifecycleActionAsync(id, "resumed", apiClient.ResumeApprenticeAsync, cancellationToken);
 
     /// <summary>
     /// Cancel execution (POST /api/apprentices/{id}/cancel).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    [Command("cancel")]
-    public Task<int> Cancel([Argument] string id, CancellationToken cancellationToken) =>
+    public Task<int> Cancel(string id, CancellationToken cancellationToken) =>
         RunLifecycleActionAsync(id, "cancelled", apiClient.CancelApprenticeAsync, cancellationToken);
 
     private async Task<int> RunLifecycleActionAsync(
@@ -389,8 +380,7 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
     /// <param name="plan">JSON array of plan steps: inline text, or @filename to read from a file.</param>
-    [Command("reweave")]
-    public async Task<int> Reweave([Argument] string id, string? plan = null, CancellationToken cancellationToken = default)
+    public async Task<int> Reweave(string id, string? plan = null, CancellationToken cancellationToken = default)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
@@ -457,8 +447,7 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
     /// <param name="guidance">Guidance text for the escalated Apprentice.</param>
-    [Command("intervene")]
-    public async Task<int> Intervene([Argument] string id, string? guidance = null, CancellationToken cancellationToken = default)
+    public async Task<int> Intervene(string id, string? guidance = null, CancellationToken cancellationToken = default)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
@@ -496,9 +485,8 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// <param name="id">Apprentice GUID.</param>
     /// <param name="goal">Child Apprentice goal text.</param>
     /// <param name="name">Display name for the child Apprentice.</param>
-    [Command("cast")]
     public async Task<int> Cast(
-        [Argument] string id,
+        string id,
         string? goal = null,
         string? name = null,
         CancellationToken cancellationToken = default)
@@ -553,8 +541,7 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// Stream live Apprentice events (GET /api/apprentices/{id}/chronicle, SSE).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    [Command("chronicle")]
-    public async Task<int> Chronicle([Argument] string id, CancellationToken cancellationToken)
+    public async Task<int> Chronicle(string id, CancellationToken cancellationToken)
     {
 
         if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))

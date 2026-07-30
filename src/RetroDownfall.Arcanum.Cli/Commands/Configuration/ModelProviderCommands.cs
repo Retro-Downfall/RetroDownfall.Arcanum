@@ -1,4 +1,3 @@
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -16,7 +15,6 @@ public sealed class ModelCommands(ArcanumApiClient apiClient, IThemePalette them
     /// <summary>
     /// List configured models across all providers (GET /api/models).
     /// </summary>
-    [Command("list")]
     public async Task<int> List(CancellationToken cancellationToken)
     {
 
@@ -72,7 +70,6 @@ public sealed class ProviderCommands(ArcanumApiClient apiClient, IThemePalette t
     /// <summary>
     /// List configured providers with redacted secrets (GET /api/providers).
     /// </summary>
-    [Command("list")]
     public async Task<int> List(CancellationToken cancellationToken)
     {
 

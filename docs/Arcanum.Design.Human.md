@@ -31,7 +31,7 @@ Native AOT on Windows and Linux; macOS uses a signed, folder-based self-containe
 current macOS linker/toolchain limitation prevents a single-file AOT binary for the full closure).
 
 The stack is .NET 10, ASP.NET Core Minimal API, `Microsoft.Extensions.AI`, EF Core 10 with SQLCipher,
-ConsoleAppFramework, Spectre.Console, Terminal.Gui (for the interactive Command Center), and Avalonia
+System.CommandLine 2.0.10, Spectre.Console, Terminal.Gui (for the interactive Command Center), and Avalonia
 (for Compendium and The Forge desktop applications).
 
 The codebase is organized as a multi-project solution:
@@ -218,7 +218,7 @@ Turn order (canonical from `DESIGN.md` §10.7):
 
 ## 12. Native AOT and trimming (`DESIGN.md` §9)
 
-`Cli` (`PublishAot` on non-macOS RIDs) produces a native binary. `Infrastructure` (`IsTrimmable` + `PublishAot`) is analyzed in the publish graph. `Core`/`Api` (`IsAotCompatible`) opt into analyzers. `EnableRequestDelegateGenerator` on `Api` ensures Minimal API endpoints in a referenced class library are source-generated. `ConsoleAppFramework` is source-generated (no `TrimmerRootAssembly` / `DynamicDependency` needed). `Terminal.Gui` (only in `Cli`) requires method-level suppressions in `CommandCenterApp` (verified by `verify-aot-il-warnings.sh`). `dotnet build` remains warning-clean.
+`Cli` (`PublishAot` on non-macOS RIDs) produces a native binary. `Infrastructure` (`IsTrimmable` + `PublishAot`) is analyzed in the publish graph. `Core`/`Api` (`IsAotCompatible`) opt into analyzers. `EnableRequestDelegateGenerator` on `Api` ensures Minimal API endpoints in a referenced class library are source-generated. `System.CommandLine 2.0.10` is source-generated (no `TrimmerRootAssembly` / `DynamicDependency` needed). `Terminal.Gui` (only in `Cli`) requires method-level suppressions in `CommandCenterApp` (verified by `verify-aot-il-warnings.sh`). `dotnet build` remains warning-clean.
 
 Constraints for new code: every HTTP payload needs `[JsonSerializable]` on `ArcanumJsonContext`; Grimoire blobs use `GrimoireJsonContext` + explicit `JsonTypeInfo` (no reflection `JsonSerializer`); MCP wire uses `McpJsonSerializerContext`; outbound webhook uses `CommLinkInfrastructureJsonContext`; `AIFunction` uses hand-authored `JsonDocument` schemas (`AIFunctionFactory.Create` forbidden); `ArcanumSettings` uses mutable `{ get; set; }` (not `init` — AOT binding generator skips `init`); Minimal API handlers return no anonymous DTOs. Runtime regex (`search_workspace`) must not use `RegexOptions.Compiled` or input-derived cache; `NonBacktracking` first, interpreted bounded fallback.
 

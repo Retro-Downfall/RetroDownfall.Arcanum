@@ -108,18 +108,7 @@
 
     <PackageReference Include="Terminal.Gui" Version="2.4.17" />
 
-    <PackageReference Include="ConsoleAppFramework" Version="5.7.13">
-
-      <PrivateAssets>all</PrivateAssets>
-
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
-
-    </PackageReference>
-
-    <!-- Provides public ConsoleAppContext/ConsoleAppFilter types (the per-project source
-         generator otherwise emits them as internal), since AskCommand.Ask needs
-         ConsoleAppContext as a public method parameter to read EscapedArguments. -->
-    <PackageReference Include="ConsoleAppFramework.Abstractions" Version="5.7.13" />
+    <PackageReference Include="System.CommandLine" Version="2.0.10" />
 
   </ItemGroup>
 

@@ -3,7 +3,6 @@ using System.Globalization;
 using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
-using ConsoleAppFramework;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -107,7 +106,6 @@ public sealed class ChatCommand(
     /// <param name="responseFormat">Response format: text | json_object | json_schema.</param>
     /// <param name="presencePenalty">Presence penalty -2..2.</param>
     /// <param name="frequencyPenalty">Frequency penalty -2..2.</param>
-    [Command("")]
     public async Task<int> Chat(
         CancellationToken cancellationToken,
         string? model = null,

@@ -1,5 +1,4 @@
 using System.Globalization;
-using ConsoleAppFramework;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -19,7 +18,6 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// <summary>
     /// List all scribed lore keys.
     /// </summary>
-    [Command("list")]
     public async Task<int> List(CancellationToken cancellationToken)
     {
         Result<List<LoreDto>> result = await apiClient.ListLoreAsync(cancellationToken).ConfigureAwait(false);
@@ -60,8 +58,7 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// Read a specific lore entry by key.
     /// </summary>
     /// <param name="key">The lore key.</param>
-    [Command("get")]
-    public async Task<int> Get([Argument] string key, CancellationToken cancellationToken)
+    public async Task<int> Get(string key, CancellationToken cancellationToken)
     {
 
         Result<LoreDto> result = await apiClient.GetLoreAsync(key, cancellationToken).ConfigureAwait(false);
@@ -91,8 +88,7 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// </summary>
     /// <param name="key">The lore key.</param>
     /// <param name="value">The lore value.</param>
-    [Command("set")]
-    public async Task<int> Set([Argument] string key, [Argument] string value, CancellationToken cancellationToken)
+    public async Task<int> Set(string key, string value, CancellationToken cancellationToken)
     {
 
         Result<LoreDto> result =
@@ -118,8 +114,7 @@ public sealed class LoreCommands(ArcanumApiClient apiClient, IThemePalette theme
     /// Delete a lore entry.
     /// </summary>
     /// <param name="key">The lore key.</param>
-    [Command("delete")]
-    public async Task<int> Delete([Argument] string key, CancellationToken cancellationToken)
+    public async Task<int> Delete(string key, CancellationToken cancellationToken)
     {
 
         Result<bool> result = await apiClient.DeleteLoreAsync(key, cancellationToken).ConfigureAwait(false);

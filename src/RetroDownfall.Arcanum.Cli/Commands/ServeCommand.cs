@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using ConsoleAppFramework;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -31,7 +30,6 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
     /// Stops the running Arcanum host from anywhere (asks the API to shut itself down; requires the
     /// master API key like every other /api verb).
     /// </summary>
-    [Command("quit")]
     public async Task<int> Quit(CancellationToken cancellationToken)
     {
 
@@ -63,7 +61,6 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
     /// Hosts the Arcanum Minimal API (default http://localhost:5001/; set Arcanum:Host:Port in arcanum.json).
     /// When ListenAny / ARCANUM_HOST_ANY is effective, binds HTTPS-only on Arcanum:Host:Https:Port.
     /// </summary>
-    [Command("")]
     public async Task<int> Run(CancellationToken cancellationToken)
     {
 

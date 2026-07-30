@@ -1,4 +1,3 @@
-using ConsoleAppFramework;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -43,9 +42,8 @@ public sealed class AskCommand(
     /// <param name="frequencyPenalty">Frequency penalty -2..2 (positive penalizes frequent tokens).</param>
     /// <param name="image">Attach an image (Scrying focus) for this turn; repeatable. Requires a vision-capable model.</param>
     /// <param name="prompt">The prompt text: all words after ask, or after --.</param>
-    [Command("")]
     public async Task<int> Ask(
-        ConsoleAppContext context,
+        string[] escapedArguments,
         CancellationToken cancellationToken,
         string? model = null,
         bool @new = false,
@@ -60,9 +58,9 @@ public sealed class AskCommand(
         string? presencePenalty = null,
         string? frequencyPenalty = null,
         string[]? image = null,
-        [Argument] params string[] prompt)
+        params string[] prompt)
     {
-        string promptText = BuildPrompt(prompt, context.EscapedArguments.ToArray());
+        string promptText = BuildPrompt(prompt, escapedArguments);
 
         if (string.IsNullOrWhiteSpace(promptText))
         {
