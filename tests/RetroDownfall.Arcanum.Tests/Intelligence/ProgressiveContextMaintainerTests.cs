@@ -1,4 +1,6 @@
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
+using Moq;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 public class ProgressiveContextMaintainerTests
 {
@@ -20,7 +22,7 @@ public class ProgressiveContextMaintainerTests
             new RetroDownfall.Arcanum.Core.Intelligence.ModelTokenizationContracts.ContextTokenBreakdown
             {
                 Provider = "test", Model = "test",
-                Profile = new RetroDownfall.Arcanum.Core.Intelligence.ResolvedModelTokenizationProfile(),
+                Profile = new RetroDownfall.Arcanum.Core.Intelligence.ResolvedModelTokenizationProfile { ProfileId = "test", Type = ModelTokenizationProfileType.Calibrated, TokenizerId = "o200k_base", SafetyMarginPercent = 15, PerMessageOverheadTokens = 4, PerToolOverheadTokens = 8, ProviderFramingTokens = 0, StopTokenOverheadTokens = 0, UnknownImageReserveTokens = 2048, Confidence = 1.0 },
                 Components = new System.Collections.ObjectModel.ReadOnlyCollection<RetroDownfall.Arcanum.Core.Intelligence.ContextTokenComponent>(new List<RetroDownfall.Arcanum.Core.Intelligence.ContextTokenComponent>()),
                 InputTokens = 50, ReservedTokens = 10, TotalTokens = 60,
                 OverallClassification = RetroDownfall.Arcanum.Core.Intelligence.TokenEstimateClassification.Estimated,

@@ -30,7 +30,7 @@ public sealed class ModelCallExecutorTests
     {
         const int callCount = 13;
         ScriptingChatClient chat = new(text: "pong");
-        TurnBudget budget = new();
+        TurnBudget budget = new(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m));
         ModelCallExecutor executor = new();
 
         for (int call = 0; call < callCount; call++)
@@ -370,7 +370,7 @@ public sealed class ModelCallExecutorTests
     {
         ScriptingChatClient chat = new(text: "ab");
 
-        TurnBudget budget = new();
+        TurnBudget budget = new(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m));
 
         ModelCallExecutor executor = new();
 
