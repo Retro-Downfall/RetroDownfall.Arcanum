@@ -16,4 +16,8 @@ internal sealed class SandboxExecHelperPayload
 
     public string? WorkingDirectory { get; init; }
 
+    public string? WindowsProfileName { get; init; }
+
+    public string[] ReadOnlyRoots { get; init; } = [];
+
 }

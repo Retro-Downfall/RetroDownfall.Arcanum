@@ -7,7 +7,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 /// <summary>
 /// Result of attempting to apply an OS filesystem jail to a tool child.
-/// Windows without Sanctum path-boundary uses <see cref="NoFilesystemJail"/> — never <see cref="Applied"/>.
+/// Windows AppContainer and macOS Seatbelt use <see cref="Applied"/>.
 /// </summary>
 internal enum ChildProcessSandboxApplyStatus
 {
@@ -18,13 +18,13 @@ internal enum ChildProcessSandboxApplyStatus
     /// <summary>Jail required but unavailable (Linux beta default, missing sandbox-exec, setup failure).</summary>
     Unavailable,
 
-    /// <summary>Windows Sanctum Enabled + EnforcePathBoundary — child tools denied.</summary>
+    /// <summary>Legacy status retained for serialized/result compatibility.</summary>
     DeniedByWindowsSanctum,
 
     /// <summary>Operator escape hatch: ran without FS jail (rlimits may still apply).</summary>
     EscapedByOperator,
 
-    /// <summary>Windows without Sanctum path-boundary: no FS jail; Job Objects only.</summary>
+    /// <summary>Legacy status retained for serialized/result compatibility.</summary>
     NoFilesystemJail,
 
 }
@@ -74,7 +74,7 @@ internal static class ChildProcessFilesystemJail
         if (OperatingSystem.IsWindows())
         {
 
-            return ApplyWindows(request, logger);
+            return ApplyWindows(startInfo, request, logger);
 
         }
 
@@ -167,41 +167,96 @@ internal static class ChildProcessFilesystemJail
     }
 
     private static ChildProcessSandboxApplyResult ApplyWindows(
+        ProcessStartInfo startInfo,
         ChildProcessSandboxRequest request,
         ILogger? logger)
     {
-
-        if (request.WindowsPathBoundaryRequired)
+        if (!WindowsAppContainerPolicy.IsSupported())
         {
+            return WindowsFailClosedOrEscape(request, logger, "Windows AppContainer APIs are unavailable.");
+        }
 
-            logger?.LogWarning(
-                "Refusing execute_command/run_spell_script on Windows: Sanctum path-boundary enforcement is enabled and no FS jail is available. {Note}",
-                ChildProcessSandboxMessages.NotNetworkIsolationNote);
+        IdentityOwnedFileSystemArtifact? temp = null;
+        IdentityOwnedFileSystemArtifact? config = null;
+        try
+        {
+            List<string> readWrite = NormalizeExistingRoots(request.ReadWriteRoots);
+            List<string> readOnly = NormalizeExistingRoots(request.ReadOnlyRoots);
+            List<string> readExecute = NormalizeExistingRoots(request.ReadExecuteRoots);
+            if (readWrite.Concat(readOnly).Concat(readExecute)
+                .Any(static root => !WindowsAppContainerPolicy.IsSafeRoot(root)))
+            {
+                return WindowsFailClosedOrEscape(request, logger, "Windows jail root validation failed.");
+            }
+
+            temp = CreateOwnerOnlyTempDirectory("arcanum-win-child-");
+            readWrite.Add(temp.Value.Path);
+            startInfo.Environment["TMP"] = temp.Value.Path;
+            startInfo.Environment["TEMP"] = temp.Value.Path;
+
+            SandboxExecHelperPayload payload = new()
+            {
+                Target = startInfo.FileName,
+                Arguments = [.. startInfo.ArgumentList],
+                WorkingDirectory = startInfo.WorkingDirectory,
+                ReadWriteRoots = [.. readWrite],
+                ReadOnlyRoots = [.. readOnly],
+                ReadExecuteRoots = [.. readExecute],
+                WindowsProfileName = WindowsAppContainerPolicy.CreateProfileName(),
+            };
+            string json = System.Text.Json.JsonSerializer.Serialize(
+                payload,
+                SandboxExecJsonContext.Default.SandboxExecHelperPayload);
+            config = WriteOwnerOnlyTempFile("arcanum-win-sb-", ".json", json);
+
+            string? host = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(host) || !File.Exists(host))
+            {
+                throw new InvalidOperationException("Trusted sandbox broker executable is unavailable.");
+            }
+
+            startInfo.FileName = host;
+            startInfo.ArgumentList.Clear();
+            startInfo.ArgumentList.Add(HelperArg);
+            startInfo.ArgumentList.Add("--config");
+            startInfo.ArgumentList.Add(config.Value.Path);
+            startInfo.WorkingDirectory = temp.Value.Path;
 
             return new ChildProcessSandboxApplyResult
             {
-
-                Status = ChildProcessSandboxApplyStatus.DeniedByWindowsSanctum,
-
-                Detail = ChildProcessSandboxMessages.WindowsSanctumPathBoundaryDenied,
-
+                Status = ChildProcessSandboxApplyStatus.Applied,
+                OwnedArtifactsToCleanup = [config.Value, temp.Value],
             };
-
+        }
+        catch (Exception ex)
+        {
+            List<IdentityOwnedFileSystemArtifact> cleanup = [];
+            if (config is not null) cleanup.Add(config.Value);
+            if (temp is not null) cleanup.Add(temp.Value);
+            CleanupTempPaths(cleanup);
+            logger?.LogError(ex.GetType().Name, "Failed to prepare Windows AppContainer broker.");
+            return WindowsFailClosedOrEscape(request, logger, "Windows AppContainer setup failed.");
         }
 
-        logger?.LogDebug(
-            "Windows: no filesystem jail for this invocation (Job Object resource limits only). {Note}",
-            ChildProcessSandboxMessages.NotNetworkIsolationNote);
+    }
 
+    private static ChildProcessSandboxApplyResult WindowsFailClosedOrEscape(
+        ChildProcessSandboxRequest request,
+        ILogger? logger,
+        string detail)
+    {
+        if (!request.WindowsPathBoundaryRequired)
+        {
+            return FailClosedOrEscape(request, logger, detail);
+        }
+
+        logger?.LogWarning(
+            "Windows AppContainer setup was not active while Sanctum path-boundary enforcement was required; refusing the tool child.");
         return new ChildProcessSandboxApplyResult
         {
-
-            Status = ChildProcessSandboxApplyStatus.NoFilesystemJail,
-
-            Detail = "Windows: no filesystem jail; Job Object resource limits only.",
-
+            Status = ChildProcessSandboxApplyStatus.Unavailable,
+            Detail = detail,
         };
-
     }
 
     /// <summary>

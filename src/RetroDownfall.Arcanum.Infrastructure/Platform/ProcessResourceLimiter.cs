@@ -36,7 +36,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Platform;
 /// <c>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</c>, then returns
 /// <see cref="ProcessResourceLimiterResult.AssignAfterStart"/> so the caller can
 /// <c>AssignProcessToJobObject</c> immediately after <see cref="Process.Start()"/> — .NET has no
-/// suspended-create hook, so there is an unavoidable post-start race window before assignment
+/// suspended-create hook. For jailed tool children, this directly started process is a trusted broker
+/// which waits for Job membership and creates the untrusted target suspended before resuming it
 /// (documented in DESIGN §11.15). Open file descriptors have no Job Object equivalent and are not
 /// enforced on Windows.
 /// </para>

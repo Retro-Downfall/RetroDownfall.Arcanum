@@ -78,6 +78,12 @@ internal static class SandboxExecHelper
 
         }
 
+        if (OperatingSystem.IsWindows())
+        {
+            Environment.Exit(WindowsAppContainerLauncher.Run(payload));
+            return true;
+        }
+
         if (!OperatingSystem.IsLinux())
         {
 

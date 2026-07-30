@@ -46,7 +46,7 @@ internal enum CappedChildProcessOutcome
     FilesystemSandboxUnavailable,
 
     /// <summary>
-    /// Windows + Sanctum path-boundary enforcement: no FS jail available; process never started.
+    /// Legacy Windows Sanctum denial outcome retained for result compatibility.
     /// </summary>
     FilesystemSandboxDeniedByWindowsSanctum,
 
@@ -243,8 +243,7 @@ internal static class CappedChildProcessRunner
 
             }
 
-            // Applied (macOS Seatbelt), NoFilesystemJail (Windows Job Objects only), and
-            // EscapedByOperator continue — never treat NoFilesystemJail as Applied FS confinement.
+            // Applied OS jail and an explicitly accepted operator escape continue.
 
         }
 

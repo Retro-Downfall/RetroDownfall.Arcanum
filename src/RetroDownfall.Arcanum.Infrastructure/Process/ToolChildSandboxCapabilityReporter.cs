@@ -29,7 +29,11 @@ public static class ToolChildSandboxCapabilityReporter
     }
 
     public static ToolChildSandboxStatus BuildForCurrentHost(bool escapeHatchEnabled) =>
-        Build(DetectPlatform(), escapeHatchEnabled, macOsSandboxExecPresent: File.Exists("/usr/bin/sandbox-exec"));
+        Build(
+            DetectPlatform(),
+            escapeHatchEnabled,
+            macOsSandboxExecPresent: File.Exists("/usr/bin/sandbox-exec"),
+            windowsAppContainerAvailable: WindowsAppContainerPolicy.IsSupported());
 
     /// <summary>
     /// Pure status builder. <paramref name="macOsSandboxExecPresent"/> is only consulted for macOS.
@@ -37,7 +41,8 @@ public static class ToolChildSandboxCapabilityReporter
     public static ToolChildSandboxStatus Build(
         string platform,
         bool escapeHatchEnabled,
-        bool macOsSandboxExecPresent = true)
+        bool macOsSandboxExecPresent = true,
+        bool windowsAppContainerAvailable = true)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(platform);
@@ -161,36 +166,42 @@ public static class ToolChildSandboxCapabilityReporter
 
         if (string.Equals(platform, Platforms.Windows, StringComparison.OrdinalIgnoreCase))
         {
+            if (windowsAppContainerAvailable)
+            {
+                return new ToolChildSandboxStatus
+                {
+                    Platform = Platforms.Windows,
+                    FilesystemJailMode = ToolChildFilesystemJailMode.Active,
+                    ResourceLimitsMode = ToolChildResourceLimitsMode.Active,
+                    NetworkIsolationMode = ToolChildNetworkIsolationMode.NotProvided,
+                    PublicMessage =
+                        "Windows AppContainer filesystem jail and Job Object process-tree/resource enforcement are active. "
+                        + NetworkIsolationPublicMessage,
+                    OperatorGuidance =
+                        "Tool children use a per-invocation AppContainer identity and explicit allowed-root ACLs. "
+                        + NetworkIsolationPublicMessage,
+                    IsBetaSafeDefault = true,
+                    EscapeHatchEnabled = false,
+                    IsHealthDegraded = false,
+                };
+            }
 
             return new ToolChildSandboxStatus
             {
                 Platform = Platforms.Windows,
-
-                FilesystemJailMode = ToolChildFilesystemJailMode.NotAvailable,
-
-                ResourceLimitsMode = ToolChildResourceLimitsMode.Partial,
-
+                FilesystemJailMode = ToolChildFilesystemJailMode.InactiveFailClosed,
+                ResourceLimitsMode = ToolChildResourceLimitsMode.Active,
                 NetworkIsolationMode = ToolChildNetworkIsolationMode.NotProvided,
-
                 PublicMessage =
-                    "Windows: no filesystem jail; Job Objects / resource limits only. "
-                    + "When Sanctum Enabled+EnforcePathBoundary, command tools are denied "
-                    + "(AllowUnsandboxedToolChildren does not bypass that denial). "
+                    "Windows AppContainer filesystem jail is unavailable; command tools fail closed. "
                     + NetworkIsolationPublicMessage,
-
                 OperatorGuidance =
-                    "Do not expect FS confinement on Windows in this beta. Prefer macOS for sandboxed command tools, "
-                    + "or keep Sanctum path-boundary off only if Job Objects alone are acceptable. "
+                    "Use a supported Windows host with AppContainer APIs available. "
                     + NetworkIsolationPublicMessage,
-
                 IsBetaSafeDefault = false,
-
                 EscapeHatchEnabled = false,
-
-                // Documented ≠ Healthy — Windows no-FS-jail is always Degraded for beta honesty.
                 IsHealthDegraded = true,
             };
-
         }
 
         return new ToolChildSandboxStatus
@@ -254,7 +265,7 @@ public static class ToolChildSandboxCapabilityReporter
         if (string.Equals(platform, Platforms.Windows, StringComparison.OrdinalIgnoreCase))
         {
 
-            return ToolChildResourceLimitsMode.Partial;
+            return ToolChildResourceLimitsMode.Active;
 
         }
 

@@ -13,7 +13,7 @@ public enum ToolChildFilesystemJailMode
     /// <summary>Operator escape hatch: running without FS confinement.</summary>
     UnsandboxedEscapeHatch,
 
-    /// <summary>No FS jail on this platform (e.g. Windows Job Objects only).</summary>
+    /// <summary>No FS jail is available on this platform.</summary>
     NotAvailable,
 
 }

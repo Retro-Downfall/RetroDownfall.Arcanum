@@ -69,25 +69,36 @@ public sealed class ToolChildSandboxCapabilityReporterTests
     }
 
     [Fact]
-    public void Windows_no_fs_jail_is_degraded_even_when_documented()
+    public void Windows_with_AppContainer_is_active_and_healthy()
     {
 
         ToolChildSandboxStatus status = ToolChildSandboxCapabilityReporter.Build(
             ToolChildSandboxCapabilityReporter.Platforms.Windows,
-            escapeHatchEnabled: false);
+            escapeHatchEnabled: false,
+            windowsAppContainerAvailable: true);
 
-        Assert.Equal(ToolChildFilesystemJailMode.NotAvailable, status.FilesystemJailMode);
+        Assert.Equal(ToolChildFilesystemJailMode.Active, status.FilesystemJailMode);
 
-        Assert.Equal(ToolChildResourceLimitsMode.Partial, status.ResourceLimitsMode);
+        Assert.Equal(ToolChildResourceLimitsMode.Active, status.ResourceLimitsMode);
 
+        Assert.False(status.IsHealthDegraded);
+
+        Assert.True(status.IsBetaSafeDefault);
+
+        Assert.Contains("AppContainer", status.PublicMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Windows_without_AppContainer_fails_closed_and_is_degraded()
+    {
+        ToolChildSandboxStatus status = ToolChildSandboxCapabilityReporter.Build(
+            ToolChildSandboxCapabilityReporter.Platforms.Windows,
+            escapeHatchEnabled: false,
+            windowsAppContainerAvailable: false);
+
+        Assert.Equal(ToolChildFilesystemJailMode.InactiveFailClosed, status.FilesystemJailMode);
         Assert.True(status.IsHealthDegraded);
-
-        Assert.False(status.IsBetaSafeDefault);
-
-        Assert.Contains("Job Objects", status.PublicMessage, StringComparison.Ordinal);
-
-        Assert.Contains("does not bypass", status.PublicMessage, StringComparison.OrdinalIgnoreCase);
-
+        Assert.Contains("fail closed", status.PublicMessage, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
