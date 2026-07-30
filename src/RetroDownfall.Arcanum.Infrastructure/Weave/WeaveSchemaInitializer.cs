@@ -11,9 +11,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// registered migration in <c>GrimoireSqlSchemaMigrator.MigrationOrder</c>:
 ///
 /// <list type="bullet">
-/// <item>The BLOB metadata tables are raw-SQL-owned and reconciled idempotently here. Additive
-/// workspace chunk metadata columns are detected with <c>PRAGMA table_info</c> and added in place,
-/// preserving existing embeddings without entering the EF compiled model.</item>
+/// <item>The BLOB metadata tables are raw-SQL-owned and created idempotently here. Before Arcanum
+/// has users, their canonical definitions change in place in this initializer; local and test
+/// databases are recreated instead of upgraded.</item>
 /// <item>The vec0 table's vector column width must be interpolated from
 /// <c>Arcanum:Integrations:Embeddings:Dimensions</c> at runtime; a static embedded <c>.sql</c> file
 /// cannot express that.</item>
@@ -42,7 +42,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 internal static class WeaveSchemaInitializer
 {
 
-    internal const int SchemaVersion = 2;
+    internal const string CanonicalSchemaFingerprint = "workspace-lines-v2";
 
     public static async Task EnsureSchemaAsync(
         SqliteConnection connection,
@@ -189,16 +189,6 @@ internal static class WeaveSchemaInitializer
 
         _ = await chunksCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-        await EnsureWorkspaceChunkColumnAsync(
-            connection,
-            "StartLine",
-            cancellationToken).ConfigureAwait(false);
-
-        await EnsureWorkspaceChunkColumnAsync(
-            connection,
-            "EndLine",
-            cancellationToken).ConfigureAwait(false);
-
         await using SqliteCommand indexCmd = connection.CreateCommand();
 
         indexCmd.CommandText =
@@ -208,45 +198,6 @@ internal static class WeaveSchemaInitializer
             """;
 
         _ = await indexCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-    }
-
-    private static async Task EnsureWorkspaceChunkColumnAsync(
-        SqliteConnection connection,
-        string columnName,
-        CancellationToken cancellationToken)
-    {
-
-        await using SqliteCommand inspect = connection.CreateCommand();
-
-        inspect.CommandText = """PRAGMA table_info("workspace_file_chunks");""";
-
-        await using SqliteDataReader reader = await inspect.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-
-            if (string.Equals(reader.GetString(1), columnName, StringComparison.Ordinal))
-            {
-
-                return;
-
-            }
-
-        }
-
-        await reader.DisposeAsync().ConfigureAwait(false);
-
-        await using SqliteCommand alter = connection.CreateCommand();
-
-        alter.CommandText = columnName switch
-        {
-            "StartLine" => """ALTER TABLE "workspace_file_chunks" ADD COLUMN "StartLine" INTEGER NOT NULL DEFAULT 1;""",
-            "EndLine" => """ALTER TABLE "workspace_file_chunks" ADD COLUMN "EndLine" INTEGER NOT NULL DEFAULT 1;""",
-            _ => throw new ArgumentOutOfRangeException(nameof(columnName)),
-        };
-
-        _ = await alter.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

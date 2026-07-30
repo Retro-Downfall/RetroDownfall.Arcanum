@@ -182,6 +182,9 @@ These are the recurring shapes. Matching them is what makes a change "fit."
   recovery handler, store only minimum encrypted checkpoint state, and expose only a bounded safe
   summary. Never persist a live Task/token/enumerator/process/DI object. See
   [DESIGN §10.8](Arcanum.DESIGN.md#108-durable-operation-ledger-and-restart-reconciliation).
+- **Change pre-user raw-SQL schemas directly.** Arcanum has no users yet, so update canonical
+  initializer definitions and recreate local/test databases; do not add compatibility migrations
+  or in-place upgrade paths. Revisit this policy before durable user data exists.
 
 ---
 

@@ -139,9 +139,9 @@ public sealed class GrimoireFixture : IDisposable
     }
 
     /// <summary>
-    /// Hashes every embedded Grimoire SQL migration script so the cached template database
-    /// (which persists across test process invocations under the OS temp directory) is rebuilt
-    /// whenever a migration script changes, instead of silently serving a stale schema.
+    /// Hashes every embedded Grimoire SQL migration script plus the canonical raw-SQL schema
+    /// fingerprint so the cached template database (which persists across test process invocations
+    /// under the OS temp directory) is rebuilt whenever either schema source changes.
     /// </summary>
     private static string ComputeSchemaFingerprint()
     {
@@ -151,7 +151,7 @@ public sealed class GrimoireFixture : IDisposable
         StringBuilder combined = new();
 
         combined.Append("WeaveSchemaInitializer:")
-            .Append(WeaveSchemaInitializer.SchemaVersion)
+            .Append(WeaveSchemaInitializer.CanonicalSchemaFingerprint)
             .Append('\n');
 
         foreach (string resourceName in assembly.GetManifestResourceNames()
