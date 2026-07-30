@@ -84,6 +84,16 @@ public static class ArcanumSettingClamps
 
     public static int ContextWindowLimit(int value) => Math.Clamp(value, 256, 2_097_152);
 
+    public static int MaxModelCallsPerTurn(int value) => Math.Clamp(value, 1, 128);
+
+    public static int MaxToolRoundsPerTurn(int value) => Math.Clamp(value, 1, 64);
+
+    public static int MaxToolCallsPerTurn(int value) => Math.Clamp(value, 1, 256);
+
+    public static int MaxToolResultTokensPerTurn(int value) => Math.Clamp(value, 1, 2_097_152);
+
+    public static int MaxTurnElapsedSeconds(int value) => Math.Clamp(value, 1, 3_600);
+
     public static int ReasoningBudgetTokens(int value) => Math.Clamp(value, 1, 2_097_152);
 
     public static int ExecuteCommandTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);

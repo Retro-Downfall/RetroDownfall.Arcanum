@@ -114,7 +114,11 @@ internal sealed class TurnAccountingHandle
 
     public TurnAccountingHandle CreateNestedOperationHandle() =>
         new(
-            new TurnBudget(),
+            new TurnBudget(new TurnLimits(
+            MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64,
+            MaxToolResultTokens: 512_000, MaxToolResultBytes: 4_194_304,
+            MaxElapsedTime: TimeSpan.FromSeconds(300),
+            MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
             RunId,
             ReservationId,
             ReservationActive,
@@ -241,7 +245,11 @@ internal sealed class TurnAccountingHandle
         int? reasoningBudgetTokens = null,
         decimal? reservedUsdOverride = null)
     {
-        TurnBudget budget = new();
+        TurnBudget budget = new(new TurnLimits(
+            MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64,
+            MaxToolResultTokens: 512_000, MaxToolResultBytes: 4_194_304,
+            MaxElapsedTime: TimeSpan.FromSeconds(300),
+            MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m));
 
         if (turnRunWriter is null)
         {

@@ -127,7 +127,7 @@ public sealed class ModelTokenEstimatorTests
                 chat,
                 messages,
                 options,
-                new TurnBudget(),
+                new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
                 ModelCallPurpose.MainInference,
                 CancellationToken.None,
                 new ModelCallContext(provider, "custom-model", 32, 0, breakdown));
@@ -326,7 +326,7 @@ public sealed class ModelTokenEstimatorTests
             chat,
             messages,
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
             ModelCallPurpose.ToolContinuation,
             CancellationToken.None,
             new ModelCallContext(provider, "gpt-4o", ReservedAnswerTokens: 64, ReservedReasoningTokens: 0));
@@ -357,7 +357,7 @@ public sealed class ModelTokenEstimatorTests
             chat,
             messages,
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
             ModelCallPurpose.MainInference,
             CancellationToken.None,
             new ModelCallContext(provider, "gpt-4o", 32, 0, breakdown));
@@ -390,7 +390,7 @@ public sealed class ModelTokenEstimatorTests
             chat,
             messages,
             new ChatOptions(),
-            new TurnBudget(),
+            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
             ModelCallPurpose.MainInference,
             CancellationToken.None,
             new ModelCallContext(provider, "gpt-4o", 32, 0, stale));
@@ -423,7 +423,7 @@ public sealed class ModelTokenEstimatorTests
                 chat,
                 messages,
                 new ChatOptions(),
-                new TurnBudget(),
+                new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
                 ModelCallPurpose.MainInference,
                 CancellationToken.None,
                 new ModelCallContext(provider, "gpt-4o", 32, 0, stale)))

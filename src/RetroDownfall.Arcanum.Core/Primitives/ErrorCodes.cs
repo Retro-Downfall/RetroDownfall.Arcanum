@@ -44,6 +44,12 @@ public static class ErrorCodes
     {
         public const string ContextBudgetExceeded = "Hub.ContextBudgetExceeded";
 
+        public const string RepetitionDetected = "Hub.RepetitionDetected";
+
+        public const string TurnLimitExceeded = "Hub.TurnLimitExceeded";
+
+        public const string NoProgressDetected = "Hub.NoProgressDetected";
+
         public const string Model = "Hub.Model";
 
         public const string Error = "Hub.Error";
