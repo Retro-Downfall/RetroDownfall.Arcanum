@@ -225,7 +225,8 @@ public sealed class SessionRepository(
                 s.Status,
                 entryCounts.GetValueOrDefault(s.Id),
                 s.CreatedAt,
-                s.UpdatedAt))
+                s.UpdatedAt,
+                s.ForkedFromSessionId))
             .ToArray();
 
         DateTimeOffset? nextBefore = hasMore && page.Count > 0 ? page[^1].UpdatedAt : null;

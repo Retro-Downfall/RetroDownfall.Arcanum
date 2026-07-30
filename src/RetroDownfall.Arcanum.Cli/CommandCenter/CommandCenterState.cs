@@ -42,6 +42,8 @@ internal sealed class CommandCenterState
 
     public int? SessionEntryCount { get; set; }
 
+    public Guid? ForkedFromSessionId { get; set; }
+
     public string? Model { get; set; }
 
     public bool ShowTelemetryPane { get; set; } = true;
@@ -103,6 +105,12 @@ internal sealed class CommandCenterState
     public string SessionFilter { get; set; } = string.Empty;
 
     public Guid? SelectedSessionId { get; set; }
+
+    public Guid? SelectedTranscriptEntryId { get; set; }
+
+    public IReadOnlyList<EntryDto> LoadedTranscriptEntries { get; set; } = [];
+
+    public string? PendingAlternativePrompt { get; set; }
 
     public CommandCenterFocusRegion FocusRegion { get; set; } = CommandCenterFocusRegion.Composer;
 
@@ -225,17 +233,24 @@ internal sealed class CommandCenterState
         SessionTitle = null;
         SessionStatus = null;
         SessionEntryCount = null;
+        ForkedFromSessionId = null;
         SelectedSessionId = null;
         LastContextBreakdown = null;
     }
 
-    public void ApplySessionMeta(Guid id, string? title, string? status, int? entryCount)
+    public void ApplySessionMeta(
+        Guid id,
+        string? title,
+        string? status,
+        int? entryCount,
+        Guid? forkedFromSessionId = null)
     {
         SessionId = id;
         SelectedSessionId = id;
         SessionTitle = string.IsNullOrWhiteSpace(title) ? "Untitled" : title.Trim();
         SessionStatus = string.IsNullOrWhiteSpace(status) ? "Active" : status.Trim();
         SessionEntryCount = entryCount;
+        ForkedFromSessionId = forkedFromSessionId;
     }
 
     private string FormatSessionHeader()
@@ -248,7 +263,8 @@ internal sealed class CommandCenterState
         string title = string.IsNullOrWhiteSpace(SessionTitle) ? "Untitled" : SessionTitle!;
         string shortId = sid.ToString("N")[..8];
         string status = string.IsNullOrWhiteSpace(SessionStatus) ? "Active" : SessionStatus!;
-        return $"Session: {title} · {shortId} · {status}";
+        string branch = ForkedFromSessionId is null ? string.Empty : " · ⑂ branch";
+        return $"Session: {title} · {shortId} · {status}{branch}";
     }
 }
 
@@ -257,7 +273,8 @@ internal sealed record SessionListItem(
     string Title,
     string Status,
     DateTimeOffset UpdatedAt,
-    int EntryCount)
+    int EntryCount,
+    Guid? ForkedFromSessionId = null)
 {
     public string ShortId => Id.ToString("N")[..8];
 
@@ -271,7 +288,8 @@ internal sealed record SessionListItem(
                 title = title[..21] + "…";
             }
 
-            return $"{title}  {ShortId}";
+            string branch = ForkedFromSessionId is null ? string.Empty : " ⑂";
+            return $"{title}  {ShortId}{branch}";
         }
     }
 
@@ -281,7 +299,8 @@ internal sealed record SessionListItem(
             string.IsNullOrWhiteSpace(dto.Title) ? "Untitled" : dto.Title!,
             string.IsNullOrWhiteSpace(dto.Status) ? "Active" : dto.Status,
             dto.UpdatedAt,
-            dto.EntryCount);
+            dto.EntryCount,
+            dto.ForkedFromSessionId);
 }
 
 internal enum CommandCenterOverlayKind

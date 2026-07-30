@@ -1379,6 +1379,7 @@ internal sealed class CommandCenterHost(
         CommandCenterWindow window,
         CancellationTokenSource linked)
     {
+        app.Invoke(() => state.SelectedTranscriptEntryId = window.GetSelectedTranscriptEntryId(state));
         await RunGatedAsync(
                 state,
                 ui,
@@ -1551,6 +1552,7 @@ internal sealed class CommandCenterHost(
 
         if (isSlash)
         {
+            app.Invoke(() => state.SelectedTranscriptEntryId = window.GetSelectedTranscriptEntryId(state));
             app.Invoke(() => window.ClearComposer());
             await RunGatedAsync(
                     state,
@@ -1580,6 +1582,12 @@ internal sealed class CommandCenterHost(
                         });
                     })
                 .ConfigureAwait(false);
+            if (state.PendingAlternativePrompt is { } alternativePrompt)
+            {
+                state.PendingAlternativePrompt = null;
+                await HandleSubmitAsync(alternativePrompt, state, ui, app, window, linked)
+                    .ConfigureAwait(false);
+            }
             return;
         }
 

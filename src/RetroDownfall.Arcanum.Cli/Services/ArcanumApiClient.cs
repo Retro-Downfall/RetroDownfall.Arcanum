@@ -688,6 +688,38 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<Result<SessionDetailDto>> ForkSessionAsync(
+        Guid sourceId,
+        ForkSessionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request, ArcanumJsonContext.Default.ForkSessionRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/sessions/{sourceId:D}/fork",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
+            static (response, _, envelope) =>
+            {
+                if (response.IsSuccessStatusCode && envelope is { IsSuccess: true, Data: not null })
+                {
+                    return Result<SessionDetailDto>.Success(envelope.Data);
+                }
+
+                if (envelope is { IsSuccess: false, Error: not null })
+                {
+                    return Result<SessionDetailDto>.Failure(envelope.Error.Value);
+                }
+
+                return Result<SessionDetailDto>.Failure(
+                    new Error("Api.HttpError", $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<Result<EntryDto[]>> GetSessionEntriesAsync(
         Guid sessionId,
         int? offset = null,

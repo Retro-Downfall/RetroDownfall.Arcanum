@@ -24,7 +24,8 @@ public sealed record SessionSummaryDto(
     string Status,
     int EntryCount,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    Guid? ForkedFromSessionId = null);
 
 public sealed record SessionDetailDto(
     Guid Id,

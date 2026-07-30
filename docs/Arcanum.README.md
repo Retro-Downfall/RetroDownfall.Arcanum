@@ -552,6 +552,15 @@ All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDow
 
 **Command Center:** interactive Terminal.Gui workbench (sessions sidebar, transcript, composer, HITL/Ward hard modals). Bare interactive `arcanum` opens it; non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage. Slash allowlist and attach flows: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
 
+Session branching is first-class in Command Center. `/fork` copies the complete active session;
+select a transcript entry and use `/fork at` for an inclusive cutoff branch. Select an assistant
+answer and use `/fork alternative` to branch before it and regenerate from the preceding user
+prompt; generation starts only after the new branch opens. `/branch parent` and `/branch child`
+move through visible lineage. A compact `⑂` marker identifies branches in the header and session
+pane without changing its newest-updated-first order. Large attachment-bearing forks require
+`/fork confirm`. The new branch is opened only after its transcript and attachment metadata reload;
+any fork failure leaves the original session unchanged.
+
 Persistent session context is managed with `/context`, `/context pin <kind> <target>`, and
 `/context unpin <pin-id>`. Kinds are `file`, `directorySnapshot`, `symbolRange`
 (`path:start-end`), `sessionEntry`, `attachment`, `url`, and `diagnostic`. Pins survive host and

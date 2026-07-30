@@ -162,6 +162,97 @@ internal sealed class ShellCommandDispatcher(
                 sessionWorkspace.StartNewSession(state);
                 return ShellDispatchResult.Continue;
 
+            case ShellCommandKind.SessionFork:
+                Guid? cutoff = null;
+                string? alternativePrompt = null;
+                if (parsed.SecondaryArgument == "alternative")
+                {
+                    int answerIndex = state.LoadedTranscriptEntries
+                        .ToList()
+                        .FindIndex(entry => entry.Id == state.SelectedTranscriptEntryId);
+                    if (answerIndex <= 0
+                        || !state.LoadedTranscriptEntries[answerIndex].Role.Equals(
+                            "assistant", StringComparison.OrdinalIgnoreCase))
+                    {
+                        state.Log.Append(
+                            SessionLogEntryKind.Error,
+                            "Select an assistant answer, then run `/fork alternative`.");
+                        return ShellDispatchResult.Continue;
+                    }
+
+                    int promptIndex = answerIndex - 1;
+                    while (promptIndex >= 0
+                           && !state.LoadedTranscriptEntries[promptIndex].Role.Equals(
+                               "user", StringComparison.OrdinalIgnoreCase))
+                    {
+                        promptIndex--;
+                    }
+                    if (promptIndex < 0)
+                    {
+                        state.Log.Append(SessionLogEntryKind.Error, "No user prompt precedes the selected answer.");
+                        return ShellDispatchResult.Continue;
+                    }
+
+                    cutoff = state.LoadedTranscriptEntries[promptIndex].Id;
+                    alternativePrompt = state.LoadedTranscriptEntries[promptIndex].Content;
+                }
+                if (parsed.SecondaryArgument == "selected")
+                {
+                    cutoff = state.SelectedTranscriptEntryId;
+                    if (cutoff is null)
+                    {
+                        state.Log.Append(
+                            SessionLogEntryKind.Error,
+                            "Select a transcript entry, then run `/fork at` again.");
+                        return ShellDispatchResult.Continue;
+                    }
+                }
+                if (parsed.Argument is not null && !Guid.TryParse(parsed.Argument, out _))
+                {
+                    state.Log.Append(SessionLogEntryKind.Error, "Usage: /fork [at <entry-id>]");
+                    return ShellDispatchResult.Continue;
+                }
+                if (parsed.Argument is not null)
+                {
+                    cutoff = Guid.Parse(parsed.Argument);
+                }
+                SessionForkResult fork = await sessionWorkspace
+                    .ForkSessionAsync(
+                        state,
+                        new ForkSessionRequest(UpToEntryId: cutoff),
+                        cancellationToken,
+                        attachmentCopyConfirmed: parsed.SecondaryArgument == "confirm")
+                    .ConfigureAwait(false);
+                state.Log.Append(
+                    fork.Outcome == SessionForkOutcome.Success ? SessionLogEntryKind.Status : SessionLogEntryKind.Error,
+                    fork.Outcome == SessionForkOutcome.Success
+                        ? $"Opened branch {fork.ForkSessionId:D}."
+                        : fork.ErrorMessage ?? "Fork failed.");
+                if (fork.Outcome == SessionForkOutcome.Success && alternativePrompt is not null)
+                {
+                    state.PendingAlternativePrompt = alternativePrompt;
+                }
+                return ShellDispatchResult.Continue;
+
+            case ShellCommandKind.BranchParent:
+                if (state.ForkedFromSessionId is not { } parentId)
+                {
+                    state.Log.Append(SessionLogEntryKind.Status, "This session has no parent branch.");
+                    return ShellDispatchResult.Continue;
+                }
+                await sessionWorkspace.ResumeSessionAsync(state, parentId, cancellationToken).ConfigureAwait(false);
+                return ShellDispatchResult.Continue;
+
+            case ShellCommandKind.BranchChild:
+                SessionListItem? child = state.Sessions.FirstOrDefault(s => s.ForkedFromSessionId == state.SessionId);
+                if (child is null)
+                {
+                    state.Log.Append(SessionLogEntryKind.Status, "No child branch is visible in the recent session list.");
+                    return ShellDispatchResult.Continue;
+                }
+                await sessionWorkspace.ResumeSessionAsync(state, child.Id, cancellationToken).ConfigureAwait(false);
+                return ShellDispatchResult.Continue;
+
             case ShellCommandKind.SpellList:
                 state.Log.Append(
                     SessionLogEntryKind.Command,
@@ -659,6 +750,12 @@ internal sealed class ShellCommandDispatcher(
                 "  /session list         Refresh + list sessions",
                 "  /session new          Start a New Session",
                 "  /session resume <id>  Load transcript + continue that session",
+                "  /fork                 Fork the entire active session and open the branch",
+                "  /fork confirm         Confirm a large attachment-bearing fork",
+                "  /fork alternative     Fork before the selected answer and regenerate",
+                "  /fork at <entry-id>   Fork through a transcript entry and open the branch",
+                "  /fork at              Fork through the selected transcript entry",
+                "  /branch parent|child  Open the visible parent or newest child branch",
                 "  /attach <path>        Stage a local text file or image (Scrying) for the next turn",
                 "  @path                 Inline stage (text attach or Scrying image) in a message",
                 "  /attachments          List bound session attachments",

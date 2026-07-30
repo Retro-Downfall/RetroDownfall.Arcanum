@@ -33,6 +33,18 @@ internal sealed record SessionResumeResult(
     bool WasEmpty = false,
     bool HadOlderMessages = false);
 
+internal enum SessionForkOutcome
+{
+    Success,
+    Failed,
+    ConfirmationRequired,
+}
+
+internal sealed record SessionForkResult(
+    SessionForkOutcome Outcome,
+    Guid? ForkSessionId = null,
+    string? ErrorMessage = null);
+
 /// <summary>
 /// Session list / resume / new / startup restore for Command Center.
 /// Mutates <see cref="CommandCenterState"/> and log buffer; never touches Terminal.Gui.
@@ -147,7 +159,7 @@ internal sealed class SessionWorkspaceService(
             EntryDto[] chronological = descending.Reverse().ToArray();
             bool hadOlder = detail.EntryCount > chronological.Length;
 
-            List<(SessionLogEntryKind Kind, string Text)> mapped = [];
+            List<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> mapped = [];
             state.Incantations.Clear();
             foreach (EntryDto e in chronological)
             {
@@ -164,12 +176,14 @@ internal sealed class SessionWorkspaceService(
                     continue;
                 }
 
-                mapped.Add((kind, FormatEntryContent(e)));
+                mapped.Add((kind, FormatEntryContent(e), e.Id));
             }
 
             // Commit only after successful load.
-            state.ApplySessionMeta(detail.Id, detail.Title, detail.Status, detail.EntryCount);
-            state.Log.ReplaceWithHistory(mapped, showOlderMessagesMarker: hadOlder);
+            state.ApplySessionMeta(
+                detail.Id, detail.Title, detail.Status, detail.EntryCount, detail.ForkedFromSessionId);
+            state.LoadedTranscriptEntries = chronological;
+            state.Log.ReplaceWithApiHistory(mapped, showOlderMessagesMarker: hadOlder);
             lastSessionStore.SaveSessionId(detail.Id);
 
             return new SessionResumeResult(
@@ -189,6 +203,115 @@ internal sealed class SessionWorkspaceService(
             state.TransientStatus = null;
         }
     }
+
+    /// <summary>
+    /// Forks through the server contract and switches only after the new branch, transcript, and
+    /// attachment metadata have all loaded successfully.
+    /// </summary>
+    public async Task<SessionForkResult> ForkSessionAsync(
+        CommandCenterState state,
+        ForkSessionRequest request,
+        CancellationToken cancellationToken,
+        bool attachmentCopyConfirmed = false)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        if (state.SessionId is not { } sourceId)
+        {
+            return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: "Open a session before forking.");
+        }
+
+        state.TransientStatus = "Forking session…";
+        try
+        {
+            Result<SessionAttachmentDto[]> sourceAttachments = await apiClient
+                .GetSessionAttachmentsAsync(sourceId, cancellationToken).ConfigureAwait(false);
+            if (!sourceAttachments.IsSuccess)
+            {
+                string message = FormatForkError(sourceAttachments.Error);
+                return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: message);
+            }
+
+            SessionAttachmentDto[] attachments = sourceAttachments.Value ?? [];
+            long attachmentBytes = attachments.Sum(static attachment => attachment.ByteLength);
+            if (!attachmentCopyConfirmed && (attachments.Length >= 10 || attachmentBytes >= 10 * 1024 * 1024))
+            {
+                string message =
+                    $"This fork will copy {attachments.Length} attachment(s) ({attachmentBytes / 1024d / 1024d:F1} MiB). "
+                    + "Run `/fork confirm` to continue.";
+                return new SessionForkResult(SessionForkOutcome.ConfirmationRequired, ErrorMessage: message);
+            }
+
+            Result<SessionDetailDto> forkResult = await apiClient
+                .ForkSessionAsync(sourceId, request, cancellationToken).ConfigureAwait(false);
+            if (!forkResult.IsSuccess || forkResult.Value is null)
+            {
+                string message = FormatForkError(forkResult.Error);
+                state.LastError = message;
+                return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: message);
+            }
+
+            Guid forkId = forkResult.Value.Id;
+            Result<SessionDetailDto> detailResult = await apiClient
+                .GetSessionAsync(forkId, cancellationToken).ConfigureAwait(false);
+            Result<EntryDto[]> entriesResult = await apiClient
+                .GetSessionEntriesAsync(
+                    forkId, 0, CommandCenterState.TranscriptEntryLimit, cancellationToken)
+                .ConfigureAwait(false);
+            Result<SessionAttachmentDto[]> attachmentsResult = await apiClient
+                .GetSessionAttachmentsAsync(forkId, cancellationToken).ConfigureAwait(false);
+
+            if (!detailResult.IsSuccess || detailResult.Value is null
+                || !entriesResult.IsSuccess || !attachmentsResult.IsSuccess)
+            {
+                Error error = !detailResult.IsSuccess
+                    ? detailResult.Error
+                    : !entriesResult.IsSuccess ? entriesResult.Error : attachmentsResult.Error;
+                string message = FormatForkError(error);
+                state.LastError = message;
+                return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: message);
+            }
+
+            SessionDetailDto detail = detailResult.Value;
+            EntryDto[] chronological = (entriesResult.Value ?? []).Reverse().ToArray();
+            List<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> mapped = chronological
+                .Where(static e => !SessionLogBuffer.IsEphemeralReasoningRole(e.Role))
+                .Where(static e => !PersistedToolInteraction.IsToolInteraction(e))
+                .Select(static e => (
+                    SessionLogBuffer.MapEntryRole(e.Role), FormatEntryContent(e), (Guid?)e.Id))
+                .ToList();
+
+            state.ApplySessionMeta(
+                detail.Id, detail.Title, detail.Status, detail.EntryCount, detail.ForkedFromSessionId);
+            state.LoadedTranscriptEntries = chronological;
+            state.Log.ReplaceWithApiHistory(mapped, detail.EntryCount > chronological.Length);
+            lastSessionStore.SaveSessionId(detail.Id);
+            state.LastError = null;
+            await RefreshSessionsAsync(state, cancellationToken).ConfigureAwait(false);
+            return new SessionForkResult(SessionForkOutcome.Success, detail.Id);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Session fork failed for {SessionId}.", sourceId);
+            state.LastError = ex.Message;
+            return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: ex.Message);
+        }
+        finally
+        {
+            state.TransientStatus = null;
+        }
+    }
+
+    private static string FormatForkError(Error error) =>
+        error.Code switch
+        {
+            ErrorCodes.Session.ForkDepthExceeded =>
+                "This session is already at the maximum branch depth. Open an earlier parent and fork there.",
+            ErrorCodes.Session.EntryNotFound =>
+                "The selected cutoff entry is no longer available. Refresh the transcript and select another entry.",
+            _ when error.Message.Contains("attachment", StringComparison.OrdinalIgnoreCase) =>
+                $"Attachment copy failed; the source remains active. {error.Message}",
+            _ => string.IsNullOrWhiteSpace(error.Message) ? "The session could not be forked." : error.Message,
+        };
 
     public void StartNewSession(CommandCenterState state, bool clearTranscript = true)
     {

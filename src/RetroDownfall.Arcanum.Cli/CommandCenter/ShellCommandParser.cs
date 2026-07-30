@@ -16,6 +16,9 @@ internal enum ShellCommandKind
     SessionList,
     SessionResume,
     SessionNew,
+    SessionFork,
+    BranchParent,
+    BranchChild,
     SpellList,
     Tools,
     Mana,
@@ -148,6 +151,20 @@ internal sealed class ShellCommandParser
                 => new ParsedShellCommand(ShellCommandKind.SessionList, raw),
             "session" when parts.Length >= 2 && parts[1].Equals("new", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(ShellCommandKind.SessionNew, raw),
+            "fork" when parts.Length == 1
+                => new ParsedShellCommand(ShellCommandKind.SessionFork, raw),
+            "fork" when parts.Length == 2 && parts[1].Equals("at", StringComparison.OrdinalIgnoreCase)
+                => new ParsedShellCommand(ShellCommandKind.SessionFork, raw, SecondaryArgument: "selected"),
+            "fork" when parts.Length == 2 && parts[1].Equals("confirm", StringComparison.OrdinalIgnoreCase)
+                => new ParsedShellCommand(ShellCommandKind.SessionFork, raw, SecondaryArgument: "confirm"),
+            "fork" when parts.Length == 2 && parts[1].Equals("alternative", StringComparison.OrdinalIgnoreCase)
+                => new ParsedShellCommand(ShellCommandKind.SessionFork, raw, SecondaryArgument: "alternative"),
+            "fork" when parts.Length == 3 && parts[1].Equals("at", StringComparison.OrdinalIgnoreCase)
+                => new ParsedShellCommand(ShellCommandKind.SessionFork, raw, Argument: parts[2]),
+            "branch" when parts.Length == 2 && parts[1].Equals("parent", StringComparison.OrdinalIgnoreCase)
+                => new ParsedShellCommand(ShellCommandKind.BranchParent, raw),
+            "branch" when parts.Length == 2 && parts[1].Equals("child", StringComparison.OrdinalIgnoreCase)
+                => new ParsedShellCommand(ShellCommandKind.BranchChild, raw),
             "session" when parts.Length >= 3 && parts[1].Equals("resume", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(ShellCommandKind.SessionResume, raw, Argument: parts[2]),
             "spell" when parts.Length >= 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)

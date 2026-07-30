@@ -411,6 +411,22 @@ internal sealed class CommandCenterWindow : Window
     public int GetSelectedLogIndex() =>
         _logLines.Count == 0 ? -1 : Math.Clamp(LogView.SelectedItem ?? 0, 0, _logLines.Count - 1);
 
+    public Guid? GetSelectedTranscriptEntryId(CommandCenterState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        int index = GetSelectedLogIndex();
+        if (index < 0 || index >= _logLineAnchors.Count)
+        {
+            return null;
+        }
+
+        if (_logLineAnchors[index] is not { } anchor)
+        {
+            return null;
+        }
+        return state.Log.Snapshot().FirstOrDefault(entry => entry.Id == anchor)?.SourceEntryId;
+    }
+
     public Guid? GetSelectedSessionId(CommandCenterState state)
     {
         ArgumentNullException.ThrowIfNull(state);

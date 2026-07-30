@@ -53,6 +53,53 @@ public sealed class SessionLogBufferHistoryTests
 public sealed class SessionWorkspaceServiceTests
 {
     [Fact]
+    public async Task Fork_success_opens_branch_and_preserves_source_history()
+    {
+        Guid sourceId = Guid.Parse("10101010-1010-1010-1010-101010101010");
+        Guid forkId = Guid.Parse("20202020-2020-2020-2020-202020202020");
+        DateTimeOffset now = DateTimeOffset.Parse("2026-07-30T12:00:00Z");
+        EntryDto sourceEntry = new(Guid.NewGuid(), sourceId, "user", "source question", null, null, now);
+        EntryDto forkEntry = sourceEntry with { SessionId = forkId };
+        FakeSessionHttp handler = new(
+            detail: new SessionDetailDto(forkId, null, "Fork", "Active", 1, now, now, null, 0, sourceId),
+            entries: [forkEntry],
+            fork: new SessionDetailDto(forkId, null, "Fork", "Active", 1, now, now, null, 0, sourceId));
+        SessionWorkspaceService workspace = CreateWorkspace(handler, out _);
+        CommandCenterState state = new(new SessionLogBuffer());
+        state.ApplySessionMeta(sourceId, "Source", "Active", 1);
+        state.Log.Append(SessionLogEntryKind.User, "source question");
+
+        SessionForkResult result = await workspace.ForkSessionAsync(
+            state, new ForkSessionRequest(), CancellationToken.None);
+
+        Assert.Equal(SessionForkOutcome.Success, result.Outcome);
+        Assert.Equal(forkId, state.SessionId);
+        Assert.Equal(sourceId, state.ForkedFromSessionId);
+        Assert.Contains("source question", state.Log.RenderPlainText(), StringComparison.Ordinal);
+        Assert.True(handler.AttachmentsRequested);
+    }
+
+    [Fact]
+    public async Task Fork_failure_leaves_active_session_unchanged_with_actionable_depth_message()
+    {
+        Guid sourceId = Guid.Parse("30303030-3030-3030-3030-303030303030");
+        FakeSessionHttp handler = new(
+            forkError: new Error(ErrorCodes.Session.ForkDepthExceeded, "maximum fork depth reached"));
+        SessionWorkspaceService workspace = CreateWorkspace(handler, out _);
+        CommandCenterState state = new(new SessionLogBuffer());
+        state.ApplySessionMeta(sourceId, "Source", "Active", 1);
+        state.Log.Append(SessionLogEntryKind.User, "keep source");
+
+        SessionForkResult result = await workspace.ForkSessionAsync(
+            state, new ForkSessionRequest(), CancellationToken.None);
+
+        Assert.Equal(SessionForkOutcome.Failed, result.Outcome);
+        Assert.Equal(sourceId, state.SessionId);
+        Assert.Contains("maximum branch depth", result.ErrorMessage ?? "", StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("keep source", state.Log.RenderPlainText(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Resume_success_replaces_transcript_chronologically()
     {
         Guid id = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
@@ -272,13 +319,40 @@ public sealed class SessionWorkspaceServiceTests
     private sealed class FakeSessionHttp(
         SessionDetailDto? detail = null,
         EntryDto[]? entries = null,
-        bool failDetail = false) : HttpMessageHandler
+        bool failDetail = false,
+        SessionDetailDto? fork = null,
+        Error? forkError = null) : HttpMessageHandler
     {
+        public bool AttachmentsRequested { get; private set; }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             string path = request.RequestUri?.AbsolutePath ?? "";
+
+            if (request.Method == HttpMethod.Post && path.EndsWith("/fork", StringComparison.Ordinal))
+            {
+                Result<SessionDetailDto> result = forkError is { } error
+                    ? Result<SessionDetailDto>.Failure(error)
+                    : Result<SessionDetailDto>.Success(fork!);
+                ApiResponse<SessionDetailDto> envelope = ApiResponse<SessionDetailDto>.FromResult(result);
+                string json = JsonSerializer.Serialize(envelope, ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+                return Task.FromResult(new HttpResponseMessage(forkError is null ? HttpStatusCode.Created : HttpStatusCode.Conflict)
+                {
+                    Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
+                });
+            }
+
+            if (path.EndsWith("/attachments", StringComparison.Ordinal))
+            {
+                AttachmentsRequested = true;
+                ApiResponse<SessionAttachmentDto[]> envelope = ApiResponse<SessionAttachmentDto[]>.FromResult(
+                    Result<SessionAttachmentDto[]>.Success([]));
+                string json = JsonSerializer.Serialize(
+                    envelope, ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray);
+                return Task.FromResult(OkJson(json));
+            }
 
             if (path.Contains("/entries", StringComparison.Ordinal))
             {

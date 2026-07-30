@@ -16,13 +16,18 @@ internal enum SessionLogEntryKind
 
 internal sealed class SessionLogEntry
 {
-    public SessionLogEntry(SessionLogEntryKind kind, string text, bool streaming = false)
+    public SessionLogEntry(
+        SessionLogEntryKind kind,
+        string text,
+        bool streaming = false,
+        Guid? sourceEntryId = null)
     {
         Id = Guid.NewGuid();
         Kind = kind;
         Text = text ?? string.Empty;
         Streaming = streaming;
         CreatedUtc = DateTimeOffset.UtcNow;
+        SourceEntryId = sourceEntryId;
     }
 
     public Guid Id { get; }
@@ -34,6 +39,8 @@ internal sealed class SessionLogEntry
     public bool Streaming { get; set; }
 
     public DateTimeOffset CreatedUtc { get; }
+
+    public Guid? SourceEntryId { get; }
 }
 
 /// <summary>
@@ -194,6 +201,13 @@ internal sealed class SessionLogBuffer
     public void ReplaceWithHistory(
         IReadOnlyList<(SessionLogEntryKind Kind, string Text)> entries,
         bool showOlderMessagesMarker)
+        => ReplaceWithApiHistory(
+            entries.Select(static entry => (entry.Kind, entry.Text, (Guid?)null)).ToArray(),
+            showOlderMessagesMarker);
+
+    public void ReplaceWithApiHistory(
+        IReadOnlyList<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> entries,
+        bool showOlderMessagesMarker)
     {
         ArgumentNullException.ThrowIfNull(entries);
 
@@ -207,14 +221,15 @@ internal sealed class SessionLogBuffer
             }
 
             bool addedHistory = false;
-            foreach ((SessionLogEntryKind kind, string text) in entries)
+            foreach ((SessionLogEntryKind kind, string text, Guid? sourceEntryId) in entries)
             {
                 if (kind == SessionLogEntryKind.Reasoning)
                 {
                     continue;
                 }
 
-                _entries.Add(new SessionLogEntry(kind, ClampForKind(kind, text ?? string.Empty)));
+                _entries.Add(new SessionLogEntry(
+                    kind, ClampForKind(kind, text ?? string.Empty), sourceEntryId: sourceEntryId));
                 addedHistory = true;
             }
 
