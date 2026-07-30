@@ -825,6 +825,57 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             cancellationToken).ConfigureAwait(false);
     }
 
+    public Task<Result<SessionContextPinDto[]>> GetSessionContextPinsAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default) =>
+        SendRequestAsync(
+            HttpMethod.Get,
+            $"api/sessions/{sessionId:D}/context-pins",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSessionContextPinDtoArray,
+            cancellationToken);
+
+    public Task<Result<SessionContextPinDto>> CreateSessionContextPinAsync(
+        Guid sessionId,
+        CreateSessionContextPinRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request, ArcanumJsonContext.Default.CreateSessionContextPinRequest);
+        return SendRequestAsync(
+            HttpMethod.Post,
+            $"api/sessions/{sessionId:D}/context-pins",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSessionContextPinDto,
+            cancellationToken);
+    }
+
+    public async Task<Result> DeleteSessionContextPinAsync(
+        Guid sessionId,
+        Guid pinId,
+        CancellationToken cancellationToken = default)
+    {
+        Result<bool> result = await SendRequestAsync(
+            HttpMethod.Delete,
+            $"api/sessions/{sessionId:D}/context-pins/{pinId:D}",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            static (response, _, envelope) =>
+            {
+                if ((int)response.StatusCode == 204)
+                {
+                    return Result<bool>.Success(true);
+                }
+                return Result<bool>.Failure(envelope?.Error
+                    ?? new Error("ContextPin.NotFound", "Context pin was not found."));
+            },
+            cancellationToken).ConfigureAwait(false);
+        return result.IsSuccess ? Result.Success() : Result.Failure(result.Error);
+    }
+
     public async Task<Result> ArchiveSessionAsync(Guid id, CancellationToken cancellationToken = default)
     {
         Result<bool> result = await SendRequestAsync(

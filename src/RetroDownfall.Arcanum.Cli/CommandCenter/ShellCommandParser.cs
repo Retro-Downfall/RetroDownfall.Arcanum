@@ -27,6 +27,9 @@ internal enum ShellCommandKind
     AttachmentsList,
     AttachmentsAdd,
     AttachmentsReveal,
+    ContextList,
+    ContextPin,
+    ContextUnpin,
     Denied,
     Unknown,
 }
@@ -36,7 +39,8 @@ internal sealed record ParsedShellCommand(
     string Raw,
     string? Argument = null,
     string? DenialMessage = null,
-    int? Version = null);
+    int? Version = null,
+    string? SecondaryArgument = null);
 
 /// <summary>
 /// Explicit slash-command grammar for Command Center v1. No reflection.
@@ -76,6 +80,27 @@ internal sealed class ShellCommandParser
                 ? string.Join(' ', parts.Skip(1))
                 : null;
             return new ParsedShellCommand(ShellCommandKind.Attach, raw, Argument: arg);
+        }
+
+        if (head is "context")
+        {
+            if (parts.Length == 1 || (parts.Length == 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)))
+            {
+                return new ParsedShellCommand(ShellCommandKind.ContextList, raw);
+            }
+            if (parts.Length >= 4 && parts[1].Equals("pin", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ParsedShellCommand(
+                    ShellCommandKind.ContextPin,
+                    raw,
+                    Argument: parts[2],
+                    SecondaryArgument: string.Join(' ', parts.Skip(3)));
+            }
+            if (parts.Length == 3 && parts[1].Equals("unpin", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ParsedShellCommand(ShellCommandKind.ContextUnpin, raw, Argument: parts[2]);
+            }
+            return Denied(raw, "Usage: /context [list] | /context pin <kind> <target> | /context unpin <pin-id>");
         }
 
         if (head.StartsWith("attach", StringComparison.Ordinal))

@@ -79,6 +79,16 @@ internal sealed class ShellCommandDispatcher(
                         cancellationToken)
                     .ConfigureAwait(false);
 
+            case ShellCommandKind.ContextList:
+                return await ListContextPinsAsync(state, cancellationToken).ConfigureAwait(false);
+
+            case ShellCommandKind.ContextPin:
+                return await PinContextAsync(
+                    state, parsed.Argument, parsed.SecondaryArgument, cancellationToken).ConfigureAwait(false);
+
+            case ShellCommandKind.ContextUnpin:
+                return await UnpinContextAsync(state, parsed.Argument, cancellationToken).ConfigureAwait(false);
+
             case ShellCommandKind.Status:
                 state.Log.Append(SessionLogEntryKind.Command, BuildStatusText(state));
                 return ShellDispatchResult.Continue;
@@ -438,6 +448,100 @@ internal sealed class ShellCommandDispatcher(
         return string.Join(Environment.NewLine, lines);
     }
 
+    private async Task<ShellDispatchResult> ListContextPinsAsync(
+        CommandCenterState state,
+        CancellationToken cancellationToken)
+    {
+        if (!TryRequireSession(state, out Guid sessionId))
+        {
+            return ShellDispatchResult.Continue;
+        }
+        Result<SessionContextPinDto[]> result =
+            await apiClient.GetSessionContextPinsAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            state.Log.Append(SessionLogEntryKind.Error, result.Error.Message);
+            return ShellDispatchResult.Continue;
+        }
+        string[] lines = result.Value is { Length: > 0 } rows
+            ? ["Pinned context:", .. rows.Select(pin =>
+                $"  {pin.Id:D}  {pin.Kind}  {pin.DisplayLabel}  version={pin.ContentVersion ?? "-"}")]
+            : ["No pinned session context."];
+        state.Log.Append(SessionLogEntryKind.Command, string.Join(Environment.NewLine, lines));
+        return ShellDispatchResult.Continue;
+    }
+
+    private async Task<ShellDispatchResult> PinContextAsync(
+        CommandCenterState state,
+        string? kindText,
+        string? targetText,
+        CancellationToken cancellationToken)
+    {
+        if (!TryRequireSession(state, out Guid sessionId))
+        {
+            return ShellDispatchResult.Continue;
+        }
+        if (!Enum.TryParse(kindText, ignoreCase: true, out SessionContextPinKind kind)
+            || string.IsNullOrWhiteSpace(targetText))
+        {
+            state.Log.Append(
+                SessionLogEntryKind.Error,
+                "Kinds: file, directorySnapshot, symbolRange, sessionEntry, attachment, url, diagnostic.");
+            return ShellDispatchResult.Continue;
+        }
+
+        string target = targetText.Trim();
+        string? version = null;
+        if (kind is SessionContextPinKind.File)
+        {
+            string candidate = Path.GetFullPath(target, state.WorkingDirectory);
+            string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(state.WorkingDirectory));
+            if (!candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                || !File.Exists(candidate))
+            {
+                state.Log.Append(SessionLogEntryKind.Error, "File pins must name an existing file inside the workspace.");
+                return ShellDispatchResult.Continue;
+            }
+            target = Path.GetRelativePath(root, candidate);
+            version = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(candidate, cancellationToken)))
+                .ToLowerInvariant();
+        }
+
+        Result<SessionContextPinDto> result = await apiClient.CreateSessionContextPinAsync(
+            sessionId,
+            new CreateSessionContextPinRequest(kind, target, target, version),
+            cancellationToken).ConfigureAwait(false);
+        state.Log.Append(
+            result.IsSuccess ? SessionLogEntryKind.Status : SessionLogEntryKind.Error,
+            result.IsSuccess
+                ? $"Pinned {kind}: {result.Value!.DisplayLabel} ({result.Value.Id:D})"
+                : result.Error.Message);
+        return ShellDispatchResult.Continue;
+    }
+
+    private async Task<ShellDispatchResult> UnpinContextAsync(
+        CommandCenterState state,
+        string? idText,
+        CancellationToken cancellationToken)
+    {
+        if (!TryRequireSession(state, out Guid sessionId))
+        {
+            return ShellDispatchResult.Continue;
+        }
+        if (!Guid.TryParse(idText, out Guid pinId))
+        {
+            state.Log.Append(SessionLogEntryKind.Error, "Usage: /context unpin <pin-id>");
+            return ShellDispatchResult.Continue;
+        }
+        Result result = await apiClient.DeleteSessionContextPinAsync(sessionId, pinId, cancellationToken)
+            .ConfigureAwait(false);
+        state.Log.Append(
+            result.IsSuccess ? SessionLogEntryKind.Status : SessionLogEntryKind.Error,
+            result.IsSuccess ? $"Unpinned context {pinId:D}." : result.Error.Message);
+        return ShellDispatchResult.Continue;
+    }
+
     private async Task<ShellDispatchResult> ResumeSessionAsync(
         CommandCenterState state,
         string? argument,
@@ -560,6 +664,9 @@ internal sealed class ShellCommandDispatcher(
                 "  /attachments          List bound session attachments",
                 "  /attachments add <name> [vN]  Stage a prior attachment as AttachmentReferences",
                 "  /attachments reveal <name> [vN]  Reveal attachment file in OS file manager",
+                "  /context              Inspect persistent session context pins",
+                "  /context pin <kind> <target>  Pin file/directorySnapshot/symbolRange/sessionEntry/attachment/url/diagnostic",
+                "  /context unpin <id>   Remove a context pin",
                 "  /spell list           List spells",
                 "  /ward list            List open wards",
                 "  /ward allow [id]      Allow pending ward (id optional when prompted)",

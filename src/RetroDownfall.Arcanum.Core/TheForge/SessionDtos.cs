@@ -141,3 +141,19 @@ public sealed record SessionAttachmentDto(
     string? LastObservedSourceContentSha256 = null,
     DateTimeOffset? LastObservedSourceWriteTime = null,
     long? LastObservedSourceByteLength = null);
+
+public sealed record CreateSessionContextPinRequest(
+    SessionContextPinKind Kind,
+    string TargetIdentifier,
+    string? DisplayLabel = null,
+    string? ContentVersion = null);
+
+public sealed record SessionContextPinDto(
+    Guid Id,
+    Guid SessionId,
+    SessionContextPinKind Kind,
+    string TargetIdentifier,
+    string DisplayLabel,
+    string? ContentVersion,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);

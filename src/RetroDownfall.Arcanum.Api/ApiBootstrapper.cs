@@ -352,6 +352,7 @@ public static class ApiBootstrapper
         services.AddScoped<IContextCompressionService, ContextCompressionService>();
 
         services.AddScoped<InferenceContextBuilder>();
+        services.AddScoped<SessionContextPinMaterializer>();
 
         services.AddScoped<ToolExecutionPipeline>();
 

@@ -82,7 +82,8 @@ public sealed class WizardIntelligenceProvider(
     IBudgetReservationService? budgetReservationService = null,
     Lazy<ITurnExecutionFacade>? turnCoordinator = null,
     IModelTokenEstimator? modelTokenEstimator = null,
-    IWebResearchProviderCatalog? webResearchProviderCatalog = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
+    IWebResearchProviderCatalog? webResearchProviderCatalog = null,
+    SessionContextPinMaterializer? sessionContextPinMaterializer = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
 {
     private readonly TokenAccountingDependencies _tokenAccounting =
         TokenAccountingDependencies.Create(
@@ -1475,6 +1476,16 @@ public sealed class WizardIntelligenceProvider(
                 logger)
             .ConfigureAwait(false);
 
+        SessionContextPinMaterialization streamPinMaterialization =
+            sessionContextPinMaterializer is not null
+            && (grimoireTurn.SessionId ?? request.SessionId) is { } contextPinSessionId
+                ? await sessionContextPinMaterializer.MaterializeAsync(
+                    contextPinSessionId, request.WorkingDirectory, inferenceToken).ConfigureAwait(false)
+                : new SessionContextPinMaterialization([], 0, 0);
+
+        IReadOnlyList<AIContent> streamAppendedContext =
+            streamAttachmentPrep.RehydratedContents.Concat(streamPinMaterialization.Contents).ToArray();
+
         if (streamAttachmentPrep.ErrorMessage is not null)
         {
             if (!streaming)
@@ -1846,7 +1857,7 @@ public sealed class WizardIntelligenceProvider(
                 ModelCallContext preparationContext = BuildModelCallContext(lease, request);
                 InferenceContextBuilder.AppendContentsToLastMessage(
                     chatMessages,
-                    streamAttachmentPrep.RehydratedContents);
+                    streamAppendedContext);
                 (bool compressed, List<MeAiChatMessage> preparedMessages) =
                     inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
                         new ContextCompressionRequest
@@ -1862,7 +1873,7 @@ public sealed class WizardIntelligenceProvider(
                             DependencySpells = streamResonants,
                             ReservedAnswerTokens = preparationContext.ReservedAnswerTokens,
                             ReservedReasoningTokens = preparationContext.ReservedReasoningTokens,
-                            AppendedContents = streamAttachmentPrep.RehydratedContents,
+                            AppendedContents = streamAppendedContext,
                             SemanticContext = streamSemanticContext,
                             SagaMemories = streamSagaMemories,
                             LexiconEntries = streamLexiconEntries,

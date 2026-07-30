@@ -13,6 +13,24 @@ public sealed class ShellCommandParserTests
     private readonly ShellCommandParser _parser = new();
 
     [Theory]
+    [InlineData("/context", (int)ShellCommandKind.ContextList)]
+    [InlineData("/context list", (int)ShellCommandKind.ContextList)]
+    [InlineData("/context unpin 11111111-1111-1111-1111-111111111111", (int)ShellCommandKind.ContextUnpin)]
+    public void Parses_context_management_commands(string input, int expected)
+    {
+        Assert.Equal((ShellCommandKind)expected, _parser.Parse(input).Kind);
+    }
+
+    [Fact]
+    public void Parses_context_pin_kind_and_target()
+    {
+        ParsedShellCommand parsed = _parser.Parse("/context pin symbolRange src/App.cs:10-20");
+        Assert.Equal(ShellCommandKind.ContextPin, parsed.Kind);
+        Assert.Equal("symbolRange", parsed.Argument);
+        Assert.Equal("src/App.cs:10-20", parsed.SecondaryArgument);
+    }
+
+    [Theory]
     [InlineData("/help", "Help")]
     [InlineData("/exit", "Exit")]
     [InlineData("/quit", "Quit")]

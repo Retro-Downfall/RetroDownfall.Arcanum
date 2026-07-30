@@ -552,6 +552,16 @@ All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDow
 
 **Command Center:** interactive Terminal.Gui workbench (sessions sidebar, transcript, composer, HITL/Ward hard modals). Bare interactive `arcanum` opens it; non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage. Slash allowlist and attach flows: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
 
+Persistent session context is managed with `/context`, `/context pin <kind> <target>`, and
+`/context unpin <pin-id>`. Kinds are `file`, `directorySnapshot`, `symbolRange`
+(`path:start-end`), `sessionEntry`, `attachment`, `url`, and `diagnostic`. Pins survive host and
+session restarts. File pins retain a SHA-256 version and are re-read on every turn; modified,
+deleted, inaccessible, or workspace/symlink-escaping targets are shown to the model with an
+explicit stale/error status rather than silently reusing bytes. Directory snapshots and all other
+pins have deterministic count/byte limits. Materialized values are source-labeled untrusted data,
+participate in normal context/mana estimates, and do not change transcript `Entries.IsPinned`
+compression behavior. Existing `@path` text/image staging remains unchanged and turn-scoped.
+
 **Ephemeral reasoning:** `ask` and `chat` render client-safe reasoning in a dimmed, labeled block separate from the Mage answer; their reasoning buffer has a 64 KiB default cap with an explicit truncation marker, and the live `chat` layout coalesces reasoning on the same refresh cadence as answer tokens. Command Center stops its synthetic Thinking indicator and refreshes the header exactly once on the first token or reasoning frame, coalesces reasoning into one separately bounded in-memory `Reasoning (ephemeral)` entry, and preserves both the source entry and exact line offset of a scrolled multiline viewport. Reasoning is never appended to stdout answer text, mana totals, structured output, or reloaded session history.
 
 

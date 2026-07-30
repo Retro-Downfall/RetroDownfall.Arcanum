@@ -118,6 +118,7 @@ public static class ServiceCollectionExtensions
         // GrimoireRepository requires the attachment store (session fork/purge hooks). Register it
         // here so the CLI chronosync path cannot drift from AddArcanumInfrastructure.
         services.AddScoped<ISessionAttachmentStore, SessionAttachmentStore>();
+        services.AddScoped<ISessionContextPinStore, SessionContextPinStore>();
         services.AddScoped<IAttachmentSourceResolver, AttachmentSourceResolver>();
 
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
@@ -363,6 +364,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
 
         services.AddScoped<ISessionAttachmentStore, SessionAttachmentStore>();
+        services.AddScoped<ISessionContextPinStore, SessionContextPinStore>();
         services.AddScoped<IAttachmentSourceResolver, AttachmentSourceResolver>();
 
         services.AddScoped<IBatchRepository, BatchRepository>();

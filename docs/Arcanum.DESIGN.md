@@ -263,6 +263,9 @@ Single-host failure behavior:
 | POST | `/api/sessions/{id}/rest` | Enqueue Campaign Log consolidation (**202** + `ApiResponse<bool>` when accepted; **503** + `Session.RestQueueFull` when the bounded queue rejects). |
 | GET | `/api/sessions/{id}/stream` | SSE replay + live entry stream. |
 | GET | `/api/sessions/{id}/attachments` | List **bound** session attachments (`ApiResponse<SessionAttachmentDto[]>`; includes the snapshot `RelativePath` for Reveal plus sanitized source provenance/refreshability; never an absolute source path; §10.2.5). |
+| GET | `/api/sessions/{id}/context-pins` | List durable, structured session context pins. |
+| POST | `/api/sessions/{id}/context-pins` | Create or update a context pin by `(session, kind, stable target)`; accepts file, directory snapshot, symbol/range, session entry, attachment, URL, and diagnostic kinds. |
+| DELETE | `/api/sessions/{id}/context-pins/{pinId}` | Remove a durable context pin without changing `Entries.IsPinned`. |
 | POST | `/api/sessions/{id}/fork` | Create an independent branch of a session, optionally truncated at `upToEntryId` (**201**; §11.16.1). |
 | POST | `/api/embeddings/reset` | Truncate embedding tables for RAG dimension-change recovery (requires `?confirm=true`; optional `?scope=all\|entry\|workspaceFile\|saga`, default. |
 | DELETE | `/api/sessions/{id}/entries/{entryId}` | Delete a single entry from a session (**204**). |
@@ -441,7 +444,7 @@ The `/api` and `/v1` groups are protected by `ApiKeyEndpointFilter` (section 11)
 | `serve` | Builds `WebApplication` with slim defaults, configures Kestrel, registers API services, runs the host (§5.3). When `ARCANUM_AUTO_LAUNCHED=1`, suppresses the Listening line and the raw first-run key print (hint: `arcanum key show`); redirects Console.Out/Error to an owner-only bootstrap log under `{ArcanumPaths.GrimoireDirectory}/logs/auto-serve-bootstrap.log`. |
 | `ask` | Single-prompt streaming inference via NDJSON. Resolves cwd, runs Eye of the World and Chronosync (scoped `IChronosyncEngine`), sends `PingRequest` with workspace context, `ChronosyncDelta`, and optional session continuation. Interactive sessions call `IArcanumServeLauncher.EnsureRunningAsync` before the first stream (auto-start gate). |
 | `chat` | Interactive multi-turn REPL with Figlet banner (`ArcanumBannerRenderer`), Mana bar, slash commands (`/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`), per-turn cancellation, inline `@` file staging, and swap-at-end Markdig rendering via `MarkdigSpectreRenderer`. On wide interactive color terminals (≥100×24), generation uses a Spectre `Layout` live dashboard (`ChatLayoutRenderer`) with MCP/model/server sidebars; narrow / redirected / `NO_COLOR` keeps the simple streaming path. Auto-starts `serve` via `IArcanumServeLauncher` when needed. `/mcp reload` is parsed as the verb `/mcp` with the required argument `reload`; the verb alone prints a usage hint. When a **`MemoryCompressionNotice`** status is received, the Mana bar gains a persistent muted **Memory Compressed** suffix until **`/new`**. Direct `arcanum chat` stays frameless Spectre; bare interactive `arcanum` opens the Command Center (below), not this REPL. |
-| *(bare)* | **Command Center v2** (Terminal.Gui 2.4.17): bare interactive `arcanum` with `ARCANUM_NO_COMMAND_CENTER` unset. Fixed viewport — header / left sessions (UpdatedAt desc; overlay picker when narrow) / transcript (follow-tail) / composer / footer. Chat + allowlisted slash via `ShellCommandDispatcher` / `CommandCenterChatRunner` / `SessionWorkspaceService` (no Spectre, no CAF recursion, no `ChatCommand`). Resume loads ≤200 recent entries; `CliSessionManager` last-session restore with stale → New Session. Attachments: `/attach`, `/attachments` (+ `add`/`reveal`), `@path`; host persists when `Arcanum:Features:Attachments` is enabled (§10.2.5 / §16.6). Coalesced streaming (~50ms). Size gate **inside** the host after TG Init (≥80×12 floor); too small or init failure → exit **1**. Bare non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage/help exit **0**. `NO_COLOR` / `ARCANUM_NO_COLOR` select monochrome theme only — they do **not** block the TUI. Auto-serve via `IArcanumServeLauncher`. Types under `Cli/CommandCenter/`. |
+| *(bare)* | **Command Center v2** (Terminal.Gui 2.4.17): bare interactive `arcanum` with `ARCANUM_NO_COMMAND_CENTER` unset. Fixed viewport — header / left sessions (UpdatedAt desc; overlay picker when narrow) / transcript (follow-tail) / composer / footer. Chat + allowlisted slash via `ShellCommandDispatcher` / `CommandCenterChatRunner` / `SessionWorkspaceService` (no Spectre, no CAF recursion, no `ChatCommand`). Resume loads ≤200 recent entries; `CliSessionManager` last-session restore with stale → New Session. Attachments: `/attach`, `/attachments` (+ `add`/`reveal`), `@path`; host persists when `Arcanum:Features:Attachments` is enabled (§10.2.5 / §16.6). Structured persistent context is discoverable through `/help` and managed with `/context`, `/context pin <kind> <target>`, and `/context unpin <id>` (§10.2.6). Coalesced streaming (~50ms). Size gate **inside** the host after TG Init (≥80×12 floor); too small or init failure → exit **1**. Bare non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage/help exit **0**. `NO_COLOR` / `ARCANUM_NO_COLOR` select monochrome theme only — they do **not** block the TUI. Auto-serve via `IArcanumServeLauncher`. Types under `Cli/CommandCenter/`. |
 | `look` | Prints `PatternSnapshot` from Eye of the World (no HTTP dependency). |
 | `doctor` | Environment diagnostics across panels — **System** (version/OS/runtime/TTY/color), **Paths**, **Configuration** (`arcanum.json` parse), **MCP** (`mcp.json`), and a **Tokenizer** smoke test — plus an **API Health** probe (`GET /api/health`) with a code-owned 2-second timeout. A hard-check failure exits **1**; an unreachable or timed-out API is a **non-fatal warning** (still exits 0). Pass `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. No infrastructure services required beyond `IHttpClientFactory`, `ISecretStore`, and `IOptions<ArcanumSettings>`. |
 | `key show` | Prints the stored master API key from the OS credential store (`ISecretStore` → keychain with `security.dat` fallback) to **stderr**. CLI-only, **no HTTP** (§16.3). |
@@ -618,6 +621,7 @@ The Grimoire is the primary persistence authority, but not every durable byte be
 | Budget alert deduplication | `BudgetAlerts` | Unique `(Threshold, date(AlertedAt))`; insert-before-dispatch is the concurrency authority (§22.2). |
 | OpenAI file metadata | `UploadedFiles` | Bytes use a fresh GUID path under `ArcanumPaths.FilesDirectory`, never the client filename (§11.20). |
 | Session attachment metadata | `SessionAttachments` | Raw SQL through `ISessionAttachmentStore`; bytes and lifecycle are in §10.2.5. |
+| Session context pins | `SessionContextPins` | Raw SQL through `ISessionContextPinStore`; durable metadata only. Content is revalidated and materialized from its authoritative source on every turn (§10.2.6). |
 | OpenAI batch metadata | `Batches` | No request-count columns; `GET` derives counts from input/output/error files (§11.21). |
 | Embedding and Saga state | `entry_embeddings`[+`_vec`], `workspace_file_chunks`, `workspace_file_embeddings`[+`_vec`], `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks` | Created by `WeaveSchemaInitializer`; reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
 | Entry pinning | `Entries.IsPinned` | Pinned entries survive read-time compression and remain available to inference. |
@@ -671,7 +675,7 @@ in `SqliteBusyRetry`. They do not open an unrelated second connection to the enc
 
 The compiled model is canonical for EF-tracked entities, while raw-SQL schemas remain outside it.
 The historical EF `InitialCreate` C# migration and model snapshot are intentionally not a complete
-runtime-schema inventory: `SessionAttachments` and inference-accounting tables have no EF entities,
+runtime-schema inventory: `SessionAttachments`, `SessionContextPins`, and inference-accounting tables have no EF entities,
 and additive SQL-backed surfaces do not imply compiled-model regeneration. Do not add a `DbSet` or
 regenerate the compiled model for `BillableOperations.ReasoningTokens`.
 
@@ -680,7 +684,7 @@ index, plus additive tables such as `UnseenServantWatermarks`, `SanctumBreaches`
 `IdempotencyKeys`, `UploadedFiles`, `Batches`, and `BudgetAlerts`, were installed through SQL-backed
 schema work rather than a newly generated EF migration. The snapshot was hand-aligned for
 `TotalCostUsd` and `ForkedFromSessionId` so design-time migration scaffolding does not invent those
-columns again. `SessionAttachments`, `InferenceRuns`, `BillableOperations`, `BudgetReservations`,
+columns again. `SessionAttachments`, `SessionContextPins`, `InferenceRuns`, `BillableOperations`, `BudgetReservations`,
 and `CostAdjustments` remain intentionally absent from both EF tracking and the compiled model.
 
 `apply_patch` deliberately crosses the filesystem/Grimoire boundary without claiming distributed
@@ -1280,6 +1284,46 @@ Deleting or reinstalling only `arcanum.db` leaves orphan attachment bytes. A ful
 reset, or uninstall must copy/remove `~/.config/arcanum/attachments` with the database. This tree is
 distinct from `/v1/files`, whose opaque bytes use `files/{guid}`. Configuration authority remains
 the Compendium reference linked from §3.4.
+
+### 10.2.6 Structured mentions and durable context pins
+
+`SessionContextPinKind` is the closed structured-mention vocabulary: `File`,
+`DirectorySnapshot`, `SymbolRange`, `SessionEntry`, `Attachment`, `Url`, and `Diagnostic`.
+The existing free-text `@path` staging contract remains backward compatible and turn-scoped; pins
+are an additive, explicit session facility. Command Center exposes the vocabulary in `/help` and
+provides `/context [list]`, `/context pin <kind> <target>`, and `/context unpin <pin-id>`.
+
+The raw-SQL `SessionContextPins` table stores the session id, kind, stable target identifier,
+display label, optional content hash/version, and created/updated timestamps. The unique key is
+`(SessionId, Kind, TargetIdentifier)`, so pinning an existing target updates metadata without
+duplicating it. The foreign key cascades on session deletion. This table is intentionally absent
+from the compiled EF model and is installed by
+`20260730010000_AddSessionContextPins.sql`; `ISessionContextPinStore` owns access.
+
+Materialization happens afresh before every bound inference turn:
+
+- File, directory, and symbol/range paths are resolved relative to `PingRequest.WorkingDirectory`.
+  Lexical workspace containment and final symlink-target containment both fail closed. Missing
+  sources produce a labeled `Missing` block. A file whose SHA-256 differs from the optional pinned
+  version produces `Modified` and injects only the current bytes with the new hash disclosed; old
+  bytes are never cached in the pin row.
+- Directory snapshots are deterministic ordinal path/size listings, never full recursive content,
+  and stop at 64 files. Symbol ranges require `path:start-end` and stop at 2,000 lines.
+- Entry targets must parse as an entry id belonging to the same session. Attachment targets accept
+  an attachment id or logical key and must resolve to a bound text attachment in the same session.
+  Diagnostic text is stored as the stable target itself. URL metadata may be pinned and listed, but
+  implicit materialization reports `Unsupported`; URL retrieval must enter through guarded web
+  browsing and never an unrestricted `HttpClient`.
+- Each pin is limited to 64 KiB, each turn to 32 pins and 256 KiB. Truncation and omitted-pin counts
+  are explicit. These appended `TextContent` parts flow through the normal model-aware context/mana
+  estimator, so their tokens are visible without a parallel estimate.
+
+Every materialized item is surrounded by an adaptive backtick fence and explicit source kind,
+label, stable id, freshness status, and diagnostic fields inside an
+`UNTRUSTED SESSION CONTEXT DATA` envelope. Models must treat these bytes as data, never
+instructions. A single failure becomes an error/status block and cannot mutate or corrupt the
+session. `Entries.IsPinned` remains the independent transcript-compression contract: context pins
+neither set it nor change which historical entries compression retains.
 
 ### 10.3 Registration lifetimes
 

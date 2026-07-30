@@ -11,7 +11,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
 {
 
-    private const int ExpectedMigrationCount = 7;
+    private const int ExpectedMigrationCount = 8;
 
     private readonly GrimoireFixture _fixture;
 
@@ -61,6 +61,17 @@ public sealed class GrimoireSqlSchemaMigratorTests : IAsyncLifetime
             static entityType => string.Equals(
                 entityType.GetTableName(),
                 "BillableOperations",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CompiledEfModel_DoesNotMapRawSqlSessionContextPinsTable()
+    {
+        Assert.DoesNotContain(
+            ArcanumDbContextModel.Instance.GetEntityTypes(),
+            static entityType => string.Equals(
+                entityType.GetTableName(),
+                "SessionContextPins",
                 StringComparison.Ordinal));
     }
 

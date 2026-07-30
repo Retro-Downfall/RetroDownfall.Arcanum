@@ -231,6 +231,95 @@ internal static class SessionEndpoints
             })
         .WithName("GetSessionAttachments");
 
+        apiGroup.MapGet(
+            "/sessions/{id:guid}/context-pins",
+            async (Guid id, ISessionRepository repo, ISessionContextPinStore store, HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+                if (await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false) is null)
+                {
+                    return Results.Json(
+                        ApiResponse<SessionContextPinDto[]>.FromResult(
+                            Result<SessionContextPinDto[]>.Failure(
+                                new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionContextPinDtoArray,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                IReadOnlyList<SessionContextPinRecord> pins =
+                    await store.ListAsync(id, ctx.RequestAborted).ConfigureAwait(false);
+                return Results.Ok(ApiResponse<SessionContextPinDto[]>.FromResult(
+                    Result<SessionContextPinDto[]>.Success(pins.Select(ToContextPinDto).ToArray()),
+                    traceId));
+            })
+        .WithName("GetSessionContextPins");
+
+        apiGroup.MapPost(
+            "/sessions/{id:guid}/context-pins",
+            async (
+                Guid id,
+                CreateSessionContextPinRequest? request,
+                ISessionRepository repo,
+                ISessionContextPinStore store,
+                HttpContext ctx) =>
+            {
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+                if (request is null || string.IsNullOrWhiteSpace(request.TargetIdentifier))
+                {
+                    return Results.BadRequest(ApiResponse<SessionContextPinDto>.FromResult(
+                        Result<SessionContextPinDto>.Failure(
+                            new Error(ErrorCodes.Validation.InvalidBody, "A context pin target is required.")),
+                        traceId));
+                }
+
+                if (await repo.GetByIdAsync(id, ctx.RequestAborted).ConfigureAwait(false) is null)
+                {
+                    return Results.Json(
+                        ApiResponse<SessionContextPinDto>.FromResult(
+                            Result<SessionContextPinDto>.Failure(
+                                new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionContextPinDto,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                string target = request.TargetIdentifier.Trim();
+                if (target.Length > 16_384)
+                {
+                    return Results.BadRequest(ApiResponse<SessionContextPinDto>.FromResult(
+                        Result<SessionContextPinDto>.Failure(
+                            new Error(ErrorCodes.Validation.InvalidBody, "Context pin target is too long.")),
+                        traceId));
+                }
+
+                string label = string.IsNullOrWhiteSpace(request.DisplayLabel)
+                    ? target.Length <= 160 ? target : target[..157] + "..."
+                    : request.DisplayLabel.Trim();
+                if (label.Length > 256)
+                {
+                    return Results.BadRequest(ApiResponse<SessionContextPinDto>.FromResult(
+                        Result<SessionContextPinDto>.Failure(
+                            new Error(ErrorCodes.Validation.InvalidBody, "Context pin label is too long.")),
+                        traceId));
+                }
+
+                SessionContextPinRecord pin = await store.UpsertAsync(
+                    id, request.Kind, target, label, request.ContentVersion, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+                return Results.Ok(ApiResponse<SessionContextPinDto>.FromResult(
+                    Result<SessionContextPinDto>.Success(ToContextPinDto(pin)), traceId));
+            })
+        .WithName("CreateSessionContextPin");
+
+        apiGroup.MapDelete(
+            "/sessions/{id:guid}/context-pins/{pinId:guid}",
+            async (Guid id, Guid pinId, ISessionContextPinStore store, HttpContext ctx) =>
+                await store.DeleteAsync(id, pinId, ctx.RequestAborted).ConfigureAwait(false)
+                    ? Results.NoContent()
+                    : Results.NotFound())
+        .WithName("DeleteSessionContextPin");
+
         apiGroup.MapPost(
             "/sessions/{id:guid}/entries",
             async (Guid id, AppendEntryRequest? request, ISessionRepository repo, SessionEventHub eventHub, HttpContext ctx) =>
@@ -813,6 +902,10 @@ internal static class SessionEndpoints
 
         return apiGroup;
     }
+
+    private static SessionContextPinDto ToContextPinDto(SessionContextPinRecord pin) => new(
+        pin.Id, pin.SessionId, pin.Kind, pin.TargetIdentifier, pin.DisplayLabel,
+        pin.ContentVersion, pin.CreatedAt, pin.UpdatedAt);
 
     private static async Task PumpSessionLiveAsync(
         Guid sessionId,
