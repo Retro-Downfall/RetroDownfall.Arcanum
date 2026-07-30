@@ -206,9 +206,9 @@ public sealed class AtomicFileTests : IDisposable
             CancellationToken.None,
             beforeReplace: () =>
             {
-                File.Delete(tempPath);
-
-                File.WriteAllText(tempPath, "external temp replacement");
+                // Overwrite-rename from a staged file: a deterministic fresh (dev, ino) identity.
+                // In-place delete+create recycles the inode on ext4/tmpfs, hiding the swap.
+                WriteExternalReplacementWithFreshIdentity(tempPath, "external temp replacement");
 
                 return false;
             });
@@ -245,11 +245,9 @@ public sealed class AtomicFileTests : IDisposable
                             _root,
                             ".arcanum-bak-*"));
 
-                    File.Delete(backup);
-
-                    File.WriteAllText(
-                        backup,
-                        "external backup replacement");
+                    // Overwrite-rename from a staged file: a deterministic fresh (dev, ino)
+                    // identity. In-place delete+create recycles the inode on ext4/tmpfs.
+                    WriteExternalReplacementWithFreshIdentity(backup, "external backup replacement");
 
                     throw new InvalidOperationException(
                         "stop before move");
@@ -938,6 +936,17 @@ public sealed class AtomicFileTests : IDisposable
             FileHandleIdentityInterop
                 .TryGetPathMetadataForTests = seam;
         }
+    }
+
+    private static void WriteExternalReplacementWithFreshIdentity(string path, string contents)
+    {
+        string staging = Path.Combine(
+            Path.GetDirectoryName(Path.GetFullPath(path))!,
+            $".identity-swap-{Guid.NewGuid():N}");
+
+        File.WriteAllText(staging, contents);
+
+        File.Move(staging, path, overwrite: true);
     }
 
     private static async Task WriteTextAsync(Stream stream, string text, CancellationToken cancellationToken)

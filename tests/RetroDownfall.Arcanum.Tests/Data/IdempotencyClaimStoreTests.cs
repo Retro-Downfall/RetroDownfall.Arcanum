@@ -379,8 +379,10 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
 
         try
         {
+            // Generous orchestration budget: the collation callback can be delayed well past 5s
+            // on coverage-instrumented CI runners under parallel load.
             await losingReadEntered.Task.WaitAsync(
-                TimeSpan.FromSeconds(5));
+                TimeSpan.FromSeconds(30));
 
             IdempotencyClaimAcquireResult winner =
                 await winningStore.TryAcquireAsync(
@@ -403,7 +405,7 @@ public sealed class IdempotencyClaimStoreTests : IAsyncLifetime
 
         IdempotencyClaimAcquireResult loser =
             await losingAcquire.WaitAsync(
-                TimeSpan.FromSeconds(5));
+                TimeSpan.FromSeconds(30));
 
         Assert.False(loser.Conflict);
         Assert.False(loser.Acquired);

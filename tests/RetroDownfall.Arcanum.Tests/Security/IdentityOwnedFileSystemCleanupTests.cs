@@ -27,6 +27,17 @@ public sealed class IdentityOwnedFileSystemCleanupTests : IDisposable
         }
     }
 
+    private static void WriteExternalReplacementWithFreshIdentity(string path)
+    {
+        string staging = Path.Combine(
+            Path.GetDirectoryName(Path.GetFullPath(path))!,
+            $".identity-swap-{Guid.NewGuid():N}");
+
+        File.WriteAllText(staging, "external replacement");
+
+        File.Move(staging, path, overwrite: true);
+    }
+
     [Fact]
     public void TryCapturePath_rejects_blank_unavailable_and_wrong_kind()
     {
@@ -313,11 +324,10 @@ public sealed class IdentityOwnedFileSystemCleanupTests : IDisposable
         FileHandleIdentityInterop
             .TryGetPathMetadataNoFollowForTests = _ =>
             {
-                File.Delete(file);
-
-                File.WriteAllText(
-                    file,
-                    "external replacement");
+                // Swap via overwrite-rename from a staged file so the replacement deterministically
+                // carries a fresh (dev, ino) identity — ext4/tmpfs immediately recycle the inode of
+                // an in-place delete+create, which would make the swap invisible to the cleanup.
+                WriteExternalReplacementWithFreshIdentity(file);
 
                 FileHandleIdentityInterop
                     .TryGetPathMetadataNoFollowForTests = null;
@@ -445,10 +455,7 @@ public sealed class IdentityOwnedFileSystemCleanupTests : IDisposable
                             FileSystemObjectKind.RegularFile,
                     })
                 {
-                    File.Delete(path);
-                    File.WriteAllText(
-                        path,
-                        "external replacement");
+                    WriteExternalReplacementWithFreshIdentity(path);
                     swapped = true;
 
                     return artifact.Metadata;

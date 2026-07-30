@@ -130,9 +130,13 @@ public sealed class ChildProcessBoundaryBehaviorTests
                     FileSystemObjectKind.RegularFile,
                     out IdentityOwnedFileSystemArtifact artifact));
 
-            File.Delete(file);
+            // Overwrite-rename from a staged file: a deterministic fresh (dev, ino) identity.
+            // In-place delete+create recycles the inode on ext4/tmpfs, hiding the swap.
+            string staging = Path.Combine(root, $".identity-swap-{Guid.NewGuid():N}");
 
-            File.WriteAllText(file, "external replacement");
+            File.WriteAllText(staging, "external replacement");
+
+            File.Move(staging, file, overwrite: true);
 
             bool cleaned =
                 ChildProcessFilesystemJail.CleanupTempPaths(
@@ -170,13 +174,19 @@ public sealed class ChildProcessBoundaryBehaviorTests
                     FileSystemObjectKind.Directory,
                     out IdentityOwnedFileSystemArtifact artifact));
 
-            Directory.Delete(directory);
-
-            Directory.CreateDirectory(directory);
+            // Stage the replacement directory alongside the original, then rename it into place:
+            // the staged directory keeps its own fresh (dev, ino) identity, whereas an in-place
+            // delete+create recycles the inode on ext4/tmpfs and hides the swap from the cleanup.
+            string stagingDirectory = Directory.CreateDirectory(
+                Path.Combine(root, $".identity-swap-{Guid.NewGuid():N}")).FullName;
 
             File.WriteAllText(
-                Path.Combine(directory, "external.txt"),
+                Path.Combine(stagingDirectory, "external.txt"),
                 "external replacement");
+
+            Directory.Delete(directory);
+
+            Directory.Move(stagingDirectory, directory);
 
             bool cleaned =
                 ChildProcessFilesystemJail.CleanupTempPaths(
