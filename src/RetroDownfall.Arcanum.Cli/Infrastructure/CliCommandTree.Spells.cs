@@ -1,6 +1,8 @@
 using System.CommandLine;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Commands.TheForge;
+using RetroDownfall.Arcanum.Cli.Services;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -224,7 +226,11 @@ internal static partial class CliCommandTree
     {
         CampaignCommands handler = sp.GetRequiredService<CampaignCommands>();
         CampaignCodexCommands codexHandler = sp.GetRequiredService<CampaignCodexCommands>();
-        Command campaign = new("campaign", "Campaign registry (requires arcanum serve).");
+        ContextCommands contextHandler = sp.GetRequiredService<ContextCommands>();
+
+        Command campaign = new(
+            "campaign",
+            "Persistent project containers for sessions, spells, prompts, Codex, and Sanctum; filesystem access and indexing remain Workspace responsibilities.");
 
         Command list = new("list", "List registered campaigns.");
         Option<string?> listType = new("--type");
@@ -243,6 +249,27 @@ internal static partial class CliCommandTree
         get.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Get(pr.GetValue(getId), ct).ConfigureAwait(false));
         campaign.Add(get);
+
+        Command use = new(
+            "use",
+            "Select a Campaign in the shared persistent CLI context.");
+
+        Argument<string> useIdentifier = new("campaign")
+        {
+
+            Description = "Campaign GUID or name.",
+
+        };
+
+        use.Add(useIdentifier);
+
+        use.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await contextHandler.Use(
+                CliContextScope.Campaign,
+                pr.GetValue(useIdentifier)!,
+                ct).ConfigureAwait(false));
+
+        campaign.Add(use);
 
         Command create = new("create", "Register a new campaign.");
         Option<string?> createName = new("--name");

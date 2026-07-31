@@ -15,7 +15,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 ## Running Arcanum under a debugger
 
 - **Host (`arcanum serve`)**: `ServeCommand.Run()` (`Program.cs`) → `WebApplication.CreateSlimBuilder()` (`ServeCommand`) → `AddArcanumApiServices()` (`ApiBootstrapper`) → `MapArcanumEndpoints()` → `RunAsync()`.
-- **CLI verbs** (`ask`, `chat`, `session`, `look`, `lore`, `daemon`, `key`, `config`, `serve`): request/response cycles through `ArcanumApiClient.SendRequestAsync()`; session SSE uses `WatchSessionAsync()`. Inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `session` lifecycle commands must remain HTTP-only; debug selection in `CliResourceCatalog`, command routing in `SessionCommands`, and feature-gate failures at `SessionEndpoints`. `config` prefers `/api/config` but deliberately enters labelled local bootstrap through `ConfigurationCommandService` on unavailability. `data encryption ...` is intentionally local: `DataEncryptionCommands` initializes the Grimoire and calls `BlobEncryptionLifecycleService`.
+- **CLI verbs** (`ask`, `chat`, `session`, `workspace`, `look`, `lore`, `daemon`, `key`, `config`, `serve`): request/response cycles through `ArcanumApiClient.SendRequestAsync()`; session SSE uses `WatchSessionAsync()`. Inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `session` lifecycle commands must remain HTTP-only; debug selection in `CliResourceCatalog`, command routing in `SessionCommands`, and feature-gate failures at `SessionEndpoints`. Workspace `tree`/`info`/`read`/`search`/index inspection must also remain HTTP-only; start in `WorkspaceCommands`, then its typed `ArcanumApiClient` method, and finally the `/api/workspaces` endpoint. `config` prefers `/api/config` but deliberately enters labelled local bootstrap through `ConfigurationCommandService` on unavailability. `data encryption ...` is intentionally local: `DataEncryptionCommands` initializes the Grimoire and calls `BlobEncryptionLifecycleService`.
 - **CLI process contract**: start at `CliApplicationFactory.RunAsync()` → `CliCommandTree.Build()` →
   `CliInvocationContext.Push()`. Payload/diagnostic routing is `ConsoleDispatcher`; destructive
   approval is `ConfirmationPrompt`; final failure categorization is `CliFailureMapper`.
@@ -35,6 +35,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 | `SessionEntryPersistence` / `GrimoireRepository` (`Infrastructure/Repositories/`) | Write-lock (`SessionWriteLock.AcquireAsync()`); busy retry (`SqliteBusyRetry`); append (`AppendMandatoryToolInteractionAsync()`); summarization (`GetUnsummarizedEntriesAsync()`); rollup (`CampaignBackedWorkspaceRegistry`). |
 | `CampaignBackedWorkspaceRegistry` / `CampaignRepository` | Registry capacity (`Campaign.MaxReached`); workspace resolution; typed `ICampaignRepository.AddAsync()` return. |
 | `WorkspaceIndexingService` / `WorkspaceFileWatcher` / `WorkspaceCodeChunker` | Watcher admission (`EnsureWatcher()`), bounded coalescing (`QueueWatcherChange()`), overflow recovery (`HandleWatcherError()` → `ReconcileWorkspaceAsync()`), final-state incremental processing (`ProcessPendingWatcherEventsAsync()`), path/handle identity revalidation (`IndexFileAsync()`), stable chunk/embedding reuse, and watcher disposal on workspace unregister or host stop. Inspect `/api/workspaces/{id}/files/index/status` for `Watching`, `Degraded`, `Overflowed`, `Reconciling`, last event, and last successful index. |
+| `WorkspaceCommands` / `ArcanumApiClient` / `CliContextService` | Complete workspace CLI routing; explicit/saved/current-directory selector precedence; independent Workspace/Campaign containment; server-host path copy; registration guidance; typed `/api/workspaces` calls. Confirm no direct file I/O enters the CLI command handler. |
 | `McpConnectionManager` / `TrustedMcpWorkspaceStore` (`Infrastructure/Mcp/`) | Digest-bound admission (`IsApprovedDigestAsync()` / `TrustAsync()`); bounded config load (`SecureFileReader` cap `MaxMcpConfigBytes`); lifecycle (`StartAsync()` / `RestartAsync()`); retirement/replacement ordering; identity-owned cleanup. |
 | `AtomicFile` / `SecureFileReader` / `PhysicalFileSystemBrowser` (`Infrastructure/Storage/` / `Security/`) | Handle-bound open (`O_NOFOLLOW` / `NONBLOCK` / `O_CLOEXEC`); identity revalidation (`FileHandleIdentity`); bounded read (`ArrayPool<byte>`); rollback (backup fingerprint verification); identity-owned temp/backup deletion. |
 | `BlobEncryptionLifecycleService` / `BlobEncryptionFileProcessor` / `BlobEncryptionMetadataStore` | Candidate inventory; metadata-versus-envelope classification; pre/post plaintext length and SHA-256 verification; atomic replacement; replace-before-metadata retry; bounded worker/throttle; durable checkpoints; retained-key retirement gate. Use `arcanum operation show <id>` for safe progress and `arcanum data encryption verify` for aggregate reconciliation categories. |
@@ -93,6 +94,12 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     creates one next version; `TryBuildRefreshedContentsAsync()` consumes inject-once only after
     materialization; and the User extras follow every tool result in the round. Native streams emit
     `attachmentRefreshed` after `toolResult`; OpenAI streams omit it.
+13. **Trace Workspace/Campaign CLI mapping:** run `arcanum workspace current` inside a registered
+    root, break in `WorkspaceCommands.Current()`, and compare its deepest containing Workspace and
+    Campaign independently. Continue through `ResolveWorkspaceAsync()` for a file/search/index
+    command and verify the final operation is an authenticated `ArcanumApiClient` request. For a
+    remote-host thought experiment, use a path that is valid only on the server and confirm help and
+    output call it a server path; never add `File.*` or `Directory.*` content access to the CLI.
 
 ## Related documents
 

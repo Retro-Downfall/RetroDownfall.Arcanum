@@ -557,6 +557,185 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<Result<WorkspaceInfo>> GetWorkspaceAsync(
+        string workspaceId,
+        CancellationToken cancellationToken = default)
+    {
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            $"api/workspaces/{Uri.EscapeDataString(workspaceId)}",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseWorkspaceInfo,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<WorkspaceInfo>> RegisterWorkspaceAsync(
+        CreateWorkspaceRequest request,
+        CancellationToken cancellationToken = default)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.CreateWorkspaceRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/workspaces",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseWorkspaceInfo,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result> UnregisterWorkspaceAsync(
+        string workspaceId,
+        CancellationToken cancellationToken = default) =>
+        await DeleteReturningNoContentAsync(
+            $"api/workspaces/{Uri.EscapeDataString(workspaceId)}",
+            cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<FileListResult>> ListWorkspaceFilesAsync(
+        string workspaceId,
+        string? relativePath,
+        bool recursive,
+        CancellationToken cancellationToken = default)
+    {
+
+        string path = BuildQueryString(
+            $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files",
+            ("relativePath", relativePath),
+            ("recursive", recursive ? "true" : "false"));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseFileListResult,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<FileEntry>> GetWorkspaceFileInfoAsync(
+        string workspaceId,
+        string relativePath,
+        CancellationToken cancellationToken = default)
+    {
+
+        string path = BuildQueryString(
+            $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/info",
+            ("relativePath", relativePath));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseFileEntry,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<FileReadResult>> ReadWorkspaceFileAsync(
+        string workspaceId,
+        string relativePath,
+        CancellationToken cancellationToken = default)
+    {
+
+        string path = BuildQueryString(
+            $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/contents",
+            ("relativePath", relativePath));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseFileReadResult,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<WorkspaceSearchResult[]>> SearchWorkspaceAsync(
+        string workspaceId,
+        WorkspaceSemanticSearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.WorkspaceSemanticSearchRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/divine",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseWorkspaceSearchResultArray,
+            static envelope => Result<WorkspaceSearchResult[]>.Success(
+                envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<bool>> IndexWorkspaceAsync(
+        string workspaceId,
+        CancellationToken cancellationToken = default)
+    {
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/index",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<WorkspaceIndexStatusDto>> GetWorkspaceIndexStatusAsync(
+        string workspaceId,
+        CancellationToken cancellationToken = default)
+    {
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/index/status",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseWorkspaceIndexStatusDto,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<WorkspaceFileChunkPage>> GetWorkspaceChunksAsync(
+        string workspaceId,
+        string? relativePath,
+        int? limit,
+        int? offset,
+        CancellationToken cancellationToken = default)
+    {
+
+        string path = BuildQueryString(
+            $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/chunks",
+            ("relativePath", relativePath),
+            ("limit", limit?.ToString(CultureInfo.InvariantCulture)),
+            ("offset", offset?.ToString(CultureInfo.InvariantCulture)));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseWorkspaceFileChunkPage,
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
     public async Task<Result<string>> ReloadMcpAsync(OptionalWorkspaceRequest request, CancellationToken cancellationToken)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.OptionalWorkspaceRequest);

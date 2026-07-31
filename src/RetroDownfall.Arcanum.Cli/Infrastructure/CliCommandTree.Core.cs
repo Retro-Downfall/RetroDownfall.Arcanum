@@ -172,19 +172,289 @@ internal static partial class CliCommandTree
 
     private static Command BuildWorkspace(IServiceProvider sp)
     {
+
         WorkspaceCommands handler = sp.GetRequiredService<WorkspaceCommands>();
-        Command workspace = new("workspace", "Registered workspace discovery (requires arcanum serve).");
+
+        Command workspace = new(
+            "workspace",
+            "Workspace = registered filesystem access/indexing boundary. Campaign = persistent project container with sessions, spells, prompts, Codex, and Sanctum. Paths are resolved on the server host.");
+
         Command list = new("list", "List registered workspaces.");
+
         list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
-        Command get = new("get", "Show a workspace.");
-        Argument<string?> identifier = OptionalResourceArgument("workspace", "workspace ID or name");
-        get.Add(identifier);
+
+        Command current = new(
+            "current",
+            "Map the client current directory to registered server Workspace and Campaign resources.");
+
+        current.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Current(ct).ConfigureAwait(false));
+
+        Command register = new(
+            "register",
+            "Register a server-host path; omit path to register this directory when client and server share a host.");
+
+        Argument<string?> registerPath = new("path")
+        {
+
+            Arity = ArgumentArity.ZeroOrOne,
+
+            Description = "Server-host filesystem path; defaults to the client current directory for the bundled local server.",
+
+        };
+
+        Option<string?> registerName = new("--name")
+        {
+
+            Description = "Workspace display name; defaults to the path's final segment.",
+
+        };
+
+        Option<string?> registerType = new("--type")
+        {
+
+            Description = "Workspace type: spell, campaign, data, or custom (default).",
+
+        };
+
+        register.Add(registerPath);
+
+        register.Add(registerName);
+
+        register.Add(registerType);
+
+        register.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Register(
+                    pr.GetValue(registerPath),
+                    pr.GetValue(registerName),
+                    pr.GetValue(registerType),
+                    ct).ConfigureAwait(false));
+
+        Command show = new("show", "Show one registered workspace and its server-host path.");
+
+        Argument<string?> showIdentifier = OptionalResourceArgument(
+            "workspace",
+            "workspace ID, name, or server path");
+
+        show.Add(showIdentifier);
+
+        show.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Show(pr.GetValue(showIdentifier), ct).ConfigureAwait(false));
+
+        Command get = new("get", "Compatibility alias for 'workspace show'.");
+
+        Argument<string?> getIdentifier = OptionalResourceArgument(
+            "workspace",
+            "workspace ID, name, or server path");
+
+        get.Add(getIdentifier);
+
         get.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
+            await handler.Show(pr.GetValue(getIdentifier), ct).ConfigureAwait(false));
+
+        Command tree = new("tree", "List the server-side workspace tree recursively.");
+
+        Argument<string?> treeWorkspace = OptionalResourceArgument(
+            "workspace",
+            "workspace ID, name, or server path");
+
+        Option<string?> treePath = new("--path")
+        {
+
+            Description = "Optional relative path inside the selected workspace.",
+
+        };
+
+        tree.Add(treeWorkspace);
+
+        tree.Add(treePath);
+
+        tree.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Tree(
+                pr.GetValue(treeWorkspace),
+                pr.GetValue(treePath),
+                ct).ConfigureAwait(false));
+
+        Command info = new("info", "Inspect a path through the server workspace API.");
+
+        Argument<string> infoPath = new("path")
+        {
+
+            Description = "Relative path within the selected server workspace.",
+
+        };
+
+        Option<string?> infoWorkspace = WorkspaceOption();
+
+        info.Add(infoPath);
+
+        info.Add(infoWorkspace);
+
+        info.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Info(
+                pr.GetValue(infoPath)!,
+                pr.GetValue(infoWorkspace),
+                ct).ConfigureAwait(false));
+
+        Command read = new("read", "Read a file through the bounded server workspace API.");
+
+        Argument<string> readPath = new("path")
+        {
+
+            Description = "Relative file path within the selected server workspace.",
+
+        };
+
+        Option<string?> readWorkspace = WorkspaceOption();
+
+        read.Add(readPath);
+
+        read.Add(readWorkspace);
+
+        read.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Read(
+                pr.GetValue(readPath)!,
+                pr.GetValue(readWorkspace),
+                ct).ConfigureAwait(false));
+
+        Command search = new("search", "Semantically search the selected workspace's server-side index.");
+
+        Argument<string> searchQuery = new("query")
+        {
+
+            Description = "Semantic search query.",
+
+        };
+
+        Option<string?> searchWorkspace = WorkspaceOption();
+
+        Option<int?> searchLimit = new("--limit")
+        {
+
+            Description = "Optional bounded result count.",
+
+        };
+
+        search.Add(searchQuery);
+
+        search.Add(searchWorkspace);
+
+        search.Add(searchLimit);
+
+        search.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Search(
+                pr.GetValue(searchQuery)!,
+                pr.GetValue(searchWorkspace),
+                pr.GetValue(searchLimit),
+                ct).ConfigureAwait(false));
+
+        Command index = new("index", "Request a server-side workspace re-index.");
+
+        Argument<string?> indexWorkspace = OptionalResourceArgument(
+            "workspace",
+            "workspace ID, name, or server path");
+
+        index.Add(indexWorkspace);
+
+        index.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Index(pr.GetValue(indexWorkspace), ct).ConfigureAwait(false));
+
+        Command indexStatus = new("index-status", "Show server-side workspace indexing status.");
+
+        Argument<string?> statusWorkspace = OptionalResourceArgument(
+            "workspace",
+            "workspace ID, name, or server path");
+
+        indexStatus.Add(statusWorkspace);
+
+        indexStatus.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.IndexStatus(pr.GetValue(statusWorkspace), ct).ConfigureAwait(false));
+
+        Command chunks = new("chunks", "Inspect bounded previews of server-side indexed chunks.");
+
+        Argument<string?> chunksWorkspace = OptionalResourceArgument(
+            "workspace",
+            "workspace ID, name, or server path");
+
+        Option<string?> chunksPath = new("--path")
+        {
+
+            Description = "Optional relative-path filter.",
+
+        };
+
+        Option<int?> chunksLimit = new("--limit");
+
+        Option<int?> chunksOffset = new("--offset");
+
+        chunks.Add(chunksWorkspace);
+
+        chunks.Add(chunksPath);
+
+        chunks.Add(chunksLimit);
+
+        chunks.Add(chunksOffset);
+
+        chunks.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Chunks(
+                pr.GetValue(chunksWorkspace),
+                pr.GetValue(chunksPath),
+                pr.GetValue(chunksLimit),
+                pr.GetValue(chunksOffset),
+                ct).ConfigureAwait(false));
+
+        Command unregister = new("unregister", "Remove a workspace registration without deleting files.");
+
+        Argument<string?> unregisterWorkspace = OptionalResourceArgument(
+            "workspace",
+            "workspace ID, name, or server path");
+
+        unregister.Add(unregisterWorkspace);
+
+        unregister.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Unregister(
+                pr.GetValue(unregisterWorkspace),
+                ct).ConfigureAwait(false));
+
         workspace.Add(list);
+
+        workspace.Add(current);
+
+        workspace.Add(register);
+
+        workspace.Add(show);
+
         workspace.Add(get);
+
+        workspace.Add(tree);
+
+        workspace.Add(info);
+
+        workspace.Add(read);
+
+        workspace.Add(search);
+
+        workspace.Add(index);
+
+        workspace.Add(indexStatus);
+
+        workspace.Add(chunks);
+
+        workspace.Add(unregister);
+
         return workspace;
+
     }
+
+    private static Option<string?> WorkspaceOption() =>
+        new("--workspace")
+        {
+
+            Description = "Workspace ID, name, or server path; defaults to saved context or current-path detection.",
+
+        };
 
     private static Command BuildMcp(IServiceProvider sp)
     {

@@ -104,15 +104,7 @@ public sealed class CliInferenceContextResolver(
 
             }
 
-            if (!CliContextService.TryNormalizePath(
-                    selected!.Path,
-                    out explicitWorkspacePath))
-            {
-
-                return CliInferenceContextResult.Failure(
-                    "The selected workspace path is not valid on this local host.");
-
-            }
+            explicitWorkspacePath = selected!.Path.Trim();
 
         }
 
@@ -165,6 +157,7 @@ public sealed class CliInferenceContextResolver(
                 active,
                 validation.DetectedCampaign?.Id,
                 validation.DetectedCampaign?.Path,
+                validation.DetectedWorkspace?.Path,
                 settings.Value.DefaultModel,
                 request.NoContext));
 

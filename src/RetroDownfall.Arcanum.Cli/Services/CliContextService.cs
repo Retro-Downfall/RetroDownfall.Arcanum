@@ -129,26 +129,18 @@ public sealed class CliContextService(
 
                 }
 
-                if (!TryNormalizePath(
-                        workspaceValue!.Path,
-                        out string? normalizedWorkspacePath))
-                {
-
-                    return CliContextMutationResult.Failure(
-                        "The selected workspace path is not valid on this local host.");
-
-                }
+                WorkspaceInfo selectedWorkspace = workspaceValue!;
 
                 document = document with
                 {
-                    WorkspaceId = workspaceValue.Id,
-                    WorkspacePath = normalizedWorkspacePath,
+                    WorkspaceId = selectedWorkspace.Id,
+                    WorkspacePath = selectedWorkspace.Path.Trim(),
                 };
 
                 store.Save(document);
 
                 return CliContextMutationResult.Success(
-                    $"Using workspace {workspaceValue.Name} ({workspaceValue.Path}).");
+                    $"Using workspace {selectedWorkspace.Name} ({selectedWorkspace.Path}).");
 
             case CliContextScope.Model:
 
@@ -265,6 +257,7 @@ public sealed class CliContextService(
                 validation.Active,
                 validation.DetectedCampaign?.Id,
                 validation.DetectedCampaign?.Path,
+                validation.DetectedWorkspace?.Path,
                 settings.Value.DefaultModel,
                 noContext));
 
@@ -429,12 +422,20 @@ public sealed class CliContextService(
             .OrderByDescending(item => FullPathLength(item.Path))
             .FirstOrDefault();
 
+        WorkspaceInfo? detectedWorkspace = workspaces.IsSuccess
+            ? workspaces.Value
+                .Where(item => IsWithin(currentDirectory, item.Path))
+                .OrderByDescending(item => FullPathLength(item.Path))
+                .FirstOrDefault()
+            : null;
+
         return new CliContextValidation(
             active,
             activeCampaign,
             activeWorkspace,
             session,
             detectedCampaign,
+            detectedWorkspace,
             [.. campaigns],
             [.. warnings]);
 
@@ -537,7 +538,7 @@ public sealed class CliContextService(
         {
             CliContextSource.ExplicitOption => "explicit option",
             CliContextSource.ActiveContext => "active context",
-            CliContextSource.CurrentDirectory => "current-directory campaign",
+            CliContextSource.CurrentDirectory => "current directory",
             _ => "server default",
         };
 
@@ -650,5 +651,6 @@ public sealed record CliContextValidation(
     WorkspaceInfo? ActiveWorkspace,
     SessionDetailDto? Session,
     CampaignDto? DetectedCampaign,
+    WorkspaceInfo? DetectedWorkspace,
     CampaignDto[] Campaigns,
     string[] Warnings);

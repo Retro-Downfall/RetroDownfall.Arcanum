@@ -30,6 +30,7 @@ public sealed class CliContextPrecedenceTests
                 Active: active,
                 DetectedCampaignId: Guid.Parse("44444444-4444-4444-4444-444444444444"),
                 DetectedCampaignPath: "/detected/campaign",
+                DetectedWorkspacePath: "/detected/workspace",
                 ServerDefaultModel: "server-model",
                 NoContext: false));
 
@@ -74,6 +75,7 @@ public sealed class CliContextPrecedenceTests
                 Active: active,
                 DetectedCampaignId: detectedCampaign,
                 DetectedCampaignPath: "/detected/campaign",
+                DetectedWorkspacePath: "/detected/workspace",
                 ServerDefaultModel: "server-model",
                 NoContext: true));
 
@@ -81,7 +83,7 @@ public sealed class CliContextPrecedenceTests
 
         Assert.Equal(CliContextSource.CurrentDirectory, result.Campaign.Source);
 
-        Assert.Equal("/detected/campaign", result.Workspace.Value);
+        Assert.Equal("/detected/workspace", result.Workspace.Value);
 
         Assert.Equal(CliContextSource.CurrentDirectory, result.Workspace.Source);
 

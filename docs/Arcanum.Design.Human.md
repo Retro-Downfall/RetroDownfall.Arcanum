@@ -65,6 +65,15 @@ Owner-only local recency data improves picker ordering but cannot resolve a tie.
 the visible columns and keep provider endpoints/credentials and MCP connection/process details out
 of picker and safe-detail output.
 
+Workspace and Campaign are deliberately adjacent, not interchangeable. A **Workspace** is a
+registered server filesystem access/indexing boundary. A **Campaign** is a persistent project
+container for sessions, spells, prompts, Codex, and Sanctum. `arcanum workspace
+list|current|register|show|tree|info|read|search|index|index-status|chunks|unregister` operates
+through the authenticated Workspace API; it never turns a server read into client filesystem I/O.
+`workspace current` independently reports the deepest containing Workspace and Campaign, while
+`campaign use` aliases the shared active-context selector. CLI path copy says “server path” because
+client/server path identity is only safe to infer for the shipping loopback pairing.
+
 The `session` command family is the direct-client counterpart to the full server session lifecycle:
 list/show/chat/entries/watch/fork/rename/archive/export/rest/attachments plus gated entry
 delete/pin/unpin/compact. It never opens the Grimoire. Session selectors use the shared
@@ -95,7 +104,8 @@ Safe defaults are deliberate:
 
 Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms without a clean fantasy equivalent (`Prompt`, `Goal`, `Plan`, `Session`, `Entry`, `Workspaces`) stay as-is. Thematic terms include:
 
-- **Campaign** — persistent workspace (`/api/campaigns`)
+- **Workspace** — registered filesystem access/indexing boundary (`/api/workspaces`)
+- **Campaign** — persistent project container for sessions, spells, prompts, Codex, and Sanctum (`/api/campaigns`)
 - **Spell** — versioned markdown skill (`SPELL.md` + optional `SPELL.json`; legacy `SKILL.json` read when present)
 - **Prompt** — parameterized template (`/api/prompts`)
 - **Ward** — approval gate (`/api/wards`)
@@ -167,9 +177,11 @@ The Grimoire has no supported user-data migration path between incompatible sche
 Campaign Logger (unseen servant / headless summarization) aggregates entries after `LastSummarizedMessageAt` (timestamp-based, expanded to cover full tied `CreatedAt` groups so no turn is split), builds a stateless `PingRequest` (`SkipSpellRouting`, `DisableMcpTools`, `UnattendedMode`), runs headless summarization, and updates `Session.Summary` + watermark atomically. The `UnsummarizedEntryCount` is incremented by `SessionEntryPersistence.ReserveSequenceRangeAsync` + append and reset by the summarize commit. Full details: `DESIGN.md` §5.4.1, §5.4.2, §8.7, §5.5.5.
 
 CLI defaults live outside the Grimoire in owner-only, versioned `cli-context.json`. `arcanum use
-campaign|workspace|model|session` validates and selects a local preference; `use clear [scope]`
+campaign|workspace|model|session` validates and selects a local preference (`campaign use` is an
+alias); `use clear [scope]`
 removes it; `context current` explains each effective value and source. Resolution order is explicit
-option, active context, current-directory Campaign detection, then server default, with
+option, active context, current-directory resource detection, then server default, with Campaign
+and Workspace containment resolved independently and
 `--no-context` bypassing saved values once. Confirmed stale references are reported before they are
 cleared, inherited workspaces outside the current directory generate a pre-operation warning, and
 Session/Campaign mismatches stop inference. The document stores identifiers, safe names/paths, and

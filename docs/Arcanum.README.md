@@ -669,9 +669,37 @@ arcanum campaign get campaign-alpha   # exact name or unique prefix
 arcanum prompt render                 # interactive picker when attached to a TTY
 arcanum prompt render <exact-guid> --param topic=dragons  # deterministic script
 arcanum session get                   # title/campaign/updated picker
-arcanum workspace get
+arcanum workspace show
 arcanum mcp get
 ```
+
+### Workspace versus Campaign
+
+A **Workspace** is a registered filesystem access and indexing boundary. A **Campaign** is a
+persistent project container for sessions, spells, prompts, Codex, and Sanctum policy. Campaigns
+are exposed as workspaces to filesystem consumers, but the server models remain separate and the
+CLI does not copy or merge them.
+
+```bash
+arcanum workspace register                 # current directory, bundled local server
+arcanum workspace current                  # explain Campaign and Workspace containment
+arcanum workspace tree                     # saved/current Workspace, server-side listing
+arcanum workspace info src/Program.cs
+arcanum workspace read README.md
+arcanum workspace search "where is startup configured"
+arcanum workspace index
+arcanum workspace index-status
+arcanum workspace chunks --path src/Program.cs
+arcanum workspace unregister
+```
+
+Workspace file, search, and index commands always call the authenticated server API; they never
+substitute a direct client filesystem read. Explicit registration paths and paths printed by the
+CLI belong to the **server host**. Omitting `register [path]` uses the client current directory only
+because the shipping CLI connects to its bundled loopback server. A future remote client must pass
+an explicit server path. File-write routes and `Arcanum:Workspaces:EnableFileWrite` are unchanged.
+When `workspace current` finds a Workspace but no Campaign, it suggests the exact `campaign create`
+shape for operations that need persistent project state.
 
 ### Persistent active context
 
@@ -679,6 +707,7 @@ Use local active context to avoid repeating Campaign, Workspace, Model, and Sess
 
 ```bash
 arcanum use campaign campaign-alpha
+arcanum campaign use campaign-alpha   # alias into the same context store
 arcanum use workspace workspace-alpha
 arcanum use model provider/model
 arcanum use session 11111111-1111-1111-1111-111111111111
@@ -687,8 +716,9 @@ arcanum use clear workspace   # one scope
 arcanum use clear             # every scope
 ```
 
-Precedence is explicit option, active context, current-directory Campaign detection, then server
-default. `--no-context` bypasses saved values for one invocation without disabling directory
+Precedence is explicit option, active context, current-directory resource detection, then server
+default. Campaign and Workspace containment are detected independently. `--no-context` bypasses
+saved values for one invocation without disabling directory
 detection. `context current` explains the source of each effective value. `ask`/`chat` validate
 saved references before inference, report confirmed stale references before clearing them, warn
 when the current directory is outside an inherited workspace, and refuse a Session/Campaign
@@ -712,7 +742,7 @@ All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDow
 | `--json` | Write exactly one valid JSON document to stdout and disable terminal control sequences. Typed commands keep their documented shape (for example `doctor`); text commands use `{ "output": "...", "exitCode": 0 }`. Diagnostics remain on stderr. |
 | `--plain` | Disable ANSI colors, animations, and the mana bar for this invocation. This does not change `arcanum.json`. |
 | `--yes` | Auto-approve command confirmation prompts. Without it, a confirmation required while stdout is redirected fails immediately instead of reading stdin or hanging CI. |
-| `--no-context` | Bypass saved Campaign, Workspace, Model, and Session defaults for one invocation; explicit options and current-directory Campaign detection still apply. |
+| `--no-context` | Bypass saved Campaign, Workspace, Model, and Session defaults for one invocation; explicit options and independent current-directory Campaign/Workspace detection still apply. |
 
 The closed exit-code set is `0` success, `1` generic/runtime error, `2` invalid command line or
 configuration/confirmation error, `3` network error, and `130` cancellation. Unexpected failures
@@ -775,9 +805,9 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `lore list\|get\|set\|delete` | Operator key-value memory via `/api/lore` (needs `serve`). Args: `get <KEY>`, `set <KEY> <VALUE>`, `delete <KEY>`. |
 | `daemon install\|uninstall\|status` | OS background-service lifecycle. |
 | `daemon jobs\|initiative\|alert` | Unseen Servant inspection + Comm Link smoke test (needs `serve`). `daemon jobs` shows **Last run** / interval from persisted watermarks (survive restart), **Next due** reconstructed from watermark + interval, and **Last result** (process-local diagnostic text). `daemon initiative <JOB_NAME> <MINUTES>` sets adaptive interval. `daemon alert <MESSAGE>` options: `--title`/`-t` (default `"Arcanum alert"`), `--severity`/`-s` (`Info`\|`Warning`\|`Critical`, default `Warning`), `--source`. |
-| `campaign list\|get\|create\|update\|delete\|export\|import\|codex\|spells\|prompts\|sessions` | The Forge campaign registry via `/api/campaigns` (needs `serve`). Resource-taking verbs accept optional ID/name/prefix selection. |
+| `campaign list\|get\|create\|update\|delete\|export\|import\|codex\|spells\|prompts\|sessions\|use` | The Forge campaign registry via `/api/campaigns` (needs `serve`). `campaign use` selects the shared active Campaign context. Resource-taking verbs accept optional ID/name/prefix selection. |
 | `session list\|show\|get\|chat\|entries\|watch\|fork\|rename\|archive\|export\|rest\|attachments\|delete-entry\|pin-entry\|unpin-entry\|compact\|divine` | Manage the complete session lifecycle through the API (needs `serve`). Session arguments accept a GUID/title/prefix or open the interactive picker when omitted; `get` aliases `show`. `list` supports `--campaign`, `--status`, `--search`, `--model`, `--from`, and `--to`. `show` reports status, campaign, entry/attachment counts, token/cost telemetry, and fork parent. `session chat` continues the selected session. `watch` supports `--since`; `fork` supports `--title`, `--up-to-entry`, and destination `--campaign`; `export` supports `json`/`markdown`. Delete-entry requires confirmation (`--yes` for redirected use). Memory commands do not bypass `Arcanum:Features:MemoryManagement`. Read commands support `--json`; watch uses newline-delimited JSON. Archived sessions can still be shown, exported, and forked. |
-| `workspace list\|get` | List/select registered workspaces; picker shows name and path. |
+| `workspace list\|current\|register\|show\|tree\|info\|read\|search\|index\|index-status\|chunks\|unregister` | Register, resolve, inspect, search, index, and unregister server-host Workspace boundaries through `/api/workspaces` (needs `serve`). `show` accepts ID/name/path and retains `get` as a compatibility alias. Omitted selectors use saved Workspace context, then current-directory containment. |
 | `saga list\|divine\|delete\|stats` | Saga long-term associative memory via `/api/saga/*` (needs `serve`). `list` (options `--query`, `--session`, `--limit`, `--offset`) and `stats` are always available; `divine <QUERY>` (option `--limit`) requires `Arcanum:Features:Embeddings` + `Arcanum:Features:Saga`; `delete <ID>` removes a single memory. See [Arcanum.DESIGN.md §21.8](Arcanum.DESIGN.md#218-saga-long-term-associative-memory). |
 | `spell list\|get\|create\|update\|delete\|search\|validate\|execute\|versions\|export\|import\|cast\|clone` | The Forge spell CRUD + execution via `/api/spells` (needs `serve`). `create`/`update` require `--workspace`; `--body`/`--goal`/`--template`/`--plan`/`--inquisitor` accept inline text or `@filename`; `execute` prints the response text plus a tool-call summary (stderr) when tools ran (`--version` takes a **string label**); `cast <name>` is a dry-run system-prompt preview — no inference tokens consumed; `clone <name> --new-name <n>` clones a spell into the workspace. |
 | `spell version create\|update\|activate` | Named spell version files (`SPELL.v{label}.md`) via `/api/spells/{name}/versions` (needs `serve`). `create`/`update <name> --version <label> --body <text\|@file>`; `activate <name> --version <label>` swaps the version into `SPELL.md`, printing where the previous content was preserved. |

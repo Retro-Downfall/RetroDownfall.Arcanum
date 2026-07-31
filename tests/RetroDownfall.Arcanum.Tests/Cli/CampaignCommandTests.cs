@@ -85,6 +85,55 @@ public sealed class CampaignCommandTests
     }
 
     [Fact]
+
+    public void Campaign_operation_in_a_workspace_without_a_campaign_offers_registration()
+    {
+
+        WorkspaceInfo workspace = new(
+            "ws-current",
+            "current",
+            Path.GetFullPath(global::System.Environment.CurrentDirectory),
+            WorkspaceType.Custom,
+            DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(request =>
+        {
+
+            if (request.RequestUri!.AbsolutePath == "/api/workspaces")
+            {
+
+                return CreateResponse(
+                    new ApiResponse<WorkspaceInfo[]>([workspace], true, null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray);
+
+            }
+
+            return CreateResponse(
+                new ApiResponse<ListPageResult<CampaignDto>>(
+                    new ListPageResult<CampaignDto>([], false),
+                    true,
+                    null),
+                ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto);
+
+        });
+
+        CliTestResult result = RunCommand(handler, ["campaign", "get"]);
+
+        Assert.Equal(1, result.ExitCode);
+
+        Assert.Contains(
+            "campaign create",
+            result.Output,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            "server path",
+            result.Output,
+            StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
     public void Campaign_create_posts_register_request()
     {
 

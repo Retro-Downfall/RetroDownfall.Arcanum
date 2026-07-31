@@ -33,6 +33,27 @@ public sealed class CliContextCommandTests
     }
 
     [Fact]
+
+    public async Task Campaign_use_is_an_alias_for_shared_campaign_context_selection()
+    {
+
+        FakeCliContextService context = new();
+
+        ServiceCollection services = CreateServices(context);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            ["campaign", "use", "campaign-alpha"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(CliContextScope.Campaign, context.SelectedScope);
+
+        Assert.Equal("campaign-alpha", context.SelectedIdentifier);
+
+    }
+
+    [Fact]
     public async Task Use_clear_without_scope_clears_every_saved_value()
     {
 

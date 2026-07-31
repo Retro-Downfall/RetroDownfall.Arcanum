@@ -31,6 +31,7 @@ public sealed record CliContextResolutionRequest(
     CliContextDocument Active,
     Guid? DetectedCampaignId,
     string? DetectedCampaignPath,
+    string? DetectedWorkspacePath,
     string? ServerDefaultModel,
     bool NoContext);
 
@@ -55,7 +56,7 @@ public static class CliContextPrecedence
         CliContextValue<string?> workspace = Select(
             Normalize(request.ExplicitWorkspacePath),
             Normalize(active.WorkspacePath),
-            Normalize(request.DetectedCampaignPath),
+            Normalize(request.DetectedWorkspacePath),
             default(string));
 
         CliContextValue<string?> model = Select(

@@ -148,6 +148,12 @@ valid provider and model. A model's optional `reasoning` object defaults to
 | `workspaces.defaultRoot` | `string?`, `null` | path | Default for workspace-scoped routes. |
 | `workspaces.enableFileWrite` | `bool`, `false` | — | Permits workspace create, modify, and delete routes. |
 
+`arcanum workspace register|tree|info|read|search|index|index-status|chunks|unregister` adds no
+configuration keys. Those commands call the existing authenticated Workspace API and continue to
+honor the server's path allowlists, indexing feature gates, and `workspaces.enableFileWrite` policy.
+CLI path arguments describe the server host; the current-directory default is valid only for the
+shipping loopback client/server pairing. Campaign remains a separate persistent project container.
+
 ### Feature opt-ins
 
 | Descriptor key | Type and default | Bounds | Semantics |

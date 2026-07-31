@@ -49,10 +49,12 @@ public sealed class CliResourceCatalog(
 {
     private const int PageSize = 100;
 
-    public Task<ResourceSelectionResult<CampaignDto>> SelectCampaignAsync(
+    public async Task<ResourceSelectionResult<CampaignDto>> SelectCampaignAsync(
         string? identifier,
-        CancellationToken cancellationToken) =>
-        SelectAsync(
+        CancellationToken cancellationToken)
+    {
+
+        ResourceSelectionResult<CampaignDto> result = await SelectAsync(
             new ResourceSelectionRequest<CampaignDto>(
                 "campaign",
                 identifier,
@@ -72,7 +74,102 @@ public sealed class CliResourceCatalog(
                         .ConfigureAwait(false);
                     return ToPage(result, static page => page.NextOffset?.ToString(CultureInfo.InvariantCulture));
                 }),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+
+        if (result.Status != ResourceSelectionStatus.Error
+            || !string.IsNullOrWhiteSpace(identifier))
+        {
+
+            return result;
+
+        }
+
+        string? advice = await GetCampaignRegistrationAdviceAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return advice is null
+            ? result
+            : ResourceSelectionResult<CampaignDto>.Failure(
+                $"{result.Error} {advice}");
+
+    }
+
+    private async Task<string?> GetCampaignRegistrationAdviceAsync(
+        CancellationToken cancellationToken)
+    {
+
+        string currentDirectory = Path.GetFullPath(Environment.CurrentDirectory);
+
+        Result<WorkspaceInfo[]> workspaces = await apiClient
+            .GetWorkspacesAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (workspaces.IsFailure)
+        {
+
+            return null;
+
+        }
+
+        WorkspaceInfo? workspace = workspaces.Value
+            .Where(item => CliContextService.IsWithin(
+                currentDirectory,
+                item.Path))
+            .OrderByDescending(item => item.Path.Length)
+            .FirstOrDefault();
+
+        if (workspace is null)
+        {
+
+            return null;
+
+        }
+
+        int offset = 0;
+
+        for (int page = 0; page < 100; page++)
+        {
+
+            Result<ListPageResult<CampaignDto>> campaigns = await apiClient
+                .GetCampaignsPageAsync(
+                    null,
+                    PageSize,
+                    offset,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (campaigns.IsFailure)
+            {
+
+                return null;
+
+            }
+
+            if (campaigns.Value.Items.Any(
+                    item => CliContextService.IsWithin(
+                        currentDirectory,
+                        item.Path)))
+            {
+
+                return null;
+
+            }
+
+            if (!campaigns.Value.HasMore
+                || campaigns.Value.NextOffset is not { } nextOffset)
+            {
+
+                return $"This server path is registered as Workspace '{workspace.Name}' but no Campaign contains it. Register a Campaign with: arcanum campaign create --name <name> --path <server path>.";
+
+            }
+
+            offset = nextOffset;
+
+        }
+
+        return null;
+
+    }
 
     public Task<ResourceSelectionResult<SessionSummaryDto>> SelectSessionAsync(
         string? identifier,

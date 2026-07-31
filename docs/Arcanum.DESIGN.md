@@ -485,16 +485,19 @@ references plus MCP URL, command, arguments, and working directory are excluded.
 and timestamp and has no resolution authority. Fuzzy matching remains a terminal search operation;
 server APIs retain exact semantics.
 
-**Active CLI context contract:** `arcanum use campaign <id-or-name>`, `use workspace
-<id-or-path>`, `use model <name>`, and `use session <id>` select local defaults without mutating
-Campaign, Workspace, Model, or Session server records. `arcanum use clear [campaign|workspace|model|session]`
+**Active CLI context contract:** `arcanum use campaign <id-or-name>` (also
+`arcanum campaign use <id-or-name>`), `use workspace <id-or-path>`, `use model <name>`, and
+`use session <id>` select local defaults without mutating Campaign, Workspace, Model, or Session
+server records. `arcanum use clear [campaign|workspace|model|session]`
 clears one scope (or every scope when omitted). `arcanum context current` prints the effective
 campaign, workspace, model, and session plus each value's source; `--json` returns the same typed
 payload. All direct commands accept recursive `--no-context`, which bypasses saved values for that
-invocation but still permits current-directory Campaign detection.
+invocation but still permits independent current-directory Campaign and Workspace detection.
 
 Effective-value precedence is fixed: **explicit command option → active CLI context →
-current-directory Campaign detection → server default**. `ask` and `chat` accept explicit
+current-directory resource detection → server default**. The deepest containing Campaign supplies
+Campaign context, while the deepest containing registered Workspace independently supplies
+Workspace context. `ask` and `chat` accept explicit
 `--workspace` and `--session` in addition to `--campaign` and `--model`, resolve every explicit or
 saved server resource through the authenticated API, and use the effective workspace for Eye of
 the World, Chronosync, MCP workspace scope, file staging, and `PingRequest.WorkingDirectory`.
@@ -511,9 +514,10 @@ Workspace, Model, and Session references are reported before being cleared; tran
 do not clear state. An inherited workspace outside the invocation's current directory is warned
 before operation. A Session whose Campaign differs from the effective Campaign fails inference
 context resolution rather than silently crossing Campaigns. Arcanum's shipping CLI client connects
-to the local loopback host, so current-directory Campaign detection may compare local paths; this
-must not be reused by a future remote-host client, which cannot infer server filesystem identity
-from a client path. `cli-session.txt` remains a temporary last-session mirror for older CLI flows,
+to the local loopback host, so current-directory resource detection may compare local paths. Every
+workspace path sent to or returned by the API is nevertheless labelled as a **server-host path**;
+a future remote-host client must require an explicit server path and cannot infer server filesystem
+identity from a client path. `cli-session.txt` remains a temporary last-session mirror for older CLI flows,
 while `cli-context.json.sessionId` is the active-context authority.
 
 | Command | Purpose |
@@ -535,7 +539,7 @@ while `cli-context.json.sessionId` is the active-context authority.
 | `daemon jobs` | Lists Unseen Servant jobs (name, spell, base vs effective interval, enabled) via **`GET /api/unseen-servant/jobs`**; requires **`arcanum serve`** (or equivalent host) and stored API key. |
 | `daemon initiative <JOB_NAME> <MINUTES>` | Sets adaptive initiative for a job via **`POST /api/unseen-servant/jobs/{name}/initiative`** with **`AdjustInitiativeRequestDto`**; prints updated **effective** interval (server-clamped). Same connectivity requirements as `daemon jobs`. |
 | `daemon alert <MESSAGE>` | Sends a **Comm Link** smoke alert via **`POST /api/commlink/send`** with **`CommLinkMessageRequestDto`** (options: `--title`, `--severity`, `--source`). Same connectivity requirements as `daemon jobs`. |
-| `campaign list\|get\|create\|update\|delete\|export\|import\|spells\|prompts\|sessions` | The Forge campaign registry via **`/api/campaigns`**. Resource-taking verbs accept an optional campaign ID/name/prefix and use the shared picker when omitted interactively. `list` accepts `--type`; `create` requires `--name`/`--path` (`--type` defaults to `campaign`); export/import round-trip `CampaignExportDto`; scoped lists preserve spell shadowing. |
+| `campaign list\|get\|create\|update\|delete\|export\|import\|spells\|prompts\|sessions\|use` | The Forge campaign registry via **`/api/campaigns`**. `campaign use` aliases shared active-context selection. Resource-taking verbs accept an optional campaign ID/name/prefix and use the shared picker when omitted interactively. `list` accepts `--type`; `create` requires `--name`/`--path` (`--type` defaults to `campaign`); export/import round-trip `CampaignExportDto`; scoped lists preserve spell shadowing. |
 | `campaign codex get\|put\|delete` | Manage the campaign's `CODEX.md` via **`/api/campaigns/{id}/codex`**. `put` reads content from `--file` (or inline `@file` convention, see below). |
 | `spell list\|get\|create\|update\|delete\|search\|validate\|execute\|versions\|export\|import\|cast\|clone` | The Forge spell CRUD + execution via **`/api/spells`**. `create`/`update` require `--workspace`; `create` accepts `--body`, repeatable `--tag`/`--declared-tool`/`--dependency` (writes `SPELL.json`); `execute` sends `SpellExecuteRequest` (`--version` takes a **string label**, not an integer) and prints the response text (plus a themed tool-call summary on stderr when `ToolCalls` is non-empty); `search` filters by `--query`/`--tag`/`--tool`/`--source`; `cast <NAME>` is a **dry-run** preview (`POST /api/spells/{name}/cast`) rendering the assembled system prompt, resonant dependencies, attuned tools, and spell scripts without consuming inference tokens; `clone <NAME> --new-name <N>` clones a spell (built-in or workspace) into the workspace (`POST /api/spells/{name}/clone`). |
 | `spell version create\|update\|activate` | Nested branch for named spell **version files** (`SPELL.v{label}.md`) via **`/api/spells/{name}/versions`**. `create`/`update <NAME> --version <LABEL> --body <TEXT_OR_FILE>` write a version file (label: alphanumeric + dots); `activate <NAME> --version <LABEL>` swaps the version into `SPELL.md`, preserving the prior active content as `SPELL.v{previousLabel}.md` (printed as a themed note). |
@@ -545,7 +549,7 @@ while `cli-context.json.sessionId` is the active-context authority.
 | `apprentice list\|get\|create\|delete\|start\|pause\|resume\|cancel\|reweave\|intervene\|cast\|chronicle` | The Forge Apprentice orchestration via **`/api/apprentices`**. Resource-taking verbs accept optional ID/name/prefix selection; cancellation occurs before mutation. `create` accepts `--goal`; `reweave` reads `PlanStep[]`; `chronicle` is SSE. |
 | `model list\|get`, `provider list\|get` | List or safely select configured models/providers. `get` omits endpoints and credential details; model identity is `provider/model` when names collide. |
 | `session list\|show\|get\|chat\|entries\|watch\|fork\|rename\|archive\|export\|rest\|attachments\|delete-entry\|pin-entry\|unpin-entry\|compact\|divine` | Complete session lifecycle and continuation over **`/api/sessions`**. Session arguments accept a GUID, exact title, unique prefix, or an interactive picker; `get` remains an alias for `show`. `list` filters by campaign/status/search/model/from/to; `show` combines metadata with attachment count and displays token/cost telemetry plus fork parent; `watch` consumes the session SSE stream. Fork/archive/export preserve archived-session semantics and use server APIs. Entry delete requires confirmation; delete/pin/unpin/compact retain the server's memory-management gate. Read commands support recursive `--json` (`watch` emits one JSON object per line). |
-| `workspace list\|get` | List/select registered workspaces by ID, exact name, or unique prefix; picker shows name/path. |
+| `workspace list\|current\|register\|show\|tree\|info\|read\|search\|index\|index-status\|chunks\|unregister` | Operate through authenticated **`/api/workspaces`** routes. `register [path]` registers the current directory with one command for the bundled local host; explicit paths are server-host paths. `show` retains `get` as a compatibility alias. File reads/listing remain bounded server operations; `search`, `index`, `index-status`, and `chunks` expose The Weave without The Forge. Optional selectors resolve from explicit ID/name/path, saved Workspace context, then current-directory containment. `current` reports independent Campaign and Workspace mappings and offers the exact Campaign registration command when only a Workspace matches. |
 | `mcp list\|get` | List/select MCP server safe status. Output excludes URL, command, arguments, working directory, and other secret-adjacent configuration. |
 | `saga list` | Paginated listing of Saga memories via **`GET /api/saga`**; options `--query`, `--session`, `--limit`, `--offset` (§21.8). |
 | `saga divine <QUERY>` | Semantic search over Saga memories via **`POST /api/saga/divine`**; option `--limit` (§21.8). |
@@ -1147,6 +1151,8 @@ Serilog → `SerilogLogRingBufferSink` → a code-owned bounded in-memory ring t
 ### 8.17 Workspace registry and file browser/writer (`/api/workspaces`)
 
 Campaign-backed when Grimoire ready (`persisted: true`); else in-memory. Writes gated by `Arcanum:Workspaces:EnableFileWrite` (default off) → **403** `Workspace.FileWriteDisabled`. Path policy: reject `..`/absolute; symlink escape → `Workspace.SymbolicLinkEscape`; revalidate before I/O. Atomic temp+rename for PUT/PATCH. Size clamps: §3.4. PATCH ordinal replace with ambiguous/not-found codes. HEAD contents returns size/`Last-Modified` only.
+
+The CLI exposes this boundary directly as `arcanum workspace list|current|register|show|tree|info|read|search|index|index-status|chunks|unregister`. `tree`, `info`, and `read` call the authenticated file-browser routes and never read the client filesystem directly. File writes remain absent from this command family, so `Arcanum:Workspaces:EnableFileWrite` is neither bypassed nor implicitly enabled. `register [path]` sends the path to the server registry; omission uses the client current directory only because the shipping CLI targets the bundled loopback host. Help and output call every such value a server-host path so this convenience cannot silently become a remote path assumption.
 
 ### 8.18 Session API
 
