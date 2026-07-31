@@ -509,6 +509,10 @@ Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Co
 
 Visual editor for §3.4 — reads/writes `arcanum.json` only (no inference/daemon/Grimoire/MCP). References **Core** only and edits credential environment-variable references, never provider/PFX values. Its local certificate generator writes an owner-only PEM pair, avoiding a generated password. `SettingDescriptor` drives controls/clamps; parity + coverage tests guard drift. See [`Compendium.README.md`](Compendium.README.md).
 
+Descriptor-driven views cache only completed builds. They observe replacement field collections so
+an asynchronous configuration load rebuilds controls even when the view was created first; view
+construction and rebuilds perform no diagnostic file I/O.
+
 
 ---
 
@@ -2980,8 +2984,10 @@ relax the Arcanum host's source-generated wire contracts or Native AOT requireme
   Reasoning is typed `{text,output}` and never carries provider-protected data.
 - The NDJSON reader preflights the discriminator before strict source-generated deserialization.
   Unknown nonblank future values are skipped; malformed JSON and missing/non-string/blank/padded
-  types are logged and skipped. `StreamReader` reassembles complete lines and multibyte UTF-8 split
-  across transport reads.
+  types are logged and skipped. A bounded line reader over `StreamReader` reassembles multibyte
+  UTF-8 split across transport reads, caps each protocol line at 1 MiB, discards an over-cap frame,
+  and resumes at the next line. The SSE parser applies the same line cap plus an 8 MiB aggregate
+  event cap.
 - The Tome renders reasoning in a separate live role and never appends it to the answer. Mutable
   live buffers publish coalesced snapshots with a final flush and explicit truncation: 64 KiB for
   reasoning and 200,000 characters for other live messages.
@@ -2998,7 +3004,15 @@ relax the Arcanum host's source-generated wire contracts or Native AOT requireme
   envelopes, never `ApiResponse<T>`.
 
 Transport failures do not escape ViewModels as exceptions: route services synthesize failed
-`ApiResponse<T>` values with `Connection.Failed` or `Connection.Timeout`.
+`ApiResponse<T>` values with `Connection.Failed` or `Connection.Timeout`. Buffered `/api` and
+OpenAI-shaped JSON/error bodies are read with `ResponseHeadersRead` and a 64 MiB hard ceiling;
+over-cap bodies become `Api.ResponseTooLarge`; status-only deletes complete after headers and do
+not buffer an ignored body. JSONL previews stop at their byte ceiling even when the input contains
+no newline. File downloads stream to a same-directory staging file, flush, and atomically replace
+the destination only after a complete transfer; cancellation or I/O failure removes the staging
+file and preserves any existing destination. The Hearth's local terminal reader caps each
+stdout/stderr line at 64 Ki characters, retains a bounded prefix with an explicit truncation marker,
+and continues with later lines.
 
 ### 19.9 Connection, authentication, and desktop settings
 

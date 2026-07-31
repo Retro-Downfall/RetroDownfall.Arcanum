@@ -95,6 +95,45 @@ public class SseFrameParserTests
 
     }
 
+    [Fact]
+    public async Task ParseAsync_OversizeEvent_is_discarded_and_next_event_is_preserved()
+    {
+
+        string payload =
+            "data: "
+            + new string('x', SseFrameParser.MaxLineChars + 1)
+            + "\n\ndata: ok\n\n";
+
+        using StringReader reader = new(payload);
+
+        List<SseEvent> frames = await CollectAsync(reader);
+
+        SseEvent frame = Assert.Single(frames);
+
+        Assert.Equal("ok", frame.Data);
+
+    }
+
+    [Fact]
+    public async Task ParseAsync_OversizeMultilineEvent_is_discarded_and_next_event_is_preserved()
+    {
+
+        string dataLine = "data: " + new string('x', SseFrameParser.MaxLineChars - "data: ".Length);
+
+        string payload =
+            string.Join('\n', Enumerable.Repeat(dataLine, 9))
+            + "\n\ndata: ok\n\n";
+
+        using StringReader reader = new(payload);
+
+        List<SseEvent> frames = await CollectAsync(reader);
+
+        SseEvent frame = Assert.Single(frames);
+
+        Assert.Equal("ok", frame.Data);
+
+    }
+
     private static async Task<List<SseEvent>> CollectAsync(TextReader reader)
     {
 

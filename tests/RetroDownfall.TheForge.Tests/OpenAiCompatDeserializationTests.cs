@@ -149,6 +149,29 @@ public class JsonlBoundedPreviewTests
     }
 
     [Fact]
+    public async Task ReadAsync_HugeSingleLine_stops_reading_at_byte_limit()
+    {
+
+        byte[] payload = Encoding.UTF8.GetBytes(new string('x', 1_000_000));
+
+        await using MemoryStream stream = new(payload);
+
+        JsonlPreviewResult result = await JsonlBoundedPreview.ReadAsync(
+            stream,
+            maxLines: 50,
+            maxBytes: 500);
+
+        Assert.True(result.Truncated);
+
+        Assert.InRange(result.BytesRead, 0, 500);
+
+        Assert.InRange(stream.Position, 0, 501);
+
+        Assert.All(result.Lines, line => Assert.InRange(Encoding.UTF8.GetByteCount(line), 0, 500));
+
+    }
+
+    [Fact]
     public async Task ReadAsync_SmallFile_NotTruncated()
     {
 

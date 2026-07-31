@@ -116,7 +116,7 @@ public sealed class OpenAiCompatApiClient
             using HttpRequestMessage request = new(HttpMethod.Post, path) { Content = form };
 
             using HttpResponseMessage response = await client
-                .SendAsync(request, cancellationToken)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
 
             return await ParseJsonResponseAsync(response, responseTypeInfo, path, cancellationToken)
@@ -167,6 +167,7 @@ public sealed class OpenAiCompatApiClient
         string destinationPath,
         CancellationToken cancellationToken)
     {
+        string? temporaryPath = null;
 
         try
         {
@@ -182,9 +183,17 @@ public sealed class OpenAiCompatApiClient
             if (!response.IsSuccessStatusCode)
             {
 
-                string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                byte[]? bodyBytes = await BoundedHttpContentReader
+                    .TryReadAsync(response.Content, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
 
-                return FailFromBody<bool>(body, path, (int)response.StatusCode, response.ReasonPhrase);
+                return bodyBytes is null
+                    ? ResponseTooLarge<bool>()
+                    : FailFromBody<bool>(
+                        Encoding.UTF8.GetString(bodyBytes),
+                        path,
+                        (int)response.StatusCode,
+                        response.ReasonPhrase);
 
             }
 
@@ -192,24 +201,35 @@ public sealed class OpenAiCompatApiClient
                 .ReadAsStreamAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            string? directory = Path.GetDirectoryName(destinationPath);
+            string fullDestinationPath = Path.GetFullPath(destinationPath);
 
-            if (!string.IsNullOrEmpty(directory))
+            string directory = Path.GetDirectoryName(fullDestinationPath)
+                ?? throw new IOException("The download destination has no parent directory.");
+
+            Directory.CreateDirectory(directory);
+
+            temporaryPath = Path.Combine(
+                directory,
+                $".{Path.GetFileName(fullDestinationPath)}.{Guid.NewGuid():N}.download");
+
+            await using (FileStream file = new(
+                             temporaryPath,
+                             FileMode.CreateNew,
+                             FileAccess.Write,
+                             FileShare.None,
+                             bufferSize: 81920,
+                             options: FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
 
-                Directory.CreateDirectory(directory);
+                await network.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
+
+                await file.FlushAsync(cancellationToken).ConfigureAwait(false);
 
             }
 
-            await using FileStream file = new(
-                destinationPath,
-                FileMode.Create,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 81920,
-                options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+            File.Move(temporaryPath, fullDestinationPath, overwrite: true);
 
-            await network.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
+            temporaryPath = null;
 
             return OpenAiResult<bool>.Ok(true);
 
@@ -246,6 +266,30 @@ public sealed class OpenAiCompatApiClient
             return OpenAiResult<bool>.Fail("Files.WriteFailed", ex.Message);
 
         }
+        finally
+        {
+
+            if (temporaryPath is not null)
+            {
+
+                try
+                {
+
+                    File.Delete(temporaryPath);
+
+                }
+                catch (IOException)
+                {
+                    // Best effort: a failed transfer must never replace the destination.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Best effort cleanup; the original destination remains intact.
+                }
+
+            }
+
+        }
 
     }
 
@@ -255,15 +299,18 @@ public sealed class OpenAiCompatApiClient
     /// </summary>
     public async Task<OpenAiResult<Stream>> OpenContentStreamAsync(string path, CancellationToken cancellationToken)
     {
+        HttpClient? client = null;
+
+        HttpResponseMessage? response = null;
 
         try
         {
 
-            HttpClient client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
+            client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
 
-            HttpRequestMessage request = new(HttpMethod.Get, path);
+            using HttpRequestMessage request = new(HttpMethod.Get, path);
 
-            HttpResponseMessage response = await client
+            response = await client
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -274,20 +321,30 @@ public sealed class OpenAiCompatApiClient
 
                 string? reasonPhrase = response.ReasonPhrase;
 
-                string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                byte[]? bodyBytes = await BoundedHttpContentReader
+                    .TryReadAsync(response.Content, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
 
-                response.Dispose();
-
-                client.Dispose();
-
-                return FailFromBody<Stream>(body, path, statusCode, reasonPhrase);
+                return bodyBytes is null
+                    ? ResponseTooLarge<Stream>()
+                    : FailFromBody<Stream>(
+                        Encoding.UTF8.GetString(bodyBytes),
+                        path,
+                        statusCode,
+                        reasonPhrase);
 
             }
 
             Stream network = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
 
             // Own the response + client for the lifetime of the content stream.
-            return OpenAiResult<Stream>.Ok(new ContentStreamOwner(network, response, client));
+            ContentStreamOwner owner = new(network, response, client);
+
+            response = null;
+
+            client = null;
+
+            return OpenAiResult<Stream>.Ok(owner);
 
         }
         catch (InvalidOperationException ex)
@@ -306,6 +363,14 @@ public sealed class OpenAiCompatApiClient
             return OpenAiResult<Stream>.Fail("Connection.Failed", ex.Message);
 
         }
+        catch (IOException ex)
+        {
+
+            _logger.LogWarning(ex, "OpenAI content GET {Path} response could not be read.", path);
+
+            return OpenAiResult<Stream>.Fail("Connection.Failed", ex.Message);
+
+        }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
 
@@ -313,6 +378,12 @@ public sealed class OpenAiCompatApiClient
 
             return OpenAiResult<Stream>.Fail("Connection.Timeout", "The request to Arcanum timed out.");
 
+        }
+        finally
+        {
+            response?.Dispose();
+
+            client?.Dispose();
         }
 
     }
@@ -333,7 +404,7 @@ public sealed class OpenAiCompatApiClient
             using HttpRequestMessage request = new(method, path) { Content = requestContent };
 
             using HttpResponseMessage response = await client
-                .SendAsync(request, cancellationToken)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
 
             return await ParseJsonResponseAsync(response, responseTypeInfo, path, cancellationToken)
@@ -356,6 +427,14 @@ public sealed class OpenAiCompatApiClient
             return OpenAiResult<TResponse>.Fail("Connection.Failed", ex.Message);
 
         }
+        catch (IOException ex)
+        {
+
+            _logger.LogWarning(ex, "OpenAI {Method} {Path} response could not be read.", method, path);
+
+            return OpenAiResult<TResponse>.Fail("Connection.Failed", ex.Message);
+
+        }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
 
@@ -374,7 +453,18 @@ public sealed class OpenAiCompatApiClient
         CancellationToken cancellationToken)
     {
 
-        string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        byte[]? bodyBytes = await BoundedHttpContentReader
+            .TryReadAsync(response.Content, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        if (bodyBytes is null)
+        {
+
+            return ResponseTooLarge<TResponse>();
+
+        }
+
+        string body = Encoding.UTF8.GetString(bodyBytes);
 
         if (response.IsSuccessStatusCode)
         {
@@ -417,6 +507,11 @@ public sealed class OpenAiCompatApiClient
         return FailFromBody<TResponse>(body, path, (int)response.StatusCode, response.ReasonPhrase);
 
     }
+
+    private static OpenAiResult<T> ResponseTooLarge<T>() =>
+        OpenAiResult<T>.Fail(
+            "Api.ResponseTooLarge",
+            "The API response exceeded the maximum allowed size and was not read.");
 
     private OpenAiResult<T> FailFromBody<T>(string body, string path, int statusCode, string? reasonPhrase)
     {

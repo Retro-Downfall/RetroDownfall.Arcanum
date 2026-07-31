@@ -36,71 +36,68 @@ public static class JsonlBoundedPreview
 
         }
 
-        List<string> lines = new(Math.Min(maxLines, 64));
+        using MemoryStream boundedBytes = new(Math.Min(maxBytes, 81_920));
 
-        using StreamReader reader = new(stream, leaveOpen: true);
+        byte[] readBuffer = new byte[Math.Min(maxBytes, 81_920)];
 
-        int bytesRead = 0;
-
-        bool truncated = false;
-
-        while (lines.Count < maxLines)
+        while (boundedBytes.Length < maxBytes)
         {
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            int remaining = maxBytes - checked((int)boundedBytes.Length);
 
-            if (line is null)
+            int read = await stream
+                .ReadAsync(readBuffer.AsMemory(0, Math.Min(readBuffer.Length, remaining)), cancellationToken)
+                .ConfigureAwait(false);
+
+            if (read == 0)
             {
 
                 break;
 
             }
 
-            // Count UTF-8 bytes of the line content + a newline separator estimate.
-            int lineBytes = System.Text.Encoding.UTF8.GetByteCount(line) + 1;
+            await boundedBytes
+                .WriteAsync(readBuffer.AsMemory(0, read), cancellationToken)
+                .ConfigureAwait(false);
 
-            if (bytesRead + lineBytes > maxBytes && lines.Count > 0)
-            {
+        }
 
-                truncated = true;
+        bool truncated = false;
 
-                break;
+        if (boundedBytes.Length == maxBytes)
+        {
 
-            }
+            byte[] probe = new byte[1];
 
-            bytesRead += lineBytes;
+            truncated = await stream
+                .ReadAsync(probe, cancellationToken)
+                .ConfigureAwait(false) != 0;
+
+        }
+
+        string text = System.Text.Encoding.UTF8.GetString(boundedBytes.GetBuffer(), 0, checked((int)boundedBytes.Length));
+
+        List<string> lines = new(Math.Min(maxLines, 64));
+
+        using StringReader reader = new(text);
+
+        while (lines.Count < maxLines && reader.ReadLine() is { } line)
+        {
 
             lines.Add(line);
 
-            if (bytesRead >= maxBytes)
-            {
-
-                truncated = true;
-
-                break;
-
-            }
-
         }
 
-        if (!truncated && lines.Count >= maxLines)
+        if (lines.Count >= maxLines && reader.ReadLine() is not null)
         {
 
-            // Peek one more line to know whether more content remains.
-            string? peek = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-
-            if (peek is not null)
-            {
-
-                truncated = true;
-
-            }
+            truncated = true;
 
         }
 
-        return new JsonlPreviewResult(lines, truncated, bytesRead);
+        return new JsonlPreviewResult(lines, truncated, checked((int)boundedBytes.Length));
 
     }
 

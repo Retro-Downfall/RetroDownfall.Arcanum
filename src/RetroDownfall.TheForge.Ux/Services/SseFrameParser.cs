@@ -13,6 +13,9 @@ namespace RetroDownfall.TheForge.Ux.Services;
 /// </summary>
 internal static class SseFrameParser
 {
+    internal const int MaxLineChars = BoundedTextLineReader.DefaultMaxLineChars;
+
+    internal const int MaxEventChars = 8 * 1024 * 1024;
 
     public static async IAsyncEnumerable<SseEvent> ParseAsync(
         TextReader reader,
@@ -23,22 +26,51 @@ internal static class SseFrameParser
 
         List<string> dataLines = [];
 
+        int dataChars = 0;
+
+        bool discardEvent = false;
+
+        BoundedTextLineReader lineReader = new(reader, MaxLineChars);
+
         while (true)
         {
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            BoundedTextLineReadResult read = await lineReader
+                .ReadLineAsync(cancellationToken)
+                .ConfigureAwait(false);
 
-            if (line is null)
+            if (!read.HasLine)
             {
 
                 break;
 
             }
 
+            if (read.IsTooLong)
+            {
+                discardEvent = true;
+                dataLines.Clear();
+                dataChars = 0;
+                eventName = null;
+
+                continue;
+            }
+
+            string line = read.Line;
+
             if (line.Length == 0)
             {
+                if (discardEvent)
+                {
+                    discardEvent = false;
+                    dataLines.Clear();
+                    dataChars = 0;
+                    eventName = null;
+
+                    continue;
+                }
 
                 if (dataLines.Count > 0)
                 {
@@ -56,12 +88,19 @@ internal static class SseFrameParser
 
                     dataLines.Clear();
 
+                    dataChars = 0;
+
                     eventName = null;
 
                 }
 
                 continue;
 
+            }
+
+            if (discardEvent)
+            {
+                continue;
             }
 
             if (line.StartsWith(':'))
@@ -81,13 +120,27 @@ internal static class SseFrameParser
             else if (line.StartsWith("data:", StringComparison.Ordinal))
             {
 
-                dataLines.Add(line["data:".Length..].TrimStart());
+                string dataLine = line["data:".Length..].TrimStart();
+
+                dataChars += dataLine.Length + (dataLines.Count > 0 ? 1 : 0);
+
+                if (dataChars > MaxEventChars)
+                {
+                    discardEvent = true;
+                    dataLines.Clear();
+                    dataChars = 0;
+                    eventName = null;
+
+                    continue;
+                }
+
+                dataLines.Add(dataLine);
 
             }
 
         }
 
-        if (dataLines.Count > 0)
+        if (!discardEvent && dataLines.Count > 0)
         {
 
             string data = string.Join('\n', dataLines);

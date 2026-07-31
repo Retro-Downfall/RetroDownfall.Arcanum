@@ -77,8 +77,10 @@ public sealed class ArcanumApiClient
 
             using HttpClient client = await CreateClientAsync(cancellationToken).ConfigureAwait(false);
 
+            using HttpRequestMessage request = new(HttpMethod.Delete, path);
+
             using HttpResponseMessage response = await client
-                .DeleteAsync(path, cancellationToken)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
 
             return response.IsSuccessStatusCode;
@@ -194,10 +196,29 @@ public sealed class ArcanumApiClient
 
             using StreamReader reader = new(stream, Encoding.UTF8);
 
-            string? line;
+            BoundedTextLineReader lineReader = new(reader);
 
-            while ((line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
+            while (true)
             {
+                BoundedTextLineReadResult read = await lineReader
+                    .ReadLineAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!read.HasLine)
+                {
+                    break;
+                }
+
+                if (read.IsTooLong)
+                {
+                    _logger.LogWarning(
+                        "NDJSON stream response from {Path} exceeded the maximum line size; frame discarded.",
+                        path);
+
+                    continue;
+                }
+
+                string line = read.Line;
 
                 if (string.IsNullOrWhiteSpace(line))
                 {
@@ -361,14 +382,24 @@ public sealed class ArcanumApiClient
             using HttpRequestMessage request = new(method, path) { Content = requestContent };
 
             using HttpResponseMessage response = await client
-                .SendAsync(request, cancellationToken)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
 
-            string body = await response.Content
-                .ReadAsStringAsync(cancellationToken)
+            byte[]? body = await BoundedHttpContentReader
+                .TryReadAsync(response.Content, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
-            if (string.IsNullOrWhiteSpace(body))
+            if (body is null)
+            {
+
+                return Failure(
+                    responseTypeInfo,
+                    "Api.ResponseTooLarge",
+                    "The API response exceeded the maximum allowed size and was not read.");
+
+            }
+
+            if (body.Length == 0 || IsJsonWhitespace(body))
             {
 
                 return response.IsSuccessStatusCode
@@ -407,6 +438,14 @@ public sealed class ArcanumApiClient
             return Failure(responseTypeInfo, "Connection.Failed", ex.Message);
 
         }
+        catch (IOException ex)
+        {
+
+            _logger.LogWarning(ex, "{Method} {Path} response could not be read.", method, path);
+
+            return Failure(responseTypeInfo, "Connection.Failed", ex.Message);
+
+        }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
 
@@ -420,6 +459,19 @@ public sealed class ArcanumApiClient
 
         }
 
+    }
+
+    private static bool IsJsonWhitespace(ReadOnlySpan<byte> body)
+    {
+        foreach (byte value in body)
+        {
+            if (value is not ((byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static ApiResponse<TResponse> Failure<TResponse>(

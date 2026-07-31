@@ -167,6 +167,35 @@ public sealed class ArcanumApiClientNdjsonTests
             static message => message.Contains("deserialize", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task PostNdjsonStreamAsync_discards_oversize_line_and_continues()
+    {
+        IntelligenceEvent token = new(IntelligenceEventType.Token, string.Empty, "tail");
+        string ndjson = new string('x', BoundedTextLineReader.DefaultMaxLineChars + 1)
+            + "\n"
+            + JsonSerializer.Serialize(token, TheForgeJsonContext.Default.IntelligenceEvent)
+            + "\n";
+        ListLogger<ArcanumApiClient> logger = new();
+        ArcanumApiClient client = CreateClient(ndjson, logger);
+
+        List<IntelligenceEvent> events = [];
+        await foreach (IntelligenceEvent evt in client.PostNdjsonStreamAsync(
+                           "/api/intelligence/ping-stream",
+                           new PingRequest("hello"),
+                           TheForgeJsonContext.Default.PingRequest,
+                           TheForgeJsonContext.Default.IntelligenceEvent,
+                           CancellationToken.None))
+        {
+            events.Add(evt);
+        }
+
+        IntelligenceEvent parsed = Assert.Single(events);
+        Assert.Equal("tail", parsed.Data);
+        Assert.Contains(
+            logger.Messages,
+            static message => message.Contains("maximum line size", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static ArcanumApiClient CreateClient(
         string ndjson,
         ILogger<ArcanumApiClient> logger) =>

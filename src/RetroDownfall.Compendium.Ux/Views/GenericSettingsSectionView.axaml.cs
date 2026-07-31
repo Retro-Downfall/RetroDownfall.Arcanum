@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Data;
 using Avalonia.Media;
+using System.ComponentModel;
 using RetroDownfall.Compendium.Ux.Models;
 using RetroDownfall.Compendium.Ux.ViewModels;
 using RetroDownfall.Compendium.Ux.Views.Controls;
@@ -30,7 +31,16 @@ public partial class GenericSettingsSectionView : UserControl
 
         PropertyChanged += OnPropertyChangedHandler;
 
-        DataContextChanged += (_, _) => Rebuild();
+        DataContextChanged += OnDataContextChangedHandler;
+
+        DetachedFromLogicalTree += (_, _) => ObserveSection(null);
+
+        AttachedToLogicalTree += (_, _) =>
+        {
+            ObserveSection(DataContext as GenericSectionViewModel);
+            _lastRebuiltSection = null;
+            Rebuild();
+        };
 
     }
 
@@ -48,19 +58,57 @@ public partial class GenericSettingsSectionView : UserControl
 
     private ConfigSection? _lastRebuiltSection;
 
+    private GenericSectionViewModel? _observedSection;
+
+    private void OnDataContextChangedHandler(object? sender, EventArgs e)
+    {
+        GenericSectionViewModel? next = DataContext as GenericSectionViewModel;
+
+        ObserveSection(next);
+
+        if (next is null)
+        {
+            _lastRebuiltSection = null;
+        }
+
+        Rebuild();
+    }
+
+    private void ObserveSection(GenericSectionViewModel? next)
+    {
+        if (!ReferenceEquals(_observedSection, next))
+        {
+            if (_observedSection is not null)
+            {
+                _observedSection.PropertyChanged -= OnSectionPropertyChanged;
+            }
+
+            _observedSection = next;
+
+            if (_observedSection is not null)
+            {
+                _observedSection.PropertyChanged += OnSectionPropertyChanged;
+            }
+        }
+    }
+
+    private void OnSectionPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(GenericSectionViewModel.Fields))
+        {
+            return;
+        }
+
+        _lastRebuiltSection = null;
+
+        Rebuild();
+    }
+
     private void Rebuild()
     {
         if (RootPanel is null || Section == _lastRebuiltSection)
         {
             return;
-        }
-        _lastRebuiltSection = Section;
-
-        if (RootPanel is null)
-        {
-
-            return;
-
         }
 
         RootPanel.Children.Clear();
@@ -89,7 +137,10 @@ public partial class GenericSettingsSectionView : UserControl
 
         GenericSectionViewModel sectionVm = root.GetOrCreateGenericSection(Section);
 
-        System.IO.File.AppendAllText("/tmp/compendium_rebuild.log", $"Rebuild: Section={Section}, Fields={sectionVm.Fields.Count}, Timestamp={System.DateTime.Now:O}\n");
+        // Mark the successful build before replacing DataContext because that assignment raises
+        // DataContextChanged recursively. Do not cache an unsuccessful attempt: controls commonly
+        // receive Section before their inherited DataContext during template construction.
+        _lastRebuiltSection = Section;
 
         DataContext = sectionVm;
 

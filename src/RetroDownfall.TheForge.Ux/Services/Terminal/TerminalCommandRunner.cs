@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using RetroDownfall.TheForge.Ux.Services;
 
 namespace RetroDownfall.TheForge.Ux.Services.Terminal;
 
@@ -8,6 +9,7 @@ namespace RetroDownfall.TheForge.Ux.Services.Terminal;
 /// </summary>
 public sealed class TerminalCommandRunner : ITerminalCommandRunner
 {
+    internal const int MaxOutputLineChars = 64 * 1024;
 
     private readonly ITerminalShellResolver _shellResolver;
 
@@ -133,7 +135,7 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
 
     }
 
-    private static async Task ReadLinesAsync(
+    internal static async Task ReadLinesAsync(
         StreamReader reader,
         TerminalOutputKind kind,
         IProgress<TerminalOutputEvent>? progress,
@@ -142,18 +144,25 @@ public sealed class TerminalCommandRunner : ITerminalCommandRunner
 
         try
         {
+            BoundedTextLineReader lineReader = new(reader, MaxOutputLineChars);
 
             while (true)
             {
 
-                string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                BoundedTextLineReadResult read = await lineReader
+                    .ReadLineAsync(cancellationToken)
+                    .ConfigureAwait(false);
 
-                if (line is null)
+                if (!read.HasLine)
                 {
 
                     break;
 
                 }
+
+                string line = read.IsTooLong
+                    ? $"{read.Line} … [output line truncated]"
+                    : read.Line;
 
                 progress?.Report(new TerminalOutputEvent(line, kind));
 

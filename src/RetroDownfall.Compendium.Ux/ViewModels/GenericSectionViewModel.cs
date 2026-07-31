@@ -6,6 +6,7 @@ namespace RetroDownfall.Compendium.Ux.ViewModels;
 
 public sealed class GenericSectionViewModel : ObservableObject
 {
+    private ObservableCollection<GenericSettingFieldViewModel> _fields = [];
 
     public GenericSectionViewModel(ConfigurationViewModel root, ConfigSection section)
     {
@@ -14,15 +15,18 @@ public sealed class GenericSectionViewModel : ObservableObject
 
         Section = section;
 
-        Fields = new ObservableCollection<GenericSettingFieldViewModel>();
-
     }
 
     public ConfigurationViewModel Root { get; }
 
     public ConfigSection Section { get; }
 
-    public ObservableCollection<GenericSettingFieldViewModel> Fields { get; set; }
+    public ObservableCollection<GenericSettingFieldViewModel> Fields
+    {
+        get => _fields;
+
+        private set => SetProperty(ref _fields, value);
+    }
 
     public void LoadFrom(IEnumerable<GenericSettingFieldViewModel> fields)
     {

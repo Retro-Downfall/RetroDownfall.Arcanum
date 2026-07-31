@@ -5,6 +5,38 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class TerminalCommandRunnerTests
 {
+    [Fact]
+    public async Task ReadLinesAsync_truncates_oversize_line_and_continues()
+    {
+
+        string payload =
+            new string('x', TerminalCommandRunner.MaxOutputLineChars + 100)
+            + "\ntail\n";
+
+        await using MemoryStream stream = new(System.Text.Encoding.UTF8.GetBytes(payload));
+
+        using StreamReader reader = new(stream);
+
+        List<TerminalOutputEvent> events = [];
+
+        await TerminalCommandRunner.ReadLinesAsync(
+            reader,
+            TerminalOutputKind.StandardOutput,
+            new InlineProgress<TerminalOutputEvent>(events.Add),
+            CancellationToken.None);
+
+        Assert.Equal(2, events.Count);
+
+        Assert.Contains("truncated", events[0].Text, StringComparison.OrdinalIgnoreCase);
+
+        Assert.InRange(
+            events[0].Text.Length,
+            1,
+            TerminalCommandRunner.MaxOutputLineChars + 100);
+
+        Assert.Equal("tail", events[1].Text);
+
+    }
 
     [Fact]
     public async Task RunAsync_EchoesStdout()
@@ -116,6 +148,11 @@ public class TerminalCommandRunnerTests
         public TerminalShellSpec Resolve() =>
             new(Path.Combine(Path.GetTempPath(), $"missing-shell-{Guid.NewGuid():N}"), ["/C"]);
 
+    }
+
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
     }
 
 }
