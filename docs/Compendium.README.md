@@ -160,7 +160,7 @@ valid provider and model. A model's optional `reasoning` object defaults to
 | `features.sagaExtraction` | `bool`, `false` | — | Enables automatic Saga extraction and derives Saga/substrate availability. |
 | `features.semanticSpellRouting` | `bool`, `false` | — | Enables embedding-assisted spell routing and derives embedding-substrate activation. |
 | `features.scrying` | `bool`, `true` | — | Accepts images for vision-capable models. |
-| `features.attachments` | `bool`, `true` | — | Persists session attachments and exposes the attachment tool. |
+| `features.attachments` | `bool`, `true` | — | Persists encrypted session attachment snapshots and exposes `attach_session_file` plus host-authorized `refresh_session_file`; refresh accepts no path, revalidates source provenance and Sanctum, and shares version/byte/reference budgets. |
 | `features.clientTools` | `bool`, `false` | — | Forwards client-declared tools to compatible providers. |
 | `features.webBrowsing` | `bool`, `false` | — | Advertises the native `web_search` and `read_url` tools. The deprecated `browse_web` name remains available only as a compatibility surface. |
 | `features.guardrails` | `bool`, `false` | — | Runs configured input/output guardrails. |

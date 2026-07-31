@@ -134,6 +134,7 @@ namespace RetroDownfall.TheForge.Core.Serialization;
 [JsonSerializable(typeof(PromptCacheRetentionPolicy))]
 [JsonSerializable(typeof(List<Guid>))]
 [JsonSerializable(typeof(IntelligenceEvent))]
+[JsonSerializable(typeof(AttachmentRefreshEvent))]
 [JsonSerializable(typeof(ContextTokenBreakdown))]
 [JsonSerializable(typeof(ContextTokenComponent))]
 [JsonSerializable(typeof(List<ContextTokenComponent>))]

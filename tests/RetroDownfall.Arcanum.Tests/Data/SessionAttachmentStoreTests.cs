@@ -139,6 +139,82 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task PersistRefreshedAsync_changed_source_creates_exactly_one_next_version()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string workspace = Path.Combine(Path.GetTempPath(), "arcanum-refresh-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            Guid sessionId = Guid.NewGuid();
+            string sourcePath = Path.Combine(workspace, "notes.txt");
+            byte[] original = Encoding.UTF8.GetBytes("original");
+            await File.WriteAllBytesAsync(sourcePath, original);
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            SessionAttachmentStore store = new(
+                _db!, Options.Create(_settings), _attachmentsRoot, CreateEncryptedBlobStore(), sourceResolver: resolver);
+            SessionAttachmentRecord first = await store.PersistNewFromSourceAsync(
+                sessionId, null, null, "notes.txt", "notes.txt", original, "text/plain",
+                SessionAttachmentKind.Text, new AttachmentSourceClaim(sourcePath));
+            await File.WriteAllTextAsync(sourcePath, "changed");
+            AttachmentSourceResolution current = await resolver.ResolveCurrentAsync(
+                first.Source!, first.ContentSha256, 1024, static (_, _) => Task.FromResult(true));
+
+            SessionAttachmentRefreshPersistence refreshed = await store.PersistRefreshedAsync(
+                first, Guid.NewGuid(), current);
+            SessionAttachmentRefreshPersistence repeated = await store.PersistRefreshedAsync(
+                refreshed.Record, Guid.NewGuid(), current);
+
+            Assert.True(refreshed.NewVersionCreated);
+            Assert.Equal(2, refreshed.Record.Version);
+            Assert.Equal("changed", Encoding.UTF8.GetString((await store.ReadBytesAsync(refreshed.Record)).Span));
+            Assert.Equal(AttachmentSourceStatus.Refreshable, refreshed.Record.Source!.Status);
+            Assert.False(repeated.NewVersionCreated);
+            Assert.Equal(refreshed.Record.Id, repeated.Record.Id);
+            Assert.Equal(2, (await store.ListBoundAsync(sessionId)).Count);
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task PersistRefreshedAsync_unchanged_source_reuses_latest_without_duplicate()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string workspace = Path.Combine(Path.GetTempPath(), "arcanum-refresh-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            Guid sessionId = Guid.NewGuid();
+            string sourcePath = Path.Combine(workspace, "notes.txt");
+            byte[] original = Encoding.UTF8.GetBytes("unchanged");
+            await File.WriteAllBytesAsync(sourcePath, original);
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+            SessionAttachmentStore store = new(
+                _db!, Options.Create(_settings), _attachmentsRoot, CreateEncryptedBlobStore(), sourceResolver: resolver);
+            SessionAttachmentRecord first = await store.PersistNewFromSourceAsync(
+                sessionId, null, null, "notes.txt", "notes.txt", original, "text/plain",
+                SessionAttachmentKind.Text, new AttachmentSourceClaim(sourcePath));
+            AttachmentSourceResolution current = await resolver.ResolveCurrentAsync(
+                first.Source!, first.ContentSha256, 1024, static (_, _) => Task.FromResult(true));
+
+            SessionAttachmentRefreshPersistence refreshed = await store.PersistRefreshedAsync(first, null, current);
+
+            Assert.False(refreshed.NewVersionCreated);
+            Assert.Equal(first.Id, refreshed.Record.Id);
+            Assert.Single(await store.ListBoundAsync(sessionId));
+        }
+        finally
+        {
+            Directory.Delete(workspace, recursive: true);
+        }
+    }
+
+    [SkippableFact]
     public async Task PersistNewAsync_bound_v1_writes_row_and_bytes_readable()
     {
 

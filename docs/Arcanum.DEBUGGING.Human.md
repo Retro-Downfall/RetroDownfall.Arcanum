@@ -29,7 +29,8 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 | `WizardIntelligenceProvider` (`Api/Intelligence/`) | Turn entry (`ValidateReasoningForCandidate()`); provider resolution (`ProviderResolver.ResolveCandidates()`); model-call execution (`ModelCallExecutor`); context admission (`BuildModelCallContext()`); streaming writer (`InferenceExecuteWriter.WriteStreamAsync()`); interrupted/finalized cleanup (`GrimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync()`); audit (`WriteAuditRecordAsync()`). |
 | `TurnExecutionCoordinator` / `TurnEngine` (`Api/Intelligence/TurnEngine/`) | Semantic source (`ITurnEventSource.RunTurnAsync()`); projection selection (`ITurnPipelineRunner`); commitment tracking (`ProviderAttemptCommitTracker`); budget admission (`TurnAccountingAmbient`); event emission (`TurnEventEmitter`). |
 | `ArcanumDelegateTaskTool` / `SubagentRunner` / `DelegatedManaTracker` (`Api/Intelligence/Tools/` + `Subagents/`) | Parent tool arguments; sterile stateless child request; `MaxSubagentDepth = 1`; provider-call charging; exact budget failure; `subagent` durable operation completion/failure; single terminal telemetry roll-up. |
-| `ToolExecutionPipeline` (`Api/Intelligence/`) | Preflight (`ManaPreflight`), attunement (`BuiltInToolRegistry`), `WardedToolExecution`, `PublicToolFailureMessage`, structured-error logging. |
+| `ToolExecutionPipeline` (`Api/Intelligence/`) | Preflight (`ManaPreflight`), attunement (`BuiltInToolRegistry`), `WardedToolExecution`, `PublicToolFailureMessage`, structured-error logging; `ProcessRefreshSessionFileAsync()` for turn-visible selection, hidden-source Sanctum, MIME/model policy, persistence, structured result, and queued injection. |
+| `AttachmentSourceResolver` / `SessionAttachmentStore` | Refresh path reconstruction from encrypted provenance; canonical/link and path-vs-handle identity; double-read stability; `PersistRefreshedAsync()` hash reuse/new version under existing gates and byte/version budgets. |
 | `GrimoireTurnWriter` (`Api/Intelligence/`) | Turn creation (`TryBeginBufferedAssistantReplyAsync()`); interruption (`ResolveInterruptedAsync()` / `ResolveInterruptedAndMarkFinalizedAsync()`); audit writing. |
 | `SessionEntryPersistence` / `GrimoireRepository` (`Infrastructure/Repositories/`) | Write-lock (`SessionWriteLock.AcquireAsync()`); busy retry (`SqliteBusyRetry`); append (`AppendMandatoryToolInteractionAsync()`); summarization (`GetUnsummarizedEntriesAsync()`); rollup (`CampaignBackedWorkspaceRegistry`). |
 | `CampaignBackedWorkspaceRegistry` / `CampaignRepository` | Registry capacity (`Campaign.MaxReached`); workspace resolution; typed `ICampaignRepository.AddAsync()` return. |
@@ -75,6 +76,15 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     `MoveNextAsync` pending until `WriteSignalStream` observes a keep-alive write. If it stalls, inspect
     the pending-move reuse in `SseStreamWriter.StreamAsync`; do not replace the signal with short
     scheduler delays or a cancellation token that can expire while coverage suspends the process.
+11. **Trace `refresh_session_file`:** begin at the internal MCP selector/schema, then break at
+    `ToolExecutionPipeline.ProcessRefreshSessionFileAsync()`,
+    `AttachmentSourceResolver.ResolveCurrentAsync()`, and
+    `SessionAttachmentStore.PersistRefreshedAsync()`. Confirm the selected id/key was visible at
+    turn start; the model supplied no path; Sanctum sees the actual canonical path before either
+    handle read; both reads hash identically; unchanged content reuses the row; changed content
+    creates one next version; `TryBuildRefreshedContentsAsync()` consumes inject-once only after
+    materialization; and the User extras follow every tool result in the round. Native streams emit
+    `attachmentRefreshed` after `toolResult`; OpenAI streams omit it.
 
 ## Related documents
 

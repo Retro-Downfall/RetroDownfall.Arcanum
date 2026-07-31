@@ -558,6 +558,39 @@ internal sealed partial class ArcanumInternalToolServer
         });
     }
 
+    private static JsonElement BuildRefreshSessionFileSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+            w.WriteStartObject("properties");
+            WriteStringProperty(
+                w,
+                "attachmentId",
+                "ID of a turn-visible attachment bound to the current session.");
+            WriteStringProperty(
+                w,
+                "logicalKey",
+                "Logical key of a turn-visible attachment from the current session attachment index.");
+            w.WriteEndObject();
+
+            w.WriteStartArray("oneOf");
+            w.WriteStartObject();
+            w.WriteStartArray("required");
+            w.WriteStringValue("attachmentId");
+            w.WriteEndArray();
+            w.WriteEndObject();
+            w.WriteStartObject();
+            w.WriteStartArray("required");
+            w.WriteStringValue("logicalKey");
+            w.WriteEndArray();
+            w.WriteEndObject();
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
     private static JsonElement BuildAdjustInitiativeSchema()
     {
         return BuildSchema(static w =>

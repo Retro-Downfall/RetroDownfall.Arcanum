@@ -171,6 +171,14 @@ internal sealed class IntelligenceEventProjection
                     ToolDenied: completed.Denied),
             ],
 
+            AttachmentRefreshed refreshed =>
+            [
+                new IntelligenceEvent(
+                    IntelligenceEventType.AttachmentRefreshed,
+                    "Session attachment source refreshed",
+                    AttachmentRefresh: refreshed.Detail),
+            ],
+
             RunCompleted completed => MapCompleted(completed, includeReasoning: true),
 
             RunFailed failed =>

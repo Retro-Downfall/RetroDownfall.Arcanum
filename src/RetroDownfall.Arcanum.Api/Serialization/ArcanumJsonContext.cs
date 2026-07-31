@@ -86,6 +86,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(DomainType))]
 [JsonSerializable(typeof(IntelligenceEventType))]
 [JsonSerializable(typeof(IntelligenceEvent))]
+[JsonSerializable(typeof(AttachmentRefreshEvent))]
 [JsonSerializable(typeof(McpServerInfo))]
 [JsonSerializable(typeof(McpServerInfo[]))]
 [JsonSerializable(typeof(McpServerState))]

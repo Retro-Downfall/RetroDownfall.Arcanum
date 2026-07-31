@@ -81,6 +81,8 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _attachSessionFileSchema;
 
+    private readonly JsonElement _refreshSessionFileSchema;
+
     private readonly JsonElement _adjustInitiativeSchema;
 
     private readonly JsonElement _sendCommLinkAlertSchema;
@@ -322,6 +324,8 @@ internal sealed partial class ArcanumInternalToolServer
         _readSagaSchema = BuildReadSagaSchema();
 
         _attachSessionFileSchema = BuildAttachSessionFileSchema();
+
+        _refreshSessionFileSchema = BuildRefreshSessionFileSchema();
 
         _adjustInitiativeSchema = BuildAdjustInitiativeSchema();
 
@@ -886,6 +890,15 @@ internal sealed partial class ArcanumInternalToolServer
                         "Re-attach a bound session attachment (text or image) into the next model turn by logical name. Uses the current session only; optional version selects a specific revision (latest when omitted). Content is injected multimodally after the tool result — do not expect image bytes in the tool text.",
                     InputSchema = _attachSessionFileSchema,
                 });
+
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = "refresh_session_file",
+                    Description =
+                        "Securely read the verified workspace source for a turn-visible session attachment, persist or reuse its latest version, and queue that content for the next model request. Select by attachmentId or logicalKey; source paths are host-owned and cannot be supplied or overridden.",
+                    InputSchema = _refreshSessionFileSchema,
+                });
         }
 
         McpToolsListResultWire body = new() { Tools = tools.ToArray() };
@@ -938,7 +951,7 @@ internal sealed partial class ArcanumInternalToolServer
             return BuildToolsCallResponse(rpcId, ToolError("Saga is disabled in configuration."));
         }
 
-        if (call.Name == "attach_session_file" && !_attachmentsToolEnabled)
+        if (call.Name is "attach_session_file" or "refresh_session_file" && !_attachmentsToolEnabled)
         {
             return BuildToolsCallResponse(rpcId, ToolError("Session attachment model tool is disabled in configuration."));
         }

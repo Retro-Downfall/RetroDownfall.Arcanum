@@ -38,6 +38,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -64,7 +65,8 @@ public sealed class ToolExecutionPipeline(
     ISessionAttachmentStore sessionAttachmentStore,
     ILogger<ToolExecutionPipeline> logger,
     IToolResultMaterializer? toolResultMaterializer = null,
-    GrimoireTurnWriter? grimoireTurnWriter = null)
+    GrimoireTurnWriter? grimoireTurnWriter = null,
+    IAttachmentSourceResolver? attachmentSourceResolver = null)
 {
 
     /// <summary>
@@ -108,6 +110,8 @@ public sealed class ToolExecutionPipeline(
 
         public IReadOnlyList<AITool> InferenceTools { get; init; } = [];
 
+        public IReadOnlySet<Guid>? VisibleAttachmentIds { get; init; }
+
         /// <summary>
         /// Full <c>scripts/</c> roots the spell-script tool will resolve against (active spell + resonant
         /// dependencies). The Sanctum preflight validates every candidate root, not just the active spell's.
@@ -131,7 +135,8 @@ public sealed class ToolExecutionPipeline(
         bool Failed = false,
         IReadOnlyList<AIContent>? AdditionalContextContents = null,
         bool ReceiptHandled = false,
-        bool Denied = false);
+        bool Denied = false,
+        AttachmentRefreshEvent? AttachmentRefresh = null);
 
     public static List<FunctionCallContent> CollectActionableFunctionCalls(ChatResponse response)
     {
@@ -466,6 +471,10 @@ public sealed class ToolExecutionPipeline(
 
         IReadOnlyList<AIContent>? additionalContext = null;
 
+        string resultText = wardedExecution.ResultText;
+
+        AttachmentRefreshEvent? attachmentRefresh = null;
+
         bool executedSuccessfully = !wardedExecution.Failed && !wardedExecution.Denied;
 
         if (executedSuccessfully
@@ -527,17 +536,364 @@ public sealed class ToolExecutionPipeline(
 
         }
 
+        else if (executedSuccessfully
+            && string.Equals(toolName, "refresh_session_file", StringComparison.Ordinal))
+        {
+            try
+            {
+                RefreshPostProcess refresh = await ProcessRefreshSessionFileAsync(
+                        fcc,
+                        request,
+                        turnContext,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                resultText = refresh.ResultText;
+                additionalContext = refresh.AdditionalContext;
+                attachmentRefresh = refresh.Event;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (suppressInvocationFailures)
+                {
+                    logger.LogError(
+                        "refresh_session_file post-process failed during inference (tolerated by mode policy); exception type {ExceptionType}, call {ToolCallId}.",
+                        ex.GetType().FullName,
+                        callId);
+                    RecordToolInvocationMetric(toolName, "error");
+                    return new ProcessedToolCall(
+                        callId,
+                        toolName,
+                        argsSnapshot,
+                        PublicToolFailureMessage(toolName),
+                        wardedExecution.WardEvents,
+                        Failed: true);
+                }
+
+                RecordToolInvocationMetric(toolName, "error");
+                throw;
+            }
+        }
+
         return new ProcessedToolCall(
             callId,
             toolName,
             argsSnapshot,
-            wardedExecution.ResultText,
+            resultText,
             wardedExecution.WardEvents,
             wardedExecution.Failed,
             additionalContext,
             applyPatchContext?.ReceiptHandled == true,
-            wardedExecution.Denied);
+            wardedExecution.Denied,
+            attachmentRefresh);
 
+    }
+
+    private sealed record RefreshPostProcess(
+        string ResultText,
+        IReadOnlyList<AIContent>? AdditionalContext,
+        AttachmentRefreshEvent? Event);
+
+    private async Task<RefreshPostProcess> ProcessRefreshSessionFileAsync(
+        FunctionCallContent call,
+        PingRequest request,
+        TurnContext turnContext,
+        CancellationToken cancellationToken)
+    {
+        if (attachmentSourceResolver is null)
+        {
+            throw new InvalidOperationException("No attachment source resolver is available.");
+        }
+
+        if (SessionAttachmentToolAmbient.CurrentSessionId is not { } sessionId)
+        {
+            return RefreshError("session_required", "No current session is available for attachment refresh.");
+        }
+
+        if (!TryParseRefreshSelector(call.Arguments, out Guid? attachmentId, out string? logicalKey))
+        {
+            return RefreshError(
+                "invalid_selector",
+                "Exactly one of attachmentId or logicalKey is required.");
+        }
+
+        IReadOnlyList<SessionAttachmentRecord> bound = await sessionAttachmentStore
+            .ListBoundAsync(sessionId, cancellationToken)
+            .ConfigureAwait(false);
+        IEnumerable<SessionAttachmentRecord> visible = turnContext.VisibleAttachmentIds is { } visibleIds
+            ? bound.Where(row =>
+                visibleIds.Contains(row.Id)
+                || turnContext.AssistantEntryId is { } assistantEntryId
+                    && row.EntryId == assistantEntryId)
+            : bound;
+        SessionAttachmentRecord? selected;
+
+        if (attachmentId is { } id)
+        {
+            selected = visible.FirstOrDefault(row => row.Id == id);
+        }
+        else
+        {
+            List<string> matchingKeys = visible
+                .Select(static row => row.LogicalKey)
+                .Distinct(StringComparer.Ordinal)
+                .Where(key => string.Equals(key, logicalKey, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matchingKeys.Count > 1)
+            {
+                return RefreshError(
+                    "ambiguous_logical_key",
+                    "The logicalKey selector is ambiguous in the current logical turn.");
+            }
+
+            selected = matchingKeys.Count == 1
+                ? bound
+                    .Where(row => string.Equals(row.LogicalKey, matchingKeys[0], StringComparison.Ordinal))
+                    .OrderByDescending(static row => row.Version)
+                    .FirstOrDefault()
+                : null;
+        }
+
+        if (selected is null
+            || selected.State != SessionAttachmentState.Bound
+            || selected.SessionId != sessionId)
+        {
+            return RefreshError(
+                "attachment_not_visible",
+                "The selected attachment is not bound and visible to the current logical turn.");
+        }
+
+        SessionAttachmentRecord latest = bound
+            .Where(row => string.Equals(row.LogicalKey, selected.LogicalKey, StringComparison.Ordinal))
+            .OrderByDescending(static row => row.Version)
+            .First();
+
+        if (latest.Source is not { Kind: AttachmentSourceKind.WorkspaceFile } source
+            || string.IsNullOrWhiteSpace(source.WorkspaceRelativePath)
+            || string.IsNullOrWhiteSpace(source.WorkspaceIdentity))
+        {
+            return RefreshError(
+                "source_unavailable",
+                "The selected attachment is snapshot-only or lacks verified refreshable source metadata.");
+        }
+
+        if (latest.Kind == SessionAttachmentKind.Image
+            && SessionAttachmentToolInjection.ValidateImageAttach(
+                latest,
+                byteLength: 0,
+                settings.Value,
+                request.Model) is { } imagePolicyError)
+        {
+            return RefreshError("image_policy_denied", imagePolicyError);
+        }
+
+        long maxBytes = latest.Kind == SessionAttachmentKind.Image
+            ? ArcanumSettingClamps.ScryingMaxImageBytes(settings.Value.ResolveScrying().MaxImageBytes)
+            : ArcanumSettingClamps.MaxAttachFileSizeBytes(ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+
+        async Task<bool> AuthorizePathAsync(string canonicalPath, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(turnContext.CampaignId))
+            {
+                return true;
+            }
+
+            SanctumResult result = await sanctumGuard.ValidatePathAsync(
+                    turnContext.CampaignId,
+                    canonicalPath,
+                    "attachment source read",
+                    "refresh_session_file",
+                    ct)
+                .ConfigureAwait(false);
+            return result.Allowed || turnContext.SanctumMode == SanctumMode.AuditOnly;
+        }
+
+        AttachmentSourceResolution current = await attachmentSourceResolver.ResolveCurrentAsync(
+                source,
+                latest.ContentSha256,
+                maxBytes,
+                AuthorizePathAsync,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (current.Metadata.Status is not (AttachmentSourceStatus.Refreshable or AttachmentSourceStatus.PriorVersion))
+        {
+            return RefreshError(
+                "source_unavailable",
+                current.Metadata.DiagnosticReason ?? "The attachment source could not be safely refreshed.");
+        }
+
+        string? contentError = ValidateRefreshedContent(latest, current, settings.Value);
+        if (contentError is not null)
+        {
+            return RefreshError("invalid_content", contentError);
+        }
+
+        SessionAttachmentRefreshPersistence persisted;
+        try
+        {
+            persisted = await sessionAttachmentStore.PersistRefreshedAsync(
+                    latest,
+                    turnContext.AssistantEntryId,
+                    current,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return RefreshError("attachment_budget_exhausted", ex.Message);
+        }
+
+        IReadOnlyList<AIContent>? additional = await SessionAttachmentToolInjection
+            .TryBuildRefreshedContentsAsync(
+                sessionAttachmentStore,
+                persisted.Record,
+                settings.Value,
+                request.Model,
+                cancellationToken)
+            .ConfigureAwait(false);
+        bool queued = additional is { Count: > 0 };
+        AttachmentSourceMetadata persistedSource = persisted.Record.Source ?? current.Metadata;
+        DateTimeOffset freshness = persistedSource.LastObservedWriteTime ?? DateTimeOffset.UtcNow;
+        string safePath = SystemPromptBuilder.HardenAttachmentIndexName(
+            persistedSource.WorkspaceRelativePath ?? persisted.Record.OriginalFileName);
+        AttachmentRefreshEvent detail = new(
+            persisted.Record.Id,
+            persisted.Record.LogicalKey,
+            persisted.Record.Version,
+            persisted.NewVersionCreated,
+            queued,
+            safePath,
+            persisted.Record.ContentSha256,
+            persisted.Record.ByteLength,
+            freshness);
+        RefreshSessionFileResultWire wire = new(
+            Success: true,
+            persisted.Record.Id,
+            persisted.Record.LogicalKey,
+            persisted.Record.Version,
+            persisted.NewVersionCreated,
+            queued,
+            safePath,
+            persisted.Record.ContentSha256,
+            persisted.Record.ByteLength,
+            freshness);
+        string text = JsonSerializer.Serialize(
+            wire,
+            McpJsonSerializerContext.Default.RefreshSessionFileResultWire);
+        return new RefreshPostProcess(text, additional, detail);
+    }
+
+    private static RefreshPostProcess RefreshError(string code, string message)
+    {
+        RefreshSessionFileResultWire wire = new(
+            Success: false,
+            AttachmentId: null,
+            LogicalKey: null,
+            Version: null,
+            NewVersionCreated: false,
+            QueuedForInjection: false,
+            SanitizedSourcePath: null,
+            ContentSha256: null,
+            ByteLength: null,
+            SourceFreshnessTimestamp: null,
+            ErrorCode: code,
+            Message: message);
+        return new RefreshPostProcess(
+            JsonSerializer.Serialize(wire, McpJsonSerializerContext.Default.RefreshSessionFileResultWire),
+            AdditionalContext: null,
+            Event: null);
+    }
+
+    private static bool TryParseRefreshSelector(
+        IDictionary<string, object?>? arguments,
+        out Guid? attachmentId,
+        out string? logicalKey)
+    {
+        attachmentId = null;
+        logicalKey = null;
+        if (arguments is null)
+        {
+            return false;
+        }
+
+        foreach ((string key, object? raw) in arguments)
+        {
+            if (string.Equals(key, "attachmentId", StringComparison.OrdinalIgnoreCase))
+            {
+                string? text = raw switch
+                {
+                    Guid guid => guid.ToString("D"),
+                    JsonElement { ValueKind: JsonValueKind.String } json => json.GetString(),
+                    _ => raw?.ToString(),
+                };
+                if (Guid.TryParse(text, out Guid parsed) && parsed != Guid.Empty)
+                {
+                    attachmentId = parsed;
+                }
+            }
+            else if (string.Equals(key, "logicalKey", StringComparison.OrdinalIgnoreCase))
+            {
+                logicalKey = raw switch
+                {
+                    JsonElement { ValueKind: JsonValueKind.String } json => json.GetString()?.Trim(),
+                    _ => raw?.ToString()?.Trim(),
+                };
+            }
+        }
+
+        bool byId = attachmentId is not null;
+        bool byLogical = !string.IsNullOrWhiteSpace(logicalKey);
+        return byId != byLogical;
+    }
+
+    private static string? ValidateRefreshedContent(
+        SessionAttachmentRecord latest,
+        AttachmentSourceResolution current,
+        ArcanumSettings settings)
+    {
+        string mime = current.DetectedMimeType ?? string.Empty;
+        if (latest.Kind == SessionAttachmentKind.Image)
+        {
+            if (!mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+            {
+                return "The refreshed source no longer contains a supported image type.";
+            }
+
+            string[] allowed = settings.ResolveScrying().AllowedMimeTypes ?? [];
+            return allowed.Length == 0 || allowed.Contains(mime, StringComparer.OrdinalIgnoreCase)
+                ? null
+                : $"Image type '{mime}' is not permitted by Scrying policy.";
+        }
+
+        bool textualMime = mime.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
+            || mime is "application/json" or "application/xml" or "application/yaml" or "application/toml";
+        if (!textualMime)
+        {
+            return $"Content type '{mime}' is not a supported textual attachment type.";
+        }
+
+        string[] allowedUploads = settings.ResolveFiles().AllowedMimeTypes ?? [];
+        if (allowedUploads.Length > 0
+            && !allowedUploads.Contains(mime, StringComparer.OrdinalIgnoreCase))
+        {
+            return $"Content type '{mime}' is not permitted by upload MIME policy.";
+        }
+
+        try
+        {
+            string decoded = new UTF8Encoding(false, true).GetString(current.VerifiedBytes.Span);
+            return decoded.Contains('\0', StringComparison.Ordinal)
+                ? "Refreshed textual content contains NUL bytes."
+                : null;
+        }
+        catch (DecoderFallbackException)
+        {
+            return "Refreshed textual content is not valid UTF-8.";
+        }
     }
 
     private static List<FunctionCallContent> CollectFunctionCalls(ChatResponse response)

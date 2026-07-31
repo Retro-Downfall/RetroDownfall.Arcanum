@@ -94,13 +94,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 }, ReadOnlyMemory<byte>.Empty)
             : await _sourceResolver.ResolveForPersistenceAsync(source, bytes, cancellationToken).ConfigureAwait(false);
 
-        SessionAttachmentRecord record = await PersistNewAsync(
+        PersistNewCoreResult persisted = await PersistNewCoreAsync(
             sessionId, pendingTurnId, entryId, logicalNameHint, originalFileName,
-            bytes, mimeType, kind, cancellationToken).ConfigureAwait(false);
-
-        AttachmentSourceMetadata metadata = resolution.Metadata;
-        await UpdateSourceAsync(record.Id, metadata, cancellationToken).ConfigureAwait(false);
-        return record with { Source = metadata };
+            bytes, mimeType, kind, resolution.Metadata, cancellationToken).ConfigureAwait(false);
+        return persisted.Record;
     }
 
     public async Task<SessionAttachmentRecord> PersistNewAsync(
@@ -113,6 +110,84 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         string mimeType,
         SessionAttachmentKind kind,
         CancellationToken cancellationToken = default)
+    {
+        PersistNewCoreResult persisted = await PersistNewCoreAsync(
+            sessionId,
+            pendingTurnId,
+            entryId,
+            logicalNameHint,
+            originalFileName,
+            bytes,
+            mimeType,
+            kind,
+            source: null,
+            cancellationToken).ConfigureAwait(false);
+        return persisted.Record;
+    }
+
+    public async Task<SessionAttachmentRefreshPersistence> PersistRefreshedAsync(
+        SessionAttachmentRecord latest,
+        Guid? entryId,
+        AttachmentSourceResolution current,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(latest);
+        ArgumentNullException.ThrowIfNull(current);
+
+        if (latest.State != SessionAttachmentState.Bound || latest.SessionId is not { } sessionId)
+        {
+            throw new InvalidOperationException("Only a bound session attachment can be refreshed.");
+        }
+
+        if (current.Metadata.Kind != AttachmentSourceKind.WorkspaceFile
+            || current.Metadata.Status is not (AttachmentSourceStatus.Refreshable or AttachmentSourceStatus.PriorVersion)
+            || string.IsNullOrWhiteSpace(current.DetectedMimeType)
+            || string.IsNullOrWhiteSpace(current.Metadata.LastObservedContentSha256))
+        {
+            throw new InvalidOperationException("The current source was not securely resolved with a MIME type.");
+        }
+
+        string verifiedHash = Convert.ToHexString(SHA256.HashData(current.VerifiedBytes.Span));
+        if (!verifiedHash.Equals(
+                current.Metadata.LastObservedContentSha256,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The current source hash does not match the verified bytes.");
+        }
+
+        AttachmentSourceMetadata persistedSource = current.Metadata with
+        {
+            Status = AttachmentSourceStatus.Refreshable,
+            DiagnosticReason = null,
+        };
+        PersistNewCoreResult persisted = await PersistNewCoreAsync(
+            sessionId,
+            pendingTurnId: null,
+            entryId,
+            latest.LogicalKey,
+            latest.OriginalFileName,
+            current.VerifiedBytes,
+            current.DetectedMimeType,
+            latest.Kind,
+            persistedSource,
+            cancellationToken).ConfigureAwait(false);
+
+        return new SessionAttachmentRefreshPersistence(
+            persisted.Record,
+            persisted.NewVersionCreated);
+    }
+
+    private async Task<PersistNewCoreResult> PersistNewCoreAsync(
+        Guid? sessionId,
+        string? pendingTurnId,
+        Guid? entryId,
+        string logicalNameHint,
+        string originalFileName,
+        ReadOnlyMemory<byte> bytes,
+        string mimeType,
+        SessionAttachmentKind kind,
+        AttachmentSourceMetadata? source,
+        CancellationToken cancellationToken)
     {
 
         if (sessionId is null && string.IsNullOrWhiteSpace(pendingTurnId))
@@ -194,8 +269,15 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         if (latest is not null && string.Equals(latest.ContentSha256, contentSha256, StringComparison.OrdinalIgnoreCase))
         {
+            if (source is null)
+            {
+                return new PersistNewCoreResult(latest, NewVersionCreated: false);
+            }
 
-            return latest;
+            await UpdateSourceAsync(latest.Id, source, cancellationToken).ConfigureAwait(false);
+            return new PersistNewCoreResult(
+                latest with { Source = source },
+                NewVersionCreated: false);
 
         }
 
@@ -256,7 +338,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             bytes.Length,
             kind,
             createdAt,
-            Source: null,
+            Source: source,
             EncryptionVersion: descriptor.Version,
             EncryptionKeyId: descriptor.KeyId);
 
@@ -284,9 +366,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         }
 
-        return record;
+        return new PersistNewCoreResult(record, NewVersionCreated: true);
 
     }
+
+    private sealed record PersistNewCoreResult(
+        SessionAttachmentRecord Record,
+        bool NewVersionCreated);
 
     public async Task PromotePendingAsync(
         string pendingTurnId,

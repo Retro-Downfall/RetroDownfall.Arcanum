@@ -49,6 +49,65 @@ public sealed class AttachSessionFileToolTests
 
         Assert.DoesNotContain(tools.Tools, static t => t.Name == "attach_session_file");
 
+        Assert.DoesNotContain(tools.Tools, static t => t.Name == "refresh_session_file");
+
+    }
+
+    [Fact]
+    public async Task ToolsList_RefreshSessionFile_RequiresExactlyOneHostBoundSelector()
+    {
+        await using TestMcpSession session = await CreateSessionAsync(attachmentsToolEnabled: true);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        McpToolDefinitionWire refresh = Assert.Single(
+            tools.Tools,
+            static t => t.Name == "refresh_session_file");
+        JsonElement schema = refresh.InputSchema;
+
+        Assert.False(schema.GetProperty("additionalProperties").GetBoolean());
+        JsonElement.ArrayEnumerator oneOf = schema.GetProperty("oneOf").EnumerateArray();
+        Assert.Collection(
+            oneOf,
+            byId => Assert.Equal("attachmentId", Assert.Single(byId.GetProperty("required").EnumerateArray()).GetString()),
+            byLogical => Assert.Equal("logicalKey", Assert.Single(byLogical.GetProperty("required").EnumerateArray()).GetString()));
+        Assert.False(schema.GetProperty("properties").TryGetProperty("path", out _));
+        Assert.DoesNotContain(
+            SessionAttachmentToolAmbient.OpaqueInvocationTokenArgumentName,
+            schema.GetRawText(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ToolsCall_RefreshSessionFile_RejectsMissingOrMultipleSelectors()
+    {
+        await using TestMcpSession session = await CreateSessionAsync(attachmentsToolEnabled: true);
+        SessionAttachmentToolAmbient.CurrentSessionId = Guid.NewGuid();
+        try
+        {
+            McpToolsCallResultWire missing = await session.CallToolAsync(
+                "refresh_session_file",
+                JsonSerializer.SerializeToElement(new { }));
+            McpToolsCallResultWire multiple = await session.CallToolAsync(
+                "refresh_session_file",
+                JsonSerializer.SerializeToElement(new
+                {
+                    attachmentId = Guid.NewGuid(),
+                    logicalKey = "notes.txt",
+                }));
+
+            Assert.True(missing.IsError);
+            Assert.True(multiple.IsError);
+            Assert.Contains("exactly one", missing.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("exactly one", multiple.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            SessionAttachmentToolAmbient.CurrentSessionId = null;
+        }
     }
 
     [Fact]

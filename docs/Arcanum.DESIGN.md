@@ -206,7 +206,7 @@ Single-host failure behavior:
 
 **MCP (SDK on the wire):** Client/transport uses **`ModelContextProtocol.Core`**; Arcanum owns `IMcpClient` → `SdkMcpClientWrapper`, in-process `ArcanumInternalToolServer` (unchanged handlers/framing), and `IMcpConnectionManager` → `McpConnectionManager` (global + workspace `mcp.json`, caps, trust gate, transport factory). Caps (`MaxPaginationPages` / tools / bytes) and `McpBridgeTool` output/fallback semantics are unchanged. Streamable HTTP via SDK `HttpClientTransport` + SSRF-guarded `HttpClient("McpHttp")`; legacy SSE → `Mcp.SseNotSupported`. Stdio env: strip by default; `inheritEnv` allowlist cannot override absolute denials (`ARCANUM_*`, loader hijacks). Per-request cancel: SDK `notifications/cancelled`; internal server tracks in-flight calls concurrently.
 
-**In-process MCP tools (canonical list):** `read_file_chunk`, `replace_text_block`, `write_file`, `list_directory`, `search_workspace`, `apply_patch`, `workspace_check` (advertised only while eligible on macOS), `execute_command` (no shell; `ArgumentList` only), `ask_human` (streaming attended only), `scribe_lexicon`/`delete_lexicon` (`Arcanum:Features:Lexicon`; delete is Forbidden Art), `search_archives`, `send_commlink_alert`, `petition_dungeon_master`, `adjust_initiative`, `cast_sending` / `dispatch_sending` (Conclave/A2A feature gates), `read_saga` (`Arcanum:Features:Saga`), and `attach_session_file` (`Arcanum:Features:Attachments`; post-tool content injection). `search_workspace` is the exact bounded text-search surface and does not query The Weave. `apply_patch` is bound to a persisted assistant turn. All filesystem tools use `WorkspacePathPolicy`; campaign Sanctum is an additional conditional policy, not the primary containment boundary.
+**In-process MCP tools (canonical list):** `read_file_chunk`, `replace_text_block`, `write_file`, `list_directory`, `search_workspace`, `apply_patch`, `workspace_check` (advertised only while eligible on macOS), `execute_command` (no shell; `ArgumentList` only), `ask_human` (streaming attended only), `scribe_lexicon`/`delete_lexicon` (`Arcanum:Features:Lexicon`; delete is Forbidden Art), `search_archives`, `send_commlink_alert`, `petition_dungeon_master`, `adjust_initiative`, `cast_sending` / `dispatch_sending` (Conclave/A2A feature gates), `read_saga` (`Arcanum:Features:Saga`), and `attach_session_file` / `refresh_session_file` (`Arcanum:Features:Attachments`; post-tool content injection). `search_workspace` is the exact bounded text-search surface and does not query The Weave. `apply_patch` is bound to a persisted assistant turn. All filesystem tools use `WorkspacePathPolicy`; campaign Sanctum is an additional conditional policy, not the primary containment boundary.
 
 **Other DI surfaces:** `AddArcanumInfrastructure`, `AddArcanumDaemonServices`, `AddArcanumEyeOfTheWorld`, `AddArcanumThemeDetection`, Grimoire/`Chronosync`/`CampaignLoggerQueue`/`Loremaster`, `InMemoryEventBus`, Comm Link multiplex/webhook.
 
@@ -1198,7 +1198,7 @@ The intelligence layer follows a **provider pattern**: `Core` defines `IArcanumI
 
 **Reasoning separation and safety:** Answer and ephemeral reasoning have independent accumulators. Reasoning never enters answer token accumulation, structured-output validation, `PromptTurnResult.Text`, Grimoire assistant entries, audit/log text, or persistence. Client-safe reasoning projects only when the resolved model allows the requested output (and, for live frames, declares streaming support). MEAI `TextReasoningContent.ProtectedData` may remain on the raw in-memory assistant message only so the **same provider** can continue after a tool result; it is never projected, logged, audited, traced, exported, or stored. Buffered guardrails and strict structured-output mode hold both answer and reasoning frames until validation succeeds. Corrective strict calls discard the rejected candidate's reasoning/answer and release only the accepted replacement; output guardrails inspect the accepted answer plus projectable reasoning. Explicit guardrail passthrough retains its existing leakage warning. Reasoning is not transferred from the Master to Apprentices, Apprentice prompts/checkpoints/results, or Chronicle persistence.
 
-**Streaming:** `StreamPromptAsync` yields `IntelligenceEvent` objects — `status` (model checks), `sessionBound` (canonical session id; `conversationBound` emitted as deprecated alias), `reasoning` (typed client-safe reasoning, separate from answer), `token` (incremental answer text), `toolCall` / `toolResult` (tool execution diagnostics), `toolError` (tolerated unexpected tool exception; §10.2.1), `warded` / `wardResolved` (Forbidden Arts gate; §11.14), **`result`** (structured **`usage`** plus legacy **`data`** total string), `error`.
+**Streaming:** `StreamPromptAsync` yields `IntelligenceEvent` objects — `status` (model checks), `sessionBound` (canonical session id; `conversationBound` emitted as deprecated alias), `reasoning` (typed client-safe reasoning, separate from answer), `token` (incremental answer text), `toolCall` / `toolResult` (tool execution diagnostics), `toolError` (tolerated unexpected tool exception; §10.2.1), `attachmentRefreshed` (sanitized native refresh observability; ignored by OpenAI projections), `warded` / `wardResolved` (Forbidden Arts gate; §11.14), **`result`** (structured **`usage`** plus legacy **`data`** total string), `error`.
 
 **Forbidden Arts (wards):** After the hub emits `toolCall` for a gated tool, `ExecuteToolCallWithWardAsync` may emit `warded`, block on **`IWard.WardAsync`** until the operator resolves via **`POST /api/wards/{id}`** or the code-owned wait expires, then emit `wardResolved` and either execute the tool or feed a synthetic denial as `toolResult`. Per-campaign, **`CampaignSettings.RequireWardForForbiddenArts`** defaults to **`true`** on newly registered campaigns; set `false` via `PUT /api/campaigns/{id}` to opt out. When no campaign matches `WorkingDirectory`, wards apply when `Arcanum:Security:Ward:Enabled` is true.
 
@@ -1323,11 +1323,17 @@ the file content is an `ARCABLOB` authenticated-encryption envelope, not plainte
 permissions remain defense in depth. Dedupe uses the plaintext SHA-256 retained inside SQLCipher
 (identical bytes → reuse id, no new `vN`).
 
-**System prompt index:** metadata-only `### Session Attachments Index` (bounded by `MaxIndexItemsInPrompt` / `MaxIndexBytesInPrompt`); no bytes. Model pulls content via MCP `attach_session_file` (or the operator via `/attachments add`).
+**System prompt index:** metadata-only `### Session Attachments Index` (bounded by `MaxIndexItemsInPrompt` / `MaxIndexBytesInPrompt`); no bytes. Model pulls snapshot content via MCP `attach_session_file`, requests the verified live source via `refresh_session_file`, or the operator uses `/attachments add`.
 
-**Turn budget / injection:** the code-owned per-turn reference cap is shared by user `AttachmentReferences` and model `attach_session_file` injections. Each logical key+version is injected **once** per turn (subsequent tool rounds do not re-inject). Image re-attach requires `Arcanum:Features:Scrying` and a model with `SupportsVision`; oversize images are **rejected, never truncated**.
+**Turn budget / injection:** the code-owned per-turn reference cap is shared by user `AttachmentReferences` and model `attach_session_file` / `refresh_session_file` injections. Each logical key+version is injected **once** per turn (subsequent tool rounds do not re-inject). Image re-attach or refresh requires `Arcanum:Features:Scrying`, an allowed image MIME, and a model with `SupportsVision`; oversize images are **rejected, never truncated**.
 
 **Model tool:** `attach_session_file` is an **internal MCP** tool (attunement-aware). After a **successful** call (`!Failed && !Denied` — Ward/Sanctum denials and tool failures do not inject), a dedicated post-tool path materializes `TextContent` / `DataContent`, then atomically consumes the turn budget / inject-once mark, and queues content for the **next** inference round. User extras from a multi-tool model response are appended **only after** every tool call and tool result from that round are on the transcript (never interleaved between tool exchanges). Injected/rehydrated text is framed as untrusted DATA (adaptive fences); attachment headings harden hostile path characters. Unexpected post-processing failures follow the code-owned tolerant mode policy and never partially inject.
+
+`refresh_session_file` is the corresponding host-authorized live-source tool. Its hand-authored schema accepts exactly one `attachmentId` or `logicalKey`; session, source path, model, campaign, assistant Entry, and turn-visible attachment set are host-owned. It resolves only a Bound current-session attachment visible when the logical turn began. A case-insensitive logical-key match that names more than one case-distinct key fails as ambiguous. Snapshot-only, missing, inaccessible, unsafe, changed-workspace, or corrupt provenance fails closed with a structured result.
+
+The source resolver reconstructs only the stored workspace-relative provenance, verifies workspace identity and lexical/canonical containment, rejects a changed symlink target, compares path and open-handle identities, applies Sanctum to the actual canonical source, and reads from that handle under a kind-specific byte cap. It reads the handle twice and requires identical hashes so a file changing during the read is rejected. MIME and strict UTF-8/Scrying/vision policy are reapplied before persistence. A hash matching the latest Bound version reuses its row and encrypted blob; changed bytes use the existing session/logical-key gates to enforce `MaxBytesPerSession` and `MaxVersionsPerLogicalKey` while atomically inserting the next version with current hash, MIME, length, source observations, timestamp, and assistant Entry binding.
+
+The structured result reports attachment id, logical key, version, creation/queue booleans, sanitized relative source path, hash, byte length, freshness time, and bounded error information. Refreshed text is untrusted DATA labeled with sanitized filename, logical key, version, and freshness. The original user Entry is never rewritten. `refresh_session_file` participates in Artifact Attunement and `ToolPolicy.ReadOnlyTools`; it is not intrinsically Warded or a default Forbidden Art, but operator-configured Forbidden Arts still apply. Sanctum always evaluates the hidden resolved source when a campaign exists. Successful refreshes emit native `attachmentRefreshed`; OpenAI projections intentionally ignore it.
 
 **Metadata invariants:** `SessionAttachments` is installed by the embedded
 `20260719180000_AddSessionAttachments` script and accessed through scoped
@@ -1365,6 +1371,10 @@ unsafe, changed-workspace, or corrupt metadata changes source status without del
 snapshot bytes. Forks copy source metadata with the snapshot and revalidation applies in the fork.
 Watcher-based rename repair is an optional future optimization; correctness never depends on a
 watcher.
+
+The complete per-round ordering is maintained in [Arcanum.CHAT-LOOP.md](Arcanum.CHAT-LOOP.md): a
+tool result cannot alter the provider request that produced it, so refreshed content is appended
+only to the next request in the same logical turn and only after the round's complete tool transcript.
 
 The source columns are part of the canonical hand-authored
 `20260719180000_AddSessionAttachments.sql` table definition and remain outside the compiled EF
@@ -1691,7 +1701,10 @@ chat loop:
    reasoning, followed by a tool message containing `FunctionResultContent(callId, resultText)`.
 10. Persist the tool interaction for stateful turns and publish it to the live Session hub, subject
     to the mandatory `apply_patch` receipt path below. Reasoning is not persisted.
-11. Return to step 2 with the augmented message list.
+11. After every call/result pair in the round is appended, add any queued `attach_session_file` or
+    `refresh_session_file` `TextContent` / `DataContent` as one User message. Never interleave this
+    content between tool exchanges.
+12. Return to step 2 with the augmented message list.
 
 There is no arbitrary model-call, tool-round, correction-attempt, step, run, or turn-duration cap.
 Changing evidence may continue until terminal output, client-tool forwarding, caller/host
@@ -1760,8 +1773,9 @@ including protected-only or withheld reasoning.
 After each streamed round: combine updates → accumulate usage → collect calls → either finish,
 forward calls, or for each server call emit `toolCall`, Ward frames, optional `toolError`, and
 `toolResult`, append/persist the exchange, then start a fresh admitted model call. Successful
-`attach_session_file` content is queued only after every tool result in that round and appears in the
-next round.
+`attach_session_file` and `refresh_session_file` content is queued only after every tool result in
+that round and appears in the next round. A successful refresh additionally emits the native
+`attachmentRefreshed` frame after its `toolResult`; OpenAI SSE omits that native-only event.
 
 Output guardrails use the code-owned buffered policy. Guardrails or
 `response_format.json_schema.strict:true` hold answer and reasoning runs together in provider order.

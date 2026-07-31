@@ -134,6 +134,7 @@ public static class IntelligenceEventDiscriminator
         "warded",
         "wardResolved",
         "toolError",
+        "attachmentRefreshed",
     ];
 }
 

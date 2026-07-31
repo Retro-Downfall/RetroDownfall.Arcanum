@@ -98,6 +98,10 @@ internal sealed record ToolInvocationCompleted(
     TimeSpan Duration,
     bool AttachmentPostProcessed) : TurnEvent(Correlation);
 
+internal sealed record AttachmentRefreshed(
+    TurnEventCorrelation Correlation,
+    AttachmentRefreshEvent Detail) : TurnEvent(Correlation);
+
 internal sealed record OutputValidated(
     TurnEventCorrelation Correlation,
     bool Passed,

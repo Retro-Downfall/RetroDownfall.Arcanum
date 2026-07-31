@@ -114,6 +114,58 @@ public static class SessionAttachmentToolInjection
 
     }
 
+    public static async Task<IReadOnlyList<AIContent>?> TryBuildRefreshedContentsAsync(
+        ISessionAttachmentStore store,
+        SessionAttachmentRecord record,
+        ArcanumSettings settings,
+        string? requestModel,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentNullException.ThrowIfNull(settings);
+
+        if (record.State != SessionAttachmentState.Bound
+            || record.SessionId is null
+            || string.IsNullOrWhiteSpace(record.RelativePath)
+            || Path.IsPathRooted(record.RelativePath)
+            || record.RelativePath.Contains("..", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        ReadOnlyMemory<byte> bytes = await store.ReadBytesAsync(record, cancellationToken)
+            .ConfigureAwait(false);
+        string label = RefreshedFrameLabel(record);
+        List<AIContent> contents;
+
+        if (record.Kind == SessionAttachmentKind.Image)
+        {
+            if (ValidateImageAttach(record, bytes.Length, settings, requestModel) is not null)
+            {
+                return null;
+            }
+
+            contents =
+            [
+                new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(label)),
+                new DataContent(bytes, record.MimeType),
+            ];
+        }
+        else
+        {
+            string text = DecodeTextWithByteBound(
+                bytes,
+                ArcanumSettingClamps.MaxAttachFileSizeBytes(
+                    ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes));
+            contents = [new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))];
+        }
+
+        return SessionAttachmentTurnBudget.TryConsumeAndMarkInjected(record.LogicalKey, record.Version)
+            ? contents
+            : null;
+    }
+
     private static string FrameLabel(SessionAttachmentRecord record)
     {
 
@@ -131,6 +183,15 @@ public static class SessionAttachmentToolInjection
 
         return hardened;
 
+    }
+
+    private static string RefreshedFrameLabel(SessionAttachmentRecord record)
+    {
+        string fileName = FrameLabel(record);
+        string logicalKey = SystemPromptBuilder.HardenAttachmentIndexName(record.LogicalKey);
+        string freshness = record.Source?.LastObservedWriteTime?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
+            ?? "unknown";
+        return $"{fileName} | logicalKey={logicalKey} | version={record.Version.ToString(CultureInfo.InvariantCulture)} | sourceFreshness={freshness}";
     }
 
     /// <summary>Shared image gate for user rehydrate and model inject.</summary>
@@ -153,8 +214,7 @@ public static class SessionAttachmentToolInjection
             return $"Model '{requestModel ?? "(default)"}' does not support vision. Use a vision-capable model.";
         }
 
-        long maxImageBytes = ArcanumSettingClamps.ScryingMaxImageBytes(
-            ArcanumRuntimeDefaults.Scrying.MaxImageBytes);
+        long maxImageBytes = ArcanumSettingClamps.ScryingMaxImageBytes(scrying.MaxImageBytes);
 
         if (byteLength > maxImageBytes)
         {

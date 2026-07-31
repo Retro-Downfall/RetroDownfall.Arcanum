@@ -287,6 +287,13 @@ Summaries only — full contracts live in DESIGN.
   folded into the canonical database creation script, so upgrading installations must recreate the
   database. Full contract: [§10.2.4](Arcanum.DESIGN.md#1024-scrying--the-visionmultimodality-capability-gate) /
   [§10.2.5](Arcanum.DESIGN.md#1025-session-attachments-disk--grimoire-pointers).
+  The attunement-aware `refresh_session_file` tool accepts an attachment id or logical key—not a
+  path—securely rereads verified workspace provenance through an identity-checked handle, reuses an
+  unchanged version or persists the next encrypted version, and queues it after the complete tool
+  round for the next request in the same logical turn. It shares attachment byte/version/reference
+  budgets, inject-once behavior, MIME/Scrying/vision checks, and Sanctum enforcement. Native NDJSON
+  exposes sanitized `attachmentRefreshed` observability; OpenAI projections ignore it. See
+  [the chat-loop ordering guide](Arcanum.CHAT-LOOP.md).
 - **A2A:** [§5.7.1](Arcanum.DESIGN.md#571-a2a-and-the-conclave) (disabled by default).
 - **RAG (Weave / Divination / Saga):** [§21](Arcanum.DESIGN.md#21-the-weave-divination-and-saga-rag) — capabilities are gated under `Arcanum:Features`; embedding provider/model/dimensions and the codebase watcher debounce/count/reconciliation controls live under `Arcanum:Integrations:Embeddings`. Semantic workspace indexing reacts to debounced recursive watcher events, revalidates paths and opened file identities before every read, retains bounded periodic reconciliation when events are lost/unavailable, and exposes watcher/reconciliation health through `/api/workspaces/{id}/files/index/status`.
 - **Lexicon:** agent memory via `scribe_lexicon` / `delete_lexicon`; gated by `Arcanum:Features:Lexicon`. [§10.6](Arcanum.DESIGN.md#106-the-lexicon--agent-directed-entity-memory).

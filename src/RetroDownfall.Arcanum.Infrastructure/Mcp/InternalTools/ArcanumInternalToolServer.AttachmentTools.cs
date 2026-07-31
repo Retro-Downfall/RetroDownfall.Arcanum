@@ -16,6 +16,93 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 internal sealed partial class ArcanumInternalToolServer
 {
 
+    private async Task<McpToolsCallResultWire> ExecuteRefreshSessionFileAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        RefreshSessionFileParams? args;
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.RefreshSessionFileParams);
+        }
+        catch (JsonException ex)
+        {
+            _logger?.LogError(ex, "refresh_session_file argument deserialization failed.");
+            return ToolError("Invalid arguments for refresh_session_file.");
+        }
+
+        bool byId = args?.AttachmentId is { } id && id != Guid.Empty;
+        bool byLogical = !string.IsNullOrWhiteSpace(args?.LogicalKey);
+        if (byId == byLogical)
+        {
+            return ToolError("refresh_session_file requires exactly one of 'attachmentId' or 'logicalKey'.");
+        }
+
+        if (SessionAttachmentToolAmbient.CurrentSessionId is not { } sessionId)
+        {
+            return ToolError("No current session; cannot refresh a session file.");
+        }
+
+        try
+        {
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+            ISessionAttachmentStore store = scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
+            SessionAttachmentRecord? record;
+
+            if (byId)
+            {
+                record = await store.GetByIdAsync(args!.AttachmentId!.Value, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                IReadOnlyList<SessionAttachmentRecord> bound = await store
+                    .ListBoundAsync(sessionId, cancellationToken)
+                    .ConfigureAwait(false);
+                List<IGrouping<string, SessionAttachmentRecord>> matches = bound
+                    .GroupBy(static row => row.LogicalKey, StringComparer.Ordinal)
+                    .Where(group => string.Equals(
+                        group.Key,
+                        args!.LogicalKey!.Trim(),
+                        StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (matches.Count > 1)
+                {
+                    return ToolError("The logicalKey selector is ambiguous in the current session.");
+                }
+
+                record = matches.Count == 1
+                    ? matches[0].OrderByDescending(static row => row.Version).First()
+                    : null;
+            }
+
+            if (record is null
+                || record.State != SessionAttachmentState.Bound
+                || record.SessionId != sessionId)
+            {
+                return ToolError("The selected attachment is not bound to the current session.");
+            }
+
+            if (record.Source is not { Kind: AttachmentSourceKind.WorkspaceFile })
+            {
+                return ToolError("The selected attachment is snapshot-only and cannot be refreshed.");
+            }
+
+            return CapToolTextResult(
+                $"Refresh accepted for '{record.LogicalKey}'. Secure source processing will complete before the next model request.",
+                "refresh_session_file");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "refresh_session_file selector validation failed.");
+            return ToolError("An internal error occurred during tool execution.");
+        }
+    }
+
     private async Task<McpToolsCallResultWire> ExecuteAttachSessionFileAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)

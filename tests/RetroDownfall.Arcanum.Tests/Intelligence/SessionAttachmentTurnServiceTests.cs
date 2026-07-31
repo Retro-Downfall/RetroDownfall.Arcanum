@@ -108,6 +108,42 @@ public sealed class SessionAttachmentTurnServiceTests
     }
 
     [Fact]
+    public async Task PrepareAsync_VisibleIdsIncludeOnlyPromptIndexedOrExplicitAttachments()
+    {
+        Guid sessionId = Guid.NewGuid();
+        Guid indexedId = Guid.NewGuid();
+        Guid hiddenId = Guid.NewGuid();
+        SessionAttachmentRecord indexed = FakeSessionAttachmentStore.BoundRecord(indexedId, sessionId, "indexed");
+        SessionAttachmentRecord hidden = FakeSessionAttachmentStore.BoundRecord(hiddenId, sessionId, "hidden");
+        FakeSessionAttachmentStore store = new()
+        {
+            IndexItems =
+            [
+                new SessionAttachmentIndexItem(
+                    indexed.LogicalKey,
+                    indexed.OriginalFileName,
+                    [indexed.Version],
+                    indexed.Kind,
+                    indexed.ByteLength),
+            ],
+        };
+        store.Records[indexedId] = indexed;
+        store.Records[hiddenId] = hidden;
+
+        SessionAttachmentTurnPreparation prep = await SessionAttachmentTurnService.PrepareAsync(
+            new PingRequest("hi", SessionId: sessionId),
+            store,
+            new ArcanumSettings(),
+            turnSessionId: sessionId,
+            turnEntryId: null,
+            pendingTurnId: null);
+
+        Assert.Null(prep.ErrorMessage);
+        Guid visible = Assert.Single(Assert.IsAssignableFrom<IReadOnlySet<Guid>>(prep.VisibleAttachmentIds));
+        Assert.Equal(indexedId, visible);
+    }
+
+    [Fact]
     public async Task PrepareAsync_UsesPendingWhenNoSessionId()
     {
 
@@ -442,6 +478,8 @@ public sealed class SessionAttachmentTurnServiceTests
 
         public Guid? IndexSessionId { get; init; }
 
+        public IReadOnlyList<SessionAttachmentIndexItem>? IndexItems { get; init; }
+
         public Dictionary<Guid, SessionAttachmentRecord> Records { get; } = new();
 
         public Dictionary<Guid, ReadOnlyMemory<byte>> BytesById { get; } = new();
@@ -481,7 +519,7 @@ public sealed class SessionAttachmentTurnServiceTests
 
             Guid id = Guid.NewGuid();
 
-            return Task.FromResult(new SessionAttachmentRecord(
+            SessionAttachmentRecord record = new(
                 id,
                 sessionId,
                 entryId,
@@ -495,7 +533,11 @@ public sealed class SessionAttachmentTurnServiceTests
                 mimeType,
                 bytes.Length,
                 kind,
-                DateTimeOffset.UtcNow));
+                DateTimeOffset.UtcNow);
+
+            Records[id] = record;
+            BytesById[id] = bytes.ToArray();
+            return Task.FromResult(record);
 
         }
 
@@ -526,13 +568,22 @@ public sealed class SessionAttachmentTurnServiceTests
         public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
             Guid sessionId,
             CancellationToken cancellationToken = default) =>
-            throw new NotImplementedException();
+            Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(
+                Records.Values
+                    .Where(record => record.SessionId == sessionId
+                        && record.State == SessionAttachmentState.Bound)
+                    .ToList());
 
         public Task<IReadOnlyList<SessionAttachmentIndexItem>> BuildIndexAsync(
             Guid sessionId,
             int maxItems,
             CancellationToken cancellationToken = default)
         {
+
+            if (IndexItems is not null)
+            {
+                return Task.FromResult(IndexItems);
+            }
 
             if (IndexSessionId is { } expected && expected == sessionId)
             {
@@ -545,6 +596,23 @@ public sealed class SessionAttachmentTurnServiceTests
             return Task.FromResult<IReadOnlyList<SessionAttachmentIndexItem>>([]);
 
         }
+
+        internal static SessionAttachmentRecord BoundRecord(Guid id, Guid sessionId, string logicalKey) =>
+            new(
+                id,
+                sessionId,
+                EntryId: null,
+                PendingTurnId: null,
+                SessionAttachmentState.Bound,
+                logicalKey,
+                $"{logicalKey}.txt",
+                Version: 1,
+                RelativePath: $"session/{sessionId:N}/{logicalKey}/v1.txt",
+                ContentSha256: "HASH",
+                MimeType: "text/plain",
+                ByteLength: 4,
+                SessionAttachmentKind.Text,
+                DateTimeOffset.UtcNow);
 
         public Task<ReadOnlyMemory<byte>> ReadBytesAsync(
             SessionAttachmentRecord record,

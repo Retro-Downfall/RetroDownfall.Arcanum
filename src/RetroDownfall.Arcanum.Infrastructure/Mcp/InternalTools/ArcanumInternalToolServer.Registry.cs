@@ -63,6 +63,8 @@ internal sealed partial class ArcanumInternalToolServer
 
             ["attach_session_file"] = ExecuteAttachSessionFileAsync,
 
+            ["refresh_session_file"] = ExecuteRefreshSessionFileAsync,
+
         };
 
         return handlers;

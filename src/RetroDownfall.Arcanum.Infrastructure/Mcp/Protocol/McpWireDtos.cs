@@ -299,6 +299,28 @@ public sealed record AttachSessionFileParams(
     [property: JsonPropertyName("version")] int? Version = null);
 
 /// <summary>
+/// Arguments for <c>refresh_session_file</c>. Exactly one selector is accepted; session and source
+/// path are host-owned ambient state and never appear in this model-visible contract.
+/// </summary>
+public sealed record RefreshSessionFileParams(
+    [property: JsonPropertyName("attachmentId")] Guid? AttachmentId = null,
+    [property: JsonPropertyName("logicalKey")] string? LogicalKey = null);
+
+public sealed record RefreshSessionFileResultWire(
+    [property: JsonPropertyName("success")] bool Success,
+    [property: JsonPropertyName("attachmentId")] Guid? AttachmentId,
+    [property: JsonPropertyName("logicalKey")] string? LogicalKey,
+    [property: JsonPropertyName("version")] int? Version,
+    [property: JsonPropertyName("newVersionCreated")] bool NewVersionCreated,
+    [property: JsonPropertyName("queuedForInjection")] bool QueuedForInjection,
+    [property: JsonPropertyName("sourcePath")] string? SanitizedSourcePath,
+    [property: JsonPropertyName("contentSha256")] string? ContentSha256,
+    [property: JsonPropertyName("byteLength")] long? ByteLength,
+    [property: JsonPropertyName("sourceFreshnessTimestamp")] DateTimeOffset? SourceFreshnessTimestamp,
+    [property: JsonPropertyName("errorCode")] string? ErrorCode = null,
+    [property: JsonPropertyName("message")] string? Message = null);
+
+/// <summary>
 /// Arguments accepted by the in-process <c>adjust_initiative</c> tool (Unseen Servant dynamic polling).
 /// </summary>
 public sealed record AdjustInitiativeArgs
@@ -426,4 +448,3 @@ public sealed record DispatchSendingResultWire
     public string? Error { get; init; }
 
 }
-

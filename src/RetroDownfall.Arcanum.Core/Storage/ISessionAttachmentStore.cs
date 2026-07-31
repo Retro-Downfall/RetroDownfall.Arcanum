@@ -69,7 +69,12 @@ public sealed record AttachmentSourceClaim(string AbsolutePath);
 
 public sealed record AttachmentSourceResolution(
     AttachmentSourceMetadata Metadata,
-    ReadOnlyMemory<byte> VerifiedBytes);
+    ReadOnlyMemory<byte> VerifiedBytes,
+    string? DetectedMimeType = null);
+
+public delegate Task<bool> AttachmentSourcePathAuthorizer(
+    string canonicalPath,
+    CancellationToken cancellationToken);
 
 public interface IAttachmentSourceResolver
 {
@@ -81,6 +86,14 @@ public interface IAttachmentSourceResolver
     Task<AttachmentSourceMetadata> RevalidateAsync(
         AttachmentSourceMetadata source,
         CancellationToken cancellationToken = default);
+
+    Task<AttachmentSourceResolution> ResolveCurrentAsync(
+        AttachmentSourceMetadata source,
+        string expectedSnapshotSha256,
+        long maxBytes,
+        AttachmentSourcePathAuthorizer authorizeCanonicalPath,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Current attachment source reads are not supported by this resolver.");
 }
 
 public sealed record SessionAttachmentRecord(
@@ -117,6 +130,10 @@ public sealed record SessionAttachmentForkCopyPlan(
     Guid NewAttachmentId,
     Guid? NewEntryId);
 
+public sealed record SessionAttachmentRefreshPersistence(
+    SessionAttachmentRecord Record,
+    bool NewVersionCreated);
+
 public interface ISessionAttachmentStore
 {
 
@@ -152,6 +169,13 @@ public interface ISessionAttachmentStore
             mimeType,
             kind,
             cancellationToken);
+
+    Task<SessionAttachmentRefreshPersistence> PersistRefreshedAsync(
+        SessionAttachmentRecord latest,
+        Guid? entryId,
+        AttachmentSourceResolution current,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Attachment source refresh persistence is not supported by this store.");
 
     Task PromotePendingAsync(string pendingTurnId, Guid sessionId, Guid? entryId, CancellationToken cancellationToken = default);
 

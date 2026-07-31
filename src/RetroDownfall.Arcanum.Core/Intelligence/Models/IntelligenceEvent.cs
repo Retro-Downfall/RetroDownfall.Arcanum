@@ -37,6 +37,9 @@ public sealed record IntelligenceEvent(
     [property: JsonPropertyName("contextBreakdown")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     ContextTokenBreakdown? ContextBreakdown = null,
+    [property: JsonPropertyName("attachmentRefresh")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    AttachmentRefreshEvent? AttachmentRefresh = null,
     [property: JsonIgnore]
     bool ToolDenied = false)
 {
@@ -58,3 +61,15 @@ public sealed record IntelligenceToolCallEvent(
     string ArgumentsJson,
     int Index = 0,
     [property: JsonIgnore] bool PreserveProviderCallId = false);
+
+/// <summary>Sanitized native event payload for <c>refresh_session_file</c>.</summary>
+public sealed record AttachmentRefreshEvent(
+    Guid AttachmentId,
+    string LogicalKey,
+    int Version,
+    bool NewVersionCreated,
+    bool QueuedForInjection,
+    string SanitizedSourcePath,
+    string ContentSha256,
+    long ByteLength,
+    DateTimeOffset SourceFreshnessTimestamp);

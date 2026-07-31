@@ -177,6 +177,30 @@ public sealed class TurnProjectionSemanticTests
     }
 
     [Fact]
+    public void AttachmentRefreshed_ProjectsToNativeNdjson_AndOpenAiIgnoresIt()
+    {
+        AttachmentRefreshEvent detail = new(
+            Guid.NewGuid(),
+            "notes.txt",
+            2,
+            NewVersionCreated: true,
+            QueuedForInjection: true,
+            "notes.txt",
+            "ABC123",
+            12,
+            DateTimeOffset.UtcNow);
+        AttachmentRefreshed refreshed = new(Correlation(1), detail);
+
+        IntelligenceEvent native = Assert.Single(IntelligenceEventProjection.Map(refreshed));
+        Assert.Equal(IntelligenceEventType.AttachmentRefreshed, native.Type);
+        Assert.Equal(detail, native.AttachmentRefresh);
+
+        Channel<OpenAiChatChunk> channel = Channel.CreateUnbounded<OpenAiChatChunk>();
+        OpenAiSseProjection openAi = new(channel.Writer, "chatcmpl-refresh", "model", 1);
+        Assert.Empty(openAi.Map(refreshed));
+    }
+
+    [Fact]
     public void IntelligenceEventProjection_NonTransportSemanticEvents_AreFiltered()
     {
         Error error = new(ErrorCodes.Hub.Error, "detail");

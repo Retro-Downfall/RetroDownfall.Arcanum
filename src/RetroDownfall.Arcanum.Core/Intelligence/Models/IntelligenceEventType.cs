@@ -55,4 +55,8 @@ public enum IntelligenceEventType
     /// </summary>
     [JsonStringEnumMemberName("toolError")]
     ToolError,
+
+    /// <summary>Native observability frame emitted after a session source refresh is processed.</summary>
+    [JsonStringEnumMemberName("attachmentRefreshed")]
+    AttachmentRefreshed,
 }

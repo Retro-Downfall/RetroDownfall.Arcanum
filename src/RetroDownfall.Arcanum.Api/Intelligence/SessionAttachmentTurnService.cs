@@ -89,6 +89,7 @@ public static class SessionAttachmentTurnService
 
             string? effectivePending = sessionId is null ? pendingTurnId : null;
             Guid? entryId = turnEntryId;
+            HashSet<Guid> explicitlyVisibleAttachmentIds = [];
 
             if (request.AttachedFiles is { Count: > 0 })
             {
@@ -105,7 +106,7 @@ public static class SessionAttachmentTurnService
 
                     operation = "persist-text";
 
-                    await store
+                    SessionAttachmentRecord persisted = await store
                         .PersistNewAsync(
                             sessionId,
                             effectivePending,
@@ -117,6 +118,7 @@ public static class SessionAttachmentTurnService
                             SessionAttachmentKind.Text,
                             cancellationToken)
                         .ConfigureAwait(false);
+                    explicitlyVisibleAttachmentIds.Add(persisted.Id);
                 }
             }
 
@@ -145,7 +147,7 @@ public static class SessionAttachmentTurnService
 
                     operation = "persist-image";
 
-                    await store
+                    SessionAttachmentRecord persisted = await store
                         .PersistNewAsync(
                             sessionId,
                             effectivePending,
@@ -157,6 +159,7 @@ public static class SessionAttachmentTurnService
                             SessionAttachmentKind.Image,
                             cancellationToken)
                         .ConfigureAwait(false);
+                    explicitlyVisibleAttachmentIds.Add(persisted.Id);
                 }
             }
 
@@ -190,6 +193,8 @@ public static class SessionAttachmentTurnService
                             effectivePending,
                             $"Attachment '{attachmentId}' is not a bound attachment for this session.");
                     }
+
+                    explicitlyVisibleAttachmentIds.Add(record.Id);
 
                     operation = "read-reference";
 
@@ -256,6 +261,8 @@ public static class SessionAttachmentTurnService
 
             IReadOnlyList<SessionAttachmentIndexItem> indexItems = [];
 
+            IReadOnlySet<Guid>? visibleAttachmentIds = null;
+
             if (sessionId is { } boundSessionId)
             {
                 operation = "build-index";
@@ -266,13 +273,24 @@ public static class SessionAttachmentTurnService
                 indexItems = await store
                     .BuildIndexAsync(boundSessionId, maxItems, cancellationToken)
                     .ConfigureAwait(false);
+
+                HashSet<string> indexedLogicalKeys = indexItems
+                    .Select(static item => item.LogicalKey)
+                    .ToHashSet(StringComparer.Ordinal);
+                explicitlyVisibleAttachmentIds.UnionWith((await store
+                        .ListBoundAsync(boundSessionId, cancellationToken)
+                        .ConfigureAwait(false))
+                    .Where(row => indexedLogicalKeys.Contains(row.LogicalKey))
+                    .Select(static row => row.Id));
+                visibleAttachmentIds = explicitlyVisibleAttachmentIds;
             }
 
             return new SessionAttachmentTurnPreparation(
                 indexItems,
                 rehydrated,
                 effectivePending,
-                ErrorMessage: null);
+                ErrorMessage: null,
+                visibleAttachmentIds);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -369,4 +387,5 @@ public sealed record SessionAttachmentTurnPreparation(
     IReadOnlyList<SessionAttachmentIndexItem> IndexItems,
     IReadOnlyList<AIContent> RehydratedContents,
     string? PendingTurnId,
-    string? ErrorMessage);
+    string? ErrorMessage,
+    IReadOnlySet<Guid>? VisibleAttachmentIds = null);

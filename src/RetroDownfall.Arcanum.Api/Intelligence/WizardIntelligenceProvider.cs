@@ -395,6 +395,13 @@ public sealed class WizardIntelligenceProvider(
 
                     yield break;
 
+                case IntelligenceEventType.AttachmentRefreshed when frame.AttachmentRefresh is { } refresh:
+                    yield return new AttachmentRefreshed(correlation, refresh);
+                    yield break;
+
+                case IntelligenceEventType.AttachmentRefreshed:
+                    yield break;
+
                 case IntelligenceEventType.Result:
                     yield return new RunCompleted(
                         correlation,
@@ -1778,6 +1785,7 @@ public sealed class WizardIntelligenceProvider(
             humanInteractionAvailable,
             grimoireTurn,
             targetModel,
+            streamAttachmentPrep.VisibleAttachmentIds,
             inferenceToken).ConfigureAwait(false);
 
         bool streamUsesTools = !request.DisableAllTools && streamTurnContext.InferenceTools.Count > 0;
@@ -2604,6 +2612,14 @@ public sealed class WizardIntelligenceProvider(
                                 new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex),
                                 ToolDenied: processed.Denied);
 
+                            if (processed.AttachmentRefresh is { } refreshDetail)
+                            {
+                                yield return new IntelligenceEvent(
+                                    IntelligenceEventType.AttachmentRefreshed,
+                                    "Session attachment source refreshed",
+                                    AttachmentRefresh: refreshDetail);
+                            }
+
                             toolCallIndex++;
                         }
                         finally
@@ -3095,6 +3111,7 @@ public sealed class WizardIntelligenceProvider(
         bool humanInteractionAvailable,
         GrimoireTurnWriter.TurnHandle grimoireTurn,
         string targetModel,
+        IReadOnlySet<Guid>? visibleAttachmentIds,
         CancellationToken cancellationToken)
     {
         Campaign? campaign = null;
@@ -3160,6 +3177,7 @@ public sealed class WizardIntelligenceProvider(
             SanctumEnabled = sanctumEnabled,
             SanctumMode = sanctumMode,
             InferenceTools = inferenceTools,
+            VisibleAttachmentIds = visibleAttachmentIds,
             SpellScriptRoots = spellScriptRoots,
         };
     }
@@ -4382,7 +4400,7 @@ public sealed class WizardIntelligenceProvider(
         foreach (AITool t in attunement.Allowed)
         {
             if (!advertiseAttachTool
-                && string.Equals(t.Name, "attach_session_file", StringComparison.Ordinal))
+                && t.Name is "attach_session_file" or "refresh_session_file")
             {
                 continue;
             }
@@ -4531,6 +4549,8 @@ public sealed class WizardIntelligenceProvider(
         "list_directory",
         "read_lore",
         "search_archives",
+        "attach_session_file",
+        "refresh_session_file",
         ToolRiskClassifier.SearchWorkspaceToolName,
         "ask_human",
         "send_commlink_alert",

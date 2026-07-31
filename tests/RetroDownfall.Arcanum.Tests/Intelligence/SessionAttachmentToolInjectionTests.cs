@@ -590,7 +590,7 @@ public sealed class SessionAttachmentToolInjectionTests
 
         FunctionCallContent other = new("c1", "other_tool");
 
-        FunctionCallContent attach = new("c2", "attach_session_file");
+        FunctionCallContent attach = new("c2", "refresh_session_file");
 
         ToolExecutionPipeline.AppendToolExchangeToMessages(messages, other, "c1", "other-result");
 
@@ -608,13 +608,370 @@ public sealed class SessionAttachmentToolInjectionTests
 
     }
 
-    private static ToolExecutionPipeline CreatePipeline(ArcanumSettings settings, ISessionAttachmentStore store) =>
+    [Fact]
+    public async Task ProcessSingleToolCall_RefreshSessionFile_PersistsAndQueuesStructuredFreshContent()
+    {
+        Guid sessionId = Guid.NewGuid();
+        Guid originalId = Guid.NewGuid();
+        DateTimeOffset freshness = DateTimeOffset.UtcNow;
+        AttachmentSourceMetadata source = new(
+            AttachmentSourceKind.WorkspaceFile,
+            "workspace",
+            "notes.txt",
+            "/workspace/notes.txt",
+            "OLD",
+            "1:1",
+            freshness.AddMinutes(-1),
+            3,
+            AttachmentSourceStatus.Refreshable,
+            null);
+        FakeSessionAttachmentStore store = new();
+        store.Records.Add(new SessionAttachmentRecord(
+            originalId,
+            sessionId,
+            Guid.NewGuid(),
+            null,
+            SessionAttachmentState.Bound,
+            "notes.txt",
+            "notes.txt",
+            1,
+            "rel/notes.txt",
+            "OLD",
+            "text/plain",
+            3,
+            SessionAttachmentKind.Text,
+            DateTimeOffset.UtcNow,
+            source));
+        FakeAttachmentSourceResolver resolver = new(
+            new AttachmentSourceResolution(
+                source with
+                {
+                    LastObservedContentSha256 = "NEW",
+                    LastObservedWriteTime = freshness,
+                    LastObservedByteLength = 7,
+                    Status = AttachmentSourceStatus.PriorVersion,
+                },
+                Encoding.UTF8.GetBytes("changed"),
+                "text/plain"));
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { Attachments = true },
+            Security = new SecuritySettings { AllowedUploadMimeTypes = ["text/plain"] },
+        };
+        ToolExecutionPipeline pipeline = CreatePipeline(settings, store, resolver);
+        FunctionCallContent call = new(
+            "refresh-1",
+            "refresh_session_file",
+            new Dictionary<string, object?> { ["logicalKey"] = "notes.txt" });
+        ChatOptions options = new()
+        {
+            Tools = [AIFunctionFactory.Create(() => "accepted", "refresh_session_file")],
+        };
+        SessionAttachmentTurnBudget.BeginTurn(maxReferences: 2, initialConsumed: 0);
+        SessionAttachmentToolAmbient.CurrentSessionId = sessionId;
+
+        try
+        {
+            ToolExecutionPipeline.ProcessedToolCall processed = await pipeline.ProcessSingleToolCallAsync(
+                call,
+                new PingRequest("refresh", Model: "vision-model", WorkingDirectory: "/workspace"),
+                options,
+                activeSpell: null,
+                sessionId.ToString("D"),
+                new ToolExecutionPipeline.TurnContext
+                {
+                    VisibleAttachmentIds = new HashSet<Guid> { originalId },
+                    AssistantEntryId = Guid.NewGuid(),
+                },
+                suppressInvocationFailures: false,
+                CancellationToken.None);
+
+            Assert.False(processed.Failed);
+            Assert.Contains("\"success\":true", processed.ResultText, StringComparison.Ordinal);
+            Assert.Contains("\"newVersionCreated\":true", processed.ResultText, StringComparison.Ordinal);
+            Assert.Contains("\"queuedForInjection\":true", processed.ResultText, StringComparison.Ordinal);
+            Assert.Equal(2, processed.AttachmentRefresh?.Version);
+            TextContent text = Assert.IsType<TextContent>(Assert.Single(processed.AdditionalContextContents!));
+            Assert.Contains("logicalKey=notes.txt", text.Text, StringComparison.Ordinal);
+            Assert.Contains("version=2", text.Text, StringComparison.Ordinal);
+            Assert.Contains("sourceFreshness=", text.Text, StringComparison.Ordinal);
+            Assert.Contains("changed", text.Text, StringComparison.Ordinal);
+
+            ToolExecutionPipeline.ProcessedToolCall repeated = await pipeline.ProcessSingleToolCallAsync(
+                call,
+                new PingRequest("refresh", Model: "vision-model", WorkingDirectory: "/workspace"),
+                options,
+                activeSpell: null,
+                sessionId.ToString("D"),
+                new ToolExecutionPipeline.TurnContext
+                {
+                    VisibleAttachmentIds = new HashSet<Guid> { originalId },
+                },
+                suppressInvocationFailures: false,
+                CancellationToken.None);
+
+            Assert.Contains("\"newVersionCreated\":false", repeated.ResultText, StringComparison.Ordinal);
+            Assert.Contains("\"queuedForInjection\":false", repeated.ResultText, StringComparison.Ordinal);
+            Assert.Null(repeated.AdditionalContextContents);
+            Assert.Equal(2, store.Records.Count);
+        }
+        finally
+        {
+            SessionAttachmentToolAmbient.CurrentSessionId = null;
+            SessionAttachmentTurnBudget.EndTurn();
+        }
+    }
+
+    [Fact]
+    public async Task ProcessSingleToolCall_RefreshSessionFile_RejectsInvisibleSnapshotAndAmbiguousSelectors()
+    {
+        Guid sessionId = Guid.NewGuid();
+        AttachmentSourceMetadata source = new(
+            AttachmentSourceKind.WorkspaceFile,
+            "workspace",
+            "notes.txt",
+            "/workspace/notes.txt",
+            "HASH",
+            "1:1",
+            DateTimeOffset.UtcNow,
+            4,
+            AttachmentSourceStatus.Refreshable,
+            null);
+        FakeSessionAttachmentStore store = new();
+        SessionAttachmentRecord lower = RefreshRecord(Guid.NewGuid(), sessionId, "notes.txt", source);
+        SessionAttachmentRecord upper = RefreshRecord(Guid.NewGuid(), sessionId, "NOTES.TXT", source);
+        SessionAttachmentRecord snapshot = RefreshRecord(Guid.NewGuid(), sessionId, "snapshot.txt", source: null);
+        store.Records.AddRange([lower, upper, snapshot]);
+        FakeAttachmentSourceResolver resolver = new(
+            new AttachmentSourceResolution(source, Encoding.UTF8.GetBytes("same"), "text/plain"));
+        ToolExecutionPipeline pipeline = CreatePipeline(
+            new ArcanumSettings { Features = new FeatureSettings { Attachments = true } },
+            store,
+            resolver);
+        ChatOptions options = new()
+        {
+            Tools = [AIFunctionFactory.Create(() => "accepted", "refresh_session_file")],
+        };
+        SessionAttachmentToolAmbient.CurrentSessionId = sessionId;
+
+        try
+        {
+            async Task<ToolExecutionPipeline.ProcessedToolCall> InvokeAsync(
+                Dictionary<string, object?> arguments,
+                IReadOnlySet<Guid> visible) =>
+                await pipeline.ProcessSingleToolCallAsync(
+                    new FunctionCallContent(Guid.NewGuid().ToString("N"), "refresh_session_file", arguments),
+                    new PingRequest("refresh", WorkingDirectory: "/workspace"),
+                    options,
+                    activeSpell: null,
+                    sessionId.ToString("D"),
+                    new ToolExecutionPipeline.TurnContext { VisibleAttachmentIds = visible },
+                    suppressInvocationFailures: false,
+                    CancellationToken.None);
+
+            ToolExecutionPipeline.ProcessedToolCall ambiguous = await InvokeAsync(
+                new Dictionary<string, object?> { ["logicalKey"] = "notes.txt" },
+                new HashSet<Guid> { lower.Id, upper.Id });
+            ToolExecutionPipeline.ProcessedToolCall invisible = await InvokeAsync(
+                new Dictionary<string, object?> { ["attachmentId"] = lower.Id.ToString("D") },
+                new HashSet<Guid>());
+            ToolExecutionPipeline.ProcessedToolCall snapshotOnly = await InvokeAsync(
+                new Dictionary<string, object?> { ["attachmentId"] = snapshot.Id },
+                new HashSet<Guid> { snapshot.Id });
+
+            Assert.Contains("ambiguous_logical_key", ambiguous.ResultText, StringComparison.Ordinal);
+            Assert.Contains("attachment_not_visible", invisible.ResultText, StringComparison.Ordinal);
+            Assert.Contains("source_unavailable", snapshotOnly.ResultText, StringComparison.Ordinal);
+            Assert.All(
+                new[] { ambiguous, invisible, snapshotOnly },
+                processed =>
+                {
+                    Assert.Null(processed.AdditionalContextContents);
+                    Assert.Null(processed.AttachmentRefresh);
+                });
+        }
+        finally
+        {
+            SessionAttachmentToolAmbient.CurrentSessionId = null;
+        }
+    }
+
+    [Fact]
+    public async Task ProcessSingleToolCall_RefreshSessionFile_RejectsImageForNonVisionModel()
+    {
+        Guid sessionId = Guid.NewGuid();
+        Guid attachmentId = Guid.NewGuid();
+        AttachmentSourceMetadata source = new(
+            AttachmentSourceKind.WorkspaceFile,
+            "workspace",
+            "shot.png",
+            "/workspace/shot.png",
+            "HASH",
+            "1:1",
+            DateTimeOffset.UtcNow,
+            8,
+            AttachmentSourceStatus.Refreshable,
+            null);
+        FakeSessionAttachmentStore store = new();
+        store.Records.Add(RefreshRecord(
+            attachmentId,
+            sessionId,
+            "shot.png",
+            source,
+            SessionAttachmentKind.Image,
+            "image/png"));
+        ToolExecutionPipeline pipeline = CreatePipeline(
+            new ArcanumSettings
+            {
+                Features = new FeatureSettings { Attachments = true, Scrying = true },
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "test",
+                        Models = [new ModelEntry("text-model", SupportsVision: false)],
+                    },
+                ],
+            },
+            store,
+            new ThrowingAttachmentSourceResolver());
+        ChatOptions options = new()
+        {
+            Tools = [AIFunctionFactory.Create(() => "accepted", "refresh_session_file")],
+        };
+        SessionAttachmentToolAmbient.CurrentSessionId = sessionId;
+
+        try
+        {
+            ToolExecutionPipeline.ProcessedToolCall processed = await pipeline.ProcessSingleToolCallAsync(
+                new FunctionCallContent(
+                    "image-refresh",
+                    "refresh_session_file",
+                    new Dictionary<string, object?> { ["attachmentId"] = attachmentId }),
+                new PingRequest("refresh", Model: "text-model", WorkingDirectory: "/workspace"),
+                options,
+                activeSpell: null,
+                sessionId.ToString("D"),
+                new ToolExecutionPipeline.TurnContext
+                {
+                    VisibleAttachmentIds = new HashSet<Guid> { attachmentId },
+                },
+                suppressInvocationFailures: false,
+                CancellationToken.None);
+
+            Assert.Contains("image_policy_denied", processed.ResultText, StringComparison.Ordinal);
+            Assert.Contains("does not support vision", processed.ResultText, StringComparison.OrdinalIgnoreCase);
+            Assert.Null(processed.AdditionalContextContents);
+        }
+        finally
+        {
+            SessionAttachmentToolAmbient.CurrentSessionId = null;
+        }
+    }
+
+    [Fact]
+    public async Task ProcessSingleToolCall_RefreshSessionFile_UnexpectedFailure_UsesModePolicy()
+    {
+        Guid sessionId = Guid.NewGuid();
+        Guid attachmentId = Guid.NewGuid();
+        AttachmentSourceMetadata source = new(
+            AttachmentSourceKind.WorkspaceFile,
+            "workspace",
+            "notes.txt",
+            "/workspace/notes.txt",
+            "HASH",
+            "1:1",
+            DateTimeOffset.UtcNow,
+            4,
+            AttachmentSourceStatus.Refreshable,
+            null);
+        FakeSessionAttachmentStore store = new();
+        store.Records.Add(RefreshRecord(attachmentId, sessionId, "notes.txt", source));
+        ToolExecutionPipeline pipeline = CreatePipeline(
+            new ArcanumSettings { Features = new FeatureSettings { Attachments = true } },
+            store,
+            new ThrowingAttachmentSourceResolver());
+        FunctionCallContent call = new(
+            "refresh-failure",
+            "refresh_session_file",
+            new Dictionary<string, object?> { ["attachmentId"] = attachmentId });
+        ChatOptions options = new()
+        {
+            Tools = [AIFunctionFactory.Create(() => "accepted", "refresh_session_file")],
+        };
+        ToolExecutionPipeline.TurnContext turn = new()
+        {
+            VisibleAttachmentIds = new HashSet<Guid> { attachmentId },
+        };
+        SessionAttachmentToolAmbient.CurrentSessionId = sessionId;
+
+        try
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.ProcessSingleToolCallAsync(
+                call,
+                new PingRequest("refresh", WorkingDirectory: "/workspace"),
+                options,
+                activeSpell: null,
+                sessionId.ToString("D"),
+                turn,
+                suppressInvocationFailures: false,
+                CancellationToken.None));
+
+            ToolExecutionPipeline.ProcessedToolCall tolerated = await pipeline.ProcessSingleToolCallAsync(
+                call,
+                new PingRequest("refresh", WorkingDirectory: "/workspace"),
+                options,
+                activeSpell: null,
+                sessionId.ToString("D"),
+                turn,
+                suppressInvocationFailures: true,
+                CancellationToken.None);
+
+            Assert.True(tolerated.Failed);
+            Assert.Contains("internal error", tolerated.ResultText, StringComparison.OrdinalIgnoreCase);
+            Assert.Null(tolerated.AdditionalContextContents);
+        }
+        finally
+        {
+            SessionAttachmentToolAmbient.CurrentSessionId = null;
+        }
+    }
+
+    private static SessionAttachmentRecord RefreshRecord(
+        Guid id,
+        Guid sessionId,
+        string logicalKey,
+        AttachmentSourceMetadata? source,
+        SessionAttachmentKind kind = SessionAttachmentKind.Text,
+        string mimeType = "text/plain") =>
+        new(
+            id,
+            sessionId,
+            Guid.NewGuid(),
+            null,
+            SessionAttachmentState.Bound,
+            logicalKey,
+            logicalKey,
+            1,
+            "rel/" + logicalKey,
+            "HASH",
+            mimeType,
+            4,
+            kind,
+            DateTimeOffset.UtcNow,
+            source);
+
+    private static ToolExecutionPipeline CreatePipeline(
+        ArcanumSettings settings,
+        ISessionAttachmentStore store,
+        IAttachmentSourceResolver? resolver = null) =>
         new(
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             new FakeWard(),
             new AllowAllSanctumGuard(),
             store,
-            NullLogger<ToolExecutionPipeline>.Instance);
+            NullLogger<ToolExecutionPipeline>.Instance,
+            attachmentSourceResolver: resolver);
 
     private sealed class FakeWard : IWard
     {
@@ -711,6 +1068,48 @@ public sealed class SessionAttachmentToolInjectionTests
             Guid? entryId,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<SessionAttachmentRefreshPersistence> PersistRefreshedAsync(
+            SessionAttachmentRecord latest,
+            Guid? entryId,
+            AttachmentSourceResolution current,
+            CancellationToken cancellationToken = default)
+        {
+            string hash = current.Metadata.LastObservedContentSha256!;
+            SessionAttachmentRecord record;
+            bool created;
+
+            if (string.Equals(latest.ContentSha256, hash, StringComparison.OrdinalIgnoreCase))
+            {
+                record = latest with { Source = current.Metadata };
+                int index = Records.FindIndex(row => row.Id == latest.Id);
+                Records[index] = record;
+                created = false;
+            }
+            else
+            {
+                record = latest with
+                {
+                    Id = Guid.NewGuid(),
+                    EntryId = entryId,
+                    Version = latest.Version + 1,
+                    ContentSha256 = hash,
+                    MimeType = current.DetectedMimeType!,
+                    ByteLength = current.VerifiedBytes.Length,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    Source = current.Metadata with
+                    {
+                        Status = AttachmentSourceStatus.Refreshable,
+                        DiagnosticReason = null,
+                    },
+                };
+                Records.Add(record);
+                created = true;
+            }
+
+            BytesByLogical[record.LogicalKey] = current.VerifiedBytes.ToArray();
+            return Task.FromResult(new SessionAttachmentRefreshPersistence(record, created));
+        }
 
         public Task<SessionAttachmentRecord?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(Records.FirstOrDefault(r => r.Id == id));
@@ -832,6 +1231,51 @@ public sealed class SessionAttachmentToolInjectionTests
 
         }
 
+    }
+
+    private sealed class FakeAttachmentSourceResolver(AttachmentSourceResolution resolution)
+        : IAttachmentSourceResolver
+    {
+        public Task<AttachmentSourceResolution> ResolveForPersistenceAsync(
+            AttachmentSourceClaim claim,
+            ReadOnlyMemory<byte> snapshotBytes,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(resolution);
+
+        public Task<AttachmentSourceMetadata> RevalidateAsync(
+            AttachmentSourceMetadata source,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(resolution.Metadata);
+
+        public Task<AttachmentSourceResolution> ResolveCurrentAsync(
+            AttachmentSourceMetadata source,
+            string expectedSnapshotSha256,
+            long maxBytes,
+            AttachmentSourcePathAuthorizer authorizeCanonicalPath,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(resolution);
+    }
+
+    private sealed class ThrowingAttachmentSourceResolver : IAttachmentSourceResolver
+    {
+        public Task<AttachmentSourceResolution> ResolveForPersistenceAsync(
+            AttachmentSourceClaim claim,
+            ReadOnlyMemory<byte> snapshotBytes,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("source resolver should not have been invoked");
+
+        public Task<AttachmentSourceMetadata> RevalidateAsync(
+            AttachmentSourceMetadata source,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("source resolver should not have been invoked");
+
+        public Task<AttachmentSourceResolution> ResolveCurrentAsync(
+            AttachmentSourceMetadata source,
+            string expectedSnapshotSha256,
+            long maxBytes,
+            AttachmentSourcePathAuthorizer authorizeCanonicalPath,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("source resolver should not have been invoked");
     }
 
 }
