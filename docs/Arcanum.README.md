@@ -79,7 +79,7 @@ Single-user, loopback-by-default, secret-minimizing. See [DESIGN.md §11](Arcanu
   via PBKDF2-HMAC-SHA256 with a unique 16-byte salt stored in `{grimoire.db}.kdf`). Session
   attachments, uploaded files, and batch artifacts outside SQLCipher are independently protected
   by versioned, chunk-authenticated AES-256-GCM envelopes.
-- Sensitive files (`arcanum.json`, Grimoire `.db`, `cli-session.txt`, logs) are created **owner-only** (`chmod 600/700` on Unix; owner ACL on Windows). Startup warns if group/other can read them.
+- Sensitive files (`arcanum.json`, Grimoire `.db`, `cli-context.json`, `cli-session.txt`, logs) are created **owner-only** (`chmod 600/700` on Unix; owner ACL on Windows). Startup warns if group/other can read them.
 - `Arcanum:Host:ListenAny` requires **first-run acknowledgement** in interactive `serve` (or `ARCANUM_LISTEN_ANY_ACK=1` / `ARCANUM_HOST_ANY` for automation) and emits a **security banner** when binding all interfaces over **HTTPS only** (plaintext any-IP HTTP is refused; `Arcanum:Host:Https:Enabled` + cert required).
 - `WorkspacePathPolicy` containment, symlink walking, and handle-identity revalidation are the primary boundary for file/search/patch tools; campaign Sanctum is an additional conditional allowlist. Shared `SecureFileReader` opens no-follow/nonblocking, accepts only regular single-link files, reads through cleared capped pools, and revalidates identity; FIFO/device/hardlink/symlink inputs fail closed. Host-process tools (`execute_command` / `run_spell_script`) use `ArgumentList` (no shell) with child-env scrubbing and are **gated by Local edition** unless Development + `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1`; workspace MCP requires trust bound to the exact approved bytes. **Tool-child FS jail** is filesystem-only: macOS uses Seatbelt, Linux remains inactive/fail-closed, and Windows uses a per-invocation AppContainer identity with explicit allowed-root ACLs plus Job Object process-tree/resource enforcement. The Windows broker confirms Job membership before resuming the suspended untrusted target; capability or setup failure fails closed, and health/doctor are Healthy only when AppContainer is genuinely available. Owner-only temp artifacts are deleted only after identity-safe quarantine checks. `workspace_check` is stricter and separate: advertised only on an eligible macOS Seatbelt host, never enabled by `AllowUnsandboxedToolChildren`, and unavailable on Linux/Windows. SSRF guard + DNS-rebind pinning on untrusted egress; sanitized public error envelopes. Details: [DESIGN §11](Arcanum.DESIGN.md#11-local-api-security).
 
@@ -663,6 +663,34 @@ arcanum workspace get
 arcanum mcp get
 ```
 
+### Persistent active context
+
+Use local active context to avoid repeating Campaign, Workspace, Model, and Session options:
+
+```bash
+arcanum use campaign campaign-alpha
+arcanum use workspace workspace-alpha
+arcanum use model provider/model
+arcanum use session 11111111-1111-1111-1111-111111111111
+arcanum context current
+arcanum use clear workspace   # one scope
+arcanum use clear             # every scope
+```
+
+Precedence is explicit option, active context, current-directory Campaign detection, then server
+default. `--no-context` bypasses saved values for one invocation without disabling directory
+detection. `context current` explains the source of each effective value. `ask`/`chat` validate
+saved references before inference, report confirmed stale references before clearing them, warn
+when the current directory is outside an inherited workspace, and refuse a Session/Campaign
+mismatch. Explicit options always win and are never persisted merely by use.
+
+The state file is owner-only `~/.config/arcanum/cli-context.json` (platform-equivalent Grimoire
+directory), schema version `1`. It contains resource IDs, safe names/paths, and a model name only;
+it contains no credentials, prompts, or transcript content and has no server authority.
+`cli-session.txt` is retained temporarily as a last-session mirror for older flows. The shipping CLI
+talks to its local loopback host; a future remote-host client must not compare its local current
+directory with server paths.
+
 All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- <cmd>` in development, or `arcanum <cmd>` after an AOT publish.
 
 **Default command:** bare interactive `arcanum` (no arguments) opens the **Command Center** (Terminal.Gui fixed-viewport TUI). Bare non-interactive `arcanum`, or `ARCANUM_NO_COMMAND_CENTER=1`, prints usage and exits **0**. Explicit commands (`serve`, `ask`, `chat`, `--help`, …) stay frameless Spectre/CAF as before.
@@ -674,6 +702,7 @@ All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDow
 | `--json` | Write exactly one valid JSON document to stdout and disable terminal control sequences. Typed commands keep their documented shape (for example `doctor`); text commands use `{ "output": "...", "exitCode": 0 }`. Diagnostics remain on stderr. |
 | `--plain` | Disable ANSI colors, animations, and the mana bar for this invocation. This does not change `arcanum.json`. |
 | `--yes` | Auto-approve command confirmation prompts. Without it, a confirmation required while stdout is redirected fails immediately instead of reading stdin or hanging CI. |
+| `--no-context` | Bypass saved Campaign, Workspace, Model, and Session defaults for one invocation; explicit options and current-directory Campaign detection still apply. |
 
 The closed exit-code set is `0` success, `1` generic/runtime error, `2` invalid command line or
 configuration/confirmation error, `3` network error, and `130` cancellation. Unexpected failures
@@ -722,8 +751,10 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 |---------|---------|
 | *(bare)* | Open Command Center (interactive TTY). Non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage, exit 0. |
 | `serve` | Run the host (default loopback :5001). ListenAny is HTTPS-only + first-run ack. Auto-launched suppresses key print. Details: [DESIGN §5](Arcanum.DESIGN.md#5-hybrid-hosting-model).
-| `ask <prompt>` | Single-turn inference (NDJSON stream). Flags: `-n` / `--new` (new session), `-m <model>`, `-c` / `--campaign <id>`, `--unattended`, `--image <path>` (repeatable — attach a Scrying focus; requires a vision-capable model), plus inference flags (below). Use `--` to pass a prompt that starts with a flag. Ctrl+C cancels the in-flight turn (exit 130). Running `ask` before a key is stored exits **1** with a friendly "run `arcanum serve` once" message (no crash). Interactive sessions auto-start `serve` when the API is unreachable (see above). |
-| `chat` | Interactive multi-turn REPL (Figlet banner, Markdig rendering, mana bar, live multi-panel layout on wide color terminals). Flags: `-n` / `--new`, `-m`, `-c` / `--campaign <id>` (shown in the startup banner when set), `--no-tools`, `--unattended`, plus inference flags. **Slash commands:** `/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`. Stage text files inline with `@path`; an `@path` whose extension is an image type (`.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.bmp`) stages a **Scrying focus** instead (prints `Scrying focus: <name> (<size>)`; requires a vision-capable model). The mana bar shows a persistent **(Memory Compressed)** suffix after read-time compression until `/new`. Auto-starts `serve` when needed (see above). Narrow / redirected / `NO_COLOR` sessions keep the simple streaming path. |
+| `ask <prompt>` | Single-turn inference (NDJSON stream). Flags: `-n` / `--new` (new session), `-m <model>`, `-c` / `--campaign <id-or-name>`, `--workspace <id-or-path>`, `--session <id>`, `--unattended`, `--image <path>` (repeatable — attach a Scrying focus; requires a vision-capable model), plus inference flags (below). `--new` and `--session` are mutually exclusive. Use `--` to pass a prompt that starts with a flag. Ctrl+C cancels the in-flight turn (exit 130). Interactive sessions print effective context and auto-start `serve` when needed. |
+| `chat` | Interactive multi-turn REPL (Figlet banner, effective-context header, Markdig rendering, mana bar, live multi-panel layout on wide color terminals). Flags: `-n` / `--new`, `-m`, `-c` / `--campaign <id-or-name>`, `--workspace <id-or-path>`, `--session <id>`, `--no-tools`, `--unattended`, plus inference flags. `--new` and `--session` are mutually exclusive. **Slash commands:** `/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`. Stage text files inline with `@path`; image extensions stage a Scrying focus. Auto-starts `serve` when needed. |
+| `use campaign\|workspace\|model\|session <value>` | Validate and save an active local default without modifying server rows. |
+| `use clear [scope]`, `context current` | Clear saved context or show effective values, sources, warnings, and the state-file path. |
 | `look` | Print the Eye of the World workspace snapshot (no HTTP). |
 | `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer / File Encryption panels) + API health probe, including key availability, encrypted/legacy/corrupt blob counts, and the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0 unless another check fails). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
 | `data encryption status\|migrate\|verify\|rotate-key` | Inspect mixed-mode state; resumably encrypt legacy blobs; authenticate/decrypt/hash-check every blob; or create a new key and incrementally rotate before retiring unreferenced old keys. Worker commands accept `--max-concurrency` and `--max-bytes-per-second`; output contains aggregate files/bytes and issue categories, never names or paths. |
@@ -750,4 +781,4 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `operation list\|show\|cancel\|retry\|reconcile` | Inspect and repair the durable operation ledger via authenticated `/api/operations*` routes (needs `serve`). `list` accepts `--kind` / `--state`; `show <id>` returns only safe checkpoint presence/version/summary; `cancel <id>` requests `Cancelling`; `retry <id>` resets failed/abandoned/repair-required work; `reconcile` runs a bounded pass and exits 2 when operator attention remains. |
 | `browse <url>` | Compatibility CLI for the legacy `browse_web` direct-invoke surface (requires `Arcanum:Features:WebBrowsing`; needs `serve`). New inference toolsets use `read_url`. |
 
-**Inference flags** (`ask`/`chat`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format`, penalties, `-c`/`--campaign`. Scrying: `ask --image` / chat `@path`. Full slash-command suite and error formatting: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
+**Inference flags** (`ask`/`chat`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format`, penalties, `-c`/`--campaign`, `--workspace`, and `--session`. Scrying: `ask --image` / chat `@path`. Full slash-command suite, context precedence, and error formatting: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).

@@ -21,7 +21,7 @@ internal static partial class CliCommandTree
         list.Add(listQuery); list.Add(session); list.Add(listLimit); list.Add(offset);
         list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(
             pr.GetValue(listQuery),
-            pr.GetValue(session),
+            ActiveSession(sp, pr.GetValue(session)),
             pr.GetValue(listLimit),
             pr.GetValue(offset),
             ct).ConfigureAwait(false));

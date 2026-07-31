@@ -14,6 +14,8 @@ internal static partial class CliCommandTree
         Option<bool> @new = new("--new", "-n");
         Option<bool> unattended = new("--unattended");
         Option<string?> campaign = new("--campaign", "-c");
+        Option<string?> workspace = new("--workspace");
+        Option<string?> session = new("--session");
         Option<string?> temperature = new("--temperature");
         Option<string?> topP = new("--top-p");
         Option<string?> maxTokens = new("--max-tokens");
@@ -26,6 +28,7 @@ internal static partial class CliCommandTree
         Argument<string[]> prompt = new("prompt");
 
         ask.Add(model); ask.Add(@new); ask.Add(unattended); ask.Add(campaign);
+        ask.Add(workspace); ask.Add(session);
         ask.Add(temperature); ask.Add(topP); ask.Add(maxTokens); ask.Add(seed);
         ask.Add(stop); ask.Add(responseFormat); ask.Add(presencePenalty);
         ask.Add(frequencyPenalty); ask.Add(image); ask.Add(prompt);
@@ -41,6 +44,8 @@ internal static partial class CliCommandTree
                 pr.GetValue(@new),
                 pr.GetValue(unattended),
                 pr.GetValue(campaign),
+                pr.GetValue(workspace),
+                pr.GetValue(session),
                 pr.GetValue(temperature),
                 pr.GetValue(topP),
                 pr.GetValue(maxTokens),

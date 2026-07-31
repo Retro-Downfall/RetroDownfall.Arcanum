@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using Microsoft.Extensions.Options;
@@ -37,7 +38,7 @@ public sealed class ChatCommand(
     IServiceScopeFactory scopeFactory,
     ICliEnvironment cliEnvironment,
     IArcanumServeLauncher serveLauncher,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliInferenceContextResolver contextResolver)
 {
 
     private long MaxAttachFileSizeBytes =>
@@ -114,6 +115,8 @@ public sealed class ChatCommand(
         bool noTools = false,
         bool unattended = false,
         string? campaign = null,
+        string? workspace = null,
+        string? sessionIdOption = null,
         string? temperature = null,
         string? topP = null,
         string? maxTokens = null,
@@ -123,9 +126,13 @@ public sealed class ChatCommand(
         string? presencePenalty = null,
         string? frequencyPenalty = null)
     {
-        if (@new)
+        if (@new && !string.IsNullOrWhiteSpace(sessionIdOption))
         {
-            cliSession.ClearSession();
+            AnsiConsole.MarkupLine(
+                themePalette.ErrorMarkup(
+                    Markup.Escape("--new and --session cannot be used together.")));
+
+            return 1;
         }
 
         InferenceFlagInputs flagInputs = new(temperature, topP, maxTokens, seed, stop, responseFormat, presencePenalty, frequencyPenalty);
@@ -138,54 +145,6 @@ public sealed class ChatCommand(
         unattended = OperatorFacingUnattendedMode.Resolve(
             unattended,
             arcanumSettings.Value.Security.Ward);
-
-        Guid? campaignId = null;
-
-        if (!string.IsNullOrWhiteSpace(campaign))
-        {
-            if (Guid.TryParse(campaign, out Guid parsedCampaignId))
-            {
-                campaignId = parsedCampaignId;
-            }
-            else if (resourceCatalog is not null)
-            {
-                ResourceSelectionResult<CampaignDto> selected = await resourceCatalog
-                    .SelectCampaignAsync(campaign, cancellationToken)
-                    .ConfigureAwait(false);
-                if (selected.Status != ResourceSelectionStatus.Selected)
-                {
-                    if (selected.Status == ResourceSelectionStatus.Error)
-                    {
-                        AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selected.Error!)));
-                    }
-                    return selected.Status == ResourceSelectionStatus.Cancelled ? 0 : 1;
-                }
-                campaignId = selected.Value!.Id;
-            }
-            else
-            {
-                AnsiConsole.MarkupLine(
-                    themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape("--campaign must be a valid GUID.")));
-                return 1;
-            }
-
-        }
-
-        if (!string.IsNullOrWhiteSpace(model) && resourceCatalog is not null)
-        {
-            ResourceSelectionResult<ModelInfoDto> selected = await resourceCatalog
-                .SelectModelAsync(model, cancellationToken)
-                .ConfigureAwait(false);
-            if (selected.Status != ResourceSelectionStatus.Selected)
-            {
-                if (selected.Status == ResourceSelectionStatus.Error)
-                {
-                    AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selected.Error!)));
-                }
-                return selected.Status == ResourceSelectionStatus.Cancelled ? 0 : 1;
-            }
-            model = selected.Value!.Model;
-        }
 
         IAnsiConsole stderrConsole = AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) });
 
@@ -205,14 +164,64 @@ public sealed class ChatCommand(
 
         _serveLaunch = await serveLauncher.EnsureRunningAsync(cancellationToken).ConfigureAwait(false);
 
+        if (@new)
+        {
+            cliSession.ClearSession();
+        }
+
+        string invocationDirectory = Environment.CurrentDirectory;
+
+        CliInferenceContextResult contextResult = await contextResolver
+            .ResolveAsync(
+                new CliInferenceContextRequest(
+                    campaign,
+                    workspace,
+                    model,
+                    sessionIdOption,
+                    invocationDirectory,
+                    CliInvocationContext.Current.NoContext,
+                    @new),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!contextResult.IsSuccess)
+        {
+            if (contextResult.IsCancelled)
+            {
+                return 0;
+            }
+
+            stderrConsole.MarkupLine(
+                themePalette.ErrorMarkup(
+                    Markup.Escape(contextResult.Error ?? "CLI context could not be resolved.")));
+
+            return 1;
+        }
+
+        CliEffectiveContext effectiveContext = contextResult.Context!;
+
+        foreach (string warning in contextResult.Warnings)
+        {
+            stderrConsole.MarkupLine(
+                themePalette.ErrorMarkup(Markup.Escape("Warning: " + warning)));
+        }
+
         SessionMut session = new()
         {
-            CurrentModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim(),
+            CurrentModel = effectiveContext.Model.Value,
             DisableTools = noTools,
-            CampaignId = campaignId,
+            CampaignId = effectiveContext.Campaign.Value,
+            WorkspacePath = effectiveContext.Workspace.Value
+                ?? invocationDirectory,
+            SessionId = effectiveContext.Session.Value,
         };
 
         await WriteStartupBannerAsync(session, unattended, flags, cancellationToken).ConfigureAwait(false);
+
+        AnsiConsole.MarkupLine(
+            themePalette.MutedMarkup(
+                Markup.Escape(
+                    $"Context: campaign {session.CampaignId?.ToString("D") ?? "server default"}; workspace {session.WorkspacePath}; model {session.CurrentModel ?? "server default"}; session {session.SessionId?.ToString("D") ?? "new"}.")));
 
         HashSet<string> stagedFiles = new(StringComparer.Ordinal);
 
@@ -318,7 +327,7 @@ public sealed class ChatCommand(
                 }
             }
 
-            string cwdForAt = Environment.CurrentDirectory;
+            string cwdForAt = session.WorkspacePath;
 
             MatchCollection atMatches = Regex.Matches(prompt, @"(?<=^|\s)@([^\s]+)", RegexOptions.CultureInvariant);
 
@@ -407,7 +416,7 @@ public sealed class ChatCommand(
 
             if (stagedFiles.Count > 0)
             {
-                string cwd = Environment.CurrentDirectory;
+                string cwd = session.WorkspacePath;
 
                 List<AttachedFileDto> attached = new();
 
@@ -588,6 +597,8 @@ public sealed class ChatCommand(
         {
             cliSession.ClearSession();
 
+            session.SessionId = null;
+
             session.MemoryCompressed = false;
 
             session.SessionMana = null;
@@ -658,7 +669,7 @@ public sealed class ChatCommand(
         if (verb.Equals("/look", StringComparison.OrdinalIgnoreCase))
         {
             PatternSnapshot snapshot = await eye
-                .PerceivePatternAsync(Environment.CurrentDirectory, cancellationToken)
+                .PerceivePatternAsync(session.WorkspacePath, cancellationToken)
                 .ConfigureAwait(false);
 
             PatternSnapshotMarkup.WritePatternSnapshot(snapshot, themePalette);
@@ -687,7 +698,7 @@ public sealed class ChatCommand(
                 return (true, false);
             }
 
-            OptionalWorkspaceRequest reloadBody = new(WorkingDirectory: Environment.CurrentDirectory);
+            OptionalWorkspaceRequest reloadBody = new(WorkingDirectory: session.WorkspacePath);
 
             Result<string> reloadResult = await apiClient.ReloadMcpAsync(reloadBody, cancellationToken).ConfigureAwait(false);
 
@@ -705,7 +716,7 @@ public sealed class ChatCommand(
 
         if (verb.Equals("/arsenal", StringComparison.OrdinalIgnoreCase))
         {
-            OptionalWorkspaceRequest arsenalBody = new(WorkingDirectory: Environment.CurrentDirectory);
+            OptionalWorkspaceRequest arsenalBody = new(WorkingDirectory: session.WorkspacePath);
 
             Result<WorkspaceArsenalDto> arsenalResult =
                 await apiClient.GetWorkspaceArsenalAsync(arsenalBody, cancellationToken).ConfigureAwait(false);
@@ -800,6 +811,8 @@ public sealed class ChatCommand(
 
             cliSession.SaveSessionId(resumeId);
 
+            session.SessionId = resumeId;
+
             AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Resumed session.")));
 
             return (true, false);
@@ -837,11 +850,13 @@ public sealed class ChatCommand(
                 return (true, false);
             }
 
-            Guid? active = cliSession.GetLastSessionId();
+            Guid? active = session.SessionId;
 
             if (active == deleteId)
             {
                 cliSession.ClearSession();
+
+                session.SessionId = null;
             }
 
             AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Session archived.")));
@@ -851,7 +866,7 @@ public sealed class ChatCommand(
 
         if (verb.Equals("/rest", StringComparison.OrdinalIgnoreCase))
         {
-            Guid? activeSessionId = cliSession.GetLastSessionId();
+            Guid? activeSessionId = session.SessionId;
 
             if (activeSessionId is null)
             {
@@ -896,7 +911,10 @@ public sealed class ChatCommand(
                 ? "Campaign Log"
                 : "Memory Summary";
 
-            await TryShowCampaignSummaryPanelAsync(panelTitle, cancellationToken).ConfigureAwait(false);
+            await TryShowCampaignSummaryPanelAsync(
+                panelTitle,
+                session,
+                cancellationToken).ConfigureAwait(false);
 
             return (true, false);
         }
@@ -911,7 +929,7 @@ public sealed class ChatCommand(
                 return (true, false);
             }
 
-            RunAttachBrowser(stagedFiles, Environment.CurrentDirectory, MaxAttachFileSizeBytes);
+            RunAttachBrowser(stagedFiles, session.WorkspacePath, MaxAttachFileSizeBytes);
 
             return (true, false);
         }
@@ -1506,9 +1524,12 @@ public sealed class ChatCommand(
         AnsiConsole.MarkupLine(line);
     }
 
-    private async Task TryShowCampaignSummaryPanelAsync(string panelTitle, CancellationToken cancellationToken)
+    private async Task TryShowCampaignSummaryPanelAsync(
+        string panelTitle,
+        SessionMut session,
+        CancellationToken cancellationToken)
     {
-        Guid? logSessionId = cliSession.GetLastSessionId();
+        Guid? logSessionId = session.SessionId;
 
         if (logSessionId is null)
         {
@@ -1602,7 +1623,7 @@ public sealed class ChatCommand(
 
         try
         {
-            string cwd = Environment.CurrentDirectory;
+            string cwd = session.WorkspacePath;
 
             PatternSnapshot snapshot = await eye
                 .PerceivePatternAsync(cwd, perTurnCts.Token)
@@ -1617,7 +1638,7 @@ public sealed class ChatCommand(
                 chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot, perTurnCts.Token).ConfigureAwait(false);
             }
 
-            Guid? sessionId = cliSession.GetLastSessionId();
+            Guid? sessionId = session.SessionId;
 
             PingRequest ping = new(
                 prompt,
@@ -1748,6 +1769,8 @@ public sealed class ChatCommand(
                         if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid boundId))
                         {
                             cliSession.SaveSessionId(boundId);
+
+                            session.SessionId = boundId;
                         }
 
                         break;
@@ -2072,6 +2095,8 @@ public sealed class ChatCommand(
                                 if (evt.Data is not null && Guid.TryParse(evt.Data, out Guid boundId))
                                 {
                                     cliSession.SaveSessionId(boundId);
+
+                                    session.SessionId = boundId;
                                 }
 
                                 break;
@@ -2283,6 +2308,10 @@ public sealed class ChatCommand(
 
         public Guid? CampaignId { get; set; }
 
+        public string WorkspacePath { get; set; } = string.Empty;
+
+        public Guid? SessionId { get; set; }
+
     }
 
     internal static ChatCompletionUsage AccumulateSessionMana(ChatCompletionUsage? running, ChatCompletionUsage round)
@@ -2319,7 +2348,7 @@ public sealed class ChatCommand(
 
         int sessionTotal = session.SessionMana?.TotalTokens ?? 0;
 
-        Guid? activeId = cliSession.GetLastSessionId();
+        Guid? activeId = session.SessionId;
 
         long lifetime = 0L;
 
@@ -2437,7 +2466,7 @@ public sealed class ChatCommand(
 
         long lifetime = 0L;
 
-        Guid? id = cliSession.GetLastSessionId();
+        Guid? id = session.SessionId;
 
         if (id is not null)
         {

@@ -19,7 +19,7 @@ internal static partial class CliCommandTree
         Option<string?> listTag = new("--tag") { Description = "Filter by tag." };
         list.Add(listCampaignId); list.Add(listQuery); list.Add(listTag);
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.List(pr.GetValue(listCampaignId), pr.GetValue(listQuery), pr.GetValue(listTag), ct).ConfigureAwait(false));
+            await handler.List(ActiveCampaign(sp, pr.GetValue(listCampaignId)), pr.GetValue(listQuery), pr.GetValue(listTag), ct).ConfigureAwait(false));
         prompt.Add(list);
 
         Command get = new("get", "Show prompt detail.");
@@ -38,7 +38,7 @@ internal static partial class CliCommandTree
         Option<string?> versionsCampaignId = new("--campaign-id", "--campaignId") { Description = "Filter by campaign GUID." };
         versions.Add(versionsName); versions.Add(versionsCampaignId);
         versions.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Versions(pr.GetValue(versionsName)!, pr.GetValue(versionsCampaignId), ct).ConfigureAwait(false));
+            await handler.Versions(pr.GetValue(versionsName)!, ActiveCampaign(sp, pr.GetValue(versionsCampaignId)), ct).ConfigureAwait(false));
         prompt.Add(versions);
 
         Command create = new("create", "Create a prompt.");
@@ -55,7 +55,7 @@ internal static partial class CliCommandTree
                 pr.GetValue(createName),
                 pr.GetValue(createVersion),
                 pr.GetValue(createTemplate),
-                pr.GetValue(createCampaignId),
+                ActiveCampaign(sp, pr.GetValue(createCampaignId)),
                 pr.GetValue(createDescription),
                 pr.GetValue(createTag),
                 ct).ConfigureAwait(false));
@@ -103,7 +103,7 @@ internal static partial class CliCommandTree
                 pr.GetValue(executeId),
                 pr.GetValue(executeInput),
                 pr.GetValue(executeParam),
-                pr.GetValue(executeSessionId),
+                ActiveSession(sp, pr.GetValue(executeSessionId)),
                 ct).ConfigureAwait(false));
         prompt.Add(execute);
 
@@ -118,7 +118,7 @@ internal static partial class CliCommandTree
                 pr.GetValue(cloneId),
                 pr.GetValue(cloneNewName),
                 pr.GetValue(cloneNewVersion),
-                pr.GetValue(cloneCampaign),
+                ActiveCampaign(sp, pr.GetValue(cloneCampaign)),
                 ct).ConfigureAwait(false));
         prompt.Add(clone);
 
@@ -135,7 +135,7 @@ internal static partial class CliCommandTree
         Option<string?> importCampaignId = new("--campaign-id", "--campaignId") { Description = "Campaign GUID to associate the import with." };
         import.Add(importFile); import.Add(importCampaignId);
         import.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Import(pr.GetValue(importFile), pr.GetValue(importCampaignId), ct).ConfigureAwait(false));
+            await handler.Import(pr.GetValue(importFile), ActiveCampaign(sp, pr.GetValue(importCampaignId)), ct).ConfigureAwait(false));
         prompt.Add(import);
 
         return prompt;
@@ -152,7 +152,7 @@ internal static partial class CliCommandTree
         Option<int?> listLimit = new("--limit") { Description = "Maximum number of Apprentices to return." };
         list.Add(listCampaignId); list.Add(listStatus); list.Add(listLimit);
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.List(pr.GetValue(listCampaignId), pr.GetValue(listStatus), pr.GetValue(listLimit), ct).ConfigureAwait(false));
+            await handler.List(ActiveCampaign(sp, pr.GetValue(listCampaignId)), pr.GetValue(listStatus), pr.GetValue(listLimit), ct).ConfigureAwait(false));
         apprentice.Add(list);
 
         Command get = new("get", "Show Apprentice detail.");
@@ -176,8 +176,8 @@ internal static partial class CliCommandTree
             await handler.Create(
                 pr.GetValue(createGoal),
                 pr.GetValue(createName),
-                pr.GetValue(createCampaignId),
-                pr.GetValue(createWorkspace),
+                ActiveCampaign(sp, pr.GetValue(createCampaignId)),
+                ActiveWorkspace(sp, pr.GetValue(createWorkspace)),
                 ct).ConfigureAwait(false));
         apprentice.Add(create);
 
@@ -304,8 +304,8 @@ internal static partial class CliCommandTree
             await handler.Run(
                 pr.GetValue(runTarget),
                 pr.GetValue(runTargetValue),
-                pr.GetValue(runModel),
-                pr.GetValue(runWorkspace),
+                ActiveModel(sp, pr.GetValue(runModel)),
+                ActiveWorkspace(sp, pr.GetValue(runWorkspace)),
                 pr.GetValue(runName),
                 pr.GetValue(runInquisitor),
                 pr.GetValue(runVar),

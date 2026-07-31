@@ -340,10 +340,19 @@ public static class SecureFilePermissions
 
         string sessionFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-session.txt");
 
+        string contextFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-context.json");
+
         if (File.Exists(sessionFile))
         {
 
             ApplyOwnerOnlyFile(sessionFile);
+
+        }
+
+        if (File.Exists(contextFile))
+        {
+
+            ApplyOwnerOnlyFile(contextFile);
 
         }
 
@@ -425,6 +434,8 @@ public static class SecureFilePermissions
 
         string sessionFile = Path.Combine(grimoireDir, "cli-session.txt");
 
+        string contextFile = Path.Combine(grimoireDir, "cli-context.json");
+
         string logDirectory = ArcanumPaths.LogDirectory;
 
         CheckPath(logger, grimoireDir, isDirectory: true);
@@ -434,6 +445,8 @@ public static class SecureFilePermissions
         CheckPath(logger, databaseFile, isDirectory: false);
 
         CheckPath(logger, sessionFile, isDirectory: false);
+
+        CheckPath(logger, contextFile, isDirectory: false);
 
         foreach (string secretFile in secretFilePaths)
         {

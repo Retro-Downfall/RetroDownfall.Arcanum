@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using RetroDownfall.Arcanum.Cli.Services;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -23,7 +24,8 @@ public enum CliExitCode
 public readonly record struct CliInvocationOptions(
     bool Json,
     bool Plain,
-    bool Yes);
+    bool Yes,
+    bool NoContext = false);
 
 public interface ICliInvocationContext
 {
@@ -439,4 +441,6 @@ internal static class CliFailureMapper
     WriteIndented = false)]
 [JsonSerializable(typeof(CliTextPayload))]
 [JsonSerializable(typeof(CliErrorPayload))]
+[JsonSerializable(typeof(CliContextStatusPayload))]
+[JsonSerializable(typeof(CliContextMutationResult))]
 internal sealed partial class CliJsonContext : JsonSerializerContext;

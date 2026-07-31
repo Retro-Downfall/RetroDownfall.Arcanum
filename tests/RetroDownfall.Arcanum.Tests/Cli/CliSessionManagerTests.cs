@@ -118,6 +118,53 @@ public sealed class CliSessionManagerTests : IDisposable
     }
 
     [Fact]
+    public void Session_changes_are_mirrored_into_the_versioned_context_document()
+    {
+
+        string contextPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "cli-context.json");
+
+        CliContextStore store = new(contextPath);
+
+        CliSessionManager manager = CreateManager(contextStore: store);
+
+        Guid expected = Guid.Parse(
+            "dddddddd-dddd-dddd-dddd-dddddddddddd");
+
+        manager.SaveSessionId(expected);
+
+        Assert.Equal(expected, store.Load().SessionId);
+
+        manager.ClearSession();
+
+        Assert.Null(store.Load().SessionId);
+
+    }
+
+    [Fact]
+    public void Existing_context_document_is_authoritative_over_the_legacy_session_mirror()
+    {
+
+        Guid legacy = Guid.Parse(
+            "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+
+        CreateManager().SaveSessionId(legacy);
+
+        CliContextStore store = new(
+            Path.Combine(
+                ArcanumPaths.GrimoireDirectory,
+                "cli-context.json"));
+
+        store.Save(CliContextDocument.Empty);
+
+        CliSessionManager manager = CreateManager(contextStore: store);
+
+        Assert.Null(manager.GetLastSessionId());
+
+    }
+
+    [Fact]
     public void GetLastSessionId_warns_once_on_corrupt_file()
     {
 
@@ -223,7 +270,8 @@ public sealed class CliSessionManagerTests : IDisposable
     }
 
     private static CliSessionManager CreateManager(
-        ILogger<CliSessionManager>? logger = null)
+        ILogger<CliSessionManager>? logger = null,
+        ICliContextStore? contextStore = null)
     {
 
         ThemeSemanticColors semantic = new();
@@ -232,7 +280,7 @@ public sealed class CliSessionManagerTests : IDisposable
 
         ConfiguredThemePalette palette = new(semantic, fallback);
 
-        return new CliSessionManager(palette, logger);
+        return new CliSessionManager(palette, logger, contextStore);
 
     }
 

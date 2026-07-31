@@ -6,7 +6,10 @@ using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
-public sealed class CliSessionManager(IThemePalette palette, ILogger<CliSessionManager>? logger = null)
+public sealed class CliSessionManager(
+    IThemePalette palette,
+    ILogger<CliSessionManager>? logger = null,
+    ICliContextStore? contextStore = null)
 {
     private int _corruptionWarned;
 
@@ -15,6 +18,14 @@ public sealed class CliSessionManager(IThemePalette palette, ILogger<CliSessionM
 
     public Guid? GetLastSessionId(bool quiet = false)
     {
+        Guid? contextSession = contextStore?.Load().SessionId;
+
+        if (contextSession is not null
+            || contextStore is not null && File.Exists(contextStore.FilePath))
+        {
+            return contextSession;
+        }
+
         try
         {
             if (!File.Exists(SessionFilePath))
@@ -54,6 +65,20 @@ public sealed class CliSessionManager(IThemePalette palette, ILogger<CliSessionM
 
     public void SaveSessionId(Guid id, bool quiet = false)
     {
+        if (contextStore is not null)
+        {
+            try
+            {
+                CliContextDocument context = contextStore.Load();
+
+                contextStore.Save(context with { SessionId = id });
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                WarnSessionIo(ex, quiet);
+            }
+        }
+
         try
         {
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.GrimoireDirectory);
@@ -103,6 +128,20 @@ public sealed class CliSessionManager(IThemePalette palette, ILogger<CliSessionM
 
     public void ClearSession(bool quiet = false)
     {
+        if (contextStore is not null)
+        {
+            try
+            {
+                CliContextDocument context = contextStore.Load();
+
+                contextStore.Save(context with { SessionId = null });
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                WarnSessionIo(ex, quiet);
+            }
+        }
+
         try
         {
             if (File.Exists(SessionFilePath))

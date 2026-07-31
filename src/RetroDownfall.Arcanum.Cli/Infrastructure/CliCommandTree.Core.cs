@@ -16,6 +16,8 @@ internal static partial class CliCommandTree
         Option<bool> noTools = new("--no-tools") { Description = "Disable MCP-provided tools for this REPL session (built-in tools still apply)." };
         Option<bool> unattended = new("--unattended") { Description = "Force unattended for this run; skips ask_human blocking and uses Ward auto-deny." };
         Option<string?> campaign = new("--campaign", "-c") { Description = "Campaign GUID to resolve the workspace from." };
+        Option<string?> workspace = new("--workspace") { Description = "Workspace ID or path for this chat." };
+        Option<string?> session = new("--session") { Description = "Session ID to resume for this chat." };
         Option<string?> temperature = new("--temperature") { Description = "Sampling temperature 0-2 (lower = more deterministic). Applies to every turn." };
         Option<string?> topP = new("--top-p") { Description = "Nucleus sampling cutoff 0-1. Applies to every turn." };
         Option<string?> maxTokens = new("--max-tokens") { Description = "Maximum output tokens per turn." };
@@ -26,7 +28,8 @@ internal static partial class CliCommandTree
         Option<string?> frequencyPenalty = new("--frequency-penalty") { Description = "Frequency penalty -2..2." };
 
         chat.Add(model); chat.Add(@new); chat.Add(noTools); chat.Add(unattended);
-        chat.Add(campaign); chat.Add(temperature); chat.Add(topP); chat.Add(maxTokens);
+        chat.Add(campaign); chat.Add(workspace); chat.Add(session);
+        chat.Add(temperature); chat.Add(topP); chat.Add(maxTokens);
         chat.Add(seed); chat.Add(stop); chat.Add(responseFormat); chat.Add(presencePenalty);
         chat.Add(frequencyPenalty);
 
@@ -39,6 +42,8 @@ internal static partial class CliCommandTree
                 pr.GetValue(noTools),
                 pr.GetValue(unattended),
                 pr.GetValue(campaign),
+                pr.GetValue(workspace),
+                pr.GetValue(session),
                 pr.GetValue(temperature),
                 pr.GetValue(topP),
                 pr.GetValue(maxTokens),

@@ -1,0 +1,237 @@
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Workspaces;
+
+namespace RetroDownfall.Arcanum.Cli.Services;
+
+public sealed record CliInferenceContextRequest(
+    string? Campaign,
+    string? Workspace,
+    string? Model,
+    string? Session,
+    string CurrentDirectory,
+    bool NoContext,
+    bool NewSession);
+
+public sealed record CliInferenceContextResult(
+    bool IsSuccess,
+    bool IsCancelled,
+    CliEffectiveContext? Context,
+    string[] Warnings,
+    string? Error)
+{
+
+    public static CliInferenceContextResult Success(
+        CliEffectiveContext context,
+        IEnumerable<string> warnings) =>
+        new(true, false, context, [.. warnings], null);
+
+    public static CliInferenceContextResult Failure(string error) =>
+        new(false, false, null, [], error);
+
+    public static CliInferenceContextResult Cancelled() =>
+        new(false, true, null, [], null);
+
+}
+
+public interface ICliInferenceContextResolver
+{
+
+    Task<CliInferenceContextResult> ResolveAsync(
+        CliInferenceContextRequest request,
+        CancellationToken cancellationToken);
+
+}
+
+public sealed class CliInferenceContextResolver(
+    CliContextService contextService,
+    ICliResourceCatalog resources,
+    IOptions<ArcanumSettings> settings) : ICliInferenceContextResolver
+{
+
+    public async Task<CliInferenceContextResult> ResolveAsync(
+        CliInferenceContextRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(request);
+
+        CliContextValidation validation = await contextService
+            .ValidateAsync(request.NoContext, cancellationToken)
+            .ConfigureAwait(false);
+
+        Guid? explicitCampaignId = null;
+
+        string? explicitWorkspacePath = null;
+
+        string? explicitModel = null;
+
+        Guid? explicitSessionId = null;
+
+        SessionSummaryDto? explicitSession = null;
+
+        if (!string.IsNullOrWhiteSpace(request.Campaign))
+        {
+
+            ResourceSelectionResult<CampaignDto> campaign = await resources
+                .SelectCampaignAsync(request.Campaign, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!TrySelected(campaign, out CampaignDto? selected, out string? error))
+            {
+
+                return SelectionFailure(campaign.Status, error);
+
+            }
+
+            explicitCampaignId = selected!.Id;
+
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Workspace))
+        {
+
+            ResourceSelectionResult<WorkspaceInfo> workspace = await resources
+                .SelectWorkspaceAsync(request.Workspace, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!TrySelected(workspace, out WorkspaceInfo? selected, out string? error))
+            {
+
+                return SelectionFailure(workspace.Status, error);
+
+            }
+
+            if (!CliContextService.TryNormalizePath(
+                    selected!.Path,
+                    out explicitWorkspacePath))
+            {
+
+                return CliInferenceContextResult.Failure(
+                    "The selected workspace path is not valid on this local host.");
+
+            }
+
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Model))
+        {
+
+            ResourceSelectionResult<ModelInfoDto> model = await resources
+                .SelectModelAsync(request.Model, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!TrySelected(model, out ModelInfoDto? selected, out string? error))
+            {
+
+                return SelectionFailure(model.Status, error);
+
+            }
+
+            explicitModel = selected!.Model;
+
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Session))
+        {
+
+            ResourceSelectionResult<SessionSummaryDto> session = await resources
+                .SelectSessionAsync(request.Session, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!TrySelected(session, out explicitSession, out string? error))
+            {
+
+                return SelectionFailure(session.Status, error);
+
+            }
+
+            explicitSessionId = explicitSession!.Id;
+
+        }
+
+        CliContextDocument active = request.NewSession
+            ? validation.Active with { SessionId = null }
+            : validation.Active;
+
+        CliEffectiveContext effective = CliContextPrecedence.Resolve(
+            new CliContextResolutionRequest(
+                explicitCampaignId,
+                explicitWorkspacePath,
+                explicitModel,
+                request.NewSession ? null : explicitSessionId,
+                active,
+                validation.DetectedCampaign?.Id,
+                validation.DetectedCampaign?.Path,
+                settings.Value.DefaultModel,
+                request.NoContext));
+
+        List<string> warnings = [.. validation.Warnings];
+
+        if (effective.Workspace is
+            {
+                Source: CliContextSource.ActiveContext,
+                Value: { } workspacePath,
+            }
+            && !CliContextService.IsWithin(
+                request.CurrentDirectory,
+                workspacePath))
+        {
+
+            warnings.Add(
+                $"Current directory is outside the selected workspace {workspacePath}.");
+
+        }
+
+        Guid? sessionCampaignId = explicitSession?.CampaignId
+            ?? validation.Session?.CampaignId;
+
+        if (effective.Session.Value is not null
+            && effective.Campaign.Value is { } campaignId
+            && sessionCampaignId != campaignId)
+        {
+
+            warnings.Add(
+                "The selected session belongs to another campaign; start a new session or align the campaign before operating.");
+
+            return CliInferenceContextResult.Failure(
+                string.Join(' ', warnings));
+
+        }
+
+        return CliInferenceContextResult.Success(effective, warnings);
+
+    }
+
+    private static bool TrySelected<T>(
+        ResourceSelectionResult<T> result,
+        out T? value,
+        out string? error)
+        where T : class
+    {
+
+        value = result.Value;
+
+        error = result.Status switch
+        {
+            ResourceSelectionStatus.Cancelled => "Selection cancelled.",
+            ResourceSelectionStatus.Error => result.Error,
+            _ => null,
+        };
+
+        return result.Status == ResourceSelectionStatus.Selected
+            && value is not null;
+
+    }
+
+    private static CliInferenceContextResult SelectionFailure(
+        ResourceSelectionStatus status,
+        string? error) =>
+        status == ResourceSelectionStatus.Cancelled
+            ? CliInferenceContextResult.Cancelled()
+            : CliInferenceContextResult.Failure(
+                error ?? "The resource could not be selected.");
+
+}

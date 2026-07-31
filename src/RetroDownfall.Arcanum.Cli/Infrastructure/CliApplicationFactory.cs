@@ -73,6 +73,15 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<CliSessionManager>();
 
+        services.AddSingleton<ICliContextStore, CliContextStore>();
+
+        services.AddSingleton<CliContextService>();
+
+        services.AddSingleton<ICliContextService>(serviceProvider =>
+            serviceProvider.GetRequiredService<CliContextService>());
+
+        services.AddSingleton<ICliInferenceContextResolver, CliInferenceContextResolver>();
+
         services.AddSingleton<ICliInvocationContext, CliInvocationContext>();
 
         services.AddSingleton<IConsoleDispatcher, ConsoleDispatcher>();
@@ -194,6 +203,7 @@ internal static class CliApplicationFactory
 
         services.AddTransient<OperationCommands>();
         services.AddTransient<DataEncryptionCommands>();
+        services.AddTransient<ContextCommands>();
 
     }
 
@@ -239,7 +249,8 @@ internal static class CliApplicationFactory
             CliInvocationOptions options = new(
                 parseResult.GetValue(globalOptions.Json),
                 parseResult.GetValue(globalOptions.Plain),
-                parseResult.GetValue(globalOptions.Yes));
+                parseResult.GetValue(globalOptions.Yes),
+                parseResult.GetValue(globalOptions.NoContext));
             activeOptions = options;
 
             using IDisposable invocationScope =

@@ -465,16 +465,50 @@ references plus MCP URL, command, arguments, and working directory are excluded.
 and timestamp and has no resolution authority. Fuzzy matching remains a terminal search operation;
 server APIs retain exact semantics.
 
+**Active CLI context contract:** `arcanum use campaign <id-or-name>`, `use workspace
+<id-or-path>`, `use model <name>`, and `use session <id>` select local defaults without mutating
+Campaign, Workspace, Model, or Session server records. `arcanum use clear [campaign|workspace|model|session]`
+clears one scope (or every scope when omitted). `arcanum context current` prints the effective
+campaign, workspace, model, and session plus each value's source; `--json` returns the same typed
+payload. All direct commands accept recursive `--no-context`, which bypasses saved values for that
+invocation but still permits current-directory Campaign detection.
+
+Effective-value precedence is fixed: **explicit command option → active CLI context →
+current-directory Campaign detection → server default**. `ask` and `chat` accept explicit
+`--workspace` and `--session` in addition to `--campaign` and `--model`, resolve every explicit or
+saved server resource through the authenticated API, and use the effective workspace for Eye of
+the World, Chronosync, MCP workspace scope, file staging, and `PingRequest.WorkingDirectory`.
+Interactive inference prints a context line before work starts. Other option-bearing commands use
+the matching saved default (workspace for Spell/version and Trial commands; Campaign for
+Prompt/Apprentice/session-divination commands; session for Saga/prompt execution/Spell cast; model
+for Trials) only when the explicit option is absent.
+
+The versioned local state document is `{ArcanumPaths.GrimoireDirectory}/cli-context.json` (schema
+version `1`). It contains only resource IDs, safe display names/paths, and a model name—never API
+keys, endpoints, credential references, prompts, or transcript content. Writes use a sibling temp
+file, durable flush, atomic replace, and owner-only permissions. Confirmed stale Campaign,
+Workspace, Model, and Session references are reported before being cleared; transient API failures
+do not clear state. An inherited workspace outside the invocation's current directory is warned
+before operation. A Session whose Campaign differs from the effective Campaign fails inference
+context resolution rather than silently crossing Campaigns. Arcanum's shipping CLI client connects
+to the local loopback host, so current-directory Campaign detection may compare local paths; this
+must not be reused by a future remote-host client, which cannot infer server filesystem identity
+from a client path. `cli-session.txt` remains a temporary last-session mirror for older CLI flows,
+while `cli-context.json.sessionId` is the active-context authority.
+
 | Command | Purpose |
 |---------|---------|
 | `serve` | Builds `WebApplication` with slim defaults, configures Kestrel, registers API services, runs the host (§5.3). When `ARCANUM_AUTO_LAUNCHED=1`, suppresses the Listening line and the raw first-run key print (hint: `arcanum key show`); redirects Console.Out/Error to an owner-only bootstrap log under `{ArcanumPaths.GrimoireDirectory}/logs/auto-serve-bootstrap.log`. |
-| `ask` | Single-prompt streaming inference via NDJSON. Resolves cwd, runs Eye of the World and Chronosync (scoped `IChronosyncEngine`), sends `PingRequest` with workspace context, `ChronosyncDelta`, and optional session continuation. Interactive sessions call `IArcanumServeLauncher.EnsureRunningAsync` before the first stream (auto-start gate). |
-| `chat` | Interactive multi-turn REPL with Figlet banner (`ArcanumBannerRenderer`), Mana bar, slash commands (`/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`), per-turn cancellation, inline `@` file staging, and swap-at-end Markdig rendering via `MarkdigSpectreRenderer`. On wide interactive color terminals (≥100×24), generation uses a Spectre `Layout` live dashboard (`ChatLayoutRenderer`) with MCP/model/server sidebars; narrow / redirected / `NO_COLOR` keeps the simple streaming path. Auto-starts `serve` via `IArcanumServeLauncher` when needed. `/mcp reload` is parsed as the verb `/mcp` with the required argument `reload`; the verb alone prints a usage hint. When a **`MemoryCompressionNotice`** status is received, the Mana bar gains a persistent muted **Memory Compressed** suffix until **`/new`**. Direct `arcanum chat` stays frameless Spectre; bare interactive `arcanum` opens the Command Center (below), not this REPL. |
+| `ask` | Single-prompt streaming inference via NDJSON. Resolves effective CLI context, prints it interactively, runs Eye of the World and Chronosync in the effective workspace, and sends `PingRequest` with optional Campaign/Model/Session. Explicit flags: `--campaign`, `--workspace`, `--model`, and `--session`; `--new` conflicts with `--session`. Interactive sessions auto-start the host before context validation and streaming. |
+| `chat` | Interactive multi-turn REPL with Figlet banner, effective-context header, Mana bar, slash commands (`/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`), per-turn cancellation, inline `@` file staging, and swap-at-end Markdig rendering. `--campaign`, `--workspace`, `--model`, and `--session` override active context; `--new` conflicts with `--session`. Wide interactive color terminals use the live dashboard; narrow, redirected, and `NO_COLOR` paths keep simple streaming. |
 | *(bare)* | **Command Center v2** (Terminal.Gui 2.4.17): bare interactive `arcanum` with `ARCANUM_NO_COMMAND_CENTER` unset. Fixed viewport — header / left sessions (UpdatedAt desc; overlay picker when narrow) / transcript (follow-tail) / composer / footer. Chat + allowlisted slash via `ShellCommandDispatcher` / `CommandCenterChatRunner` / `SessionWorkspaceService` (no Spectre, no CAF recursion, no `ChatCommand`). Resume loads ≤200 recent entries; `CliSessionManager` last-session restore with stale → New Session. Branching uses the server fork contract: `/fork`, selected-entry `/fork at`, `/fork alternative`, `/fork confirm`, and `/branch parent|child`; `⑂` marks branches without changing session ordering. Successful forks load branch detail, transcript, and attachments before switching; failures leave the source active. Attachments: `/attach`, `/attachments` (+ `add`/`reveal`), `@path`; host persists when `Arcanum:Features:Attachments` is enabled (§10.2.5 / §16.6). Structured persistent context is discoverable through `/help` and managed with `/context`, `/context pin <kind> <target>`, and `/context unpin <id>` (§10.2.6). Coalesced streaming (~50ms). Size gate **inside** the host after TG Init (≥80×12 floor); too small or init failure → exit **1**. Bare non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage/help exit **0**. `NO_COLOR` / `ARCANUM_NO_COLOR` select monochrome theme only — they do **not** block the TUI. Auto-serve via `IArcanumServeLauncher`. Types under `Cli/CommandCenter/`. |
 | `look` | Prints `PatternSnapshot` from Eye of the World (no HTTP dependency). |
 | `doctor` | Environment diagnostics across panels — **System** (version/OS/runtime/TTY/color), **Paths**, **Configuration** (`arcanum.json` parse), **MCP** (`mcp.json`), and a **Tokenizer** smoke test — plus an **API Health** probe (`GET /api/health`) with a code-owned 2-second timeout. A hard-check failure exits **1**; an unreachable or timed-out API is a **non-fatal warning** (still exits 0). Pass `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. No infrastructure services required beyond `IHttpClientFactory`, `ISecretStore`, and `IOptions<ArcanumSettings>`. |
 | `key show` | Prints the stored master API key from the OS credential store (`ISecretStore` → keychain with `security.dat` fallback) to **stderr**. CLI-only, **no HTTP** (§16.3). |
 | `key set` | Stores a master API key into the OS credential store (mirrors to `security.dat`). Argument, stdin, or interactive secret prompt (§16.3). |
+| `use campaign\|workspace\|model\|session <value>` | Validate and select an owner-local active CLI default. Selection never updates a server resource row. |
+| `use clear [scope]` | Clear all saved CLI context or only `campaign`, `workspace`, `model`, or `session`. |
+| `context current` | Explain every effective value and its source; reports and then clears confirmed stale references. |
 | `lore list\|get\|set\|delete` | CRUD on `MageSettings` via `/api/lore`. |
 | `daemon install\|uninstall\|status` | OS-specific background service lifecycle (Windows `sc`, macOS `launchd`, Linux `systemctl --user`). |
 | `daemon jobs` | Lists Unseen Servant jobs (name, spell, base vs effective interval, enabled) via **`GET /api/unseen-servant/jobs`**; requires **`arcanum serve`** (or equivalent host) and stored API key. |
@@ -2030,7 +2064,7 @@ Sensitive paths are restricted to the current user at creation time via `SecureF
 - **Unix:** `File.SetUnixFileMode` — files `600` (`UserRead | UserWrite`), directories `700` (`UserRead | UserWrite | UserExecute`).
 - **Windows:** `File.SetUnixFileMode` throws; owner-only ACL via `FileSystemAccessRule` (`Modify` for files, `FullControl` with inheritance for directories).
 
-**Applied on create:** Grimoire `.db`, `arcanum.json`, `cli-session.txt`, Serilog rolling logs
+**Applied on create:** Grimoire `.db`, `arcanum.json`, `cli-context.json`, `cli-session.txt`, Serilog rolling logs
 (`SecureSerilogFileHooks`), Data Protection secret files, encrypted attachment/upload/batch
 envelopes and their same-directory ciphertext temps, and owner-only creation of
 `~/.config/arcanum` and `%ApplicationData%/arcanum/logs/`.
@@ -2839,7 +2873,10 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   guarded, and a failure rolls back both schema work and the history row so startup can retry.
 - **SQLite pragmas** (applied on every connection via **`SqliteConnectionPragmas`**): `journal_mode=WAL`, `busy_timeout=5000`, `foreign_keys=ON`, `synchronous=NORMAL`. WAL provides automatic crash recovery; write contention is retried via **`SqliteBusyRetry`** (bounded backoff on SQLITE_BUSY/locked). Its total-delay guard accumulates scheduled backoff durations instead of wall-clock elapsed time, so coverage profilers and runtime suspension cannot suppress a valid retry.
 - **`Arcanum:Features:Conclave`** gates **The Conclave** cross-Apprentice delegation (the **`cast_sending`** tool and **`POST /api/apprentices/{id}/cast`**). Apprentice lineage (**`ParentApprenticeId`**) is persisted inside the existing **`CheckpointData`** JSON column — deliberately **no** EF migration or compiled-model regeneration, and no top-level SQL index.
-- **`cli-session.txt`** stores one last session id — not multi-user, not cloud sync.
+- **`cli-context.json`** is the owner-only, versioned local CLI preference document for active
+  Campaign, Workspace, Model, and Session. It stores no secrets and has no server authority.
+  `cli-session.txt` remains a temporary compatibility mirror of the last Session id; neither file
+  is multi-user or cloud-synchronized.
 - **`UnseenServantWatermarks`** (§5.5.5) is deliberately **not** part of the compiled EF model — it is accessed entirely via raw SQL through the scoped **`ArcanumDbContext`**'s connection (`GetDbConnection()`), following the FTS query pattern (**`ResolveFtsSessionIdsAsync`**/**`SearchArchivesAsync`**), so adding it required no `dotnet ef dbcontext optimize` regeneration.
 - **Schema-install safety and configuration impact:** `UnseenServantWatermarks` and `SanctumBreaches` are folded into the `InitialCreate.sql` baseline (no production databases in the wild); neither adds a public configuration element. Installation/reinstall policy is §5.4.5.
 - **`SanctumBreaches`** (§11.15): raw SQL via `SanctumBreachRepository` (not in the compiled EF model); FK to `Campaigns` (`ON DELETE CASCADE`); retention enforced on every insert (`SanctumConfig.MaxBreachCount`, clamp 100 – 100,000).
@@ -2900,7 +2937,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 ### 16.6 CLI UX surface (Spectre.Console + Command Center)
 
 - **Command Center** (bare interactive `arcanum`): Terminal.Gui fixed viewport; hard-modal arbitration (Wards > HumanPrompt); attachments when enabled (§10.2.5); `ARCANUM_NO_COMMAND_CENTER=1` escapes to usage.
-- **Frameless `ask`/`chat`:** Spectre banner, mana bar, `@file`/`@image` staging (chat ephemeral; CC host-persists), TTY/`NO_COLOR` theme gating, atomic `cli-session.txt`.
+- **Frameless `ask`/`chat`:** Spectre banner, effective-context header, mana bar, `@file`/`@image` staging (chat ephemeral; CC host-persists), TTY/`NO_COLOR` theme gating, atomic owner-only `cli-context.json` plus the temporary `cli-session.txt` mirror.
 - **doctor:** themed panels + optional `--json` `DoctorReport`.
 
 ### 16.7 Reliability & Performance Hardening

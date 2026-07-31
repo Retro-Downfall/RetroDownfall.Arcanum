@@ -1,5 +1,7 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
+using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Cli.Services;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -25,10 +27,16 @@ internal static partial class CliCommandTree
             Description = "Automatically approve destructive confirmation prompts.",
             Recursive = true,
         };
+        Option<bool> noContext = new("--no-context")
+        {
+            Description = "Bypass saved CLI context for this invocation.",
+            Recursive = true,
+        };
         root.Add(json);
         root.Add(plain);
         root.Add(yes);
-        globalOptions = new CliGlobalOptions(json, plain, yes);
+        root.Add(noContext);
+        globalOptions = new CliGlobalOptions(json, plain, yes, noContext);
         Command serve = BuildServe(serviceProvider);
         Command ask = BuildAsk(serviceProvider);
         Command chat = BuildChat(serviceProvider);
@@ -52,6 +60,8 @@ internal static partial class CliCommandTree
         Command mcp = BuildMcp(serviceProvider);
         Command operation = BuildOperation(serviceProvider);
         Command data = BuildData(serviceProvider);
+        Command use = BuildUse(serviceProvider);
+        Command context = BuildContext(serviceProvider);
 
         root.Add(serve);
         root.Add(ask);
@@ -75,14 +85,89 @@ internal static partial class CliCommandTree
         root.Add(mcp);
         root.Add(operation);
         root.Add(data);
+        root.Add(use);
+        root.Add(context);
 
         return root;
     }
 
     private static RootCommand CreateRoot() => new("Arcanum CLI");
+
+    private static string? ActiveCampaign(
+        IServiceProvider serviceProvider,
+        string? explicitValue) =>
+        ActiveValue(
+            serviceProvider,
+            explicitValue,
+            static document => document.CampaignId?.ToString("D"));
+
+    private static string? ActiveWorkspace(
+        IServiceProvider serviceProvider,
+        string? explicitValue)
+    {
+
+        string? value = ActiveValue(
+            serviceProvider,
+            explicitValue,
+            static document => document.WorkspacePath);
+
+        if (explicitValue is null
+            && value is not null
+            && !CliContextService.IsWithin(Environment.CurrentDirectory, value))
+        {
+
+            serviceProvider
+                .GetRequiredService<IConsoleDispatcher>()
+                .WriteDiagnostic(
+                    $"Warning: Current directory is outside the selected workspace {value}.");
+
+        }
+
+        return value;
+
+    }
+
+    private static string? ActiveModel(
+        IServiceProvider serviceProvider,
+        string? explicitValue) =>
+        ActiveValue(
+            serviceProvider,
+            explicitValue,
+            static document => document.Model);
+
+    private static string? ActiveSession(
+        IServiceProvider serviceProvider,
+        string? explicitValue) =>
+        ActiveValue(
+            serviceProvider,
+            explicitValue,
+            static document => document.SessionId?.ToString("D"));
+
+    private static string? ActiveValue(
+        IServiceProvider serviceProvider,
+        string? explicitValue,
+        Func<CliContextDocument, string?> selector)
+    {
+
+        if (!string.IsNullOrWhiteSpace(explicitValue)
+            || CliInvocationContext.Current.NoContext)
+        {
+
+            return explicitValue;
+
+        }
+
+        CliContextDocument document = serviceProvider
+            .GetRequiredService<ICliContextStore>()
+            .Load();
+
+        return selector(document);
+
+    }
 }
 
 internal readonly record struct CliGlobalOptions(
     Option<bool> Json,
     Option<bool> Plain,
-    Option<bool> Yes);
+    Option<bool> Yes,
+    Option<bool> NoContext);

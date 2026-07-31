@@ -119,6 +119,54 @@ public sealed class CliApplicationFactoryTests
         Assert.Contains("chat", result.Output, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("look", result.Output, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("key", result.Output, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("use", result.Output, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("context", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Help_exposes_context_bypass_and_management_commands()
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult root = CliTestHarness.Run(services, "--help");
+
+        CliTestResult use = CliTestHarness.Run(services, "use", "--help");
+
+        CliTestResult context = CliTestHarness.Run(services, "context", "--help");
+
+        Assert.Contains("--no-context", root.Output, StringComparison.Ordinal);
+
+        Assert.Contains("campaign", use.Output, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("workspace", use.Output, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("model", use.Output, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("session", use.Output, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("clear", use.Output, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("current", context.Output, StringComparison.OrdinalIgnoreCase);
+
+        CliTestResult ask = CliTestHarness.Run(services, "ask", "--help");
+
+        CliTestResult chat = CliTestHarness.Run(services, "chat", "--help");
+
+        Assert.Contains("--workspace", ask.Output, StringComparison.Ordinal);
+
+        Assert.Contains("--session", ask.Output, StringComparison.Ordinal);
+
+        Assert.Contains("--workspace", chat.Output, StringComparison.Ordinal);
+
+        Assert.Contains("--session", chat.Output, StringComparison.Ordinal);
+
     }
 
     [Fact]

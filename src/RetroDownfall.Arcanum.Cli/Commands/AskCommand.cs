@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Chronosync;
@@ -24,7 +25,7 @@ public sealed class AskCommand(
     ICliEnvironment cliEnvironment,
     IOptions<ArcanumSettings> arcanumSettings,
     IArcanumServeLauncher serveLauncher,
-    ICliResourceCatalog? resourceCatalog = null)
+    ICliInferenceContextResolver contextResolver)
 {
 
     /// <summary>
@@ -51,6 +52,8 @@ public sealed class AskCommand(
         bool @new = false,
         bool unattended = false,
         string? campaign = null,
+        string? workspace = null,
+        string? sessionIdOption = null,
         string? temperature = null,
         string? topP = null,
         string? maxTokens = null,
@@ -143,52 +146,13 @@ public sealed class AskCommand(
             scryingFoci = foci;
         }
 
-        Guid? campaignId = null;
-
-        if (!string.IsNullOrWhiteSpace(campaign))
+        if (@new && !string.IsNullOrWhiteSpace(sessionIdOption))
         {
-            if (Guid.TryParse(campaign, out Guid parsedCampaignId))
-            {
-                campaignId = parsedCampaignId;
-            }
-            else if (resourceCatalog is not null)
-            {
-                ResourceSelectionResult<CampaignDto> selected = await resourceCatalog
-                    .SelectCampaignAsync(campaign, cancellationToken)
-                    .ConfigureAwait(false);
-                if (selected.Status != ResourceSelectionStatus.Selected)
-                {
-                    if (selected.Status == ResourceSelectionStatus.Error)
-                    {
-                        AnsiConsole.MarkupLine(palette.ErrorMarkup(Markup.Escape(selected.Error!)));
-                    }
-                    return selected.Status == ResourceSelectionStatus.Cancelled ? 0 : 1;
-                }
-                campaignId = selected.Value!.Id;
-            }
-            else
-            {
-                AnsiConsole.MarkupLine(
-                    palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape("--campaign must be a valid GUID.")));
-                return 1;
-            }
+            AnsiConsole.MarkupLine(
+                palette.ErrorMarkup(
+                    Markup.Escape("--new and --session cannot be used together.")));
 
-        }
-
-        if (!string.IsNullOrWhiteSpace(model) && resourceCatalog is not null)
-        {
-            ResourceSelectionResult<ModelInfoDto> selected = await resourceCatalog
-                .SelectModelAsync(model, cancellationToken)
-                .ConfigureAwait(false);
-            if (selected.Status != ResourceSelectionStatus.Selected)
-            {
-                if (selected.Status == ResourceSelectionStatus.Error)
-                {
-                    AnsiConsole.MarkupLine(palette.ErrorMarkup(Markup.Escape(selected.Error!)));
-                }
-                return selected.Status == ResourceSelectionStatus.Cancelled ? 0 : 1;
-            }
-            model = selected.Value!.Model;
+            return 1;
         }
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -222,12 +186,6 @@ public sealed class AskCommand(
 
         try
         {
-            string cwd = Environment.CurrentDirectory;
-
-            PatternSnapshot snapshot = await eye
-                .PerceivePatternAsync(cwd, linked.Token)
-                .ConfigureAwait(false);
-
             try
             {
                 await grimoireBootstrapper.EnsureInitializedAsync(linked.Token).ConfigureAwait(false);
@@ -244,6 +202,69 @@ public sealed class AskCommand(
 
             _ = await serveLauncher.EnsureRunningAsync(linked.Token).ConfigureAwait(false);
 
+            if (@new)
+            {
+                session.ClearSession();
+            }
+
+            string invocationDirectory = Environment.CurrentDirectory;
+
+            CliInferenceContextResult contextResult = await contextResolver
+                .ResolveAsync(
+                    new CliInferenceContextRequest(
+                        campaign,
+                        workspace,
+                        model,
+                        sessionIdOption,
+                        invocationDirectory,
+                        CliInvocationContext.Current.NoContext,
+                        @new),
+                    linked.Token)
+                .ConfigureAwait(false);
+
+            if (!contextResult.IsSuccess)
+            {
+                if (contextResult.IsCancelled)
+                {
+                    return 0;
+                }
+
+                stderrConsole.MarkupLine(
+                    palette.ErrorMarkup(
+                        Markup.Escape(contextResult.Error ?? "CLI context could not be resolved.")));
+
+                return 1;
+            }
+
+            CliEffectiveContext effectiveContext = contextResult.Context!;
+
+            foreach (string warning in contextResult.Warnings)
+            {
+                stderrConsole.MarkupLine(
+                    palette.ErrorMarkup(Markup.Escape("Warning: " + warning)));
+            }
+
+            string cwd = effectiveContext.Workspace.Value
+                ?? invocationDirectory;
+
+            Guid? campaignId = effectiveContext.Campaign.Value;
+
+            Guid? sessionId = effectiveContext.Session.Value;
+
+            model = effectiveContext.Model.Value;
+
+            if (cliEnvironment.IsInteractive)
+            {
+                stderrConsole.MarkupLine(
+                    palette.MutedMarkup(
+                        Markup.Escape(
+                            $"Context: campaign {campaignId?.ToString("D") ?? "server default"}; workspace {cwd}; model {model ?? "server default"}; session {sessionId?.ToString("D") ?? "new"}.")));
+            }
+
+            PatternSnapshot snapshot = await eye
+                .PerceivePatternAsync(cwd, linked.Token)
+                .ConfigureAwait(false);
+
             ChronosyncReport chronosyncDelta;
 
             await using (AsyncServiceScope chronosyncScope = scopeFactory.CreateAsyncScope())
@@ -251,17 +272,6 @@ public sealed class AskCommand(
                 IChronosyncEngine chronosync = chronosyncScope.ServiceProvider.GetRequiredService<IChronosyncEngine>();
 
                 chronosyncDelta = await chronosync.AnalyzeAndSyncAsync(snapshot, linked.Token).ConfigureAwait(false);
-            }
-
-            Guid? sessionId = null;
-
-            if (@new)
-            {
-                session.ClearSession();
-            }
-            else
-            {
-                sessionId = session.GetLastSessionId();
             }
 
             bool effectiveUnattended = OperatorFacingUnattendedMode.Resolve(
