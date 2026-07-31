@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Cli;
@@ -27,7 +28,8 @@ public sealed class DoctorCommand(
     ISecretStore secretStore,
     IEncryptedBlobDiagnostics encryptedBlobDiagnostics,
     IThemePalette themePalette,
-    ICliEnvironment cliEnvironment)
+    ICliEnvironment cliEnvironment,
+    IConsoleDispatcher consoleDispatcher)
 {
 
     private const string OkGlyph = "\u2713";
@@ -60,9 +62,9 @@ public sealed class DoctorCommand(
 
             DoctorReport report = await BuildJsonReportAsync(cancellationToken).ConfigureAwait(false);
 
-            string output = JsonSerializer.Serialize(report, ArcanumJsonContext.Default.DoctorReport);
-
-            Console.WriteLine(output);
+            consoleDispatcher.WriteJson(
+                report,
+                ArcanumJsonContext.Default.DoctorReport);
 
             return report.Healthy ? 0 : 1;
 

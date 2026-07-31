@@ -33,7 +33,7 @@ a folder-based self-contained fallback, but the shared host remains AOT-constrai
 reflection, source generation, and an AOT warning gate still dictate serialization and binding.
 See [DESIGN.md §9](Arcanum.DESIGN.md#9-native-aot-and-trimming).
 
-- **Source-generated JSON only.** Every HTTP payload type must have a `[JsonSerializable]` registration on **`ArcanumJsonContext`** (Api). Other contexts are scoped: `GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext` (Core — Grimoire blobs, `arcanum.json`, campaign/skill metadata), `McpJsonSerializerContext` / `McpConfigJsonSerializerContext` (Infrastructure, JSON-RPC + `mcp.json`), `CommLinkInfrastructureJsonContext` (outbound webhooks). **Never** use reflection-based `JsonSerializer` overloads, `PostAsJsonAsync` with anonymous types, or `Results.Json` without an explicit `JsonTypeInfo`.
+- **Source-generated JSON only.** Every HTTP payload type must have a `[JsonSerializable]` registration on **`ArcanumJsonContext`** (Api). Other contexts are scoped: `GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext` (Core — Grimoire blobs, `arcanum.json`, campaign/skill metadata), `McpJsonSerializerContext` / `McpConfigJsonSerializerContext` (Infrastructure, JSON-RPC + `mcp.json`), `CommLinkInfrastructureJsonContext` (outbound webhooks), and `CliJsonContext` (CLI process envelopes). **Never** use reflection-based `JsonSerializer` overloads, `PostAsJsonAsync` with anonymous types, or `Results.Json` without an explicit `JsonTypeInfo`.
 - **Source-generated request delegates.** `Api` sets `EnableRequestDelegateGenerator`; handlers must be RDG-compatible (no unbounded reflection model binding, no anonymous return DTOs).
 - **Hand-authored tool schemas.** New `AIFunction` tools use explicit `JsonDocument` schemas, **not** `AIFunctionFactory.Create`.
 - **Config binding** uses `EnableConfigurationBindingGenerator`. Settings POCOs under `Arcanum:…` must use `{ get; set; }` (not `init`) — the generator silently skips `init`-only properties (dotnet/runtime#107856), which previously left `Providers` / `DefaultModel` empty at runtime while `arcanum.json` still looked correct.
@@ -177,7 +177,7 @@ These are the recurring shapes. Matching them is what makes a change "fit."
 - **Wire envelope.** JSON under `/api` returns `ApiResponse<T>` (`Data`, `IsSuccess`, `Error`, `TraceId`). Map from domain with `ApiResponse<T>.FromResult`. Exceptions: streaming (NDJSON), SSE event buses, and OpenAI `/v1` (raw OpenAI shape). See [DESIGN.md §8.1](Arcanum.DESIGN.md#81-wire-contract-the-apiresponset-envelope).
 - **Result flow.** Domain ops return `Result` / `Result<T>` and rely on implicit conversions; the endpoint is the single place that turns a `Result` into an envelope + status code.
 - **New endpoint checklist:** add to `MapArcanumEndpoints` → return `ApiResponse<T>` (or documented streaming shape) → register every new payload type on `ArcanumJsonContext` → `.WithName(...)` for OpenAPI → use explicit `JsonTypeInfo` on failable `Results.Json` → update DESIGN.md §4.3 + this README's API map.
-- **New CLI verb:** add a public method (XML doc `<summary>`/`<param>` comments drive `--help` text and aliases) to a grouped command class under `Cli/Commands`, registered via `app.Add<T>("path")` in `CliApplicationFactory.RunAsync`; prefer `AddArcanumEyeOfTheWorld()` over full infrastructure for lightweight verbs.
+- **New CLI verb:** add the handler under `Cli/Commands` and wire it in `CliCommandTree`; use `IConsoleDispatcher` for stdout payloads/stderr diagnostics, `IConfirmationPrompt` for destructive approval, an explicit source-generated `JsonTypeInfo` for structured output, and a defined `CliExitCode`. Prefer `AddArcanumEyeOfTheWorld()` over full infrastructure for lightweight verbs.
 - **New inference provider:** add an `AiProviderKind` and extend `IChatClientFactory`; keep the `WizardIntelligenceProvider` contract intact.
 - **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema via `McpJsonSerializerContext`; honor unconditional `WorkspacePathPolicy` containment and `ToolOutputCapBytes`; decide whether it belongs in `ToolRiskClassifier.IntrinsicWardToolNames`. Do not treat campaign Sanctum as the primary filesystem boundary.
 - **Treat all wire types as versioned contracts.** Casing is fixed at the context level; don't add `[JsonPropertyName]` except on OpenAI `/v1` and MCP JSON-RPC types (see [DESIGN.md §8.2](Arcanum.DESIGN.md#82-arcanumjsoncontext--source-generated-public)).
@@ -637,6 +637,26 @@ Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](
 All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- <cmd>` in development, or `arcanum <cmd>` after an AOT publish.
 
 **Default command:** bare interactive `arcanum` (no arguments) opens the **Command Center** (Terminal.Gui fixed-viewport TUI). Bare non-interactive `arcanum`, or `ARCANUM_NO_COMMAND_CENTER=1`, prints usage and exits **0**. Explicit commands (`serve`, `ask`, `chat`, `--help`, …) stay frameless Spectre/CAF as before.
+
+**Global automation contract:** every direct command accepts these flags before or after its verb:
+
+| Flag | Contract |
+|---|---|
+| `--json` | Write exactly one valid JSON document to stdout and disable terminal control sequences. Typed commands keep their documented shape (for example `doctor`); text commands use `{ "output": "...", "exitCode": 0 }`. Diagnostics remain on stderr. |
+| `--plain` | Disable ANSI colors, animations, and the mana bar for this invocation. This does not change `arcanum.json`. |
+| `--yes` | Auto-approve command confirmation prompts. Without it, a confirmation required while stdout is redirected fails immediately instead of reading stdin or hanging CI. |
+
+The closed exit-code set is `0` success, `1` generic/runtime error, `2` invalid command line or
+configuration/confirmation error, `3` network error, and `130` cancellation. Unexpected failures
+print fixed redacted copy only: no raw exception message, stack trace, path, PII, or credential.
+
+Examples:
+
+```bash
+arcanum doctor --json | jq .
+arcanum --json operation list | jq -r '.output'
+arcanum operation list --plain
+```
 
 **Command Center:** interactive Terminal.Gui workbench (sessions sidebar, transcript, composer, HITL/Ward hard modals). Bare interactive `arcanum` opens it; non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage. Slash allowlist and attach flows: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
 

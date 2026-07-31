@@ -5,9 +5,30 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-    public static RootCommand Build(IServiceProvider serviceProvider)
+    public static RootCommand Build(
+        IServiceProvider serviceProvider,
+        out CliGlobalOptions globalOptions)
     {
         RootCommand root = new("Arcanum CLI");
+        Option<bool> json = new("--json")
+        {
+            Description = "Force structured JSON output for machine consumption.",
+            Recursive = true,
+        };
+        Option<bool> plain = new("--plain")
+        {
+            Description = "Disable ANSI colors and terminal animations.",
+            Recursive = true,
+        };
+        Option<bool> yes = new("--yes")
+        {
+            Description = "Automatically approve destructive confirmation prompts.",
+            Recursive = true,
+        };
+        root.Add(json);
+        root.Add(plain);
+        root.Add(yes);
+        globalOptions = new CliGlobalOptions(json, plain, yes);
         Command serve = BuildServe(serviceProvider);
         Command ask = BuildAsk(serviceProvider);
         Command chat = BuildChat(serviceProvider);
@@ -56,3 +77,8 @@ internal static partial class CliCommandTree
 
     private static RootCommand CreateRoot() => new("Arcanum CLI");
 }
+
+internal readonly record struct CliGlobalOptions(
+    Option<bool> Json,
+    Option<bool> Plain,
+    Option<bool> Yes);

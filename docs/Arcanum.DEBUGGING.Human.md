@@ -16,6 +16,9 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 
 - **Host (`arcanum serve`)**: `ServeCommand.Run()` (`Program.cs`) → `WebApplication.CreateSlimBuilder()` (`ServeCommand`) → `AddArcanumApiServices()` (`ApiBootstrapper`) → `MapArcanumEndpoints()` → `RunAsync()`.
 - **CLI verbs** (`ask`, `chat`, `look`, `lore`, `daemon`, `key`, `serve`): request/response cycles through `ArcanumApiClient.SendRequestAsync()`; inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `data encryption ...` is intentionally local: `DataEncryptionCommands` initializes the Grimoire and calls `BlobEncryptionLifecycleService`.
+- **CLI process contract**: start at `CliApplicationFactory.RunAsync()` → `CliCommandTree.Build()` →
+  `CliInvocationContext.Push()`. Payload/diagnostic routing is `ConsoleDispatcher`; destructive
+  approval is `ConfirmationPrompt`; final failure categorization is `CliFailureMapper`.
 - **Native AOT**: `dotnet build -c Release` on Windows/Linux produces the trimmed image; macOS uses folder-based publish (`Directory.Build.props`).
 - **Debug-only host**: `Arcanum.Api.DevHost/Program.cs` mirrors the serve wiring but does not ship.
 
@@ -39,6 +42,8 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 | `InferenceExecuteWriter` (`Api/TheForge/`) | NDJSON writer (`WriteStreamAsync()`); timeout (`PublicStreamTimeoutMessage` mapped to `Hub.Timeout` for `/v1` streaming); sanitized failure (`PublicStreamFailureMessage` mapped to native generic failure); exact-byte capture (`IdempotencyBufferingStream`); replay eligibility (`ReplayResponse` / `ReplayEligibleAsync` / `Complete`). |
 | `PublicInferenceErrorMessages` / `OpenAiStreamErrorMapper` / `ArcanumErrorMapper` (`Api/` + `TheForge/`) | Stable error copy (`NativeGenericFailure` / `OpenAiGenericFailure`); `Hub.Model` / `Hub.Timeout` mapped to 503 for `/v1` streaming; `Session.RestQueueFull` mapped to 503; `Security.IdempotencyInProgress` mapped to 409; `Security.IdempotencyConflict` mapped to 409; no raw exception leakage. |
 | `CliSessionManager` / `ArcanumPaths` | Session isolation (`ARCANUM_TEST_HOME` isolation; no developer storage access); session identity; diagnostic preview (`CliSessionManagerTests` avoids corrupt preview by reading identity, not untrusted content). |
+| `CliApplicationFactory` / `CliInvocationContext` / `ConsoleDispatcher` | Recursive `--json`/`--plain`/`--yes` binding; JSON stdout capture and typed-output bypass; ANSI suppression; stdout payload vs stderr diagnostic routing; exit-code normalization; fixed-copy exception mapping. |
+| `ConfirmationPrompt` | `--yes` short circuit; redirected-output fail-closed check before prompt or input read; stderr prompt copy and cancellation-aware input. |
 | `ChildProcessFilesystemJail` / `CappedChildProcessRunner` (`Infrastructure/Process/`) | Nonblocking/no-follow process-group launch (`setsid` / direct target group, no blocking FIFO before check); handle-bound child termination; identity-owned cleanup; timeout vs cancellation event; best-effort descendant cleanup. |
 | `GrimoireRepository` / `EntryWindowPolicy` / `SqliteBusyRetry` (`Infrastructure/Repositories/`) | Timestamp-group load (expanded CTE covering full tied group before advancing); bounded query limit (`Limit` / `MaxEntriesPerSession`); rollup updates (`CampaignBackedWorkspaceRegistry`); parameterized filtering/ordering/capping; bookmark advance only when complete group is below ceiling; `BEGIN IMMEDIATE` retry. |
 
@@ -51,6 +56,12 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 5. **Inspect reservation/accounting lifecycle:** `BudgetReservationService.EstimateWorstCaseTurnUsd()` (per-call max-not-sum); `TurnAccountingHandle.ReserveTurnBudget()` / `EstablishClampedSnapshot()`; `TurnAccountingHandle` lease renewal; `GrimoireRepository` timestamp-group summarization; `SqliteBusyRetry` busy/locked retry with fresh transaction per retry and cancellation-observed exit.
 6. **Inspect isolated delegation:** break at `ArcanumDelegateTaskTool.InvokeCoreAsync()` and `SubagentRunner.RunAsync()`. Confirm the child `PingRequest` has no `SessionId`, workspace, context snapshot, Chronosync, campaign, data streams, tools, or retrieval; inspect `SubagentExecutionAmbient.Depth`; then verify `ModelCallExecutor.RecordDelegatedUsage()` charges provider usage before `ThrowIfExhausted()` ends the loop and the durable `subagent` row reaches `Completed` or `Failed`.
 7. **Inspect blob migration/rotation recovery:** seed a version-zero row and matching plaintext file, then break in `BlobEncryptionFileProcessor.MigrateAsync()`. Stop after `EncryptedBlobStore.WriteAsync()` replaces the file but before `UpdateEncryptionMetadataAsync()` commits; rerun `arcanum data encryption migrate` and confirm the valid envelope is verified and metadata advances without another plaintext rewrite. During rotation, confirm `FileEncryptionKeyProvider` can read both key ids and retires the old id only after aggregate verification reports zero remaining/failed files.
+8. **Verify the CLI pipe contract:** run `arcanum operation list --json | jq .` and confirm stdout
+   contains one document. Send stderr to a separate file to verify diagnostics never enter that
+   document. Break in `FlushJsonOutput()` to distinguish typed output
+   (`StructuredPayloadWritten`) from the `CliTextPayload` compatibility wrapper. For a destructive
+   command, redirect stdout without `--yes` and break in
+   `ConfirmationPrompt.PromptForConfirmationAsync()`; it must throw before reading `Console.In`.
 
 ## Related documents
 

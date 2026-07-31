@@ -522,7 +522,8 @@ construction and rebuilds perform no diagnostic file I/O.
 
 One binary; the CLI verb selects the process role (per-command detail in §4.4). The defining axis is process lifetime:
 
-- **No arguments** — Spectre prints standard usage.
+- **No arguments** — opens Command Center on an interactive TTY; prints standard usage when
+  noninteractive or `ARCANUM_NO_COMMAND_CENTER=1`.
 - **`serve`** — the long-running HTTP host: builds `WebApplication` with slim defaults and blocks until shutdown.
 - **`ask`** — streams single-prompt inference via NDJSON, then exits (0/1/130).
 - **`chat`** — multi-turn REPL with per-turn cancellation and swap-at-end rendering.
@@ -531,6 +532,34 @@ One binary; the CLI verb selects the process role (per-command detail in §4.4).
 ### 5.2 Why System.CommandLine 2.0.10
 
 Source-generated parsing (AOT-clean, no reflection). Spectre remains for rendering. `RepeatableOptionMerger` rewrites repeated flags into CAF JSON-array syntax; XML-doc aliases preserve legacy camelCase option spellings.
+
+Every direct command inherits three recursive root options, accepted before or after the verb:
+
+- `--json` forces one valid JSON document on stdout. Commands with typed structured output write
+  that type through `IConsoleDispatcher.WriteJson` and an explicit source-generated
+  `JsonTypeInfo`; legacy text commands are captured at the process boundary and returned as
+  `CliTextPayload { output, exitCode }`. ANSI is disabled while JSON is active, so terminal control
+  sequences cannot corrupt a pipe such as `arcanum operation list --json | jq`.
+- `--plain` disables ANSI color and terminal animation for that invocation. It does
+  not persist or replace `Arcanum:Cli:Theme`.
+- `--yes` is the only global auto-approval signal. `IConfirmationPrompt` returns immediately when
+  it is present; otherwise a redirected-output invocation fails closed with
+  `NonInteractiveConfirmationException` before reading stdin or writing a prompt. Command Center
+  modals and inference `ask_human` are separate interactive protocols.
+
+`IConsoleDispatcher` owns the process stream contract: requested text/JSON payloads go to stdout;
+diagnostics, warnings, progress, and confirmation copy go to stderr. `CliInvocationContext` carries
+the immutable per-invocation option snapshot without process-wide environment mutation. New command
+code must use these services rather than writing directly to `Console` or serializing with a
+reflection overload.
+
+`CliExitCode` is the closed process contract: `0` success, `1` generic/runtime failure, `2`
+configuration or command-line failure, `3` network failure, and `130` cancellation. Arbitrary
+handler return values normalize to `1`. `CliApplicationFactory.RunAsync` disables
+System.CommandLine's default exception printer and is the global exception boundary:
+`CliFailureMapper` maps only exception categories to fixed public messages, never exception
+messages, paths, PII, API keys, or stack traces. JSON invocations receive a source-generated
+`CliErrorPayload`; the same fixed diagnostic goes to stderr.
 
 ### 5.3 `ServeCommand` lifecycle
 
@@ -1132,6 +1161,8 @@ Zero runtime prerequisite for the shipping CLI; fast cold start for short verbs;
 - Grimoire `PatternSnapshot` blobs use `GrimoireJsonContext` with explicit `JsonTypeInfo` — no reflection-based `JsonSerializer` overloads for those columns.
 - MCP wire types use `McpJsonSerializerContext` exclusively — no reflection-based `JsonSerializer` overloads.
 - Outbound Comm Link webhook bodies use `CommLinkInfrastructureJsonContext` / `WebhookPayloadDto` exclusively (`title`, `body`, `severity`, `source`, `timestampUtc`) — no `PostAsJsonAsync` with anonymous DTOs.
+- CLI process envelopes use `CliJsonContext` with explicit `JsonTypeInfo`; typed command payloads may
+  use another source-generated context already authoritative for that DTO.
 - Minimal API handlers must not return anonymous DTOs or use unbounded reflection-based model binding.
 - New `AIFunction` tools must use hand-authored `JsonDocument` schemas, not `AIFunctionFactory.Create`.
 - Runtime model-supplied regex must not use `RegexOptions.Compiled` or an input-derived cache. `search_workspace` tries the culture-invariant `NonBacktracking` engine first and falls back to the bounded interpreted engine only for otherwise-valid syntax that `NonBacktracking` does not support; fixed application patterns continue to use `[GeneratedRegex]`.
@@ -2636,6 +2667,7 @@ reinstall.
 | `LexiconServiceTests` | Case-insensitive create/upsert, nonduplicate fact append, `General`/keep/refresh type rules, per-upsert cap, delete/FTS removal, exact-before-FTS ranking with `bm25(...,3.0,2.0,1.0)`, fact-text hits, special-char sanitization, index refresh, and missing-name null. |
 | Lexicon internal-tool tests | Enabled tools-list advertisement, disabled omission of Lexicon and legacy Lore tools, service-backed create/delete, and disabled tool error. |
 | `SemanticRouterTests` / `LexiconEntityExtractor` cases | Spell+entities result, entities surviving `NONE`, missing→empty, fenced/malformed JSON, no-call empty prompt, and cap/deduplication. |
+| `CliContractTests` / `DoctorCommandJsonTests` | Recursive global flag placement; stdout/stderr separation; ANSI stripping; one-document JSON wrapping; fail-closed redirected confirmation and `--yes`; closed exit codes; redacted network/unhandled failures; typed doctor JSON. |
 | `SystemPromptBuilderTests` / untrusted-fence tests | Lexicon DATA inclusion/omission, control/newline hardening, byte truncation, adaptive fences for Codex/Spell/instructions/Chronosync/summary/attachments, and sanitized Data Stream ids. |
 | `UnseenServantDaemonJobTests` | Deterministic bounded daemon-state name, enabled Lexicon state/instruction, disabled omission, and missing-state fail-open kickoff. |
 
@@ -2663,7 +2695,7 @@ retain their normal skip behavior when the native asset is absent.
 
 1. **New HTTP routes:** Add in `MapArcanumEndpoints`. Return `ApiResponse<T>` via `FromResult`. Extend `ArcanumJsonContext` for new payload types. Use `.WithName(...)` for OpenAPI.
 2. **New domain operations:** Return `Result` / `Result<T>`; rely on implicit conversions.
-3. **New CLI verbs:** Add a public method (with XML doc `<summary>`/`<param>` comments for the description/aliases) to an existing grouped command class under `Cli/Commands`, or a new class registered via `app.Add<T>("path")` in `CliApplicationFactory.RunAsync`; register the class's constructor dependencies in `ConfigureCliServices`. Lightweight verbs should use `AddArcanumEyeOfTheWorld()` rather than `AddArcanumInfrastructure`.
+3. **New CLI verbs:** Add the handler under `Cli/Commands` and wire it in `CliCommandTree`; register constructor dependencies in `ConfigureCliServices`. Route requested payloads through `IConsoleDispatcher`, diagnostics through its stderr path, confirmations through `IConfirmationPrompt`, and structured values through an explicit source-generated `JsonTypeInfo`. Return only `CliExitCode` values. Lightweight verbs should use `AddArcanumEyeOfTheWorld()` rather than `AddArcanumInfrastructure`.
 4. **New intelligence providers:** Implement `IArcanumIntelligenceProvider` in `Api`. Follow the `WizardIntelligenceProvider` + `IChatClientFactory` pattern (or extend the factory for new `AiProviderKind` values).
 5. **Domain logic:** Place in `Core`; keep `Api` free of business orchestration.
 6. **Breaking JSON contracts:** Treat all wire types as versioned contracts. Property casing is fixed at the context level.

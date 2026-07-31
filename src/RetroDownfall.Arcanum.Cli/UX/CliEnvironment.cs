@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Cli.Infrastructure;
+
 namespace RetroDownfall.Arcanum.Cli.UX;
 
 /// <summary>
@@ -30,14 +32,30 @@ public interface ICliEnvironment
 public sealed class CliEnvironment : ICliEnvironment
 {
 
+    private readonly bool _isInteractive;
+
+    private readonly bool _colorEnabled;
+
+    private readonly bool _showManaBarConfigured;
+
+    private readonly ICliInvocationContext? _invocationContext;
+
     public CliEnvironment(bool showManaBarConfigured)
+        : this(showManaBarConfigured, invocationContext: null)
+    {
+
+    }
+
+    internal CliEnvironment(
+        bool showManaBarConfigured,
+        ICliInvocationContext? invocationContext)
     {
 
         bool stdoutRedirected = Console.IsOutputRedirected;
 
         bool stdinRedirected = Console.IsInputRedirected;
 
-        IsInteractive = !stdinRedirected && !stdoutRedirected;
+        _isInteractive = !stdinRedirected && !stdoutRedirected;
 
         string? noColor = Environment.GetEnvironmentVariable("NO_COLOR");
 
@@ -45,16 +63,25 @@ public sealed class CliEnvironment : ICliEnvironment
 
         bool noColorRequested = !string.IsNullOrEmpty(noColor) || !string.IsNullOrEmpty(arcanumNoColor);
 
-        ColorEnabled = IsInteractive && !noColorRequested;
+        _colorEnabled = _isInteractive && !noColorRequested;
 
-        ShouldShowManaBar = showManaBarConfigured && IsInteractive;
+        _showManaBarConfigured = showManaBarConfigured;
+
+        _invocationContext = invocationContext;
 
     }
 
-    public bool IsInteractive { get; }
+    public bool IsInteractive =>
+        _isInteractive && !(_invocationContext?.Options.Json ?? false);
 
-    public bool ColorEnabled { get; }
+    public bool ColorEnabled =>
+        _colorEnabled
+        && !(_invocationContext?.Options.Plain ?? false)
+        && !(_invocationContext?.Options.Json ?? false);
 
-    public bool ShouldShowManaBar { get; }
+    public bool ShouldShowManaBar =>
+        _showManaBarConfigured
+        && IsInteractive
+        && ColorEnabled;
 
 }

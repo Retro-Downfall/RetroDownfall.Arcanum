@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.CommandLine;
+using System.CommandLine.Parsing;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -45,7 +46,9 @@ internal static class CliApplicationFactory
         {
             bool showManaBar = sp.GetRequiredService<IOptions<ArcanumSettings>>().Value.Cli.ShowManaBar;
 
-            return new CliEnvironment(showManaBar);
+            return new CliEnvironment(
+                showManaBar,
+                sp.GetRequiredService<ICliInvocationContext>());
         });
 
         services.AddSingleton<IThemePalette>(sp =>
@@ -69,6 +72,12 @@ internal static class CliApplicationFactory
         });
 
         services.AddSingleton<CliSessionManager>();
+
+        services.AddSingleton<ICliInvocationContext, CliInvocationContext>();
+
+        services.AddSingleton<IConsoleDispatcher, ConsoleDispatcher>();
+
+        services.AddSingleton<IConfirmationPrompt, ConfirmationPrompt>();
 
         services.AddSingleton<TelemetryService>();
 
@@ -185,28 +194,160 @@ internal static class CliApplicationFactory
     public static async Task<int> RunAsync(string[] args, IServiceProvider serviceProvider)
     {
 
-        if (args.Length == 0)
+        CliInvocationOptions activeOptions = default;
+
+        try
         {
-            ICliEnvironment env = serviceProvider.GetRequiredService<ICliEnvironment>();
 
-            if (env.IsInteractive && !CommandCenterHost.IsCommandCenterDisabled())
+            if (args.Length == 0)
             {
-                ICommandCenterHost host = serviceProvider.GetRequiredService<ICommandCenterHost>();
+                using IDisposable emptyInvocationScope =
+                    CliInvocationContext.Push(default);
 
-                return await host.RunAsync(CancellationToken.None).ConfigureAwait(false);
+                ICliEnvironment env = serviceProvider.GetRequiredService<ICliEnvironment>();
+
+                if (env.IsInteractive && !CommandCenterHost.IsCommandCenterDisabled())
+                {
+                    ICommandCenterHost host = serviceProvider.GetRequiredService<ICommandCenterHost>();
+
+                    int hostExitCode = await host
+                        .RunAsync(CancellationToken.None)
+                        .ConfigureAwait(false);
+
+                    return NormalizeExitCode(hostExitCode);
+                }
+
+                WriteBareUsage();
+
+                return (int)CliExitCode.Success;
             }
 
-            WriteBareUsage();
+            RootCommand root = CliCommandTree.Build(
+                serviceProvider,
+                out CliGlobalOptions globalOptions);
+            ParseResult parseResult = root.Parse(args);
+            CliInvocationOptions options = new(
+                parseResult.GetValue(globalOptions.Json),
+                parseResult.GetValue(globalOptions.Plain),
+                parseResult.GetValue(globalOptions.Yes));
+            activeOptions = options;
 
-            return 0;
+            using IDisposable invocationScope =
+                CliInvocationContext.Push(options);
+
+            if (parseResult.Errors.Count > 0 && options.Json)
+            {
+                IConsoleDispatcher dispatcher =
+                    serviceProvider.GetRequiredService<IConsoleDispatcher>();
+                dispatcher.WriteDiagnostic("The command line is invalid.");
+                dispatcher.WriteJson(
+                    new CliErrorPayload(
+                        "The command line is invalid.",
+                        (int)CliExitCode.ConfigurationError),
+                    CliJsonContext.Default.CliErrorPayload);
+
+                return (int)CliExitCode.ConfigurationError;
+            }
+
+            IAnsiConsole originalAnsiConsole = AnsiConsole.Console;
+            TextWriter originalOutput = Console.Out;
+            StringWriter? capturedOutput = options.Json ? new StringWriter() : null;
+
+            try
+            {
+                if (capturedOutput is not null)
+                {
+                    Console.SetOut(capturedOutput);
+                }
+
+                ConfigureAnsiConsoleForInvocation(options);
+
+                System.CommandLine.InvocationConfiguration config = new()
+                {
+                    EnableDefaultExceptionHandler = false,
+                    ProcessTerminationTimeout = Timeout.InfiniteTimeSpan,
+                    Output = Console.Out,
+                    Error = Console.Error,
+                };
+
+                int exitCode = await parseResult
+                    .InvokeAsync(config)
+                    .ConfigureAwait(false);
+
+                int normalizedExitCode = parseResult.Errors.Count > 0
+                    ? (int)CliExitCode.ConfigurationError
+                    : NormalizeExitCode(exitCode);
+
+                if (capturedOutput is not null)
+                {
+                    FlushJsonOutput(
+                        originalOutput,
+                        capturedOutput.ToString(),
+                        normalizedExitCode);
+                }
+
+                return normalizedExitCode;
+            }
+            finally
+            {
+                if (capturedOutput is not null)
+                {
+                    Console.SetOut(originalOutput);
+                    capturedOutput.Dispose();
+                }
+
+                AnsiConsole.Console = originalAnsiConsole;
+            }
+        }
+        catch (Exception exception)
+        {
+            CliFailure failure = CliFailureMapper.Map(exception);
+            IConsoleDispatcher dispatcher =
+                serviceProvider.GetRequiredService<IConsoleDispatcher>();
+
+            if (activeOptions.Json)
+            {
+                dispatcher.WriteJson(
+                    new CliErrorPayload(
+                        failure.SafeMessage,
+                        (int)failure.ExitCode),
+                    CliJsonContext.Default.CliErrorPayload);
+            }
+
+            dispatcher.WriteDiagnostic(failure.SafeMessage);
+
+            return (int)failure.ExitCode;
         }
 
-        RootCommand root = CliCommandTree.Build(serviceProvider);
-        System.CommandLine.InvocationConfiguration config = new System.CommandLine.InvocationConfiguration();
-        config.ProcessTerminationTimeout = System.Threading.Timeout.InfiniteTimeSpan;
-        return await root.Parse(args).InvokeAsync(config).ConfigureAwait(false);
+    }
+
+    private static void FlushJsonOutput(
+        TextWriter output,
+        string capturedOutput,
+        int exitCode)
+    {
+
+        if (CliInvocationContext.StructuredPayloadWritten)
+        {
+            output.Write(capturedOutput);
+
+            return;
+        }
+
+        string normalizedOutput =
+            ConsoleDispatcher.StripAnsi(capturedOutput).TrimEnd('\r', '\n');
+        string json = System.Text.Json.JsonSerializer.Serialize(
+            new CliTextPayload(normalizedOutput, exitCode),
+            CliJsonContext.Default.CliTextPayload);
+
+        output.WriteLine(json);
 
     }
+
+    private static int NormalizeExitCode(int exitCode) =>
+        Enum.IsDefined((CliExitCode)exitCode)
+            ? exitCode
+            : (int)CliExitCode.GenericError;
 
     internal static void WriteBareUsage()
     {
@@ -260,6 +401,27 @@ internal static class CliApplicationFactory
         });
 
         _ = configuration;
+
+    }
+
+    private static void ConfigureAnsiConsoleForInvocation(
+        CliInvocationOptions options)
+    {
+
+        if (!options.Plain && !options.Json)
+        {
+
+            return;
+
+        }
+
+        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Ansi = AnsiSupport.No,
+            ColorSystem = ColorSystemSupport.NoColors,
+            Interactive = InteractionSupport.No,
+            Out = new AnsiConsoleOutput(Console.Out),
+        });
 
     }
 

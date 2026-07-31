@@ -56,12 +56,14 @@ internal static partial class CliCommandTree
         DoctorCommand handler = sp.GetRequiredService<DoctorCommand>();
         Command doctor = new("doctor", "Run environment diagnostics (version, paths, API health).");
         Option<bool> fixPermissions = new("--fix-permissions") { Description = "Apply owner-only permissions to the Grimoire database, arcanum.json, and secret store." };
-        Option<bool> json = new("--json") { Description = "Emit the report as JSON to stdout for programmatic consumption." };
 
-        doctor.Add(fixPermissions); doctor.Add(json);
+        doctor.Add(fixPermissions);
 
         doctor.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Run(pr.GetValue(fixPermissions), pr.GetValue(json), ct).ConfigureAwait(false));
+            await handler.Run(
+                pr.GetValue(fixPermissions),
+                CliInvocationContext.Current.Json,
+                ct).ConfigureAwait(false));
         return doctor;
     }
 

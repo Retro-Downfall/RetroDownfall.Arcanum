@@ -70,6 +70,30 @@ public sealed class DoctorCommandJsonTests : IDisposable
     }
 
     [Fact]
+    public async Task GlobalJson_before_doctor_emits_only_json_to_stdout()
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.AddSingleton<ISecretStore>(new NullSecretStore());
+
+        CliTestResult result = await CliTestHarness.RunAsync(services, ["--json", "doctor"]);
+
+        DoctorReport? report = JsonSerializer.Deserialize(
+            result.Output,
+            DoctorReportJsonContext.Default.DoctorReport);
+
+        Assert.NotNull(report);
+
+        Assert.Empty(result.Error);
+
+    }
+
+    [Fact]
     public void DoctorJson_WithApiHealth_ProducesWarnStatusWhenServerUnreachable()
     {
 

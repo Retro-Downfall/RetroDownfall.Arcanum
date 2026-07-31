@@ -220,6 +220,12 @@ recursion cap and per-call token/cost/turn delegation are code-owned safety requ
 | `cli.theme` | enum `"SystemDefault"` | `Light`, `Dark`, `SystemDefault` | CLI color theme. |
 | `cli.showManaBar` | `bool`, `true` | — | Shows the chat token-budget indicator. |
 
+The direct-command flags `--json`, `--plain`, and `--yes` are intentionally not configuration
+keys and are not editable in Compendium. They are per-invocation automation authority:
+`--json`/`--plain` override theme and mana-bar rendering for that process, while `--yes` approves
+only that command's confirmation prompts. Persisting any of them would make interactive and
+destructive behavior surprising.
+
 ### Dynamic dictionary shapes
 
 `cost.pricing.modelPricing` is keyed case-insensitively by model name. Every

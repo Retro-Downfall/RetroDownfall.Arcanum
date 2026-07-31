@@ -40,7 +40,7 @@ public sealed class CliApplicationFactoryTests
 
         CliTestResult result = await CliTestHarness.RunAsync(services, []);
 
-        Assert.Equal(42, result.ExitCode);
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
         Assert.Equal(1, host.RunCount);
     }
 
@@ -56,7 +56,7 @@ public sealed class CliApplicationFactoryTests
 
         CliTestResult result = await CliTestHarness.RunAsync(services, []);
 
-        Assert.Equal(7, result.ExitCode);
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
         Assert.Equal(1, host.RunCount);
     }
 
