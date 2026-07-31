@@ -17,7 +17,7 @@ internal static partial class CliCommandTree
         Option<bool> unattended = new("--unattended") { Description = "Force unattended for this run; skips ask_human blocking and uses Ward auto-deny." };
         Option<string?> campaign = new("--campaign", "-c") { Description = "Campaign GUID to resolve the workspace from." };
         Option<string?> workspace = new("--workspace") { Description = "Workspace ID or path for this chat." };
-        Option<string?> session = new("--session") { Description = "Session ID to resume for this chat." };
+        Option<string?> session = new("--session") { Description = "Session GUID, exact title, or unique title prefix to resume." };
         Option<string?> temperature = new("--temperature") { Description = "Sampling temperature 0-2 (lower = more deterministic). Applies to every turn." };
         Option<string?> topP = new("--top-p") { Description = "Nucleus sampling cutoff 0-1. Applies to every turn." };
         Option<string?> maxTokens = new("--max-tokens") { Description = "Maximum output tokens per turn." };

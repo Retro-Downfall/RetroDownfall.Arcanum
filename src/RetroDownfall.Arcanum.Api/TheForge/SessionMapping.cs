@@ -29,7 +29,8 @@ internal static class SessionMapping
             session.UpdatedAt,
             session.Summary,
             session.TotalTokensUsed,
-            session.ForkedFromSessionId);
+            session.ForkedFromSessionId,
+            session.TotalCostUsd);
 
     public static SessionAttachmentDto ToAttachmentDto(SessionAttachmentRecord record)
     {

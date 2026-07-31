@@ -17,6 +17,11 @@ public interface ICliResourceCatalog
 
     Task<ResourceSelectionResult<SessionSummaryDto>> SelectSessionAsync(string? identifier, CancellationToken cancellationToken);
 
+    Task<ResourceSelectionResult<EntryDto>> SelectSessionEntryAsync(
+        Guid sessionId,
+        string? identifier,
+        CancellationToken cancellationToken);
+
     Task<ResourceSelectionResult<WorkspaceInfo>> SelectWorkspaceAsync(string? identifier, CancellationToken cancellationToken);
 
     Task<ResourceSelectionResult<PromptSummaryDto>> SelectPromptAsync(string? identifier, CancellationToken cancellationToken);
@@ -92,8 +97,14 @@ public sealed class CliResourceCatalog(
                 async (token, ct) =>
                 {
                     DateTimeOffset? before = ParseTimestamp(token);
+
                     Result<SessionQueryResult> result = await apiClient
-                        .QuerySessionsAsync(PageSize, before, ct)
+                        .QuerySessionsAsync(
+                            new SessionQueryRequest(
+                                Status: "all",
+                                Limit: PageSize,
+                                BeforeUpdatedAt: before),
+                            ct)
                         .ConfigureAwait(false);
                     if (result.IsFailure)
                     {
@@ -103,6 +114,50 @@ public sealed class CliResourceCatalog(
                     SessionQueryResult page = result.Value;
                     string? next = page.HasMore ? page.NextBeforeUpdatedAt?.ToString("O") : null;
                     return Result<ResourcePage<SessionSummaryDto>>.Success(new(page.Summaries, next));
+                }),
+            cancellationToken);
+
+    public Task<ResourceSelectionResult<EntryDto>> SelectSessionEntryAsync(
+        Guid sessionId,
+        string? identifier,
+        CancellationToken cancellationToken) =>
+        SelectAsync(
+            new ResourceSelectionRequest<EntryDto>(
+                "session-entry",
+                identifier,
+                environment.IsInteractive,
+                new ResourceDescriptor<EntryDto>(
+                    "session entry",
+                    ["Role", "Created", "Content"],
+                    static value => value.Id.ToString("D"),
+                    static value => EntryLabel(value),
+                    static value => $"{value.Role}, created {value.CreatedAt:u}",
+                    static value =>
+                    [
+                        value.Role,
+                        value.CreatedAt.ToString("u", CultureInfo.InvariantCulture),
+                        EntryLabel(value),
+                    ]),
+                async (token, ct) =>
+                {
+                    int offset = ParseOffset(token);
+
+                    Result<EntryDto[]> result = await apiClient
+                        .GetSessionEntriesAsync(sessionId, offset, PageSize, ct)
+                        .ConfigureAwait(false);
+
+                    if (result.IsFailure)
+                    {
+                        return Result<ResourcePage<EntryDto>>.Failure(result.Error);
+                    }
+
+                    EntryDto[] entries = result.Value;
+
+                    string? next = entries.Length == PageSize
+                        ? (offset + PageSize).ToString(CultureInfo.InvariantCulture)
+                        : null;
+
+                    return Result<ResourcePage<EntryDto>>.Success(new(entries, next));
                 }),
             cancellationToken);
 
@@ -121,6 +176,18 @@ public sealed class CliResourceCatalog(
                 static value => [value.Name, value.Path]),
             apiClient.GetWorkspacesAsync,
             cancellationToken);
+
+    private static string EntryLabel(EntryDto entry)
+    {
+        string content = entry.Content.ReplaceLineEndings(" ").Trim();
+
+        return content.Length switch
+        {
+            0 => "(empty entry)",
+            > 80 => content[..77] + "...",
+            _ => content,
+        };
+    }
 
     public Task<ResourceSelectionResult<PromptSummaryDto>> SelectPromptAsync(
         string? identifier,

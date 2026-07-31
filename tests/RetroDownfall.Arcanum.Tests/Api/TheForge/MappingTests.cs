@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -176,6 +177,7 @@ public sealed class SessionMappingTests
             Status = "active",
             Summary = "rolled up",
             TotalTokensUsed = 42,
+            TotalCostUsd = 0.125m,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         };
@@ -189,6 +191,12 @@ public sealed class SessionMappingTests
         Assert.Equal("rolled up", dto.Summary);
 
         Assert.Equal(42, dto.TotalTokensUsed);
+
+        Assert.Equal(0.125m, dto.TotalCostUsd);
+
+        string json = JsonSerializer.Serialize(dto, ArcanumJsonContext.Default.SessionDetailDto);
+
+        Assert.Contains("\"totalCostUsd\"", json, StringComparison.Ordinal);
     }
 
     [Fact]

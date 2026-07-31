@@ -608,16 +608,29 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         DateTimeOffset? beforeUpdatedAt = null,
         CancellationToken cancellationToken = default)
     {
-        string query = limit is int l
-            ? $"api/sessions?limit={l}"
-            : "api/sessions";
+        return await QuerySessionsAsync(
+            new SessionQueryRequest(
+                Limit: limit,
+                BeforeUpdatedAt: beforeUpdatedAt),
+            cancellationToken).ConfigureAwait(false);
+    }
 
-        if (beforeUpdatedAt is DateTimeOffset before)
-        {
-            string encoded = Uri.EscapeDataString(before.ToString("O"));
-
-            query += query.Contains('?', StringComparison.Ordinal) ? $"&beforeUpdatedAt={encoded}" : $"?beforeUpdatedAt={encoded}";
-        }
+    public async Task<Result<SessionQueryResult>> QuerySessionsAsync(
+        SessionQueryRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        string query = BuildQueryString(
+            "api/sessions",
+            ("campaignId", request.CampaignId?.ToString("D")),
+            ("status", request.Status),
+            ("search", request.Search),
+            ("title", request.Title),
+            ("role", request.Role?.ToString().ToLowerInvariant()),
+            ("model", request.Model),
+            ("from", request.From?.ToString("O", CultureInfo.InvariantCulture)),
+            ("to", request.To?.ToString("O", CultureInfo.InvariantCulture)),
+            ("limit", request.Limit?.ToString(CultureInfo.InvariantCulture)),
+            ("beforeUpdatedAt", request.BeforeUpdatedAt?.ToString("O", CultureInfo.InvariantCulture)));
 
         return await SendRequestAsync(
             HttpMethod.Get,
@@ -796,6 +809,24 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                     new Error("Api.HttpError", $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
             },
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<Result<SessionDetailDto>> UpdateSessionAsync(
+        Guid id,
+        UpdateSessionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.UpdateSessionRequest);
+
+        return SendRequestAsync(
+            HttpMethod.Patch,
+            $"api/sessions/{id:D}",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
+            cancellationToken);
     }
 
     public async Task<Result<EntryDto[]>> GetSessionEntriesAsync(
@@ -1085,6 +1116,225 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 return Result<SessionExportResult>.Failure(new Error("Api.HttpError", fallback));
             },
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<Result<CompactResult>> CompactSessionAsync(
+        Guid id,
+        CancellationToken cancellationToken = default) =>
+        SendRequestAsync(
+            HttpMethod.Post,
+            $"api/sessions/{id:D}/compact",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseCompactResult,
+            cancellationToken);
+
+    public Task<Result> DeleteSessionEntryAsync(
+        Guid sessionId,
+        Guid entryId,
+        CancellationToken cancellationToken = default) =>
+        SendSessionEntryMutationAsync(
+            HttpMethod.Delete,
+            $"api/sessions/{sessionId:D}/entries/{entryId:D}",
+            cancellationToken);
+
+    public Task<Result> PinSessionEntryAsync(
+        Guid sessionId,
+        Guid entryId,
+        CancellationToken cancellationToken = default) =>
+        SendSessionEntryMutationAsync(
+            HttpMethod.Post,
+            $"api/sessions/{sessionId:D}/entries/{entryId:D}/pin",
+            cancellationToken);
+
+    public Task<Result> UnpinSessionEntryAsync(
+        Guid sessionId,
+        Guid entryId,
+        CancellationToken cancellationToken = default) =>
+        SendSessionEntryMutationAsync(
+            HttpMethod.Delete,
+            $"api/sessions/{sessionId:D}/entries/{entryId:D}/pin",
+            cancellationToken);
+
+    private async Task<Result> SendSessionEntryMutationAsync(
+        HttpMethod method,
+        string path,
+        CancellationToken cancellationToken)
+    {
+        Result<bool> result = await SendRequestAsync(
+            method,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            static (response, _, envelope) =>
+            {
+                if ((int)response.StatusCode == 204)
+                {
+                    return Result<bool>.Success(true);
+                }
+
+                if (response.IsSuccessStatusCode && envelope is { IsSuccess: true })
+                {
+                    return Result<bool>.Success(true);
+                }
+
+                if (envelope is { IsSuccess: false, Error: not null })
+                {
+                    return Result<bool>.Failure(envelope.Error.Value);
+                }
+
+                return Result<bool>.Failure(
+                    new Error("Api.HttpError", $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return result.IsSuccess ? Result.Success() : Result.Failure(result.Error);
+    }
+
+    public async IAsyncEnumerable<Result<EntryDto>> WatchSessionAsync(
+        Guid sessionId,
+        Guid? since = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+            yield return Result<EntryDto>.Failure(MissingApiKeyError);
+
+            yield break;
+        }
+
+        HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
+
+        string path = BuildQueryString(
+            $"api/sessions/{sessionId:D}/stream",
+            ("since", since?.ToString("D")));
+
+        using HttpRequestMessage request = new(HttpMethod.Get, path);
+
+        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
+
+        HttpResponseMessage? response = null;
+
+        Error? sendError = null;
+
+        try
+        {
+            response = await client
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            sendError = RequestTimeoutError;
+        }
+        catch (HttpRequestException)
+        {
+            sendError = RequestUnreachableError;
+        }
+
+        if (sendError is not null || response is null)
+        {
+            yield return Result<EntryDto>.Failure(
+                sendError ?? RequestUnreachableError);
+
+            yield break;
+        }
+
+        using (response!)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                byte[]? responseBytes = await TryReadCappedContentAsync(
+                        response.Content,
+                        MaxResponseBytes,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                ApiResponse<SessionDetailDto>? envelope = responseBytes is null
+                    ? null
+                    : TryDeserialize(
+                        responseBytes,
+                        ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+
+                Error error = envelope?.Error
+                    ?? new Error(
+                        "Api.HttpError",
+                        $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+
+                yield return Result<EntryDto>.Failure(error);
+
+                yield break;
+            }
+
+            Stream stream = await response.Content
+                .ReadAsStreamAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            await using (stream.ConfigureAwait(false))
+            {
+                using StreamReader reader = new(
+                    stream,
+                    Encoding.UTF8,
+                    detectEncodingFromByteOrderMarks: false,
+                    bufferSize: 1024,
+                    leaveOpen: true);
+
+                while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+                {
+                    if (!line.StartsWith("data: ", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    string payload = line[6..];
+
+                    if (string.Equals(payload, "[DONE]", StringComparison.Ordinal))
+                    {
+                        yield break;
+                    }
+
+                    if (string.Equals(payload, "{\"type\":\"live\"}", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    EntryDto? entry = null;
+
+                    bool malformed = false;
+
+                    try
+                    {
+                        entry = JsonSerializer.Deserialize(
+                            payload,
+                            ArcanumJsonContext.Default.EntryDto);
+                    }
+                    catch (JsonException)
+                    {
+                        malformed = true;
+                    }
+
+                    if (malformed)
+                    {
+                        yield return Result<EntryDto>.Failure(
+                            new Error("Api.InvalidResponse", "Malformed session event received from API."));
+
+                        continue;
+                    }
+
+                    if (entry is not null)
+                    {
+                        yield return Result<EntryDto>.Success(entry);
+                    }
+                }
+            }
+        }
     }
 
     public async IAsyncEnumerable<IntelligenceEvent> AskStreamAsync(

@@ -65,6 +65,15 @@ Owner-only local recency data improves picker ordering but cannot resolve a tie.
 the visible columns and keep provider endpoints/credentials and MCP connection/process details out
 of picker and safe-detail output.
 
+The `session` command family is the direct-client counterpart to the full server session lifecycle:
+list/show/chat/entries/watch/fork/rename/archive/export/rest/attachments plus gated entry
+delete/pin/unpin/compact. It never opens the Grimoire. Session selectors use the shared
+GUID/title/prefix picker, while omitted entry selectors page entries after choosing a session.
+`session chat` and root `chat --session` converge on the existing chat loop. Read operations support
+structured output (the live watcher uses newline-delimited JSON); destructive entry deletion uses
+the shared confirmation boundary. Archive, fork, export, and memory-management policy remain owned
+by the server, and API error codes are preserved at the terminal.
+
 ---
 
 ## 2. Architectural goals and safe defaults

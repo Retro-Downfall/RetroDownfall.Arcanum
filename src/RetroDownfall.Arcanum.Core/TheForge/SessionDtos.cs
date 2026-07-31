@@ -37,7 +37,8 @@ public sealed record SessionDetailDto(
     DateTimeOffset UpdatedAt,
     string? Summary,
     long TotalTokensUsed,
-    Guid? ForkedFromSessionId = null);
+    Guid? ForkedFromSessionId = null,
+    decimal TotalCostUsd = 0);
 
 /// <summary>
 /// Body for <c>POST /api/sessions/{id}/fork</c>. All fields optional: <paramref name="Title"/>

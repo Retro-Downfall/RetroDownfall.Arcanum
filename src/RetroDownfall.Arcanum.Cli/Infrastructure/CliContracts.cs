@@ -62,6 +62,20 @@ public sealed record CliErrorPayload(
     string Error,
     int ExitCode);
 
+public sealed record SessionShowPayload(
+    Guid Id,
+    Guid? CampaignId,
+    string? Title,
+    string Status,
+    int EntryCount,
+    int AttachmentCount,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    string? Summary,
+    long TotalTokensUsed,
+    decimal TotalCostUsd,
+    Guid? ForkedFromSessionId);
+
 public sealed record CliFailure(
     CliExitCode ExitCode,
     string SafeMessage);
@@ -443,4 +457,5 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(CliErrorPayload))]
 [JsonSerializable(typeof(CliContextStatusPayload))]
 [JsonSerializable(typeof(CliContextMutationResult))]
+[JsonSerializable(typeof(SessionShowPayload))]
 internal sealed partial class CliJsonContext : JsonSerializerContext;

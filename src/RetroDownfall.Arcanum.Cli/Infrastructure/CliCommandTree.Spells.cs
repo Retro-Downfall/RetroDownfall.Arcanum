@@ -364,32 +364,269 @@ internal static partial class CliCommandTree
     private static Command BuildSession(IServiceProvider sp)
     {
         SessionCommands handler = sp.GetRequiredService<SessionCommands>();
-        Command session = new("session", "Session discovery and semantic search (requires arcanum serve).");
+        Command session = new("session", "Manage and continue sessions through the Arcanum API.");
 
         Command list = new("list", "List recent sessions.");
+
+        Option<string?> listCampaign = new("--campaign") { Description = "Filter by campaign GUID." };
+
+        Option<string?> listStatus = new("--status") { Description = "Filter by session status." };
+
+        Option<string?> listSearch = new("--search") { Description = "Filter by search text." };
+
+        Option<string?> listModel = new("--model") { Description = "Filter by model." };
+
+        Option<string?> listFrom = new("--from") { Description = "Include sessions on or after this ISO-8601 timestamp." };
+
+        Option<string?> listTo = new("--to") { Description = "Include sessions on or before this ISO-8601 timestamp." };
+
         Option<int?> listLimit = new("--limit") { Description = "Maximum sessions per page." };
+
+        list.Add(listCampaign);
+
+        list.Add(listStatus);
+
+        list.Add(listSearch);
+
+        list.Add(listModel);
+
+        list.Add(listFrom);
+
+        list.Add(listTo);
+
         list.Add(listLimit);
+
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.List(pr.GetValue(listLimit), ct).ConfigureAwait(false));
+            await handler.List(
+                ActiveCampaign(sp, pr.GetValue(listCampaign)),
+                pr.GetValue(listStatus),
+                pr.GetValue(listSearch),
+                pr.GetValue(listModel),
+                pr.GetValue(listFrom),
+                pr.GetValue(listTo),
+                pr.GetValue(listLimit),
+                ct).ConfigureAwait(false));
+
         session.Add(list);
 
-        Command get = new("get", "Show a session.");
-        Argument<string?> getIdentifier = new("session")
-        {
-            Arity = ArgumentArity.ZeroOrOne,
-            Description = "Optional session GUID, exact title, or unique title prefix; omit for an interactive picker.",
-        };
+        Command show = new("show", "Summarize a session, including telemetry and lineage.");
+
+        Argument<string?> showIdentifier = SessionArgument();
+
+        show.Add(showIdentifier);
+
+        show.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Show(pr.GetValue(showIdentifier), ct).ConfigureAwait(false));
+
+        session.Add(show);
+
+        Command get = new("get", "Compatibility alias for session show.");
+
+        Argument<string?> getIdentifier = SessionArgument();
+
         get.Add(getIdentifier);
+
         get.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Get(pr.GetValue(getIdentifier), ct).ConfigureAwait(false));
+
         session.Add(get);
 
+        Command chat = new("chat", "Continue a session by GUID, title, prefix, or interactive selection.");
+
+        Argument<string?> chatIdentifier = SessionArgument();
+
+        chat.Add(chatIdentifier);
+
+        chat.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Chat(pr.GetValue(chatIdentifier), ct).ConfigureAwait(false));
+
+        session.Add(chat);
+
+        Command entries = new("entries", "List transcript entries for a session.");
+
+        Argument<string?> entriesIdentifier = SessionArgument();
+
+        Option<int?> entriesOffset = new("--offset") { Description = "Number of entries to skip." };
+
+        Option<int?> entriesLimit = new("--limit") { Description = "Maximum entries to return." };
+
+        entries.Add(entriesIdentifier);
+
+        entries.Add(entriesOffset);
+
+        entries.Add(entriesLimit);
+
+        entries.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Entries(
+                pr.GetValue(entriesIdentifier),
+                pr.GetValue(entriesOffset),
+                pr.GetValue(entriesLimit),
+                ct).ConfigureAwait(false));
+
+        session.Add(entries);
+
+        Command watch = new("watch", "Watch replayed and live session entries.");
+
+        Argument<string?> watchIdentifier = SessionArgument();
+
+        Option<string?> watchSince = new("--since") { Description = "Resume after this entry GUID." };
+
+        watch.Add(watchIdentifier);
+
+        watch.Add(watchSince);
+
+        watch.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Watch(
+                pr.GetValue(watchIdentifier),
+                pr.GetValue(watchSince),
+                ct).ConfigureAwait(false));
+
+        session.Add(watch);
+
+        Command fork = new("fork", "Fork a session through the server fork API.");
+
+        Argument<string?> forkIdentifier = SessionArgument();
+
+        Option<string?> forkTitle = new("--title") { Description = "Optional fork title." };
+
+        Option<string?> forkUpToEntry = new("--up-to-entry") { Description = "Copy through this entry GUID." };
+
+        Option<string?> forkCampaign = new("--campaign") { Description = "Optional destination campaign GUID." };
+
+        fork.Add(forkIdentifier);
+
+        fork.Add(forkTitle);
+
+        fork.Add(forkUpToEntry);
+
+        fork.Add(forkCampaign);
+
+        fork.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Fork(
+                pr.GetValue(forkIdentifier),
+                pr.GetValue(forkTitle),
+                pr.GetValue(forkUpToEntry),
+                pr.GetValue(forkCampaign),
+                ct).ConfigureAwait(false));
+
+        session.Add(fork);
+
+        Command rename = new("rename", "Rename a session.");
+
+        Argument<string?> renameIdentifier = SessionArgument();
+
+        Option<string?> renameTitle = new("--title") { Description = "New session title." };
+
+        rename.Add(renameIdentifier);
+
+        rename.Add(renameTitle);
+
+        rename.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Rename(
+                pr.GetValue(renameIdentifier),
+                pr.GetValue(renameTitle),
+                ct).ConfigureAwait(false));
+
+        session.Add(rename);
+
+        Command archive = new("archive", "Archive a session without deleting it.");
+
+        Argument<string?> archiveIdentifier = SessionArgument();
+
+        archive.Add(archiveIdentifier);
+
+        archive.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Archive(pr.GetValue(archiveIdentifier), ct).ConfigureAwait(false));
+
+        session.Add(archive);
+
+        Command export = new("export", "Export an active or archived session.");
+
+        Argument<string?> exportIdentifier = SessionArgument();
+
+        Option<string?> exportFormat = new("--format") { Description = "Export format: json or markdown." };
+
+        export.Add(exportIdentifier);
+
+        export.Add(exportFormat);
+
+        export.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Export(
+                pr.GetValue(exportIdentifier),
+                pr.GetValue(exportFormat),
+                ct).ConfigureAwait(false));
+
+        session.Add(export);
+
+        Command rest = new("rest", "Queue Campaign Log consolidation for a session.");
+
+        Argument<string?> restIdentifier = SessionArgument();
+
+        rest.Add(restIdentifier);
+
+        rest.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Rest(pr.GetValue(restIdentifier), ct).ConfigureAwait(false));
+
+        session.Add(rest);
+
+        Command attachments = new("attachments", "List bound session attachments.");
+
+        Argument<string?> attachmentsIdentifier = SessionArgument();
+
+        attachments.Add(attachmentsIdentifier);
+
+        attachments.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Attachments(pr.GetValue(attachmentsIdentifier), ct).ConfigureAwait(false));
+
+        session.Add(attachments);
+
+        AddEntryMutation(
+            session,
+            "delete-entry",
+            "Delete an entry after confirmation.",
+            handler.DeleteEntry);
+
+        AddEntryMutation(
+            session,
+            "pin-entry",
+            "Pin an entry when memory management is enabled.",
+            handler.PinEntry);
+
+        AddEntryMutation(
+            session,
+            "unpin-entry",
+            "Unpin an entry when memory management is enabled.",
+            handler.UnpinEntry);
+
+        Command compact = new("compact", "Compact session context when memory management is enabled.");
+
+        Argument<string?> compactIdentifier = SessionArgument();
+
+        compact.Add(compactIdentifier);
+
+        compact.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Compact(pr.GetValue(compactIdentifier), ct).ConfigureAwait(false));
+
+        session.Add(compact);
+
         Command divine = new("divine", "Semantic search over Grimoire entries.");
+
         Argument<string> divineQuery = new("query");
+
         Option<int?> divineLimit = new("--limit");
+
         Option<string?> divineCampaign = new("--campaign");
+
         Option<string?> divineStatus = new("--status");
-        divine.Add(divineQuery); divine.Add(divineLimit); divine.Add(divineCampaign); divine.Add(divineStatus);
+
+        divine.Add(divineQuery);
+
+        divine.Add(divineLimit);
+
+        divine.Add(divineCampaign);
+
+        divine.Add(divineStatus);
+
         divine.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Divine(
                 pr.GetValue(divineQuery)!,
@@ -397,8 +634,47 @@ internal static partial class CliCommandTree
                 ActiveCampaign(sp, pr.GetValue(divineCampaign)),
                 pr.GetValue(divineStatus),
                 ct).ConfigureAwait(false));
+
         session.Add(divine);
 
         return session;
+
+        static Argument<string?> SessionArgument() => new("session")
+        {
+            Arity = ArgumentArity.ZeroOrOne,
+            Description = "Optional session GUID, exact title, or unique title prefix; omit for an interactive picker.",
+        };
+
+        static void AddEntryMutation(
+            Command parent,
+            string name,
+            string description,
+            Func<string?, string?, CancellationToken, Task<int>> action)
+        {
+            Command command = new(name, description);
+
+            Argument<string?> entry = new("entry")
+            {
+                Arity = ArgumentArity.ZeroOrOne,
+                Description = "Optional entry GUID; omit for an interactive picker.",
+            };
+
+            Option<string?> selectedSession = new("--session")
+            {
+                Description = "Session GUID, exact title, or unique title prefix; omit for an interactive picker.",
+            };
+
+            command.Add(entry);
+
+            command.Add(selectedSession);
+
+            command.SetAction(async (ParseResult pr, CancellationToken ct) =>
+                await action(
+                    pr.GetValue(entry),
+                    pr.GetValue(selectedSession),
+                    ct).ConfigureAwait(false));
+
+            parent.Add(command);
+        }
     }
 }
