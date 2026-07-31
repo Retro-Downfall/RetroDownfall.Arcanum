@@ -62,6 +62,49 @@ public sealed class ConfigEndpointTests
     }
 
     [SkippableFact]
+
+    public async Task PostConfigValidate_MergesRedactedSnapshotBeforeOutboundValidation()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage getResponse = await client.GetAsync("/api/config");
+
+        string getJson = await getResponse.Content.ReadAsStringAsync();
+
+        ApiResponse<ArcanumSettings>? envelope = JsonSerializer.Deserialize(
+            getJson,
+            ArcanumJsonContext.Default.ApiResponseArcanumSettings);
+
+        Assert.NotNull(envelope?.Data);
+
+        Assert.Contains(
+            envelope.Data.Providers,
+            static provider => provider.Endpoint == "***");
+
+        string payload = JsonSerializer.Serialize(
+            envelope.Data,
+            ArcanumJsonContext.Default.ArcanumSettings);
+
+        HttpResponseMessage validationResponse = await client.PostAsync(
+            "/api/config/validate",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        string validationJson = await validationResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, validationResponse.StatusCode);
+
+        Assert.Contains("Security.BlockedOutboundUrl", validationJson, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Config.UnresolvedMask", validationJson, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("***", validationJson, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
     public async Task PostConfigValidate_WithLlamaCppServerType_ReturnsMigrationValidationFailed()
     {
 

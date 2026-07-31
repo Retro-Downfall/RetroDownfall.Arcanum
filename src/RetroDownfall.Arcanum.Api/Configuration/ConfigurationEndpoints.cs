@@ -108,6 +108,7 @@ internal static class ConfigurationEndpoints
 
         apiGroup.MapPost("/config/validate", async (
             ConfigurationValidator validator,
+            IOptionsSnapshot<ArcanumSettings> currentSettings,
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
@@ -131,7 +132,22 @@ internal static class ConfigurationEndpoints
                 return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
             }
 
-            Result outbound = await OutboundUrlGuard.ValidateArcanumSettingsAsync(request, cancellationToken).ConfigureAwait(false);
+            ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(
+                request,
+                currentSettings.Value);
+
+            Result residualMask = ConfigurationRedactor.ValidateNoResidualMask(merged);
+
+            if (residualMask.IsFailure)
+            {
+
+                Result<bool> invalid = Result<bool>.Failure(residualMask.Error);
+
+                return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
+
+            }
+
+            Result outbound = await OutboundUrlGuard.ValidateArcanumSettingsAsync(merged, cancellationToken).ConfigureAwait(false);
 
             if (outbound.IsFailure)
             {
@@ -140,7 +156,7 @@ internal static class ConfigurationEndpoints
                 return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
             }
 
-            Result validation = validator.Validate(request);
+            Result validation = validator.Validate(merged);
 
             Result<bool> result = validation.IsSuccess
                 ? Result<bool>.Success(true)

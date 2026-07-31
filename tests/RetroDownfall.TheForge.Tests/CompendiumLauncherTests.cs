@@ -1,5 +1,6 @@
 using System.Diagnostics;
-using RetroDownfall.TheForge.Ux.Services.Compendium;
+using RetroDownfall.TheForge.Ux;
+using RetroDownfall.Arcanum.Core.Desktop;
 using Xunit;
 
 namespace RetroDownfall.TheForge.Tests;
@@ -68,6 +69,21 @@ public class CompendiumLauncherTests
         Assert.DoesNotContain("secret", result.Message, StringComparison.OrdinalIgnoreCase);
 
         Assert.DoesNotContain("apiKey", result.ConfigPath, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+
+    public void Mac_settings_action_launches_compendium()
+    {
+
+        FakeCompendiumLauncher launcher = new();
+
+        CompendiumLaunchResult result = App.OpenSettings(launcher);
+
+        Assert.True(result.Launched);
+
+        Assert.Equal(1, launcher.LaunchCount);
 
     }
 

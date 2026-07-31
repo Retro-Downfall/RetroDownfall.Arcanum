@@ -10,6 +10,8 @@
     <NativeMenu>
       <NativeMenuItem Header="About The Forge"
                       Click="OnAboutClick" />
+      <NativeMenuItem Header="Settings..."
+                      Click="OnSettingsClick" />
     </NativeMenu>
   </NativeMenu.Menu>
 

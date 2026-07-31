@@ -5,7 +5,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Ux.Models;
-using RetroDownfall.TheForge.Ux.Services.Compendium;
+using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
 
 namespace RetroDownfall.TheForge.Ux.ViewModels.Setup;

@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using RetroDownfall.Arcanum.Core.Storage;
 
-namespace RetroDownfall.TheForge.Ux.Services.Compendium;
+namespace RetroDownfall.Arcanum.Core.Desktop;
 
 /// <summary>
 /// Locates Compendium via an installed binary, sibling build output, or <c>dotnet run</c> on the
@@ -182,7 +182,8 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         if (OperatingSystem.IsMacOS())
         {
 
-            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string home = global::System.Environment.GetFolderPath(
+                global::System.Environment.SpecialFolder.UserProfile);
 
             yield return Path.Combine(home, "Applications", "Compendium.app", "Contents", "MacOS", AssemblyName);
 
@@ -193,7 +194,8 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         if (OperatingSystem.IsLinux())
         {
 
-            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string home = global::System.Environment.GetFolderPath(
+                global::System.Environment.SpecialFolder.UserProfile);
 
             yield return Path.Combine(home, ".local", "bin", AssemblyName);
 
@@ -204,7 +206,8 @@ public sealed class CompendiumLauncher : ICompendiumLauncher
         if (OperatingSystem.IsWindows())
         {
 
-            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string local = global::System.Environment.GetFolderPath(
+                global::System.Environment.SpecialFolder.LocalApplicationData);
 
             yield return Path.Combine(local, "Compendium", fileName);
 

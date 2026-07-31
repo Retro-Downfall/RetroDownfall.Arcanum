@@ -15,7 +15,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 ## Running Arcanum under a debugger
 
 - **Host (`arcanum serve`)**: `ServeCommand.Run()` (`Program.cs`) → `WebApplication.CreateSlimBuilder()` (`ServeCommand`) → `AddArcanumApiServices()` (`ApiBootstrapper`) → `MapArcanumEndpoints()` → `RunAsync()`.
-- **CLI verbs** (`ask`, `chat`, `look`, `lore`, `daemon`, `key`, `serve`): request/response cycles through `ArcanumApiClient.SendRequestAsync()`; inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `data encryption ...` is intentionally local: `DataEncryptionCommands` initializes the Grimoire and calls `BlobEncryptionLifecycleService`.
+- **CLI verbs** (`ask`, `chat`, `look`, `lore`, `daemon`, `key`, `config`, `serve`): request/response cycles through `ArcanumApiClient.SendRequestAsync()`; inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `config` prefers `/api/config` but deliberately enters labelled local bootstrap through `ConfigurationCommandService` on unavailability. `data encryption ...` is intentionally local: `DataEncryptionCommands` initializes the Grimoire and calls `BlobEncryptionLifecycleService`.
 - **CLI process contract**: start at `CliApplicationFactory.RunAsync()` → `CliCommandTree.Build()` →
   `CliInvocationContext.Push()`. Payload/diagnostic routing is `ConsoleDispatcher`; destructive
   approval is `ConfirmationPrompt`; final failure categorization is `CliFailureMapper`.
@@ -45,6 +45,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 | `CliSessionManager` / `ArcanumPaths` | Session isolation (`ARCANUM_TEST_HOME` isolation; no developer storage access); session identity; diagnostic preview (`CliSessionManagerTests` avoids corrupt preview by reading identity, not untrusted content). |
 | `ResourceSelector<T>` / `CliResourceCatalog` / `RecentResourceStore` | Resolution precedence (ID, exact name, unique prefix), ambiguity diagnostics, TTY/`--json` prompt suppression, bounded API page-token progression, cancellation before mutation, safe descriptor columns, and recency ordering without authority. |
 | `CliApplicationFactory` / `CliInvocationContext` / `ConsoleDispatcher` | Recursive `--json`/`--plain`/`--yes` binding; JSON stdout capture and typed-output bypass; ANSI suppression; stdout payload vs stderr diagnostic routing; exit-code normalization; fixed-copy exception mapping. |
+| `ConfigCommands` / `ConfigurationCommandService` / `ConfigurationPathAccessor` | Host-API versus local-bootstrap selection; generated-metadata dot-path resolution; typed parse; provider-endpoint secure input/redaction; full-snapshot validation; owner-only editor temp file; atomic write; environment-override diagnostics. |
 | `ConfirmationPrompt` | `--yes` short circuit; redirected-output fail-closed check before prompt or input read; stderr prompt copy and cancellation-aware input. |
 | `ChildProcessFilesystemJail` / `CappedChildProcessRunner` (`Infrastructure/Process/`) | Nonblocking/no-follow process-group launch (`setsid` / direct target group, no blocking FIFO before check); handle-bound child termination; identity-owned cleanup; timeout vs cancellation event; best-effort descendant cleanup. |
 | `GrimoireRepository` / `EntryWindowPolicy` / `SqliteBusyRetry` (`Infrastructure/Repositories/`) | Timestamp-group load (expanded CTE covering full tied group before advancing); bounded query limit (`Limit` / `MaxEntriesPerSession`); rollup updates (`CampaignBackedWorkspaceRegistry`); parameterized filtering/ordering/capping; bookmark advance only when complete group is below ceiling; `BEGIN IMMEDIATE` retry. |
@@ -64,7 +65,13 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
    (`StructuredPayloadWritten`) from the `CliTextPayload` compatibility wrapper. For a destructive
    command, redirect stdout without `--yes` and break in
    `ConfirmationPrompt.PromptForConfirmationAsync()`; it must throw before reading `Console.In`.
-9. **Diagnose API-host/WAL CI teardown failures:** run
+9. **Trace a safe configuration update:** break in `ConfigurationCommandService.ReadAsync()` to
+   confirm `/api/config` wins when available and local bootstrap is explicitly diagnosed otherwise.
+   Continue through `ConfigurationPathAccessor.Set()`, `ValidateAsync()`, and `WriteAsync()`; a
+   provider endpoint must arrive from stdin/hidden prompt and display only `***`. For `config edit`,
+   verify owner-only temp permissions, mask restoration, validation-before-write, and deletion in
+   `finally`.
+10. **Diagnose API-host/WAL CI teardown failures:** run
    `ArcanumWebApplicationFactoryDisposalTests` and
    `GrimoireDatabaseBootstrapperTests.CheckpointOnShutdownAsync_truncates_populated_wal_when_no_readers_hold_it`
    together several times. For path mismatches, break in
@@ -73,11 +80,11 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
    `ARCANUM_TEST_HOME`. For an empty pre-checkpoint WAL, verify the test's pooling-disabled owner is
    still open, `wal_autocheckpoint` is zero, and no read transaction is active; do not infer WAL
    population from migrations or connection close behavior.
-10. **Diagnose SSE heartbeat concurrency tests:** `SseStreamWriterTests` deliberately holds the first
+11. **Diagnose SSE heartbeat concurrency tests:** `SseStreamWriterTests` deliberately holds the first
     `MoveNextAsync` pending until `WriteSignalStream` observes a keep-alive write. If it stalls, inspect
     the pending-move reuse in `SseStreamWriter.StreamAsync`; do not replace the signal with short
     scheduler delays or a cancellation token that can expire while coverage suspends the process.
-11. **Trace `refresh_session_file`:** begin at the internal MCP selector/schema, then break at
+12. **Trace `refresh_session_file`:** begin at the internal MCP selector/schema, then break at
     `ToolExecutionPipeline.ProcessRefreshSessionFileAsync()`,
     `AttachmentSourceResolver.ResolveCurrentAsync()`, and
     `SessionAttachmentStore.PersistRefreshedAsync()`. Confirm the selected id/key was visible at

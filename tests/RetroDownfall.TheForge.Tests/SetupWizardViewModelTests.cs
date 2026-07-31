@@ -2,7 +2,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Ux.Models;
-using RetroDownfall.TheForge.Ux.Services.Compendium;
+using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.TheForge.Ux.ViewModels.Setup;
 using Xunit;
 

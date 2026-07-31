@@ -7,7 +7,7 @@ using RetroDownfall.TheForge.Core.Models;
 using RetroDownfall.TheForge.Core.Services;
 using RetroDownfall.TheForge.Ux.Models;
 using RetroDownfall.TheForge.Ux.Services;
-using RetroDownfall.TheForge.Ux.Services.Compendium;
+using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels.Anvil;
 using Xunit;

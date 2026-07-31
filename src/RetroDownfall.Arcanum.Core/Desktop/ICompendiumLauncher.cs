@@ -1,4 +1,4 @@
-namespace RetroDownfall.TheForge.Ux.Services.Compendium;
+namespace RetroDownfall.Arcanum.Core.Desktop;
 
 /// <summary>Discovers and launches Compendium when installed or available in a development tree.</summary>
 public interface ICompendiumLauncher

@@ -6,6 +6,7 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Media;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.TheForge.Ux.Services;
+using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.TheForge.Ux.Services.Whispers;
 using RetroDownfall.TheForge.Ux.ViewModels;
 using RetroDownfall.TheForge.Ux.Views;
@@ -129,5 +130,29 @@ public partial class App : Application
         await dialog.ShowDialog(owner);
 
     }
+
+    private void OnSettingsClick(object? sender, EventArgs e)
+    {
+
+        if (_services is null)
+        {
+
+            return;
+
+        }
+
+        CompendiumLaunchResult result = OpenSettings(
+            _services.GetRequiredService<ICompendiumLauncher>());
+
+        _services.GetRequiredService<IWhispersService>().Show(
+            result.Launched ? WhisperSeverity.Success : WhisperSeverity.Error,
+            result.Message,
+            "Settings");
+
+    }
+
+    internal static CompendiumLaunchResult OpenSettings(
+        ICompendiumLauncher launcher) =>
+        launcher.TryLaunch();
 
 }

@@ -168,6 +168,12 @@ a model name—no credentials or conversation bodies—and selecting context nev
 rows. Local-path detection is valid only for the shipping loopback CLI; it must not be inferred for
 a future remote host.
 
+Routine settings use `arcanum config path|show|get|set|validate|edit|open`. The commands resolve
+typed dot paths from source-generated configuration metadata, preserve API redaction, take provider
+endpoints only through secure input, validate the whole snapshot, and prefer `/api/config`. When the
+host cannot be used, they visibly fall back to the same local loader, validator, outbound guard, and
+atomic writer rather than defining a parallel configuration model.
+
 ---
 
 ## 7. HTTP wire contracts (`Api` project)
@@ -294,6 +300,10 @@ Key surfaces (vocabulary in `DESIGN.md` §19.10): Center workbench (`The Workben
 The Forge authentication resolves the master API key through: OS credential store (`service=arcanum`, `account=master-api-key`) → migrate-and-strip legacy `apiKey` → trimmed `THEFORGE_ARCANUM_KEY` (process-only, never persisted) → `arcanum key show` (persisted to OS store when possible) → operator paste dialog (persisted or process-only). The key is never retained as active plaintext in `the-forge.json`. `BaseUrl` defaults to `http://localhost:5001`; when the host uses `ListenAny`, the HTTPS URL (`https://localhost:{HttpsPort}`) or remote HTTPS authority is required; clients never disable TLS validation.
 
 Desktop settings (`~/.config/arcanum/the-forge.json`, `reloadOnChange:true`; old `forge.json` renamed): base URL, theme (`SystemDefault` / `Light` / `Dark`), last Campaign (`CampaignId`), dock layout (`layoutState`), auto-connect (`autoConnect`), active session (`activeSessionId`). A fresh install uses `light` theme; existing `dark` selections remain honored and change live through **View → Theme**. Layout reset through **View → Reset Window Layout**. `ArcanumSseClient` handles server events; `ArcanumConnectionService` polls health every 5s when `AutoConnect` is true.
+
+The macOS application-menu **Settings...** action launches Compendium through the same tested
+launcher used by Forge setup/settings surfaces; `arcanum config open` provides the CLI equivalent
+and an exact-path/`config edit` fallback when Compendium is unavailable.
 
 Wire contracts: `ApiResponse<T>` for `/api` JSON; `IntelligenceEvent` NDJSON (`type` camelCase string discriminator); `ChronicleFrame` flattened (pass-through `toolCall`/`toolResult`/`warded`/`wardResolved` are top-level, not nested `wizardEvent`); `WardDto` uses `string` `WardId`; `BatchRequest` uses `AiProviderKind.OpenAICompatible` only. The Forge never duplicates `Arcanum.DESIGN.md` contracts or `Compendium.README.md` configuration details; it links to them.
 

@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.TheForge.Ux.Services.Compendium;
+using RetroDownfall.Arcanum.Core.Desktop;
 
 namespace RetroDownfall.TheForge.Tests;
 

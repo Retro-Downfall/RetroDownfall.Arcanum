@@ -140,6 +140,25 @@ and portable case-insensitively unique credential-reference names. Startup abort
 requests when either gate fails; `PUT /api/config` and `POST /api/config/validate` use the same
 schema and semantic validation.
 
+The Native-AOT-safe CLI configuration surface is `arcanum config path|show|get|set|validate|edit|open`.
+`ConfigurationPathAccessor` resolves case-insensitive dot paths (including explicit collection
+indices such as `providers.0.endpoint`) through `ConfigurationJsonContext` property metadata; it
+does not walk settings POCOs with `PropertyInfo`. Values are parsed to the generated target type,
+then the complete snapshot passes the same outbound and semantic validation used by the API before
+any write. `show` and `get` apply `ConfigurationRedactor`; provider endpoint updates reject argv
+values and accept only redirected stdin or a hidden terminal prompt. Successful `set` output shows
+the effective value, or `***` for a sensitive field.
+
+Configuration commands prefer the authenticated loopback `/api/config` contract. Connection
+unavailability (and first-run absence of the local master key) enters an explicit **local bootstrap**
+mode that loads with `ConfigurationBootstrapper`, validates with `ConfigurationValidator` plus
+`OutboundUrlGuard`, and writes through `ConfigurationWriter`/`AtomicFile`. Diagnostics name this
+mode; it is not a second configuration model. `edit` writes an owner-only redacted temporary
+`ArcanumConfigurationFile`, invokes `$VISUAL`, `$EDITOR`, or the platform editor, restores existing
+masked endpoints, validates, atomically applies on editor exit 0, and deletes the temporary copy.
+Recognized `ARCANUM_Arcanum__...`, `ARCANUM_EDITION`, and `ARCANUM_HOST_ANY` variables are reported
+as override sources without printing their values.
+
 Unknown and obsolete paths are hard failures: they are grouped into one actionable diagnostic and
 are never silently ignored or accepted through deprecated aliases. Operators correct
 `arcanum.json` and restart. A configuration-only correction does not require a Grimoire reinstall;
@@ -180,6 +199,7 @@ Single-host failure behavior:
 | Grimoire SQLITE_BUSY / locked | Bounded exponential backoff on writes (`SqliteBusyRetry`); the delay budget counts only code-scheduled backoff, never action time, profiler suspension, scheduler starvation, or retry-observer work. Persistent contention is then surfaced as API/CLI failure. |
 | Disk full / partial `security.dat` write | Atomic temp+rename on `security.dat`; corrupt store fails with recovery guidance (§16.3) instead of silent key regen when a Grimoire DB exists. |
 | Data Protection keyring corrupt | See §16.3 rotate-or-restore steps; **`arcanum key show`** reads the local store only (no HTTP). |
+| Configuration host/API unavailable | `arcanum config` reports and uses local bootstrap mode with the canonical loader, validator, outbound guard, and atomic writer; validation failure leaves the prior file unchanged. |
 | File-encryption key missing/corrupt or blob authentication fails | Startup/read fails closed; no replacement key is generated while ciphertext exists. `FileEncryption` health and `arcanum doctor` identify key/legacy/corrupt state; restore the OS credential or DP mirror + key ring (§5.4.6, §16.3). |
 
 ---
@@ -509,6 +529,7 @@ while `cli-context.json.sessionId` is the active-context authority.
 | `use campaign\|workspace\|model\|session <value>` | Validate and select an owner-local active CLI default. Selection never updates a server resource row. |
 | `use clear [scope]` | Clear all saved CLI context or only `campaign`, `workspace`, `model`, or `session`. |
 | `context current` | Explain every effective value and its source; reports and then clears confirmed stale references. |
+| `config path\|show\|get <key>\|set <key> [value]\|validate\|edit\|open` | Safe configuration inspection and mutation. Uses `/api/config` when available, otherwise explicitly reports canonical local bootstrap mode. Reads preserve API redaction; provider endpoints require stdin/hidden input. `edit` validates an owner-only temporary copy before atomic replacement; `open` launches Compendium or prints the exact path and `arcanum config edit` fallback. |
 | `lore list\|get\|set\|delete` | CRUD on `MageSettings` via `/api/lore`. |
 | `daemon install\|uninstall\|status` | OS-specific background service lifecycle (Windows `sc`, macOS `launchd`, Linux `systemctl --user`). |
 | `daemon jobs` | Lists Unseen Servant jobs (name, spell, base vs effective interval, enabled) via **`GET /api/unseen-servant/jobs`**; requires **`arcanum serve`** (or equivalent host) and stored API key. |
@@ -562,7 +583,7 @@ Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Co
 
 ### 4.6 `RetroDownfall.Compendium.Ux` (.NET 10 Avalonia desktop configuration editor)
 
-Visual editor for §3.4 — reads/writes `arcanum.json` only (no inference/daemon/Grimoire/MCP). References **Core** only and edits credential environment-variable references, never provider/PFX values. Its local certificate generator writes an owner-only PEM pair, avoiding a generated password. `SettingDescriptor` drives controls/clamps; parity + coverage tests guard drift. See [`Compendium.README.md`](Compendium.README.md).
+Visual editor for §3.4 — reads/writes `arcanum.json` only (no inference/daemon/Grimoire/MCP). References **Core** only and edits credential environment-variable references, never provider/PFX values. Its local certificate generator writes an owner-only PEM pair, avoiding a generated password. `SettingDescriptor` drives controls/clamps; parity + coverage tests guard drift. It launches from `arcanum config open`, existing Forge configuration actions, and the macOS application-menu **Settings...** item. See [`Compendium.README.md`](Compendium.README.md).
 
 Descriptor-driven views cache only completed builds. They observe replacement field collections so
 an asynchronous configuration load rebuilds controls even when the view was created first; view
@@ -1105,7 +1126,7 @@ In-process `IEventBus` uses code-owned bounded per-subscriber channels with `Dro
 
 ### 8.12 Configuration API (`GET` / `PUT` / `POST /api/config`)
 
-Read: redacted secret-bearing URLs/endpoints (`***`) plus non-secret credential references; environment values are never read into the response. Write: merge redacted URL placeholders from the current snapshot, validate, and atomically replace `arcanum.json`. Provider API keys and PFX passwords are not accepted fields. Validate-only: no write. The source-generated settings snapshot is loaded at process start, so configuration changes require a host restart; referenced secret environment values are resolved only at provider/certificate use. Status: **400** `Configuration.ValidationFailed`, **500** `Configuration.WriteFailed`.
+Read: redacted secret-bearing URLs/endpoints (`***`) plus non-secret credential references; environment values are never read into the response. Write: merge redacted URL placeholders from the current snapshot, validate, and atomically replace `arcanum.json`. Validate-only also merges recognized endpoint masks against the current snapshot before outbound and semantic validation, so an unchanged redacted `GET` document remains a valid update candidate; it never writes. Residual masks for new/unmatched providers fail closed. Provider API keys and PFX passwords are not accepted fields. The source-generated settings snapshot is loaded at process start, so configuration changes require a host restart; referenced secret environment values are resolved only at provider/certificate use. Status: **400** `Configuration.ValidationFailed`, **500** `Configuration.WriteFailed`.
 
 ### 8.13 MCP server event SSE bus (`GET /api/events/mcp`)
 

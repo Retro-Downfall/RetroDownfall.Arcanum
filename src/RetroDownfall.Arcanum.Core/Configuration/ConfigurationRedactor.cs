@@ -3,9 +3,9 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 
-namespace RetroDownfall.Arcanum.Api.Configuration;
+namespace RetroDownfall.Arcanum.Core.Configuration;
 
-internal static class ConfigurationRedactor
+public static class ConfigurationRedactor
 {
 
     private const string MaskSentinel = "***";

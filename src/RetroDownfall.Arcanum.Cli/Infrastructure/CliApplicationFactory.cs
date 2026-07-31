@@ -16,10 +16,12 @@ using RetroDownfall.Arcanum.Cli.Commands.Wards;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
 using Spectre.Console;
@@ -127,6 +129,14 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<ArcanumApiClient>();
 
+        services.AddSingleton<ConfigurationValidator>();
+
+        services.AddSingleton<ConfigurationWriter>();
+
+        services.AddSingleton<IConfigurationCommandService, ConfigurationCommandService>();
+
+        services.AddSingleton<CompendiumLauncher>();
+
         services.AddSingleton<ICliResourceCatalog, CliResourceCatalog>();
 
         services.AddSingleton<IServeProcessLauncher, ServeProcessLauncher>();
@@ -204,6 +214,8 @@ internal static class CliApplicationFactory
         services.AddTransient<OperationCommands>();
         services.AddTransient<DataEncryptionCommands>();
         services.AddTransient<ContextCommands>();
+
+        services.AddTransient<ConfigCommands>();
 
     }
 

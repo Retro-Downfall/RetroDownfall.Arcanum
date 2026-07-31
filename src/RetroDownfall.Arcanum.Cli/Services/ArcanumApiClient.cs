@@ -1820,7 +1820,55 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
     #endregion
 
-    #region Configuration (Models and Providers)
+    #region Configuration
+
+    public Task<Result<ArcanumSettings>> GetConfigurationAsync(
+        CancellationToken cancellationToken = default) =>
+        SendRequestAsync(
+            HttpMethod.Get,
+            "api/config",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseArcanumSettings,
+            cancellationToken);
+
+    public Task<Result<bool>> ValidateConfigurationAsync(
+        ArcanumSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            settings,
+            ArcanumJsonContext.Default.ArcanumSettings);
+
+        return SendRequestAsync(
+            HttpMethod.Post,
+            "api/config/validate",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            cancellationToken);
+
+    }
+
+    public Task<Result<bool>> UpdateConfigurationAsync(
+        ArcanumSettings settings,
+        CancellationToken cancellationToken = default)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            settings,
+            ArcanumJsonContext.Default.ArcanumSettings);
+
+        return SendRequestAsync(
+            HttpMethod.Put,
+            "api/config",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            cancellationToken);
+
+    }
 
     public async Task<Result<ModelInfoDto[]>> GetModelsAsync(CancellationToken cancellationToken = default)
     {

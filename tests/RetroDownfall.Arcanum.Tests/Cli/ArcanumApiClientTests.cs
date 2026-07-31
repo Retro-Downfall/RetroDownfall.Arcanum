@@ -4,6 +4,7 @@ using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -15,6 +16,79 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class ArcanumApiClientTests
 {
+
+    [Fact]
+
+    public async Task Configuration_methods_use_config_api_contracts()
+    {
+
+        RecordingHandler handler = new(request =>
+        {
+
+            if (request.Method == HttpMethod.Get)
+            {
+
+                byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+                    new ApiResponse<ArcanumSettings>(new ArcanumSettings(), true, null),
+                    ArcanumJsonContext.Default.ApiResponseArcanumSettings);
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+
+                    Content = new ByteArrayContent(payload),
+
+                };
+
+            }
+
+            return CreateBooleanResponse(new ApiResponse<bool>(true, true, null));
+
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        ArcanumSettings settings = new();
+
+        Result<ArcanumSettings> read = await client.GetConfigurationAsync();
+
+        Result<bool> validation = await client.ValidateConfigurationAsync(settings);
+
+        Result<bool> write = await client.UpdateConfigurationAsync(settings);
+
+        Assert.True(read.IsSuccess);
+
+        Assert.True(validation.IsSuccess);
+
+        Assert.True(write.IsSuccess);
+
+        Assert.Collection(
+            handler.Requests,
+            request =>
+            {
+
+                Assert.Equal(HttpMethod.Get, request.Method);
+
+                Assert.Equal("/api/config", request.RequestUri!.AbsolutePath);
+
+            },
+            request =>
+            {
+
+                Assert.Equal(HttpMethod.Post, request.Method);
+
+                Assert.Equal("/api/config/validate", request.RequestUri!.AbsolutePath);
+
+            },
+            request =>
+            {
+
+                Assert.Equal(HttpMethod.Put, request.Method);
+
+                Assert.Equal("/api/config", request.RequestUri!.AbsolutePath);
+
+            });
+
+    }
 
     [Fact]
     public async Task AskAsync_returns_failure_when_api_key_missing()

@@ -20,14 +20,22 @@ of reproducing the complete key table.
 ## Launch and configuration file
 
 The Forge opens Compendium from **View → Open Compendium**, The Anvil, the setup
-wizard, and disabled-feature guidance. Discovery checks installed binaries first
-and then the development project. If launch fails, The Forge shows the exact
-configuration path for manual editing.
+wizard, disabled-feature guidance, and the macOS application-menu **Settings...** item. The CLI
+opens the same editor with `arcanum config open`. Discovery checks installed binaries first and
+then the development project. If launch fails, the exact configuration path and
+`arcanum config edit` fallback are shown.
 
 Compendium edits:
 
 - macOS/Linux: `~/.config/arcanum/arcanum.json`
 - Windows: `%USERPROFILE%\.config\arcanum\arcanum.json`
+
+For non-visual work, use `arcanum config path`, `show`, `get <key>`, `set <key> [value]`,
+`validate`, or `edit`. CLI reads preserve the API's provider-endpoint redaction. Dot paths use the
+source-generated configuration descriptor metadata and explicit numeric indices for collections
+(`providers.0.endpoint`). Sensitive endpoint updates omit `[value]` and read redirected stdin or a
+hidden prompt so the value never appears in argv or output. The commands use `/api/config` while
+the host is available and clearly label canonical local bootstrap mode otherwise.
 
 Paths are resolved through `ArcanumPaths`; service code does not use
 platform-specific path literals.
@@ -373,6 +381,12 @@ Cancel restores the in-memory snapshot. Reload re-reads disk after confirmation
 when local edits exist. A file watcher reports external changes and blocks
 overwriting them until reload. Arcanum loads the source-generated configuration
 snapshot at process start; restart the host after saving changes.
+
+`arcanum config edit` provides the same safety boundary for an operator-configured text editor: it
+writes an owner-only redacted temporary wrapper, waits for `$VISUAL`, `$EDITOR`, or the platform
+editor, restores unchanged masks, validates the complete result, and only then invokes the API or
+atomic local writer. A parse, validation, editor, or write failure leaves the valid configuration
+file unchanged.
 
 ## Build and test
 

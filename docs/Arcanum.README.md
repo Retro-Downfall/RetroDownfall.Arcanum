@@ -304,6 +304,16 @@ Summaries only — full contracts live in DESIGN.
 
 Settings bind under the required `Arcanum` object in **`arcanum.json`** (`~/.config/arcanum/` on macOS/Linux, `%USERPROFILE%\.config\arcanum\` on Windows). General environment overrides keep the wrapper after the prefix, for example `ARCANUM_Arcanum__Host__Port`; `ARCANUM_EDITION` and `ARCANUM_HOST_ANY` are explicit overrides. Before binding, the source-generated configuration schema walks the complete tree and reports every unknown/obsolete path together; dynamic array indices and documented dictionary keys remain valid. Serve then runs semantic validation before listening.
 
+Use `arcanum config path`, `show`, `get <dot.path>`, `set <dot.path> [value]`, `validate`,
+`edit`, or `open` for routine configuration work. These commands prefer the running host's
+authenticated `/api/config` endpoints. When the host cannot be reached (or a first-run key is not
+initialized), stderr clearly identifies local bootstrap mode; that path still uses the canonical
+loader, full validator, outbound URL guard, and atomic writer. `show`/`get` mask provider endpoints,
+environment overrides are named without revealing their values, and sensitive endpoint values must
+be supplied through redirected stdin or the hidden prompt—not argv. `edit` uses an owner-only
+temporary redacted copy and applies it only after full validation. `open` launches Compendium or
+prints the exact file path and `arcanum config edit` fallback.
+
 Public settings are limited to deployment choices, provider/model facts, credential references,
 security and permission policy, integration endpoints/allowlists, feature opt-ins, schedules,
 host-capacity choices, pricing facts, and user preferences. Retry, fallback, workflow-count, and
@@ -761,6 +771,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
 | `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Argument or stdin / interactive secret prompt. |
 | `key provider set\|status\|delete perplexity` | Manage the Perplexity key used by native `web_search`. Status never prints the secret; all operations are CLI-only and perform no HTTP. |
+| `config path\|show\|get\|set\|validate\|edit\|open` | Inspect or change `arcanum.json` without manual file discovery. Host API first; explicit canonical local bootstrap on unavailability; redacted reads, typed dot paths, full-snapshot validation, secure sensitive input, and atomic writes. |
 | `lore list\|get\|set\|delete` | Operator key-value memory via `/api/lore` (needs `serve`). Args: `get <KEY>`, `set <KEY> <VALUE>`, `delete <KEY>`. |
 | `daemon install\|uninstall\|status` | OS background-service lifecycle. |
 | `daemon jobs\|initiative\|alert` | Unseen Servant inspection + Comm Link smoke test (needs `serve`). `daemon jobs` shows **Last run** / interval from persisted watermarks (survive restart), **Next due** reconstructed from watermark + interval, and **Last result** (process-local diagnostic text). `daemon initiative <JOB_NAME> <MINUTES>` sets adaptive interval. `daemon alert <MESSAGE>` options: `--title`/`-t` (default `"Arcanum alert"`), `--severity`/`-s` (`Info`\|`Warning`\|`Critical`, default `Warning`), `--source`. |

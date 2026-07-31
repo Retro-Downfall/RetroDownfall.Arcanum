@@ -1,4 +1,4 @@
-namespace RetroDownfall.TheForge.Ux.Services.Compendium;
+namespace RetroDownfall.Arcanum.Core.Desktop;
 
 /// <summary>Outcome of attempting to launch Compendium from The Forge.</summary>
 public sealed record CompendiumLaunchResult(
