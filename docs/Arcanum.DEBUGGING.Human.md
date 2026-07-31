@@ -62,6 +62,19 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
    (`StructuredPayloadWritten`) from the `CliTextPayload` compatibility wrapper. For a destructive
    command, redirect stdout without `--yes` and break in
    `ConfirmationPrompt.PromptForConfirmationAsync()`; it must throw before reading `Console.In`.
+9. **Diagnose API-host/WAL CI teardown failures:** run
+   `ArcanumWebApplicationFactoryDisposalTests` and
+   `GrimoireDatabaseBootstrapperTests.CheckpointOnShutdownAsync_truncates_populated_wal_when_no_readers_hold_it`
+   together several times. For path mismatches, break in
+   `ArcanumWebApplicationFactory.StopApplicationHostAsync()` and the hosted-service `StopAsync`;
+   the captured host must finish stopping before `DisposeIsolatedResources()` restores
+   `ARCANUM_TEST_HOME`. For an empty pre-checkpoint WAL, verify the test's pooling-disabled owner is
+   still open, `wal_autocheckpoint` is zero, and no read transaction is active; do not infer WAL
+   population from migrations or connection close behavior.
+10. **Diagnose SSE heartbeat concurrency tests:** `SseStreamWriterTests` deliberately holds the first
+    `MoveNextAsync` pending until `WriteSignalStream` observes a keep-alive write. If it stalls, inspect
+    the pending-move reuse in `SseStreamWriter.StreamAsync`; do not replace the signal with short
+    scheduler delays or a cancellation token that can expire while coverage suspends the process.
 
 ## Related documents
 

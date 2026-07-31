@@ -44,7 +44,7 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 
         using TestingEnvironmentScope scope = new(parentHome);
 
-        ShutdownPathProbe probe = new();
+        ShutdownPathProbe probe = new(delayBeforeCapture: true);
 
         ArcanumWebApplicationFactory factory = CreateStartedFactory(probe);
 
@@ -104,6 +104,15 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
     private sealed class ShutdownPathProbe : IHostedService
     {
 
+        private readonly bool _delayBeforeCapture;
+
+        public ShutdownPathProbe(bool delayBeforeCapture = false)
+        {
+
+            _delayBeforeCapture = delayBeforeCapture;
+
+        }
+
         public string? GrimoireDirectoryAtShutdown { get; private set; }
 
         public string? DatabasePathAtShutdown { get; private set; }
@@ -112,16 +121,23 @@ public sealed class ArcanumWebApplicationFactoryDisposalTests
 
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-        public Task StopAsync(CancellationToken cancellationToken)
+        public async Task StopAsync(CancellationToken cancellationToken)
         {
+
+            if (_delayBeforeCapture)
+            {
+
+                // Make asynchronous teardown observable. The factory must keep its isolated
+                // process environment active until every hosted service finishes stopping.
+                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+
+            }
 
             GrimoireDirectoryAtShutdown = ArcanumPaths.GrimoireDirectory;
 
             DatabasePathAtShutdown = ArcanumPaths.GrimoireDatabaseFile;
 
             DatabaseExistedAtShutdown = File.Exists(DatabasePathAtShutdown);
-
-            return Task.CompletedTask;
 
         }
 

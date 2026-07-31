@@ -34,6 +34,10 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     private readonly Dictionary<string, string?> _originalEnvironment = new();
 
+    private IHost? _applicationHost;
+
+    private int _applicationHostStopped;
+
     private int _isolatedResourcesDisposed;
 
     public ArcanumWebApplicationFactory()
@@ -250,7 +254,11 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
         global::System.Environment.SetEnvironmentVariable("ARCANUM_SKIP_KEY_BOOTSTRAP", "1");
 
-        return base.CreateHost(builder);
+        IHost host = base.CreateHost(builder);
+
+        _applicationHost = host;
+
+        return host;
 
     }
 
@@ -325,26 +333,24 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     }
 
-    protected override void Dispose(bool disposing)
+    public override async ValueTask DisposeAsync()
     {
-
-        if (!disposing)
-        {
-
-            base.Dispose(disposing);
-
-            return;
-
-        }
 
         try
         {
 
-            base.Dispose(true);
+            try
+            {
 
-        }
-        catch (ObjectDisposedException)
-        {
+                await StopApplicationHostAsync();
+
+            }
+            finally
+            {
+
+                await base.DisposeAsync();
+
+            }
 
         }
         finally
@@ -356,21 +362,19 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
     }
 
-    public override async ValueTask DisposeAsync()
+    private async ValueTask StopApplicationHostAsync()
     {
 
-        try
+        IHost? host = _applicationHost;
+
+        if (host is null || Interlocked.Exchange(ref _applicationHostStopped, 1) != 0)
         {
 
-            await base.DisposeAsync();
+            return;
 
         }
-        finally
-        {
 
-            DisposeIsolatedResources();
-
-        }
+        await host.StopAsync();
 
     }
 

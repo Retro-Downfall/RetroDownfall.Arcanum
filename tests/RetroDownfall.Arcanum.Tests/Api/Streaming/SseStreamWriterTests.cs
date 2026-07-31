@@ -98,31 +98,58 @@ public sealed class SseStreamWriterTests
 
         DefaultHttpContext httpContext = new();
 
-        httpContext.Response.Body = new MemoryStream();
+        WriteSignalStream responseBody = new();
 
-        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
+        httpContext.Response.Body = responseBody;
 
-        await SseStreamWriter.StreamAsync(
+        Task streamTask = SseStreamWriter.StreamAsync(
             httpContext,
             source,
             async (_, _) => await Task.CompletedTask.ConfigureAwait(false),
             heartbeatInterval: TimeSpan.FromMilliseconds(20),
-            cts.Token);
+            CancellationToken.None);
+
+        try
+        {
+
+            await source.FirstMoveStarted.WaitAsync(TimeSpan.FromSeconds(30));
+
+            await responseBody.FirstWrite.WaitAsync(TimeSpan.FromSeconds(30));
+
+        }
+        finally
+        {
+
+            source.ReleaseMoves();
+
+        }
+
+        await streamTask.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.False(source.ConcurrentMoveDetected, "MoveNextAsync was invoked while a prior move was still pending.");
 
         Assert.True(source.MoveCount >= 2);
 
-        Assert.True(httpContext.Response.Body.Length > 0, "Expected at least one keep-alive write.");
+        Assert.True(responseBody.Length > 0, "Expected at least one keep-alive write.");
 
     }
 
     private sealed class ConcurrentMoveGuardEnumerable : IAsyncEnumerable<string>
     {
 
+        private readonly TaskCompletionSource _firstMoveStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _releaseMoves =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public bool ConcurrentMoveDetected { get; private set; }
 
+        public Task FirstMoveStarted => _firstMoveStarted.Task;
+
         public int MoveCount { get; private set; }
+
+        public void ReleaseMoves() => _releaseMoves.TrySetResult();
 
         public IAsyncEnumerator<string> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
             new Enumerator(this, cancellationToken);
@@ -153,9 +180,11 @@ public sealed class SseStreamWriterTests
 
                     owner.MoveCount++;
 
-                    // Hold the move long enough that a heartbeat interval can elapse while
-                    // MoveNextAsync is still pending — the bug would start a second move here.
-                    await Task.Delay(60, cancellationToken).ConfigureAwait(false);
+                    owner._firstMoveStarted.TrySetResult();
+
+                    // Keep the move pending until the test observes a heartbeat. A buggy writer
+                    // would start another MoveNextAsync against this same enumerator meanwhile.
+                    await owner._releaseMoves.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
                     if (_yielded >= 2)
                     {
@@ -179,6 +208,27 @@ public sealed class SseStreamWriterTests
                 }
 
             }
+
+        }
+
+    }
+
+    private sealed class WriteSignalStream : MemoryStream
+    {
+
+        private readonly TaskCompletionSource _firstWrite =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task FirstWrite => _firstWrite.Task;
+
+        public override async ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+
+            await base.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+            _firstWrite.TrySetResult();
 
         }
 

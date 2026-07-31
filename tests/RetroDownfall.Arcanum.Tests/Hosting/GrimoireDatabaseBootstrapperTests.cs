@@ -213,13 +213,39 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             _tempDir,
             CancellationToken.None);
 
+        await using SqliteConnection walOwner = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = _dbPath,
+            Password = _passphraseSource.Passphrase,
+            Pooling = false,
+        }.ToString());
+
+        await walOwner.OpenAsync();
+
+        await using (SqliteCommand populateWal = walOwner.CreateCommand())
+        {
+
+            populateWal.CommandText =
+                """
+                PRAGMA wal_autocheckpoint = 0;
+                CREATE TABLE ShutdownCheckpointProbe (
+                    Id INTEGER PRIMARY KEY,
+                    Value TEXT NOT NULL
+                );
+                INSERT INTO ShutdownCheckpointProbe (Value) VALUES ('pending-checkpoint');
+                """;
+
+            await populateWal.ExecuteNonQueryAsync();
+
+        }
+
         string walPath = _dbPath + "-wal";
 
         long beforeSize = File.Exists(walPath) ? new FileInfo(walPath).Length : 0;
 
-        // EnsureInitializedAsync runs migrations (writing frames to the WAL) and closes the
-        // connection, leaving a populated -wal file (verified by beforeSize > 0). The shutdown
-        // checkpoint must truncate it; without the checkpoint the WAL would persist at beforeSize.
+        // Keep an idle connection open so SQLite cannot remove the WAL as the final connection
+        // closes. There is no active reader or transaction, so the shutdown TRUNCATE checkpoint
+        // can still acquire the database locks it needs.
         await GrimoireDatabaseBootstrapper.CheckpointOnShutdownAsync(
             _passphraseSource,
             _dbPath,

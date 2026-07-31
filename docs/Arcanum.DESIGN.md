@@ -2494,6 +2494,10 @@ re-enabled in `.github/workflows/ci.yml`; use the Windows command above meanwhil
 - API-host tests set `ARCANUM_TEST_HOME` while the environment is `Testing`. This is required on
   Windows because changing `HOME`, `USERPROFILE`, or `APPDATA` after process start does not redirect
   .NET known-folder paths.
+- Concurrency tests synchronize on observable state transitions, not narrow scheduler windows.
+  `SseStreamWriterTests` holds one `MoveNextAsync` behind a signal until a heartbeat write is
+  observed, then releases the enumerator; its long `WaitAsync` bounds are deadlock guards and never
+  cancel the stream under ordinary coverage-run suspension.
 
 xUnit runs collections in parallel and tests inside a collection serially:
 
@@ -2514,6 +2518,11 @@ after its temporary DB can be deleted. Cached-template validation/remediation an
 copying share an in-process lifecycle lock plus a named cross-process mutex, so concurrent
 test/coverage processes cannot observe or delete a partial template.
 
+Shutdown-checkpoint tests create their WAL precondition explicitly: a pooling-disabled SQLCipher
+connection disables automatic checkpoints, writes a probe row, and stays open but transaction-free
+while `CheckpointOnShutdownAsync` runs. Tests must not assume schema initialization will leave a
+nonempty WAL after its final connection closes; SQLite may checkpoint or remove that WAL.
+
 `ArcanumWebApplicationFactory` references `Api.DevHost`, seeds an encrypted copy under a unique
 testing root, disables the production PID file, replaces `ISecretStore` and
 `IArcanumIntelligenceProvider`, and exposes `CreateAuthenticatedClient()`. It sets
@@ -2525,8 +2534,11 @@ paths all remain inside that root.
 Each factory registers `ArcanumDbContext` with an explicit SQLCipher connection rooted at its own
 `TempHome`; later process-environment changes cannot redirect scoped repositories into another
 factory's DB. Every factory-creating class belongs to `ApiHost` (a reflection guard covers the
-performance baseline). Sync/async disposal stops the host, checkpoints Grimoire, restores
-environment, clears pooled SQLite connections, and only then deletes the root.
+performance baseline). The factory retains the exact `IHost` returned by `CreateHost` and
+idempotently awaits its stop before delegating framework disposal, so delayed hosted-service
+shutdown still observes the factory's test-home paths. Only after host stop and Grimoire checkpoint
+does disposal restore the process environment, clear pooled SQLite connections, and delete the
+isolated root. Sync disposal routes through the same async lifecycle.
 
 `AddArcanumSerilog` must not resolve options or the ring-buffer sink through
 `GetRequiredService` inside the `AddSerilog` configure callback during host `Build()`; that re-enters
