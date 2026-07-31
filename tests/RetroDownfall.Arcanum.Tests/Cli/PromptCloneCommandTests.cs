@@ -73,16 +73,22 @@ public sealed class PromptCloneCommandTests
     }
 
     [Fact]
-    public void Prompt_clone_validates_id_guid()
+    public void Prompt_clone_reports_missing_name_candidate_after_list_lookup()
     {
 
-        RecordingHandler handler = new();
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<PromptSummaryDto>>(
+                new ListPageResult<PromptSummaryDto>([], false),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultPromptSummaryDto));
 
         CliTestResult result = RunCommand(handler, ["prompt", "clone", "not-a-guid", "--new-name", "x", "--new-version", "1.0.0"]);
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.Empty(handler.Requests);
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+        Assert.Equal("/api/prompts", request.RequestUri!.AbsolutePath);
 
     }
 

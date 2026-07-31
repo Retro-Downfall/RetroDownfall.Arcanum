@@ -9,7 +9,10 @@ namespace RetroDownfall.Arcanum.Cli.Commands.Configuration;
 /// <summary>
 /// Native model listing across configured providers (requires arcanum serve).
 /// </summary>
-public sealed class ModelCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class ModelCommands(
+    ArcanumApiClient apiClient,
+    IThemePalette themePalette,
+    ICliResourceCatalog? resourceCatalog = null)
 {
 
     /// <summary>
@@ -59,12 +62,43 @@ public sealed class ModelCommands(ArcanumApiClient apiClient, IThemePalette them
 
     }
 
+    public async Task<int> Get(string? identifier, CancellationToken cancellationToken)
+    {
+        if (resourceCatalog is null)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("A model name is required.")));
+            return 1;
+        }
+
+        ResourceSelectionResult<ModelInfoDto> selection = await resourceCatalog
+            .SelectModelAsync(identifier, cancellationToken)
+            .ConfigureAwait(false);
+        if (selection.Status == ResourceSelectionStatus.Cancelled)
+        {
+            return 0;
+        }
+        if (selection.Status == ResourceSelectionStatus.Error)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+            return 1;
+        }
+
+        ModelInfoDto model = selection.Value!;
+        AnsiConsole.MarkupLine(themePalette.HeadingBoldMarkup(Markup.Escape(model.Model)));
+        AnsiConsole.MarkupLine(themePalette.TextMarkup(Markup.Escape($"Provider: {model.ProviderName}")));
+        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Type: {model.ProviderType}; context window: {model.ContextWindowLimit}")));
+        return 0;
+    }
+
 }
 
 /// <summary>
 /// Native provider listing and configuration summary (requires arcanum serve).
 /// </summary>
-public sealed class ProviderCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class ProviderCommands(
+    ArcanumApiClient apiClient,
+    IThemePalette themePalette,
+    ICliResourceCatalog? resourceCatalog = null)
 {
 
     /// <summary>
@@ -115,6 +149,34 @@ public sealed class ProviderCommands(ArcanumApiClient apiClient, IThemePalette t
 
         return 0;
 
+    }
+
+    public async Task<int> Get(string? identifier, CancellationToken cancellationToken)
+    {
+        if (resourceCatalog is null)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("A provider name is required.")));
+            return 1;
+        }
+
+        ResourceSelectionResult<ProviderInfoDto> selection = await resourceCatalog
+            .SelectProviderAsync(identifier, cancellationToken)
+            .ConfigureAwait(false);
+        if (selection.Status == ResourceSelectionStatus.Cancelled)
+        {
+            return 0;
+        }
+        if (selection.Status == ResourceSelectionStatus.Error)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+            return 1;
+        }
+
+        ProviderInfoDto provider = selection.Value!;
+        AnsiConsole.MarkupLine(themePalette.HeadingBoldMarkup(Markup.Escape(provider.Name)));
+        AnsiConsole.MarkupLine(themePalette.TextMarkup(Markup.Escape($"Type: {provider.Type}")));
+        AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape($"Models: {string.Join(", ", provider.Models)}")));
+        return 0;
     }
 
 }

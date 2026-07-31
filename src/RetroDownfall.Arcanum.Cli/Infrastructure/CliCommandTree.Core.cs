@@ -140,6 +140,12 @@ internal static partial class CliCommandTree
         Command list = new("list", "List configured models across all providers (GET /api/models).");
         list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
         model.Add(list);
+        Command get = new("get", "Show a configured model without exposing its endpoint.");
+        Argument<string?> identifier = OptionalResourceArgument("model", "model name or provider/model ID");
+        get.Add(identifier);
+        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
+        model.Add(get);
         return model;
     }
 
@@ -150,6 +156,53 @@ internal static partial class CliCommandTree
         Command list = new("list", "List configured providers with redacted secrets (GET /api/providers).");
         list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
         provider.Add(list);
+        Command get = new("get", "Show a configured provider without exposing endpoint or credential details.");
+        Argument<string?> identifier = OptionalResourceArgument("provider", "provider name");
+        get.Add(identifier);
+        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
+        provider.Add(get);
         return provider;
+    }
+
+    private static Command BuildWorkspace(IServiceProvider sp)
+    {
+        WorkspaceCommands handler = sp.GetRequiredService<WorkspaceCommands>();
+        Command workspace = new("workspace", "Registered workspace discovery (requires arcanum serve).");
+        Command list = new("list", "List registered workspaces.");
+        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
+        Command get = new("get", "Show a workspace.");
+        Argument<string?> identifier = OptionalResourceArgument("workspace", "workspace ID or name");
+        get.Add(identifier);
+        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
+        workspace.Add(list);
+        workspace.Add(get);
+        return workspace;
+    }
+
+    private static Command BuildMcp(IServiceProvider sp)
+    {
+        McpCommands handler = sp.GetRequiredService<McpCommands>();
+        Command mcp = new("mcp", "MCP server status without secret-adjacent configuration details.");
+        Command list = new("list", "List MCP server status.");
+        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
+        Command get = new("get", "Show one MCP server's safe status summary.");
+        Argument<string?> identifier = OptionalResourceArgument("server", "MCP server name");
+        get.Add(identifier);
+        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
+        mcp.Add(list);
+        mcp.Add(get);
+        return mcp;
+    }
+
+    private static Argument<string?> OptionalResourceArgument(string name, string accepted)
+    {
+        return new Argument<string?>(name)
+        {
+            Arity = ArgumentArity.ZeroOrOne,
+            Description = $"Optional {accepted}; omit for an interactive picker.",
+        };
     }
 }

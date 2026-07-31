@@ -23,10 +23,14 @@ internal static partial class CliCommandTree
         prompt.Add(list);
 
         Command get = new("get", "Show prompt detail.");
-        Argument<string> getId = new("id") { Description = "Prompt GUID." };
+        Argument<string?> getId = new("id")
+        {
+            Arity = ArgumentArity.ZeroOrOne,
+            Description = "Optional prompt GUID, exact name, or unique name prefix; omit for an interactive picker.",
+        };
         get.Add(getId);
         get.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(getId)!, ct).ConfigureAwait(false));
+            await handler.Get(pr.GetValue(getId), ct).ConfigureAwait(false));
         prompt.Add(get);
 
         Command versions = new("versions", "List versions of a prompt by name.");
@@ -58,45 +62,45 @@ internal static partial class CliCommandTree
         prompt.Add(create);
 
         Command update = new("update", "Update a prompt.");
-        Argument<string> updateId = new("id") { Description = "Prompt GUID." };
+        Argument<string?> updateId = OptionalResourceArgument("id", "prompt GUID or name");
         Option<string?> updateTemplate = new("--template") { Description = "Prompt template: inline text, or @filename to read from a file." };
         Option<string[]> updateTag = new("--tag") { AllowMultipleArgumentsPerToken = true, Description = "Tag; pass multiple times for several tags." };
         update.Add(updateId); update.Add(updateTemplate); update.Add(updateTag);
         update.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Update(pr.GetValue(updateId)!, pr.GetValue(updateTemplate), pr.GetValue(updateTag), ct).ConfigureAwait(false));
+            await handler.Update(pr.GetValue(updateId), pr.GetValue(updateTemplate), pr.GetValue(updateTag), ct).ConfigureAwait(false));
         prompt.Add(update);
 
         Command delete = new("delete", "Delete a prompt.");
-        Argument<string> deleteId = new("id") { Description = "Prompt GUID." };
+        Argument<string?> deleteId = OptionalResourceArgument("id", "prompt GUID or name");
         delete.Add(deleteId);
         delete.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Delete(pr.GetValue(deleteId)!, ct).ConfigureAwait(false));
+            await handler.Delete(pr.GetValue(deleteId), ct).ConfigureAwait(false));
         prompt.Add(delete);
 
         Command render = new("render", "Render a prompt template with parameters.");
-        Argument<string> renderId = new("id") { Description = "Prompt GUID." };
+        Argument<string?> renderId = OptionalResourceArgument("id", "prompt GUID or name");
         Option<string[]> renderParam = new("--param") { AllowMultipleArgumentsPerToken = true, Description = "Template parameter as key=value; pass multiple times for several parameters." };
         render.Add(renderId); render.Add(renderParam);
         render.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Render(pr.GetValue(renderId)!, pr.GetValue(renderParam), ct).ConfigureAwait(false));
+            await handler.Render(pr.GetValue(renderId), pr.GetValue(renderParam), ct).ConfigureAwait(false));
         prompt.Add(render);
 
         Command test = new("test", "Assemble the system prompt without LLM cost.");
-        Argument<string> testId = new("id") { Description = "Prompt GUID." };
+        Argument<string?> testId = OptionalResourceArgument("id", "prompt GUID or name");
         test.Add(testId);
         test.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Test(pr.GetValue(testId)!, ct).ConfigureAwait(false));
+            await handler.Test(pr.GetValue(testId), ct).ConfigureAwait(false));
         prompt.Add(test);
 
         Command execute = new("execute", "Render and run session-backed inference.");
-        Argument<string> executeId = new("id") { Description = "Prompt GUID." };
+        Argument<string?> executeId = OptionalResourceArgument("id", "prompt GUID or name");
         Option<string?> executeInput = new("--input") { Description = "User message for the prompt turn: inline text, or @filename to read from a file." };
         Option<string[]> executeParam = new("--param") { AllowMultipleArgumentsPerToken = true, Description = "Template parameter as key=value; pass multiple times for several parameters." };
         Option<string?> executeSessionId = new("--session-id", "--sessionId") { Description = "Session GUID to bind context from." };
         execute.Add(executeId); execute.Add(executeInput); execute.Add(executeParam); execute.Add(executeSessionId);
         execute.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Execute(
-                pr.GetValue(executeId)!,
+                pr.GetValue(executeId),
                 pr.GetValue(executeInput),
                 pr.GetValue(executeParam),
                 pr.GetValue(executeSessionId),
@@ -104,14 +108,14 @@ internal static partial class CliCommandTree
         prompt.Add(execute);
 
         Command clone = new("clone", "Clone a prompt to a new name/version.");
-        Argument<string> cloneId = new("id") { Description = "Prompt GUID." };
+        Argument<string?> cloneId = OptionalResourceArgument("id", "prompt GUID or name");
         Option<string?> cloneNewName = new("--new-name") { Description = "New prompt name." };
         Option<string?> cloneNewVersion = new("--new-version") { Description = "New prompt version label." };
         Option<string?> cloneCampaign = new("--campaign") { Description = "Campaign GUID to associate the clone with." };
         clone.Add(cloneId); clone.Add(cloneNewName); clone.Add(cloneNewVersion); clone.Add(cloneCampaign);
         clone.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Clone(
-                pr.GetValue(cloneId)!,
+                pr.GetValue(cloneId),
                 pr.GetValue(cloneNewName),
                 pr.GetValue(cloneNewVersion),
                 pr.GetValue(cloneCampaign),
@@ -119,11 +123,11 @@ internal static partial class CliCommandTree
         prompt.Add(clone);
 
         Command export = new("export", "Export a prompt as portable JSON.");
-        Argument<string> exportId = new("id") { Description = "Prompt GUID." };
+        Argument<string?> exportId = OptionalResourceArgument("id", "prompt GUID or name");
         Option<string?> exportOutput = new("--output") { Description = "Write exported JSON to this file instead of stdout." };
         export.Add(exportId); export.Add(exportOutput);
         export.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Export(pr.GetValue(exportId)!, pr.GetValue(exportOutput), ct).ConfigureAwait(false));
+            await handler.Export(pr.GetValue(exportId), pr.GetValue(exportOutput), ct).ConfigureAwait(false));
         prompt.Add(export);
 
         Command import = new("import", "Import a prompt from portable JSON.");
@@ -152,10 +156,14 @@ internal static partial class CliCommandTree
         apprentice.Add(list);
 
         Command get = new("get", "Show Apprentice detail.");
-        Argument<string> getId = new("id") { Description = "Apprentice GUID." };
+        Argument<string?> getId = new("id")
+        {
+            Arity = ArgumentArity.ZeroOrOne,
+            Description = "Optional Apprentice GUID, exact name, or unique name prefix; omit for an interactive picker.",
+        };
         get.Add(getId);
         get.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(getId)!, ct).ConfigureAwait(false));
+            await handler.Get(pr.GetValue(getId), ct).ConfigureAwait(false));
         apprentice.Add(get);
 
         Command create = new("create", "Create an Apprentice.");
@@ -174,70 +182,70 @@ internal static partial class CliCommandTree
         apprentice.Add(create);
 
         Command delete = new("delete", "Delete a terminal Apprentice.");
-        Argument<string> deleteId = new("id") { Description = "Apprentice GUID." };
+        Argument<string?> deleteId = OptionalResourceArgument("id", "Apprentice GUID or name");
         delete.Add(deleteId);
         delete.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Delete(pr.GetValue(deleteId)!, ct).ConfigureAwait(false));
+            await handler.Delete(pr.GetValue(deleteId), ct).ConfigureAwait(false));
         apprentice.Add(delete);
 
         Command start = new("start", "Start plan generation and execution.");
-        Argument<string> startId = new("id") { Description = "Apprentice GUID." };
+        Argument<string?> startId = OptionalResourceArgument("id", "Apprentice GUID or name");
         start.Add(startId);
         start.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Start(pr.GetValue(startId)!, ct).ConfigureAwait(false));
+            await handler.Start(pr.GetValue(startId), ct).ConfigureAwait(false));
         apprentice.Add(start);
 
         Command pause = new("pause", "Pause at the next step boundary.");
-        Argument<string> pauseId = new("id") { Description = "Apprentice GUID." };
+        Argument<string?> pauseId = OptionalResourceArgument("id", "Apprentice GUID or name");
         pause.Add(pauseId);
         pause.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Pause(pr.GetValue(pauseId)!, ct).ConfigureAwait(false));
+            await handler.Pause(pr.GetValue(pauseId), ct).ConfigureAwait(false));
         apprentice.Add(pause);
 
         Command resume = new("resume", "Resume from checkpoint.");
-        Argument<string> resumeId = new("id") { Description = "Apprentice GUID." };
+        Argument<string?> resumeId = OptionalResourceArgument("id", "Apprentice GUID or name");
         resume.Add(resumeId);
         resume.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Resume(pr.GetValue(resumeId)!, ct).ConfigureAwait(false));
+            await handler.Resume(pr.GetValue(resumeId), ct).ConfigureAwait(false));
         apprentice.Add(resume);
 
         Command cancel = new("cancel", "Cancel execution.");
-        Argument<string> cancelId = new("id") { Description = "Apprentice GUID." };
+        Argument<string?> cancelId = OptionalResourceArgument("id", "Apprentice GUID or name");
         cancel.Add(cancelId);
         cancel.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Cancel(pr.GetValue(cancelId)!, ct).ConfigureAwait(false));
+            await handler.Cancel(pr.GetValue(cancelId), ct).ConfigureAwait(false));
         apprentice.Add(cancel);
 
         Command reweave = new("reweave", "Replace the remaining plan steps.");
-        Argument<string> reweaveId = new("id") { Description = "Apprentice GUID." };
+        Argument<string?> reweaveId = OptionalResourceArgument("id", "Apprentice GUID or name");
         Option<string?> reweavePlan = new("--plan") { Description = "JSON array of plan steps: inline text, or @filename to read from a file." };
         reweave.Add(reweaveId); reweave.Add(reweavePlan);
         reweave.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Reweave(pr.GetValue(reweaveId)!, pr.GetValue(reweavePlan), ct).ConfigureAwait(false));
+            await handler.Reweave(pr.GetValue(reweaveId), pr.GetValue(reweavePlan), ct).ConfigureAwait(false));
         apprentice.Add(reweave);
 
         Command intervene = new("intervene", "Provide Divine Intervention guidance to an escalated Apprentice.");
-        Argument<string> interveneId = new("id") { Description = "Apprentice GUID." };
+        Argument<string?> interveneId = OptionalResourceArgument("id", "Apprentice GUID or name");
         Option<string?> interveneGuidance = new("--guidance") { Description = "Guidance text for the escalated Apprentice." };
         intervene.Add(interveneId); intervene.Add(interveneGuidance);
         intervene.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Intervene(pr.GetValue(interveneId)!, pr.GetValue(interveneGuidance), ct).ConfigureAwait(false));
+            await handler.Intervene(pr.GetValue(interveneId), pr.GetValue(interveneGuidance), ct).ConfigureAwait(false));
         apprentice.Add(intervene);
 
         Command cast = new("cast", "Delegate a child Apprentice via The Conclave.");
-        Argument<string> castId = new("id") { Description = "Apprentice GUID." };
+        Argument<string?> castId = OptionalResourceArgument("id", "Apprentice GUID or name");
         Option<string?> castGoal = new("--goal") { Description = "Child Apprentice goal text." };
         Option<string?> castName = new("--name") { Description = "Display name for the child Apprentice." };
         cast.Add(castId); cast.Add(castGoal); cast.Add(castName);
         cast.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Cast(pr.GetValue(castId)!, pr.GetValue(castGoal), pr.GetValue(castName), ct).ConfigureAwait(false));
+            await handler.Cast(pr.GetValue(castId), pr.GetValue(castGoal), pr.GetValue(castName), ct).ConfigureAwait(false));
         apprentice.Add(cast);
 
         Command chronicle = new("chronicle", "Stream live Apprentice events (SSE).");
-        Argument<string> chronicleId = new("id") { Description = "Apprentice GUID." };
+        Argument<string?> chronicleId = OptionalResourceArgument("id", "Apprentice GUID or name");
         chronicle.Add(chronicleId);
         chronicle.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Chronicle(pr.GetValue(chronicleId)!, ct).ConfigureAwait(false));
+            await handler.Chronicle(pr.GetValue(chronicleId), ct).ConfigureAwait(false));
         apprentice.Add(chronicle);
 
         return apprentice;

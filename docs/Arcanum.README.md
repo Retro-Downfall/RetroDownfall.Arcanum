@@ -641,6 +641,28 @@ Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](
 
 ## CLI quick reference
 
+### Safe resource selection
+
+Commands that target a session, campaign, workspace, prompt, spell, Apprentice, model, provider,
+or MCP server accept an exact ID, an exact case-insensitive name, or a unique name prefix. In an
+interactive terminal, omit the selector to open a searchable picker; press Escape to cancel before
+any mutation. Redirected stdin/stdout, `--json`, ambiguity, and missing selectors never prompt or
+guess: they exit with candidate summaries so scripts can provide an exact value. Exact IDs retain
+deterministic scripting behavior.
+
+Pickers page through large collections and show only safe resource-specific columns. Recent choices
+are stored locally as an owner-only ordering hint, never as tie-breaking authority. Picker output
+does not include provider endpoints/credential references or MCP URL/command/argument details.
+
+```bash
+arcanum campaign get campaign-alpha   # exact name or unique prefix
+arcanum prompt render                 # interactive picker when attached to a TTY
+arcanum prompt render <exact-guid> --param topic=dragons  # deterministic script
+arcanum session get                   # title/campaign/updated picker
+arcanum workspace get
+arcanum mcp get
+```
+
 All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- <cmd>` in development, or `arcanum <cmd>` after an AOT publish.
 
 **Default command:** bare interactive `arcanum` (no arguments) opens the **Command Center** (Terminal.Gui fixed-viewport TUI). Bare non-interactive `arcanum`, or `ARCANUM_NO_COMMAND_CENTER=1`, prints usage and exits **0**. Explicit commands (`serve`, `ask`, `chat`, `--help`, …) stay frameless Spectre/CAF as before.
@@ -711,15 +733,18 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `lore list\|get\|set\|delete` | Operator key-value memory via `/api/lore` (needs `serve`). Args: `get <KEY>`, `set <KEY> <VALUE>`, `delete <KEY>`. |
 | `daemon install\|uninstall\|status` | OS background-service lifecycle. |
 | `daemon jobs\|initiative\|alert` | Unseen Servant inspection + Comm Link smoke test (needs `serve`). `daemon jobs` shows **Last run** / interval from persisted watermarks (survive restart), **Next due** reconstructed from watermark + interval, and **Last result** (process-local diagnostic text). `daemon initiative <JOB_NAME> <MINUTES>` sets adaptive interval. `daemon alert <MESSAGE>` options: `--title`/`-t` (default `"Arcanum alert"`), `--severity`/`-s` (`Info`\|`Warning`\|`Critical`, default `Warning`), `--source`. |
-| `campaign list\|get\|create\|update\|delete\|export\|import\|codex\|spells\|prompts\|sessions` | The Forge campaign registry via `/api/campaigns` (needs `serve`). `create --name <n> --path <p> [--type <t>]`; `export`/`import <id>` round-trip JSON (stdout/`--output` or `--file`); `codex get\|put\|delete <id>` manages `CODEX.md`; `spells\|prompts\|sessions <id>` list campaign-scoped resources (campaign spells shadow built-ins of the same name). |
-| `session divine <QUERY>` | Session Divination — semantic search over Grimoire entries via `POST /api/sessions/divine` (needs `serve`; disabled by default — requires `Arcanum:Features:Embeddings` + `Arcanum:Features:SessionSearch`). Options: `--limit <n>`, `--campaign <id>`, `--status <status>`. See [Arcanum.DESIGN.md §21.6](Arcanum.DESIGN.md#216-session-divination). |
+| `campaign list\|get\|create\|update\|delete\|export\|import\|codex\|spells\|prompts\|sessions` | The Forge campaign registry via `/api/campaigns` (needs `serve`). Resource-taking verbs accept optional ID/name/prefix selection. |
+| `session list\|get\|divine` | List/select sessions or run semantic search. `get` accepts optional GUID/title/prefix; `divine` retains its query and filter options. |
+| `workspace list\|get` | List/select registered workspaces; picker shows name and path. |
 | `saga list\|divine\|delete\|stats` | Saga long-term associative memory via `/api/saga/*` (needs `serve`). `list` (options `--query`, `--session`, `--limit`, `--offset`) and `stats` are always available; `divine <QUERY>` (option `--limit`) requires `Arcanum:Features:Embeddings` + `Arcanum:Features:Saga`; `delete <ID>` removes a single memory. See [Arcanum.DESIGN.md §21.8](Arcanum.DESIGN.md#218-saga-long-term-associative-memory). |
 | `spell list\|get\|create\|update\|delete\|search\|validate\|execute\|versions\|export\|import\|cast\|clone` | The Forge spell CRUD + execution via `/api/spells` (needs `serve`). `create`/`update` require `--workspace`; `--body`/`--goal`/`--template`/`--plan`/`--inquisitor` accept inline text or `@filename`; `execute` prints the response text plus a tool-call summary (stderr) when tools ran (`--version` takes a **string label**); `cast <name>` is a dry-run system-prompt preview — no inference tokens consumed; `clone <name> --new-name <n>` clones a spell into the workspace. |
 | `spell version create\|update\|activate` | Named spell version files (`SPELL.v{label}.md`) via `/api/spells/{name}/versions` (needs `serve`). `create`/`update <name> --version <label> --body <text\|@file>`; `activate <name> --version <label>` swaps the version into `SPELL.md`, printing where the previous content was preserved. |
-| `prompt list\|get\|versions\|create\|update\|delete\|render\|test\|execute\|export\|import\|clone` | The Forge prompt CRUD + rendering via `/api/prompts` (needs `serve`). `render`/`execute` accept repeatable `--param key=value`; `test` assembles the system prompt at no LLM cost; `clone <id> --new-name <n> --new-version <v> [--campaign <id>]` copies to a new name/version. |
+| `prompt list\|get\|versions\|create\|update\|delete\|render\|test\|execute\|export\|import\|clone` | Prompt CRUD + rendering. Resource-taking verbs accept optional ID/name/prefix selection; `render`/`execute` accept repeatable `--param key=value`. |
 | `ward list\|get\|resolve` | Ward approval gates via `/api/wards` (needs `serve`). `resolve <id>` requires exactly one of `--allow`/`--deny` plus optional `--reason`. |
 | `trial run` | The Proving Grounds via `POST /api/proving-grounds/trials/run` (needs `serve`). `--target spell\|prompt\|apprenticeGoal` + `--target-value`, repeatable `--inquisitor` (JSON or `@file`) and `--var key=value`; exits `1` when the Trial fails. |
-| `apprentice list\|get\|create\|delete\|start\|pause\|resume\|cancel\|reweave\|intervene\|cast\|chronicle` | The Forge Apprentice orchestration via `/api/apprentices` (needs `serve`). `create --goal <text\|@file>`; `reweave --plan <json\|@file>`; `cast` reports 409 `Apprentice.ConclaveDisabled` when `Arcanum:Features:Conclave` is off; `chronicle <id>` streams live SSE events (Ctrl+C exits 130). |
+| `apprentice list\|get\|create\|delete\|start\|pause\|resume\|cancel\|reweave\|intervene\|cast\|chronicle` | Apprentice orchestration. Resource-taking verbs accept optional ID/name/prefix selection and picker cancellation never mutates. |
+| `model list\|get`, `provider list\|get` | List/select configured inference resources. Detail output omits endpoints and credential references. |
+| `mcp list\|get` | List/select safe MCP server status without command, URL, arguments, or working-directory details. |
 | `model list` | List configured models across all providers via `GET /api/models` (needs `serve`); endpoint redacted. |
 | `provider list` | List configured providers via `GET /api/providers` (needs `serve`); endpoint redacted and only the credential environment-variable reference returned. |
 | `operation list\|show\|cancel\|retry\|reconcile` | Inspect and repair the durable operation ledger via authenticated `/api/operations*` routes (needs `serve`). `list` accepts `--kind` / `--state`; `show <id>` returns only safe checkpoint presence/version/summary; `cancel <id>` requests `Cancelling`; `retry <id>` resets failed/abandoned/repair-required work; `reconcile` runs a bounded pass and exits 2 when operator attention remains. |

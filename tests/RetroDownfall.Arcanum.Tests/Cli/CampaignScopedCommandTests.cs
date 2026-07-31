@@ -89,16 +89,22 @@ public sealed class CampaignScopedCommandTests
     }
 
     [Fact]
-    public void Campaign_spells_validates_id_guid()
+    public void Campaign_spells_reports_missing_name_candidate_after_list_lookup()
     {
 
-        RecordingHandler handler = new();
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<CampaignDto>>(
+                new ListPageResult<CampaignDto>([], false),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto));
 
         CliTestResult result = RunCommand(handler, ["campaign", "spells", "not-a-guid"]);
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.Empty(handler.Requests);
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+        Assert.Equal("/api/campaigns", request.RequestUri!.AbsolutePath);
 
     }
 

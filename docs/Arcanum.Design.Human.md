@@ -55,6 +55,16 @@ categories instead of raw exception messages. Command Center modals and inferenc
 remain separate because they are long-lived interactive protocols, not direct-command
 confirmations.
 
+Direct resource commands share a client-side `IResourceSelector<T>` policy rather than teaching
+server APIs fuzzy matching. Exact IDs remain deterministic; otherwise the CLI tries an exact
+case-insensitive name and then a unique prefix. Only a real interactive terminal may open the
+searchable picker when the selector is omitted. Redirected or JSON invocations return bounded,
+actionable candidates, ambiguity never chooses, and Escape cancels before the downstream action.
+The typed catalog pages existing list endpoints for large session/prompt/campaign/Apprentice sets.
+Owner-only local recency data improves picker ordering but cannot resolve a tie. Descriptors control
+the visible columns and keep provider endpoints/credentials and MCP connection/process details out
+of picker and safe-detail output.
+
 ---
 
 ## 2. Architectural goals and safe defaults

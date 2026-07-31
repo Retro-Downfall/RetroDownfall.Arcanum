@@ -102,7 +102,10 @@ internal static class ApprenticeCommandSupport
 /// <summary>
 /// The Forge Apprentice orchestration (requires arcanum serve).
 /// </summary>
-public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class ApprenticeCommands(
+    ArcanumApiClient apiClient,
+    IThemePalette themePalette,
+    ICliResourceCatalog? resourceCatalog = null)
 {
 
     /// <summary>
@@ -188,14 +191,31 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// Show Apprentice detail (GET /api/apprentices/{id}).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    public async Task<int> Get(string id, CancellationToken cancellationToken)
+    public async Task<int> Get(string? id, CancellationToken cancellationToken)
     {
-
-        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
+        Guid apprenticeId;
+        if (!CliArgReader.TryParseGuid(id, out apprenticeId))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+            if (resourceCatalog is null)
+            {
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+                return 1;
+            }
 
-            return 1;
+            ResourceSelectionResult<ApprenticeSummaryDto> selection = await resourceCatalog
+                .SelectApprenticeAsync(id, cancellationToken)
+                .ConfigureAwait(false);
+            if (selection.Status == ResourceSelectionStatus.Cancelled)
+            {
+                return 0;
+            }
+            if (selection.Status == ResourceSelectionStatus.Error)
+            {
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+                return 1;
+            }
+
+            apprenticeId = selection.Value!.Id;
         }
 
         Result<ApprenticeDetailDto> result = await apiClient.GetApprenticeAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
@@ -289,19 +309,46 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
 
     }
 
+    private async Task<(bool Resolved, bool Cancelled, Guid Id)> ResolveApprenticeIdAsync(
+        string? identifier,
+        CancellationToken cancellationToken)
+    {
+        if (CliArgReader.TryParseGuid(identifier, out Guid id))
+        {
+            return (true, false, id);
+        }
+
+        if (resourceCatalog is null)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+            return (false, false, default);
+        }
+
+        ResourceSelectionResult<ApprenticeSummaryDto> selection = await resourceCatalog
+            .SelectApprenticeAsync(identifier, cancellationToken)
+            .ConfigureAwait(false);
+        if (selection.Status == ResourceSelectionStatus.Cancelled)
+        {
+            return (false, true, default);
+        }
+        if (selection.Status == ResourceSelectionStatus.Error)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+            return (false, false, default);
+        }
+
+        return (true, false, selection.Value!.Id);
+    }
+
     /// <summary>
     /// Delete a terminal Apprentice (DELETE /api/apprentices/{id}).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    public async Task<int> Delete(string id, CancellationToken cancellationToken)
+    public async Task<int> Delete(string? id, CancellationToken cancellationToken)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         Result result = await apiClient.DeleteApprenticeAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
 
@@ -322,43 +369,39 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// Start plan generation and execution (POST /api/apprentices/{id}/start).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    public Task<int> Start(string id, CancellationToken cancellationToken) =>
+    public Task<int> Start(string? id, CancellationToken cancellationToken) =>
         RunLifecycleActionAsync(id, "started", apiClient.StartApprenticeAsync, cancellationToken);
 
     /// <summary>
     /// Pause at the next step boundary (POST /api/apprentices/{id}/pause).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    public Task<int> Pause(string id, CancellationToken cancellationToken) =>
+    public Task<int> Pause(string? id, CancellationToken cancellationToken) =>
         RunLifecycleActionAsync(id, "paused", apiClient.PauseApprenticeAsync, cancellationToken);
 
     /// <summary>
     /// Resume from checkpoint (POST /api/apprentices/{id}/resume).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    public Task<int> Resume(string id, CancellationToken cancellationToken) =>
+    public Task<int> Resume(string? id, CancellationToken cancellationToken) =>
         RunLifecycleActionAsync(id, "resumed", apiClient.ResumeApprenticeAsync, cancellationToken);
 
     /// <summary>
     /// Cancel execution (POST /api/apprentices/{id}/cancel).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    public Task<int> Cancel(string id, CancellationToken cancellationToken) =>
+    public Task<int> Cancel(string? id, CancellationToken cancellationToken) =>
         RunLifecycleActionAsync(id, "cancelled", apiClient.CancelApprenticeAsync, cancellationToken);
 
     private async Task<int> RunLifecycleActionAsync(
-        string id,
+        string? id,
         string actionLabel,
         Func<Guid, CancellationToken, Task<Result<string>>> invoke,
         CancellationToken cancellationToken)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         Result<string> result = await invoke(apprenticeId, cancellationToken).ConfigureAwait(false);
 
@@ -380,15 +423,11 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
     /// <param name="plan">JSON array of plan steps: inline text, or @filename to read from a file.</param>
-    public async Task<int> Reweave(string id, string? plan = null, CancellationToken cancellationToken = default)
+    public async Task<int> Reweave(string? id, string? plan = null, CancellationToken cancellationToken = default)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         if (string.IsNullOrEmpty(plan))
         {
@@ -447,15 +486,11 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
     /// <param name="guidance">Guidance text for the escalated Apprentice.</param>
-    public async Task<int> Intervene(string id, string? guidance = null, CancellationToken cancellationToken = default)
+    public async Task<int> Intervene(string? id, string? guidance = null, CancellationToken cancellationToken = default)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         if (string.IsNullOrWhiteSpace(guidance))
         {
@@ -486,18 +521,14 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// <param name="goal">Child Apprentice goal text.</param>
     /// <param name="name">Display name for the child Apprentice.</param>
     public async Task<int> Cast(
-        string id,
+        string? id,
         string? goal = null,
         string? name = null,
         CancellationToken cancellationToken = default)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         if (string.IsNullOrWhiteSpace(goal))
         {
@@ -541,15 +572,11 @@ public sealed class ApprenticeCommands(ArcanumApiClient apiClient, IThemePalette
     /// Stream live Apprentice events (GET /api/apprentices/{id}/chronicle, SSE).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    public async Task<int> Chronicle(string id, CancellationToken cancellationToken)
+    public async Task<int> Chronicle(string? id, CancellationToken cancellationToken)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid apprenticeId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 

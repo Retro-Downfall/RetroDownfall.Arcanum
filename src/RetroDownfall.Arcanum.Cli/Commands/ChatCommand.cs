@@ -36,7 +36,8 @@ public sealed class ChatCommand(
     IGrimoireCliInitialization grimoireBootstrapper,
     IServiceScopeFactory scopeFactory,
     ICliEnvironment cliEnvironment,
-    IArcanumServeLauncher serveLauncher)
+    IArcanumServeLauncher serveLauncher,
+    ICliResourceCatalog? resourceCatalog = null)
 {
 
     private long MaxAttachFileSizeBytes =>
@@ -142,17 +143,48 @@ public sealed class ChatCommand(
 
         if (!string.IsNullOrWhiteSpace(campaign))
         {
-
-            if (!Guid.TryParse(campaign, out Guid parsedCampaignId))
+            if (Guid.TryParse(campaign, out Guid parsedCampaignId))
+            {
+                campaignId = parsedCampaignId;
+            }
+            else if (resourceCatalog is not null)
+            {
+                ResourceSelectionResult<CampaignDto> selected = await resourceCatalog
+                    .SelectCampaignAsync(campaign, cancellationToken)
+                    .ConfigureAwait(false);
+                if (selected.Status != ResourceSelectionStatus.Selected)
+                {
+                    if (selected.Status == ResourceSelectionStatus.Error)
+                    {
+                        AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selected.Error!)));
+                    }
+                    return selected.Status == ResourceSelectionStatus.Cancelled ? 0 : 1;
+                }
+                campaignId = selected.Value!.Id;
+            }
+            else
             {
                 AnsiConsole.MarkupLine(
                     themePalette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape("--campaign must be a valid GUID.")));
-
                 return 1;
             }
 
-            campaignId = parsedCampaignId;
+        }
 
+        if (!string.IsNullOrWhiteSpace(model) && resourceCatalog is not null)
+        {
+            ResourceSelectionResult<ModelInfoDto> selected = await resourceCatalog
+                .SelectModelAsync(model, cancellationToken)
+                .ConfigureAwait(false);
+            if (selected.Status != ResourceSelectionStatus.Selected)
+            {
+                if (selected.Status == ResourceSelectionStatus.Error)
+                {
+                    AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selected.Error!)));
+                }
+                return selected.Status == ResourceSelectionStatus.Cancelled ? 0 : 1;
+            }
+            model = selected.Value!.Model;
         }
 
         IAnsiConsole stderrConsole = AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) });

@@ -19,11 +19,15 @@ internal static partial class CliCommandTree
         spell.Add(list);
 
         Command get = new("get", "Show spell detail.");
-        Argument<string> getName = new("name");
+        Argument<string?> getName = new("name")
+        {
+            Arity = ArgumentArity.ZeroOrOne,
+            Description = "Optional exact spell name or unique name prefix; omit for an interactive picker.",
+        };
         Option<string?> getWorkspace = new("--workspace");
         get.Add(getName); get.Add(getWorkspace);
         get.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(getName)!, pr.GetValue(getWorkspace), ct).ConfigureAwait(false));
+            await handler.Get(pr.GetValue(getName), pr.GetValue(getWorkspace), ct).ConfigureAwait(false));
         spell.Add(get);
 
         Command create = new("create", "Create a spell.");
@@ -230,10 +234,14 @@ internal static partial class CliCommandTree
         campaign.Add(list);
 
         Command get = new("get", "Show campaign detail.");
-        Argument<string> getId = new("id");
+        Argument<string?> getId = new("id")
+        {
+            Arity = ArgumentArity.ZeroOrOne,
+            Description = "Optional campaign GUID, exact name, or unique name prefix; omit for an interactive picker.",
+        };
         get.Add(getId);
         get.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(getId)!, ct).ConfigureAwait(false));
+            await handler.Get(pr.GetValue(getId), ct).ConfigureAwait(false));
         campaign.Add(get);
 
         Command create = new("create", "Register a new campaign.");
@@ -252,45 +260,45 @@ internal static partial class CliCommandTree
         campaign.Add(create);
 
         Command update = new("update", "Update a campaign.");
-        Argument<string> updateId = new("id");
+        Argument<string?> updateId = OptionalResourceArgument("id", "campaign GUID or name");
         Option<string?> updateName = new("--name");
         update.Add(updateId); update.Add(updateName);
         update.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Update(pr.GetValue(updateId)!, pr.GetValue(updateName), ct).ConfigureAwait(false));
+            await handler.Update(pr.GetValue(updateId), pr.GetValue(updateName), ct).ConfigureAwait(false));
         campaign.Add(update);
 
         Command delete = new("delete", "Remove a campaign.");
-        Argument<string> deleteId = new("id");
+        Argument<string?> deleteId = OptionalResourceArgument("id", "campaign GUID or name");
         delete.Add(deleteId);
         delete.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Delete(pr.GetValue(deleteId)!, ct).ConfigureAwait(false));
+            await handler.Delete(pr.GetValue(deleteId), ct).ConfigureAwait(false));
         campaign.Add(delete);
 
         Command export = new("export", "Export a campaign's spells and prompts as JSON.");
-        Argument<string> exportId = new("id");
+        Argument<string?> exportId = OptionalResourceArgument("id", "campaign GUID or name");
         Option<string?> exportOutput = new("--output");
         export.Add(exportId); export.Add(exportOutput);
         export.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Export(pr.GetValue(exportId)!, pr.GetValue(exportOutput), ct).ConfigureAwait(false));
+            await handler.Export(pr.GetValue(exportId), pr.GetValue(exportOutput), ct).ConfigureAwait(false));
         campaign.Add(export);
 
         Command import = new("import", "Import spells and prompts into a campaign.");
-        Argument<string> importId = new("id");
+        Argument<string?> importId = OptionalResourceArgument("id", "campaign GUID or name");
         Option<string?> importFile = new("--file");
         import.Add(importId); import.Add(importFile);
         import.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Import(pr.GetValue(importId)!, pr.GetValue(importFile), ct).ConfigureAwait(false));
+            await handler.Import(pr.GetValue(importId), pr.GetValue(importFile), ct).ConfigureAwait(false));
         campaign.Add(import);
 
         Command spells = new("spells", "List spells scoped to a campaign, shadowing built-ins.");
-        Argument<string> spellsId = new("id");
+        Argument<string?> spellsId = OptionalResourceArgument("id", "campaign GUID or name");
         Option<string?> spellsQuery = new("--query", "-q");
         Option<string?> spellsTag = new("--tag");
         Option<string?> spellsTool = new("--tool");
         spells.Add(spellsId); spells.Add(spellsQuery); spells.Add(spellsTag); spells.Add(spellsTool);
         spells.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Spells(
-                pr.GetValue(spellsId)!,
+                pr.GetValue(spellsId),
                 pr.GetValue(spellsQuery),
                 pr.GetValue(spellsTag),
                 pr.GetValue(spellsTool),
@@ -298,16 +306,16 @@ internal static partial class CliCommandTree
         campaign.Add(spells);
 
         Command prompts = new("prompts", "List prompts scoped to a campaign.");
-        Argument<string> promptsId = new("id");
+        Argument<string?> promptsId = OptionalResourceArgument("id", "campaign GUID or name");
         Option<string?> promptsQuery = new("--query", "-q");
         Option<string?> promptsTag = new("--tag");
         prompts.Add(promptsId); prompts.Add(promptsQuery); prompts.Add(promptsTag);
         prompts.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Prompts(pr.GetValue(promptsId)!, pr.GetValue(promptsQuery), pr.GetValue(promptsTag), ct).ConfigureAwait(false));
+            await handler.Prompts(pr.GetValue(promptsId), pr.GetValue(promptsQuery), pr.GetValue(promptsTag), ct).ConfigureAwait(false));
         campaign.Add(prompts);
 
         Command sessions = new("sessions", "List sessions scoped to a campaign.");
-        Argument<string> sessionsId = new("id");
+        Argument<string?> sessionsId = OptionalResourceArgument("id", "campaign GUID or name");
         Option<string?> sessionsStatus = new("--status");
         Option<string?> sessionsSearch = new("--search");
         Option<int?> sessionsLimit = new("--limit");
@@ -316,7 +324,7 @@ internal static partial class CliCommandTree
         sessions.Add(sessionsLimit); sessions.Add(sessionsBeforeUpdatedAt);
         sessions.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Sessions(
-                pr.GetValue(sessionsId)!,
+                pr.GetValue(sessionsId),
                 pr.GetValue(sessionsStatus),
                 pr.GetValue(sessionsSearch),
                 pr.GetValue(sessionsLimit),
@@ -327,25 +335,25 @@ internal static partial class CliCommandTree
         Command codex = new("codex", "Manage the campaign's CODEX.md scratchpad.");
 
         Command codexGet = new("get", "Print CODEX.md.");
-        Argument<string> codexGetId = new("id");
+        Argument<string?> codexGetId = OptionalResourceArgument("id", "campaign GUID or name");
         codexGet.Add(codexGetId);
         codexGet.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await codexHandler.Get(pr.GetValue(codexGetId)!, ct).ConfigureAwait(false));
+            await codexHandler.Get(pr.GetValue(codexGetId), ct).ConfigureAwait(false));
         codex.Add(codexGet);
 
         Command codexPut = new("put", "Write CODEX.md from a file.");
-        Argument<string> codexPutId = new("id");
+        Argument<string?> codexPutId = OptionalResourceArgument("id", "campaign GUID or name");
         Option<string?> codexPutFile = new("--file");
         codexPut.Add(codexPutId); codexPut.Add(codexPutFile);
         codexPut.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await codexHandler.Put(pr.GetValue(codexPutId)!, pr.GetValue(codexPutFile), ct).ConfigureAwait(false));
+            await codexHandler.Put(pr.GetValue(codexPutId), pr.GetValue(codexPutFile), ct).ConfigureAwait(false));
         codex.Add(codexPut);
 
         Command codexDelete = new("delete", "Delete CODEX.md.");
-        Argument<string> codexDeleteId = new("id");
+        Argument<string?> codexDeleteId = OptionalResourceArgument("id", "campaign GUID or name");
         codexDelete.Add(codexDeleteId);
         codexDelete.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await codexHandler.Delete(pr.GetValue(codexDeleteId)!, ct).ConfigureAwait(false));
+            await codexHandler.Delete(pr.GetValue(codexDeleteId), ct).ConfigureAwait(false));
         codex.Add(codexDelete);
 
         campaign.Add(codex);
@@ -356,7 +364,25 @@ internal static partial class CliCommandTree
     private static Command BuildSession(IServiceProvider sp)
     {
         SessionCommands handler = sp.GetRequiredService<SessionCommands>();
-        Command session = new("session", "Session semantic search (requires arcanum serve).");
+        Command session = new("session", "Session discovery and semantic search (requires arcanum serve).");
+
+        Command list = new("list", "List recent sessions.");
+        Option<int?> listLimit = new("--limit") { Description = "Maximum sessions per page." };
+        list.Add(listLimit);
+        list.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.List(pr.GetValue(listLimit), ct).ConfigureAwait(false));
+        session.Add(list);
+
+        Command get = new("get", "Show a session.");
+        Argument<string?> getIdentifier = new("session")
+        {
+            Arity = ArgumentArity.ZeroOrOne,
+            Description = "Optional session GUID, exact title, or unique title prefix; omit for an interactive picker.",
+        };
+        get.Add(getIdentifier);
+        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Get(pr.GetValue(getIdentifier), ct).ConfigureAwait(false));
+        session.Add(get);
 
         Command divine = new("divine", "Semantic search over Grimoire entries.");
         Argument<string> divineQuery = new("query");

@@ -11,7 +11,10 @@ namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
 /// <summary>
 /// The Forge prompt utilities (requires arcanum serve).
 /// </summary>
-public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class PromptCommands(
+    ArcanumApiClient apiClient,
+    IThemePalette themePalette,
+    ICliResourceCatalog? resourceCatalog = null)
 {
 
     /// <summary>
@@ -92,14 +95,31 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// Show prompt detail (GET /api/prompts/{id}).
     /// </summary>
     /// <param name="id">Prompt GUID.</param>
-    public async Task<int> Get(string id, CancellationToken cancellationToken)
+    public async Task<int> Get(string? id, CancellationToken cancellationToken)
     {
-
-        if (!CliArgReader.TryParseGuid(id, out Guid promptId))
+        Guid promptId;
+        if (!CliArgReader.TryParseGuid(id, out promptId))
         {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+            if (resourceCatalog is null)
+            {
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+                return 1;
+            }
 
-            return 1;
+            ResourceSelectionResult<PromptSummaryDto> selection = await resourceCatalog
+                .SelectPromptAsync(id, cancellationToken)
+                .ConfigureAwait(false);
+            if (selection.Status == ResourceSelectionStatus.Cancelled)
+            {
+                return 0;
+            }
+            if (selection.Status == ResourceSelectionStatus.Error)
+            {
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+                return 1;
+            }
+
+            promptId = selection.Value!.Id;
         }
 
         Result<PromptDetailDto> result = await apiClient.GetPromptAsync(promptId, cancellationToken).ConfigureAwait(false);
@@ -321,18 +341,14 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// <param name="template">Prompt template: inline text, or @filename to read from a file.</param>
     /// <param name="tag">Tag; pass multiple times for several tags.</param>
     public async Task<int> Update(
-        string id,
+        string? id,
         string? template = null,
         string[]? tag = null,
         CancellationToken cancellationToken = default)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid promptId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         string? resolvedTemplate = null;
 
@@ -384,15 +400,11 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// Delete a prompt (DELETE /api/prompts/{id}).
     /// </summary>
     /// <param name="id">Prompt GUID.</param>
-    public async Task<int> Delete(string id, CancellationToken cancellationToken)
+    public async Task<int> Delete(string? id, CancellationToken cancellationToken)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid promptId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         Result result = await apiClient.DeletePromptAsync(promptId, cancellationToken).ConfigureAwait(false);
 
@@ -414,15 +426,11 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// </summary>
     /// <param name="id">Prompt GUID.</param>
     /// <param name="param">Template parameter as key=value; pass multiple times for several parameters.</param>
-    public async Task<int> Render(string id, string[]? param = null, CancellationToken cancellationToken = default)
+    public async Task<int> Render(string? id, string[]? param = null, CancellationToken cancellationToken = default)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid promptId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         if (!CliArgReader.TryParseKeyValuePairs(param, out Dictionary<string, string> parameters, out string? paramError))
         {
@@ -452,15 +460,11 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// Assemble the system prompt without LLM cost (POST /api/prompts/{id}/test).
     /// </summary>
     /// <param name="id">Prompt GUID.</param>
-    public async Task<int> Test(string id, CancellationToken cancellationToken)
+    public async Task<int> Test(string? id, CancellationToken cancellationToken)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid promptId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         TestPromptRequest request = new(
             WorkingDirectory: Environment.CurrentDirectory,
@@ -492,19 +496,15 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// <param name="param">Template parameter as key=value; pass multiple times for several parameters.</param>
     /// <param name="sessionId">--sessionId, Session GUID to bind context from.</param>
     public async Task<int> Execute(
-        string id,
+        string? id,
         string? input = null,
         string[]? param = null,
         string? sessionId = null,
         CancellationToken cancellationToken = default)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid promptId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         if (string.IsNullOrEmpty(input))
         {
@@ -571,19 +571,15 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// <param name="newVersion">New prompt version label.</param>
     /// <param name="campaign">Campaign GUID to associate the clone with.</param>
     public async Task<int> Clone(
-        string id,
+        string? id,
         string? newName = null,
         string? newVersion = null,
         string? campaign = null,
         CancellationToken cancellationToken = default)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid promptId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         if (string.IsNullOrWhiteSpace(newName) || string.IsNullOrWhiteSpace(newVersion))
         {
@@ -672,15 +668,11 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// </summary>
     /// <param name="id">Prompt GUID.</param>
     /// <param name="output">Write exported JSON to this file instead of stdout.</param>
-    public async Task<int> Export(string id, string? output = null, CancellationToken cancellationToken = default)
+    public async Task<int> Export(string? id, string? output = null, CancellationToken cancellationToken = default)
     {
 
-        if (!CliArgReader.TryParseGuid(id, out Guid promptId))
-        {
-            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
-
-            return 1;
-        }
+        (bool resolved, bool cancelled, Guid promptId) = await ResolvePromptIdAsync(id, cancellationToken).ConfigureAwait(false);
+        if (!resolved) return cancelled ? 0 : 1;
 
         Result<PromptExportDto> result = await apiClient.ExportPromptAsync(promptId, cancellationToken).ConfigureAwait(false);
 
@@ -716,6 +708,37 @@ public sealed class PromptCommands(ArcanumApiClient apiClient, IThemePalette the
     /// </summary>
     /// <param name="file">Path to a prompt export JSON file.</param>
     /// <param name="campaignId">--campaignId, Campaign GUID to associate the import with.</param>
+    private async Task<(bool Resolved, bool Cancelled, Guid Id)> ResolvePromptIdAsync(
+        string? identifier,
+        CancellationToken cancellationToken)
+    {
+        if (CliArgReader.TryParseGuid(identifier, out Guid id))
+        {
+            return (true, false, id);
+        }
+
+        if (resourceCatalog is null)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+            return (false, false, default);
+        }
+
+        ResourceSelectionResult<PromptSummaryDto> selection = await resourceCatalog
+            .SelectPromptAsync(identifier, cancellationToken)
+            .ConfigureAwait(false);
+        if (selection.Status == ResourceSelectionStatus.Cancelled)
+        {
+            return (false, true, default);
+        }
+        if (selection.Status == ResourceSelectionStatus.Error)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+            return (false, false, default);
+        }
+
+        return (true, false, selection.Value!.Id);
+    }
+
     public async Task<int> Import(string? file = null, string? campaignId = null, CancellationToken cancellationToken = default)
     {
 

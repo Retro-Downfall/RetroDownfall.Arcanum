@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using Spectre.Console;
 
@@ -22,7 +23,8 @@ public sealed class AskCommand(
     IServiceScopeFactory scopeFactory,
     ICliEnvironment cliEnvironment,
     IOptions<ArcanumSettings> arcanumSettings,
-    IArcanumServeLauncher serveLauncher)
+    IArcanumServeLauncher serveLauncher,
+    ICliResourceCatalog? resourceCatalog = null)
 {
 
     /// <summary>
@@ -145,17 +147,48 @@ public sealed class AskCommand(
 
         if (!string.IsNullOrWhiteSpace(campaign))
         {
-
-            if (!Guid.TryParse(campaign, out Guid parsedCampaignId))
+            if (Guid.TryParse(campaign, out Guid parsedCampaignId))
+            {
+                campaignId = parsedCampaignId;
+            }
+            else if (resourceCatalog is not null)
+            {
+                ResourceSelectionResult<CampaignDto> selected = await resourceCatalog
+                    .SelectCampaignAsync(campaign, cancellationToken)
+                    .ConfigureAwait(false);
+                if (selected.Status != ResourceSelectionStatus.Selected)
+                {
+                    if (selected.Status == ResourceSelectionStatus.Error)
+                    {
+                        AnsiConsole.MarkupLine(palette.ErrorMarkup(Markup.Escape(selected.Error!)));
+                    }
+                    return selected.Status == ResourceSelectionStatus.Cancelled ? 0 : 1;
+                }
+                campaignId = selected.Value!.Id;
+            }
+            else
             {
                 AnsiConsole.MarkupLine(
                     palette.ErrorLabelMarkup(Markup.Escape("Error:"), Markup.Escape("--campaign must be a valid GUID.")));
-
                 return 1;
             }
 
-            campaignId = parsedCampaignId;
+        }
 
+        if (!string.IsNullOrWhiteSpace(model) && resourceCatalog is not null)
+        {
+            ResourceSelectionResult<ModelInfoDto> selected = await resourceCatalog
+                .SelectModelAsync(model, cancellationToken)
+                .ConfigureAwait(false);
+            if (selected.Status != ResourceSelectionStatus.Selected)
+            {
+                if (selected.Status == ResourceSelectionStatus.Error)
+                {
+                    AnsiConsole.MarkupLine(palette.ErrorMarkup(Markup.Escape(selected.Error!)));
+                }
+                return selected.Status == ResourceSelectionStatus.Cancelled ? 0 : 1;
+            }
+            model = selected.Value!.Model;
         }
 
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

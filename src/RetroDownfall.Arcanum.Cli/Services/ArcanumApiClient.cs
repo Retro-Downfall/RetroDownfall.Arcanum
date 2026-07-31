@@ -545,6 +545,18 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         return Result<IReadOnlyList<McpServerInfo>>.Success(result.Value!);
     }
 
+    public async Task<Result<WorkspaceInfo[]>> GetWorkspacesAsync(CancellationToken cancellationToken = default)
+    {
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            "api/workspaces",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray,
+            static envelope => Result<WorkspaceInfo[]>.Success(envelope.Data ?? []),
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<Result<string>> ReloadMcpAsync(OptionalWorkspaceRequest request, CancellationToken cancellationToken)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, ArcanumJsonContext.Default.OptionalWorkspaceRequest);
@@ -1605,7 +1617,20 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         WorkspaceType? type = null,
         CancellationToken cancellationToken = default)
     {
-        string path = BuildQueryString("api/campaigns", ("type", type?.ToString()));
+        return await GetCampaignsPageAsync(type, null, null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<ListPageResult<CampaignDto>>> GetCampaignsPageAsync(
+        WorkspaceType? type = null,
+        int? limit = null,
+        int? offset = null,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            "api/campaigns",
+            ("type", type?.ToString()),
+            ("limit", limit?.ToString(CultureInfo.InvariantCulture)),
+            ("offset", offset?.ToString(CultureInfo.InvariantCulture)));
 
         return await SendRequestAsync(
             HttpMethod.Get,

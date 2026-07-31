@@ -135,6 +135,28 @@ public sealed class CliApplicationFactoryTests
         Assert.Contains("lore", result.Output, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("campaign", result.Output, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("operation", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("workspace", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("mcp", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("campaign", "get")]
+    [InlineData("prompt", "get")]
+    [InlineData("spell", "get")]
+    [InlineData("apprentice", "get")]
+    public void Resource_get_help_marks_identifier_as_optional_for_interactive_selection(
+        string family,
+        string command)
+    {
+        ServiceCollection services = new();
+        ConfigurationManager configuration = new();
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult result = CliTestHarness.Run(services, family, command, "--help");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("optional", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("name", result.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

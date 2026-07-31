@@ -79,6 +79,10 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<IConfirmationPrompt, ConfirmationPrompt>();
 
+        services.AddSingleton<IResourcePicker, SpectreResourcePicker>();
+
+        services.AddSingleton<IRecentResourceStore, RecentResourceStore>();
+
         services.AddSingleton<TelemetryService>();
 
         services.AddSingleton<MarkdigSpectreRenderer>();
@@ -113,6 +117,8 @@ internal static class CliApplicationFactory
             });
 
         services.AddSingleton<ArcanumApiClient>();
+
+        services.AddSingleton<ICliResourceCatalog, CliResourceCatalog>();
 
         services.AddSingleton<IServeProcessLauncher, ServeProcessLauncher>();
 
@@ -181,6 +187,10 @@ internal static class CliApplicationFactory
         services.AddTransient<ModelCommands>();
 
         services.AddTransient<ProviderCommands>();
+
+        services.AddTransient<WorkspaceCommands>();
+
+        services.AddTransient<McpCommands>();
 
         services.AddTransient<OperationCommands>();
         services.AddTransient<DataEncryptionCommands>();

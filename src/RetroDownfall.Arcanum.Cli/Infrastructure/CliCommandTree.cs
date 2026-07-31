@@ -48,6 +48,8 @@ internal static partial class CliCommandTree
         Command apprentice = BuildApprentice(serviceProvider);
         Command modelCmd = BuildModel(serviceProvider);
         Command provider = BuildProvider(serviceProvider);
+        Command workspace = BuildWorkspace(serviceProvider);
+        Command mcp = BuildMcp(serviceProvider);
         Command operation = BuildOperation(serviceProvider);
         Command data = BuildData(serviceProvider);
 
@@ -69,6 +71,8 @@ internal static partial class CliCommandTree
         root.Add(apprentice);
         root.Add(modelCmd);
         root.Add(provider);
+        root.Add(workspace);
+        root.Add(mcp);
         root.Add(operation);
         root.Add(data);
 

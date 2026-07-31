@@ -51,7 +51,10 @@ internal static class SpellCommandSupport
 /// <summary>
 /// The Forge spell utilities (requires arcanum serve).
 /// </summary>
-public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class SpellCommands(
+    ArcanumApiClient apiClient,
+    IThemePalette themePalette,
+    ICliResourceCatalog? resourceCatalog = null)
 {
 
     /// <summary>
@@ -81,10 +84,32 @@ public sealed class SpellCommands(ArcanumApiClient apiClient, IThemePalette them
     /// </summary>
     /// <param name="name">Spell name.</param>
     /// <param name="workspace">Workspace root to scope the lookup.</param>
-    public async Task<int> Get(string name, string? workspace = null, CancellationToken cancellationToken = default)
+    public async Task<int> Get(string? name, string? workspace = null, CancellationToken cancellationToken = default)
     {
+        if (resourceCatalog is not null)
+        {
+            ResourceSelectionResult<SpellSummary> selection = await resourceCatalog
+                .SelectSpellAsync(name, workspace, cancellationToken)
+                .ConfigureAwait(false);
+            if (selection.Status == ResourceSelectionStatus.Cancelled)
+            {
+                return 0;
+            }
+            if (selection.Status == ResourceSelectionStatus.Error)
+            {
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+                return 1;
+            }
 
-        Result<SpellDetail> result = await apiClient.GetSpellAsync(name, workspace, cancellationToken).ConfigureAwait(false);
+            name = selection.Value!.Name;
+        }
+        else if (string.IsNullOrWhiteSpace(name))
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<NAME> is required.")));
+            return 1;
+        }
+
+        Result<SpellDetail> result = await apiClient.GetSpellAsync(name!, workspace, cancellationToken).ConfigureAwait(false);
 
         if (result.IsFailure)
         {

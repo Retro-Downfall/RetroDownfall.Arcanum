@@ -65,16 +65,22 @@ public sealed class CampaignCommandTests
     }
 
     [Fact]
-    public void Campaign_get_rejects_invalid_guid_without_calling_api()
+    public void Campaign_get_reports_missing_name_candidate_after_list_lookup()
     {
 
-        RecordingHandler handler = new();
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<ListPageResult<CampaignDto>>(
+                new ListPageResult<CampaignDto>([], false),
+                true,
+                null),
+            ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto));
 
         CliTestResult result = RunCommand(handler, ["campaign", "get", "not-a-guid"]);
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.Empty(handler.Requests);
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+        Assert.Equal("/api/campaigns", request.RequestUri!.AbsolutePath);
 
     }
 

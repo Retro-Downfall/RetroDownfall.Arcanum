@@ -60,15 +60,22 @@ public sealed class SpellCommandTests
             "/tmp/ws",
             "/tmp/ws/spells/greet/SPELL.md");
 
-        RecordingHandler handler = new(_ => CreateResponse(
-            new ApiResponse<SpellDetail>(detail, true, null),
-            ArcanumJsonContext.Default.ApiResponseSpellDetail));
+        SpellSummary summary = new("greet", "Say hello", SpellSource.Workspace, []);
+        RecordingHandler handler = new(request =>
+            request.RequestUri!.AbsolutePath == "/api/spells"
+                ? CreateResponse(
+                    new ApiResponse<SpellSummary[]>([summary], true, null),
+                    ArcanumJsonContext.Default.ApiResponseSpellSummaryArray)
+                : CreateResponse(
+                    new ApiResponse<SpellDetail>(detail, true, null),
+                    ArcanumJsonContext.Default.ApiResponseSpellDetail));
 
         CliTestResult result = RunCommand(handler, ["spell", "get", "greet"]);
 
         Assert.Equal(0, result.ExitCode);
 
-        HttpRequestMessage request = Assert.Single(handler.Requests);
+        Assert.Equal(2, handler.Requests.Count);
+        HttpRequestMessage request = handler.Requests[1];
 
         Assert.Equal("/api/spells/greet", request.RequestUri!.AbsolutePath);
 

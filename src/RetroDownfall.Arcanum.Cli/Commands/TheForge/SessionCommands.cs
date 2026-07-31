@@ -10,8 +10,83 @@ namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
 /// <summary>
 /// Session semantic search (requires arcanum serve).
 /// </summary>
-public sealed class SessionCommands(ArcanumApiClient apiClient, IThemePalette themePalette)
+public sealed class SessionCommands(
+    ArcanumApiClient apiClient,
+    IThemePalette themePalette,
+    ICliResourceCatalog? resourceCatalog = null)
 {
+    public async Task<int> List(int? limit = null, CancellationToken cancellationToken = default)
+    {
+        Result<SessionQueryResult> result = await apiClient.QuerySessionsAsync(limit, cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            return 1;
+        }
+
+        Table table = new();
+        table.AddColumn(themePalette.HeadingTableColumn("Title"));
+        table.AddColumn(themePalette.HeadingTableColumn("Campaign"));
+        table.AddColumn(themePalette.HeadingTableColumn("Status"));
+        table.AddColumn(themePalette.HeadingTableColumn("Updated"));
+        foreach (SessionSummaryDto session in result.Value.Summaries)
+        {
+            table.AddRow(
+                new Markup(themePalette.TextMarkup(Markup.Escape(session.Title ?? "(untitled)"))),
+                new Markup(themePalette.MutedMarkup(Markup.Escape(session.CampaignId?.ToString("D") ?? "-"))),
+                new Markup(themePalette.TextMarkup(Markup.Escape(session.Status))),
+                new Markup(themePalette.MutedMarkup(Markup.Escape(session.UpdatedAt.ToString("u", CultureInfo.InvariantCulture)))));
+        }
+        AnsiConsole.Write(table);
+        return 0;
+    }
+
+    public async Task<int> Get(string? identifier, CancellationToken cancellationToken = default)
+    {
+        Guid id;
+        if (!Guid.TryParse(identifier, out id))
+        {
+            if (resourceCatalog is null)
+            {
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape("<ID> must be a valid GUID.")));
+                return 1;
+            }
+
+            ResourceSelectionResult<SessionSummaryDto> selection = await resourceCatalog
+                .SelectSessionAsync(identifier, cancellationToken)
+                .ConfigureAwait(false);
+            if (selection.Status == ResourceSelectionStatus.Cancelled)
+            {
+                return 0;
+            }
+            if (selection.Status == ResourceSelectionStatus.Error)
+            {
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
+                return 1;
+            }
+            id = selection.Value!.Id;
+        }
+
+        Result<SessionDetailDto> result = await apiClient.GetSessionAsync(id, cancellationToken).ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(result.Error));
+            return 1;
+        }
+
+        SessionDetailDto session = result.Value;
+        Table table = new Table().Border(TableBorder.None).HideHeaders();
+        table.AddColumn(string.Empty);
+        table.AddColumn(string.Empty);
+        table.AddRow("Id:", Markup.Escape(session.Id.ToString("D")));
+        table.AddRow("Title:", Markup.Escape(session.Title ?? "(untitled)"));
+        table.AddRow("Campaign:", Markup.Escape(session.CampaignId?.ToString("D") ?? "-"));
+        table.AddRow("Status:", Markup.Escape(session.Status));
+        table.AddRow("Updated:", Markup.Escape(session.UpdatedAt.ToString("u", CultureInfo.InvariantCulture)));
+        AnsiConsole.Write(table);
+        return 0;
+    }
+
 
     /// <summary>
     /// Semantic search over Grimoire entries (POST /api/sessions/divine; requires
