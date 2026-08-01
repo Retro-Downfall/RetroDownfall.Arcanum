@@ -545,6 +545,73 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
         return Result<IReadOnlyList<McpServerInfo>>.Success(result.Value!);
     }
 
+    public async Task<Result<McpServerInfo>> GetMcpServerAsync(
+        string serverName,
+        string? workingDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        string path = BuildQueryString(
+            $"api/mcp/{Uri.EscapeDataString(serverName)}",
+            ("workingDirectory", workingDirectory));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseMcpServerInfo,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<Result<bool>> StartMcpServerAsync(
+        string serverName,
+        string? workingDirectory,
+        CancellationToken cancellationToken = default) =>
+        ChangeMcpServerStateAsync(
+            serverName,
+            "start",
+            workingDirectory,
+            cancellationToken);
+
+    public Task<Result<bool>> StopMcpServerAsync(
+        string serverName,
+        string? workingDirectory,
+        CancellationToken cancellationToken = default) =>
+        ChangeMcpServerStateAsync(
+            serverName,
+            "stop",
+            workingDirectory,
+            cancellationToken);
+
+    public Task<Result<bool>> RestartMcpServerAsync(
+        string serverName,
+        string? workingDirectory,
+        CancellationToken cancellationToken = default) =>
+        ChangeMcpServerStateAsync(
+            serverName,
+            "restart",
+            workingDirectory,
+            cancellationToken);
+
+    private async Task<Result<bool>> ChangeMcpServerStateAsync(
+        string serverName,
+        string action,
+        string? workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        string path = BuildQueryString(
+            $"api/mcp/{Uri.EscapeDataString(serverName)}/{action}",
+            ("workingDirectory", workingDirectory));
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<Result<WorkspaceInfo[]>> GetWorkspacesAsync(CancellationToken cancellationToken = default)
     {
         return await SendRequestAsync(
@@ -747,6 +814,40 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseString,
             static envelope => Result<string>.Success(envelope.Data ?? string.Empty),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<bool>> TrustMcpWorkspaceAsync(
+        OptionalWorkspaceRequest request,
+        CancellationToken cancellationToken)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.OptionalWorkspaceRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/mcp/trust-workspace",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<McpToolInvokeResponse>> InvokeDiagnosticMcpToolAsync(
+        McpToolInvokeRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.McpToolInvokeRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            "api/mcp/tools/invoke",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseMcpToolInvokeResponse,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -1189,6 +1290,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
                 {
                     return Result<bool>.Success(true);
                 }
+
                 return Result<bool>.Failure(envelope?.Error
                     ?? new Error("ContextPin.NotFound", "Context pin was not found."));
             },
@@ -1765,6 +1867,7 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
             offset = page.NextOffset ?? offset + page.Items.Length;
         }
+
         while (hasMore);
 
         return Result<List<LoreDto>>.Success(all);

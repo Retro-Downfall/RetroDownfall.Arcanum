@@ -15,7 +15,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 ## Running Arcanum under a debugger
 
 - **Host (`arcanum serve`)**: `ServeCommand.Run()` (`Program.cs`) → `WebApplication.CreateSlimBuilder()` (`ServeCommand`) → `AddArcanumApiServices()` (`ApiBootstrapper`) → `MapArcanumEndpoints()` → `RunAsync()`.
-- **CLI verbs** (`ask`, `chat`, `session`, `workspace`, `look`, `lore`, `daemon`, `key`, `config`, `serve`): request/response cycles through `ArcanumApiClient.SendRequestAsync()`; session SSE uses `WatchSessionAsync()`. Inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `session` lifecycle commands must remain HTTP-only; debug selection in `CliResourceCatalog`, command routing in `SessionCommands`, and feature-gate failures at `SessionEndpoints`. Workspace `tree`/`info`/`read`/`search`/index inspection must also remain HTTP-only; start in `WorkspaceCommands`, then its typed `ArcanumApiClient` method, and finally the `/api/workspaces` endpoint. `config` prefers `/api/config` but deliberately enters labelled local bootstrap through `ConfigurationCommandService` on unavailability. `data encryption ...` is intentionally local: `DataEncryptionCommands` initializes the Grimoire and calls `BlobEncryptionLifecycleService`.
+- **CLI verbs** (`ask`, `chat`, `session`, `workspace`, `mcp`, `tool`, `look`, `lore`, `daemon`, `key`, `config`, `serve`): request/response cycles through `ArcanumApiClient.SendRequestAsync()`; session SSE uses `WatchSessionAsync()`. Inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `session` lifecycle commands must remain HTTP-only; debug selection in `CliResourceCatalog`, command routing in `SessionCommands`, and feature-gate failures at `SessionEndpoints`. Workspace `tree`/`info`/`read`/`search`/index inspection must also remain HTTP-only; start in `WorkspaceCommands`, then its typed `ArcanumApiClient` method, and finally the `/api/workspaces` endpoint. MCP lifecycle/diagnostic commands are likewise HTTP-only: start in `McpCommands` or `ToolCommands`, inspect `ToolArgumentReader` and `ResourceSelector<T>`, then continue into `McpEndpoints`, `DiagnosticMcpInvocationEndpoints`, or `ToolInvokeEndpoints`. `config` prefers `/api/config` but deliberately enters labelled local bootstrap through `ConfigurationCommandService` on unavailability. `data encryption ...` is intentionally local: `DataEncryptionCommands` initializes the Grimoire and calls `BlobEncryptionLifecycleService`.
 - **CLI process contract**: start at `CliApplicationFactory.RunAsync()` → `CliCommandTree.Build()` →
   `CliInvocationContext.Push()`. Payload/diagnostic routing is `ConsoleDispatcher`; destructive
   approval is `ConfirmationPrompt`; final failure categorization is `CliFailureMapper`.
@@ -100,6 +100,14 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     command and verify the final operation is an authenticated `ArcanumApiClient` request. For a
     remote-host thought experiment, use a path that is valid only on the server and confirm help and
     output call it a server path; never add `File.*` or `Directory.*` content access to the CLI.
+14. **Trace MCP/tool CLI administration:** run `arcanum mcp show` or `arcanum tool list`, break in
+    `McpCommands` / `ToolCommands`, and confirm every operation reaches a typed `ArcanumApiClient`
+    request. For invocation, test inline JSON, `@file`, and redirected stdin at
+    `ToolArgumentReader.TryRead()`; oversized/non-object input must fail before the API call. Follow
+    external invocation through `DiagnosticMcpInvocationService` and confirm
+    `arcanum-internal`, blocked names, untrusted workspaces, server ambiguity, timeout, and output
+    truncation remain server-enforced. Safe CLI output must omit command, URL, arguments,
+    environment, and secret values.
 
 ## Related documents
 

@@ -293,7 +293,7 @@ internal static class IntelligenceEndpoints
         .WithLargeRequestBody()
         .AddEndpointFilter(IdempotencyEndpointFilters.ForRawBody);
 
-        apiGroup.MapPost("/intelligence/arsenal", async (OptionalWorkspaceRequest? body, IMcpConnectionManager mcp, IOptionsSnapshot<ArcanumSettings> settings, IWorkspaceCheckCapabilityReporter workspaceCheckCapability, HttpContext httpContext, CancellationToken ct) =>
+        apiGroup.MapPost("/intelligence/arsenal", async (OptionalWorkspaceRequest? body, IMcpConnectionManager mcp, IBuiltInToolRegistry builtInTools, IOptionsSnapshot<ArcanumSettings> settings, IWorkspaceCheckCapabilityReporter workspaceCheckCapability, HttpContext httpContext, CancellationToken ct) =>
         {
             string workingDirectory = body?.WorkingDirectory ?? string.Empty;
 
@@ -312,7 +312,7 @@ internal static class IntelligenceEndpoints
 
             List<string> spellNames = spellSummaries.Select(static s => s.Name).ToList();
 
-            List<string> nativeTools = [ArcanumLocalTimeTool.ToolName, ArcanumSystemInfoTool.ToolName];
+            List<string> nativeTools = builtInTools.GetToolNames().ToList();
 
             List<McpServerStatusDto> servers = await mcp.GetServerStatusesAsync(workingDirectory, ct).ConfigureAwait(false);
 

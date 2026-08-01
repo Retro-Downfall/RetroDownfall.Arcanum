@@ -62,6 +62,25 @@ public sealed class ResourceSelectorTests
     }
 
     [Fact]
+    public async Task Ambiguous_name_can_opt_into_interactive_selection_for_operational_resources()
+    {
+        SelectionFixture fixture = new(
+            new Candidate("one", "Mordain", "global"),
+            new Candidate("two", "Morrigan", "workspace"));
+
+        fixture.Picker.SelectedId = "two";
+
+        ResourceSelectionResult<Candidate> result = await fixture.SelectAsync(
+            "mor",
+            interactive: true,
+            pickAmbiguousIdentifiers: true);
+
+        Assert.Equal(ResourceSelectionStatus.Selected, result.Status);
+        Assert.Equal("two", result.Value!.Id);
+        Assert.Equal(["one", "two"], fixture.Picker.LastChoiceIds);
+    }
+
+    [Fact]
     public async Task Omitted_identifier_in_non_interactive_mode_is_actionable_without_prompting()
     {
         SelectionFixture fixture = new(
@@ -160,7 +179,10 @@ public sealed class ResourceSelectorTests
 
         public FakeRecentResourceStore Recent { get; }
 
-        public Task<ResourceSelectionResult<Candidate>> SelectAsync(string? identifier, bool interactive)
+        public Task<ResourceSelectionResult<Candidate>> SelectAsync(
+            string? identifier,
+            bool interactive,
+            bool pickAmbiguousIdentifiers = false)
         {
             ResourceSelector<Candidate> selector = new(Picker, Recent);
             ResourceSelectionRequest<Candidate> request = new(
@@ -175,7 +197,8 @@ public sealed class ResourceSelectorTests
                     static x => x.Summary,
                     static x => [x.Name, x.Summary]),
                 (_, _) => Task.FromResult(
-                    Result<ResourcePage<Candidate>>.Success(new ResourcePage<Candidate>(_candidates, null))));
+                    Result<ResourcePage<Candidate>>.Success(new ResourcePage<Candidate>(_candidates, null))),
+                PickAmbiguousIdentifiers: pickAmbiguousIdentifiers);
 
             return selector.SelectAsync(request);
         }

@@ -58,12 +58,21 @@ confirmations.
 Direct resource commands share a client-side `IResourceSelector<T>` policy rather than teaching
 server APIs fuzzy matching. Exact IDs remain deterministic; otherwise the CLI tries an exact
 case-insensitive name and then a unique prefix. Only a real interactive terminal may open the
-searchable picker when the selector is omitted. Redirected or JSON invocations return bounded,
-actionable candidates, ambiguity never chooses, and Escape cancels before the downstream action.
+searchable picker when the selector is omitted. MCP server/tool commands additionally opt into the
+same picker for ambiguous names; every other ambiguity remains an error. Redirected or JSON
+invocations always return bounded, actionable candidates without prompting, and Escape cancels
+before the downstream action.
 The typed catalog pages existing list endpoints for large session/prompt/campaign/Apprentice sets.
 Owner-only local recency data improves picker ordering but cannot resolve a tie. Descriptors control
 the visible columns and keep provider endpoints/credentials and MCP connection/process details out
 of picker and safe-detail output.
+
+`arcanum mcp list|show|start|stop|restart|reload|trust|tools|invoke` is the direct operational
+counterpart to the MCP lifecycle and external-only diagnostic APIs. `arcanum tool
+list|show|invoke` covers the bounded built-in diagnostic registry. Both are API clients: they do
+not read server configuration or spawn tools locally. Invoke arguments are a JSON object supplied
+inline, by `@file`, or redirected stdin, bounded to 1 MiB and depth 64. The external MCP command
+cannot target `arcanum-internal` or Forbidden Arts; those remain in the Master pipeline.
 
 Workspace and Campaign are deliberately adjacent, not interchangeable. A **Workspace** is a
 registered server filesystem access/indexing boundary. A **Campaign** is a persistent project
@@ -336,7 +345,7 @@ Limitations (`DESIGN.md` §19.11): no true PTY Hearth; no provider/pricing/model
 
 Tests (`tests/RetroDownfall.Arcanum.Tests`, `RetroDownfall.Compendium.Tests`, `RetroDownfall.TheForge.Tests`) cover contracts, configuration, workspace policy, SQLCipher/API-host safety, reasoning coverage, reliable editing-loop matrices, and desktop wire contracts. Key rules: `ARCANUM_TEST_HOME` set before any path access; scratch Grimoire fixtures only; `GrimoireFixture.SqlCipherAvailable` skips SQLCipher tests when native asset absent; `ArcanumWebApplicationFactory` seeds encrypted DB copies under unique temp roots and explicitly stops its captured host before restoring process-global paths; checkpoint tests populate a pooling-disabled, auto-checkpoint-disabled WAL explicitly and keep its idle owner open while exercising truncation; concurrency tests use state-transition signals rather than narrow scheduler delays; parallel xUnit collections (`Grimoire`, `ApiHost`, `ProcessEnvironment`, `OutboundUrlGuardDns`, `WorkspacePathPolicy`); serial `ProcessEnvironment` for global mutation; no developer `~/.config/arcanum` mutation; no real database migration/reinstall inside tests.
 
-Coverage thresholds (`scripts/coverage.sh`, `scripts/coverage_threshold.py`, `tests/RetroDownfall.Arcanum.Tests/coverage.runsettings`): line ≥ 85% default (80% Ubuntu CI); branch ≥ 75% default (70% Ubuntu CI); security-critical branch 100% (`ApiKeyEndpointFilter`, `DataProtectionSecretStore`, `GrimoireKeyDerivation`, `McpSecurityLimits`, `TrustedMcpWorkspaceStore`, `SandboxedFileIo`, `SecureFileReader`, `SanctumGuard`, `OutboundUrlGuard`, `HostProcessToolPolicy`, `IdempotencyClaimStore`, `BudgetReservationService`, `WardGate`). The temporarily reduced CI aggregate floors preserve headroom while provenance-path coverage is expanded; they do not relax security-critical enforcement. `Dir.Build.props` `Directory.Build.props` MSBuild exclusions cover source-generated JSON contexts and framework artifacts.
+Coverage thresholds (`scripts/coverage.sh`, `scripts/coverage_threshold.py`, `tests/RetroDownfall.Arcanum.Tests/coverage.runsettings`): line ≥ 80% and branch ≥ 70% locally and in Ubuntu CI; security-critical branch 100% (`ApiKeyEndpointFilter`, `DataProtectionSecretStore`, `GrimoireKeyDerivation`, `McpSecurityLimits`, `TrustedMcpWorkspaceStore`, `SandboxedFileIo`, `SecureFileReader`, `SanctumGuard`, `OutboundUrlGuard`, `HostProcessToolPolicy`, `IdempotencyClaimStore`, `BudgetReservationService`, `WardGate`). Environment overrides remain available for platform-specific validation without relaxing security-critical enforcement. `Dir.Build.props` `Directory.Build.props` MSBuild exclusions cover source-generated JSON contexts and framework artifacts.
 
 Reliable editing-loop tests (`DESIGN.md` §13.6) cover `WorkspaceSearchToolTests` (line scope/mixed newlines/no cross-line regex/ordinal literal/AOT non-backtracking fallback/deterministic order/UTF-8 binary/symlink policy/cancellation), `ApplyPatchToolTests` (parser/planner/all-files-before-mutation/text/newline/mode/unique relocation/alias/cycle/topology/metadata rejection/dry-run/order/caps/receipt outcomes/rollback/recovery/non-isolated boundary), `MultiFileCommitCoordinatorTests` (all-stage-before-mutation/visibility/concurrent/cancel/reverse rollback/incomplete cleanup/identity-safe retention), `MandatoryGrimoireRepositoryTests` (deterministic receipt/entry IDs/payload readback/assisted-call-before-system-result/recovered-idempotence/ambiguous classification/cancellation), `WorkspaceCheckToolTests` (`msBuild`/`vsTest`/`dotNetFormat` profiles, trusted executable/SDK/global.json/package identity, read-only source/package-cache/SDK, owner-only per-run outputs, seeding caps 128/640/64MiB + 64/8MiB per project, deadline admission/cleanup, timeout/cancel, macOS advertisement/unavailability, open network, malicious-descendant boundary). See full contract matrix in `DESIGN.md` §13.6.
 

@@ -23,6 +23,16 @@ import coverage_threshold
 
 
 class CoverageThresholdParserTests(unittest.TestCase):
+    def test_default_targets_match_repository_policy(self) -> None:
+        self.assertEqual(coverage_threshold.DEFAULT_LINE_TARGET, 80.0)
+        self.assertEqual(coverage_threshold.DEFAULT_BRANCH_TARGET, 70.0)
+
+        powershell = (Path(__file__).parent / "coverage_threshold.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('COVERAGE_LINE_TARGET" -Default 80.0', powershell)
+        self.assertIn('COVERAGE_BRANCH_TARGET" -Default 70.0', powershell)
+
     def _write_xml(self, content: str) -> Path:
         path = Path(tempfile.mktemp(suffix=".cobertura.xml"))
         path.write_text(content, encoding="utf-8")

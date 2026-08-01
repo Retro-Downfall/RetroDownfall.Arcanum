@@ -405,14 +405,16 @@ public sealed class CliResourceCatalog(
                     ? Result<McpServerInfo[]>.Success(result.Value.ToArray())
                     : Result<McpServerInfo[]>.Failure(result.Error);
             },
-            cancellationToken);
+            cancellationToken,
+            pickAmbiguousIdentifiers: true);
 
     private Task<ResourceSelectionResult<T>> SelectSinglePageAsync<T>(
         string resourceKind,
         string? identifier,
         ResourceDescriptor<T> descriptor,
         Func<CancellationToken, Task<Result<T[]>>> fetch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool pickAmbiguousIdentifiers = false)
         where T : class =>
         SelectAsync(
             new ResourceSelectionRequest<T>(
@@ -426,7 +428,8 @@ public sealed class CliResourceCatalog(
                     return result.IsSuccess
                         ? Result<ResourcePage<T>>.Success(new(result.Value, null))
                         : Result<ResourcePage<T>>.Failure(result.Error);
-                }),
+                },
+                PickAmbiguousIdentifiers: pickAmbiguousIdentifiers),
             cancellationToken);
 
     private Task<ResourceSelectionResult<T>> SelectAsync<T>(

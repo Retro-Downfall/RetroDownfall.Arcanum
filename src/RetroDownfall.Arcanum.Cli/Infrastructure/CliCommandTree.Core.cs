@@ -458,19 +458,331 @@ internal static partial class CliCommandTree
 
     private static Command BuildMcp(IServiceProvider sp)
     {
+
         McpCommands handler = sp.GetRequiredService<McpCommands>();
-        Command mcp = new("mcp", "MCP server status without secret-adjacent configuration details.");
-        Command list = new("list", "List MCP server status.");
-        list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
-        Command get = new("get", "Show one MCP server's safe status summary.");
-        Argument<string?> identifier = OptionalResourceArgument("server", "MCP server name");
-        get.Add(identifier);
-        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
+
+        Command mcp = new(
+            "mcp",
+            "Operate MCP lifecycle, trust, discovery, and external-only diagnostics without exposing server secrets.");
+
+        Command list = new(
+            "list",
+            "List safe MCP scope, transport, trust, lifecycle, tool-count, and last-error status.");
+
+        Option<string?> listWorkspace = WorkspaceOption();
+
+        list.Add(listWorkspace);
+
+        list.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.List(
+                    ActiveWorkspace(sp, pr.GetValue(listWorkspace)),
+                    ct).ConfigureAwait(false));
+
+        Command show = new(
+            "show",
+            "Show one MCP server's safe status summary.");
+
+        Argument<string?> showIdentifier = OptionalResourceArgument(
+            "server",
+            "MCP server name");
+
+        Option<string?> showWorkspace = WorkspaceOption();
+
+        show.Add(showIdentifier);
+
+        show.Add(showWorkspace);
+
+        show.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Show(
+                    pr.GetValue(showIdentifier),
+                    ActiveWorkspace(sp, pr.GetValue(showWorkspace)),
+                    ct).ConfigureAwait(false));
+
+        Command get = new(
+            "get",
+            "Compatibility alias for 'mcp show'.");
+
+        Argument<string?> getIdentifier = OptionalResourceArgument(
+            "server",
+            "MCP server name");
+
+        Option<string?> getWorkspace = WorkspaceOption();
+
+        get.Add(getIdentifier);
+
+        get.Add(getWorkspace);
+
+        get.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Show(
+                    pr.GetValue(getIdentifier),
+                    ActiveWorkspace(sp, pr.GetValue(getWorkspace)),
+                    ct).ConfigureAwait(false));
+
+        Command start = BuildMcpLifecycleCommand(
+            "start",
+            "Start one trusted MCP server.",
+            handler.Start,
+            sp);
+
+        Command stop = BuildMcpLifecycleCommand(
+            "stop",
+            "Stop one MCP server.",
+            handler.Stop,
+            sp);
+
+        Command restart = BuildMcpLifecycleCommand(
+            "restart",
+            "Restart one trusted MCP server.",
+            handler.Restart,
+            sp);
+
+        Command reload = new(
+            "reload",
+            "Clear MCP partitions and reload global or explicitly scoped workspace configuration.");
+
+        Option<string?> reloadWorkspace = WorkspaceOption();
+
+        reload.Add(reloadWorkspace);
+
+        reload.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Reload(
+                    ActiveWorkspace(sp, pr.GetValue(reloadWorkspace)),
+                    ct).ConfigureAwait(false));
+
+        Command trust = new(
+            "trust",
+            "Trust the current workspace mcp.json bytes; defaults to the current directory.");
+
+        Argument<string?> trustWorkspace = new("workspace")
+        {
+
+            Arity = ArgumentArity.ZeroOrOne,
+
+            Description = "Server-host workspace path; defaults to the current directory.",
+
+        };
+
+        trust.Add(trustWorkspace);
+
+        trust.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Trust(
+                    pr.GetValue(trustWorkspace),
+                    ct).ConfigureAwait(false));
+
+        Command tools = new(
+            "tools",
+            "List tools exposed by one selected MCP server.");
+
+        Argument<string?> toolsIdentifier = OptionalResourceArgument(
+            "server",
+            "MCP server name");
+
+        Option<string?> toolsWorkspace = WorkspaceOption();
+
+        tools.Add(toolsIdentifier);
+
+        tools.Add(toolsWorkspace);
+
+        tools.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Tools(
+                    pr.GetValue(toolsIdentifier),
+                    ActiveWorkspace(sp, pr.GetValue(toolsWorkspace)),
+                    ct).ConfigureAwait(false));
+
+        Command invoke = new(
+            "invoke",
+            "Invoke one external MCP tool diagnostically; internal and Forbidden Art tools remain blocked server-side.");
+
+        Argument<string> invokeTool = new("tool")
+        {
+
+            Description = "External MCP tool name or unique prefix.",
+
+        };
+
+        Argument<string?> invokeArguments = ToolArgumentsArgument();
+
+        Option<string?> invokeServer = new("--server")
+        {
+
+            Description = "External MCP server name or unique prefix; omit for tool-based selection.",
+
+        };
+
+        Option<string?> invokeWorkspace = WorkspaceOption();
+
+        invoke.Add(invokeTool);
+
+        invoke.Add(invokeArguments);
+
+        invoke.Add(invokeServer);
+
+        invoke.Add(invokeWorkspace);
+
+        invoke.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Invoke(
+                    pr.GetValue(invokeTool)!,
+                    pr.GetValue(invokeArguments),
+                    pr.GetValue(invokeServer),
+                    ActiveWorkspace(sp, pr.GetValue(invokeWorkspace)),
+                    ct).ConfigureAwait(false));
+
         mcp.Add(list);
+
+        mcp.Add(show);
+
         mcp.Add(get);
+
+        mcp.Add(start);
+
+        mcp.Add(stop);
+
+        mcp.Add(restart);
+
+        mcp.Add(reload);
+
+        mcp.Add(trust);
+
+        mcp.Add(tools);
+
+        mcp.Add(invoke);
+
         return mcp;
+
     }
+
+    private static Command BuildMcpLifecycleCommand(
+        string name,
+        string description,
+        Func<string?, string?, CancellationToken, Task<int>> action,
+        IServiceProvider serviceProvider)
+    {
+
+        Command command = new(name, description);
+
+        Argument<string?> identifier = OptionalResourceArgument(
+            "server",
+            "MCP server name");
+
+        Option<string?> workspace = WorkspaceOption();
+
+        command.Add(identifier);
+
+        command.Add(workspace);
+
+        command.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await action(
+                    pr.GetValue(identifier),
+                    ActiveWorkspace(serviceProvider, pr.GetValue(workspace)),
+                    ct).ConfigureAwait(false));
+
+        return command;
+
+    }
+
+    private static Command BuildTool(IServiceProvider sp)
+    {
+
+        ToolCommands handler = sp.GetRequiredService<ToolCommands>();
+
+        Command tool = new(
+            "tool",
+            "Discover and invoke built-in diagnostic tools through the authenticated API.");
+
+        Command list = new(
+            "list",
+            "List built-in diagnostic tools available for the selected workspace scope.");
+
+        Option<string?> listWorkspace = WorkspaceOption();
+
+        list.Add(listWorkspace);
+
+        list.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.List(
+                    ActiveWorkspace(sp, pr.GetValue(listWorkspace)),
+                    ct).ConfigureAwait(false));
+
+        Command show = new(
+            "show",
+            "Show one built-in diagnostic tool.");
+
+        Argument<string> showTool = new("tool")
+        {
+
+            Description = "Built-in tool name or unique prefix.",
+
+        };
+
+        Option<string?> showWorkspace = WorkspaceOption();
+
+        show.Add(showTool);
+
+        show.Add(showWorkspace);
+
+        show.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Show(
+                    pr.GetValue(showTool)!,
+                    ActiveWorkspace(sp, pr.GetValue(showWorkspace)),
+                    ct).ConfigureAwait(false));
+
+        Command invoke = new(
+            "invoke",
+            "Invoke one built-in diagnostic tool with inline JSON, @file JSON, or redirected stdin.");
+
+        Argument<string> invokeTool = new("tool")
+        {
+
+            Description = "Built-in tool name or unique prefix.",
+
+        };
+
+        Argument<string?> invokeArguments = ToolArgumentsArgument();
+
+        Option<string?> invokeWorkspace = WorkspaceOption();
+
+        invoke.Add(invokeTool);
+
+        invoke.Add(invokeArguments);
+
+        invoke.Add(invokeWorkspace);
+
+        invoke.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Invoke(
+                    pr.GetValue(invokeTool)!,
+                    pr.GetValue(invokeArguments),
+                    ActiveWorkspace(sp, pr.GetValue(invokeWorkspace)),
+                    ct).ConfigureAwait(false));
+
+        tool.Add(list);
+
+        tool.Add(show);
+
+        tool.Add(invoke);
+
+        return tool;
+
+    }
+
+    private static Argument<string?> ToolArgumentsArgument() =>
+        new("arguments")
+        {
+
+            Arity = ArgumentArity.ZeroOrOne,
+
+            Description = "Optional JSON object, @file, or redirected stdin; defaults to {} in an interactive terminal.",
+
+        };
 
     private static Argument<string?> OptionalResourceArgument(string name, string accepted)
     {

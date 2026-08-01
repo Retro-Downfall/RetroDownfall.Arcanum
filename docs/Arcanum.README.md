@@ -454,7 +454,7 @@ Known official OpenAI `gpt-4o`, `chatgpt-4o`, `gpt-4.1`, `gpt-5`, `o1`, `o3`, an
 families use the built-in exact `o200k_base`/key-only prompt-cache profile. Unknown providers,
 endpoints, or models use conservative estimated accounting and no prompt-cache directive.
 
-`DefaultModel`/`FastModel` must match a `models` entry on some provider — matching is a case-insensitive **exact** match, with no bare-name or tag-stripping fallback. OpenAI-compatible `endpoint`s usually include `/v1`. **MCP servers** are wired via `~/.config/arcanum/mcp.json` (`mcpServers` schema) over **stdio** (`command`/`args`, with an optional `inheritEnv` allowlist for `npx`-style launches) or **Streamable HTTP** (`type: "http"` or a bare `url`, SSRF-guarded and `https`-by-default); workspace-local `mcp.json` is merged only after `POST /api/mcp/trust-workspace`. See [Compendium's complete configuration reference](Compendium.README.md#complete-configuration-reference); MCP transport limits are code-owned.
+`DefaultModel`/`FastModel` must match a `models` entry on some provider — matching is a case-insensitive **exact** match, with no bare-name or tag-stripping fallback. OpenAI-compatible `endpoint`s usually include `/v1`. **MCP servers** are wired via `~/.config/arcanum/mcp.json` (`mcpServers` schema) over **stdio** (`command`/`args`, with an optional `inheritEnv` allowlist for `npx`-style launches) or **Streamable HTTP** (`type: "http"` or a bare `url`, SSRF-guarded and `https`-by-default); workspace-local `mcp.json` is merged only after explicit `arcanum mcp trust [workspace]` approval, which calls `POST /api/mcp/trust-workspace`. Routine listing, lifecycle, reload, tool discovery, and diagnostics are available through `arcanum mcp ...` and `arcanum tool ...`; raw HTTP is not required. See [Compendium's complete configuration reference](Compendium.README.md#complete-configuration-reference); MCP transport limits are code-owned.
 
 ### Local Grimoire reinstall
 
@@ -654,11 +654,12 @@ Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](
 ### Safe resource selection
 
 Commands that target a session, campaign, workspace, prompt, spell, Apprentice, model, provider,
-or MCP server accept an exact ID, an exact case-insensitive name, or a unique name prefix. In an
+MCP server, or diagnostic tool accept an exact ID, an exact case-insensitive name, or a unique name prefix. In an
 interactive terminal, omit the selector to open a searchable picker; press Escape to cancel before
-any mutation. Redirected stdin/stdout, `--json`, ambiguity, and missing selectors never prompt or
-guess: they exit with candidate summaries so scripts can provide an exact value. Exact IDs retain
-deterministic scripting behavior.
+any mutation. MCP server/tool ambiguity may also open that picker in a real interactive terminal.
+Redirected stdin/stdout and `--json` never prompt or guess: ambiguity and missing selectors exit
+with candidate summaries so scripts can provide an exact value. Exact IDs retain deterministic
+scripting behavior.
 
 Pickers page through large collections and show only safe resource-specific columns. Recent choices
 are stored locally as an owner-only ordering hint, never as tie-breaking authority. Picker output
@@ -670,8 +671,41 @@ arcanum prompt render                 # interactive picker when attached to a TT
 arcanum prompt render <exact-guid> --param topic=dragons  # deterministic script
 arcanum session get                   # title/campaign/updated picker
 arcanum workspace show
-arcanum mcp get
+arcanum mcp show
 ```
+
+### MCP and diagnostic tools
+
+The MCP family is a safe API client for the existing lifecycle and diagnostic endpoints. Status
+output includes scope, transport, trust, lifecycle, tool count, and last error. It deliberately
+omits subprocess commands/arguments, URLs, environment variables, and secrets. `--workspace`
+selects a workspace-local scope; an omitted selector can open the interactive picker.
+
+```bash
+arcanum mcp list
+arcanum mcp show [server] [--workspace /server/path]
+arcanum mcp start|stop|restart [server] [--workspace /server/path]
+arcanum mcp reload [--workspace /server/path]
+arcanum mcp trust [/server/path]
+arcanum mcp tools [server] [--workspace /server/path]
+arcanum mcp invoke <tool> ['{"query":"dragons"}'] [--server name] [--workspace /server/path]
+
+arcanum tool list [--workspace /server/path]
+arcanum tool show <tool> [--workspace /server/path]
+arcanum tool invoke <tool> ['{"timezone":"UTC"}'] [--workspace /server/path]
+```
+
+Both invoke commands accept one JSON object inline, as `@file`, or from redirected stdin; omitted
+interactive arguments default to `{}`. Response-file expansion is disabled so `@file` reaches the
+Arcanum argument reader unchanged. Input is capped at 1 MiB and JSON depth 64 before any invocation.
+MCP results retain the server-owned output cap, report the server/tool, duration, and truncation
+flag, and retain the configured request timeout.
+
+`mcp invoke` is strictly external-only. `arcanum-internal` is not a diagnostic MCP target, and the
+Forbidden Art names `execute_command`, `write_file`, `replace_text_block`, `delete_lexicon`,
+`run_spell_script`, `apply_patch`, and `workspace_check` cannot use this path, including when an
+external server reuses a blocked name. Eligible built-ins use `arcanum tool invoke`; internal and
+high-risk execution otherwise remains in the Master pipeline with its Ward and Sanctum policy.
 
 ### Workspace versus Campaign
 

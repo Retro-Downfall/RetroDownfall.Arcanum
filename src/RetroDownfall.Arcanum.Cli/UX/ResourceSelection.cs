@@ -54,7 +54,8 @@ public sealed record ResourceSelectionRequest<T>(
     string? Identifier,
     bool IsInteractive,
     ResourceDescriptor<T> Descriptor,
-    Func<string?, CancellationToken, Task<Result<ResourcePage<T>>>> FetchPageAsync)
+    Func<string?, CancellationToken, Task<Result<ResourcePage<T>>>> FetchPageAsync,
+    bool PickAmbiguousIdentifiers = false)
     where T : class;
 
 public sealed record ResourcePickerRequest<T>(
@@ -87,7 +88,9 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
     where T : class
 {
     private const int MaxPages = 100;
+
     private const int MaxDiagnosticCandidates = 8;
+
     private const int MaxDiagnosticChars = 180;
 
     public async Task<ResourceSelectionResult<T>> SelectAsync(
@@ -123,9 +126,14 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
             {
                 return RememberAndSelect(request.ResourceKind, exactNames[0], descriptor);
             }
+
             if (exactNames.Length > 1)
             {
-                return Ambiguous(request, identifier, exactNames);
+                return await ResolveAmbiguousAsync(
+                    request,
+                    identifier,
+                    exactNames,
+                    cancellationToken).ConfigureAwait(false);
             }
 
             T[] prefixes = candidates
@@ -135,9 +143,14 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
             {
                 return RememberAndSelect(request.ResourceKind, prefixes[0], descriptor);
             }
+
             if (prefixes.Length > 1)
             {
-                return Ambiguous(request, identifier, prefixes);
+                return await ResolveAmbiguousAsync(
+                    request,
+                    identifier,
+                    prefixes,
+                    cancellationToken).ConfigureAwait(false);
             }
 
             return ResourceSelectionResult<T>.Failure(
@@ -220,6 +233,36 @@ public sealed class ResourceSelector<T>(IResourcePicker picker, IRecentResourceS
         ResourceSelectionResult<T>.Failure(
             $"The {request.Descriptor.SingularName} identifier '{identifier}' is ambiguous; provide an exact ID or a longer name. "
             + CandidateText(matches, request.Descriptor));
+
+    private async Task<ResourceSelectionResult<T>> ResolveAmbiguousAsync(
+        ResourceSelectionRequest<T> request,
+        string identifier,
+        IReadOnlyList<T> matches,
+        CancellationToken cancellationToken)
+    {
+        if (!request.IsInteractive || !request.PickAmbiguousIdentifiers)
+        {
+            return Ambiguous(request, identifier, matches);
+        }
+
+        IReadOnlyList<T> ordered = OrderByRecent(
+            request.ResourceKind,
+            matches,
+            request.Descriptor);
+
+        T? selected = await picker
+            .PickAsync(
+                new ResourcePickerRequest<T>(ordered, request.Descriptor),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return selected is null
+            ? ResourceSelectionResult<T>.Cancelled()
+            : RememberAndSelect(
+                request.ResourceKind,
+                selected,
+                request.Descriptor);
+    }
 
     private IReadOnlyList<T> OrderByRecent(
         string resourceKind,

@@ -211,6 +211,8 @@ internal static class CliApplicationFactory
 
         services.AddTransient<McpCommands>();
 
+        services.AddTransient<ToolCommands>();
+
         services.AddTransient<OperationCommands>();
         services.AddTransient<DataEncryptionCommands>();
         services.AddTransient<ContextCommands>();
@@ -257,7 +259,14 @@ internal static class CliApplicationFactory
             RootCommand root = CliCommandTree.Build(
                 serviceProvider,
                 out CliGlobalOptions globalOptions);
-            ParseResult parseResult = root.Parse(args);
+            ParseResult parseResult = root.Parse(
+                args,
+                new ParserConfiguration
+                {
+
+                    ResponseFileTokenReplacer = null,
+
+                });
             CliInvocationOptions options = new(
                 parseResult.GetValue(globalOptions.Json),
                 parseResult.GetValue(globalOptions.Plain),

@@ -234,6 +234,13 @@ recursion cap and per-call token/cost/turn delegation are code-owned safety requ
 | `cli.theme` | enum `"SystemDefault"` | `Light`, `Dark`, `SystemDefault` | CLI color theme. |
 | `cli.showManaBar` | `bool`, `true` | — | Shows the chat token-budget indicator. |
 
+Compendium edits MCP transport policy but does not operate server lifecycle or approve a
+workspace-local `mcp.json`. Use `arcanum mcp trust [workspace]`, then `arcanum mcp
+list|show|start|stop|restart|reload|tools`; use `arcanum mcp invoke` only for external diagnostic
+tools and `arcanum tool list|show|invoke` for the bounded built-in diagnostic registry. These CLI
+families call the authenticated host APIs and never expose MCP command lines, environment, URLs, or
+secrets.
+
 The direct-command flags `--json`, `--plain`, and `--yes` are intentionally not configuration
 keys and are not editable in Compendium. They are per-invocation automation authority:
 `--json`/`--plain` override theme and mana-bar rendering for that process, while `--yes` approves

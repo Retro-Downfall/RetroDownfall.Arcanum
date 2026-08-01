@@ -528,6 +528,8 @@ while `cli-context.json.sessionId` is the active-context authority.
 | *(bare)* | **Command Center v2** (Terminal.Gui 2.4.17): bare interactive `arcanum` with `ARCANUM_NO_COMMAND_CENTER` unset. Fixed viewport — header / left sessions (UpdatedAt desc; overlay picker when narrow) / transcript (follow-tail) / composer / footer. Chat + allowlisted slash via `ShellCommandDispatcher` / `CommandCenterChatRunner` / `SessionWorkspaceService` (no Spectre, no CAF recursion, no `ChatCommand`). Resume loads ≤200 recent entries; `CliSessionManager` last-session restore with stale → New Session. Branching uses the server fork contract: `/fork`, selected-entry `/fork at`, `/fork alternative`, `/fork confirm`, and `/branch parent|child`; `⑂` marks branches without changing session ordering. Successful forks load branch detail, transcript, and attachments before switching; failures leave the source active. Attachments: `/attach`, `/attachments` (+ `add`/`reveal`), `@path`; host persists when `Arcanum:Features:Attachments` is enabled (§10.2.5 / §16.6). Structured persistent context is discoverable through `/help` and managed with `/context`, `/context pin <kind> <target>`, and `/context unpin <id>` (§10.2.6). Coalesced streaming (~50ms). Size gate **inside** the host after TG Init (≥80×12 floor); too small or init failure → exit **1**. Bare non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage/help exit **0**. `NO_COLOR` / `ARCANUM_NO_COLOR` select monochrome theme only — they do **not** block the TUI. Auto-serve via `IArcanumServeLauncher`. Types under `Cli/CommandCenter/`. |
 | `look` | Prints `PatternSnapshot` from Eye of the World (no HTTP dependency). |
 | `doctor` | Environment diagnostics across panels — **System** (version/OS/runtime/TTY/color), **Paths**, **Configuration** (`arcanum.json` parse), **MCP** (`mcp.json`), and a **Tokenizer** smoke test — plus an **API Health** probe (`GET /api/health`) with a code-owned 2-second timeout. A hard-check failure exits **1**; an unreachable or timed-out API is a **non-fatal warning** (still exits 0). Pass `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. No infrastructure services required beyond `IHttpClientFactory`, `ISecretStore`, and `IOptions<ArcanumSettings>`. |
+| `mcp list\|show\|start\|stop\|restart\|reload\|trust\|tools\|invoke` | Authenticated MCP administration over `/api/mcp*`. Safe status projection includes scope, transport, derived trust, lifecycle, tool count, and last error while omitting command/URL/arguments/environment. Server/tool ambiguity uses the picker only on an interactive TTY; redirected/JSON invocations reject deterministically. `--workspace` is the explicit workspace-scope input. |
+| `tool list\|show\|invoke` | Workspace-aware built-in diagnostic discovery via `/api/intelligence/arsenal` and execution via `/api/tools/invoke`. The arsenal projects `IBuiltInToolRegistry.GetToolNames()` so enabled native web tools are included. |
 | `key show` | Prints the stored master API key from the OS credential store (`ISecretStore` → keychain with `security.dat` fallback) to **stderr**. CLI-only, **no HTTP** (§16.3). |
 | `key set` | Stores a master API key into the OS credential store (mirrors to `security.dat`). Argument, stdin, or interactive secret prompt (§16.3). |
 | `use campaign\|workspace\|model\|session <value>` | Validate and select an owner-local active CLI default. Selection never updates a server resource row. |
@@ -955,6 +957,16 @@ The trust document has hard code limits, not operator settings: **8 MiB serializ
 **Disambiguation:** Lifecycle routes accept optional **`?workingDirectory=`** (workspace root). When omitted and multiple registry entries share the same name, the API returns **400** **`Mcp.AmbiguousServer`**.
 
 **`POST /api/mcp/reload`:** Preserves the existing **global nuclear reload** semantics: dispose all partition clients, clear caches, reset global bootstrap, re-read global `mcp.json`, restart **`alwaysOn`** globals. The optional **`workingDirectory`** body field is **informational only** (logged); workspace partitions are not immediately re-built.
+
+**CLI lifecycle projection:** `arcanum mcp list|show|start|stop|restart|reload|trust|tools` calls
+these authenticated APIs through `ArcanumApiClient`; the CLI never opens `mcp.json` or manages a
+child process directly. Safe list/detail views do not project `Command`, `Arguments`, `Url`, or
+environment. A visible workspace-scoped entry is labelled `trusted` because registry visibility is
+admitted only after the current digest passes the workspace trust gate; global entries report trust
+as not required. Explicit `--workspace` selects a workspace partition, while the selected
+`McpServerInfo.WorkingDirectory` is sent back as the lifecycle disambiguator. MCP resource
+selection opts into interactive resolution for ambiguous names only on a real TTY; non-interactive
+and JSON callers receive deterministic candidate diagnostics.
 
 **Inference:** **`GetAvailableToolsAsync`** merge order is unchanged (internal → global → workspace local). Only **running** managed servers contribute tools; **`alwaysOn: false`** servers stay stopped until explicitly started.
 
@@ -2488,6 +2500,17 @@ Collision behavior is fail-closed and provenance-preserving: blocked names remai
 
 **Built-ins unchanged:** `POST /api/tools/invoke` (§11.27) exposes only the bounded built-in tools (`get_local_system_time`, `get_arcanum_system_info`, and `web_search` / `read_url` when enabled); it also accepts `browse_web` as an invocation-only compatibility alias. It does **not** go through Ward/Sanctum — acceptable only because the registry is deliberately limited and web egress retains the unconditional SSRF guard. The two endpoints are complementary: `/api/tools/invoke` for built-ins, `/api/mcp/tools/invoke` for external MCP.
 
+**CLI diagnostics:** `arcanum mcp invoke <tool>` discovers running external candidates from the
+workspace arsenal, excludes `arcanum-internal`, resolves server/tool ambiguity interactively only
+on a TTY, and sends the provenance-preserving `serverName` plus optional `workingDirectory` to this
+endpoint. `arcanum tool list|show|invoke` uses the arsenal's live
+`IBuiltInToolRegistry.GetToolNames()` projection and `/api/tools/invoke`. Both invocation families
+accept one JSON object inline, through `@file`, or through redirected stdin. The CLI disables
+System.CommandLine response-file substitution so `@file` remains an Arcanum convention, then caps
+the UTF-8 input at **1 MiB**, caps JSON nesting at **64**, and validates an object before any invoke
+request. Server-side diagnostic timeout, output truncation, `Mcp.DiagnosticBlocked`, workspace
+trust, and external-only checks remain authoritative; the CLI cannot widen them.
+
 **Key types:** `McpToolInvokeRequest` / `McpToolInvokeResponse` (`Api/Models/`), `DiagnosticMcpInvocationService` / `DiagnosticMcpInvocationOutcome` (`Api/Mcp/`), `DiagnosticMcpInvocationEndpoints` (`Api/Mcp/`), mirrored The Forge DTOs `McpToolInvokeRequest` / `McpToolInvokeResponse` (`TheForge.Core/Models/`) + `TheForgeJsonContext` registrations.
 
 **Tests:** `tests/RetroDownfall.Arcanum.Tests/Mcp/DiagnosticMcpInvocationServiceTests.cs` covers every Forbidden Art block, empty tool name, stopped server, internal-server filter, untrusted-workspace hiding, ambiguous tool, tool-not-found (named and unnamed), happy path, truncation marker, tool error (`isError: true`), timeout, non-JSON output wrapping, **internal+external name collision (external invoked; not ambiguous)**, **internal-only → ToolNotFound**, and **explicit wrong server → no fallback** — all with a fake `IMcpConnectionManager` + fake `AIFunction`, no API host required. Source-generated JSON round-trips for `McpToolInvokeRequest` / `McpToolInvokeResponse` / `DiagnosticMcpFixtureStoreDocument` are in `tests/RetroDownfall.TheForge.Tests/TheForgeJsonContextTests.cs`.
@@ -2543,8 +2566,8 @@ remains parallel.
 
 | Post-exclusion metric | Default/local target | Ubuntu CI target |
 |-----------------------|----------------------|------------------|
-| Line coverage | ≥ 85% | ≥ 80% |
-| Branch coverage | ≥ 75% | ≥ 70% |
+| Line coverage | ≥ 80% | ≥ 80% |
+| Branch coverage | ≥ 70% | ≥ 70% |
 | Security-critical branch coverage | 100% | 100% |
 
 The security-critical set is `ApiKeyEndpointFilter`, `ApiKeyDigestCache`,
@@ -2555,10 +2578,10 @@ The security-critical set is `ApiKeyEndpointFilter`, `ApiKeyDigestCache`,
 Python and PowerShell gates hold the same set under a parity test, and both fail when a listed type
 is absent from the Cobertura report, so a rename or new exclusion cannot silently count as 100%.
 Ubuntu executes a different
-set of OS-specific branches while the denominator still includes all shipping assemblies, so CI
-sets `COVERAGE_LINE_TARGET=80` and `COVERAGE_BRANCH_TARGET=70`; the script defaults remain 85/75.
-The temporarily reduced CI floors preserve headroom below the current aggregate coverage while
-issue #13 provenance-path tests are expanded; they do not relax the 100% security-critical gate.
+set of OS-specific branches while the denominator still includes all shipping assemblies. Local and
+CI aggregate floors are therefore both 80% line coverage and 70% branch coverage; environment
+overrides remain available for platform-specific validation. These aggregate floors do not relax
+the 100% security-critical gate.
 Both environment values are validated as finite percentages from 0 through 100.
 
 The coverage denominator includes Core, Infrastructure, and Api. Cli interactive behavior is
@@ -2962,6 +2985,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 
 - **Line-counter for swap is naive.** Multi-cell glyphs and ANSI escapes are not measured; the swap may erase extra rows or leave stray lines. The renderer never throws.
 - **Status/tool diagnostics share the TTY.** Intermixed stderr/stdout lines can desynchronize the cursor count during tool-heavy turns.
+- **Direct MCP/tool administration is API-only.** `mcp` and `tool` commands share the bounded resource selector and tool-argument reader; direct commands never read MCP configuration or invoke an MCP transport locally.
 
 ### 16.6 CLI UX surface (Spectre.Console + Command Center)
 

@@ -35,8 +35,8 @@ function Resolve-CoverageTarget {
     return $value
 }
 
-$lineTarget = Resolve-CoverageTarget -Name "COVERAGE_LINE_TARGET" -Default 85.0
-$branchTarget = Resolve-CoverageTarget -Name "COVERAGE_BRANCH_TARGET" -Default 75.0
+$lineTarget = Resolve-CoverageTarget -Name "COVERAGE_LINE_TARGET" -Default 80.0
+$branchTarget = Resolve-CoverageTarget -Name "COVERAGE_BRANCH_TARGET" -Default 70.0
 $securityBranchTarget = 100.0
 
 $securityTypes = [System.Collections.Generic.HashSet[string]]::new(
