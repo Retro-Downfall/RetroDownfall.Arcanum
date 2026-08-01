@@ -255,6 +255,14 @@ keys and are not editable in Compendium. They are per-invocation automation auth
 only that command's confirmation prompts. Persisting any of them would make interactive and
 destructive behavior surprising.
 
+`arcanum file upload|list|show|download|delete` and `arcanum batch
+create|list|show|watch|cancel|reset|output|errors` add no configuration keys. They call the existing
+authenticated OpenAI-compatible routes and inherit `security.allowedUploadMimeTypes`, the
+code-owned upload ceiling, `execution.maxConcurrentBatches`, and
+`execution.maxConcurrentRequestsPerBatch`. Local JSONL preflight checks only the obvious batch
+wrapper before upload; server validation remains authoritative. Download overwrite approval is a
+per-invocation `--yes` decision and is never persisted by Compendium.
+
 ### Dynamic dictionary shapes
 
 `cost.pricing.modelPricing` is keyed case-insensitively by model name. Every

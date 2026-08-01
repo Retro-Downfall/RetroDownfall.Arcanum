@@ -2352,6 +2352,17 @@ flush/verify/rename behavior is §5.4.6.
 
 **Key types:** `FilesSettings`, `IUploadedFileRepository`, `UploadedFileRecord`, `UploadedFileRepository` (Infrastructure), `UploadedFileStorage` (pure path helper), `UploadedFileMimeValidator`, `OpenAiFileObject`, `OpenAiFileListResponse`, `OpenAiFileDeleteResponse`.
 
+**Native CLI surface:** `arcanum file upload <path>` streams multipart bytes through
+`FileBatchApiClient` and defaults `purpose` to `batch`; `--purpose` and `--content-type` make both
+wire fields explicit. `file list [--purpose]`, `file show <id>`, `file download <id> [--output]`,
+and `file delete <id>` call only the authenticated `/v1/files` routes. Successful JSON mode emits
+the bare OpenAI wire object/list/delete response, not `ApiResponse<T>`. Downloads first retrieve
+metadata, discard all server-supplied path components, sanitize the leaf filename, stream content
+to a same-directory uniquely named stage file, flush, and atomically replace the destination.
+Existing destinations and deletion require `IConfirmationPrompt`; redirected/noninteractive use
+fails closed unless recursive `--yes` grants the mutation. The API filename is metadata only and
+never becomes an unchecked local path.
+
 ### 11.21 OpenAI batches (`/v1/batches`)
 
 **Purpose:** OpenAI-compatible asynchronous bulk chat-completion processing over an uploaded JSONL file (§11.20). Only `endpoint: "/v1/chat/completions"` is supported; other endpoint values are rejected with **400** `invalid_value`.
@@ -2414,6 +2425,20 @@ column). Same recovery path powers `/reset`.
 **Error codes:** `Batches.NotFound` (404), `Batches.InvalidEndpoint` (400), `Batches.InputFileNotFound` (404) — registered in the shared catalog (§8.23) for consistency, even though the `/v1/batches` handlers construct their OpenAI-shaped error envelopes directly like every other `/v1` endpoint.
 
 **Key types:** `BatchesSettings`, `IBatchRepository`, `BatchRecord`, `BatchStatuses`, `BatchRepository` (Infrastructure), `BatchProcessingService`, `IBatchRecoveryService` / `BatchRecoveryService`, `BatchRequestCounter`, `OpenAiBatchRequest`, `OpenAiBatchObject`, `OpenAiBatchRequestCounts`, `OpenAiBatchListResponse`, `BatchJsonlRequestLine`, `BatchJsonlResponseLine`, `BatchJsonlResponseBody`, `BatchJsonlError`, `BatchJsonlParseError`.
+
+**Native CLI surface:** `arcanum batch create <input-file>` accepts either an existing `file-*`
+id or a local JSONL path. A local path is streamed through a client preflight that catches only
+obvious wrapper errors (valid JSON object, unique nonblank `custom_id`, exact `POST`, exact
+`/v1/chat/completions`, object `body`) with a line number; the server remains authoritative for
+the full chat request and batch policy. A passing local file is uploaded with `purpose: batch` and
+`application/jsonl`, then its returned id is posted to `/v1/batches`, so one command starts the
+asynchronous batch. `batch list [--status]`, `show`, `cancel`, and `reset` preserve the server's
+request-count, idempotent cancellation, and stuck-only reset semantics. `batch watch <id>` polls
+with cancellation-aware exponential backoff bounded from 1 ms through 10 seconds and stops only
+on `completed`, `failed`, `cancelled`, or `expired`; JSON mode writes only the terminal object.
+`batch output|errors <id> [--output]` resolves the server-owned artifact id and uses the same safe,
+atomic, overwrite-confirmed download path as `file download`. All successful structured output is
+the bare OpenAI shape or a source-generated local download receipt.
 
 ### 11.27 Native web research (`web_search` / `read_url`)
 

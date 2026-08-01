@@ -129,6 +129,8 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<ArcanumApiClient>();
 
+        services.AddSingleton<FileBatchApiClient>();
+
         services.AddSingleton<ConfigurationValidator>();
 
         services.AddSingleton<ConfigurationWriter>();
@@ -214,6 +216,8 @@ internal static class CliApplicationFactory
         services.AddTransient<ToolCommands>();
 
         services.AddTransient<WebWorkflowCommands>();
+
+        services.AddTransient<FileBatchCommands>();
 
         services.AddTransient<OperationCommands>();
         services.AddTransient<DataEncryptionCommands>();

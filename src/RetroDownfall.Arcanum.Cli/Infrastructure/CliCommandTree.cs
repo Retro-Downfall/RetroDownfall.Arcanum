@@ -62,6 +62,8 @@ internal static partial class CliCommandTree
         Command search = BuildSearch(serviceProvider);
         Command browse = BuildBrowse(serviceProvider);
         Command research = BuildResearch(serviceProvider);
+        Command file = BuildFileCommands(serviceProvider);
+        Command batch = BuildBatchCommands(serviceProvider);
         Command operation = BuildOperation(serviceProvider);
         Command data = BuildData(serviceProvider);
         Command use = BuildUse(serviceProvider);
@@ -92,6 +94,8 @@ internal static partial class CliCommandTree
         root.Add(search);
         root.Add(browse);
         root.Add(research);
+        root.Add(file);
+        root.Add(batch);
         root.Add(operation);
         root.Add(data);
         root.Add(use);

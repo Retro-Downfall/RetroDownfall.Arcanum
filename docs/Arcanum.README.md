@@ -727,6 +727,38 @@ Forbidden Art names `execute_command`, `write_file`, `replace_text_block`, `dele
 external server reuses a blocked name. Eligible built-ins use `arcanum tool invoke`; internal and
 high-risk execution otherwise remains in the Master pipeline with its Ward and Sanctum policy.
 
+### Files and asynchronous batches
+
+The native CLI exposes the existing OpenAI-compatible `/v1/files` and `/v1/batches` APIs without
+opening server storage. A batch can start from local JSONL in one command; the CLI checks the
+obvious wrapper shape first, uploads it as a batch file, and then creates the server-owned job.
+Pass an existing `file-*` id instead to skip the upload. The server still owns full request
+validation, cancellation, recovery, endpoint restrictions, MIME policy, size limits, and status.
+
+```bash
+arcanum file upload ./batch-input.jsonl
+arcanum file list --purpose batch
+arcanum file show file-0123456789abcdef0123456789abcdef
+arcanum file download file-0123456789abcdef0123456789abcdef [--output ./input.jsonl]
+arcanum file delete file-0123456789abcdef0123456789abcdef
+
+arcanum batch create ./batch-input.jsonl
+arcanum batch create file-0123456789abcdef0123456789abcdef
+arcanum batch list [--status in_progress]
+arcanum batch show batch_0123456789abcdef0123456789abcdef
+arcanum batch watch batch_0123456789abcdef0123456789abcdef
+arcanum batch cancel|reset batch_0123456789abcdef0123456789abcdef
+arcanum batch output|errors batch_0123456789abcdef0123456789abcdef [--output ./result.jsonl]
+```
+
+Lists and detail views include total/completed/failed request counts. `batch watch` uses bounded
+exponential polling and exits at the first terminal state. Downloads stream through a
+same-directory temporary file and atomically replace only after success. Default names discard
+server path components and sanitize the leaf; an existing destination requires interactive
+confirmation or explicit `--yes`. `file delete` uses the same confirmation boundary. Recursive
+`--json` emits one source-generated JSON document on stdout and keeps progress/diagnostics on
+stderr; `/v1` successes are never reinterpreted as `ApiResponse<T>`.
+
 ### Workspace versus Campaign
 
 A **Workspace** is a registered filesystem access and indexing boundary. A **Campaign** is a

@@ -80,6 +80,18 @@ public sealed record CliFailure(
     CliExitCode ExitCode,
     string SafeMessage);
 
+public sealed record FileDownloadPayload(
+    string Id,
+    string Path,
+    long Bytes);
+
+public sealed record BatchArtifactPayload(
+    string BatchId,
+    string Kind,
+    string FileId,
+    string Path,
+    long Bytes);
+
 internal sealed class CliInvocationContext : ICliInvocationContext
 {
 
@@ -458,4 +470,6 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(CliContextStatusPayload))]
 [JsonSerializable(typeof(CliContextMutationResult))]
 [JsonSerializable(typeof(SessionShowPayload))]
+[JsonSerializable(typeof(FileDownloadPayload))]
+[JsonSerializable(typeof(BatchArtifactPayload))]
 internal sealed partial class CliJsonContext : JsonSerializerContext;

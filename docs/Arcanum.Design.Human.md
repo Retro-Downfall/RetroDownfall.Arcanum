@@ -92,6 +92,17 @@ structured output (the live watcher uses newline-delimited JSON); destructive en
 the shared confirmation boundary. Archive, fork, export, and memory-management policy remain owned
 by the server, and API error codes are preserved at the terminal.
 
+The `file` and `batch` command families are direct clients for the bare OpenAI-shaped `/v1/files`
+and `/v1/batches` contracts. `file upload|list|show|download|delete` preserves streaming and never
+opens the server's encrypted storage. Downloads remove remote path components, sanitize the local
+leaf, stage in the destination directory, and require confirmation before replacing an existing
+file. `batch create` accepts either a `file-*` id or local JSONL; local input receives a lightweight
+line-aware wrapper preflight before it is uploaded and submitted, while the server remains the
+authority for chat and batch validation. `batch list|show|watch|cancel|reset|output|errors` exposes
+request counts, terminal state, bounded polling, server cancellation/reset semantics, and safe
+artifact retrieval. JSON output is one source-generated document and bare `/v1` responses are
+never parsed as native `ApiResponse<T>` envelopes.
+
 ---
 
 ## 2. Architectural goals and safe defaults
