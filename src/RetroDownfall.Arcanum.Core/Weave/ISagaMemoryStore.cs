@@ -1,5 +1,7 @@
 namespace RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 /// <summary>
 /// RAG Phase 4 — raw-SQL persistence for Saga memories (<c>saga_memories</c> +
 /// <c>saga_memory_embeddings</c> [+ <c>saga_memory_embeddings_vec</c> when available] +
@@ -24,6 +26,30 @@ public interface ISagaMemoryStore
         string? source,
         float[] embedding,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Inserts attachment-derived memory together with typed provenance. Implementations must keep
+    /// provenance after source deletion and surface the source as unavailable.
+    /// </summary>
+    Task InsertAsync(
+        string id,
+        string content,
+        DateTimeOffset createdAt,
+        Guid? sessionId,
+        string? tags,
+        string? source,
+        float[] embedding,
+        AttachmentMemoryProvenance provenance,
+        CancellationToken cancellationToken) =>
+        InsertAsync(
+            id,
+            content,
+            createdAt,
+            sessionId,
+            tags,
+            source,
+            embedding,
+            cancellationToken);
 
     /// <summary>Total number of Saga memories across all sessions.</summary>
     Task<int> CountAsync(CancellationToken cancellationToken);

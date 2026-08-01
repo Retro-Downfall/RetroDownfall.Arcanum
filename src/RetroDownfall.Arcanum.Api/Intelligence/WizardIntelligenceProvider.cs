@@ -87,7 +87,8 @@ public sealed class WizardIntelligenceProvider(
     IWebResearchProviderCatalog? webResearchProviderCatalog = null,
     SessionContextPinMaterializer? sessionContextPinMaterializer = null,
     ISubagentRunner? subagentRunner = null,
-    ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
+    ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
+    IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
 {
     private readonly TokenAccountingDependencies _tokenAccounting =
         TokenAccountingDependencies.Create(
@@ -1574,8 +1575,8 @@ public sealed class WizardIntelligenceProvider(
                         hash,
                         EstimateMaterializedTokens(bytes.Length),
                         bytes.Length,
-                        ContextMaterializationTrust.UntrustedData),
-                    materialized: true);
+                ContextMaterializationTrust.UntrustedData),
+                materialized: true);
 
                 if (accepted.Accepted)
                 {
@@ -1652,7 +1653,10 @@ public sealed class WizardIntelligenceProvider(
                     record.ContentSha256,
                     EstimateMaterializedTokens(record.ByteLength),
                     int.CreateSaturating(record.ByteLength),
-                    ContextMaterializationTrust.UntrustedData),
+                    ContextMaterializationTrust.UntrustedData)
+                {
+                    AttachmentProvenance = BuildAttachmentMemoryProvenance(record),
+                },
                 materialized: true);
 
             if (!accepted.Accepted)
@@ -3401,7 +3405,18 @@ public sealed class WizardIntelligenceProvider(
                 inferenceToken)
             .ConfigureAwait(false);
 
-        TryEnqueueSagaExtraction(grimoireTurn.SessionId);
+        IReadOnlyList<AttachmentMemoryProvenance> attachmentProvenance =
+            AttachmentMemoryGateAmbient.Snapshot();
+
+        await TryRecordAttachmentConsultationsAsync(
+            grimoireTurn.AssistantEntryId,
+            attachmentProvenance,
+            inferenceToken).ConfigureAwait(false);
+
+        TryEnqueueSagaExtraction(
+            grimoireTurn.SessionId,
+            attachmentProvenance,
+            AttachmentMemoryGateAmbient.HasUnprovenancedAttachmentContent);
 
         string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
 
@@ -4428,7 +4443,12 @@ public sealed class WizardIntelligenceProvider(
             {
                 if (byId.TryGetValue(hit.Id, out SagaMemoryDto? memory))
                 {
-                    memories.Add(new SagaMemory(memory.Content, hit.Similarity, memory.CreatedAt));
+                    memories.Add(
+                        new SagaMemory(
+                            memory.Content,
+                            hit.Similarity,
+                            memory.CreatedAt,
+                            memory.AttachmentProvenance));
                 }
             }
 
@@ -4482,7 +4502,18 @@ public sealed class WizardIntelligenceProvider(
                     chunk.ContentSha256,
                     ModelTokenEstimator.EstimateText(provider, model, chunk.Content).TokenCount,
                     bytes,
-                    ContextMaterializationTrust.UntrustedData),
+                    ContextMaterializationTrust.UntrustedData)
+                {
+                    AttachmentProvenance = new AttachmentMemoryProvenance(
+                        chunk.SessionId,
+                        chunk.AttachmentId,
+                        chunk.LogicalKey,
+                        chunk.Version,
+                        chunk.ContentSha256,
+                        DateTimeOffset.UtcNow,
+                        "SessionAttachmentRag",
+                        AttachmentSourceAvailability.Available),
+                },
                 materialized: true);
 
             if (entry.Accepted)
@@ -4499,6 +4530,18 @@ public sealed class WizardIntelligenceProvider(
         return accepted.Count == 0 ? null : [.. accepted];
 
     }
+
+    private static AttachmentMemoryProvenance BuildAttachmentMemoryProvenance(
+        SessionAttachmentRecord record) =>
+        new(
+            record.SessionId ?? Guid.Empty,
+            record.Id,
+            record.LogicalKey,
+            record.Version,
+            record.ContentSha256,
+            DateTimeOffset.UtcNow,
+            record.Source?.Kind.ToString() ?? AttachmentSourceKind.SnapshotOnly.ToString(),
+            AttachmentSourceAvailability.Available);
 
     private SemanticContextChunk[]? AcceptWorkspaceRagMaterializations(
         ContextMaterializationLedger ledger,
@@ -6239,7 +6282,10 @@ public sealed class WizardIntelligenceProvider(
     /// (see <see cref="SagaExtractionService.EnqueueExtraction"/>, which itself never throws — the
     /// try/catch here is defense in depth against unexpected failures resolving settings).
     /// </summary>
-    private void TryEnqueueSagaExtraction(Guid? sessionId)
+    private void TryEnqueueSagaExtraction(
+        Guid? sessionId,
+        IReadOnlyList<AttachmentMemoryProvenance> attachmentProvenance,
+        bool hadUnprovenancedAttachmentContent)
     {
         if (!sessionId.HasValue)
         {
@@ -6255,7 +6301,11 @@ public sealed class WizardIntelligenceProvider(
                 return;
             }
 
-            sagaExtractionService.EnqueueExtraction(sessionId.Value);
+            sagaExtractionService.EnqueueExtraction(
+                new SagaExtractionRequest(
+                    sessionId.Value,
+                    attachmentProvenance,
+                    hadUnprovenancedAttachmentContent));
         }
         catch (Exception ex)
         {
@@ -6264,6 +6314,43 @@ public sealed class WizardIntelligenceProvider(
                 sessionId,
                 ex.GetType().FullName);
         }
+    }
+
+    private async Task TryRecordAttachmentConsultationsAsync(
+        Guid? sourceEntryId,
+        IReadOnlyList<AttachmentMemoryProvenance> provenance,
+        CancellationToken cancellationToken)
+    {
+
+        if (attachmentMemoryProvenanceStore is null
+            || sourceEntryId is null
+            || provenance.Count == 0)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            await attachmentMemoryProvenanceStore
+                .RecordConsultationsAsync(
+                    sourceEntryId.Value,
+                    provenance,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            logger.LogWarning(
+                ex,
+                "Attachment consultation provenance could not be persisted; durable attachment-derived promotion will remain fail-closed for this turn.");
+
+        }
+
     }
 
     private static bool LooksLikeModelDoesNotSupportTools(string? message)

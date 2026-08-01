@@ -843,7 +843,7 @@ internal sealed partial class ArcanumInternalToolServer
                 {
                     Name = "scribe_lexicon",
                     Description =
-                        "Records structured agent memory: creates or updates a named Lexicon entity (Name + Type + Facts). Appends non-duplicate facts to an existing entity matched case-insensitively by name. Use to remember durable facts about people, projects, APIs, or daemon state.",
+                        "Records structured agent memory only when authorized by the current conversation. Attaching or indexing never promotes automatically. When a fact is attachment-derived, attachment_id is required and must name content materialized in this turn; typed provenance is retained.",
                     InputSchema = _scribeLexiconSchema,
                 });
 

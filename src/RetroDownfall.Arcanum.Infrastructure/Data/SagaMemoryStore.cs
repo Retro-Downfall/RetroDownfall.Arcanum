@@ -5,6 +5,7 @@ using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -33,6 +34,54 @@ internal sealed class SagaMemoryStore(
         string? tags,
         string? source,
         float[] embedding,
+        CancellationToken cancellationToken) =>
+        InsertCoreAsync(
+            id,
+            content,
+            createdAt,
+            sessionId,
+            tags,
+            source,
+            embedding,
+            provenance: null,
+            cancellationToken);
+
+    public Task InsertAsync(
+        string id,
+        string content,
+        DateTimeOffset createdAt,
+        Guid? sessionId,
+        string? tags,
+        string? source,
+        float[] embedding,
+        AttachmentMemoryProvenance provenance,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(provenance);
+
+        return InsertCoreAsync(
+            id,
+            content,
+            createdAt,
+            sessionId,
+            tags,
+            source,
+            embedding,
+            provenance,
+            cancellationToken);
+
+    }
+
+    private Task InsertCoreAsync(
+        string id,
+        string content,
+        DateTimeOffset createdAt,
+        Guid? sessionId,
+        string? tags,
+        string? source,
+        float[] embedding,
+        AttachmentMemoryProvenance? provenance,
         CancellationToken cancellationToken)
     {
 
@@ -83,6 +132,18 @@ internal sealed class SagaMemoryStore(
                 AddParameter(memoryCmd, "@source", (object?)source ?? DBNull.Value);
 
                 _ = await memoryCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                if (provenance is not null)
+                {
+
+                    await InsertProvenanceAsync(
+                        connection,
+                        transaction,
+                        id,
+                        provenance,
+                        cancellationToken).ConfigureAwait(false);
+
+                }
 
                 byte[] blob = EmbeddingBlobCodec.Encode(embedding);
 
@@ -199,15 +260,22 @@ internal sealed class SagaMemoryStore(
 
                 StringBuilder sql = new(
                     """
-                    SELECT "Id", "Content", "CreatedAt", "SessionId", "Tags", "Source"
-                    FROM "saga_memories"
+                    SELECT m."Id", m."Content", m."CreatedAt", m."SessionId", m."Tags", m."Source",
+                           p.SessionId, p.AttachmentId, p.LogicalKey, p.Version,
+                           p.ContentHash, p.MaterializedAt, p.SourceType,
+                           EXISTS(
+                               SELECT 1 FROM "SessionAttachments" a
+                               WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
+                           )
+                    FROM "saga_memories" m
+                    LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     WHERE 1 = 1
                     """);
 
                 if (!string.IsNullOrWhiteSpace(query))
                 {
 
-                    sql.Append(" AND \"Content\" LIKE @query ESCAPE '\\'");
+                    sql.Append(" AND m.\"Content\" LIKE @query ESCAPE '\\'");
 
                     AddParameter(cmd, "@query", "%" + EscapeLikePattern(query) + "%");
 
@@ -216,13 +284,13 @@ internal sealed class SagaMemoryStore(
                 if (sessionId is not null)
                 {
 
-                    sql.Append(" AND \"SessionId\" = @sessionId");
+                    sql.Append(" AND m.\"SessionId\" = @sessionId");
 
                     AddParameter(cmd, "@sessionId", sessionId.Value.ToString());
 
                 }
 
-                sql.Append(" ORDER BY \"CreatedAt\" DESC LIMIT @limit OFFSET @offset");
+                sql.Append(" ORDER BY m.\"CreatedAt\" DESC LIMIT @limit OFFSET @offset");
 
                 AddParameter(cmd, "@limit", limit);
 
@@ -282,9 +350,16 @@ internal sealed class SagaMemoryStore(
 
                 cmd.CommandText =
                     $"""
-                    SELECT "Id", "Content", "CreatedAt", "SessionId", "Tags", "Source"
-                    FROM "saga_memories"
-                    WHERE "Id" IN ({string.Join(", ", parameterNames)})
+                    SELECT m."Id", m."Content", m."CreatedAt", m."SessionId", m."Tags", m."Source",
+                           p.SessionId, p.AttachmentId, p.LogicalKey, p.Version,
+                           p.ContentHash, p.MaterializedAt, p.SourceType,
+                           EXISTS(
+                               SELECT 1 FROM "SessionAttachments" a
+                               WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
+                           )
+                    FROM "saga_memories" m
+                    LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
+                    WHERE m."Id" IN ({string.Join(", ", parameterNames)})
                     """;
 
                 Dictionary<string, SagaMemoryDto> results = new(ids.Count, StringComparer.Ordinal);
@@ -321,6 +396,17 @@ internal sealed class SagaMemoryStore(
                 await using DbCommand memoryCmd = connection.CreateCommand();
 
                 memoryCmd.Transaction = transaction;
+
+                await using DbCommand provenanceCmd = connection.CreateCommand();
+
+                provenanceCmd.Transaction = transaction;
+
+                provenanceCmd.CommandText =
+                    "DELETE FROM saga_memory_attachment_provenance WHERE MemoryId = @id";
+
+                AddParameter(provenanceCmd, "@id", id);
+
+                _ = await provenanceCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 memoryCmd.CommandText = """DELETE FROM "saga_memories" WHERE "Id" = @id""";
 
@@ -385,6 +471,14 @@ internal sealed class SagaMemoryStore(
                 await using DbCommand memoryCmd = connection.CreateCommand();
 
                 memoryCmd.Transaction = transaction;
+
+                await using DbCommand provenanceCmd = connection.CreateCommand();
+
+                provenanceCmd.Transaction = transaction;
+
+                provenanceCmd.CommandText = "DELETE FROM saga_memory_attachment_provenance";
+
+                _ = await provenanceCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 memoryCmd.CommandText = """DELETE FROM "saga_memories" """;
 
@@ -588,7 +682,73 @@ internal sealed class SagaMemoryStore(
 
         string? source = reader.IsDBNull(5) ? null : reader.GetString(5);
 
-        return new SagaMemoryDto(id, content, createdAt, sessionId, tags, source);
+        AttachmentMemoryProvenance? provenance = reader.IsDBNull(6)
+            ? null
+            : new AttachmentMemoryProvenance(
+                Guid.Parse(reader.GetString(6)),
+                Guid.Parse(reader.GetString(7)),
+                reader.GetString(8),
+                reader.GetInt32(9),
+                reader.GetString(10),
+                DateTimeOffset.Parse(reader.GetString(11), CultureInfo.InvariantCulture),
+                reader.GetString(12),
+                reader.GetInt32(13) == 1
+                    ? AttachmentSourceAvailability.Available
+                    : AttachmentSourceAvailability.Unavailable);
+
+        return new SagaMemoryDto(
+            id,
+            content,
+            createdAt,
+            sessionId,
+            tags,
+            source,
+            provenance);
+
+    }
+
+    private static async Task InsertProvenanceAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string memoryId,
+        AttachmentMemoryProvenance provenance,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText =
+            """
+            INSERT INTO saga_memory_attachment_provenance (
+                MemoryId, SessionId, AttachmentId, LogicalKey, Version,
+                ContentHash, MaterializedAt, SourceType)
+            VALUES (
+                @memoryId, @sessionId, @attachmentId, @logicalKey, @version,
+                @contentHash, @materializedAt, @sourceType)
+            """;
+
+        AddParameter(command, "@memoryId", memoryId);
+
+        AddParameter(command, "@sessionId", provenance.SessionId.ToString());
+
+        AddParameter(command, "@attachmentId", provenance.AttachmentId.ToString());
+
+        AddParameter(command, "@logicalKey", provenance.LogicalKey);
+
+        AddParameter(command, "@version", provenance.Version);
+
+        AddParameter(command, "@contentHash", provenance.ContentHash);
+
+        AddParameter(
+            command,
+            "@materializedAt",
+            provenance.MaterializedAt.ToString("o", CultureInfo.InvariantCulture));
+
+        AddParameter(command, "@sourceType", provenance.SourceType);
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

@@ -67,6 +67,29 @@ public sealed class PromptCachePlannerTests
     }
 
     [Fact]
+
+    public void Create_AttachmentPathContentAndHashRemainOutsideStableDigestAndSharedKey()
+    {
+
+        PromptCachePlan first = CreateForDocument(Document(
+            Stable("preamble"),
+            Volatile("path=/private/one content=alpha hash=aaa")));
+
+        PromptCachePlan second = CreateForDocument(Document(
+            Stable("preamble"),
+            Volatile("path=/private/two content=beta hash=bbb")));
+
+        Assert.Equal(first.CacheKey, second.CacheKey);
+
+        Assert.Equal(first.StableSegmentDigest, second.StableSegmentDigest);
+
+        Assert.DoesNotContain("aaa", first.CacheKey, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("/private/one", first.StableSegmentDigest, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public void Create_MainPlan_FinalizedToolDefinitionsParticipateWithoutReordering()
     {
         ChatOptions firstOptions = new()

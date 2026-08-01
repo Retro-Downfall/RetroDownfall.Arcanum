@@ -1,10 +1,41 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
 public sealed class CampaignLoggerQueueTests
 {
+
+    [Fact]
+
+    public void BuildAttachmentConsultationReferences_IncludesMetadataWithoutRawContentOrPaths()
+    {
+
+        AttachmentMemoryProvenance provenance = new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "security-review",
+            7,
+            "super-secret-hash",
+            DateTimeOffset.Parse("2026-08-01T12:00:00Z"),
+            "WorkspaceFile",
+            AttachmentSourceAvailability.Available);
+
+        string references = CampaignSummaryAttachmentPolicy.BuildConsultedReferences(
+            [provenance]);
+
+        Assert.Contains("security-review", references, StringComparison.Ordinal);
+
+        Assert.Contains("version=7", references, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("super-secret-hash", references, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("/Users/", references, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("raw attachment content", references, StringComparison.Ordinal);
+
+    }
 
     [Fact]
     public async Task TryQueue_and_ReadAllAsync_round_trip_conversation_ids()

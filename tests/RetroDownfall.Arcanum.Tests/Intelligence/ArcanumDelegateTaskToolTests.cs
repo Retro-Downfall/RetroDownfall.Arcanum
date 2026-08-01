@@ -9,6 +9,66 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ArcanumDelegateTaskToolTests
 {
+
+    [Fact]
+
+    public async Task InvokeAsync_IntersectsDelegatedAttachmentIdsWithMaterializedParentAllowlist()
+    {
+
+        Guid allowedAttachmentId = Guid.NewGuid();
+
+        Guid undelegatedAttachmentId = Guid.NewGuid();
+
+        CapturingSubagentRunner runner = new(
+            new SubagentRunResult(
+                Success: true,
+                Summary: "unused",
+                RunId: Guid.NewGuid(),
+                Usage: new DelegatedManaUsage(1, 0m, 1, Exhausted: false),
+                FailureCode: null));
+
+        ArcanumDelegateTaskTool tool = new(runner, inheritedModel: null);
+
+        using IDisposable scope = AttachmentMemoryGateAmbient.BeginTurn();
+
+        AttachmentMemoryGateAmbient.RegisterMaterialized(
+            new AttachmentMemoryProvenance(
+                Guid.NewGuid(),
+                allowedAttachmentId,
+                "allowed",
+                1,
+                "hash",
+                DateTimeOffset.UtcNow,
+                "SessionAttachment",
+                AttachmentSourceAvailability.Available));
+
+        JsonElement files = JsonSerializer.SerializeToElement(
+            new[]
+            {
+                new
+                {
+                    path = "notes.txt",
+                    content = "secret",
+                    attachment_id = undelegatedAttachmentId,
+                },
+            });
+
+        object? output = await tool.InvokeAsync(
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["prompt"] = "Review the delegated attachment.",
+                    ["files"] = files,
+                    ["max_tokens"] = 100,
+                }),
+            CancellationToken.None);
+
+        Assert.Equal("Subagent task failed: Explicit files were not delegated by the parent attachment policy.", output);
+
+        Assert.Null(runner.Request);
+
+    }
+
     [Fact]
     public async Task InvokeAsync_PassesOnlyExplicitPromptFilesAndBudget()
     {

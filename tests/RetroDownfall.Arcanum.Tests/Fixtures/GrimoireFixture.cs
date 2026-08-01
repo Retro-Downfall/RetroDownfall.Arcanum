@@ -154,6 +154,10 @@ public sealed class GrimoireFixture : IDisposable
             .Append(WeaveSchemaInitializer.CanonicalSchemaFingerprint)
             .Append('\n');
 
+        combined.Append("LexiconSchemaInitializer:")
+            .Append(LexiconSchemaInitializer.CanonicalSchemaFingerprint)
+            .Append('\n');
+
         combined.Append("GrimoireSqlSchemaMigrator:")
             .Append(GrimoireSqlSchemaMigrator.CanonicalMigrationOrder)
             .Append('\n');

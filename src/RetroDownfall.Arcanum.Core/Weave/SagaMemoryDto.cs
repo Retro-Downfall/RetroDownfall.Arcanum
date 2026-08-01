@@ -1,5 +1,7 @@
 namespace RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 /// <summary>
 /// RAG Phase 4 — a Saga memory as surfaced over <c>/api/saga</c> and <c>arcanum saga</c>. Mirrors the
 /// <c>saga_memories</c> table (see <c>WeaveSchemaInitializer</c>) one-to-one.
@@ -10,4 +12,5 @@ public sealed record SagaMemoryDto(
     DateTimeOffset CreatedAt,
     Guid? SessionId,
     string? Tags,
-    string? Source);
+    string? Source,
+    AttachmentMemoryProvenance? AttachmentProvenance = null);

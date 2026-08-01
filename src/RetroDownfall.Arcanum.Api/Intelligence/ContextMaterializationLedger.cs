@@ -1,5 +1,7 @@
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 /// <summary>
 /// Describes every context source that may materialize during one logical inference turn.
 /// The ordinal values are the deterministic admission priority: lower values outrank higher ones.
@@ -108,6 +110,8 @@ public sealed record ContextMaterializationCandidate(
     ContextMaterializationTrust Trust)
 {
 
+    public AttachmentMemoryProvenance? AttachmentProvenance { get; init; }
+
     public ContextMaterializationIdentity Identity =>
         new(SourceKind, SourceId, VersionOrContentHash, Range);
 
@@ -130,6 +134,8 @@ public sealed record ContextMaterializationEntry(
     int? VersionOrdinal = null)
 {
 
+    public AttachmentMemoryProvenance? AttachmentProvenance { get; init; }
+
     internal static ContextMaterializationEntry FromCandidate(
         ContextMaterializationCandidate candidate,
         bool accepted,
@@ -146,7 +152,10 @@ public sealed record ContextMaterializationEntry(
             candidate.Trust,
             accepted,
             rejection,
-            VersionOrdinal: candidate.VersionOrdinal);
+            VersionOrdinal: candidate.VersionOrdinal)
+        {
+            AttachmentProvenance = candidate.AttachmentProvenance,
+        };
 
 }
 
@@ -183,6 +192,8 @@ public sealed class ContextMaterializationLedger
     }
 
     public IReadOnlyList<ContextMaterializationEntry> Entries => _entries;
+
+    public Guid? SessionId => _sessionId;
 
     public ContextMaterializationEntry Accept(
         ContextMaterializationCandidate candidate,
@@ -275,6 +286,23 @@ public sealed class ContextMaterializationLedger
             ContextMaterializationRejection.None);
 
         _entries.Add(accepted);
+
+        if (candidate.AttachmentProvenance is { } provenance)
+        {
+
+            AttachmentMemoryGateAmbient.RegisterMaterialized(provenance);
+
+        }
+        else if (candidate.SourceKind is ContextMaterializationSourceKind.CurrentTurnAttachment
+            or ContextMaterializationSourceKind.ExplicitAttachmentReference
+            or ContextMaterializationSourceKind.AttachSessionFile
+            or ContextMaterializationSourceKind.RefreshSessionFile
+            or ContextMaterializationSourceKind.AttachmentRag)
+        {
+
+            AttachmentMemoryGateAmbient.RegisterUnprovenancedMaterialization();
+
+        }
 
         return accepted;
 
@@ -532,7 +560,12 @@ public static class ContextMaterializationLedgerAmbient
 
         ArgumentNullException.ThrowIfNull(ledger);
 
-        Current.Value = new State(ledger, 0);
+        Current.Value?.AttachmentMemoryScope.Dispose();
+
+        Current.Value = new State(
+            ledger,
+            0,
+            AttachmentMemoryGateAmbient.BeginTurn(ledger.SessionId));
 
     }
 
@@ -548,16 +581,28 @@ public static class ContextMaterializationLedgerAmbient
 
     }
 
-    public static void End() => Current.Value = null;
+    public static void End()
+    {
+
+        State? state = Current.Value;
+
+        Current.Value = null;
+
+        state?.AttachmentMemoryScope.Dispose();
+
+    }
 
     private sealed class State(
         ContextMaterializationLedger ledger,
-        int providerRound)
+        int providerRound,
+        IDisposable attachmentMemoryScope)
     {
 
         public ContextMaterializationLedger Ledger { get; } = ledger;
 
         public int ProviderRound { get; set; } = providerRound;
+
+        public IDisposable AttachmentMemoryScope { get; } = attachmentMemoryScope;
 
     }
 

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
@@ -80,6 +81,51 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.Single(result.Value.Facts);
 
         Assert.Equal("Prefers concise answers.", result.Value.Facts[0]);
+
+    }
+
+    [SkippableFact]
+
+    public async Task UpsertAsync_AttachmentDerivedFact_RoundTripsTypedProvenanceAsUnavailableWhenSourceWasDeleted()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid deletedAttachmentId = Guid.NewGuid();
+
+        AttachmentMemoryProvenance provenance = new(
+            sessionId,
+            deletedAttachmentId,
+            "privacy-policy",
+            2,
+            "content-hash",
+            DateTimeOffset.Parse("2026-08-01T12:00:00Z"),
+            "WorkspaceFile",
+            AttachmentSourceAvailability.Available);
+
+        Result<LexiconEntryDto> result = await _service!.UpsertAsync(
+            "Privacy policy",
+            "Document",
+            ["Retention is thirty days."],
+            provenance,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Result<LexiconEntryDto?> reloaded = await _service.GetByNameAsync(
+            "Privacy policy",
+            CancellationToken.None);
+
+        LexiconFactProvenance factProvenance = Assert.Single(
+            reloaded.Value!.FactProvenance ?? []);
+
+        Assert.Equal("Retention is thirty days.", factProvenance.Fact);
+
+        Assert.Equal(deletedAttachmentId, factProvenance.Source.AttachmentId);
+
+        Assert.Equal(AttachmentSourceAvailability.Unavailable, factProvenance.Source.Availability);
 
     }
 

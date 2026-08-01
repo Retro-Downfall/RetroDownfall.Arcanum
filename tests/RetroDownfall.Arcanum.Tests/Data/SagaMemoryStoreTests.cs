@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -121,6 +122,49 @@ public sealed class SagaMemoryStoreTests : IAsyncLifetime
         Assert.Equal(sessionId, memory.SessionId);
 
         Assert.Equal("extraction", memory.Source);
+
+    }
+
+    [SkippableFact]
+
+    public async Task InsertAsync_AttachmentDerivedMemory_RoundTripsProvenanceAndUnavailableSourceState()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid deletedAttachmentId = Guid.NewGuid();
+
+        AttachmentMemoryProvenance provenance = new(
+            sessionId,
+            deletedAttachmentId,
+            "architecture",
+            4,
+            "attachment-hash",
+            DateTimeOffset.Parse("2026-08-01T12:00:00Z"),
+            "SessionAttachmentRag",
+            AttachmentSourceAvailability.Available);
+
+        await _store!.InsertAsync(
+            "mem-provenance",
+            "The architecture decision uses SQLite.",
+            DateTimeOffset.Parse("2026-08-01T12:01:00Z"),
+            sessionId,
+            tags: null,
+            source: "extraction",
+            Vec(1f),
+            provenance,
+            CancellationToken.None);
+
+        SagaMemoryDto memory = Assert.Single(
+            await _store.ListAsync(null, sessionId, 10, 0, CancellationToken.None));
+
+        Assert.NotNull(memory.AttachmentProvenance);
+
+        Assert.Equal(deletedAttachmentId, memory.AttachmentProvenance.AttachmentId);
+
+        Assert.Equal(AttachmentSourceAvailability.Unavailable, memory.AttachmentProvenance.Availability);
 
     }
 

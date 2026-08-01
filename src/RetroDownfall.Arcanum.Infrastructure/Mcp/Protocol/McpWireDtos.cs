@@ -276,7 +276,8 @@ public sealed record AskHumanParams
 public sealed record ScribeLexiconParams(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("type")] string? Type,
-    [property: JsonPropertyName("facts")] string[] Facts);
+    [property: JsonPropertyName("facts")] string[] Facts,
+    [property: JsonPropertyName("attachment_id")] string? AttachmentId = null);
 
 public sealed record DeleteLexiconParams([property: JsonPropertyName("name")] string Name);
 

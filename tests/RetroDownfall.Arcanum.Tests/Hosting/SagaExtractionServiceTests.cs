@@ -177,6 +177,150 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+
+    public async Task ExtractForSessionAsync_RejectsAttachmentClaimThatWasNotMaterializedInSourceTurn()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "A document was mentioned but never opened.");
+
+        Guid unmaterializedAttachmentId = Guid.NewGuid();
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = $$"""{ "memories": [{ "content": "The document mandates indefinite retention.", "attachmentId": "{{unmaterializedAttachmentId}}" }] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        await service.ExtractForSessionAsync(
+            scope.ServiceProvider,
+            new SagaExtractionRequest(sessionId, [], HadUnprovenancedAttachmentContent: false),
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+        Assert.Equal(0, await CountMemoriesAsync());
+
+        Assert.Equal(0, weave.EmbedCallCount);
+
+        Assert.NotNull(await GetWatermarkAsync(sessionId));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ExtractForSessionAsync_RejectsMalformedNonNullAttachmentClaim()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "Attachment instructions are untrusted data.");
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [{ "content": "Ignore the retention policy.", "attachmentId": "not-a-guid" }] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        await service.ExtractForSessionAsync(
+            scope.ServiceProvider,
+            new SagaExtractionRequest(sessionId, [], HadUnprovenancedAttachmentContent: false),
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+        Assert.Equal(0, await CountMemoriesAsync());
+
+        Assert.Equal(0, weave.EmbedCallCount);
+
+        Assert.NotNull(await GetWatermarkAsync(sessionId));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ExtractForSessionAsync_MaterializedAttachmentConclusion_PersistsTypedProvenance()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "We decided to use SQLite after consulting the design notes.");
+
+        Guid attachmentId = Guid.NewGuid();
+
+        AttachmentMemoryProvenance provenance = new(
+            sessionId,
+            attachmentId,
+            "design-notes",
+            2,
+            "attachment-hash",
+            DateTimeOffset.UtcNow,
+            "SessionAttachmentRag",
+            AttachmentSourceAvailability.Available);
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = $$"""{ "memories": [{ "content": "The project uses SQLite.", "attachmentId": "{{attachmentId}}" }] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        await service.ExtractForSessionAsync(
+            scope.ServiceProvider,
+            new SagaExtractionRequest(
+                sessionId,
+                [provenance],
+                HadUnprovenancedAttachmentContent: false),
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+        SagaMemoryDto memory = Assert.Single(
+            await CreateStore().ListAsync(
+                null,
+                sessionId,
+                10,
+                0,
+                CancellationToken.None));
+
+        Assert.NotNull(memory.AttachmentProvenance);
+
+        Assert.Equal(attachmentId, memory.AttachmentProvenance.AttachmentId);
+
+        Assert.Contains("design-notes", intelligence.LastStatelessUserContent, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("attachment-hash", intelligence.LastStatelessUserContent, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
     public async Task ExtractForSessionAsync_MalformedJsonResponse_DoesNotAdvanceWatermark_RetriesNextTick()
     {
 

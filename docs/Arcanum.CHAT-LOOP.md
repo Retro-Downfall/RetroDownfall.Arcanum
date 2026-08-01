@@ -71,6 +71,25 @@ Initial DATA ordering is `Attached Files for this Turn` → `Retrieved Session A
 filename, logical key, version, opaque attachment id, character/line range, hash, an explicit
 untrusted-DATA warning, and an adaptive fence.
 
+## 5.2 Attachment memory promotion gate
+
+Materialization is the only authority for attachment-derived durable memory. A successful explicit
+attachment, attach/refresh tool result, or accepted attachment-RAG excerpt publishes typed
+provenance containing session id, opaque attachment id, logical key, version, content hash,
+materialized timestamp, and source type. A failed read, suppressed excerpt, attachment index row,
+or instruction inside attachment text grants no promotion authority.
+
+Lexicon writes that name an attachment must match the current turn's materialized allowlist. Saga
+extraction receives that same allowlist and discards claimed attachment conclusions that do not
+match it. Campaign summaries receive metadata-only consultation references, never attachment bytes,
+host paths, excerpt text, or index contents. Stable prompt-cache segments exclude attachment
+content, paths, hashes, and provenance; volatile context follows the stable prefix.
+
+Subagents remain sterile. A delegated file attachment id must intersect the parent's current-turn
+materialized allowlist, and only its explicitly supplied value crosses the child boundary. Deleting
+the source keeps the historical provenance record but changes its source availability to
+`Unavailable`; no durable memory silently loses its origin.
+
 ## 8. Transcript and injection order
 
 For a model response containing several calls, Arcanum appends every assistant-call/tool-result pair

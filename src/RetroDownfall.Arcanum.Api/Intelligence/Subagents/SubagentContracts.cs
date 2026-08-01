@@ -21,7 +21,8 @@ public sealed record SubagentRunRequest(
     IReadOnlyList<AttachedFileDto> Files,
     long? MaxTokens,
     decimal? MaxCostUsd,
-    int MaxTurns);
+    int MaxTurns,
+    IReadOnlySet<Guid>? AttachmentAllowlist = null);
 
 public sealed record SubagentRunResult(
     bool Success,

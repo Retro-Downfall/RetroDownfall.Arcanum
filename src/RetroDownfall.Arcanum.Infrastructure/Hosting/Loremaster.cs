@@ -158,6 +158,9 @@ internal sealed class Loremaster(
                     IArcanumIntelligenceProvider intelligence =
                         iterationScope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
 
+                    IAttachmentMemoryProvenanceStore attachmentProvenance =
+                        iterationScope.ServiceProvider.GetRequiredService<IAttachmentMemoryProvenanceStore>();
+
                     Session? session = await grimoire
                         .GetSessionHeaderAsync(sessionId, stoppingToken)
                         .ConfigureAwait(false);
@@ -193,6 +196,21 @@ internal sealed class Loremaster(
 
                     StringBuilder userPayload = new();
 
+                    DateTimeOffset provenanceWatermark = session.LastSummarizedMessageAt is { } summarizedAt
+                        ? new DateTimeOffset(
+                            DateTime.SpecifyKind(summarizedAt, DateTimeKind.Utc),
+                            TimeSpan.Zero)
+                        : DateTimeOffset.MinValue;
+
+                    IReadOnlyList<AttachmentMemoryProvenance> consultations =
+                        await attachmentProvenance
+                            .ListConsultationsAsync(
+                                sessionId,
+                                provenanceWatermark,
+                                new DateTimeOffset(batchEndUtc, TimeSpan.Zero),
+                                stoppingToken)
+                            .ConfigureAwait(false);
+
                     if (!string.IsNullOrWhiteSpace(session.Summary))
                     {
                         _ = userPayload.AppendLine("## Previous Summary");
@@ -200,6 +218,18 @@ internal sealed class Loremaster(
                         _ = userPayload.AppendLine(session.Summary.Trim());
 
                         _ = userPayload.AppendLine();
+                    }
+
+                    string consultedReferences =
+                        CampaignSummaryAttachmentPolicy.BuildConsultedReferences(consultations);
+
+                    if (consultedReferences.Length > 0)
+                    {
+
+                        _ = userPayload.AppendLine(consultedReferences);
+
+                        _ = userPayload.AppendLine();
+
                     }
 
                     foreach (Entry m in batch)
@@ -216,7 +246,7 @@ internal sealed class Loremaster(
                     }
 
                     const string systemPersona =
-                        "You are an AI tasked with maintaining a rolling campaign summary of a technical workspace conversation. Combine the previous summary (if any) with the new messages into a single, cohesive, highly condensed summary. Preserve critical technical details, file paths, and decisions. Discard conversational filler.";
+                        "You are an AI tasked with maintaining a rolling campaign summary of a technical workspace conversation. Combine the previous summary (if any) with the new messages into a single, cohesive, highly condensed summary. Preserve decisions and consulted attachment references by logical key and version, but never reproduce attachment excerpts or turn the summary into a document archive. Discard conversational filler.";
 
                     List<CoreChatMessage> statelessMessages =
                     [

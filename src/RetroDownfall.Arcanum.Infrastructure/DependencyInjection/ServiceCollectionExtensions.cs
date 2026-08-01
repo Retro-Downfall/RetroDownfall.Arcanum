@@ -426,6 +426,8 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
+        services.AddScoped<IAttachmentMemoryProvenanceStore, AttachmentMemoryProvenanceStore>();
+
         services.AddScoped<ILexiconService, LexiconService>();
 
         services.AddSingleton(TimeProvider.System);

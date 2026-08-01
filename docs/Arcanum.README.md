@@ -301,10 +301,15 @@ Summaries only — full contracts live in DESIGN.
   printed only after the backend confirms the persisted/reused version.
   Semantic retrieval reads only through the encrypted attachment store, exposes bounded
   `indexingStatus` metadata, and fences retrieved excerpts as untrusted DATA.
+  Durable memory promotion is fail-closed: Lexicon and Saga accept attachment-derived facts only
+  from the current turn's materialized attachment allowlist and retain typed source provenance.
+  Campaign summaries persist metadata-only consultation references; prompt-cache stable prefixes,
+  audit logs, and subagent context never absorb attachment bytes, excerpts, host paths, or hashes.
+  Source deletion preserves provenance but reports it as unavailable.
   See [the chat-loop ordering guide](Arcanum.CHAT-LOOP.md).
 - **A2A:** [§5.7.1](Arcanum.DESIGN.md#571-a2a-and-the-conclave) (disabled by default).
 - **RAG (Weave / Divination / Saga):** [§21](Arcanum.DESIGN.md#21-the-weave-divination-and-saga-rag) — capabilities are gated under `Arcanum:Features`; embedding provider/model/dimensions and the codebase watcher debounce/count/reconciliation controls live under `Arcanum:Integrations:Embeddings`. Semantic workspace indexing reacts to debounced recursive watcher events, revalidates paths and opened file identities before every read, retains bounded periodic reconciliation when events are lost/unavailable, and exposes watcher/reconciliation health through `/api/workspaces/{id}/files/index/status`.
-- **Lexicon:** agent memory via `scribe_lexicon` / `delete_lexicon`; gated by `Arcanum:Features:Lexicon`. [§10.6](Arcanum.DESIGN.md#106-the-lexicon--agent-directed-entity-memory).
+- **Lexicon:** agent memory via `scribe_lexicon` / `delete_lexicon`; gated by `Arcanum:Features:Lexicon`. Attachment-derived facts require a current-turn materialized attachment id and retain typed provenance. [§10.6](Arcanum.DESIGN.md#106-the-lexicon--agent-directed-entity-memory).
 
 ---
 
@@ -656,7 +661,8 @@ Full distribution contracts are in [DESIGN §19.12](Arcanum.DESIGN.md#1912-build
   `ReconciliationRequired`/Degraded health and is repaired with `arcanum operation ...`.
 - Subagents are intentionally one level deep and model-only. They inherit no parent transcript,
   session memory, workspace/Codex/RAG context, or tools; the parent must pass self-contained
-  instructions and any file content explicitly. A crashed `subagent` durable operation is
+  instructions and any file content explicitly. Attachment files additionally require an opaque id
+  from the parent's current-turn materialized allowlist. A crashed `subagent` durable operation is
   abandoned safely rather than replayed.
 
 ---

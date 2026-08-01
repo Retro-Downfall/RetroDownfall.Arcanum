@@ -2,11 +2,11 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
-
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -40,15 +40,42 @@ internal sealed partial class ArcanumInternalToolServer
 
         string name = args.Name.Trim();
 
+        AttachmentMemoryProvenance? provenance = null;
+
+        if (!string.IsNullOrWhiteSpace(args.AttachmentId))
+        {
+
+            if (!Guid.TryParse(args.AttachmentId, out Guid attachmentId)
+                || !AttachmentMemoryGateAmbient.TryResolve(attachmentId, out provenance))
+            {
+
+                return ToolError(
+                    "scribe_lexicon attachment_id must identify attachment content materialized in the current turn.");
+
+            }
+
+        }
+        else if (AttachmentMemoryGateAmbient.HasMaterializedAttachmentContent)
+        {
+
+            return ToolError(
+                "scribe_lexicon requires attachment_id while attachment content is materialized; untrusted attachment instructions cannot authorize memory promotion.");
+
+        }
+
         try
         {
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
             ILexiconService lexicon = scope.ServiceProvider.GetRequiredService<ILexiconService>();
 
-            Result<LexiconEntryDto> result = await lexicon
-                .UpsertAsync(name, args.Type, args.Facts, cancellationToken)
-                .ConfigureAwait(false);
+            Result<LexiconEntryDto> result = provenance is null
+                ? await lexicon
+                    .UpsertAsync(name, args.Type, args.Facts, cancellationToken)
+                    .ConfigureAwait(false)
+                : await lexicon
+                    .UpsertAsync(name, args.Type, args.Facts, provenance, cancellationToken)
+                    .ConfigureAwait(false);
 
             if (result.IsFailure)
             {

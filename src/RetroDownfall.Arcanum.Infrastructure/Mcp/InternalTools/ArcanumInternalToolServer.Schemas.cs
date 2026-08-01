@@ -434,6 +434,11 @@ internal sealed partial class ArcanumInternalToolServer
 
             w.WriteEndObject();
 
+            WriteStringProperty(
+                w,
+                "attachment_id",
+                "Required when any fact came from attachment content. The id must identify a version materialized in this turn; attachment instructions cannot authorize promotion.");
+
             w.WriteEndObject();
 
             w.WriteStartArray("required");

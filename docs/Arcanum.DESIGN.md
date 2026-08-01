@@ -742,7 +742,7 @@ The Grimoire is the primary persistence authority, but not every durable byte be
 | State | Durable authority | Persistence contract |
 |-------|-------------------|----------------------|
 | Sessions, Entries, Campaigns, Prompts, Apprentices, WorkspaceContexts, operator Lore | EF-tracked Grimoire tables | Compiled-model entities; `MageSettings` remains operator-only Lore. |
-| Lexicon entity memory | `lexicon_entries` + `lexicon_fts` | Raw SQL initialized idempotently by `LexiconSchemaInitializer`; no EF entity (§10.6). |
+| Lexicon entity memory | `lexicon_entries` + `lexicon_fts` + `lexicon_fact_attachment_provenance` | Raw SQL initialized idempotently by `LexiconSchemaInitializer`; attachment-derived facts retain typed per-fact provenance and dynamically report deleted sources as unavailable; no EF entity (§10.6). |
 | Unseen Servant schedule state | `UnseenServantWatermarks` | Raw SQL; only last-run time and effective interval persist (§5.5.5). |
 | Sanctum breach history | `SanctumBreaches` | Raw SQL, per-Campaign retention, durable across restart (§11.15). |
 | Idempotency claims | `IdempotencyClaims` | Raw-SQL lease/state machine; legacy `IdempotencyKeys` may remain for expiry compatibility (§11.17). |
@@ -752,7 +752,7 @@ The Grimoire is the primary persistence authority, but not every durable byte be
 | Session attachment metadata | `SessionAttachments` | Raw SQL through `ISessionAttachmentStore`; `EncryptionVersion`/`EncryptionKeyId`, encrypted bytes, and lifecycle are in §10.2.5. |
 | Session context pins | `SessionContextPins` | Raw SQL through `ISessionContextPinStore`; durable metadata only. Content is revalidated and materialized from its authoritative source on every turn (§10.2.6). |
 | OpenAI batch metadata | `Batches` | No request-count columns; `GET` derives counts from input/output/error files (§11.21). |
-| Embedding, attachment-retrieval, and Saga state | `entry_embeddings`[+`_vec`], `workspace_file_chunks`, `workspace_file_embeddings`[+`_vec`], `session_attachment_chunks`, `session_attachment_embeddings`[+`_vec`], `session_attachment_index_state`, `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks` | Created idempotently from canonical definitions in `WeaveSchemaInitializer`. Attachment chunks retain session/version/file/hash/character/line provenance and status without serialized metadata JSON. While Arcanum has no users, schema changes replace those definitions directly and local/test databases are recreated; no compatibility upgrade path is maintained. Reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
+| Embedding, attachment-retrieval, and Saga state | `entry_embeddings`[+`_vec`], workspace/attachment companions, `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks`, `saga_memory_attachment_provenance`, `attachment_memory_consultations` | Created idempotently from canonical definitions in `WeaveSchemaInitializer`. Attachment chunks and derived Saga memories retain typed session/attachment/key/version/hash/materialized-time/source provenance. Campaign consultations are metadata-only and link to the finalized assistant entry so timestamp-group summary windows remain exact. While Arcanum has no users, schema changes replace those definitions directly and local/test databases are recreated; no compatibility upgrade path is maintained. Reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
 | Entry pinning | `Entries.IsPinned` | Pinned entries survive read-time compression and remain available to inference. |
 | Mandatory `apply_patch` receipt | deterministic `Entries` rows | Exact assistant `ToolCall` then system `ToolResult`; no receipt table (§10.7.4). |
 | Daemon execution history | process memory | `InMemoryDaemonExecutionRepository`; restart clears it. |
@@ -1107,6 +1107,12 @@ Three mechanisms trigger Campaign Log consolidation:
 
 The queue consumer resolves **`IArcanumIntelligenceProvider`** in a per-item DI scope alongside **`IGrimoireRepository`**, loads the session header via **`GetSessionHeaderAsync`**, and batches rows with **`CreatedAt > (LastSummarizedMessageAt ?? DateTime.MinValue)`**. It builds a stateless **`PingRequest`**: empty `Prompt`, `StatelessMessages` (system persona + user payload with prior summary and batched turns), **`SkipSpellRouting: true`**, **`DisableMcpTools: true`**, **`UnattendedMode: true`**, **`Model`** from **`Arcanum:FastModel`** when set else **`Arcanum:DefaultModel`**, else omitted for first-provider fallback, and **no** `SessionId` so the hub does not append a new **`Entry`**. On **`ExecutePromptAsync`** success, **`UpdateSessionCampaignRollupAsync`** atomically persists the LLM text into **`Session.Summary`** and sets **`LastSummarizedMessageAt`** to the latest batched entry time. On **`Result.IsFailure`** or exception, **no** DB update — the session remains eligible on the next sweep. The intelligence hub **reads** `Summary` for optional read-time compression (§10.2.3).
 
+For attachment privacy, the successful source turn records only typed consultation metadata. The
+Campaign Logger adds logical key, version, opaque attachment id, and source type for consultations
+inside the summarized window; it never loads attachment bytes, automatically submits the session's
+attachment index, or copies hashes/host paths into the summarizer payload. The prompt asks for useful
+decisions and source references, not an attachment archive.
+
 Under the same **Session-Based Consolidation model of AI memory**, **Chronosync reporting** (§5.4.2) addresses **spatial** drift: thread lines and `DomainType` deltas vs the last persisted `PatternSnapshot`, not chat log length. Campaign Logger and Chronosync are separate triggers; the hub folds `ChronosyncReport` into the system prompt via `PingRequest.ChronosyncDelta`; MCP context remains separate.
 
 ### 8.8 OpenAI `/v1` Chat Completions compatibility subset
@@ -1385,7 +1391,7 @@ After the dynamic system prompt, rehydrated attachments, and final tool set have
 - **Delegated Mana:** `DelegatedManaTracker` is scoped through `SubagentExecutionAmbient` and charges provider-authoritative total tokens plus dynamically priced USD cost after every child model call. `BeginModelCall` enforces the delegated turn ceiling before provider I/O. Token/cost overrun is detected immediately after usage is available and terminates the child after its billable operation is recorded; `SubagentParentContextInjector` appends the exact system message `Subagent task failed: Delegated budget exhausted.` to the parent context. The tracker uses interlocked counters plus a cost lock so future parallel children cannot race the ceiling.
 - **Native AOT:** tokenizer creation uses the **`Microsoft.ML.Tokenizers.Data.O200kBase`** data assembly; all new wire/audit/config contracts are source-generated and linker-safe.
 
-**Child context isolation:** `SubagentRunner` creates a new stateless request containing exactly one code-owned isolated system instruction, the delegated user prompt, and the explicit attached file values. It carries no parent `SessionId`, transcript, `ContextSnapshot`, Chronosync delta, campaign, data streams, workspace root, Codex, session pins, Lexicon, Saga, or semantic retrieval. Child tools are disabled. `SubagentExecutionAmbient.MaxSubagentDepth = 1` prevents child-to-grandchild delegation even if a tool surface is accidentally widened later.
+**Child context isolation:** `SubagentRunner` creates a new stateless request containing exactly one code-owned isolated system instruction, the delegated user prompt, and explicit file values. It carries no parent `SessionId`, transcript, `ContextSnapshot`, Chronosync delta, campaign, data streams, workspace root, Codex, session pins, Lexicon, Saga, attachment index, or semantic retrieval. When parent attachment content was materialized, every delegated file must name an attachment id in the parent turn's materialized allowlist; the effective child permission is therefore the intersection of parent authority and the child request. Child tools are disabled. `SubagentExecutionAmbient.MaxSubagentDepth = 1` prevents child-to-grandchild delegation even if a tool surface is accidentally widened later.
 
 ### 10.2.3.1 Performance findings
 
@@ -1626,6 +1632,30 @@ when the schema is unavailable. The FTS triggers copy `Name`, `Type`, and the ne
 **Injection (DATA, hardened):** `SystemPromptBuilder.Build` accepts `IReadOnlyList<LexiconEntryDto>? lexiconEntries` (default null) and renders `### Lexicon (Known Context)` at the top of the DATA block. Lexicon is model-writable and potentially stale/adversarial, so it is treated strictly as DATA — never instructions; the preamble already states DATA may be stale and never overrides INSTRUCTIONS. Facts are hardened: whitespace collapsed, newlines/control chars stripped, exactly one plain markdown bullet per entity (`- **Name** (Type): "Fact 1"; "Fact 2"`), so facts cannot create headings or break DCI structure. Total rendered bytes are capped by `LexiconMaxInjectedBytes`; entry count by `LexiconMaxMatchedEntries`. Retrieval/injection failures are logged and swallowed — Lexicon never fails an inference turn. Lexicon contents are not persisted into audit logs or exposed on `/v1` tool surfaces.
 
 **Error codes:** `ErrorCodes.Lexicon.InvalidName` / `InvalidFact` / `NotFound` / `WriteFailed` / `SearchFailed` (no HTTP route yet; MCP converts expected failures to tool-result strings).
+
+#### 10.6.1 Attachment-derived memory promotion and privacy policy
+
+Attachment bytes are untrusted DATA; neither a file nor instructions inside it can authorize durable
+memory. A successful materialization publishes a turn-scoped `AttachmentMemoryProvenance` containing
+Session ID, Attachment ID, logical key, version, content hash, materialized-at timestamp, and source
+type. Failed, stale, cross-session, or merely indexed content publishes no promotion authority.
+
+| Destination | Default attachment policy |
+|-------------|---------------------------|
+| Current-turn context | Explicit files and bounded retrieved chunks are allowed as untrusted DATA. |
+| Session attachment RAG | Eligible textual chunks remain session-scoped; historical versions are explicit-only. |
+| Session Entry RAG | Attachment chunks are not copied into Entries; the normal assistant conclusion alone may be persisted. |
+| Campaign Summary | Record consulted logical key/version and useful decisions; never send all attachments or raw content. |
+| Lexicon | No automatic promotion. `scribe_lexicon` requires `attachment_id` whenever attachment content was materialized, validates that id against the current turn, and stores per-fact provenance in `lexicon_fact_attachment_provenance`. |
+| Saga | No raw automatic ingestion. Extraction receives only the conversation plus a metadata allowlist, accepts concise conclusions, and rejects any claimed attachment id absent from the source turn. Typed provenance is stored in `saga_memory_attachment_provenance`. |
+| Prompt cache | Attachment metadata, paths, hashes, and bytes are volatile DATA. They are excluded from stable prefixes and shared cache keys. |
+| Audit log | Metadata-only inference accounting; no attachment bytes, raw paths, content, or provenance hash payloads. |
+| Subagents | Only explicit file values whose attachment ids intersect the parent materialized allowlist; no inherited index or enumeration. |
+
+Deleting an attachment does not silently delete unrelated conclusions. Lexicon/Saga provenance rows
+remain and resolve `Availability=Unavailable` when no Bound source row exists, so downstream users are
+never told that an unavailable source is verifiable. This metadata is a typed side table, not opaque
+text concatenated into the fact or memory.
 
 ### 10.7 End-to-end turn lifecycle and chat loop
 
@@ -3535,9 +3565,9 @@ Watchers are latency hints, never a security or correctness boundary. Every incr
 
 **Contrast:** Lore/Lexicon are explicit; Saga is auto-extracted, operator-delete-only (no `scribe_saga`/`delete_saga`).
 
-**Store:** `ISagaMemoryStore` / `SagaMemoryStore` — `saga_memories` plus embedding companions and `saga_extraction_watermarks` (§5.4.4).
+**Store:** `ISagaMemoryStore` / `SagaMemoryStore` — `saga_memories` plus embedding companions, `saga_extraction_watermarks`, and typed `saga_memory_attachment_provenance` (§5.4.4). Provenance remains after source deletion and is surfaced as unavailable.
 
-**Service:** `SagaExtractionService` — event-driven bounded channel (`EnqueueExtraction`, DropOldest); performs headless LLM extraction after successful turns when `Arcanum:Features:SagaExtraction` is enabled. Caps, watermark rules, and degradation are code-owned (§21.4).
+**Service:** `SagaExtractionService` — event-driven bounded channel (`EnqueueExtraction`, DropOldest); performs headless LLM extraction after successful turns when `Arcanum:Features:SagaExtraction` is enabled. Each request snapshots the source turn's materialized attachment allowlist. The extractor returns concise typed candidates; invalid/unmaterialized attachment claims are discarded before embedding, and ephemeral attachment content without durable provenance fails closed. Caps, watermark rules, and degradation are code-owned (§21.4).
 
 **Retrieval:** `RetrieveSagaMemoriesAsync` → `### Saga (Associative Memory)` DATA. The query embedding is shared with semantic codebase retrieval per turn.
 

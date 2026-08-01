@@ -38,7 +38,12 @@ internal sealed class ArcanumDelegateTaskTool(
                 "type": "object",
                 "properties": {
                   "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
-                  "content": { "type": "string", "maxLength": 262144 }
+                  "content": { "type": "string", "maxLength": 262144 },
+                  "attachment_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Required for attachment-derived content and limited to attachment ids materialized in the parent turn."
+                  }
                 },
                 "required": ["path", "content"],
                 "additionalProperties": false
@@ -111,7 +116,19 @@ internal sealed class ArcanumDelegateTaskTool(
             return $"Subagent task failed: max_turns must be between 1 and {MaxTurns}.";
         }
 
-        if (!TryReadFiles(arguments, out IReadOnlyList<AttachedFileDto> files))
+        FileReadResult fileResult = TryReadFiles(
+            arguments,
+            out IReadOnlyList<AttachedFileDto> files,
+            out IReadOnlySet<Guid> attachmentAllowlist);
+
+        if (fileResult == FileReadResult.ParentPolicyDenied)
+        {
+
+            return "Subagent task failed: Explicit files were not delegated by the parent attachment policy.";
+
+        }
+
+        if (fileResult != FileReadResult.Success)
         {
             return "Subagent task failed: Explicit files were invalid or exceeded their bounds.";
         }
@@ -124,7 +141,8 @@ internal sealed class ArcanumDelegateTaskTool(
                     files,
                     maxTokens,
                     maxCostUsd,
-                    maxTurns),
+                    maxTurns,
+                    attachmentAllowlist),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -139,30 +157,35 @@ internal sealed class ArcanumDelegateTaskTool(
         };
     }
 
-    private static bool TryReadFiles(
+    private static FileReadResult TryReadFiles(
         AIFunctionArguments arguments,
-        out IReadOnlyList<AttachedFileDto> files)
+        out IReadOnlyList<AttachedFileDto> files,
+        out IReadOnlySet<Guid> attachmentAllowlist)
     {
         files = [];
+
+        attachmentAllowlist = new HashSet<Guid>();
 
         if (!arguments.TryGetValue("files", out object? raw)
             || raw is null)
         {
-            return true;
+            return FileReadResult.Success;
         }
 
         if (raw is not JsonElement element)
         {
-            return false;
+            return FileReadResult.Invalid;
         }
 
         if (element.ValueKind != JsonValueKind.Array
             || element.GetArrayLength() > MaxFiles)
         {
-            return false;
+            return FileReadResult.Invalid;
         }
 
         List<AttachedFileDto> parsed = new(element.GetArrayLength());
+
+        HashSet<Guid> delegated = [];
 
         foreach (JsonElement item in element.EnumerateArray())
         {
@@ -172,7 +195,7 @@ internal sealed class ArcanumDelegateTaskTool(
                 || !item.TryGetProperty("content", out JsonElement contentElement)
                 || contentElement.ValueKind != JsonValueKind.String)
             {
-                return false;
+                return FileReadResult.Invalid;
             }
 
             string path = pathElement.GetString() ?? string.Empty;
@@ -182,7 +205,33 @@ internal sealed class ArcanumDelegateTaskTool(
                 || path.Length > 4096
                 || content.Length > MaxFileCharacters)
             {
-                return false;
+                return FileReadResult.Invalid;
+            }
+
+            bool hasAttachmentId = item.TryGetProperty(
+                "attachment_id",
+                out JsonElement attachmentIdElement);
+
+            if (hasAttachmentId)
+            {
+
+                if (attachmentIdElement.ValueKind != JsonValueKind.String
+                    || !Guid.TryParse(attachmentIdElement.GetString(), out Guid attachmentId)
+                    || !AttachmentMemoryGateAmbient.TryResolve(attachmentId, out _))
+                {
+
+                    return FileReadResult.ParentPolicyDenied;
+
+                }
+
+                delegated.Add(attachmentId);
+
+            }
+            else if (AttachmentMemoryGateAmbient.HasMaterializedAttachmentContent)
+            {
+
+                return FileReadResult.ParentPolicyDenied;
+
             }
 
             parsed.Add(new AttachedFileDto(path, content));
@@ -190,7 +239,20 @@ internal sealed class ArcanumDelegateTaskTool(
 
         files = parsed;
 
-        return true;
+        attachmentAllowlist = delegated;
+
+        return FileReadResult.Success;
+    }
+
+    private enum FileReadResult
+    {
+
+        Success,
+
+        Invalid,
+
+        ParentPolicyDenied,
+
     }
 
     private static bool TryReadString(

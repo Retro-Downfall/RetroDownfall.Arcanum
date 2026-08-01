@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
@@ -242,7 +243,18 @@ public static class SessionAttachmentToolInjection
                 record.ContentSha256,
                 EstimatedTokens: EstimateTokens(record.ByteLength),
                 MaterializedBytes: int.CreateSaturating(record.ByteLength),
-                ContextMaterializationTrust.UntrustedData),
+                ContextMaterializationTrust.UntrustedData)
+            {
+                AttachmentProvenance = new AttachmentMemoryProvenance(
+                    record.SessionId ?? Guid.Empty,
+                    record.Id,
+                    record.LogicalKey,
+                    record.Version,
+                    record.ContentSha256,
+                    DateTimeOffset.UtcNow,
+                    record.Source?.Kind.ToString() ?? AttachmentSourceKind.SnapshotOnly.ToString(),
+                    AttachmentSourceAvailability.Available),
+            },
             materialized: true);
 
         if (!entry.Accepted || !SessionAttachmentTurnBudget.TryConsume())

@@ -1,5 +1,7 @@
 namespace RetroDownfall.Arcanum.Core.Weave;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 /// <summary>
 /// RAG Phase 4 — a single Saga memory retrieved via Divination for injection into the system prompt
 /// (see <c>SystemPromptBuilder.Build</c>'s <c>sagaMemories</c> parameter). Intentionally slimmer than
@@ -9,4 +11,5 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 public sealed record SagaMemory(
     string Content,
     float Similarity,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    AttachmentMemoryProvenance? AttachmentProvenance = null);

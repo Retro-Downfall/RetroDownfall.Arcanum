@@ -1,9 +1,71 @@
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ContextMaterializationLedgerTests
 {
+
+    [Fact]
+
+    public void AttachmentProvenance_IsPublishedOnlyAfterSuccessfulMaterialization()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid attachmentId = Guid.NewGuid();
+
+        AttachmentMemoryProvenance provenance = new(
+            sessionId,
+            attachmentId,
+            "design-notes",
+            3,
+            "sha256-value",
+            DateTimeOffset.Parse("2026-08-01T12:00:00Z"),
+            "SessionAttachmentRag",
+            AttachmentSourceAvailability.Available);
+
+        ContextMaterializationLedger ledger = CreateLedger(sessionId);
+
+        using IDisposable scope = AttachmentMemoryGateAmbient.BeginTurn();
+
+        ContextMaterializationEntry rejected = ledger.Accept(
+            Candidate(
+                sessionId,
+                ContextMaterializationSourceKind.AttachmentRag,
+                attachmentId.ToString("N"),
+                versionOrdinal: 3,
+                contentHash: "sha256-value",
+                range: new ContextMaterializationRange(0, 12)) with
+            {
+                AttachmentProvenance = provenance,
+            },
+            materialized: false);
+
+        Assert.False(rejected.Accepted);
+
+        Assert.False(AttachmentMemoryGateAmbient.TryResolve(attachmentId, out _));
+
+        ContextMaterializationEntry accepted = ledger.Accept(
+            Candidate(
+                sessionId,
+                ContextMaterializationSourceKind.AttachmentRag,
+                attachmentId.ToString("N"),
+                versionOrdinal: 3,
+                contentHash: "sha256-value",
+                range: new ContextMaterializationRange(0, 12)) with
+            {
+                AttachmentProvenance = provenance,
+            },
+            materialized: true);
+
+        Assert.True(accepted.Accepted);
+
+        Assert.True(AttachmentMemoryGateAmbient.TryResolve(attachmentId, out AttachmentMemoryProvenance resolved));
+
+        Assert.Equal(provenance, resolved);
+
+    }
 
     [Fact]
 

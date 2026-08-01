@@ -42,7 +42,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 internal static class WeaveSchemaInitializer
 {
 
-    internal const string CanonicalSchemaFingerprint = "session-attachment-index-v1";
+    internal const string CanonicalSchemaFingerprint = "attachment-memory-provenance-v3";
 
     public static async Task EnsureSchemaAsync(
         SqliteConnection connection,
@@ -399,6 +399,47 @@ internal static class WeaveSchemaInitializer
             """;
 
         _ = await watermarksCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteCommand provenanceCmd = connection.CreateCommand();
+
+        provenanceCmd.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS saga_memory_attachment_provenance (
+                MemoryId TEXT PRIMARY KEY,
+                SessionId TEXT NOT NULL,
+                AttachmentId TEXT NOT NULL,
+                LogicalKey TEXT NOT NULL,
+                Version INTEGER NOT NULL,
+                ContentHash TEXT NOT NULL,
+                MaterializedAt TEXT NOT NULL,
+                SourceType TEXT NOT NULL,
+                FOREIGN KEY (MemoryId) REFERENCES saga_memories(Id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_saga_memory_attachment_provenance_AttachmentId
+            ON saga_memory_attachment_provenance(AttachmentId);
+
+            CREATE TABLE IF NOT EXISTS attachment_memory_consultations (
+                SourceEntryId TEXT NOT NULL,
+                SessionId TEXT NOT NULL,
+                AttachmentId TEXT NOT NULL,
+                LogicalKey TEXT NOT NULL,
+                Version INTEGER NOT NULL,
+                ContentHash TEXT NOT NULL,
+                MaterializedAt TEXT NOT NULL,
+                SourceType TEXT NOT NULL,
+                PRIMARY KEY (SourceEntryId, AttachmentId, Version, MaterializedAt),
+                FOREIGN KEY (SourceEntryId) REFERENCES Entries(Id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_attachment_memory_consultations_Session_Time
+            ON attachment_memory_consultations(SessionId, MaterializedAt);
+
+            CREATE INDEX IF NOT EXISTS IX_attachment_memory_consultations_SourceEntry
+            ON attachment_memory_consultations(SourceEntryId);
+            """;
+
+        _ = await provenanceCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

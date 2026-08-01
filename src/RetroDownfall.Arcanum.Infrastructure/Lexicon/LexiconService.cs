@@ -1,12 +1,14 @@
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -28,11 +30,33 @@ internal sealed class LexiconService(
 
     private const string SelectColumns = "Id, Name, Type, FactsJson, UpdatedAt";
 
-    public async Task<Result<LexiconEntryDto>> UpsertAsync(
+    public Task<Result<LexiconEntryDto>> UpsertAsync(
         string name,
         string? type,
         IReadOnlyList<string> facts,
+        CancellationToken cancellationToken = default) =>
+        UpsertCoreAsync(name, type, facts, provenance: null, cancellationToken);
+
+    public Task<Result<LexiconEntryDto>> UpsertAsync(
+        string name,
+        string? type,
+        IReadOnlyList<string> facts,
+        AttachmentMemoryProvenance provenance,
         CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(provenance);
+
+        return UpsertCoreAsync(name, type, facts, provenance, cancellationToken);
+
+    }
+
+    private async Task<Result<LexiconEntryDto>> UpsertCoreAsync(
+        string name,
+        string? type,
+        IReadOnlyList<string> facts,
+        AttachmentMemoryProvenance? provenance,
+        CancellationToken cancellationToken)
     {
 
         string trimmedName = name?.Trim() ?? string.Empty;
@@ -105,9 +129,25 @@ internal sealed class LexiconService(
                             await UpdateAsync(connection, id, trimmedName, normalized, resolvedType, factsJson, factsText, now, cancellationToken).ConfigureAwait(false);
                         }
 
+                        LexiconFactProvenance[] factProvenance = await ReplaceFactProvenanceAsync(
+                            connection,
+                            id,
+                            existing?.FactProvenance ?? [],
+                            incoming,
+                            merged,
+                            provenance,
+                            cancellationToken).ConfigureAwait(false);
+
                         await ExecuteNonQueryAsync(connection, cancellationToken, "COMMIT").ConfigureAwait(false);
 
-                        return Result<LexiconEntryDto>.Success(new LexiconEntryDto(id, trimmedName, resolvedType, merged.ToArray(), now));
+                        return Result<LexiconEntryDto>.Success(
+                            new LexiconEntryDto(
+                                id,
+                                trimmedName,
+                                resolvedType,
+                                merged.ToArray(),
+                                now,
+                                factProvenance));
                     }
                     catch
                     {
@@ -153,7 +193,15 @@ internal sealed class LexiconService(
                     {
                         await using DbCommand cmd = connection.CreateCommand();
 
-                        cmd.CommandText = """DELETE FROM lexicon_entries WHERE NameNormalized = @normalized""";
+                        cmd.CommandText =
+                            """
+                            DELETE FROM lexicon_fact_attachment_provenance
+                            WHERE EntryId = (
+                                SELECT Id FROM lexicon_entries WHERE NameNormalized = @normalized
+                            );
+
+                            DELETE FROM lexicon_entries WHERE NameNormalized = @normalized;
+                            """;
 
                         AddParameter(cmd, "@normalized", normalized);
 
@@ -246,6 +294,20 @@ internal sealed class LexiconService(
                     if (ordered.Count > clampedLimit)
                     {
                         ordered = ordered.GetRange(0, clampedLimit);
+                    }
+
+                    for (int index = 0; index < ordered.Count; index++)
+                    {
+
+                        LexiconEntryDto entry = ordered[index];
+
+                        LexiconFactProvenance[] provenance = await ReadFactProvenanceAsync(
+                            connection,
+                            entry.Id,
+                            cancellationToken).ConfigureAwait(false);
+
+                        ordered[index] = entry with { FactProvenance = provenance };
+
                     }
 
                     return Result<IReadOnlyList<LexiconEntryDto>>.Success(ordered);
@@ -660,16 +722,187 @@ internal sealed class LexiconService(
 
         AddParameter(cmd, "@normalized", normalized);
 
-        await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        LexiconEntryDto? entry;
 
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        await using (DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-            return null;
+
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+
+                return null;
+
+            }
+
+            entry = ReadEntry(reader);
+
         }
 
-        return ReadEntry(reader);
+        LexiconFactProvenance[] provenance = await ReadFactProvenanceAsync(
+            connection,
+            entry.Id,
+            cancellationToken).ConfigureAwait(false);
+
+        return entry with { FactProvenance = provenance };
 
     }
+
+    private static async Task<LexiconFactProvenance[]> ReplaceFactProvenanceAsync(
+        DbConnection connection,
+        Guid entryId,
+        IReadOnlyList<LexiconFactProvenance> existing,
+        IReadOnlyList<string> incoming,
+        IReadOnlyList<string> retained,
+        AttachmentMemoryProvenance? provenance,
+        CancellationToken cancellationToken)
+    {
+
+        Dictionary<string, AttachmentMemoryProvenance> sources = existing
+            .Where(item => retained.Contains(item.Fact, StringComparer.Ordinal))
+            .ToDictionary(item => item.Fact, item => item.Source, StringComparer.Ordinal);
+
+        if (provenance is not null)
+        {
+
+            foreach (string fact in incoming)
+            {
+
+                if (retained.Contains(fact, StringComparer.Ordinal))
+                {
+
+                    sources[fact] = provenance;
+
+                }
+
+            }
+
+        }
+
+        await using (DbCommand delete = connection.CreateCommand())
+        {
+
+            delete.CommandText =
+                "DELETE FROM lexicon_fact_attachment_provenance WHERE EntryId = @entryId";
+
+            AddParameter(delete, "@entryId", entryId.ToString("N"));
+
+            _ = await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+
+        foreach ((string fact, AttachmentMemoryProvenance source) in sources)
+        {
+
+            await using DbCommand insert = connection.CreateCommand();
+
+            insert.CommandText =
+                """
+                INSERT INTO lexicon_fact_attachment_provenance (
+                    EntryId, FactHash, Fact, SessionId, AttachmentId, LogicalKey,
+                    Version, ContentHash, MaterializedAt, SourceType)
+                VALUES (
+                    @entryId, @factHash, @fact, @sessionId, @attachmentId, @logicalKey,
+                    @version, @contentHash, @materializedAt, @sourceType)
+                """;
+
+            AddParameter(insert, "@entryId", entryId.ToString("N"));
+
+            AddParameter(insert, "@factHash", HashFact(fact));
+
+            AddParameter(insert, "@fact", fact);
+
+            AddProvenanceParameters(insert, source);
+
+            _ = await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+
+        return
+        [
+            .. sources.Select(
+                pair => new LexiconFactProvenance(
+                    pair.Key,
+                    pair.Value with { Availability = AttachmentSourceAvailability.Available })),
+        ];
+
+    }
+
+    private static async Task<LexiconFactProvenance[]> ReadFactProvenanceAsync(
+        DbConnection connection,
+        Guid entryId,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            """
+            SELECT p.Fact, p.SessionId, p.AttachmentId, p.LogicalKey, p.Version,
+                   p.ContentHash, p.MaterializedAt, p.SourceType,
+                   EXISTS(
+                       SELECT 1 FROM "SessionAttachments" a
+                       WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
+                   )
+            FROM lexicon_fact_attachment_provenance p
+            WHERE p.EntryId = @entryId
+            ORDER BY p.rowid
+            """;
+
+        AddParameter(command, "@entryId", entryId.ToString("N"));
+
+        List<LexiconFactProvenance> results = [];
+
+        await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+
+            AttachmentMemoryProvenance source = new(
+                Guid.Parse(reader.GetString(1)),
+                Guid.Parse(reader.GetString(2)),
+                reader.GetString(3),
+                reader.GetInt32(4),
+                reader.GetString(5),
+                DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture),
+                reader.GetString(7),
+                reader.GetInt32(8) == 1
+                    ? AttachmentSourceAvailability.Available
+                    : AttachmentSourceAvailability.Unavailable);
+
+            results.Add(new LexiconFactProvenance(reader.GetString(0), source));
+
+        }
+
+        return [.. results];
+
+    }
+
+    private static void AddProvenanceParameters(
+        DbCommand command,
+        AttachmentMemoryProvenance provenance)
+    {
+
+        AddParameter(command, "@sessionId", provenance.SessionId.ToString());
+
+        AddParameter(command, "@attachmentId", provenance.AttachmentId.ToString());
+
+        AddParameter(command, "@logicalKey", provenance.LogicalKey);
+
+        AddParameter(command, "@version", provenance.Version);
+
+        AddParameter(command, "@contentHash", provenance.ContentHash);
+
+        AddParameter(
+            command,
+            "@materializedAt",
+            provenance.MaterializedAt.ToString("o", CultureInfo.InvariantCulture));
+
+        AddParameter(command, "@sourceType", provenance.SourceType);
+
+    }
+
+    private static string HashFact(string fact) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fact))).ToLowerInvariant();
 
     private static async Task InsertAsync(
         DbConnection connection,

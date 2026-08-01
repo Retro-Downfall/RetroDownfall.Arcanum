@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Core.Lexicon;
 
@@ -22,6 +23,18 @@ public interface ILexiconService
         string? type,
         IReadOnlyList<string> facts,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stores facts derived from a successfully materialized attachment version together with typed
+    /// provenance. Callers must validate current-turn materialization before invoking this overload.
+    /// </summary>
+    Task<Result<LexiconEntryDto>> UpsertAsync(
+        string name,
+        string? type,
+        IReadOnlyList<string> facts,
+        AttachmentMemoryProvenance provenance,
+        CancellationToken cancellationToken = default) =>
+        UpsertAsync(name, type, facts, cancellationToken);
 
     /// <summary>Removes an entity (and its FTS row) by case-insensitive name. Returns false when not found.</summary>
     Task<Result<bool>> DeleteByNameAsync(string name, CancellationToken cancellationToken = default);

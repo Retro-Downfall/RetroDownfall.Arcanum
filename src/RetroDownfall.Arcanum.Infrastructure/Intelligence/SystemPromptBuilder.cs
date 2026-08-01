@@ -1028,6 +1028,25 @@ public static class SystemPromptBuilder
 
             sb.Append(memory.CreatedAt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 
+            if (memory.AttachmentProvenance is { } provenance)
+            {
+
+                sb.Append(", attachment logical-key: ");
+
+                sb.Append(HardenAttachmentIndexName(provenance.LogicalKey));
+
+                sb.Append(", version: ");
+
+                sb.Append(provenance.Version.ToString(CultureInfo.InvariantCulture));
+
+                sb.Append(", source: ");
+
+                sb.Append(provenance.Availability == AttachmentSourceAvailability.Available
+                    ? "available"
+                    : "unavailable");
+
+            }
+
             sb.AppendLine(")");
 
             AppendDataFence(sb, memory.Content);

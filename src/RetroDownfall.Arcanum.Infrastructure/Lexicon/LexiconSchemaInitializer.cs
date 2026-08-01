@@ -19,6 +19,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 internal static class LexiconSchemaInitializer
 {
 
+    internal const string CanonicalSchemaFingerprint = "attachment-fact-provenance-v1";
+
     public static async Task EnsureSchemaAsync(SqliteConnection connection, ILogger? logger, CancellationToken cancellationToken)
     {
 
@@ -26,6 +28,8 @@ internal static class LexiconSchemaInitializer
         {
 
             await CreateEntriesTableAsync(connection, cancellationToken).ConfigureAwait(false);
+
+            await CreateFactProvenanceTableAsync(connection, cancellationToken).ConfigureAwait(false);
 
             await CreateFtsTableAndTriggersAsync(connection, cancellationToken).ConfigureAwait(false);
 
@@ -42,6 +46,38 @@ internal static class LexiconSchemaInitializer
                 "The Lexicon schema initialization failed; Lexicon memory features will be unavailable until this is resolved.");
 
         }
+
+    }
+
+    private static async Task CreateFactProvenanceTableAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS lexicon_fact_attachment_provenance (
+                EntryId TEXT NOT NULL,
+                FactHash TEXT NOT NULL,
+                Fact TEXT NOT NULL,
+                SessionId TEXT NOT NULL,
+                AttachmentId TEXT NOT NULL,
+                LogicalKey TEXT NOT NULL,
+                Version INTEGER NOT NULL,
+                ContentHash TEXT NOT NULL,
+                MaterializedAt TEXT NOT NULL,
+                SourceType TEXT NOT NULL,
+                PRIMARY KEY (EntryId, FactHash),
+                FOREIGN KEY (EntryId) REFERENCES lexicon_entries(Id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS IX_lexicon_fact_attachment_provenance_AttachmentId
+            ON lexicon_fact_attachment_provenance(AttachmentId);
+            """;
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

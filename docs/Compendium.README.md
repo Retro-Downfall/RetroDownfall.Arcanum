@@ -164,7 +164,7 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.a2AServer` | `bool`, `false` | — | Exposes configured inbound A2A endpoints and derives Conclave availability. |
 | `features.a2AClient` | `bool`, `false` | — | Permits dispatch to allowed remote A2A agents and derives Conclave availability. |
 | `features.apprentices` | `bool`, `true` | — | Enables the Apprentice subsystem. |
-| `features.lexicon` | `bool`, `true` | — | Enables model-writable Lexicon memory. |
+| `features.lexicon` | `bool`, `true` | — | Enables model-writable Lexicon memory; attachment-derived facts require current-turn materialization and retain typed provenance. |
 | `features.archiveSearch` | `bool`, `true` | — | Enables search over past sessions. |
 | `features.metrics` | `bool`, `true` | — | Exposes Prometheus metrics. |
 | `features.embeddings` | `bool`, `false` | — | Enables The Weave embedding substrate. |
@@ -172,7 +172,7 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.codebaseRetrieval` | `bool`, `false` | — | Enables semantic workspace retrieval and derives embedding-substrate activation. |
 | `features.attachmentRetrieval` | `bool`, `false` | — | Enables bounded per-session semantic retrieval over eligible versioned text attachments and derives embedding-substrate activation. |
 | `features.saga` | `bool`, `false` | — | Enables long-term associative memory retrieval and derives embedding-substrate activation. |
-| `features.sagaExtraction` | `bool`, `false` | — | Enables automatic Saga extraction and derives Saga/substrate availability. |
+| `features.sagaExtraction` | `bool`, `false` | — | Enables automatic concise Saga extraction and derives Saga/substrate availability; attachment claims must match the source turn's materialized allowlist. |
 | `features.semanticSpellRouting` | `bool`, `false` | — | Enables embedding-assisted spell routing and derives embedding-substrate activation. |
 | `features.scrying` | `bool`, `true` | — | Accepts images for vision-capable models. |
 | `features.attachments` | `bool`, `true` | — | Persists encrypted session attachment snapshots; exposes `attach_session_file`, host-authorized `refresh_session_file`, and Command Center Snapshot/Live/Stale status plus manual refresh. Refresh accepts no path, revalidates source provenance and Sanctum, and shares version/byte budgets. |
@@ -186,7 +186,9 @@ Feature flags are capability policy. Edition, dependency, security, provider,
 and platform eligibility still apply.
 
 The native `delegate_task` subagent tool has no operator configuration key: its one-level
-recursion cap and per-call token/cost/turn delegation are code-owned safety requirements.
+recursion cap and per-call token/cost/turn delegation are code-owned safety requirements. Child
+requests inherit no attachment context; an explicit attachment file must name an id from the
+parent's current-turn materialized allowlist.
 
 ### Integrations, execution, cost, daemon, and CLI
 

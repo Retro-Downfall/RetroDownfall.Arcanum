@@ -1,5 +1,11 @@
 namespace RetroDownfall.Arcanum.Core.Lexicon;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
+
+public sealed record LexiconFactProvenance(
+    string Fact,
+    AttachmentMemoryProvenance Source);
+
 /// <summary>
 /// A single Lexicon entity surfaced to MCP tools, the inference pipeline, and (later) Minimal APIs.
 /// Mirrors the <c>lexicon_entries</c> raw-SQL table (see <c>LexiconSchemaInitializer</c>) one-to-one,
@@ -10,4 +16,5 @@ public sealed record LexiconEntryDto(
     string Name,
     string Type,
     string[] Facts,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    LexiconFactProvenance[]? FactProvenance = null);
