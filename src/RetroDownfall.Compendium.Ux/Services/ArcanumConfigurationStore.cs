@@ -9,6 +9,8 @@ namespace RetroDownfall.Compendium.Ux.Services;
 public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 {
 
+    public const int MaxConfigurationBytes = ConfigurationBootstrapper.MaxConfigurationBytes;
+
     private const string ConfigurationFileName = "arcanum.json";
 
     private static readonly TimeSpan WriteLockTimeout = TimeSpan.FromSeconds(5);
@@ -96,6 +98,14 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
             await using FileStream stream = File.OpenRead(_filePath);
 
+            if (stream.Length > MaxConfigurationBytes)
+            {
+
+                throw new InvalidOperationException(
+                    $"Failed to parse {_filePath}: configuration exceeds the {MaxConfigurationBytes}-byte limit.");
+
+            }
+
             using JsonDocument document = await JsonDocument
                 .ParseAsync(stream, cancellationToken: ct)
                 .ConfigureAwait(false);
@@ -175,27 +185,41 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         }
 
+        string? tempPath = null;
+
         try
         {
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(_directory);
 
-            string tempPath = Path.Combine(_directory, $".arcanum.{Guid.NewGuid():N}.tmp");
+            tempPath = Path.Combine(_directory, $".arcanum.{Guid.NewGuid():N}.tmp");
 
             var wrapper = new ArcanumConfigurationFile { Arcanum = settings };
 
             try
             {
 
-                await using (FileStream tempStream = File.Create(tempPath))
+                await using (FileStream tempStream = new(
+                    tempPath,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 4096,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan))
 
                 {
+
+                    SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
 
                     await JsonSerializer.SerializeAsync(
                         tempStream,
                         wrapper,
                         ConfigurationJsonContext.Default.ArcanumConfigurationFile,
                         ct).ConfigureAwait(false);
+
+                    await tempStream.FlushAsync(ct).ConfigureAwait(false);
+
+                    tempStream.Flush(flushToDisk: true);
 
                 }
 
@@ -209,8 +233,6 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
                     $"Could not save arcanum.json: the file or configuration directory is locked by another application. Close any other editors and try again. ({ioEx.Message})");
 
             }
-
-            SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
 
             try
             {
@@ -251,6 +273,23 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         finally
 
         {
+
+            if (!string.IsNullOrEmpty(tempPath))
+            {
+
+                try
+                {
+
+                    File.Delete(tempPath);
+
+                }
+                catch (Exception cleanupException) when (
+                    cleanupException is IOException or UnauthorizedAccessException)
+                {
+
+                }
+
+            }
 
             _writeLock.Release();
 

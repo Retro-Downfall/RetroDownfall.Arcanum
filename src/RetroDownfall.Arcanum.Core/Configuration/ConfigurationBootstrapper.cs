@@ -9,6 +9,8 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 public static class ConfigurationBootstrapper
 {
 
+    public const int MaxConfigurationBytes = 10 * 1024 * 1024;
+
     public static IConfigurationBuilder AddArcanumConfiguration(this IConfigurationBuilder builder)
     {
 
@@ -73,7 +75,24 @@ public static class ConfigurationBootstrapper
         try
         {
 
-            byte[] raw = File.ReadAllBytes(jsonPath);
+            using FileStream stream = new(
+                jsonPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read);
+
+            if (stream.Length > MaxConfigurationBytes)
+            {
+
+                throw new InvalidOperationException(
+                    $"arcanum.json is invalid: configuration exceeds the {MaxConfigurationBytes}-byte limit ({jsonPath})");
+
+            }
+
+            byte[] raw = new byte[stream.Length];
+
+            stream.ReadExactly(raw);
+
             using JsonDocument document = JsonDocument.Parse(raw);
             Result treeValidation = new ConfigurationValidator()
                 .ValidateConfigurationFileJson(document.RootElement);

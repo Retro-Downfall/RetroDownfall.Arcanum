@@ -177,6 +177,41 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task EnsureInitializedAsync_CorruptedDedicatedSecret_FailsClosedWithoutTerminatingProcess()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        _secretStore.SetGrimoireReadResult(
+            SecretStoreReadResult.Corrupted("missing test key"));
+
+        GrimoireKdfSidecarFile.Write(
+            _dbPath,
+            GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2));
+
+        GrimoireDatabaseUnavailableException error =
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                    _secretStore,
+                    _passphraseSource,
+                    _scopeFactory,
+                    _dbPath,
+                    _tempDir,
+                    CancellationToken.None));
+
+        Assert.Contains(
+            "cannot be decrypted",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
+            "missing test key",
+            error.Message,
+            StringComparison.Ordinal);
+
+    }
+
     private async Task CreateLegacyDatabaseAsync(string passphrase)
     {
 
@@ -318,9 +353,14 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         public string? DedicatedSecret { get; private set; }
 
+        private SecretStoreReadResult? _grimoireReadResult;
+
         public void SetApiKey(string apiKey) => ApiKey = apiKey;
 
         public void SetDedicatedSecret(string secret) => DedicatedSecret = secret;
+
+        public void SetGrimoireReadResult(SecretStoreReadResult result) =>
+            _grimoireReadResult = result;
 
         public Task<string?> GetApiKeyAsync() => Task.FromResult(ApiKey);
 
@@ -337,6 +377,13 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         }
 
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult(DedicatedSecret);
+
+        public Task<SecretStoreReadResult> GetGrimoireEncryptionSecretReadResultAsync() =>
+            Task.FromResult(
+                _grimoireReadResult
+                ?? (DedicatedSecret is null
+                    ? SecretStoreReadResult.Missing()
+                    : SecretStoreReadResult.Ok(DedicatedSecret)));
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
         {

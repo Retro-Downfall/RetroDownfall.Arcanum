@@ -1,4 +1,8 @@
 using Microsoft.Extensions.AI;
+
+using System.Security.Cryptography;
+
+using System.Text;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -10,7 +14,9 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) : IAsyncLifetime
 {
     private string _dbPath = string.Empty;
+
     private string _workspace = string.Empty;
+
     private ArcanumDbContext? _db;
 
     public Task InitializeAsync()
@@ -28,10 +34,12 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         {
             await _db.DisposeAsync();
         }
+
         if (File.Exists(_dbPath))
         {
             File.Delete(_dbPath);
         }
+
         if (Directory.Exists(_workspace))
         {
             Directory.Delete(_workspace, recursive: true);
@@ -73,6 +81,119 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         {
             File.Delete(outside);
         }
+    }
+
+    [Fact]
+    public async Task Bounded_file_reader_hashes_full_stream_without_materializing_full_content()
+    {
+
+        byte[] payload = Encoding.UTF8.GetBytes(new string('x', 2 * 1024 * 1024));
+
+        using MemoryStream stream = new(payload, writable: false);
+
+        SessionContextPinMaterializer.BoundedFileRead read =
+            await SessionContextPinMaterializer.ReadBoundedFileAsync(
+                stream,
+                4096,
+                CancellationToken.None);
+
+        Assert.True(read.Truncated);
+
+        Assert.Equal(4096, Encoding.UTF8.GetByteCount(read.Content));
+
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant(),
+            read.Sha256);
+
+    }
+
+    [Fact]
+    public async Task Oversized_file_pin_fails_closed_without_materializing_content()
+    {
+
+        string file = Path.Combine(_workspace, "oversized.bin");
+
+        await using (FileStream stream = new(file, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+
+            stream.SetLength(SessionContextPinMaterializer.MaxSourceFileBytes + 1);
+
+        }
+
+        SessionContextPinRecord pin = Pin(
+            SessionContextPinKind.File,
+            "oversized.bin",
+            "oversized",
+            null);
+
+        SessionContextPinMaterialization result = await Create(pin).MaterializeAsync(
+            pin.SessionId,
+            _workspace,
+            CancellationToken.None);
+
+        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+        Assert.Contains("status: Truncated", text, StringComparison.Ordinal);
+
+        Assert.Contains("safe materialization limit", text, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Symbol_range_normalizes_crlf_line_endings()
+    {
+
+        string file = Path.Combine(_workspace, "lines.txt");
+
+        await File.WriteAllTextAsync(file, "first\r\nsecond\r\nthird\r\nfourth\r\n");
+
+        SessionContextPinRecord pin = Pin(
+            SessionContextPinKind.SymbolRange,
+            "lines.txt:2-3",
+            "lines",
+            null);
+
+        SessionContextPinMaterialization result = await Create(pin).MaterializeAsync(
+            pin.SessionId,
+            _workspace,
+            CancellationToken.None);
+
+        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+        Assert.Contains("second\nthird", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain('\r', text);
+
+    }
+
+    [Fact]
+    public async Task Oversized_symbol_source_fails_closed_before_scanning()
+    {
+
+        string file = Path.Combine(_workspace, "oversized-lines.txt");
+
+        await using (FileStream stream = new(file, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+
+            stream.SetLength(SessionContextPinMaterializer.MaxSourceFileBytes + 1);
+
+        }
+
+        SessionContextPinRecord pin = Pin(
+            SessionContextPinKind.SymbolRange,
+            "oversized-lines.txt:1-1",
+            "oversized-lines",
+            null);
+
+        SessionContextPinMaterialization result = await Create(pin).MaterializeAsync(
+            pin.SessionId,
+            _workspace,
+            CancellationToken.None);
+
+        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+        Assert.Contains("safe materialization limit", text, StringComparison.Ordinal);
+
     }
 
     private SessionContextPinMaterializer Create(SessionContextPinRecord pin) =>

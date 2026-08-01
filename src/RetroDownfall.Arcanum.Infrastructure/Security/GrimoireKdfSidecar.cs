@@ -35,6 +35,8 @@ public sealed record GrimoireKdfSidecar
 public static partial class GrimoireKdfSidecarFile
 {
 
+    public const int MaxSidecarBytes = 4096;
+
     public static string GetSidecarPath(string databasePath) => databasePath + ".kdf";
 
     public static bool Exists(string databasePath) => File.Exists(GetSidecarPath(databasePath));
@@ -44,36 +46,73 @@ public static partial class GrimoireKdfSidecarFile
 
         string sidecarPath = GetSidecarPath(databasePath);
 
-        string json = File.ReadAllText(sidecarPath);
+        SecureFileOpenStatus openStatus = SecureFileReader.TryOpenRegularFile(
+            sidecarPath,
+            expectedIdentity: null,
+            out FileStream? stream,
+            out _);
 
-        GrimoireKdfSidecar? sidecar = JsonSerializer.Deserialize(json, GrimoireKdfSidecarJsonContext.Default.GrimoireKdfSidecar);
-
-        if (sidecar is null)
+        if (openStatus == SecureFileOpenStatus.NotFound)
         {
 
-            throw new InvalidDataException($"Grimoire KDF sidecar at {sidecarPath} is empty or malformed.");
+            throw new FileNotFoundException("Grimoire KDF sidecar was not found.", sidecarPath);
 
         }
 
-        if (sidecar.Version != GrimoireKeyDerivation.KdfVersion2)
+        if (openStatus != SecureFileOpenStatus.Success || stream is null)
         {
 
-            throw new NotSupportedException(
-                $"Grimoire KDF sidecar version {sidecar.Version} is not supported.");
+            throw new InvalidDataException("Grimoire KDF sidecar is not an unaliased regular file.");
 
         }
 
-        byte[] salt = sidecar.GetSaltBytes();
-
-        if (salt.Length != GrimoireKeyDerivation.SaltLengthBytes)
+        using (stream)
         {
 
-            throw new InvalidDataException(
-                $"Grimoire KDF sidecar salt must be {GrimoireKeyDerivation.SaltLengthBytes} bytes.");
+            if (stream.Length > MaxSidecarBytes)
+            {
+
+                throw new InvalidDataException(
+                    $"Grimoire KDF sidecar exceeds the {MaxSidecarBytes}-byte limit.");
+
+            }
+
+            byte[] json = new byte[stream.Length];
+
+            stream.ReadExactly(json);
+
+            GrimoireKdfSidecar? sidecar = JsonSerializer.Deserialize(
+                json,
+                GrimoireKdfSidecarJsonContext.Default.GrimoireKdfSidecar);
+
+            if (sidecar is null)
+            {
+
+                throw new InvalidDataException($"Grimoire KDF sidecar at {sidecarPath} is empty or malformed.");
+
+            }
+
+            if (sidecar.Version != GrimoireKeyDerivation.KdfVersion2)
+            {
+
+                throw new NotSupportedException(
+                    $"Grimoire KDF sidecar version {sidecar.Version} is not supported.");
+
+            }
+
+            byte[] salt = sidecar.GetSaltBytes();
+
+            if (salt.Length != GrimoireKeyDerivation.SaltLengthBytes)
+            {
+
+                throw new InvalidDataException(
+                    $"Grimoire KDF sidecar salt must be {GrimoireKeyDerivation.SaltLengthBytes} bytes.");
+
+            }
+
+            return sidecar;
 
         }
-
-        return sidecar;
 
     }
 
@@ -92,9 +131,22 @@ public static partial class GrimoireKdfSidecarFile
         try
         {
 
-            File.WriteAllText(tempPath, JsonSerializer.Serialize(sidecar, GrimoireKdfSidecarJsonContext.Default.GrimoireKdfSidecar));
+            byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+                sidecar,
+                GrimoireKdfSidecarJsonContext.Default.GrimoireKdfSidecar);
+
+            using (FileStream stream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
+            {
+
+                stream.Write(json);
+
+                stream.Flush(flushToDisk: true);
+
+            }
 
             File.Move(tempPath, sidecarPath, overwrite: true);
+
+            SecureFilePermissions.ApplyOwnerOnlyFile(sidecarPath);
 
         }
         finally
@@ -129,4 +181,3 @@ public static partial class GrimoireKdfSidecarFile
     }
 
 }
-

@@ -199,6 +199,58 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ReadAsync_rejects_configuration_larger_than_supported_limit()
+    {
+
+        string configPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.json");
+
+        _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        await File.WriteAllTextAsync(
+            configPath,
+            "{\"Arcanum\":{\"padding\":\""
+            + new string('x', ArcanumConfigurationStore.MaxConfigurationBytes)
+            + "\"}}");
+
+        using ArcanumConfigurationStore store = new();
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => store.ReadAsync(CancellationToken.None));
+
+        Assert.Contains("exceeds", error.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task WriteAsync_removes_staging_file_when_destination_replace_fails()
+    {
+
+        _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        string destination = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.json");
+
+        _ = Directory.CreateDirectory(destination);
+
+        using ArcanumConfigurationStore store = new();
+
+        ConfigurationWriteResult result = await store.WriteAsync(
+            new ArcanumSettings(),
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+
+        Assert.Empty(Directory.EnumerateFiles(
+            ArcanumPaths.GrimoireDirectory,
+            ".arcanum.*.tmp"));
+
+    }
+
     public void Dispose()
     {
 

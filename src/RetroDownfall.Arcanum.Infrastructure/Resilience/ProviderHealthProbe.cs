@@ -54,7 +54,14 @@ internal sealed class ProviderHealthProbe(
                     new AuthenticationHeaderValue("Bearer", resolvedApiKey);
             }
 
-            using HttpResponseMessage response = await client.GetAsync(probeUrl, timeoutCts.Token).ConfigureAwait(false);
+            using HttpRequestMessage request = new(HttpMethod.Get, probeUrl);
+
+            using HttpResponseMessage response = await client
+                .SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    timeoutCts.Token)
+                .ConfigureAwait(false);
 
             return response.IsSuccessStatusCode;
 

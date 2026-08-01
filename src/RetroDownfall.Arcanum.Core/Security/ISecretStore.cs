@@ -11,6 +11,17 @@ public interface ISecretStore
 
     Task<string?> GetGrimoireEncryptionSecretAsync();
 
+    async Task<SecretStoreReadResult> GetGrimoireEncryptionSecretReadResultAsync()
+    {
+
+        string? value = await GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
+
+        return value is null
+            ? SecretStoreReadResult.Missing()
+            : SecretStoreReadResult.Ok(value);
+
+    }
+
     Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret);
 
     Task<SecretStoreReadResult> GetFileEncryptionSecretReadResultAsync() =>

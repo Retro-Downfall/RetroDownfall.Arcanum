@@ -124,8 +124,18 @@ internal sealed class WebhookCommLinkDispatcher(
         try
         {
 
+            using HttpRequestMessage request = new(HttpMethod.Post, endpoint)
+            {
+
+                Content = content,
+
+            };
+
             using HttpResponseMessage response = await client
-                .PostAsync(endpoint, content, cancellationToken)
+                .SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             await HttpResponseBodyDrainer.DrainAsync(response.Content, cancellationToken).ConfigureAwait(false);

@@ -20,7 +20,9 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
     private const string WebhookEnvironmentVariable = "ARCANUM_TEST_COMMLINK_WEBHOOK_URL";
 
     private readonly IDnsResolver _originalResolver;
+
     private readonly string? _originalDefaultWebhookUrl;
+
     private readonly string? _originalWebhookUrl;
 
     public WebhookCommLinkDispatcherTests()
@@ -265,6 +267,35 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
     }
 
     [Fact]
+    public async Task DispatchAsync_DoesNotBufferOversizedResponseBody()
+    {
+
+        StreamContent content = new(new ThrowOnReadStream());
+
+        content.Headers.ContentLength = HttpResponseBodyDrainer.DefaultMaxBytes + 1;
+
+        RecordingHttpHandler handler = new(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+
+                Content = content,
+
+            }));
+
+        WebhookCommLinkDispatcher dispatcher = CreateDispatcher(
+            handler,
+            SettingsWithWebhook(PublicWebhookUrl));
+
+        Result<CommLinkDeliveryResult> result = await dispatcher.DispatchAsync(
+            new CommLinkMessage("t", "b", CommLinkSeverity.Info, "src"));
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(CommLinkDeliveryStatus.Delivered, result.Value.Status);
+
+    }
+
+    [Fact]
     public async Task DispatchAsync_handler_exception_returns_failure()
     {
 
@@ -372,6 +403,48 @@ public sealed class WebhookCommLinkDispatcherTests : IDisposable
             Exception? exception,
             Func<TState, Exception?, string> formatter) =>
             Messages.Add(formatter(state, exception));
+    }
+
+    private sealed class ThrowOnReadStream : Stream
+    {
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => HttpResponseBodyDrainer.DefaultMaxBytes + 1;
+
+        public override long Position
+        {
+
+            get => 0;
+
+            set => throw new NotSupportedException();
+
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException("Webhook dispatch must not buffer an oversized response.");
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(
+                new IOException("Webhook dispatch must not buffer an oversized response."));
+
+        public override void Flush()
+        {
+
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
     }
 
 }

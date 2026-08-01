@@ -61,10 +61,54 @@ public sealed class RecentResourceStore : IRecentResourceStore
 
                 SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
                 string temp = _path + ".tmp." + Guid.NewGuid().ToString("N");
-                File.WriteAllLines(temp, entries.Select(Serialize));
-                SecureFilePermissions.ApplyOwnerOnlyFile(temp);
-                File.Move(temp, _path, overwrite: true);
-                SecureFilePermissions.ApplyOwnerOnlyFile(_path);
+
+                try
+                {
+
+                    using (FileStream stream = new(
+                        temp,
+                        FileMode.CreateNew,
+                        FileAccess.Write,
+                        FileShare.None))
+                    using (StreamWriter writer = new(stream, Encoding.UTF8))
+                    {
+
+                        SecureFilePermissions.ApplyOwnerOnlyFile(temp);
+
+                        foreach (RecentEntry entry in entries)
+                        {
+
+                            writer.WriteLine(Serialize(entry));
+
+                        }
+
+                        writer.Flush();
+
+                        stream.Flush(flushToDisk: true);
+
+                    }
+
+                    File.Move(temp, _path, overwrite: true);
+
+                    SecureFilePermissions.ApplyOwnerOnlyFile(_path);
+
+                }
+                finally
+                {
+
+                    try
+                    {
+
+                        File.Delete(temp);
+
+                    }
+                    catch (Exception cleanupException) when (
+                        cleanupException is IOException or UnauthorizedAccessException)
+                    {
+
+                    }
+
+                }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
             {

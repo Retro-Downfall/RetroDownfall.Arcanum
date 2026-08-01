@@ -184,4 +184,24 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public void ValidateArcanumConfigurationFile_oversized_file_fails_before_parsing()
+    {
+
+        string path = Path.Combine(_workspace.Root, "oversized-arcanum.json");
+
+        using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+
+            stream.SetLength(ConfigurationBootstrapper.MaxConfigurationBytes + 1L);
+
+        }
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => ConfigurationBootstrapper.ValidateArcanumConfigurationFile(path));
+
+        Assert.Contains("configuration exceeds", exception.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
 }

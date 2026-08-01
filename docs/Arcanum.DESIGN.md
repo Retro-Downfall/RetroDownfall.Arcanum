@@ -10,11 +10,11 @@ Arcanum's documentation contract contains exactly five files:
 - [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) — the human-readable companion to DESIGN (conceptual prose, navigation, turn-lifecycle and dependency-direction diagrams, and pointers into DESIGN for contracts).
 - [`Arcanum.README.md`](Arcanum.README.md) — the agent/operator primer for Cursor prompts (summarized architecture/design, repo layout, invariants, verification commands, brief CLI quick reference) plus the required reinstall instruction.
 - [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) — the only complete `arcanum.json` key/default/bounds and credential-reference listing.
-- [`Arcanum.DEBUGGING.md`](Arcanum.DEBUGGING.md) — the verified breakpoint map and task-based debugging recipes (new in this pass).
+- [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) — the verified breakpoint map and task-based debugging recipes.
 
 When a change under `src/`, packaging scripts, or workflows alters a fact described here, update the
 owning section in the same change set. Pair operator-visible behavior with `Arcanum.README.md`,
-configuration-surface changes with `Compendium.README.md`, navigation updates with `Arcanum.Design.Human.md`, and debugging guides with `Arcanum.DEBUGGING.md`.
+configuration-surface changes with `Compendium.README.md`, navigation updates with `Arcanum.Design.Human.md`, and debugging guides with `Arcanum.DEBUGGING.Human.md`.
 
 ---
 
@@ -668,7 +668,7 @@ messages, paths, PII, API keys, or stack traces. JSON invocations receive a sour
 
 **Composition:**
 
-- **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and applies embedded SQL schema migrations via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSqlSchemaMigrator`** (raw SQLite + `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`; `FailFast` on key mismatch. Legacy databases are transparently re-encrypted to the new KDF on unlock. The same bootstrapper runs from the CLI (`ask` / `chat`) so host and CLI share one migration path (§10.5).
+- **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and applies embedded SQL schema migrations via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSqlSchemaMigrator`** (raw SQLite + `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`. A key mismatch or unreadable dedicated secret throws the sanitized `GrimoireDatabaseUnavailableException`, so startup fails closed while host/test cleanup can unwind normally; it never terminates the embedding process with `Environment.FailFast`. Legacy databases are transparently re-encrypted to the new KDF on unlock. The same bootstrapper runs from the CLI (`ask` / `chat`) so host and CLI share one migration path (§10.5).
 - **`CampaignLoggerQueue` / `Loremaster`** — bounded `Channel<Guid>` (capacity 100 **session IDs**, not Entry rows) with **non-blocking `TryQueue`**: duplicate session ids coalesce via a pending-marker map; a full channel rejects with a warning log and clears the marker so the session remains eligible for a later sweep (internal sweeps fail-open). Explicit `POST /api/sessions/{id}/rest` returns **202** when accepted/coalesced and **503** + `Session.RestQueueFull` when rejected. Background service `Loremaster` (formerly `CampaignLoggerBackgroundService`) runs hybrid sweeps using **`Session.UnsummarizedEntryCount`** (incremented on every entry append — both the inference path and The Forge `POST /api/sessions/{id}/entries` path, each serialized per-session via **`SessionEntryPersistence`** / **`SessionWriteLock`** + **`SqliteBusyRetry`** so concurrent appends never lose an increment; reset on summarize) instead of full-table `Entries` aggregation. The consume path loads session headers via **`GetSessionHeaderAsync`** (no entry hydration). Headless summarization uses a stateless `PingRequest` with `SkipSpellRouting`, `DisableMcpTools`, `UnattendedMode`, optional `Arcanum:FastModel` (else `DefaultModel`); on success, `UpdateSessionCampaignRollupAsync` atomically sets `Session.Summary`, `LastSummarizedMessageAt`, and the remaining unsummarized count. On inference failure, the watermark is **not** advanced.
 - **`ArcanumDbContext`** — compiled model; SQLCipher passphrase from hosted service.
 - **`SessionRepository`** — implements **`ISessionRepository`** for Forge session CRUD, entry append, export, and analytics. Entry writes delegate shared invariants (lock, retry, limits, counter, UpdatedAt) to internal **`SessionEntryPersistence`**. **`AddEntryAsync`** returns **`Result<Entry>`** for expected domain outcomes (not found, archived, entry limits). **`UpdateSessionAsync`** patches Title/Status only — Grimoire-owned counters and rollups are never clobbered from caller-supplied `Session` rows.
@@ -1557,12 +1557,17 @@ from the compiled EF model and is installed by
 Materialization happens afresh before every bound inference turn:
 
 - File, directory, and symbol/range paths are resolved relative to `PingRequest.WorkingDirectory`.
-  Lexical workspace containment and final symlink-target containment both fail closed. Missing
-  sources produce a labeled `Missing` block. A file whose SHA-256 differs from the optional pinned
-  version produces `Modified` and injects only the current bytes with the new hash disclosed; old
-  bytes are never cached in the pin row.
+  Lexical workspace containment fails closed. File and symbol/range content is opened once through
+  `SecureFileReader` with link following disabled and is accepted only when the opened handle is a
+  single-link regular file. Missing sources produce a labeled `Missing` block. Files over the
+  code-owned 64 MiB source-scan ceiling are rejected before reading. An accepted file is hashed
+  incrementally across the complete handle while retaining at most the pin output ceiling; a hash
+  differing from the optional pinned version produces `Modified` and injects only the current bytes
+  with the new hash disclosed. Old bytes are never cached in the pin row.
 - Directory snapshots are deterministic ordinal path/size listings, never full recursive content,
-  and stop at 64 files. Symbol ranges require `path:start-end` and stop at 2,000 lines.
+  and stop at 64 files. Symbol ranges require `path:start-end`, stop at 2,000 lines, scan the opened
+  handle incrementally, retain only the byte cap, and normalize CRLF output without loading every
+  source line.
 - Entry targets must parse as an entry id belonging to the same session. Attachment targets accept
   an attachment id or logical key and must resolve to a bound text attachment in the same session.
   Diagnostic text is stored as the stable target itself. URL metadata may be pinned and listed, but
@@ -2045,8 +2050,13 @@ Arcanum runs on **loopback only** for **single-user local development**. Even on
 1. `ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync` runs **before** `Build()`.
 2. If no key exists, a cryptographically random 32-byte key is generated, Base64-encoded, and saved via `ISecretStore`.
 3. **Primary store:** the OS credential store under the fixed shared identity `service=arcanum` / `account=master-api-key` (macOS Keychain, Windows Credential Manager, Linux Secret Service via libsecret). Implemented in `RetroDownfall.Arcanum.Secrets` (`IOsCredentialStore` / `OsCredentialStore`) and consumed by `OsKeychainSecretStore`.
-4. **Mirror / fallback:** the same key is also written to Data Protection–encrypted `security.dat` (purpose `Arcanum.Core.ApiKey`, application name `ArcanumCore`) so headless Linux / locked-keychain environments can still boot. On read, keychain is preferred; if keychain is empty and `security.dat` decrypts, Arcanum **migrates** the key into the OS store once.
+4. **Mirror / fallback:** the same key is also written to Data Protection–encrypted `security.dat` (purpose `Arcanum.Core.ApiKey`, application name `ArcanumCore`) so headless Linux / locked-keychain environments can still boot. Protected master, Grimoire, file-encryption, and web-research fallback files are read only through `SecureFileReader` as no-follow single-link regular files with a 64 KiB ceiling; rejected, oversized, or undecryptable input is corrupt. On read, keychain is preferred; if keychain is empty and `security.dat` decrypts, Arcanum **migrates** the key into the OS store once.
 5. The Forge and other local clients read the **same** OS identity — they do not decrypt `security.dat`.
+
+If the master-key store is corrupt while a Grimoire database exists, bootstrap logs only fixed
+recovery guidance and throws `MasterApiKeyUnavailableException`. It does not expose the underlying
+Data Protection message, generate a replacement key, or terminate the embedding process. With no
+Grimoire database, the existing safe-regeneration behavior remains available.
 
 ### 11.3 Request authentication
 
@@ -2106,14 +2116,14 @@ Inference-pipeline errors must not leak internal exception text to clients:
 - **`WizardIntelligenceProvider.ExecutePromptAsync`** / **`StreamPromptAsync`** — model-resolution failures return the public string `"The requested model is not configured. Check Arcanum:Providers and Arcanum:DefaultModel."`; full exception is logged via `ILogger.LogWarning`. Provider failures use sanitized public errors. Caller/host cancellation propagates; there is no hidden Master turn timeout.
 - **`ArcanumExceptionHandler`** (`IExceptionHandler`) — unhandled pipeline exceptions return **`Hub.Unhandled`** in the `ApiResponse<string>` envelope with the same **`TraceId`** logged server-side. **`JsonException`** from request binding or deserialization returns **400** with **`Validation.InvalidBody`** in the `ApiResponse<bool>` envelope.
 - **`POST /v1/chat/completions`** — both buffered and SSE generic failures return exactly `"Inference failed. See server logs for details."`, and model-not-configured uses the same exact string as the native path; never the raw `Result.Error.Message`.
-- **`WebhookCommLinkDispatcher`** — outbound webhook exceptions return the public code `CommLink.WebhookException` with the generic message `"Comm Link webhook POST failed. See server logs for details."`; logs retain only host and exception type, never the secret URL or exception text.
+- **`WebhookCommLinkDispatcher`** — outbound webhook exceptions return the public code `CommLink.WebhookException` with the generic message `"Comm Link webhook POST failed. See server logs for details."`; logs retain only host and exception type, never the secret URL or exception text. Responses are requested with `ResponseHeadersRead` and drained only through the existing capped reader, so an untrusted webhook cannot force full-body buffering.
 - **`PUT /api/config`** — validation failures return **`ApiResponse<bool>`** at **400** with code `Configuration.ValidationFailed` (user-facing validation messages). Write failures return **`ApiResponse<bool>`** at **500** with code `Configuration.WriteFailed` (exception detail is logged server-side; the envelope message is safe to display in Studio).
 
 Changed inference, attachment, tool, CLI-session, and TurnEngine failure paths log safe operation identifiers and exception **types** without attaching raw exception objects/messages where canary-bearing provider/file data could leak. Tests assert canary text is absent from both public payloads and captured log entries. See §8.23 for the full `ErrorCodes` → HTTP status catalog used by `ArcanumErrorMapper` across native `/api` routes.
 
 ### 11.10 Comm Link webhook scheme allowlist and redirect handling
 
-`WebhookCommLinkDispatcher` resolves the secret URL from `Arcanum:Integrations:CommLink:WebhookUrlEnvironmentVariable` only when dispatch begins (deterministic default `ARCANUM_COMMLINK_WEBHOOK_URL`). It validates the resolved scheme against `AllowedSchemes` (default `["https"]`) and host against `AllowedHosts`. **`OutboundUrlGuard`** then rejects loopback, RFC1918, and link-local targets, including after DNS resolution. The named `HttpClient("CommLinkWebhook")` disables redirects and default factory URI logging; dispatcher logs contain at most the host. Its code-owned transport timeout bounds only the POST operation.
+`WebhookCommLinkDispatcher` resolves the secret URL from `Arcanum:Integrations:CommLink:WebhookUrlEnvironmentVariable` only when dispatch begins (deterministic default `ARCANUM_COMMLINK_WEBHOOK_URL`). It validates the resolved scheme against `AllowedSchemes` (default `["https"]`) and host against `AllowedHosts`. **`OutboundUrlGuard`** then rejects loopback, RFC1918, and link-local targets, including after DNS resolution. The named `HttpClient("CommLinkWebhook")` disables redirects and default factory URI logging; dispatcher logs contain at most the host. Its code-owned transport timeout bounds only the POST operation. The dispatcher requests headers first and drains no more than its response cap.
 
 ### 11.11 Outbound URL guard (SSRF hardening)
 
@@ -2624,7 +2634,7 @@ trust, and external-only checks remain authoritative; the CLI cannot widen them.
 - **Primary constructors on services** for DI injection.
 - **`IDisposable`** on infrastructure services with `SemaphoreSlim` or `ServiceProvider` ownership.
 - **Blank line after each line of C# code** for visual breathing room.
-- **Convention scope (project-specific vs inherited).** The conventions in this section plus the README naming metaphor are **specific to Arcanum**. Organization-wide standards scoped to `Corp.Solution.*`-prefixed solutions — Dapper repositories over SQL Server stored procedures, the `Corp.Lib.*` / `Corp.Api.Configuration.Lib` NuGet stack, and Refit "Service Library" API contracts — **do not apply** here: Arcanum is local-first over its own EF Core + SQLCipher Grimoire (no SQL Server, no stored procedures) and ships its CLI/host as Native AOT on Windows/Linux plus a self-contained macOS fallback. The always-on house rules still hold — one blank line after each C# statement (above), strict CSP with no inline JS/CSS on every web surface, and the four-document contract updated with code (§18).
+- **Convention scope (project-specific vs inherited).** The conventions in this section plus the README naming metaphor are **specific to Arcanum**. Organization-wide standards scoped to `Corp.Solution.*`-prefixed solutions — Dapper repositories over SQL Server stored procedures, the `Corp.Lib.*` / `Corp.Api.Configuration.Lib` NuGet stack, and Refit "Service Library" API contracts — **do not apply** here: Arcanum is local-first over its own EF Core + SQLCipher Grimoire (no SQL Server, no stored procedures) and ships its CLI/host as Native AOT on Windows/Linux plus a self-contained macOS fallback. The always-on house rules still hold — one blank line after each C# statement (above), strict CSP with no inline JS/CSS on every web surface, and the five-document contract updated with code (§18).
 
 ---
 
@@ -3053,8 +3063,8 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 ### 16.3 Security and identity
 
 - No user identity, sessions, or OAuth. Loopback + API key only.
-- **Grimoire KDF:** New databases derive the SQLCipher passphrase via `GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret` using **PBKDF2-HMAC-SHA256** with **600,000 iterations** and a unique 16-byte salt stored in `{grimoire.db}.kdf`. Legacy databases (created before this change) are opened with the prior HKDF path and transparently re-encrypted to PBKDF2 on unlock. The dedicated encryption secret is stored alongside the master API key; rotating the API key alone does not break the Grimoire.
-- **API key rotation:** For **legacy** databases that were still encrypted with the master API key, rotating the key was destructive. For **new** databases, the Grimoire is independent of the API key, so rotating the key only invalidates API authentication. To rotate the key on a new database, run `arcanum key set` (or replace the OS credential + `security.dat` mirror) and restart; the Grimoire `.db` and `.kdf` files can stay in place. If the Grimoire encryption secret itself is lost, the database is unrecoverable — there is no automatic key recovery or backdoor. When `grimoire-key.dat` exists but Data Protection cannot decrypt it (missing `key-*.xml` under `~/.config/arcanum/keys/`), bootstrap **FailFast**s with an explicit recovery message and does **not** fall back to the API key (that path previously produced a misleading “key verification failed”). Recovery is restore the matching DP key from backup, or delete `arcanum.db` + `arcanum.db.kdf` + `grimoire-key.dat` and start fresh.
+- **Grimoire KDF:** New databases derive the SQLCipher passphrase via `GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret` using **PBKDF2-HMAC-SHA256** with **600,000 iterations** and a unique 16-byte salt stored in `{grimoire.db}.kdf`. The sidecar is accepted only from a no-follow single-link regular-file handle under a 4 KiB ceiling; writes use owner-only staging, a durable flush, and atomic replacement. Legacy databases (created before this change) are opened with the prior HKDF path and transparently re-encrypted to PBKDF2 on unlock. The dedicated encryption secret is stored alongside the master API key; rotating the API key alone does not break the Grimoire.
+- **API key rotation:** For **legacy** databases that were still encrypted with the master API key, rotating the key was destructive. For **new** databases, the Grimoire is independent of the API key, so rotating the key only invalidates API authentication. To rotate the key on a new database, run `arcanum key set` (or replace the OS credential + `security.dat` mirror) and restart; the Grimoire `.db` and `.kdf` files can stay in place. If the Grimoire encryption secret itself is lost, the database is unrecoverable — there is no automatic key recovery or backdoor. When `grimoire-key.dat` exists but Data Protection cannot decrypt it (missing `key-*.xml` under `~/.config/arcanum/keys/`), bootstrap throws a sanitized `GrimoireDatabaseUnavailableException` and does **not** fall back to the API key (that path previously produced a misleading “key verification failed”). The controlled startup failure stops the host/CLI operation while allowing `finally`/disposal paths to run. Recovery is restore the matching DP key from backup, or delete `arcanum.db` + `arcanum.db.kdf` + `grimoire-key.dat` and start fresh.
 - **`arcanum key show`** / **`arcanum key set`** read/write the master key via CLI DI (`ISecretStore` → OS keychain with `security.dat` fallback); no HTTP endpoint. Shared identity: `arcanum` / `master-api-key`. Linux requires `libsecret` and a running Secret Service for the primary path.
 - **Attachment/upload/batch key:** a separate random 256-bit master key lives primarily in OS key
   storage at `arcanum` / `file-encryption-master-key`; it is never derived from, displayed by, or
@@ -3149,7 +3159,8 @@ The repository maintains exactly the five-document contract. Any contradiction a
 - `Compendium.README.md` for the complete public configuration surface and editor behavior;
 - `Arcanum.README.md` for concise agent/operator orientation and runnable commands; and
 - `Arcanum.Design.Human.md` for human navigation without duplicating technical or configuration
-  contracts.
+  contracts; and
+- `Arcanum.DEBUGGING.Human.md` for verified breakpoint and debugging recipes.
 
 Architecture, contract, configuration, persistence, MCP, CLI, desktop, or distribution changes are
 incomplete until the owning canonical documents are updated in the same change set.
@@ -3588,7 +3599,7 @@ These intelligence-pipeline capabilities share the same turn infrastructure.
 - **Validation.** `JsonSchemaHelper` (Core `Primitives`) is an AOT-safe, reflection-free JSON Schema parser/validator built on `JsonDocument`. It supports a pragmatic subset: `object` (with `properties`, `required`, `additionalProperties:false`), `string`, `number`, `integer`, `boolean`, `array` (with `items`), `enum`. Unsupported features (`anyOf`, `oneOf`, `allOf`, `$ref`, `pattern`, `format`, `minimum`/`maximum`, `minLength`/`maxLength`, `uniqueItems`, `multipleOf`) are ignored. `Parse` and `Validate` each take a `maxDepth` parameter (default 10, clamped 1–50 by `ArcanumSettingClamps.JsonSchemaMaxDepth`); schemas or payloads exceeding the depth are rejected with `StructuredOutput.SchemaInvalid` (HTTP 400).
 - **Correction.** `StructuredOutputValidator.ValidateAndRetryAsync` validates the buffered candidate and, on failure, appends a corrective system message naming the errors and re-invokes the model while the invalid output/correction state changes. Repeating a previously seen state stops deterministically. Before another call it estimates the error-message token count (`InferenceTokenizerResolver` first, else `length/4`) and compares against the provider's `ContextWindowLimit`; if the correction would not fit, it stops and returns the best-effort result with a `context window too small for retry` warning. Strict streaming buffers answer/reasoning and uses the same buffered replacement calls; rejected streamed content is never released, and only replacement answer/reasoning survives. `PromptTurnResult.Warnings` (an `init` property defaulting to `[]`) carries warnings out to the endpoint.
 - **Failure behavior.** Best-effort by default: after correction stops making progress the last response is returned with an `X-Arcanum-Structured-Output-Warning` response header and a `system_fingerprint` suffixed with `:arcanum:structured-output-warning`. A request whose `json_schema` wrapper sets `strict:true` flips this to a hard `400 StructuredOutput.ValidationFailed` on the buffered path and an `Error` event that terminates the stream on the streaming path (no `Result` or buffered answer/reasoning frame is emitted). Best-effort streaming remains post-hoc and does not request correction because output has already been released.
-- **Provider-side constrained decoding.** `OpenAiRequestAugmentingHandler` augments outgoing `application/json` request bodies (streaming `text/event-stream` requests pass through unchanged): it injects `strict: true` into the `json_schema` wrapper; if the provider 400s mentioning `strict`, it retries once without the flag.
+- **Provider-side constrained decoding.** `OpenAiRequestAugmentingHandler` augments outgoing `application/json` request bodies (streaming `text/event-stream` requests pass through unchanged): it injects `strict: true` into the `json_schema` wrapper; if the provider 400s mentioning `strict`, it inspects at most 64 KiB of the response stream and retries once without the flag. Caller cancellation propagates; a malformed or failed diagnostic read does not manufacture a retry.
 - **Wiring.** `StructuredOutputValidator` is a DI singleton; `WizardIntelligenceProvider.ExecutePromptAsync` invokes it for `response_format: json_schema` requests after the tool loop terminates.
 
 ### 22.2 Cost tracking and budget enforcement (`Arcanum:Cost`)
@@ -3640,6 +3651,59 @@ model-call or tool-round count, and their database transaction is never held acr
 - **Metrics.** Per completed provider call, `arcanum_prompt_cache_calls_total` records bounded mode/eligibility/reason labels. Cached tokens and hits are observed only from provider-reported cached usage; a sent key is not a hit. `arcanum_prompt_cache_potential_savings_usd_total` prices the eligible prefix estimate and `arcanum_prompt_cache_actual_savings_usd_total` prices reported cached tokens using `max(0, InputPer1M - CachedPer1M)`. Labels are bounded to provider/model/purpose/mode/eligibility/reason—never keys, sessions, workspaces, environment names, or prompt fragments.
 
 **Per-turn budget semantics (not loop/session).** `ReasoningRequestOptions.BudgetTokens` limits reasoning spend on **one inference turn** (one `PingRequest`); `ReasoningCapabilities.MaxBudgetTokens` caps it per model. There is **no loop/session-level reasoning cap** — an agentic turn of N rounds spends the sum of each round's budget independently. The design states this explicitly (§22.2, `EstimateWorstCaseCallsUsd`, `SaturatingMultiply`, reservation reconciliation per turn) and treats it as docs-only clarification rather than a feature change.
+
+## 23. 2026-08-01 Arcanum and Compendium full-codebase review
+
+### 23.1 Scope and method
+
+The review covered all production and test code in Arcanum and Compendium, including persistence,
+host/API, intelligence, CLI, desktop configuration, process/network boundaries, source-generated
+serialization, CI/build gates, and package graphs. The Forge application and its tests were
+explicitly out of scope; shared Arcanum API contracts whose folders retain the historical
+`TheForge` name remained in scope because they ship with Arcanum. Review work combined focused
+static inspection, repository-wide risky-API searches, full-suite execution, current NuGet
+vulnerability audit, and regression-first TDD. Every confirmed defect received a failing or
+crash-reproducing test before its production repair.
+
+Severity describes operator/data/security impact; difficulty describes implementation and
+verification effort, not urgency. Every listed phase is complete.
+
+### 23.2 Phased remediation plan
+
+| Phase | Area | Finding and remediation | Severity | Difficulty | Status |
+|-------|------|-------------------------|----------|------------|--------|
+| 0 — containment | Reliability / security | Corrupt master-key state with an existing Grimoire also called `Environment.FailFast` and logged its underlying message. Throw a sanitized controlled startup exception, preserve safe regeneration only when no database exists, and remove raw diagnostic text. | Critical | Easy | Complete |
+| 0 — containment | Reliability / security | Grimoire secret corruption and key mismatch called `Environment.FailFast`, terminating an embedding process and bypassing cleanup. Replace it with a sanitized typed startup exception while preserving fail-closed, no-fallback behavior. | Critical | Medium | Complete |
+| 0 — containment | Security / performance | File and symbol context pins used whole-file/whole-line allocation before their output cap and had a path-check/open race. Open a no-follow single-link regular-file handle, reject sources above 64 MiB, hash incrementally, and retain only bounded output. | High | Medium | Complete |
+| 1 — untrusted I/O | Security / performance / reliability | Structured-output fallback read an unlimited provider error body and hid caller cancellation. Inspect only a 64 KiB streamed prefix and propagate cancellation. | High | Easy | Complete |
+| 1 — untrusted I/O | Performance / reliability | Provider health probes and Comm Link webhook POSTs used buffering convenience APIs. Request headers first; never read a health body; drain webhook bodies only through the existing cap. | Medium | Easy | Complete |
+| 1 — secret storage | Security / reliability | Data Protection credential mirrors followed aliases and read unlimited ciphertext before decryption. Reuse the no-follow single-link reader with a 64 KiB ceiling and fail closed for rejected or oversized master, Grimoire, file-encryption, and web-research stores. | High | Easy | Complete |
+| 1 — key metadata | Security / reliability | The Grimoire KDF sidecar used an unlimited aliased read and non-durable ordinary writes. Admit only a no-follow single-link regular file under 4 KiB and publish through owner-only durable staging plus atomic replacement. | High | Easy | Complete |
+| 1 — local persistence | Security / reliability | Arcanum and Compendium configuration reads were unlimited; Compendium staged saves were not durable-flushed and could strand a temporary file on failure. Share a 10 MiB pre-parse ceiling, use owner-only staging, flush to disk, atomically replace, and clean staging in `finally`. | High | Medium | Complete |
+| 2 — local artifacts | Reliability / usability / security | Self-signed certificate names collided within one second and direct pair writes could overwrite or leave a partial pair. Use collision-resistant names, owner-only staged durable writes, no-overwrite moves, and pair cleanup on failure. | Medium | Medium | Complete |
+| 2 — CLI state | Reliability / security | CLI recent-resource persistence could leak a staged file after destination failure and did not durable-flush before replacement. Use owner-only staged durable writes and unconditional cleanup. | Medium | Easy | Complete |
+| 2 — test reliability | Reliability / usability | High-output child-process and MCP reload tests used load-sensitive payloads/deadlines. Preserve the behavioral boundary while using a pipe-sized payload and a 30-second observable deadline. | Medium | Easy | Complete |
+| 3 — documentation | Usability | The canonical document inventory omitted the debugging guide and several links used a nonexistent debugging filename. Correct navigation and document every changed boundary plus recovery workflow. | Low | Easy | Complete |
+
+No current vulnerable NuGet dependency was reported for either in-scope test graph. No additional
+confirmed defect remained after the static review and focused regression pass. Future phases are
+continuous: keep the AOT/IL, dependency, coverage-contract, formatting, build, and complete test
+gates mandatory; add a failing regression before repairing any new issue discovered by those gates.
+
+### 23.3 Completion evidence
+
+- Focused regression matrix: 88 passed, 2 intentional platform skips, 0 failed.
+- Complete Arcanum suite: 4,574 passed, 29 intentional platform/environment skips, 0 failed.
+- Complete Compendium suite: 74 passed, 0 skipped, 0 failed.
+- Release builds: Arcanum and Compendium test graphs, 0 warnings and 0 errors.
+- Native AOT: osx-arm64 CLI publish, IL-warning gate, and runtime-regex smoke passed.
+- Coverage policy contract: 9 tests passed; thresholds remain 80% line and 70% branch.
+- Supply chain: current NuGet audit found no vulnerable direct or transitive packages in either
+  in-scope graph.
+- Hygiene: modified C# blank-line alignment and `git diff --check` passed.
+
+Publication then fast-forwards the review branch to `main`, pushes `origin/main`, and verifies clean
+local/remote parity. The published commit is recorded in version control rather than embedded here.
 
 ---
 

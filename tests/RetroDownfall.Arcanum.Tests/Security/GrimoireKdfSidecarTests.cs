@@ -85,6 +85,25 @@ public sealed class GrimoireKdfSidecarTests : IDisposable
 
     }
 
+    [Fact]
+    public void Read_OversizedSidecar_FailsBeforeParsing()
+    {
+
+        string dbPath = Path.Combine(_tempDir, "grimoire.db");
+
+        string sidecarPath = GrimoireKdfSidecarFile.GetSidecarPath(dbPath);
+
+        using (FileStream stream = new(sidecarPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+
+            stream.SetLength(GrimoireKdfSidecarFile.MaxSidecarBytes + 1L);
+
+        }
+
+        Assert.Throws<InvalidDataException>(() => GrimoireKdfSidecarFile.Read(dbPath));
+
+    }
+
     public void Dispose()
     {
 

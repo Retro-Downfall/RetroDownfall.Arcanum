@@ -5,6 +5,8 @@ using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public sealed record SessionContextPinMaterialization(
@@ -34,6 +36,8 @@ public sealed class SessionContextPinMaterializer(
     public const int MaxBytesPerPin = 64 * 1024;
 
     public const int MaxBytesPerTurn = 256 * 1024;
+
+    public const long MaxSourceFileBytes = 64L * 1024L * 1024L;
 
     private const int MaxDirectoryFiles = 64;
 
@@ -117,9 +121,17 @@ public sealed class SessionContextPinMaterializer(
         CancellationToken cancellationToken) =>
         pin.Kind switch
         {
-            SessionContextPinKind.File => MaterializeFile(pin, workingDirectory, byteLimit),
             SessionContextPinKind.DirectorySnapshot => MaterializeDirectory(pin, workingDirectory, byteLimit),
-            SessionContextPinKind.SymbolRange => MaterializeSymbolRange(pin, workingDirectory, byteLimit),
+            SessionContextPinKind.File => await MaterializeFileAsync(
+                pin,
+                workingDirectory,
+                byteLimit,
+                cancellationToken).ConfigureAwait(false),
+            SessionContextPinKind.SymbolRange => await MaterializeSymbolRangeAsync(
+                pin,
+                workingDirectory,
+                byteLimit,
+                cancellationToken).ConfigureAwait(false),
             SessionContextPinKind.SessionEntry => await MaterializeEntryAsync(
                 pin, sessionId, byteLimit, cancellationToken).ConfigureAwait(false),
             SessionContextPinKind.Attachment => await MaterializeAttachmentAsync(
@@ -132,29 +144,75 @@ public sealed class SessionContextPinMaterializer(
             _ => new(SessionContextPinStatus.Unsupported, null, "Unsupported context pin kind."),
         };
 
-    private static MaterializedPin MaterializeFile(
-        SessionContextPinRecord pin, string? workingDirectory, int byteLimit)
+    private static async Task<MaterializedPin> MaterializeFileAsync(
+        SessionContextPinRecord pin,
+        string? workingDirectory,
+        int byteLimit,
+        CancellationToken cancellationToken)
     {
         if (!TryResolveWorkspacePath(workingDirectory, pin.TargetIdentifier, out string path, out string error))
         {
             return new(SessionContextPinStatus.Unsafe, null, error);
         }
 
-        if (!File.Exists(path))
+        SecureFileOpenStatus openStatus = SecureFileReader.TryOpenRegularFile(
+            path,
+            expectedIdentity: null,
+            out FileStream? stream,
+            out _);
+
+        if (openStatus == SecureFileOpenStatus.NotFound)
         {
             return new(SessionContextPinStatus.Missing, null, "File no longer exists.");
         }
 
-        byte[] source = File.ReadAllBytes(path);
-        string hash = Convert.ToHexString(SHA256.HashData(source)).ToLowerInvariant();
-        SessionContextPinStatus freshness =
-            pin.ContentVersion is not null && !string.Equals(pin.ContentVersion, hash, StringComparison.OrdinalIgnoreCase)
-                ? SessionContextPinStatus.Modified
-                : SessionContextPinStatus.Current;
-        string text = Encoding.UTF8.GetString(source);
-        MaterializedPin limited = FromText(text, byteLimit);
-        return new(limited.Status == SessionContextPinStatus.Truncated ? limited.Status : freshness, limited.Content,
-            freshness == SessionContextPinStatus.Modified ? $"Content changed; current sha256={hash}." : $"sha256={hash}.");
+        if (openStatus != SecureFileOpenStatus.Success || stream is null)
+        {
+
+            return new(
+                SessionContextPinStatus.Unsafe,
+                null,
+                "File could not be opened as an unaliased regular file.");
+
+        }
+
+        await using (stream)
+        {
+
+            if (stream.Length > MaxSourceFileBytes)
+            {
+
+                return new(
+                    SessionContextPinStatus.Truncated,
+                    null,
+                    $"File exceeds the {MaxSourceFileBytes}-byte safe materialization limit.");
+
+            }
+
+            BoundedFileRead source = await ReadBoundedFileAsync(
+                stream,
+                byteLimit,
+                cancellationToken).ConfigureAwait(false);
+
+            string hash = source.Sha256;
+
+            SessionContextPinStatus freshness =
+                pin.ContentVersion is not null && !string.Equals(pin.ContentVersion, hash, StringComparison.OrdinalIgnoreCase)
+                    ? SessionContextPinStatus.Modified
+                    : SessionContextPinStatus.Current;
+
+            SessionContextPinStatus status = source.Truncated
+                ? SessionContextPinStatus.Truncated
+                : freshness;
+
+            return new(
+                status,
+                source.Content,
+                freshness == SessionContextPinStatus.Modified
+                    ? $"Content changed; current sha256={hash}."
+                    : $"sha256={hash}.");
+
+        }
     }
 
     private static MaterializedPin MaterializeDirectory(
@@ -193,8 +251,11 @@ public sealed class SessionContextPinMaterializer(
         return FromText(snapshot.ToString(), byteLimit);
     }
 
-    private static MaterializedPin MaterializeSymbolRange(
-        SessionContextPinRecord pin, string? workingDirectory, int byteLimit)
+    private static async Task<MaterializedPin> MaterializeSymbolRangeAsync(
+        SessionContextPinRecord pin,
+        string? workingDirectory,
+        int byteLimit,
+        CancellationToken cancellationToken)
     {
         int separator = pin.TargetIdentifier.LastIndexOf(':');
         if (separator <= 0)
@@ -216,15 +277,197 @@ public sealed class SessionContextPinMaterializer(
             return new(SessionContextPinStatus.Unsafe, null, error);
         }
 
-        if (!File.Exists(path))
+        SecureFileOpenStatus openStatus = SecureFileReader.TryOpenRegularFile(
+            path,
+            expectedIdentity: null,
+            out FileStream? stream,
+            out _);
+
+        if (openStatus == SecureFileOpenStatus.NotFound)
         {
             return new(SessionContextPinStatus.Missing, null, "File no longer exists.");
         }
 
-        string[] lines = File.ReadAllLines(path);
-        string selected = string.Join('\n', lines.Skip(start - 1).Take(end - start + 1));
-        return FromText(selected, byteLimit);
+        if (openStatus != SecureFileOpenStatus.Success || stream is null)
+        {
+
+            return new(
+                SessionContextPinStatus.Unsafe,
+                null,
+                "File could not be opened as an unaliased regular file.");
+
+        }
+
+        await using (stream)
+        {
+
+            if (stream.Length > MaxSourceFileBytes)
+            {
+
+                return new(
+                    SessionContextPinStatus.Truncated,
+                    null,
+                    $"File exceeds the {MaxSourceFileBytes}-byte safe materialization limit.");
+
+            }
+
+            return await ReadBoundedLineRangeAsync(
+                stream,
+                start,
+                end,
+                byteLimit,
+                cancellationToken).ConfigureAwait(false);
+
+        }
     }
+
+    private static async Task<MaterializedPin> ReadBoundedLineRangeAsync(
+        Stream stream,
+        int start,
+        int end,
+        int byteLimit,
+        CancellationToken cancellationToken)
+    {
+
+        byte[] buffer = new byte[64 * 1024];
+
+        using MemoryStream selected = new(Math.Min(byteLimit, 16 * 1024));
+
+        int lineNumber = 1;
+
+        bool truncated = false;
+
+        int read;
+
+        while (lineNumber <= end
+            && (read = await stream
+                .ReadAsync(buffer, cancellationToken)
+                .ConfigureAwait(false)) > 0)
+        {
+
+            for (int index = 0; index < read && lineNumber <= end; index++)
+            {
+
+                byte value = buffer[index];
+
+                if (lineNumber >= start)
+                {
+
+                    if (selected.Length < byteLimit)
+                    {
+
+                        selected.WriteByte(value);
+
+                    }
+                    else
+                    {
+
+                        truncated = true;
+
+                    }
+
+                }
+
+                if (value == (byte)'\n')
+                {
+
+                    lineNumber++;
+
+                }
+
+            }
+
+            if (truncated)
+            {
+
+                break;
+
+            }
+
+        }
+
+        ReadOnlySpan<byte> bytes = selected.GetBuffer().AsSpan(0, (int)selected.Length);
+
+        if (bytes.EndsWith("\n"u8))
+        {
+
+            bytes = bytes[..^1];
+
+        }
+
+        if (bytes.EndsWith("\r"u8))
+        {
+
+            bytes = bytes[..^1];
+
+        }
+
+        string text = Encoding.UTF8.GetString(bytes)
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        text = TruncateUtf8(text, byteLimit);
+
+        return new(
+            truncated ? SessionContextPinStatus.Truncated : SessionContextPinStatus.Current,
+            text,
+            truncated ? $"Limited to {byteLimit} bytes." : null);
+
+    }
+
+    internal static async Task<BoundedFileRead> ReadBoundedFileAsync(
+        Stream stream,
+        int byteLimit,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(stream);
+
+        ArgumentOutOfRangeException.ThrowIfNegative(byteLimit);
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        using MemoryStream content = new(Math.Min(byteLimit, 16 * 1024));
+
+        byte[] buffer = new byte[64 * 1024];
+
+        long totalRead = 0;
+
+        int read;
+
+        while ((read = await stream
+            .ReadAsync(buffer, cancellationToken)
+            .ConfigureAwait(false)) > 0)
+        {
+
+            hash.AppendData(buffer, 0, read);
+
+            totalRead += read;
+
+            int remaining = byteLimit - (int)content.Length;
+
+            if (remaining > 0)
+            {
+
+                content.Write(buffer, 0, Math.Min(remaining, read));
+
+            }
+
+        }
+
+        string text = Encoding.UTF8.GetString(content.GetBuffer(), 0, (int)content.Length);
+
+        text = TruncateUtf8(text, byteLimit);
+
+        string sha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+
+        return new BoundedFileRead(text, sha256, totalRead > byteLimit);
+
+    }
+
+    internal sealed record BoundedFileRead(
+        string Content,
+        string Sha256,
+        bool Truncated);
 
     private async Task<MaterializedPin> MaterializeEntryAsync(
         SessionContextPinRecord pin, Guid sessionId, int byteLimit, CancellationToken cancellationToken)

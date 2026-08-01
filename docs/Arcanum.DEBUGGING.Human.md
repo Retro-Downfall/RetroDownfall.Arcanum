@@ -32,6 +32,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 | `ToolExecutionPipeline` (`Api/Intelligence/`) | Preflight (`ManaPreflight`), attunement (`BuiltInToolRegistry`), `WardedToolExecution`, `PublicToolFailureMessage`, structured-error logging; shared attachment refresh core used by `ProcessRefreshSessionFileAsync()` and operator `RefreshSessionAttachmentAsync()` for selection, hidden-source Sanctum, MIME/model policy, persistence, structured result, and optional queued injection. |
 | `AttachmentSourceResolver` / `SessionAttachmentStore` | Refresh path reconstruction from encrypted provenance; canonical/link and path-vs-handle identity; double-read stability; session-scoped `RevalidateBoundSourcesAsync()` for authoritative list badges; `PersistRefreshedAsync()` hash reuse/new version under existing gates and byte/version budgets. |
 | `AttachmentMemoryGateAmbient` / `AttachmentMemoryProvenanceStore` | Current-turn promotion authority across provider/tool tasks; typed session/attachment/key/version/hash/materialized-time/source metadata; metadata-only consultation persistence; dynamic Available/Unavailable source status. |
+| `SessionContextPinMaterializer` | File/symbol lexical containment; `SecureFileReader.TryOpenRegularFile()` no-follow single-link admission; 64 MiB source ceiling; incremental full-handle SHA-256 with bounded retained content; streamed line-range and CRLF normalization. |
 | `CommandCenterAttachmentDriftMonitor` / `ShellCommandDispatcher` | Debounced workspace `FileSystemWatcher` invalidation; authenticated attachment-list revalidation; backend-only Snapshot/Live/Stale transitions; loaded/disk hash rendering; `/attachments refresh <name>` confirmation. No UI-thread hashing or client-side Live assumption. |
 | `GrimoireTurnWriter` (`Api/Intelligence/`) | Turn creation (`TryBeginBufferedAssistantReplyAsync()`); interruption (`ResolveInterruptedAsync()` / `ResolveInterruptedAndMarkFinalizedAsync()`); audit writing. |
 | `SessionEntryPersistence` / `GrimoireRepository` (`Infrastructure/Repositories/`) | Write-lock (`SessionWriteLock.AcquireAsync()`); busy retry (`SqliteBusyRetry`); append (`AppendMandatoryToolInteractionAsync()`); summarization (`GetUnsummarizedEntriesAsync()`); rollup (`CampaignBackedWorkspaceRegistry`). |
@@ -46,13 +47,19 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 | `IdempotencyEndpointFilters` / `IdempotencyClaimStore` (`Api/Security/` / `Infrastructure/Data/`) | Durable claim (`DurableClaim` before execution); lease renewal (`HeartbeatAsync()`); replay (`ReplayEligibleAsync()` — only `Complete` terminal in-cap claims replay); single-flight (`ConcurrentDictionary` coordinator); fail-open after owner release for terminal response only. |
 | `InferenceExecuteWriter` (`Api/TheForge/`) | NDJSON writer (`WriteStreamAsync()`); timeout (`PublicStreamTimeoutMessage` mapped to `Hub.Timeout` for `/v1` streaming); sanitized failure (`PublicStreamFailureMessage` mapped to native generic failure); exact-byte capture (`IdempotencyBufferingStream`); replay eligibility (`ReplayResponse` / `ReplayEligibleAsync` / `Complete`). |
 | `PublicInferenceErrorMessages` / `OpenAiStreamErrorMapper` / `ArcanumErrorMapper` (`Api/` + `TheForge/`) | Stable error copy (`NativeGenericFailure` / `OpenAiGenericFailure`); `Hub.Model` / `Hub.Timeout` mapped to 503 for `/v1` streaming; `Session.RestQueueFull` mapped to 503; `Security.IdempotencyInProgress` mapped to 409; `Security.IdempotencyConflict` mapped to 409; no raw exception leakage. |
+| `OpenAiRequestAugmentingHandler` / `ProviderHealthProbe` / `WebhookCommLinkDispatcher` | Headers-first response handling; 64 KiB strict-compatibility diagnostic prefix; caller-cancellation propagation; health status without body reads; capped webhook draining. |
 | `CliSessionManager` / `ArcanumPaths` | Session isolation (`ARCANUM_TEST_HOME` isolation; no developer storage access); session identity; diagnostic preview (`CliSessionManagerTests` avoids corrupt preview by reading identity, not untrusted content). |
-| `ResourceSelector<T>` / `CliResourceCatalog` / `RecentResourceStore` | Resolution precedence (ID, exact name, unique prefix), ambiguity diagnostics, TTY/`--json` prompt suppression, bounded API page-token progression, cancellation before mutation, safe descriptor columns, and recency ordering without authority. |
+| `ResourceSelector<T>` / `CliResourceCatalog` / `RecentResourceStore` | Resolution precedence (ID, exact name, unique prefix), ambiguity diagnostics, TTY/`--json` prompt suppression, bounded API page-token progression, cancellation before mutation, safe descriptor columns, recency ordering without authority, and owner-only durable staging with unconditional failure cleanup. |
 | `CliApplicationFactory` / `CliInvocationContext` / `ConsoleDispatcher` | Recursive `--json`/`--plain`/`--yes` binding; JSON stdout capture and typed-output bypass; ANSI suppression; stdout payload vs stderr diagnostic routing; exit-code normalization; fixed-copy exception mapping. |
 | `ConfigCommands` / `ConfigurationCommandService` / `ConfigurationPathAccessor` | Host-API versus local-bootstrap selection; generated-metadata dot-path resolution; typed parse; provider-endpoint secure input/redaction; full-snapshot validation; owner-only editor temp file; atomic write; environment-override diagnostics. |
+| `ArcanumConfigurationStore` / `LocalCertificateGenerator` (`Compendium.Ux/Services/`) | 10 MiB read admission before parse; owner-only durable configuration staging and `finally` cleanup; collision-resistant certificate pair names; staged no-overwrite pair publication and rollback. |
 | `ConfirmationPrompt` | `--yes` short circuit; redirected-output fail-closed check before prompt or input read; stderr prompt copy and cancellation-aware input. |
 | `ChildProcessFilesystemJail` / `CappedChildProcessRunner` (`Infrastructure/Process/`) | Nonblocking/no-follow process-group launch (`setsid` / direct target group, no blocking FIFO before check); handle-bound child termination; identity-owned cleanup; timeout vs cancellation event; best-effort descendant cleanup. |
 | `GrimoireRepository` / `EntryWindowPolicy` / `SqliteBusyRetry` (`Infrastructure/Repositories/`) | Timestamp-group load (expanded CTE covering full tied group before advancing); bounded query limit (`Limit` / `MaxEntriesPerSession`); rollup updates (`CampaignBackedWorkspaceRegistry`); parameterized filtering/ordering/capping; bookmark advance only when complete group is below ceiling; `BEGIN IMMEDIATE` retry. |
+| `GrimoireDatabaseBootstrapper` / `GrimoireDatabaseUnavailableException` | Dedicated-secret read status; no API-key fallback after a present-but-corrupt secret; sanitized controlled startup failure; normal hosted-service/test cleanup rather than process termination. |
+| `ArcanumMasterKeyBootstrapper` / `MasterApiKeyUnavailableException` | Corrupt master-key state with/without an existing Grimoire; sanitized fixed recovery copy; no replacement generation when data exists; controlled startup failure rather than process termination. |
+| `DataProtectionSecretStore` / `WebResearchCredentialStore` | `SecureFileReader` admission for protected credential mirrors; no-follow single-link regular-file identity; 64 KiB ciphertext ceiling; rejected/oversized/undecryptable input mapped to corrupt without secret leakage. |
+| `GrimoireKdfSidecarFile` | No-follow single-link sidecar admission; 4 KiB read ceiling; owner-only durable staging; atomic replacement and failure cleanup. |
 
 ## Debugging recipes
 
@@ -84,11 +91,17 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
    `ARCANUM_TEST_HOME`. For an empty pre-checkpoint WAL, verify the test's pooling-disabled owner is
    still open, `wal_autocheckpoint` is zero, and no read transaction is active; do not infer WAL
    population from migrations or connection close behavior.
-11. **Diagnose SSE heartbeat concurrency tests:** `SseStreamWriterTests` deliberately holds the first
+11. **Verify bounded untrusted I/O:** run `RequestAugmentingHandlerTests`,
+    `ProviderHealthProbeTests`, `WebhookCommLinkDispatcherTests`, and
+    `SessionContextPinMaterializerTests`. Break at the first response/file stream read. Confirm a
+    health response body is untouched, strict fallback stops after 64 KiB, webhook drain stops at
+    its cap, caller cancellation propagates, and a context pin never retains more than its output
+    limit even while hashing the accepted source handle.
+12. **Diagnose SSE heartbeat concurrency tests:** `SseStreamWriterTests` deliberately holds the first
     `MoveNextAsync` pending until `WriteSignalStream` observes a keep-alive write. If it stalls, inspect
     the pending-move reuse in `SseStreamWriter.StreamAsync`; do not replace the signal with short
     scheduler delays or a cancellation token that can expire while coverage suspends the process.
-12. **Trace `refresh_session_file`:** begin at the internal MCP selector/schema, then break at
+13. **Trace `refresh_session_file`:** begin at the internal MCP selector/schema, then break at
     `ToolExecutionPipeline.ProcessRefreshSessionFileAsync()`,
     `AttachmentSourceResolver.ResolveCurrentAsync()`, and
     `SessionAttachmentStore.PersistRefreshedAsync()`. Confirm the selected id/key was visible at
@@ -103,7 +116,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     core runs with injection disabled. For drift, edit a tracked source and break in
     `CommandCenterAttachmentDriftMonitor.PumpAsync()` and `RevalidateBoundSourcesAsync()`; the watcher
     callback must not hash or set Live itself.
-13. **Trace attachment extraction and retrieval:** break at
+14. **Trace attachment extraction and retrieval:** break at
     `SessionAttachmentIndexingService.TryEnqueue()`, `SessionAttachmentIndexProcessor.ProcessAsync()`,
     and `SessionAttachmentIndexRepository.ReplaceAsync()`. Confirm bytes arrive through
     `ISessionAttachmentStore.ReadBytesAsync()`, limits are clamped before extraction, unsupported
@@ -125,7 +138,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     return without failing attachment creation; reconciliation should rediscover the missing Bound
     row. In Command Center, confirm the footer advances `Pending` to `Indexed` or `Failed` and the
     pane total changes from estimated to the valid provider-billed input after the usage frame.
-14. **Trace attachment-derived memory promotion:** start with
+15. **Trace attachment-derived memory promotion:** start with
     `AttachmentMemoryGateAmbient.RegisterMaterialized()` and confirm only successful ledger or
     attach/refresh materialization publishes an opaque attachment id. Continue through
     `ProcessScribeLexiconAsync()` and `SagaExtractionService.ProcessAsync()`; an id absent from the
@@ -135,13 +148,13 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     verify readers retain the provenance with `SourceAvailability=Unavailable`. Campaign Logger
     prompts, inference audit JSONL, stable prompt-cache segments, and child requests must contain no
     attachment bytes, excerpt text, host path, or hash.
-15. **Trace Workspace/Campaign CLI mapping:** run `arcanum workspace current` inside a registered
+16. **Trace Workspace/Campaign CLI mapping:** run `arcanum workspace current` inside a registered
     root, break in `WorkspaceCommands.Current()`, and compare its deepest containing Workspace and
     Campaign independently. Continue through `ResolveWorkspaceAsync()` for a file/search/index
     command and verify the final operation is an authenticated `ArcanumApiClient` request. For a
     remote-host thought experiment, use a path that is valid only on the server and confirm help and
     output call it a server path; never add `File.*` or `Directory.*` content access to the CLI.
-16. **Trace MCP/tool CLI administration:** run `arcanum mcp show` or `arcanum tool list`, break in
+17. **Trace MCP/tool CLI administration:** run `arcanum mcp show` or `arcanum tool list`, break in
     `McpCommands` / `ToolCommands`, and confirm every operation reaches a typed `ArcanumApiClient`
     request. For invocation, test inline JSON, `@file`, and redirected stdin at
     `ToolArgumentReader.TryRead()`; oversized/non-object input must fail before the API call. Follow
@@ -149,7 +162,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     `arcanum-internal`, blocked names, untrusted workspaces, server ambiguity, timeout, and output
     truncation remain server-enforced. Safe CLI output must omit command, URL, arguments,
     environment, and secret values.
-17. **Trace first-class web workflows:** run `arcanum research "question" --max-sources 2
+18. **Trace first-class web workflows:** run `arcanum research "question" --max-sources 2
     --max-hops 2 --format markdown`, break in `WebWorkflowCommands.Research()`,
     `ArcanumApiClient.ResearchWebAsync()`, and `WebResearchWorkflowService.ResearchAsync()`. Confirm
     the CLI only consumes NDJSON and never performs a search, fetch, or model call itself. On the
@@ -161,7 +174,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     `WebResearch.JavaScriptRenderingUnavailable` with the `--render static` hint. For domain
     filters, inspect the Perplexity request for `search_recency_filter` and bounded
     `search_domain_filter`; never log the query, URL, page content, or credential.
-18. **Trace native file/batch automation:** run `arcanum batch create ./input.jsonl`, break in
+19. **Trace native file/batch automation:** run `arcanum batch create ./input.jsonl`, break in
     `FileBatchCommands.ValidateBatchJsonlAsync()`, `FileBatchApiClient.UploadFileAsync()`, and
     `FileBatchApiClient.CreateBatchAsync()`. Confirm an obvious wrapper failure reports its local
     line and sends no request, while a valid file streams first to `/v1/files` and then submits only

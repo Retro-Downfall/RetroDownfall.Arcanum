@@ -131,6 +131,39 @@ public sealed class ProviderHealthProbeTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task ProbeAsync_DoesNotBufferSuccessfulResponseBody()
+    {
+
+        StreamContent content = new(new ThrowOnReadStream());
+
+        RecordingHttpHandler handler = new(_ => Task.FromResult(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+
+                Content = content,
+
+            }));
+
+        ProviderHealthProbe probe = CreateProbe(handler);
+
+        ProviderSettings provider = new()
+        {
+
+            Name = "streaming-health",
+
+            Type = AiProviderKind.OpenAICompatible,
+
+            Endpoint = "https://example.test/v1",
+
+        };
+
+        bool healthy = await probe.ProbeAsync(provider, CancellationToken.None);
+
+        Assert.True(healthy);
+
+    }
+
     private static ProviderHealthProbe CreateProbe(HttpMessageHandler handler)
     {
         return new ProviderHealthProbe(
@@ -167,6 +200,48 @@ public sealed class ProviderHealthProbeTests : IDisposable
             return responder(request);
 
         }
+
+    }
+
+    private sealed class ThrowOnReadStream : Stream
+    {
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+
+            get => 0;
+
+            set => throw new NotSupportedException();
+
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException("Health probes must not read response bodies.");
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(
+                new IOException("Health probes must not read response bodies."));
+
+        public override void Flush()
+        {
+
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
     }
 

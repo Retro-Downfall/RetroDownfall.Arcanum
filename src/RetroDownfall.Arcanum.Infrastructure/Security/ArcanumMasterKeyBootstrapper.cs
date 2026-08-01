@@ -50,18 +50,16 @@ public static class ArcanumMasterKeyBootstrapper
         if (existing.Status == SecretStoreReadStatus.Corrupted)
         {
 
-            string message = existing.Message
-                ?? "security.dat is present but could not be decrypted.";
+            bool grimoireExists = File.Exists(ArcanumPaths.GrimoireDatabaseFile);
 
-            if (File.Exists(ArcanumPaths.GrimoireDatabaseFile))
+            if (grimoireExists)
             {
 
                 Log.Fatal(
-                    "Master API key store is corrupt and a Grimoire database exists at {DbPath}. {Recovery}",
-                    ArcanumPaths.GrimoireDatabaseFile,
-                    message);
+                    "Master API key store is corrupt while an existing Grimoire database is present. "
+                    + "Restore the matching credential and Data Protection key ring before restart.");
 
-                Environment.FailFast(message);
+                ThrowIfCorruptedWithExistingGrimoire(existing, grimoireExists);
 
             }
 
@@ -85,6 +83,22 @@ public static class ArcanumMasterKeyBootstrapper
             ArcanumCredentialIdentity.MasterApiKeyAccount);
 
         return apiKey;
+
+    }
+
+    internal static void ThrowIfCorruptedWithExistingGrimoire(
+        SecretStoreReadResult result,
+        bool grimoireExists)
+    {
+
+        ArgumentNullException.ThrowIfNull(result);
+
+        if (result.Status == SecretStoreReadStatus.Corrupted && grimoireExists)
+        {
+
+            throw new MasterApiKeyUnavailableException();
+
+        }
 
     }
 

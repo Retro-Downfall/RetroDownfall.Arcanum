@@ -92,7 +92,6 @@ public static class GrimoireDatabaseBootstrapper
             await connection.CloseAsync().ConfigureAwait(false);
 
         }
-
         catch (Exception ex)
         {
 
@@ -158,7 +157,8 @@ public static class GrimoireDatabaseBootstrapper
                     "Grimoire database exists at {DbPath} but could not be opened with the derived key. Possible tampering, corruption, or master key mismatch. Arcanum will exit.",
                     dbPath);
 
-                Environment.FailFast("Arcanum Grimoire database key verification failed.");
+                throw new GrimoireDatabaseUnavailableException(
+                    "Arcanum Grimoire database key verification failed. See logs for recovery steps.");
             }
         }
 
@@ -343,9 +343,8 @@ public static class GrimoireDatabaseBootstrapper
             "Grimoire database at {DbPath} exists but could not be opened with either the legacy dedicated secret or the master API key.",
             dbPath);
 
-        Environment.FailFast("Arcanum Grimoire database key verification failed.");
-
-        throw new InvalidOperationException("Unreachable.");
+        throw new GrimoireDatabaseUnavailableException(
+            "Arcanum Grimoire database key verification failed. See logs for recovery steps.");
 
     }
 
@@ -429,10 +428,8 @@ public static class GrimoireDatabaseBootstrapper
                 + "Restore the matching key-*.xml from backup, or reset the Grimoire (delete arcanum.db, arcanum.db.kdf under ~/.config/arcanum/, and grimoire-key.dat under the Application Support arcanum folder) to start fresh — session data is otherwise unrecoverable.",
                 dedicated.Message ?? "unknown");
 
-            Environment.FailFast(
+            throw new GrimoireDatabaseUnavailableException(
                 "Arcanum Grimoire encryption secret cannot be decrypted (missing Data Protection key). See logs for recovery steps.");
-
-            throw new InvalidOperationException("Unreachable.");
 
         }
 
@@ -440,24 +437,9 @@ public static class GrimoireDatabaseBootstrapper
 
     }
 
-    private static Task<SecretStoreReadResult> ReadGrimoireSecretResultAsync(ISecretStore secretStore) =>
-        secretStore switch
-        {
-            OsKeychainSecretStore os => os.GetGrimoireEncryptionSecretReadResultAsync(),
-            DataProtectionSecretStore dp => dp.GetGrimoireEncryptionSecretReadResultAsync(),
-            _ => ReadGrimoireSecretResultFallbackAsync(secretStore),
-        };
-
-    private static async Task<SecretStoreReadResult> ReadGrimoireSecretResultFallbackAsync(ISecretStore secretStore)
-    {
-
-        string? value = await secretStore.GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
-
-        return value is null
-            ? SecretStoreReadResult.Missing()
-            : SecretStoreReadResult.Ok(value);
-
-    }
+    private static Task<SecretStoreReadResult> ReadGrimoireSecretResultAsync(
+        ISecretStore secretStore) =>
+        secretStore.GetGrimoireEncryptionSecretReadResultAsync();
 
     private static async Task<string> GenerateAndSaveDedicatedSecretAsync(ISecretStore secretStore)
     {

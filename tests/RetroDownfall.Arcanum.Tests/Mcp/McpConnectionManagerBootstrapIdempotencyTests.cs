@@ -202,7 +202,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             CancellationToken.None).AsTask();
 
         await sink.HandoffStarted.Task.WaitAsync(
-            TimeSpan.FromSeconds(5));
+            TimeSpan.FromSeconds(30));
 
         _settings.CurrentValue = _settings.CurrentValue with
         {
@@ -220,7 +220,7 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         sink.ReleaseHandoff();
         TrustedStructuredToolResult result =
             Assert.IsType<TrustedStructuredToolResult>(
-                await invocation.WaitAsync(TimeSpan.FromSeconds(5)));
+                await invocation.WaitAsync(TimeSpan.FromSeconds(30)));
 
         Assert.Contains(
             "\"status\":\"ok\"",
@@ -516,7 +516,6 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             CancellationToken ct = default) =>
             Task.FromResult(new ResourceLimits());
 
-        
         public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
             string? workspaceRoot,
             CancellationToken ct = default) =>

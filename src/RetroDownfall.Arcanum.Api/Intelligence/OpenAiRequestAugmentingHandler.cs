@@ -15,6 +15,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 {
+
+    private const int MaxResponseInspectionBytes = 64 * 1024;
+
     private readonly ILogger<OpenAiRequestAugmentingHandler> _logger;
 
     public OpenAiRequestAugmentingHandler(
@@ -295,9 +298,41 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
         try
         {
 
-            string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            await using Stream stream = await response.Content
+                .ReadAsStreamAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            byte[] prefix = new byte[MaxResponseInspectionBytes];
+
+            int totalRead = 0;
+
+            while (totalRead < prefix.Length)
+            {
+
+                int read = await stream
+                    .ReadAsync(prefix.AsMemory(totalRead, prefix.Length - totalRead), cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (read == 0)
+                {
+
+                    break;
+
+                }
+
+                totalRead += read;
+
+            }
+
+            string body = Encoding.UTF8.GetString(prefix, 0, totalRead);
 
             return body.Contains("strict", StringComparison.OrdinalIgnoreCase);
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
 
         }
         catch

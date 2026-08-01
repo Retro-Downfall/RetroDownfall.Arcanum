@@ -61,28 +61,48 @@ public sealed class LocalCertificateGenerator
 
         using X509Certificate2 certificate = request.CreateSelfSigned(notBefore, notAfter);
 
-        string stem = $"arcanum-localhost-{now:yyyyMMddHHmmss}";
+        string stem = $"arcanum-localhost-{now:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
 
         string certificatePath = Path.Combine(certificatesDirectory, stem + ".crt");
 
         string privateKeyPath = Path.Combine(certificatesDirectory, stem + ".key");
 
-        // Write certificate with default permissions, then restrict
-        File.WriteAllText(certificatePath, certificate.ExportCertificatePem());
+        string certificateTempPath = certificatePath + ".tmp";
 
-        SecureFilePermissions.ApplyOwnerOnlyFile(certificatePath);
+        string privateKeyTempPath = privateKeyPath + ".tmp";
 
-        // Write private key with restricted permissions atomically
-        // Create file first, then set permissions before writing content
-        using (FileStream keyStream = File.Create(privateKeyPath))
+        try
         {
 
-            // Set owner-only permissions immediately after creation, before writing
-            SecureFilePermissions.ApplyOwnerOnlyFile(privateKeyPath);
+            WriteDurableOwnerOnlyFile(
+                certificateTempPath,
+                System.Text.Encoding.ASCII.GetBytes(certificate.ExportCertificatePem()));
 
             byte[] keyBytes = System.Text.Encoding.ASCII.GetBytes(rsa.ExportPkcs8PrivateKeyPem());
 
-            keyStream.Write(keyBytes, 0, keyBytes.Length);
+            WriteDurableOwnerOnlyFile(privateKeyTempPath, keyBytes);
+
+            File.Move(certificateTempPath, certificatePath, overwrite: false);
+
+            File.Move(privateKeyTempPath, privateKeyPath, overwrite: false);
+
+        }
+        catch
+        {
+
+            TryDelete(certificatePath);
+
+            TryDelete(privateKeyPath);
+
+            throw;
+
+        }
+        finally
+        {
+
+            TryDelete(certificateTempPath);
+
+            TryDelete(privateKeyTempPath);
 
         }
 
@@ -131,6 +151,40 @@ public sealed class LocalCertificateGenerator
                 $"The certificate is valid until {notAfter:yyyy-MM-dd}. Regenerate it before it expires.",
                 "The generated PEM private key is owner-only. Keep it private and do not copy it into configuration.",
             ]);
+
+    }
+
+    private static void WriteDurableOwnerOnlyFile(string path, byte[] contents)
+    {
+
+        using FileStream stream = new(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None);
+
+        SecureFilePermissions.ApplyOwnerOnlyFile(path);
+
+        stream.Write(contents);
+
+        stream.Flush(flushToDisk: true);
+
+    }
+
+    private static void TryDelete(string path)
+    {
+
+        try
+        {
+
+            File.Delete(path);
+
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+
+        }
 
     }
 

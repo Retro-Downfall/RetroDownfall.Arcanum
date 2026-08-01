@@ -106,6 +106,34 @@ public sealed class HttpsConfigurationTests : IDisposable
     }
 
     [Fact]
+    public void Generate_twice_in_same_second_does_not_overwrite_prior_key_pair()
+    {
+
+        LocalCertificateGenerator generator = new();
+
+        string certificatesDirectory = Path.Combine(_tempRoot, "collision-certs");
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LocalCertificateResult first = generator.Generate(certificatesDirectory, now);
+
+        LocalCertificateResult second = generator.Generate(certificatesDirectory, now);
+
+        Assert.NotEqual(first.CertificatePath, second.CertificatePath);
+
+        Assert.NotEqual(first.PrivateKeyPath, second.PrivateKeyPath);
+
+        Assert.True(File.Exists(first.CertificatePath));
+
+        Assert.True(File.Exists(first.PrivateKeyPath));
+
+        Assert.True(File.Exists(second.CertificatePath));
+
+        Assert.True(File.Exists(second.PrivateKeyPath));
+
+    }
+
+    [Fact]
     public async Task GenerateLocalCertificateCommand_enables_https_sets_paths_and_preserves_valid_port()
     {
 

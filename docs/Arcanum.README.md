@@ -496,6 +496,18 @@ database created before the current schema must be recreated: stop every Arcanum
 back up anything needed, delete the database and its WAL/SHM sidecars, and restart. A database
 created by the current schema needs no reinstall.
 
+If the dedicated Grimoire secret is corrupt or cannot decrypt the current database, startup fails
+closed with a sanitized database-unavailable error and never falls back to the API key. The failure
+is controlled, so host/CLI cleanup completes. Restore the matching secret and Data Protection key
+ring, or follow the destructive reinstall procedure only after preserving anything recoverable.
+The same controlled rule applies when the master API-key credential/mirror is corrupt and a
+Grimoire database exists: Arcanum does not log the underlying decryption message or generate a
+replacement key. Safe key regeneration is limited to the no-database case.
+All Data Protection credential mirrors are accepted only as no-follow, single-link regular files
+of at most 64 KiB; linked, oversized, or undecryptable ciphertext fails closed as corrupt.
+The Grimoire `.kdf` sidecar follows the same identity rule with a 4 KiB ceiling and owner-only,
+durable atomic publication.
+
 **A reinstall is required now.** `Entries` gained a `Sequence` column and a unique
 `(SessionId, Sequence)` index, which give a session's transcript an explicit append order instead of
 inferring one from timestamps that a prompt and its answer share. Existing rows never recorded that
@@ -875,10 +887,12 @@ any fork failure leaves the original session unchanged.
 Persistent session context is managed with `/context`, `/context pin <kind> <target>`, and
 `/context unpin <pin-id>`. Kinds are `file`, `directorySnapshot`, `symbolRange`
 (`path:start-end`), `sessionEntry`, `attachment`, `url`, and `diagnostic`. Pins survive host and
-session restarts. File pins retain a SHA-256 version and are re-read on every turn; modified,
-deleted, inaccessible, or workspace/symlink-escaping targets are shown to the model with an
-explicit stale/error status rather than silently reusing bytes. Directory snapshots and all other
-pins have deterministic count/byte limits. Materialized values are source-labeled untrusted data,
+session restarts. File and symbol-range pins open a no-follow single-link regular-file handle,
+reject source files over 64 MiB, and retain only bounded output. File pins hash the accepted handle
+incrementally on every turn; modified, deleted, inaccessible, linked, or workspace-escaping targets
+are shown to the model with an explicit stale/error status rather than silently reusing bytes.
+Symbol ranges stream their selected lines and normalize CRLF output. Directory snapshots and all
+other pins have deterministic count/byte limits. Materialized values are source-labeled untrusted data,
 participate in normal context/mana estimates, and do not change transcript `Entries.IsPinned`
 compression behavior. Existing `@path` text/image staging remains unchanged and turn-scoped.
 

@@ -14,6 +14,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </summary>
 public sealed class WebResearchCredentialStore : IWebResearchCredentialStore, IDisposable
 {
+    internal const int MaxProtectedSecretBytes = 64 * 1024;
+
     private const string ProtectorPurpose = "Arcanum.WebResearch.PerplexityApiKey";
 
     private const string CorruptCredentialMessage =
@@ -21,7 +23,9 @@ public sealed class WebResearchCredentialStore : IWebResearchCredentialStore, ID
         + "(corrupt or wrong Data Protection key ring).";
 
     private readonly IOsCredentialStore _osStore;
+
     private readonly IDataProtector _protector;
+
     private readonly ILogger<WebResearchCredentialStore>? _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -185,15 +189,29 @@ public sealed class WebResearchCredentialStore : IWebResearchCredentialStore, ID
     {
         string path = ArcanumPaths.PerplexityApiKeyStoreFile;
 
-        if (!File.Exists(path))
+        using SecureFileReadResult read = await SecureFileReader
+            .ReadBytesAsync(
+                path,
+                MaxProtectedSecretBytes,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (read.Status == SecureFileReadStatus.NotFound)
         {
             return SecretStoreReadResult.Missing();
         }
 
-        byte[] cipher = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        if (read.Status != SecureFileReadStatus.Success)
+        {
+            return SecretStoreReadResult.Corrupted(CorruptCredentialMessage);
+        }
+
+        byte[] cipher = read.Bytes.ToArray();
 
         if (cipher.Length == 0)
         {
+            CryptographicOperations.ZeroMemory(cipher);
+
             return SecretStoreReadResult.Corrupted(CorruptCredentialMessage);
         }
 
@@ -217,6 +235,10 @@ public sealed class WebResearchCredentialStore : IWebResearchCredentialStore, ID
         catch (CryptographicException)
         {
             return SecretStoreReadResult.Corrupted(CorruptCredentialMessage);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(cipher);
         }
     }
 

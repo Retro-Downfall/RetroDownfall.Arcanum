@@ -12,7 +12,7 @@ This file is the only complete public configuration listing. The other canonical
 documents are [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) for architecture and API contracts,
 [`Arcanum.README.md`](Arcanum.README.md) for agent/operator orientation,
 [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) for conceptual navigation,
-and [`Arcanum.DEBUGGING.md`](Arcanum.DEBUGGING.md) for verified breakpoint and recipe guides.
+and [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) for verified breakpoint and recipe guides.
 Configuration changes update this reference, `SettingDescriptors`, validation,
 source-generated metadata, and the editor together; other docs link here instead
 of reproducing the complete key table.
@@ -411,14 +411,17 @@ Compendium never resolves referenced secret values.
 
 The Host page generates an owner-only self-signed loopback PEM certificate/key
 pair under `~/.config/arcanum/certs/`, so generated local HTTPS needs no stored
-password. It preserves a valid operator-selected HTTPS port and does not
-install OS trust. External binding still requires HTTPS and a certificate valid
-for the remote hostname/IP; TLS validation must not be disabled.
+password. Collision-resistant names preserve every pair even when several are generated in one
+second. Certificate and key bytes are durable-flushed to owner-only staging files, moved without
+overwrite, and removed as a pair if publication cannot finish. The editor preserves a valid
+operator-selected HTTPS port and does not install OS trust. External binding still requires HTTPS
+and a certificate valid for the remote hostname/IP; TLS validation must not be disabled.
 
 ## Saving and validation
 
-Save runs `ConfigurationValidator`, writes a temporary file, atomically replaces
-`arcanum.json`, and applies owner-only permissions. Host/API loading performs a
+Save runs `ConfigurationValidator`, rejects configuration files larger than the code-owned 10 MiB
+ceiling before JSON parsing, writes an owner-only temporary file, durable-flushes it, atomically
+replaces `arcanum.json`, and deletes staging in `finally`. Host/API loading performs a
 source-generated fail-closed walk before binding, grouping all unknown paths
 while preserving pricing and workspace-check dictionary keys. Validation
 pointers use the same dot paths as descriptors.

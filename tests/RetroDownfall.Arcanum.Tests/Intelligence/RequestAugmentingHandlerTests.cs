@@ -103,6 +103,34 @@ public sealed class RequestAugmentingHandlerTests
 
     }
 
+    [Fact]
+    public async Task OpenAiHandler_StrictRetry_InspectsOnlyBoundedErrorPrefix()
+    {
+
+        OversizedStrictRejectingHandler rejecting = new();
+
+        OpenAiRequestAugmentingHandler handler = new(
+            NullLogger<OpenAiRequestAugmentingHandler>.Instance)
+        {
+
+            InnerHandler = rejecting,
+
+        };
+
+        using HttpClient client = new(handler);
+
+        using HttpRequestMessage request = CreateJsonRequest("""
+            {"model":"test-model","messages":[],"response_format":{"type":"json_schema","json_schema":{"name":"test","schema":{"type":"object"}}}}
+            """);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal(2, rejecting.CallCount);
+
+    }
+
     private static HttpRequestMessage CreateJsonRequest(string json)
     {
 
@@ -162,6 +190,128 @@ public sealed class RequestAugmentingHandlerTests
             return new HttpResponseMessage(HttpStatusCode.OK);
 
         }
+
+    }
+
+    private sealed class OversizedStrictRejectingHandler : DelegatingHandler
+    {
+
+        public int CallCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+
+            CallCount++;
+
+            if (CallCount > 1)
+            {
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+
+            }
+
+            byte[] prefix = Encoding.UTF8.GetBytes(
+                "{\"error\":{\"message\":\"strict mode unsupported\"},\"padding\":\""
+                + new string('x', 70_000));
+
+            StreamContent content = new(new ThrowAfterPayloadStream(prefix));
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+
+                Content = content,
+
+            });
+
+        }
+
+    }
+
+    private sealed class ThrowAfterPayloadStream(byte[] payload) : Stream
+    {
+
+        private int _offset;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+
+            get => _offset;
+
+            set => throw new NotSupportedException();
+
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+
+            if (_offset >= payload.Length)
+            {
+
+                throw new IOException("The bounded reader consumed beyond the permitted prefix.");
+
+            }
+
+            int read = Math.Min(count, payload.Length - _offset);
+
+            payload.AsSpan(_offset, read).CopyTo(buffer.AsSpan(offset, read));
+
+            _offset += read;
+
+            return read;
+
+        }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return ValueTask.FromResult(ReadPayload(buffer.Span));
+
+        }
+
+        private int ReadPayload(Span<byte> buffer)
+        {
+
+            if (_offset >= payload.Length)
+            {
+
+                throw new IOException("The bounded reader consumed beyond the permitted prefix.");
+
+            }
+
+            int read = Math.Min(buffer.Length, payload.Length - _offset);
+
+            payload.AsSpan(_offset, read).CopyTo(buffer);
+
+            _offset += read;
+
+            return read;
+
+        }
+
+        public override void Flush()
+        {
+
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
     }
 

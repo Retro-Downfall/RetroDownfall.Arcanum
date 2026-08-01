@@ -161,6 +161,29 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task GetApiKeyReadResultAsync_OversizedFile_FailsClosed()
+    {
+
+        using DataProtectionSecretStore store = CreateStore();
+
+        string path = ArcanumPaths.ApiKeyStoreFile;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        await using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+
+            stream.SetLength(DataProtectionSecretStore.MaxProtectedSecretBytes + 1L);
+
+        }
+
+        SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+    }
+
+    [Fact]
     public async Task SaveGrimoireEncryptionSecretAsync_RoundTrip_ReturnsSameSecret()
     {
 

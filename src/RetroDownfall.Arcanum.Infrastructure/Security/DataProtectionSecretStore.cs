@@ -10,6 +10,9 @@ public sealed class DataProtectionSecretStore(
     IDataProtectionProvider dataProtectionProvider,
     IApiKeyDigestCache apiKeyDigestCache) : ISecretStore, IDisposable
 {
+
+    internal const int MaxProtectedSecretBytes = 64 * 1024;
+
     private const string ProtectorPurpose = "Arcanum.Core.ApiKey";
 
     private const string GrimoireProtectorPurpose = "Arcanum.Core.GrimoireEncryption";
@@ -93,7 +96,6 @@ public sealed class DataProtectionSecretStore(
             _grimoireProtector,
             corruptMessage: "grimoire-key.dat is present but could not be decrypted (corrupt or missing Data Protection key).");
 
-
     public async Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret)
     {
 
@@ -154,17 +156,33 @@ public sealed class DataProtectionSecretStore(
         try
         {
 
-            if (!File.Exists(path))
+            using SecureFileReadResult read = await SecureFileReader
+                .ReadBytesAsync(
+                    path,
+                    MaxProtectedSecretBytes,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+
+            if (read.Status == SecureFileReadStatus.NotFound)
             {
 
                 return SecretStoreReadResult.Missing();
 
             }
 
-            byte[] cipher = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+            if (read.Status != SecureFileReadStatus.Success)
+            {
+
+                return SecretStoreReadResult.Corrupted(corruptMessage);
+
+            }
+
+            byte[] cipher = read.Bytes.ToArray();
 
             if (cipher.Length == 0)
             {
+
+                CryptographicOperations.ZeroMemory(cipher);
 
                 return SecretStoreReadResult.Corrupted(corruptMessage);
 
@@ -186,6 +204,12 @@ public sealed class DataProtectionSecretStore(
             {
 
                 return SecretStoreReadResult.Corrupted(corruptMessage);
+
+            }
+            finally
+            {
+
+                CryptographicOperations.ZeroMemory(cipher);
 
             }
 

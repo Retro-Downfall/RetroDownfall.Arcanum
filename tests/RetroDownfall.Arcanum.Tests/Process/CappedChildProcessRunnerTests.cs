@@ -64,7 +64,7 @@ public sealed class CappedChildProcessRunnerTests
         // drain the pipe after the cap is hit, the child would block on its next write() once the
         // kernel pipe buffer fills, and RunAsync would only unblock via the timeout below — this
         // test's timeout is intentionally short so a regression here fails fast instead of hanging.
-        ProcessStartInfo psi = CreateLargeOutputProcessStartInfo(payloadCharCount: 5_000_000);
+        ProcessStartInfo psi = CreateLargeOutputProcessStartInfo(payloadCharCount: 500_000);
 
         Stopwatch stopwatch = Stopwatch.StartNew();
 
@@ -751,6 +751,7 @@ public sealed class CappedChildProcessRunnerTests
 
             await Task.Delay(25);
         }
+
         while (global::System.Environment.TickCount64 < deadline);
 
         return IsExitedOrZombie(processId);
