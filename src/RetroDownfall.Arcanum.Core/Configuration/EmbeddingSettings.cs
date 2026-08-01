@@ -103,6 +103,16 @@ public sealed record EmbeddingSettings
     public bool CodebaseRetrievalEnabled { get; set; }
 
     /// <summary>
+    /// Runtime projection of <c>Arcanum:Features:AttachmentRetrieval</c>.
+    /// </summary>
+    public bool AttachmentRetrievalEnabled { get; set; }
+
+    /// <summary>
+    /// Bounded session-attachment extraction, indexing, queue, and retrieval controls.
+    /// </summary>
+    public AttachmentEmbeddingSettings Attachments { get; set; } = new();
+
+    /// <summary>
     /// Code-owned semantic codebase retrieval mechanics (file indexing bounds, extensions, background
     /// re-index interval, and per-turn retrieval cap). Only relevant when
     /// <see cref="CodebaseRetrievalEnabled"/> is <c>true</c>.

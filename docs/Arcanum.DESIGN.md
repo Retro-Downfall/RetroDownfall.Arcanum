@@ -286,12 +286,12 @@ Single-host failure behavior:
 | GET | `/api/sessions/{id}/export` | Export JSON or Markdown (`ApiResponse<SessionExportResult>`). |
 | POST | `/api/sessions/{id}/rest` | Enqueue Campaign Log consolidation (**202** + `ApiResponse<bool>` when accepted; **503** + `Session.RestQueueFull` when the bounded queue rejects). |
 | GET | `/api/sessions/{id}/stream` | SSE replay + live entry stream. |
-| GET | `/api/sessions/{id}/attachments` | List **bound** session attachments (`ApiResponse<SessionAttachmentDto[]>`; includes the snapshot `RelativePath` for Reveal plus sanitized source provenance/refreshability; never an absolute source path; §10.2.5). |
+| GET | `/api/sessions/{id}/attachments` | List **bound** session attachments (`ApiResponse<SessionAttachmentDto[]>`; includes `indexingStatus`, the snapshot `RelativePath` for Reveal, and sanitized source provenance/refreshability; never an absolute source path; §10.2.5). |
 | GET | `/api/sessions/{id}/context-pins` | List durable, structured session context pins. |
 | POST | `/api/sessions/{id}/context-pins` | Create or update a context pin by `(session, kind, stable target)`; accepts file, directory snapshot, symbol/range, session entry, attachment, URL, and diagnostic kinds. |
 | DELETE | `/api/sessions/{id}/context-pins/{pinId}` | Remove a durable context pin without changing `Entries.IsPinned`. |
 | POST | `/api/sessions/{id}/fork` | Create an independent branch of a session, optionally truncated at `upToEntryId` (**201**; §11.16.1). |
-| POST | `/api/embeddings/reset` | Truncate embedding tables for RAG dimension-change recovery (requires `?confirm=true`; optional `?scope=all\|entry\|workspaceFile\|saga`, default. |
+| POST | `/api/embeddings/reset` | Truncate embedding tables for RAG dimension-change recovery (requires `?confirm=true`; optional `?scope=all\|entry\|workspaceFile\|saga\|sessionAttachment`, default `all`). |
 | DELETE | `/api/sessions/{id}/entries/{entryId}` | Delete a single entry from a session (**204**). |
 | POST | `/api/sessions/{id}/entries/{entryId}/pin` | Pin an entry so it is always included in inference context, even when compression would otherwise drop it. |
 | DELETE | `/api/sessions/{id}/entries/{entryId}/pin` | Unpin a previously pinned entry. |
@@ -303,9 +303,9 @@ Single-host failure behavior:
 | DELETE | `/api/lore/{key}` | Delete lore entry. |
 | GET | `/api/saga` | Paginated listing of Saga memories (`ApiResponse<SagaMemoryDto[]>`; optional `?q=` substring, `?sessionId=`, `?limit=` [1–10,000. |
 | POST | `/api/saga/divine` | Semantic search over Saga memories (`ApiResponse<SagaSearchResult>`; body `SagaSearchRequest` { `query`, `limit` }; **503**. |
-| DELETE | `/api/saga/{id}` | Delete a single Saga memory (**204**; **404** `Saga.NotFound`; §21.8). |
-| DELETE | `/api/saga` | Delete every Saga memory, embedding, and extraction watermark (**204**; requires `?confirm=true`, else **400** `Saga.NotEmpty`; §21.8). |
-| GET | `/api/saga/stats` | Aggregate Saga memory summary (`ApiResponse<SagaStats>`: total count, session count, oldest/newest `CreatedAt`; §21.8). |
+| DELETE | `/api/saga/{id}` | Delete a single Saga memory (**204**; **404** `Saga.NotFound`; §21.9). |
+| DELETE | `/api/saga` | Delete every Saga memory, embedding, and extraction watermark (**204**; requires `?confirm=true`, else **400** `Saga.NotEmpty`; §21.9). |
+| GET | `/api/saga/stats` | Aggregate Saga memory summary (`ApiResponse<SagaStats>`: total count, session count, oldest/newest `CreatedAt`; §21.9). |
 | GET | `/api/spells` | List built-in + workspace spells (`ApiResponse<SpellSummary[]>`; optional `workspace` query; §8.14). |
 | GET | `/api/spells/{name}` | Spell detail (`ApiResponse<SpellDetail>`; optional `workspace` query; **404** when missing). |
 | POST | `/api/spells` | Create workspace spell (`ApiResponse<bool>`; optional `workspace` query; **400** validation). |
@@ -559,10 +559,10 @@ while `cli-context.json.sessionId` is the active-context authority.
 | `session list\|show\|get\|chat\|entries\|watch\|fork\|rename\|archive\|export\|rest\|attachments\|delete-entry\|pin-entry\|unpin-entry\|compact\|divine` | Complete session lifecycle and continuation over **`/api/sessions`**. Session arguments accept a GUID, exact title, unique prefix, or an interactive picker; `get` remains an alias for `show`. `list` filters by campaign/status/search/model/from/to; `show` combines metadata with attachment count and displays token/cost telemetry plus fork parent; `watch` consumes the session SSE stream. Fork/archive/export preserve archived-session semantics and use server APIs. Entry delete requires confirmation; delete/pin/unpin/compact retain the server's memory-management gate. Read commands support recursive `--json` (`watch` emits one JSON object per line). |
 | `workspace list\|current\|register\|show\|tree\|info\|read\|search\|index\|index-status\|chunks\|unregister` | Operate through authenticated **`/api/workspaces`** routes. `register [path]` registers the current directory with one command for the bundled local host; explicit paths are server-host paths. `show` retains `get` as a compatibility alias. File reads/listing remain bounded server operations; `search`, `index`, `index-status`, and `chunks` expose The Weave without The Forge. Optional selectors resolve from explicit ID/name/path, saved Workspace context, then current-directory containment. `current` reports independent Campaign and Workspace mappings and offers the exact Campaign registration command when only a Workspace matches. |
 | `mcp list\|get` | List/select MCP server safe status. Output excludes URL, command, arguments, working directory, and other secret-adjacent configuration. |
-| `saga list` | Paginated listing of Saga memories via **`GET /api/saga`**; options `--query`, `--session`, `--limit`, `--offset` (§21.8). |
-| `saga divine <QUERY>` | Semantic search over Saga memories via **`POST /api/saga/divine`**; option `--limit` (§21.8). |
-| `saga delete <ID>` | Delete a single Saga memory via **`DELETE /api/saga/{id}`** (themed confirmation on success; §21.8). |
-| `saga stats` | Bordered panel summary of Saga memory storage via **`GET /api/saga/stats`** (§21.8). |
+| `saga list` | Paginated listing of Saga memories via **`GET /api/saga`**; options `--query`, `--session`, `--limit`, `--offset` (§21.9). |
+| `saga divine <QUERY>` | Semantic search over Saga memories via **`POST /api/saga/divine`**; option `--limit` (§21.9). |
+| `saga delete <ID>` | Delete a single Saga memory via **`DELETE /api/saga/{id}`** (themed confirmation on success; §21.9). |
+| `saga stats` | Bordered panel summary of Saga memory storage via **`GET /api/saga/stats`** (§21.9). |
 
 **`@filename` convention:** `--body`, `--template`, `--goal`, `--plan`, and `--inquisitor` accept either inline text/JSON or `@filename` to read the value from a file. This is a CLI-wide convention for non-interactive commands, distinct from the `chat` REPL's inline `@path` staging within prompt text — both read file contents, but the flag-value form is positional to an option while the REPL form is inline in free text.
 
@@ -751,7 +751,7 @@ The Grimoire is the primary persistence authority, but not every durable byte be
 | Session attachment metadata | `SessionAttachments` | Raw SQL through `ISessionAttachmentStore`; `EncryptionVersion`/`EncryptionKeyId`, encrypted bytes, and lifecycle are in §10.2.5. |
 | Session context pins | `SessionContextPins` | Raw SQL through `ISessionContextPinStore`; durable metadata only. Content is revalidated and materialized from its authoritative source on every turn (§10.2.6). |
 | OpenAI batch metadata | `Batches` | No request-count columns; `GET` derives counts from input/output/error files (§11.21). |
-| Embedding and Saga state | `entry_embeddings`[+`_vec`], `workspace_file_chunks`, `workspace_file_embeddings`[+`_vec`], `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks` | Created idempotently from canonical definitions in `WeaveSchemaInitializer`; workspace chunks persist stable content-derived IDs, character offsets, and one-based line ranges. While Arcanum has no users, schema changes replace those definitions directly and local/test databases are recreated; no compatibility upgrade path is maintained. Reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
+| Embedding, attachment-retrieval, and Saga state | `entry_embeddings`[+`_vec`], `workspace_file_chunks`, `workspace_file_embeddings`[+`_vec`], `session_attachment_chunks`, `session_attachment_embeddings`[+`_vec`], `session_attachment_index_state`, `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks` | Created idempotently from canonical definitions in `WeaveSchemaInitializer`. Attachment chunks retain session/version/file/hash/character/line provenance and status without serialized metadata JSON. While Arcanum has no users, schema changes replace those definitions directly and local/test databases are recreated; no compatibility upgrade path is maintained. Reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
 | Entry pinning | `Entries.IsPinned` | Pinned entries survive read-time compression and remain available to inference. |
 | Mandatory `apply_patch` receipt | deterministic `Entries` rows | Exact assistant `ToolCall` then system `ToolResult`; no receipt table (§10.7.4). |
 | Daemon execution history | process memory | `InMemoryDaemonExecutionRepository`; restart clears it. |
@@ -1354,9 +1354,9 @@ When `WorkingDirectory` is empty, filesystem tools return a workspace-not-config
 
 1. **Discovery (`SpellScanner`):** Scans `~/.config/arcanum/spells/` then the workspace for `SPELL.md` files. **Routing** uses **`ScanMetadataAsync`** (YAML frontmatter only — `name`, `description`) without reading spell bodies or `scripts/`; after **`SemanticRouter`** (or **`OverrideSpellName`**) picks a match, **`LoadFullAsync`** hydrates that spell’s full markdown, scripts list, and optional sidecar metadata. **Canonical sidecar filename is `SPELL.json`**; if absent, the scanner falls back to legacy **`SKILL.json`**; when both exist, **`SPELL.json` wins**. Creates, updates, version activation, clone, and import **write `SPELL.json` only** (they never create a new `SKILL.json`). **`ScanAsync`** (full parse) remains for spell CRUD and search APIs. Workspace spells override global spells on name collision (case-insensitive). Traversal is bounded — a canonical-path (symlink-resolved) visited set makes directory-symlink cycles terminate, plus code-owned step, depth, dependency, and declared-tool caps — and every `SPELL.md` / sidecar read is revalidated with handle-based identity (`WorkspacePathPolicy.RevalidatePathBeforeIo`), so a file whose symlink target escapes the workspace is rejected. Spell writes (`SPELL.md`, `SPELL.json`) are atomic (temp + flush + rename via `SpellAtomicFile`).
 
-2. **Pre-flight routing — `SemanticSpellRouter` (§21.9):** `WizardIntelligenceProvider.ResolveRoutedSpellAsync` calls `SemanticSpellRouter.ResolveAsync` (scoped, Api) instead of `SemanticRouter.DetermineActiveSpellAsync` directly. `SemanticSpellRouter` decides, per turn, which of three modes applies:
+2. **Pre-flight routing — `SemanticSpellRouter` (§21.10):** `WizardIntelligenceProvider.ResolveRoutedSpellAsync` calls `SemanticSpellRouter.ResolveAsync` (scoped, Api) instead of `SemanticRouter.DetermineActiveSpellAsync` directly. `SemanticSpellRouter` decides, per turn, which of three modes applies:
    - **Disabled** (`Arcanum:Features:SemanticSpellRouting = false`, the default): returns `SpellRoutingDecisionMode.FullGrimoire` — the hub builds the router `IChatClient` (including the optional `Arcanum:FastModel` lease) and calls the static `SemanticRouter.DetermineActiveSpellAsync` with the full catalog.
-   - **Pure embedding mode** (the current code-owned mode): embeds the user prompt and every spell's description (`SpellWeaveCache`, §21.9), computes cosine similarity, and returns `DirectResonance` carrying the highest-similarity spell above the internal threshold (or `null`) — **no LLM call**.
+   - **Pure embedding mode** (the current code-owned mode): embeds the user prompt and every spell's description (`SpellWeaveCache`, §21.10), computes cosine similarity, and returns `DirectResonance` carrying the highest-similarity spell above the internal threshold (or `null`) — **no LLM call**.
    - **Hybrid mode** (reserved internal mode): applies the same embedding similarity, but returns `FilteredDivination` carrying a code-owned top-K candidate set; the hub still builds the router client and calls `SemanticRouter.DetermineActiveSpellAsync(..., candidates: decision.Candidates)` — a reduced tools list, same JSON response protocol and timeout/fallback behavior as pure LLM routing.
 
    `SemanticRouter.DetermineActiveSpellAsync` accepts an optional `IReadOnlyList<SpellMetadata>? candidates = null` parameter: single `IChatClient.GetResponseAsync` with low max output tokens, zero temperature, no tools, bounded timeout, and `ChatOptions.ResponseFormat = ChatResponseFormat.Json`. The tools list offered to the LLM is `candidates ?? availableSpells`; `null` means the full catalog. The model must return a single JSON object with exactly one camelCase key `spellName` whose value is either the exact matching spell name or `NONE`; name resolution always searches the full `availableSpells` list regardless of what was offered. The hub deserializes with `JsonSerializer.Deserialize(..., ArcanumJsonContext.Default.SemanticSpellResponse)` after stripping optional markdown code fences; on `JsonException` or non-matching name, `activeSpell` is `null`. Failures and timeouts resolve to no spell. Any embedding pre-filter failure (Weave unavailable, batch/prompt embed failure, unexpected exception) falls back to `FullGrimoire` at Debug log level.
@@ -1424,6 +1424,8 @@ permissions remain defense in depth. Dedupe uses the plaintext SHA-256 retained 
 (identical bytes → reuse id, no new `vN`).
 
 **System prompt index:** metadata-only `### Session Attachments Index` (bounded by `MaxIndexItemsInPrompt` / `MaxIndexBytesInPrompt`); no bytes. Model pulls snapshot content via MCP `attach_session_file`, requests the verified live source via `refresh_session_file`, or the operator uses `/attachments add`.
+
+**Semantic attachment retrieval:** opt-in `Arcanum:Features:AttachmentRetrieval` indexes every eligible Bound version through `SessionAttachmentIndexingService` after creation, promotion, refresh, or fork. The processor reads plaintext only through `ISessionAttachmentStore.ReadBytesAsync`, which opens the final authenticated encrypted-blob abstraction. Default inference retrieval is scoped to the bound `SessionId` and only chunks from the newest Bound version of each logical key carry that session's `RetrievalScope`; historical chunks remain durable and require explicit historical search. Retrieved excerpts are injected as fenced untrusted DATA under `### Semantic Context (Session Attachments)`. The DTO status is one of `NotEligible`, `Pending`, `Indexed`, `Failed`, or `Stale`.
 
 **Turn budget / injection:** the code-owned per-turn reference cap is shared by user `AttachmentReferences` and model `attach_session_file` / `refresh_session_file` injections. Each logical key+version is injected **once** per turn (subsequent tool rounds do not re-inject). Image re-attach or refresh requires `Arcanum:Features:Scrying`, an allowed image MIME, and a model with `SupportsVision`; oversize images are **rejected, never truncated**.
 
@@ -1589,7 +1591,7 @@ The provider persists through `IGrimoireRepository`. When `sessionId` is set, pr
 | 0 | **Preamble** (base persona + the "INSTRUCTIONS override conflicting DATA" rule) | static content |
 | 1 | **DATA** (`[None]` when empty): `### Lexicon (Known Context)` → `### Chronosync Report (Temporal Delta)` → `### Attached Files for this Turn` → `### Semantic Context (Retrieved Codebase)` → `### Saga (Associative Memory)` → `### Data Stream: {StreamId}` | Lexicon retrieval (§10.6), `ChronosyncDelta`, `AttachedFiles`, RAG Phases 3 & 4 retrieval (§10.4 §21.4) |
 | 2 | **CONTEXT**: `### Workspace Context` / `### Table of Contents` → `### Master Codex (CODEX.md)` → `### Campaign Summary (compressed context)` (only on compression) | `ContextSnapshot`, `CodexReader`, read-time compression (§10.2.3) |
-| 3 | **INSTRUCTIONS**: `### Active Operational Spell ({Name})` (omitted when `SkipSpellRouting`) → `### Available Spell Scripts` (when present) → `### Output Formatting Directive` (when `CliTerminalFormatting`) | `SemanticRouter`/`SemanticSpellRouter` (§10.2.2 §21.9), scripts scan, CLI flag |
+| 3 | **INSTRUCTIONS**: `### Active Operational Spell ({Name})` (omitted when `SkipSpellRouting`) → `### Available Spell Scripts` (when present) → `### Output Formatting Directive` (when `CliTerminalFormatting`) | `SemanticRouter`/`SemanticSpellRouter` (§10.2.2 §21.10), scripts scan, CLI flag |
 
 **Ordered prompt document and cache planning.** `SystemPromptBuilder.BuildDocument` emits immutable ordered `PromptSegment` values and `Build` delegates to `Render()`. Regression tests require byte-for-byte equality with the established DCI text, including whitespace, adaptive fences, Unicode, and `[None]`. Preamble, Codex, primary/resonant Spell text, stable script instructions, and request-invariant terminal formatting are stable candidates. Lexicon, Chronosync, attachments/index/images, semantic retrieval, Saga, streams, workspace/session summaries, and per-request instructions are volatile. For cumulative-prefix contracts, planning stops at the first volatile segment; later stable Codex/Spell segments are not falsely counted as independently cacheable. The shipped root-only key/retention dialect does not split content or add messages.
 
@@ -3093,7 +3095,7 @@ surrogate-safe; SQLCipher contention uses `SqliteBusyRetry`; and
 | **The Weave / Divination / Imprint** | Embedding substrate / cosine search / stored vector (§21). |
 | **Lore** | Legacy operator key-value (`/api/lore`); not model-directed. |
 | **The Lexicon** | Model-writable entity memory (§10.6). |
-| **Saga** | Auto-extracted associative memory (§21.8); operator-delete only. |
+| **Saga** | Auto-extracted associative memory (§21.9); operator-delete only. |
 | **Arcane Resonance** | Spell `dependencies` injection (§10.2.2). |
 | **Spell Routing** | Pre-flight spell selection (`FullGrimoire` / `DirectResonance` / `FilteredDivination`). |
 | **`vec0`** | Optional sqlite-vec KNN index; managed cosine fallback when unavailable (§21.2). |
@@ -3426,9 +3428,9 @@ Semantic judge uses FastModel→DefaultModel; jsonSchema is a lightweight subset
 
 ## 21. The Weave, Divination, and Saga (RAG)
 
-**Purpose:** Five independently feature-flagged, gracefully-degrading RAG capabilities. **The Weave** imprints text as vectors; **Divination** is cosine semantic search; **Saga** is auto-extracted long-term associative memory (distinct from operator Lore / Lexicon).
+**Purpose:** Six independently feature-flagged, gracefully-degrading RAG capabilities. **The Weave** imprints text as vectors; **Divination** is cosine semantic search; **Saga** is auto-extracted long-term associative memory (distinct from operator Lore / Lexicon).
 
-All five capabilities are implemented (§21.1–§21.2 foundation; §21.6–§21.9 features). The durable table inventory and raw-SQL initialization boundary are in §5.4.4; behavioral and reset invariants stay here.
+All six capabilities are implemented (§21.1–§21.2 foundation; §21.6–§21.10 features). The durable table inventory and raw-SQL initialization boundary are in §5.4.4; behavioral and reset invariants stay here.
 
 ### 21.1 Embedding infrastructure (shared foundation)
 
@@ -3451,15 +3453,18 @@ Per feature: durable **BLOB** table (always) + optional **`vec0`** virtual table
 ### 21.3 Configuration
 
 Public opt-ins are `Arcanum:Features:Embeddings`, `Arcanum:Features:SessionSearch`,
-`Arcanum:Features:CodebaseRetrieval`, `Arcanum:Features:Saga`,
+`Arcanum:Features:CodebaseRetrieval`, `Arcanum:Features:AttachmentRetrieval`, `Arcanum:Features:Saga`,
 `Arcanum:Features:SagaExtraction`, and `Arcanum:Features:SemanticSpellRouting`; provider/model/dimensions are under
 `Arcanum:Integrations:Embeddings` (§3.4). The same section exposes
 `CodebaseIndexing:WatcherDebounceMilliseconds` (default 300, clamp 50–5,000),
 `CodebaseIndexing:MaxWatchers` (default 32, clamp 0–128; zero disables watchers), and
 `CodebaseIndexing:ReconciliationIntervalMinutes` (default 60, clamp 1–1,440). File eligibility,
-traversal limits, chunk size, retrieval thresholds, batching, queue cadence, and extraction/routing
-mechanics remain code-owned. Validation requires provider/model facts whenever an embedding-backed
-feature is enabled.
+traversal limits, and extraction/routing mechanics remain code-owned. `AttachmentIndexing` exposes
+hard limits for eligible bytes (1 KiB–20 MiB), extracted characters (1,000–1,000,000), chunk size
+(128–8,192), overlap (0–8,191 and always below effective chunk size), chunks per version (1–2,048),
+attachments per batch (1–100), queue capacity (1–10,000), retries (0–10), retry delay (1–300s),
+processing timeout (5–600s), and retrieved chunks (1–50). Validation requires provider/model facts
+whenever an embedding-backed feature is enabled.
 
 ### 21.4 Graceful degradation matrix
 
@@ -3472,6 +3477,9 @@ feature is enabled.
 | `Dimensions` changed after data | Warning only; no auto-truncate |
 | `Arcanum:Features:SessionSearch` = `false` | `EntryWeavingService` idles; `POST /api/sessions/divine` → **503** `Embeddings.FeatureDisabled` |
 | `Arcanum:Features:CodebaseRetrieval` = `false` | `WorkspaceIndexingService` idles; no prompt injection; divine/index → **503** |
+| `Arcanum:Features:AttachmentRetrieval` = `false` | Attachment creation/listing/tools remain unchanged; no extraction, embedding, or semantic prompt injection; DTO status is `NotEligible` |
+| Attachment queue full / transient embedding failure | Creation and inference still succeed; bounded reconciliation recovers dropped work and retries up to the configured cap |
+| Unsupported/binary/PDF/Office/image attachment | Attachment remains valid and is marked `NotEligible`; PDF/Office extraction, OCR, and image captions are not attempted |
 | Watcher unavailable or watcher cap reached | Workspace status is `Watching=false`, `Degraded=true`; bounded periodic reconciliation remains active |
 | Watcher overflow/error or pending-event cap reached | Mark potentially stale, expose `Overflowed` for real/cap overflow, discard the lossy event set, and schedule a bounded full reconciliation; polling never stops |
 | No indexed chunks / empty WorkingDirectory | Empty results / skip retrieval — inference continues with `[None]` |
@@ -3485,9 +3493,9 @@ feature is enabled.
 
 ### 21.5 Known limitations
 
-No auto re-index on model/dimension change (use `/api/embeddings/reset`); managed scan budgeted at 50k rows; watcher delivery is advisory and periodic reconciliation remains required; Session Divination has no cursor pagination; workspace index work is sequential per service instance; the parser-free language boundary heuristics are deterministic but not full syntax trees; Saga extraction is naive (no dedupe); pure spell-routing ties break by stable sort only.
+No auto re-index on model/dimension change (use `/api/embeddings/reset`); managed scan budgeted at 50k rows; watcher and attachment-queue delivery are advisory and periodic reconciliation remains required; Session Divination has no cursor pagination; workspace and attachment index work are sequential per service instance; HTML extraction is a bounded visible-text projection rather than a browser DOM; PDF/Office/OCR remain disabled; Saga extraction is naive (no dedupe); pure spell-routing ties break by stable sort only.
 
-**Reset scopes:** `POST /api/embeddings/reset?confirm=true` with optional `scope=all|entry|workspaceFile|saga` (default `all`); unknown scope → **400** `Validation.InvalidBody`.
+**Reset scopes:** `POST /api/embeddings/reset?confirm=true` with optional `scope=all|entry|workspaceFile|saga|sessionAttachment` (snake-case aliases accepted; default `all`); unknown scope → **400** `Validation.InvalidBody`.
 
 ### 21.6 Session Divination
 
@@ -3507,7 +3515,15 @@ Watchers are latency hints, never a security or correctness boundary. Every incr
 
 **API:** `.../files/divine`, `.../files/index`, read-only inspector `.../index/status` + `.../chunks` (no mutate; preview capped). Status merges durable counts with process-local `Watching`, `Degraded`, `Overflowed`, `Reconciling`, `LastEventAt`, and `LastSuccessfulIndexAt`; chunk previews include line ranges. These workspace-scoped diagnostics intentionally stay on the index-status route rather than changing global health/`doctor`. Errors §4.3.
 
-### 21.8 Saga (long-term associative memory)
+### 21.8 Session attachment retrieval
+
+**Extraction:** `SessionAttachmentTextExtractor` accepts strict UTF-8 plain text, Markdown, source code, JSON, YAML, XML, CSV, and logs; HTML uses bounded visible-text extraction that removes script/style content and decodes entities. Newlines are normalized deterministically. Invalid UTF-8 fails, NUL-bearing/binary content is ineligible, and character/chunk boundaries never split UTF-16 surrogate pairs. PDF, Office, images, and unknown formats remain unindexed.
+
+**Queue and lifecycle:** `SessionAttachmentIndexingService` is a bounded single-reader channel. `SessionAttachmentStore` enqueues newly created Bound versions, refreshed versions through the same persistence path, and promoted pending rows; `SessionRepository` enqueues fork copies only after commit. Attempts have configured timeout/retry bounds. Queue overflow is logged and recovered by periodic `ReconcileAndFindPendingAsync`. Purge deletes attachment index rows in the same ambient transaction; foreign keys and reconciliation remove orphan state/chunks/embeddings, including optional vec0 rows. Prior versions remain indexed while their attachment rows remain valid.
+
+**Storage and retrieval:** `session_attachment_chunks` contains Session/Attachment IDs, logical key, version, original filename, MIME, content hash, chunk index, character/line ranges, extracted content, dimensions, timestamps, and latest-version `RetrievalScope`. BLOB embeddings are authoritative; optional vec0 mirrors them. `SearchScopedAsync` ranks only the owning session's latest scopes by default, retaining managed cosine fallback when vec0 is unavailable. `WizardIntelligenceProvider` shares one query embedding across codebase, Saga, and attachment retrieval and treats all indexing/retrieval failure as empty context.
+
+### 21.9 Saga (long-term associative memory)
 
 **Contrast:** Lore/Lexicon are explicit; Saga is auto-extracted, operator-delete-only (no `scribe_saga`/`delete_saga`).
 
@@ -3519,7 +3535,7 @@ Watchers are latency hints, never a security or correctness boundary. Every incr
 
 **Surfaces:** `/api/saga*` (§4.3), MCP `read_saga` (gated), CLI `arcanum saga …`.
 
-### 21.9 Semantic spell routing
+### 21.10 Semantic spell routing
 
 **Modes:** `Arcanum:Features:SemanticSpellRouting` disabled → `FullGrimoire` (LLM full catalog); enabled uses the code-owned pure/hybrid routing policy (`DirectResonance` or `FilteredDivination`). Failures → `FullGrimoire`.
 

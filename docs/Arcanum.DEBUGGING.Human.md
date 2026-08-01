@@ -95,13 +95,22 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     creates one next version; `TryBuildRefreshedContentsAsync()` consumes inject-once only after
     materialization; and the User extras follow every tool result in the round. Native streams emit
     `attachmentRefreshed` after `toolResult`; OpenAI streams omit it.
-13. **Trace Workspace/Campaign CLI mapping:** run `arcanum workspace current` inside a registered
+13. **Trace attachment extraction and retrieval:** break at
+    `SessionAttachmentIndexingService.TryEnqueue()`, `SessionAttachmentIndexProcessor.ProcessAsync()`,
+    and `SessionAttachmentIndexRepository.ReplaceAsync()`. Confirm bytes arrive through
+    `ISessionAttachmentStore.ReadBytesAsync()`, limits are clamped before extraction, unsupported
+    formats become `NotEligible`, and no partial chunks survive dimension/provider failure. For a
+    retrieval probe, inspect `SessionAttachmentRetrievalService.SearchAsync()` and verify its scope
+    column is `RetrievalScope` for latest-only search or `SessionId` only for explicit historical
+    search. Queue overflow must return without failing attachment creation; reconciliation should
+    rediscover the missing Bound row.
+14. **Trace Workspace/Campaign CLI mapping:** run `arcanum workspace current` inside a registered
     root, break in `WorkspaceCommands.Current()`, and compare its deepest containing Workspace and
     Campaign independently. Continue through `ResolveWorkspaceAsync()` for a file/search/index
     command and verify the final operation is an authenticated `ArcanumApiClient` request. For a
     remote-host thought experiment, use a path that is valid only on the server and confirm help and
     output call it a server path; never add `File.*` or `Directory.*` content access to the CLI.
-14. **Trace MCP/tool CLI administration:** run `arcanum mcp show` or `arcanum tool list`, break in
+15. **Trace MCP/tool CLI administration:** run `arcanum mcp show` or `arcanum tool list`, break in
     `McpCommands` / `ToolCommands`, and confirm every operation reaches a typed `ArcanumApiClient`
     request. For invocation, test inline JSON, `@file`, and redirected stdin at
     `ToolArgumentReader.TryRead()`; oversized/non-object input must fail before the API call. Follow
@@ -109,7 +118,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     `arcanum-internal`, blocked names, untrusted workspaces, server ambiguity, timeout, and output
     truncation remain server-enforced. Safe CLI output must omit command, URL, arguments,
     environment, and secret values.
-15. **Trace first-class web workflows:** run `arcanum research "question" --max-sources 2
+16. **Trace first-class web workflows:** run `arcanum research "question" --max-sources 2
     --max-hops 2 --format markdown`, break in `WebWorkflowCommands.Research()`,
     `ArcanumApiClient.ResearchWebAsync()`, and `WebResearchWorkflowService.ResearchAsync()`. Confirm
     the CLI only consumes NDJSON and never performs a search, fetch, or model call itself. On the
@@ -121,7 +130,7 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     `WebResearch.JavaScriptRenderingUnavailable` with the `--render static` hint. For domain
     filters, inspect the Perplexity request for `search_recency_filter` and bounded
     `search_domain_filter`; never log the query, URL, page content, or credential.
-16. **Trace native file/batch automation:** run `arcanum batch create ./input.jsonl`, break in
+17. **Trace native file/batch automation:** run `arcanum batch create ./input.jsonl`, break in
     `FileBatchCommands.ValidateBatchJsonlAsync()`, `FileBatchApiClient.UploadFileAsync()`, and
     `FileBatchApiClient.CreateBatchAsync()`. Confirm an obvious wrapper failure reports its local
     line and sends no request, while a valid file streams first to `/v1/files` and then submits only

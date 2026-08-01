@@ -459,6 +459,31 @@ public static class ArcanumSettingClamps
 
     public static int EmbeddingsCodebaseMaxRetrievedChunks(int value) => Math.Clamp(value, 1, 50);
 
+    public static int EmbeddingsAttachmentMaxBytes(int value) => Math.Clamp(value, 1_024, 20 * 1024 * 1024);
+
+    public static int EmbeddingsAttachmentMaxExtractedCharacters(int value) => Math.Clamp(value, 1_000, 1_000_000);
+
+    public static int EmbeddingsAttachmentChunkSizeCharacters(int value) => Math.Clamp(value, 128, 8_192);
+
+    public static int EmbeddingsAttachmentChunkOverlapCharacters(int value) => Math.Clamp(value, 0, 8_191);
+
+    public static int EmbeddingsAttachmentChunkOverlapForChunkSize(int value, int chunkSize) =>
+        Math.Clamp(value, 0, Math.Max(0, chunkSize - 1));
+
+    public static int EmbeddingsAttachmentMaxChunksPerAttachment(int value) => Math.Clamp(value, 1, 2_048);
+
+    public static int EmbeddingsAttachmentMaxAttachmentsPerBatch(int value) => Math.Clamp(value, 1, 100);
+
+    public static int EmbeddingsAttachmentQueueCapacity(int value) => Math.Clamp(value, 1, 10_000);
+
+    public static int EmbeddingsAttachmentMaxRetries(int value) => Math.Clamp(value, 0, 10);
+
+    public static int EmbeddingsAttachmentRetryDelaySeconds(int value) => Math.Clamp(value, 1, 300);
+
+    public static int EmbeddingsAttachmentProcessingTimeoutSeconds(int value) => Math.Clamp(value, 5, 600);
+
+    public static int EmbeddingsAttachmentMaxRetrievedChunks(int value) => Math.Clamp(value, 1, 50);
+
     public static int EmbeddingsSagaMaxMemoriesPerSession(int value) => Math.Clamp(value, 1, 1_000);
 
     public static int EmbeddingsSagaMaxMemoriesTotal(int value) => Math.Clamp(value, 100, 1_000_000);

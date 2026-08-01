@@ -16,6 +16,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -201,6 +202,7 @@ internal static class SessionEndpoints
                 Guid id,
                 ISessionRepository repo,
                 ISessionAttachmentStore store,
+                ISessionAttachmentRetrievalService attachmentRetrieval,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
@@ -222,7 +224,19 @@ internal static class SessionEndpoints
                     .ListBoundAsync(id, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
-                SessionAttachmentDto[] dtos = bound.Select(SessionMapping.ToAttachmentDto).ToArray();
+                IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus> statuses = await attachmentRetrieval
+                    .GetStatusesAsync(
+                        [.. bound.Select(static attachment => attachment.Id)],
+                        ctx.RequestAborted)
+                    .ConfigureAwait(false);
+
+                SessionAttachmentDto[] dtos = bound
+                    .Select(attachment => SessionMapping.ToAttachmentDto(
+                        attachment,
+                        statuses.GetValueOrDefault(
+                            attachment.Id,
+                            SessionAttachmentIndexStatus.NotEligible)))
+                    .ToArray();
 
                 return Results.Ok(
                     ApiResponse<SessionAttachmentDto[]>.FromResult(

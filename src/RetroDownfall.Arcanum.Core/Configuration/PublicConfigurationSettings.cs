@@ -33,6 +33,8 @@ public sealed record FeatureSettings
 
     public bool CodebaseRetrieval { get; set; }
 
+    public bool AttachmentRetrieval { get; set; }
+
     public bool Saga { get; set; }
 
     public bool SagaExtraction { get; set; }
@@ -131,6 +133,38 @@ public sealed record EmbeddingIntegrationSettings
     public int Dimensions { get; set; } = 768;
 
     public CodebaseIndexingIntegrationSettings CodebaseIndexing { get; set; } = new();
+
+    public AttachmentIndexingIntegrationSettings AttachmentIndexing { get; set; } = new();
+
+}
+
+/// <summary>
+/// Operator-tunable resource bounds for versioned session-attachment extraction and indexing.
+/// </summary>
+public sealed record AttachmentIndexingIntegrationSettings
+{
+
+    public int MaxAttachmentBytes { get; set; } = 2 * 1024 * 1024;
+
+    public int MaxExtractedCharacters { get; set; } = 200_000;
+
+    public int ChunkSizeCharacters { get; set; } = 1_000;
+
+    public int ChunkOverlapCharacters { get; set; } = 100;
+
+    public int MaxChunksPerAttachment { get; set; } = 256;
+
+    public int MaxAttachmentsPerBatch { get; set; } = 8;
+
+    public int QueueCapacity { get; set; } = 256;
+
+    public int MaxRetries { get; set; } = 3;
+
+    public int RetryDelaySeconds { get; set; } = 5;
+
+    public int ProcessingTimeoutSeconds { get; set; } = 60;
+
+    public int MaxRetrievedChunks { get; set; } = 5;
 
 }
 

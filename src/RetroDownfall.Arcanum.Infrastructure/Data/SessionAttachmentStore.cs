@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Caching;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -41,6 +42,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     private readonly IEncryptedBlobStore _blobStore;
 
+    private readonly ISessionAttachmentIndexQueue? _indexQueue;
+
     /// <summary>
     /// Test seam: runs after bytes are on disk at the destination, before the DB write that
     /// records them. Used to simulate exhausted DB failure without holding FS work inside
@@ -54,7 +57,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         string? attachmentsRoot = null,
         IEncryptedBlobStore? blobStore = null,
         ILogger<SessionAttachmentStore>? logger = null,
-        IAttachmentSourceResolver? sourceResolver = null)
+        IAttachmentSourceResolver? sourceResolver = null,
+        ISessionAttachmentIndexQueue? indexQueue = null)
     {
 
         _db = db;
@@ -63,6 +67,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         _logger = logger ?? NullLogger<SessionAttachmentStore>.Instance;
         _sourceResolver = sourceResolver;
+        _indexQueue = indexQueue;
         _blobStore = blobStore
             ?? throw new ArgumentNullException(
                 nameof(blobStore),
@@ -352,7 +357,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             }
 
-            await SqliteBusyRetry.ExecuteAsync(
+        await SqliteBusyRetry.ExecuteAsync(
                 () => InsertRowAsync(record, cancellationToken),
                 cancellationToken).ConfigureAwait(false);
 
@@ -363,6 +368,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             TryDeleteFile(absolutePath);
 
             throw;
+
+        }
+
+        if (sessionId is { } boundSessionId)
+        {
+
+            _ = _indexQueue?.TryEnqueue(new SessionAttachmentIndexRequest(id, boundSessionId));
 
         }
 
@@ -528,6 +540,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         }
 
         TryDeletePendingTurnDirectory(validatedPendingTurnId);
+
+        foreach (PromotionPlan plan in plans)
+        {
+
+            _ = _indexQueue?.TryEnqueue(new SessionAttachmentIndexRequest(plan.Row.Id, sessionId));
+
+        }
 
     }
 

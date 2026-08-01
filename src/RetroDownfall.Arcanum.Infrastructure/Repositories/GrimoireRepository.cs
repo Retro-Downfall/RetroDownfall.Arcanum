@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -29,6 +30,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
     private readonly IOptionsSnapshot<ArcanumSettings> _arcOptions;
 
+    private readonly ISessionAttachmentIndexMaintenance? _attachmentIndex;
+
     internal Func<Guid, CancellationToken, ValueTask>? AfterLegacyBackfillCountedForTesting { get; set; }
 
     internal Func<Guid, CancellationToken, ValueTask>? AfterRollupRemainingCountedForTesting { get; set; }
@@ -43,7 +46,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
         ArcanumDbContext db,
         ISessionAttachmentStore attachments,
         ILogger<GrimoireRepository> logger,
-        IOptionsSnapshot<ArcanumSettings> arcOptions)
+        IOptionsSnapshot<ArcanumSettings> arcOptions,
+        ISessionAttachmentIndexMaintenance? attachmentIndex = null)
     {
         _db = db;
 
@@ -54,6 +58,8 @@ public sealed class GrimoireRepository : IGrimoireRepository
         _logger = logger;
 
         _arcOptions = arcOptions;
+
+        _attachmentIndex = attachmentIndex;
     }
 
     public async Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
@@ -446,6 +452,15 @@ public sealed class GrimoireRepository : IGrimoireRepository
         await using var tx = await _db.Database
             .BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        if (_attachmentIndex is not null)
+        {
+
+            await _attachmentIndex.DeleteForSessionInAmbientTransactionAsync(
+                sessionId,
+                cancellationToken).ConfigureAwait(false);
+
+        }
 
         await SqliteBusyRetry.ExecuteAsync(
             () => _attachments.DeleteRowsForSessionInAmbientTransactionAsync(sessionId, cancellationToken),

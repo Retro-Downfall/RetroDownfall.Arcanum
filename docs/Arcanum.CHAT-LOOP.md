@@ -43,6 +43,13 @@ under the existing per-session/per-logical-key locks and `MaxBytesPerSession` /
 `MaxVersionsPerLogicalKey` limits. The original user Entry is never changed; a new version may bind
 to the current assistant Entry.
 
+When semantic attachment retrieval is enabled, a newly created Bound refresh version is also
+offered to the bounded background indexing queue. This happens after durable persistence and does
+not change the tool result or injection ordering. Queue overflow or embedding failure is recovery
+work only: it records/delays indexing and never fails the logical turn. Default retrieval on later
+turns uses only the newest Bound version for each logical key in the same session; older indexed
+versions remain available only through explicit historical search.
+
 ## 8. Transcript and injection order
 
 For a model response containing several calls, Arcanum appends every assistant-call/tool-result pair

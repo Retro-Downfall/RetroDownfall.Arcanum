@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -19,7 +20,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 public sealed class SessionRepository(
     ArcanumDbContext db,
     ISessionAttachmentStore attachments,
-    IOptionsMonitor<ArcanumSettings> optionsMonitor) : ISessionRepository
+    IOptionsMonitor<ArcanumSettings> optionsMonitor,
+    ISessionAttachmentIndexQueue? attachmentIndexQueue = null) : ISessionRepository
 {
 
     private const int ExportEntryBatchSize = 500;
@@ -588,6 +590,15 @@ public sealed class SessionRepository(
                 .ConfigureAwait(false);
 
             await tx.CommitAsync(ct).ConfigureAwait(false);
+
+            foreach (SessionAttachmentForkCopyPlan plan in attachmentPlans)
+            {
+
+                _ = attachmentIndexQueue?.TryEnqueue(new SessionAttachmentIndexRequest(
+                    plan.NewAttachmentId,
+                    forkSessionId));
+
+            }
 
         }
         catch

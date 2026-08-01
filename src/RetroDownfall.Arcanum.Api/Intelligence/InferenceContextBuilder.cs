@@ -60,6 +60,8 @@ internal sealed record ContextCompressionRequest
 
     public SagaMemory[]? SagaMemories { get; init; }
 
+    public SessionAttachmentRetrievedChunk[]? SessionAttachmentContext { get; init; }
+
     public IReadOnlyList<LexiconEntryDto>? LexiconEntries { get; init; }
 
     public IReadOnlyList<SessionAttachmentIndexItem>? SessionAttachmentsIndex { get; init; }
@@ -271,7 +273,8 @@ public sealed class InferenceContextBuilder(
                 settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
             sessionAttachmentsIndex: context.SessionAttachmentsIndex,
             maxIndexItems: context.MaxIndexItems,
-            maxIndexBytes: context.MaxIndexBytes);
+            maxIndexBytes: context.MaxIndexBytes,
+            sessionAttachmentContext: context.SessionAttachmentContext);
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 

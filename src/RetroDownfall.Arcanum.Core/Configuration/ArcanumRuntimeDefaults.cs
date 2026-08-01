@@ -288,11 +288,14 @@ public static class ArcanumRuntimeSettings
             settings.Integrations?.Embeddings ?? new EmbeddingIntegrationSettings();
         CodebaseIndexingIntegrationSettings codebaseIndexing =
             integration.CodebaseIndexing ?? new CodebaseIndexingIntegrationSettings();
+        AttachmentIndexingIntegrationSettings attachmentIndexing =
+            integration.AttachmentIndexing ?? new AttachmentIndexingIntegrationSettings();
         bool sagaEnabled = features.Saga || features.SagaExtraction;
         bool enabled =
             features.Embeddings
             || features.SessionSearch
             || features.CodebaseRetrieval
+            || features.AttachmentRetrieval
             || sagaEnabled
             || features.SemanticSpellRouting;
 
@@ -310,6 +313,21 @@ public static class ArcanumRuntimeSettings
             },
             SessionSearchEnabled = features.SessionSearch,
             CodebaseRetrievalEnabled = features.CodebaseRetrieval,
+            AttachmentRetrievalEnabled = features.AttachmentRetrieval,
+            Attachments = defaults.Attachments with
+            {
+                MaxAttachmentBytes = attachmentIndexing.MaxAttachmentBytes,
+                MaxExtractedCharacters = attachmentIndexing.MaxExtractedCharacters,
+                ChunkSizeCharacters = attachmentIndexing.ChunkSizeCharacters,
+                ChunkOverlapCharacters = attachmentIndexing.ChunkOverlapCharacters,
+                MaxChunksPerAttachment = attachmentIndexing.MaxChunksPerAttachment,
+                MaxAttachmentsPerBatch = attachmentIndexing.MaxAttachmentsPerBatch,
+                QueueCapacity = attachmentIndexing.QueueCapacity,
+                MaxRetries = attachmentIndexing.MaxRetries,
+                RetryDelaySeconds = attachmentIndexing.RetryDelaySeconds,
+                ProcessingTimeoutSeconds = attachmentIndexing.ProcessingTimeoutSeconds,
+                MaxRetrievedChunks = attachmentIndexing.MaxRetrievedChunks,
+            },
             SagaEnabled = sagaEnabled,
             Saga = defaults.Saga with
             {

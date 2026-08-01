@@ -157,6 +157,12 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         Assert.True(result.DeletedRowCounts.ContainsKey("workspace_file_chunks"));
 
+        Assert.True(result.DeletedRowCounts.ContainsKey("session_attachment_embeddings"));
+
+        Assert.True(result.DeletedRowCounts.ContainsKey("session_attachment_chunks"));
+
+        Assert.True(result.DeletedRowCounts.ContainsKey("session_attachment_index_state"));
+
     }
 
 }

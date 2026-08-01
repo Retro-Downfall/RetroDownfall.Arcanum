@@ -39,6 +39,14 @@ public sealed class EmbeddingsResetService(
         "saga_extraction_watermarks",
     ];
 
+    private static readonly IReadOnlyList<string> SessionAttachmentTables =
+    [
+        "session_attachment_embeddings_vec",
+        "session_attachment_embeddings",
+        "session_attachment_chunks",
+        "session_attachment_index_state",
+    ];
+
     public async Task<EmbeddingsResetResult> ResetAsync(
         EmbeddingsResetScope scope,
         CancellationToken cancellationToken = default)
@@ -59,6 +67,11 @@ public sealed class EmbeddingsResetService(
         if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Saga)
         {
             targets.AddRange(SagaTables);
+        }
+
+        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.SessionAttachment)
+        {
+            targets.AddRange(SessionAttachmentTables);
         }
 
         Dictionary<string, int> deleted = [];
@@ -155,6 +168,8 @@ public enum EmbeddingsResetScope
     WorkspaceFile,
 
     Saga,
+
+    SessionAttachment,
 
 }
 

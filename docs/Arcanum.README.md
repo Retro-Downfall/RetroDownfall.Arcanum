@@ -64,6 +64,7 @@ Inference flows through one hub behind a single `IChatClient` abstraction. See [
 - **`TurnEngine` is a bounded semantic shell** over Wizard's `ITurnPipelineRunner`; Wizard still owns the one mode-parameterized model/tool loop. The primary loop can call native `delegate_task` to start exactly one fresh buffered child TurnEngine with a sterile stateless context, explicit file values, and a delegated token/cost/turn ceiling. Only the child summary or structured failure returns to the parent.
 - **`ProviderResolver`** maps model → provider from `Arcanum:Providers` (no hard-coded model names).
 - Agentic layers: MCP tool loops, semantic spell routing, read-time context compression, Wards, Sanctum.
+- **Session attachment retrieval:** when `Arcanum:Features:AttachmentRetrieval` is enabled, supported UTF-8 text/Markdown/source/JSON/YAML/XML/CSV/log attachments and bounded visible HTML are indexed per version and retrieved only inside their owning session. Latest Bound versions are preferred; historical provenance is retained; PDFs, Office files, binaries, and images remain unindexed. Queue/provider failures never fail the turn.
 - **Structured output / pricing / budgets / capability-driven provider prompt caching / guardrails** — see [DESIGN.md §22](Arcanum.DESIGN.md#22-structured-output-cost-tracking-and-prompt-caching) and [§8.27](Arcanum.DESIGN.md#827-content-guardrails-pii--toxicity--topics). Arcanum never caches or replays inference responses.
 
 ### The Proving Grounds
@@ -224,9 +225,9 @@ Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms with n
 | Embedding & vector substrate | **The Weave** | `Arcanum:Features:Embeddings` plus `Arcanum:Integrations:Embeddings`; see [DESIGN.md §21](Arcanum.DESIGN.md#21-the-weave-divination-and-saga-rag) |
 | Semantic search over The Weave | **Divination** | `IDivinationService`; `POST /api/sessions/divine`, `POST /api/workspaces/{id}/files/divine`, `POST /api/saga/divine` (§21) |
 | Vector representation of text | **Imprint** | `IWeaveService.EmbedAsync`/`EmbedBatchAsync` ("imprints" text into The Weave; §21) |
-| Long-term associative memory | **Saga** | `/api/saga/*`, `read_saga`, `arcanum saga` (§21.8) |
+| Long-term associative memory | **Saga** | `/api/saga/*`, `read_saga`, `arcanum saga` (§21.9) |
 | Recursive Spell dependency injection | **Arcane Resonance** | `SpellDependencyResolver`; dependency and byte envelopes are internal invariants (Arcanum.DESIGN.md §10.2.2) |
-| Pre-flight active-Spell selection | **Spell Routing** | `SemanticRouter` (LLM-based) + `SemanticSpellRouter` (embedding pre-filter); `Arcanum:Features:SemanticSpellRouting` (Arcanum.DESIGN.md §10.2.2, §21.9) |
+| Pre-flight active-Spell selection | **Spell Routing** | `SemanticRouter` (LLM-based) + `SemanticSpellRouter` (embedding pre-filter); `Arcanum:Features:SemanticSpellRouting` (Arcanum.DESIGN.md §10.2.2, §21.10) |
 
 **Rejected:** Dispel, Glyph, Invocation (too obscure). The placeholder **Bureau** was retired in favor of **The Conclave** (the multi-agent coordination network; see above).
 
@@ -292,8 +293,10 @@ Summaries only — full contracts live in DESIGN.
   unchanged version or persists the next encrypted version, and queues it after the complete tool
   round for the next request in the same logical turn. It shares attachment byte/version/reference
   budgets, inject-once behavior, MIME/Scrying/vision checks, and Sanctum enforcement. Native NDJSON
-  exposes sanitized `attachmentRefreshed` observability; OpenAI projections ignore it. See
-  [the chat-loop ordering guide](Arcanum.CHAT-LOOP.md).
+  exposes sanitized `attachmentRefreshed` observability; OpenAI projections ignore it.
+  Semantic retrieval reads only through the encrypted attachment store, exposes bounded
+  `indexingStatus` metadata, and fences retrieved excerpts as untrusted DATA.
+  See [the chat-loop ordering guide](Arcanum.CHAT-LOOP.md).
 - **A2A:** [§5.7.1](Arcanum.DESIGN.md#571-a2a-and-the-conclave) (disabled by default).
 - **RAG (Weave / Divination / Saga):** [§21](Arcanum.DESIGN.md#21-the-weave-divination-and-saga-rag) — capabilities are gated under `Arcanum:Features`; embedding provider/model/dimensions and the codebase watcher debounce/count/reconciliation controls live under `Arcanum:Integrations:Embeddings`. Semantic workspace indexing reacts to debounced recursive watcher events, revalidates paths and opened file identities before every read, retains bounded periodic reconciliation when events are lost/unavailable, and exposes watcher/reconciliation health through `/api/workspaces/{id}/files/index/status`.
 - **Lexicon:** agent memory via `scribe_lexicon` / `delete_lexicon`; gated by `Arcanum:Features:Lexicon`. [§10.6](Arcanum.DESIGN.md#106-the-lexicon--agent-directed-entity-memory).
@@ -331,7 +334,7 @@ binding; there are no compatibility aliases or silent ignores.
 | `DefaultModel` / `FastModel` / `Providers` | Provider endpoint and credential reference, model inventory, vision/reasoning facts, and context capacity. |
 | `Security` | Ward/guardrail policy, metrics authentication, path authority, MIME allowlists, and the unsandboxed-child acknowledgement. |
 | `Workspaces` | Default root and explicit write permission. |
-| `Features` | Capability opt-ins including Conclave/A2A, Apprentices, The Weave, Scrying, attachments, browsing, guardrails, workspace checks, and memory management. |
+| `Features` | Capability opt-ins including Conclave/A2A, Apprentices, The Weave, session attachment retrieval, Scrying, attachments, browsing, guardrails, workspace checks, and memory management. |
 | `Integrations` | A2A identity/allowlist, CommLink reference/allowlists, embedding facts, native web-research provider facts, MCP plaintext-host exceptions, and workspace-check profiles. |
 | `Execution` | Host concurrency/backpressure for Apprentices, SSE, and batches. |
 | `Cost` | Default/per-model pricing and daily budget policy. |
@@ -897,7 +900,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `campaign list\|get\|create\|update\|delete\|export\|import\|codex\|spells\|prompts\|sessions\|use` | The Forge campaign registry via `/api/campaigns` (needs `serve`). `campaign use` selects the shared active Campaign context. Resource-taking verbs accept optional ID/name/prefix selection. |
 | `session list\|show\|get\|chat\|entries\|watch\|fork\|rename\|archive\|export\|rest\|attachments\|delete-entry\|pin-entry\|unpin-entry\|compact\|divine` | Manage the complete session lifecycle through the API (needs `serve`). Session arguments accept a GUID/title/prefix or open the interactive picker when omitted; `get` aliases `show`. `list` supports `--campaign`, `--status`, `--search`, `--model`, `--from`, and `--to`. `show` reports status, campaign, entry/attachment counts, token/cost telemetry, and fork parent. `session chat` continues the selected session. `watch` supports `--since`; `fork` supports `--title`, `--up-to-entry`, and destination `--campaign`; `export` supports `json`/`markdown`. Delete-entry requires confirmation (`--yes` for redirected use). Memory commands do not bypass `Arcanum:Features:MemoryManagement`. Read commands support `--json`; watch uses newline-delimited JSON. Archived sessions can still be shown, exported, and forked. |
 | `workspace list\|current\|register\|show\|tree\|info\|read\|search\|index\|index-status\|chunks\|unregister` | Register, resolve, inspect, search, index, and unregister server-host Workspace boundaries through `/api/workspaces` (needs `serve`). `show` accepts ID/name/path and retains `get` as a compatibility alias. Omitted selectors use saved Workspace context, then current-directory containment. |
-| `saga list\|divine\|delete\|stats` | Saga long-term associative memory via `/api/saga/*` (needs `serve`). `list` (options `--query`, `--session`, `--limit`, `--offset`) and `stats` are always available; `divine <QUERY>` (option `--limit`) requires `Arcanum:Features:Embeddings` + `Arcanum:Features:Saga`; `delete <ID>` removes a single memory. See [Arcanum.DESIGN.md §21.8](Arcanum.DESIGN.md#218-saga-long-term-associative-memory). |
+| `saga list\|divine\|delete\|stats` | Saga long-term associative memory via `/api/saga/*` (needs `serve`). `list` (options `--query`, `--session`, `--limit`, `--offset`) and `stats` are always available; `divine <QUERY>` (option `--limit`) requires `Arcanum:Features:Embeddings` + `Arcanum:Features:Saga`; `delete <ID>` removes a single memory. See [Arcanum.DESIGN.md §21.9](Arcanum.DESIGN.md#219-saga-long-term-associative-memory). |
 | `spell list\|get\|create\|update\|delete\|search\|validate\|execute\|versions\|export\|import\|cast\|clone` | The Forge spell CRUD + execution via `/api/spells` (needs `serve`). `create`/`update` require `--workspace`; `--body`/`--goal`/`--template`/`--plan`/`--inquisitor` accept inline text or `@filename`; `execute` prints the response text plus a tool-call summary (stderr) when tools ran (`--version` takes a **string label**); `cast <name>` is a dry-run system-prompt preview — no inference tokens consumed; `clone <name> --new-name <n>` clones a spell into the workspace. |
 | `spell version create\|update\|activate` | Named spell version files (`SPELL.v{label}.md`) via `/api/spells/{name}/versions` (needs `serve`). `create`/`update <name> --version <label> --body <text\|@file>`; `activate <name> --version <label>` swaps the version into `SPELL.md`, printing where the previous content was preserved. |
 | `prompt list\|get\|versions\|create\|update\|delete\|render\|test\|execute\|export\|import\|clone` | Prompt CRUD + rendering. Resource-taking verbs accept optional ID/name/prefix selection; `render`/`execute` accept repeatable `--param key=value`. |

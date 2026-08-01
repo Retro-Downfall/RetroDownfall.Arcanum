@@ -85,7 +85,8 @@ public sealed class WizardIntelligenceProvider(
     IModelTokenEstimator? modelTokenEstimator = null,
     IWebResearchProviderCatalog? webResearchProviderCatalog = null,
     SessionContextPinMaterializer? sessionContextPinMaterializer = null,
-    ISubagentRunner? subagentRunner = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
+    ISubagentRunner? subagentRunner = null,
+    ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
 {
     private readonly TokenAccountingDependencies _tokenAccounting =
         TokenAccountingDependencies.Create(
@@ -1651,6 +1652,11 @@ public sealed class WizardIntelligenceProvider(
 
         SagaMemory[]? streamSagaMemories = await RetrieveSagaMemoriesAsync(streamQueryEmbedding, inferenceToken).ConfigureAwait(false);
 
+        SessionAttachmentRetrievedChunk[]? streamAttachmentContext = await RetrieveSessionAttachmentContextAsync(
+            request,
+            streamQueryEmbedding,
+            inferenceToken).ConfigureAwait(false);
+
         IReadOnlyList<LexiconEntryDto>? streamLexiconEntries = await RetrieveLexiconEntriesAsync(
             request,
             streamResolvedSpell?.Entities ?? Array.Empty<string>(),
@@ -1680,7 +1686,8 @@ public sealed class WizardIntelligenceProvider(
                 settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
             sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
             maxIndexItems: streamMaxIndexItems,
-            maxIndexBytes: streamMaxIndexBytes);
+            maxIndexBytes: streamMaxIndexBytes,
+            sessionAttachmentContext: streamAttachmentContext);
         SystemPromptDocument streamSystemPromptDocument = baseSystemPromptDocument;
         string streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
 
@@ -1886,6 +1893,7 @@ public sealed class WizardIntelligenceProvider(
                             AppendedContents = streamAppendedContext,
                             SemanticContext = streamSemanticContext,
                             SagaMemories = streamSagaMemories,
+                            SessionAttachmentContext = streamAttachmentContext,
                             LexiconEntries = streamLexiconEntries,
                             SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
                             MaxIndexItems = streamMaxIndexItems,
@@ -1912,7 +1920,8 @@ public sealed class WizardIntelligenceProvider(
                             settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
                         sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
                         maxIndexItems: streamMaxIndexItems,
-                        maxIndexBytes: streamMaxIndexBytes);
+                        maxIndexBytes: streamMaxIndexBytes,
+                        sessionAttachmentContext: streamAttachmentContext);
 
                     if (streaming)
                     {
@@ -3821,7 +3830,11 @@ public sealed class WizardIntelligenceProvider(
 
         bool needsSagaEmbedding = embeddings.Enabled && embeddings.SagaEnabled;
 
-        if (!needsCodebaseEmbedding && !needsSagaEmbedding)
+        bool needsAttachmentEmbedding = embeddings.Enabled
+            && embeddings.AttachmentRetrievalEnabled
+            && request.SessionId is not null;
+
+        if (!needsCodebaseEmbedding && !needsSagaEmbedding && !needsAttachmentEmbedding)
         {
             return null;
         }
@@ -4053,6 +4066,56 @@ public sealed class WizardIntelligenceProvider(
 
             return null;
         }
+    }
+
+    private async Task<SessionAttachmentRetrievedChunk[]?> RetrieveSessionAttachmentContextAsync(
+        PingRequest request,
+        Embedding<float>? queryEmbedding,
+        CancellationToken cancellationToken)
+    {
+
+        EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
+
+        if (!embeddings.Enabled
+            || !embeddings.AttachmentRetrievalEnabled
+            || request.SessionId is not { } sessionId
+            || queryEmbedding is null
+            || sessionAttachmentRetrieval is null)
+        {
+
+            return null;
+
+        }
+
+        try
+        {
+
+            SessionAttachmentRetrievedChunk[] chunks = await sessionAttachmentRetrieval.SearchAsync(
+                sessionId,
+                queryEmbedding,
+                includeHistorical: false,
+                cancellationToken).ConfigureAwait(false);
+
+            return chunks.Length == 0 ? null : chunks;
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogDebug(
+                ex,
+                "Session attachment semantic retrieval failed; continuing without attachment context.");
+
+            return null;
+
+        }
+
     }
 
     /// <summary>

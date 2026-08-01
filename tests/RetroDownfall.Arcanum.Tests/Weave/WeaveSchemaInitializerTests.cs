@@ -7,6 +7,107 @@ public sealed class WeaveSchemaInitializerTests
 {
 
     [Fact]
+
+    public async Task EnsureSchemaAsync_CreatesVersionedSessionAttachmentIndexTables()
+    {
+
+        await using SqliteConnection connection = new("Data Source=:memory:");
+
+        await connection.OpenAsync();
+
+        await WeaveSchemaInitializer.EnsureSchemaAsync(
+            connection,
+            configuredDimensions: 768,
+            availability: new WeaveIndexAvailability(),
+            logger: null,
+            CancellationToken.None);
+
+        string[] expectedTables =
+        [
+
+            "session_attachment_chunks",
+
+            "session_attachment_embeddings",
+
+            "session_attachment_index_state",
+
+        ];
+
+        foreach (string table in expectedTables)
+        {
+
+            await using SqliteCommand command = connection.CreateCommand();
+
+            command.CommandText =
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @name";
+
+            command.Parameters.AddWithValue("@name", table);
+
+            Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
+
+        }
+
+        string[] expectedChunkColumns =
+        [
+
+            "ChunkId",
+
+            "SessionId",
+
+            "AttachmentId",
+
+            "LogicalKey",
+
+            "Version",
+
+            "OriginalFileName",
+
+            "MimeType",
+
+            "ContentSha256",
+
+            "ChunkIndex",
+
+            "CharacterStart",
+
+            "CharacterEnd",
+
+            "StartLine",
+
+            "EndLine",
+
+            "Content",
+
+            "EmbeddingDimension",
+
+            "ExtractedAt",
+
+            "IndexedAt",
+
+            "RetrievalScope",
+
+        ];
+
+        List<string> actualColumns = [];
+
+        await using SqliteCommand inspect = connection.CreateCommand();
+
+        inspect.CommandText = "PRAGMA table_info('session_attachment_chunks')";
+
+        await using SqliteDataReader reader = await inspect.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+
+            actualColumns.Add(reader.GetString(1));
+
+        }
+
+        Assert.Equal(expectedChunkColumns, actualColumns);
+
+    }
+
+    [Fact]
     public async Task EnsureSchemaAsync_DoesNotUpgradeExistingWorkspaceChunkTable()
     {
 

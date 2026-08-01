@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Core.TheForge;
 
@@ -142,7 +143,8 @@ public sealed record SessionAttachmentDto(
     string? SourceDiagnosticReason = null,
     string? LastObservedSourceContentSha256 = null,
     DateTimeOffset? LastObservedSourceWriteTime = null,
-    long? LastObservedSourceByteLength = null);
+    long? LastObservedSourceByteLength = null,
+    SessionAttachmentIndexStatus IndexingStatus = SessionAttachmentIndexStatus.NotEligible);
 
 public sealed record CreateSessionContextPinRequest(
     SessionContextPinKind Kind,

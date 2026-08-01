@@ -331,6 +331,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<WeaveIndexAvailability>();
         services.AddScoped<IDivinationService, DivinationService>();
         services.AddScoped<EmbeddingsResetService>();
+        services.AddScoped<SessionAttachmentIndexRepository>();
+        services.AddScoped<ISessionAttachmentIndexMaintenance>(
+            static sp => sp.GetRequiredService<SessionAttachmentIndexRepository>());
+        services.AddScoped<SessionAttachmentIndexProcessor>();
+        services.AddScoped<ISessionAttachmentRetrievalService, SessionAttachmentRetrievalService>();
         // Phase 7 — read-only RAG / The Weave inspector over the existing workspace chunk tables. Scoped
         // because it depends on the scoped ArcanumDbContext; never triggers indexing or mutates state.
         services.AddScoped<IWorkspaceIndexInspectorService, WorkspaceIndexInspectorService>();
@@ -351,6 +356,11 @@ public static class ServiceCollectionExtensions
         // GrimoireDatabaseHostedService so the Grimoire (and The Weave's schema) is guaranteed ready
         // before either service's first tick can run any query.
         services.AddHostedService<EntryWeavingService>();
+
+        services.AddSingleton<SessionAttachmentIndexingService>();
+        services.AddSingleton<ISessionAttachmentIndexQueue>(
+            static sp => sp.GetRequiredService<SessionAttachmentIndexingService>());
+        services.AddHostedService(static sp => sp.GetRequiredService<SessionAttachmentIndexingService>());
 
         services.AddSingleton<IWorkspaceFileWatcherFactory, WorkspaceFileWatcherFactory>();
         services.AddSingleton<WorkspaceIndexingService>();

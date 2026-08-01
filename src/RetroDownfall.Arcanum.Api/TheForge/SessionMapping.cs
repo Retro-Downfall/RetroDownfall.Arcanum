@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
@@ -32,7 +33,9 @@ internal static class SessionMapping
             session.ForkedFromSessionId,
             session.TotalCostUsd);
 
-    public static SessionAttachmentDto ToAttachmentDto(SessionAttachmentRecord record)
+    public static SessionAttachmentDto ToAttachmentDto(
+        SessionAttachmentRecord record,
+        SessionAttachmentIndexStatus indexingStatus = SessionAttachmentIndexStatus.NotEligible)
     {
         AttachmentSourceMetadata source = record.Source ?? AttachmentSourceMetadata.SnapshotOnly;
 
@@ -55,7 +58,8 @@ internal static class SessionMapping
             source.DiagnosticReason,
             source.LastObservedContentSha256,
             source.LastObservedWriteTime,
-            source.LastObservedByteLength);
+            source.LastObservedByteLength,
+            indexingStatus);
     }
 
 }

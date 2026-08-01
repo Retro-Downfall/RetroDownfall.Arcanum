@@ -170,6 +170,7 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.embeddings` | `bool`, `false` | — | Enables The Weave embedding substrate. |
 | `features.sessionSearch` | `bool`, `false` | — | Enables semantic session search and derives embedding-substrate activation. |
 | `features.codebaseRetrieval` | `bool`, `false` | — | Enables semantic workspace retrieval and derives embedding-substrate activation. |
+| `features.attachmentRetrieval` | `bool`, `false` | — | Enables bounded per-session semantic retrieval over eligible versioned text attachments and derives embedding-substrate activation. |
 | `features.saga` | `bool`, `false` | — | Enables long-term associative memory retrieval and derives embedding-substrate activation. |
 | `features.sagaExtraction` | `bool`, `false` | — | Enables automatic Saga extraction and derives Saga/substrate availability. |
 | `features.semanticSpellRouting` | `bool`, `false` | — | Enables embedding-assisted spell routing and derives embedding-substrate activation. |
@@ -205,6 +206,17 @@ recursion cap and per-call token/cost/turn delegation are code-owned safety requ
 | `integrations.embeddings.codebaseIndexing.watcherDebounceMilliseconds` | `int`, `300` | 50–5,000 | Debounce window for coalescing editor save/create/change/delete/rename events before incremental semantic indexing. |
 | `integrations.embeddings.codebaseIndexing.maxWatchers` | `int`, `32` | 0–128 | Maximum recursively watched workspaces. `0` disables watchers but retains bounded periodic reconciliation. |
 | `integrations.embeddings.codebaseIndexing.reconciliationIntervalMinutes` | `int`, `60` | 1–1,440 | Full workspace reconciliation cadence used even when watchers are healthy and as the complete fallback when they are unavailable. |
+| `integrations.embeddings.attachmentIndexing.maxAttachmentBytes` | `int`, `2,097,152` | 1,024–20,971,520 | Maximum plaintext bytes eligible for deterministic extraction. |
+| `integrations.embeddings.attachmentIndexing.maxExtractedCharacters` | `int`, `200,000` | 1,000–1,000,000 | Maximum extracted characters retained per attachment version. |
+| `integrations.embeddings.attachmentIndexing.chunkSizeCharacters` | `int`, `1,000` | 128–8,192 | Maximum characters per attachment chunk. |
+| `integrations.embeddings.attachmentIndexing.chunkOverlapCharacters` | `int`, `100` | 0–8,191 | Requested overlap; runtime also clamps it below effective chunk size. |
+| `integrations.embeddings.attachmentIndexing.maxChunksPerAttachment` | `int`, `256` | 1–2,048 | Maximum chunks persisted for one version. |
+| `integrations.embeddings.attachmentIndexing.maxAttachmentsPerBatch` | `int`, `8` | 1–100 | Maximum versions processed in one background batch. |
+| `integrations.embeddings.attachmentIndexing.queueCapacity` | `int`, `256` | 1–10,000 | Bounded event queue capacity; reconciliation recovers overflow. |
+| `integrations.embeddings.attachmentIndexing.maxRetries` | `int`, `3` | 0–10 | Transient indexing retry cap. |
+| `integrations.embeddings.attachmentIndexing.retryDelaySeconds` | `int`, `5` | 1–300 | Delay between transient retries. |
+| `integrations.embeddings.attachmentIndexing.processingTimeoutSeconds` | `int`, `60` | 5–600 | Per-attempt wall-clock bound. |
+| `integrations.embeddings.attachmentIndexing.maxRetrievedChunks` | `int`, `5` | 1–50 | Maximum attachment excerpts injected into a turn. |
 | `integrations.mcp.allowedHttpHosts` | `string[]`, `[]` | hostnames | Explicit plaintext-HTTP MCP exceptions; empty permits none and HTTPS remains the default. |
 | `integrations.webResearch.searchProvider` | `string`, `"perplexity"` | nonblank registered provider name | Provider used by `web_search`. |
 | `integrations.webResearch.perplexityModel` | `string`, `"sonar"` | `sonar` or `sonar-pro` | Perplexity Sonar model used for synthesized search. |

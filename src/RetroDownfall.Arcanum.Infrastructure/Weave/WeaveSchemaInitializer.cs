@@ -42,7 +42,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 internal static class WeaveSchemaInitializer
 {
 
-    internal const string CanonicalSchemaFingerprint = "workspace-lines-v2";
+    internal const string CanonicalSchemaFingerprint = "session-attachment-index-v1";
 
     public static async Task EnsureSchemaAsync(
         SqliteConnection connection,
@@ -61,6 +61,8 @@ internal static class WeaveSchemaInitializer
 
             await CreateSagaMemoryTablesAsync(connection, cancellationToken).ConfigureAwait(false);
 
+            await CreateSessionAttachmentTablesAsync(connection, cancellationToken).ConfigureAwait(false);
+
             bool vecAvailable = SqliteVecExtensionLoader.TryLoad(connection, logger);
 
             availability.SetAvailable(vecAvailable);
@@ -75,6 +77,9 @@ internal static class WeaveSchemaInitializer
                     .ConfigureAwait(false);
 
                 await CreateSagaMemoryEmbeddingsVecTableAsync(connection, configuredDimensions, cancellationToken)
+                    .ConfigureAwait(false);
+
+                await CreateSessionAttachmentEmbeddingsVecTableAsync(connection, configuredDimensions, cancellationToken)
                     .ConfigureAwait(false);
 
             }
@@ -95,6 +100,100 @@ internal static class WeaveSchemaInitializer
                 "The Weave schema initialization failed; RAG features relying on it will report unavailable until this is resolved.");
 
         }
+
+    }
+
+    private static async Task CreateSessionAttachmentTablesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand chunks = connection.CreateCommand();
+
+        chunks.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS session_attachment_chunks (
+                ChunkId TEXT PRIMARY KEY,
+                SessionId TEXT NOT NULL,
+                AttachmentId TEXT NOT NULL,
+                LogicalKey TEXT NOT NULL,
+                Version INTEGER NOT NULL,
+                OriginalFileName TEXT NOT NULL,
+                MimeType TEXT NOT NULL,
+                ContentSha256 TEXT NOT NULL,
+                ChunkIndex INTEGER NOT NULL,
+                CharacterStart INTEGER NOT NULL,
+                CharacterEnd INTEGER NOT NULL,
+                StartLine INTEGER NOT NULL,
+                EndLine INTEGER NOT NULL,
+                Content TEXT NOT NULL,
+                EmbeddingDimension INTEGER NOT NULL,
+                ExtractedAt TEXT NOT NULL,
+                IndexedAt TEXT NOT NULL,
+                RetrievalScope TEXT,
+                UNIQUE(AttachmentId, ChunkIndex),
+                FOREIGN KEY(AttachmentId) REFERENCES SessionAttachments(Id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_attachment_chunks_session
+                ON session_attachment_chunks(SessionId, RetrievalScope);
+            CREATE INDEX IF NOT EXISTS idx_session_attachment_chunks_attachment
+                ON session_attachment_chunks(AttachmentId);
+            """;
+
+        _ = await chunks.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteCommand embeddings = connection.CreateCommand();
+
+        embeddings.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS session_attachment_embeddings (
+                ChunkId TEXT PRIMARY KEY,
+                Embedding BLOB NOT NULL,
+                Dim INTEGER NOT NULL,
+                FOREIGN KEY(ChunkId) REFERENCES session_attachment_chunks(ChunkId) ON DELETE CASCADE
+            );
+            """;
+
+        _ = await embeddings.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteCommand state = connection.CreateCommand();
+
+        state.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS session_attachment_index_state (
+                AttachmentId TEXT PRIMARY KEY,
+                Status TEXT NOT NULL,
+                ContentSha256 TEXT NOT NULL,
+                AttemptCount INTEGER NOT NULL DEFAULT 0,
+                FailureReason TEXT,
+                ExtractedAt TEXT,
+                IndexedAt TEXT,
+                UpdatedAt TEXT NOT NULL,
+                FOREIGN KEY(AttachmentId) REFERENCES SessionAttachments(Id) ON DELETE CASCADE
+            );
+            """;
+
+        _ = await state.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task CreateSessionAttachmentEmbeddingsVecTableAsync(
+        SqliteConnection connection,
+        int dimensions,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            $"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS session_attachment_embeddings_vec USING vec0(
+                ChunkId TEXT PRIMARY KEY,
+                Embedding FLOAT[{dimensions}] distance_metric=cosine
+            );
+            """;
+
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

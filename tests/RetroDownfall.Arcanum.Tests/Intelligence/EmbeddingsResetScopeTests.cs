@@ -18,6 +18,8 @@ public sealed class EmbeddingsResetScopeTests
     [InlineData("WORKSPACEFILE", EmbeddingsResetScope.WorkspaceFile)]
     [InlineData("saga", EmbeddingsResetScope.Saga)]
     [InlineData("SAGA", EmbeddingsResetScope.Saga)]
+    [InlineData("sessionattachment", EmbeddingsResetScope.SessionAttachment)]
+    [InlineData("session_attachment", EmbeddingsResetScope.SessionAttachment)]
     public void ParseScope_ValidValues_ReturnsExpectedScope(string? value, EmbeddingsResetScope expected)
     {
 
