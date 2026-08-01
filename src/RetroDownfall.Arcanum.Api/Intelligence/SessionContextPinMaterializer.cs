@@ -10,7 +10,18 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 public sealed record SessionContextPinMaterialization(
     IReadOnlyList<AIContent> Contents,
     int IncludedBytes,
-    int OmittedCount);
+    int OmittedCount,
+    IReadOnlyList<ContextPinMaterializedItem>? Items = null);
+
+public sealed record ContextPinMaterializedItem(
+    Guid PinId,
+    SessionContextPinKind Kind,
+    string SourceId,
+    string SourceLabel,
+    string ContentHash,
+    int? VersionOrdinal,
+    int MaterializedBytes,
+    AIContent Content);
 
 /// <summary>Revalidates and materializes durable context pins as explicitly untrusted model data.</summary>
 public sealed class SessionContextPinMaterializer(
@@ -19,8 +30,11 @@ public sealed class SessionContextPinMaterializer(
     ArcanumDbContext db)
 {
     public const int MaxPinsPerTurn = 32;
+
     public const int MaxBytesPerPin = 64 * 1024;
+
     public const int MaxBytesPerTurn = 256 * 1024;
+
     private const int MaxDirectoryFiles = 64;
 
     public async Task<SessionContextPinMaterialization> MaterializeAsync(
@@ -31,6 +45,7 @@ public sealed class SessionContextPinMaterializer(
         IReadOnlyList<SessionContextPinRecord> rows =
             await pins.ListAsync(sessionId, cancellationToken).ConfigureAwait(false);
         List<AIContent> contents = [];
+        List<ContextPinMaterializedItem> items = [];
         int bytes = 0;
         int omitted = Math.Max(0, rows.Count - MaxPinsPerTurn);
 
@@ -63,7 +78,25 @@ public sealed class SessionContextPinMaterializer(
                 blockBytes = Encoding.UTF8.GetByteCount(block);
             }
 
-            contents.Add(new TextContent(block));
+            TextContent content = new(block);
+
+            contents.Add(content);
+
+            items.Add(
+                new ContextPinMaterializedItem(
+                    pin.Id,
+                    pin.Kind,
+                    materialized.SourceId ?? pin.TargetIdentifier,
+                    pin.DisplayLabel,
+                    materialized.SourceHash
+                        ?? Convert.ToHexString(
+                            SHA256.HashData(
+                                Encoding.UTF8.GetBytes(materialized.Content ?? block)))
+                            .ToLowerInvariant(),
+                    materialized.SourceVersion,
+                    blockBytes,
+                    content));
+
             bytes += blockBytes;
         }
 
@@ -73,7 +106,7 @@ public sealed class SessionContextPinMaterializer(
                 $"[SESSION CONTEXT PINS: {omitted} pin(s) omitted by the {MaxPinsPerTurn}-pin/{MaxBytesPerTurn}-byte budget.]"));
         }
 
-        return new(contents, bytes, omitted);
+        return new(contents, bytes, omitted, items);
     }
 
     private async Task<MaterializedPin> MaterializeOneAsync(
@@ -151,10 +184,12 @@ public sealed class SessionContextPinMaterializer(
             }
             snapshot.Append(Path.GetRelativePath(path, file)).Append('\t').Append(new FileInfo(file).Length).AppendLine();
         }
+
         if (files.Length > MaxDirectoryFiles)
         {
             snapshot.AppendLine($"[TRUNCATED: more than {MaxDirectoryFiles} files]");
         }
+
         return FromText(snapshot.ToString(), byteLimit);
     }
 
@@ -166,6 +201,7 @@ public sealed class SessionContextPinMaterializer(
         {
             return new(SessionContextPinStatus.Error, null, "Expected path:start-end.");
         }
+
         string pathPart = pin.TargetIdentifier[..separator];
         string[] range = pin.TargetIdentifier[(separator + 1)..].Split('-', 2);
         if (!int.TryParse(range[0], out int start) || start < 1
@@ -174,14 +210,17 @@ public sealed class SessionContextPinMaterializer(
         {
             return new(SessionContextPinStatus.Error, null, "Invalid or excessive line range.");
         }
+
         if (!TryResolveWorkspacePath(workingDirectory, pathPart, out string path, out string error))
         {
             return new(SessionContextPinStatus.Unsafe, null, error);
         }
+
         if (!File.Exists(path))
         {
             return new(SessionContextPinStatus.Missing, null, "File no longer exists.");
         }
+
         string[] lines = File.ReadAllLines(path);
         string selected = string.Join('\n', lines.Skip(start - 1).Take(end - start + 1));
         return FromText(selected, byteLimit);
@@ -194,6 +233,7 @@ public sealed class SessionContextPinMaterializer(
         {
             return new(SessionContextPinStatus.Error, null, "Invalid entry identifier.");
         }
+
         string? content = await db.Entries.AsNoTracking()
             .Where(entry => entry.Id == entryId && entry.SessionId == sessionId)
             .Select(entry => entry.Content)
@@ -215,7 +255,16 @@ public sealed class SessionContextPinMaterializer(
             return new(SessionContextPinStatus.Missing, null, "Text attachment was not found in this session.");
         }
         ReadOnlyMemory<byte> source = await attachments.ReadBytesAsync(record, cancellationToken).ConfigureAwait(false);
-        return FromText(Encoding.UTF8.GetString(source.Span), byteLimit);
+        MaterializedPin materialized = FromText(Encoding.UTF8.GetString(source.Span), byteLimit);
+
+        return materialized with
+        {
+
+            SourceId = record.Id.ToString("N"),
+            SourceVersion = record.Version,
+            SourceHash = record.ContentSha256,
+
+        };
     }
 
     private static MaterializedPin FromText(string text, int byteLimit)
@@ -236,6 +285,7 @@ public sealed class SessionContextPinMaterializer(
             error = "No workspace was supplied for this turn.";
             return false;
         }
+
         try
         {
             string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workingDirectory));
@@ -311,6 +361,7 @@ public sealed class SessionContextPinMaterializer(
             current = c == '`' ? current + 1 : 0;
             longest = Math.Max(longest, current);
         }
+
         return longest;
     }
 
@@ -320,21 +371,27 @@ public sealed class SessionContextPinMaterializer(
         {
             return string.Empty;
         }
+
         byte[] bytes = Encoding.UTF8.GetBytes(value);
         if (bytes.Length <= maxBytes)
         {
             return value;
         }
+
         int length = maxBytes;
         while (length > 0 && (bytes[length] & 0xC0) == 0x80)
         {
             length--;
         }
+
         return Encoding.UTF8.GetString(bytes, 0, length);
     }
 
     private sealed record MaterializedPin(
         SessionContextPinStatus Status,
         string? Content,
-        string? Diagnostic);
+        string? Diagnostic,
+        string? SourceId = null,
+        int? SourceVersion = null,
+        string? SourceHash = null);
 }

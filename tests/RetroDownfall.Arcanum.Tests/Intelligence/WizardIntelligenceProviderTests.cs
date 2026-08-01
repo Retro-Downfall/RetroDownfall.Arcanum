@@ -4576,6 +4576,117 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+
+    public async Task AttachmentRag_BufferedAndStreaming_UseSameSessionScopedMaterialization()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid attachmentId = Guid.NewGuid();
+
+        SessionAttachmentRetrievedChunk chunk = new(
+            "chunk-1",
+            sessionId,
+            attachmentId,
+            "notes",
+            1,
+            "notes.md",
+            "text/markdown",
+            "whole-hash",
+            0,
+            0,
+            24,
+            1,
+            2,
+            "attachment semantic fact",
+            0.94f);
+
+        FakeSessionAttachmentRetrieval retrieval = new([chunk]);
+
+        FakeRagWeaveService weave = new() { Available = true };
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+
+            Features = DefaultSettings().Features with
+            {
+
+                Embeddings = true,
+
+                AttachmentRetrieval = true,
+
+            },
+
+        };
+
+        ScriptingChatClient bufferedChat = new();
+
+        bufferedChat.EnqueueText("buffered answer");
+
+        Result<PromptTurnResult> buffered = await CreateWizard(
+                bufferedChat,
+                settings,
+                weaveService: weave,
+                sessionAttachmentRetrieval: retrieval)
+            .ExecutePromptAsync(
+                BaseRequest() with
+                {
+
+                    SessionId = sessionId,
+
+                    Prompt = "find the note",
+
+                    SkipSpellRouting = true,
+
+                    DisableMcpTools = true,
+
+                },
+                CancellationToken.None);
+
+        ScriptingChatClient streamingChat = new();
+
+        streamingChat.EnqueueStreamTokens("streamed answer");
+
+        List<IntelligenceEvent> streamed = await CollectStreamAsync(
+            CreateWizard(
+                streamingChat,
+                settings,
+                weaveService: weave,
+                sessionAttachmentRetrieval: retrieval),
+            BaseRequest() with
+            {
+
+                SessionId = sessionId,
+
+                Prompt = "find the note",
+
+                SkipSpellRouting = true,
+
+                DisableMcpTools = true,
+
+            });
+
+        Assert.True(buffered.IsSuccess);
+
+        Assert.Contains(streamed, static item => item.Type == IntelligenceEventType.Result);
+
+        string bufferedSystem = ExtractSystemPromptText(bufferedChat.LastBufferedMessages);
+
+        string streamingSystem = ExtractSystemPromptText(streamingChat.LastBufferedMessages);
+
+        Assert.Equal(bufferedSystem, streamingSystem);
+
+        Assert.Contains("### Retrieved Session Attachment Context", bufferedSystem, StringComparison.Ordinal);
+
+        Assert.Contains("attachment semantic fact", bufferedSystem, StringComparison.Ordinal);
+
+        Assert.Equal([sessionId, sessionId], retrieval.SessionIds);
+
+        Assert.Equal(2, weave.EmbedCallCount);
+
+    }
+
+    [Fact]
     public async Task ScenarioRag03_Disabled_NeverRegistersWorkspace_NoSemanticContext()
     {
         FakeRagWorkspaceIndexingService indexing = new();
@@ -5224,6 +5335,35 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     }
 
+    private sealed class FakeSessionAttachmentRetrieval(
+        SessionAttachmentRetrievedChunk[] chunks) : ISessionAttachmentRetrievalService
+    {
+
+        public List<Guid> SessionIds { get; } = [];
+
+        public Task<SessionAttachmentRetrievedChunk[]> SearchAsync(
+            Guid sessionId,
+            Embedding<float> queryEmbedding,
+            bool includeHistorical,
+            CancellationToken cancellationToken)
+        {
+
+            SessionIds.Add(sessionId);
+
+            return Task.FromResult(chunks);
+
+        }
+
+        public Task<IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus>> GetStatusesAsync(
+            IReadOnlyList<Guid> attachmentIds,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus>>(
+                attachmentIds.ToDictionary(
+                    static id => id,
+                    static _ => SessionAttachmentIndexStatus.Indexed));
+
+    }
+
     private sealed class FakeRagDivinationService : IDivinationService
     {
 
@@ -5396,7 +5536,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ReasoningOutputMode requestedOutput,
         ReasoningOutput expectedOutput)
     {
-        
 
         ArcanumSettings settings = DefaultSettings() with
         {
@@ -5444,7 +5583,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     [Fact]
     public async Task ReasoningMapping_StreamingStandardDialect_MapsTypedOptions()
     {
-        
 
         ArcanumSettings settings = DefaultSettings() with
         {
@@ -6631,7 +6769,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         ITurnRunWriter? turnRunWriter = null,
         IBudgetReservationService? budgetReservationService = null,
         ILogger<WizardIntelligenceProvider>? logger = null,
-        ILogger<ToolExecutionPipeline>? toolLogger = null)
+        ILogger<ToolExecutionPipeline>? toolLogger = null,
+        ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null)
     {
         settings ??= DefaultSettings();
 
@@ -6725,7 +6864,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             guardrailsPipeline: guardrailsPipeline,
             turnRunWriter: turnRunWriter,
             budgetReservationService: budgetReservationService,
-            webResearchProviderCatalog: new WebResearchProviderCatalog([]));
+            webResearchProviderCatalog: new WebResearchProviderCatalog([]),
+            sessionAttachmentRetrieval: sessionAttachmentRetrieval);
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>
@@ -6886,7 +7026,6 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     private static ArcanumSettings SettingsWithReasoning()
     {
-        
 
         return DefaultSettings() with
         {

@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -1493,9 +1494,6 @@ public sealed class WizardIntelligenceProvider(
                     contextPinSessionId, request.WorkingDirectory, inferenceToken).ConfigureAwait(false)
                 : new SessionContextPinMaterialization([], 0, 0);
 
-        IReadOnlyList<AIContent> streamAppendedContext =
-            streamAttachmentPrep.RehydratedContents.Concat(streamPinMaterialization.Contents).ToArray();
-
         if (streamAttachmentPrep.ErrorMessage is not null)
         {
             if (!streaming)
@@ -1527,6 +1525,244 @@ public sealed class WizardIntelligenceProvider(
             streamMaxRefs,
             request.AttachmentReferences?.Count ?? 0);
 
+        EmbeddingSettings streamEmbeddingSettings = settings.Value.ResolveEmbeddings();
+
+        AttachmentEmbeddingSettings streamRetrievalSettings = streamEmbeddingSettings.Attachments;
+
+        ContextMaterializationLedger streamMaterializationLedger = new(
+            grimoireTurn.SessionId ?? request.SessionId,
+            new ContextMaterializationLimits(
+                ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedChunks(
+                    streamRetrievalSettings.MaxRetrievedChunks),
+                ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedAttachments(
+                    streamRetrievalSettings.MaxRetrievedAttachments),
+                ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedBytes(
+                    streamRetrievalSettings.MaxRetrievedBytes),
+                ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedTokens(
+                    streamRetrievalSettings.MaxRetrievedTokens)));
+
+        ContextMaterializationLedgerAmbient.Begin(streamMaterializationLedger);
+
+        List<AIContent> acceptedAppendedContext = [];
+
+        HashSet<int> acceptedAttachedFileIndices = [];
+
+        HashSet<int> acceptedScryingFocusIndices = [];
+
+        if (!attachmentsEnabled && request.AttachedFiles is { Count: > 0 } directAttachedFiles)
+        {
+
+            for (int index = 0; index < directAttachedFiles.Count; index++)
+            {
+
+                AttachedFileDto file = directAttachedFiles[index];
+
+                byte[] bytes = Encoding.UTF8.GetBytes(file.Content ?? string.Empty);
+
+                string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+                ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
+                    new ContextMaterializationCandidate(
+                        grimoireTurn.SessionId ?? request.SessionId,
+                        ContextMaterializationSourceKind.CurrentTurnAttachment,
+                        $"current:{index.ToString(CultureInfo.InvariantCulture)}",
+                        hash,
+                        VersionOrdinal: null,
+                        ContextMaterializationRange.Whole,
+                        ContextMaterializationOrigin.Explicit,
+                        file.RelativePath,
+                        hash,
+                        EstimateMaterializedTokens(bytes.Length),
+                        bytes.Length,
+                        ContextMaterializationTrust.UntrustedData),
+                    materialized: true);
+
+                if (accepted.Accepted)
+                {
+
+                    _ = streamMaterializationLedger.TryMarkInjected(
+                        accepted.Identity,
+                        providerRound: 0);
+
+                    acceptedAttachedFileIndices.Add(index);
+
+                }
+
+            }
+
+        }
+
+        if (!attachmentsEnabled && request.ScryingFoci is { Count: > 0 } directScryingFoci)
+        {
+
+            for (int index = 0; index < directScryingFoci.Count; index++)
+            {
+
+                byte[] bytes = Convert.FromBase64String(directScryingFoci[index].Data);
+
+                string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+                ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
+                    new ContextMaterializationCandidate(
+                        grimoireTurn.SessionId ?? request.SessionId,
+                        ContextMaterializationSourceKind.CurrentTurnAttachment,
+                        $"current-image:{index.ToString(CultureInfo.InvariantCulture)}",
+                        hash,
+                        VersionOrdinal: null,
+                        ContextMaterializationRange.Whole,
+                        ContextMaterializationOrigin.Explicit,
+                        $"image-{index.ToString(CultureInfo.InvariantCulture)}",
+                        hash,
+                        EstimateMaterializedTokens(bytes.Length),
+                        bytes.Length,
+                        ContextMaterializationTrust.UntrustedData),
+                    materialized: true);
+
+                if (accepted.Accepted)
+                {
+
+                    _ = streamMaterializationLedger.TryMarkInjected(
+                        accepted.Identity,
+                        providerRound: 0);
+
+                    acceptedScryingFocusIndices.Add(index);
+
+                }
+
+            }
+
+        }
+
+        foreach (SessionAttachmentExplicitMaterialization materialization
+                 in streamAttachmentPrep.ExplicitMaterializations ?? [])
+        {
+
+            SessionAttachmentRecord record = materialization.Record;
+
+            ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
+                new ContextMaterializationCandidate(
+                    record.SessionId ?? grimoireTurn.SessionId ?? request.SessionId,
+                    materialization.SourceKind,
+                    record.Id.ToString("N"),
+                    record.Version.ToString(CultureInfo.InvariantCulture),
+                    record.Version,
+                    ContextMaterializationRange.Whole,
+                    ContextMaterializationOrigin.Explicit,
+                    record.OriginalFileName,
+                    record.ContentSha256,
+                    EstimateMaterializedTokens(record.ByteLength),
+                    int.CreateSaturating(record.ByteLength),
+                    ContextMaterializationTrust.UntrustedData),
+                materialized: true);
+
+            if (!accepted.Accepted)
+            {
+
+                continue;
+
+            }
+
+            _ = streamMaterializationLedger.TryMarkInjected(accepted.Identity, providerRound: 0);
+
+            if (record.Source is
+                {
+
+                    Kind: AttachmentSourceKind.WorkspaceFile,
+                    WorkspaceRelativePath: { Length: > 0 } workspaceRelativePath,
+
+                })
+            {
+
+                streamMaterializationLedger.RegisterExplicitWorkspaceSource(
+                    workspaceRelativePath);
+
+            }
+
+            acceptedAppendedContext.AddRange(materialization.Contents);
+
+            if (materialization.AttachedFileIndex is { } attachedFileIndex)
+            {
+
+                acceptedAttachedFileIndices.Add(attachedFileIndex);
+
+            }
+
+            if (materialization.ScryingFocusIndex is { } scryingFocusIndex)
+            {
+
+                acceptedScryingFocusIndices.Add(scryingFocusIndex);
+
+            }
+
+        }
+
+        foreach (ContextPinMaterializedItem pin in streamPinMaterialization.Items ?? [])
+        {
+
+            ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
+                new ContextMaterializationCandidate(
+                    grimoireTurn.SessionId ?? request.SessionId,
+                    ContextMaterializationSourceKind.ExplicitContextPin,
+                    Guid.TryParse(pin.SourceId, out Guid pinSourceId)
+                        ? pinSourceId.ToString("N")
+                        : pin.SourceId,
+                    pin.VersionOrdinal?.ToString(CultureInfo.InvariantCulture)
+                        ?? pin.ContentHash,
+                    pin.VersionOrdinal,
+                    ContextMaterializationRange.Whole,
+                    ContextMaterializationOrigin.Explicit,
+                    pin.SourceLabel,
+                    pin.ContentHash,
+                    EstimateMaterializedTokens(pin.MaterializedBytes),
+                    pin.MaterializedBytes,
+                    ContextMaterializationTrust.UntrustedData),
+                materialized: true);
+
+            if (accepted.Accepted)
+            {
+
+                _ = streamMaterializationLedger.TryMarkInjected(accepted.Identity, providerRound: 0);
+
+                acceptedAppendedContext.Add(pin.Content);
+
+                if (pin.Kind == SessionContextPinKind.File)
+                {
+
+                    streamMaterializationLedger.RegisterExplicitWorkspaceSource(pin.SourceId);
+
+                }
+
+            }
+
+        }
+
+        HashSet<AIContent> trackedPinContents = new(ReferenceEqualityComparer.Instance);
+
+        trackedPinContents.UnionWith(
+            (streamPinMaterialization.Items ?? []).Select(static item => item.Content));
+
+        acceptedAppendedContext.AddRange(
+            streamPinMaterialization.Contents.Where(content => !trackedPinContents.Contains(content)));
+
+        IReadOnlyList<AIContent> streamAppendedContext = acceptedAppendedContext;
+
+        List<AttachedFileDto>? streamAcceptedAttachedFiles = request.AttachedFiles is null
+            ? null
+            : request.AttachedFiles
+                .Where((_, index) => acceptedAttachedFileIndices.Contains(index))
+                .ToList();
+
+        PingRequest streamContextRequest = request with
+        {
+
+            ScryingFoci = request.ScryingFoci is null
+                ? null
+                : request.ScryingFoci
+                    .Where((_, index) => acceptedScryingFocusIndices.Contains(index))
+                    .ToList(),
+
+        };
+
         Result<TurnAccountingHandle> streamAccountingBegin;
 
         if (TurnAccountingAmbient.Current is { } streamAmbientAccounting)
@@ -1553,6 +1789,8 @@ public sealed class WizardIntelligenceProvider(
         if (streamAccountingBegin.IsFailure)
         {
             SessionAttachmentTurnBudget.EndTurn();
+
+            ContextMaterializationLedgerAmbient.End();
 
             if (!streaming)
             {
@@ -1583,7 +1821,10 @@ public sealed class WizardIntelligenceProvider(
             publishedStreamAmbient = true;
         }
 
-        List<MeAiChatMessage> chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(request, thread, prompt);
+        List<MeAiChatMessage> chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
+            streamContextRequest,
+            thread,
+            prompt);
 
         string? streamCodexContent = await CodexReader
             .ReadCodexAsync(
@@ -1657,6 +1898,26 @@ public sealed class WizardIntelligenceProvider(
             streamQueryEmbedding,
             inferenceToken).ConfigureAwait(false);
 
+        streamAttachmentContext = AcceptAttachmentRagMaterializations(
+            streamMaterializationLedger,
+            streamAttachmentContext,
+            lease.Provider,
+            lease.ResolvedModel);
+
+        streamSemanticContext = AcceptWorkspaceRagMaterializations(
+            streamMaterializationLedger,
+            streamSemanticContext,
+            lease.Provider,
+            lease.ResolvedModel,
+            grimoireTurn.SessionId ?? request.SessionId);
+
+        streamSagaMemories = AcceptSagaMaterializations(
+            streamMaterializationLedger,
+            streamSagaMemories,
+            lease.Provider,
+            lease.ResolvedModel,
+            grimoireTurn.SessionId ?? request.SessionId);
+
         IReadOnlyList<LexiconEntryDto>? streamLexiconEntries = await RetrieveLexiconEntriesAsync(
             request,
             streamResolvedSpell?.Entities ?? Array.Empty<string>(),
@@ -1675,7 +1936,7 @@ public sealed class WizardIntelligenceProvider(
             request,
             streamCodexContent,
             streamActiveSpell,
-            request.AttachedFiles,
+            streamAcceptedAttachedFiles,
             dependencySpells: streamResonants,
             maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
                 ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
@@ -1691,7 +1952,103 @@ public sealed class WizardIntelligenceProvider(
         SystemPromptDocument streamSystemPromptDocument = baseSystemPromptDocument;
         string streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
 
+        bool streamContextUsesCompressedSummary = false;
+
         InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
+
+        void RebuildMaterializedSystemPrompt()
+        {
+
+            streamSystemPromptDocument = SystemPromptBuilder.BuildDocument(
+                request,
+                streamCodexContent,
+                streamActiveSpell,
+                streamAcceptedAttachedFiles,
+                campaignSummary: streamContextUsesCompressedSummary ? thread?.Summary : null,
+                dependencySpells: streamResonants,
+                maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
+                    ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
+                semanticContext: streamSemanticContext,
+                sagaMemories: streamSagaMemories,
+                lexiconEntries: streamLexiconEntries,
+                maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
+                    settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
+                sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
+                maxIndexItems: streamMaxIndexItems,
+                maxIndexBytes: streamMaxIndexBytes,
+                sessionAttachmentContext: streamAttachmentContext);
+
+            streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
+
+            if (!streamContextUsesCompressedSummary)
+            {
+
+                baseSystemPromptDocument = streamSystemPromptDocument;
+
+            }
+
+            if (chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System)
+            {
+
+                chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
+
+            }
+
+        }
+
+        bool RemoveSemanticMaterialization(ContextMaterializationEntry removed)
+        {
+
+            bool changed = removed.SourceKind switch
+            {
+
+                ContextMaterializationSourceKind.AttachmentRag =>
+                    RemoveAttachmentRagChunk(ref streamAttachmentContext, removed),
+
+                ContextMaterializationSourceKind.WorkspaceRag =>
+                    RemoveWorkspaceRagChunk(ref streamSemanticContext, removed),
+
+                ContextMaterializationSourceKind.SagaMemory =>
+                    RemoveSagaMemory(ref streamSagaMemories, removed),
+
+                _ => false,
+
+            };
+
+            if (!changed)
+            {
+
+                return false;
+
+            }
+
+            RebuildMaterializedSystemPrompt();
+
+            return true;
+
+        }
+
+        void ReconcileSuppressedSemanticContext()
+        {
+
+            bool changed = PruneSuppressedAttachmentRag(
+                ref streamAttachmentContext,
+                streamMaterializationLedger);
+
+            changed |= PruneSuppressedWorkspaceRag(
+                ref streamSemanticContext,
+                streamMaterializationLedger);
+
+            if (!changed)
+            {
+
+                return;
+
+            }
+
+            RebuildMaterializedSystemPrompt();
+
+        }
 
         if (streaming && !streamTurnBegunEarly && !InferenceContextBuilder.HasStatelessMessages(request))
         {
@@ -1858,7 +2215,10 @@ public sealed class WizardIntelligenceProvider(
             if (!streaming)
             {
                 // Buffered no-tools restart rebuilds the message list each outer attempt.
-                chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(request, thread, prompt);
+                chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
+                    streamContextRequest,
+                    thread,
+                    prompt);
 
                 InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
@@ -1904,11 +2264,13 @@ public sealed class WizardIntelligenceProvider(
 
                 if (compressed)
                 {
+                    streamContextUsesCompressedSummary = true;
+
                     streamSystemPromptDocument = SystemPromptBuilder.BuildDocument(
                         request,
                         streamCodexContent,
                         streamActiveSpell,
-                        request.AttachedFiles,
+                        streamAcceptedAttachedFiles,
                         campaignSummary: thread?.Summary,
                         dependencySpells: streamResonants,
                         maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
@@ -1950,11 +2312,17 @@ public sealed class WizardIntelligenceProvider(
 
                     ChatResponse? bufferedRoundResponse = null;
 
-                    Result streamContextGate = EnsureContextBudget(
+                    ContextMaterializationLedgerAmbient.SetProviderRound(streamToolRoundCount);
+
+                    ReconcileSuppressedSemanticContext();
+
+                    Result streamContextGate = EnsureContextBudgetWithMaterializations(
                         chatMessages,
                         streamChatOptions,
                         lease,
                         request,
+                        streamMaterializationLedger,
+                        RemoveSemanticMaterialization,
                         out ContextTokenBreakdown callBreakdown);
 
                     if (streamContextGate.IsSuccess)
@@ -2022,6 +2390,7 @@ public sealed class WizardIntelligenceProvider(
                                         streamPromptCachePlan))
                                 .ConfigureAwait(false);
                         }
+
                         if (modelCall.IsFailure)
                         {
                             // Do not break the tool-round loop yet — the inferenceError handler
@@ -2370,6 +2739,8 @@ public sealed class WizardIntelligenceProvider(
                 }
 
                 streamToolRoundCount++;
+
+                ContextMaterializationLedgerAmbient.SetProviderRound(streamToolRoundCount);
 
                 int toolCallIndex = 0;
 
@@ -2754,15 +3125,22 @@ public sealed class WizardIntelligenceProvider(
                                     streamTurnContext.InferenceTools,
                                     request,
                                     lease);
-                            ModelCallContext retryContext = BuildModelCallContext(lease, request);
-                            ContextTokenBreakdown retryContextBreakdown = ModelTokenEstimator.EstimateContext(
-                                new ModelTokenizationRequest(
-                                    lease.Provider,
-                                    lease.ResolvedModel,
-                                    chatMessages,
-                                    retryOptions,
-                                    retryContext.ReservedAnswerTokens,
-                                    retryContext.ReservedReasoningTokens));
+                            Result retryContextGate = EnsureContextBudgetWithMaterializations(
+                                chatMessages,
+                                retryOptions,
+                                lease,
+                                request,
+                                streamMaterializationLedger,
+                                RemoveSemanticMaterialization,
+                                out ContextTokenBreakdown retryContextBreakdown);
+
+                            if (retryContextGate.IsFailure)
+                            {
+
+                                throw new ModelCallAdmissionException(retryContextGate.Error);
+
+                            }
+
                             Result retryReservation = await streamAccountingLocal
                                 .EnsureReservationForContextAsync(
                                     budgetReservationService,
@@ -3080,6 +3458,8 @@ public sealed class WizardIntelligenceProvider(
             liveHumanPromptChannel?.Writer.TryComplete();
 
             SessionAttachmentTurnBudget.EndTurn();
+
+            ContextMaterializationLedgerAmbient.End();
 
             if (publishedStreamAmbient)
             {
@@ -4068,6 +4448,352 @@ public sealed class WizardIntelligenceProvider(
         }
     }
 
+    private SessionAttachmentRetrievedChunk[]? AcceptAttachmentRagMaterializations(
+        ContextMaterializationLedger ledger,
+        SessionAttachmentRetrievedChunk[]? chunks,
+        ProviderSettings provider,
+        string model)
+    {
+
+        if (chunks is not { Length: > 0 })
+        {
+
+            return null;
+
+        }
+
+        List<SessionAttachmentRetrievedChunk> accepted = [];
+
+        foreach (SessionAttachmentRetrievedChunk chunk in chunks)
+        {
+
+            int bytes = Encoding.UTF8.GetByteCount(chunk.Content);
+
+            ContextMaterializationEntry entry = ledger.Accept(
+                new ContextMaterializationCandidate(
+                    chunk.SessionId,
+                    ContextMaterializationSourceKind.AttachmentRag,
+                    chunk.AttachmentId.ToString("N"),
+                    chunk.Version.ToString(CultureInfo.InvariantCulture),
+                    chunk.Version,
+                    new ContextMaterializationRange(chunk.CharacterStart, chunk.CharacterEnd),
+                    ContextMaterializationOrigin.Semantic,
+                    chunk.OriginalFileName,
+                    chunk.ContentSha256,
+                    ModelTokenEstimator.EstimateText(provider, model, chunk.Content).TokenCount,
+                    bytes,
+                    ContextMaterializationTrust.UntrustedData),
+                materialized: true);
+
+            if (entry.Accepted)
+            {
+
+                _ = ledger.TryMarkInjected(entry.Identity, providerRound: 0);
+
+                accepted.Add(chunk);
+
+            }
+
+        }
+
+        return accepted.Count == 0 ? null : [.. accepted];
+
+    }
+
+    private SemanticContextChunk[]? AcceptWorkspaceRagMaterializations(
+        ContextMaterializationLedger ledger,
+        SemanticContextChunk[]? chunks,
+        ProviderSettings provider,
+        string model,
+        Guid? sessionId)
+    {
+
+        if (chunks is not { Length: > 0 })
+        {
+
+            return null;
+
+        }
+
+        List<SemanticContextChunk> accepted = [];
+
+        foreach (SemanticContextChunk chunk in chunks)
+        {
+
+            string hash = ComputeContentHash(chunk.Content);
+
+            ContextMaterializationEntry entry = ledger.Accept(
+                new ContextMaterializationCandidate(
+                    sessionId,
+                    ContextMaterializationSourceKind.WorkspaceRag,
+                    $"{chunk.RelativePath}\u001f{chunk.ChunkIndex.ToString(CultureInfo.InvariantCulture)}",
+                    hash,
+                    VersionOrdinal: null,
+                    new ContextMaterializationRange(chunk.ChunkIndex, chunk.ChunkIndex),
+                    ContextMaterializationOrigin.Semantic,
+                    chunk.RelativePath,
+                    hash,
+                    ModelTokenEstimator.EstimateText(provider, model, chunk.Content).TokenCount,
+                    Encoding.UTF8.GetByteCount(chunk.Content),
+                    ContextMaterializationTrust.UntrustedData),
+                materialized: true);
+
+            if (entry.Accepted)
+            {
+
+                _ = ledger.TryMarkInjected(entry.Identity, providerRound: 0);
+
+                accepted.Add(chunk);
+
+            }
+
+        }
+
+        return accepted.Count == 0 ? null : [.. accepted];
+
+    }
+
+    private SagaMemory[]? AcceptSagaMaterializations(
+        ContextMaterializationLedger ledger,
+        SagaMemory[]? memories,
+        ProviderSettings provider,
+        string model,
+        Guid? sessionId)
+    {
+
+        if (memories is not { Length: > 0 })
+        {
+
+            return null;
+
+        }
+
+        List<SagaMemory> accepted = [];
+
+        foreach (SagaMemory memory in memories)
+        {
+
+            string hash = ComputeContentHash(memory.Content);
+
+            ContextMaterializationEntry entry = ledger.Accept(
+                new ContextMaterializationCandidate(
+                    sessionId,
+                    ContextMaterializationSourceKind.SagaMemory,
+                    hash,
+                    hash,
+                    VersionOrdinal: null,
+                    ContextMaterializationRange.Whole,
+                    ContextMaterializationOrigin.Semantic,
+                    "Saga memory",
+                    hash,
+                    ModelTokenEstimator.EstimateText(provider, model, memory.Content).TokenCount,
+                    Encoding.UTF8.GetByteCount(memory.Content),
+                    ContextMaterializationTrust.UntrustedData),
+                materialized: true);
+
+            if (entry.Accepted)
+            {
+
+                _ = ledger.TryMarkInjected(entry.Identity, providerRound: 0);
+
+                accepted.Add(memory);
+
+            }
+
+        }
+
+        return accepted.Count == 0 ? null : [.. accepted];
+
+    }
+
+    private static string ComputeContentHash(string content) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
+
+    private static bool RemoveAttachmentRagChunk(
+        ref SessionAttachmentRetrievedChunk[]? chunks,
+        ContextMaterializationEntry removed)
+    {
+
+        if (chunks is not { Length: > 0 })
+        {
+
+            return false;
+
+        }
+
+        int originalCount = chunks.Length;
+
+        chunks = chunks
+            .Where(
+                chunk => !string.Equals(
+                        chunk.AttachmentId.ToString("N"),
+                        removed.Identity.SourceId,
+                        StringComparison.Ordinal)
+                    || !string.Equals(
+                        chunk.Version.ToString(CultureInfo.InvariantCulture),
+                        removed.Identity.VersionOrContentHash,
+                        StringComparison.Ordinal)
+                    || new ContextMaterializationRange(
+                        chunk.CharacterStart,
+                        chunk.CharacterEnd) != removed.Identity.Range)
+            .ToArray();
+
+        if (chunks.Length == 0)
+        {
+
+            chunks = null;
+
+        }
+
+        return chunks?.Length != originalCount;
+
+    }
+
+    private static bool PruneSuppressedAttachmentRag(
+        ref SessionAttachmentRetrievedChunk[]? chunks,
+        ContextMaterializationLedger ledger)
+    {
+
+        if (chunks is not { Length: > 0 })
+        {
+
+            return false;
+
+        }
+
+        int originalCount = chunks.Length;
+
+        chunks = chunks
+            .Where(
+                chunk => ledger.Contains(
+                    new ContextMaterializationIdentity(
+                        ContextMaterializationSourceKind.AttachmentRag,
+                        chunk.AttachmentId.ToString("N"),
+                        chunk.Version.ToString(CultureInfo.InvariantCulture),
+                        new ContextMaterializationRange(
+                            chunk.CharacterStart,
+                            chunk.CharacterEnd))))
+            .ToArray();
+
+        if (chunks.Length == 0)
+        {
+
+            chunks = null;
+
+        }
+
+        return chunks?.Length != originalCount;
+
+    }
+
+    private static bool PruneSuppressedWorkspaceRag(
+        ref SemanticContextChunk[]? chunks,
+        ContextMaterializationLedger ledger)
+    {
+
+        if (chunks is not { Length: > 0 })
+        {
+
+            return false;
+
+        }
+
+        int originalCount = chunks.Length;
+
+        chunks = chunks
+            .Where(
+                chunk =>
+                {
+
+                    string hash = ComputeContentHash(chunk.Content);
+
+                    return ledger.Contains(
+                        new ContextMaterializationIdentity(
+                            ContextMaterializationSourceKind.WorkspaceRag,
+                            $"{chunk.RelativePath}\u001f{chunk.ChunkIndex.ToString(CultureInfo.InvariantCulture)}",
+                            hash,
+                            new ContextMaterializationRange(
+                                chunk.ChunkIndex,
+                                chunk.ChunkIndex)));
+
+                })
+            .ToArray();
+
+        if (chunks.Length == 0)
+        {
+
+            chunks = null;
+
+        }
+
+        return chunks?.Length != originalCount;
+
+    }
+
+    private static bool RemoveWorkspaceRagChunk(
+        ref SemanticContextChunk[]? chunks,
+        ContextMaterializationEntry removed)
+    {
+
+        if (chunks is not { Length: > 0 })
+        {
+
+            return false;
+
+        }
+
+        int originalCount = chunks.Length;
+
+        chunks = chunks
+            .Where(chunk => !string.Equals(
+                ComputeContentHash(chunk.Content),
+                removed.ContentHash,
+                StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        if (chunks.Length == 0)
+        {
+
+            chunks = null;
+
+        }
+
+        return chunks?.Length != originalCount;
+
+    }
+
+    private static bool RemoveSagaMemory(
+        ref SagaMemory[]? memories,
+        ContextMaterializationEntry removed)
+    {
+
+        if (memories is not { Length: > 0 })
+        {
+
+            return false;
+
+        }
+
+        int originalCount = memories.Length;
+
+        memories = memories
+            .Where(memory => !string.Equals(
+                ComputeContentHash(memory.Content),
+                removed.ContentHash,
+                StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        if (memories.Length == 0)
+        {
+
+            memories = null;
+
+        }
+
+        return memories?.Length != originalCount;
+
+    }
+
     private async Task<SessionAttachmentRetrievedChunk[]?> RetrieveSessionAttachmentContextAsync(
         PingRequest request,
         Embedding<float>? queryEmbedding,
@@ -4857,6 +5583,23 @@ public sealed class WizardIntelligenceProvider(
         ChatOptions chatOptions,
         ChatClientLease lease,
         PingRequest request,
+        out ContextTokenBreakdown breakdown) =>
+        EnsureContextBudgetWithMaterializations(
+            chatMessages,
+            chatOptions,
+            lease,
+            request,
+            ledger: null,
+            onSemanticDropped: null,
+            out breakdown);
+
+    private Result EnsureContextBudgetWithMaterializations(
+        List<MeAiChatMessage> chatMessages,
+        ChatOptions chatOptions,
+        ChatClientLease lease,
+        PingRequest request,
+        ContextMaterializationLedger? ledger,
+        Func<ContextMaterializationEntry, bool>? onSemanticDropped,
         out ContextTokenBreakdown breakdown)
     {
         int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
@@ -4872,6 +5615,22 @@ public sealed class WizardIntelligenceProvider(
                     context.ReservedAnswerTokens,
                     context.ReservedReasoningTokens))
                 .TotalTokens;
+
+        while (ledger is not null
+            && onSemanticDropped is not null
+            && Count(chatMessages) > contextWindowLimit)
+        {
+
+            ContextMaterializationEntry? removed = ledger.DropLowestPrioritySemantic();
+
+            if (removed is null || !onSemanticDropped(removed))
+            {
+
+                break;
+
+            }
+
+        }
 
         _ = TurnContextGuards.TryTrimOldestToolExchanges(
             chatMessages,
@@ -5601,6 +6360,9 @@ public sealed class WizardIntelligenceProvider(
         request.AttachedFiles is { Count: > 0 }
         || request.ScryingFoci is { Count: > 0 }
         || request.AttachmentReferences is { Count: > 0 };
+
+    private static int EstimateMaterializedTokens(long materializedBytes) =>
+        int.CreateSaturating((Math.Max(0L, materializedBytes) + 3L) / 4L);
 
     private bool TryValidateAttachedFiles(PingRequest request, out Error error)
     {

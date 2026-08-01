@@ -19,12 +19,15 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 public sealed class ModelTokenEstimator : IModelTokenEstimator
 {
     private const int DefaultPerToolOverheadTokens = 8;
+
     private const int DefaultProviderFramingTokens = 3;
+
     private const int DefaultStopTokenOverheadTokens = 1;
 
     private static readonly BoundedLruCache<TextTokenCacheKey, int> TextTokenCache = new(4096);
 
     private readonly InferenceTokenizerResolver _tokenizerResolver;
+
     private readonly Func<ArcanumSettings> _getSettings;
 
     public ModelTokenEstimator(
@@ -142,6 +145,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
                     profile,
                     tokenizer);
             }
+
             if (message.AdditionalProperties is { Count: > 0 } messageProperties)
             {
                 AddText(
@@ -152,6 +156,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
                     tokenizer,
                     forceEstimated: true);
             }
+
             if (message.RawRepresentation is { } rawMessage)
             {
                 AddText(
@@ -420,6 +425,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
                 ContextTokenSource.WorkspaceRag,
                 ContextTokenSource.AttachmentRag,
                 ContextTokenSource.ExplicitAttachments,
+                ContextTokenSource.RefreshedFiles,
             ];
             foreach (ContextTokenSource candidate in reductionOrder)
             {
@@ -484,6 +490,11 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
             return ContextTokenSource.AttachmentRag;
         }
 
+        if (heading.StartsWith("### Retrieved Session Attachment Context", StringComparison.OrdinalIgnoreCase))
+        {
+            return ContextTokenSource.AttachmentRag;
+        }
+
         if (heading.StartsWith("### Attached Files", StringComparison.OrdinalIgnoreCase))
         {
             return ContextTokenSource.ExplicitAttachments;
@@ -522,13 +533,8 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
         ResolvedModelTokenizationProfile profile,
         Tokenizer tokenizer)
     {
-        ContextTokenSource metadataSource = content is FunctionCallContent or FunctionResultContent
-            ? ContextTokenSource.Tools
-            : content is DataContent or UriContent
-                ? ContextTokenSource.ExplicitAttachments
-                : currentPrompt
-                    ? ContextTokenSource.CurrentPrompt
-                    : ContextTokenSource.History;
+        ContextTokenSource metadataSource = ResolveContentSource(content, currentPrompt);
+
         if (content.AdditionalProperties is { Count: > 0 } contentProperties)
         {
             AddText(
@@ -539,6 +545,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
                 tokenizer,
                 forceEstimated: true);
         }
+
         if (content.RawRepresentation is { } rawContent)
         {
             AddText(
@@ -555,7 +562,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
             case TextContent text:
                 AddText(
                     estimates,
-                    currentPrompt ? ContextTokenSource.CurrentPrompt : ContextTokenSource.History,
+                    metadataSource,
                     text.Text,
                     profile,
                     tokenizer);
@@ -615,6 +622,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
             case DataContent data:
                 EstimateBinary(
                     estimates,
+                    metadataSource,
                     data.MediaType,
                     data.Data.Length,
                     profile);
@@ -625,7 +633,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
                 {
                     Add(
                         estimates,
-                        ContextTokenSource.ExplicitAttachments,
+                        metadataSource,
                         profile.UnknownImageReserveTokens,
                         TokenEstimateClassification.Unknown,
                         Math.Min(profile.Confidence, 0.5d));
@@ -634,7 +642,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
                 {
                     AddText(
                         estimates,
-                        ContextTokenSource.ExplicitAttachments,
+                        metadataSource,
                         uri.Uri?.ToString(),
                         profile,
                         tokenizer,
@@ -646,7 +654,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
             default:
                 AddText(
                     estimates,
-                    currentPrompt ? ContextTokenSource.CurrentPrompt : ContextTokenSource.History,
+                    metadataSource,
                     content.ToString(),
                     profile,
                     tokenizer,
@@ -657,6 +665,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
 
     private static void EstimateBinary(
         Dictionary<ContextTokenSource, MutableEstimate> estimates,
+        ContextTokenSource source,
         string? mediaType,
         int byteLength,
         ResolvedModelTokenizationProfile profile)
@@ -666,12 +675,47 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
             : Math.Max(profile.UnknownImageReserveTokens, (byteLength + 2) / 3);
         Add(
             estimates,
-            ContextTokenSource.ExplicitAttachments,
+            source,
             reserve,
             IsImage(mediaType)
                 ? TokenEstimateClassification.Unknown
                 : TokenEstimateClassification.Estimated,
             Math.Min(profile.Confidence, 0.5d));
+    }
+
+    private static ContextTokenSource ResolveContentSource(
+        AIContent content,
+        bool currentPrompt)
+    {
+
+        if (content.AdditionalProperties is { } properties
+            && properties.TryGetValue("arcanum.context_source", out object? value))
+        {
+
+            if (string.Equals(value?.ToString(), "refreshedFile", StringComparison.Ordinal))
+            {
+
+                return ContextTokenSource.RefreshedFiles;
+
+            }
+
+            if (string.Equals(value?.ToString(), "explicitAttachment", StringComparison.Ordinal))
+            {
+
+                return ContextTokenSource.ExplicitAttachments;
+
+            }
+
+        }
+
+        return content is FunctionCallContent or FunctionResultContent
+            ? ContextTokenSource.Tools
+            : content is DataContent or UriContent
+                ? ContextTokenSource.ExplicitAttachments
+                : currentPrompt
+                    ? ContextTokenSource.CurrentPrompt
+                    : ContextTokenSource.History;
+
     }
 
     private static void EstimateTools(
@@ -787,6 +831,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
             tokenCount = tokenizer.CountTokens(text);
             TextTokenCache.Set(key, tokenCount);
         }
+
         if (profile.Type == ModelTokenizationProfileType.UnknownFallback)
         {
             tokenCount = Math.Max(tokenCount, Encoding.UTF8.GetByteCount(text));

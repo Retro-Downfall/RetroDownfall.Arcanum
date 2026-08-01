@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -150,6 +151,80 @@ public sealed class SystemPromptBuilderTests
         Assert.Contains("#### notes.txt", prompt, StringComparison.Ordinal);
 
         Assert.DoesNotContain("[None]", prompt.Split("## CONTEXT")[0], StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+
+    public void Build_WithRetrievedAttachmentChunks_UsesRequiredOrderingAndUntrustedMetadata()
+    {
+
+        Guid attachmentId = Guid.NewGuid();
+
+        string prompt = SystemPromptBuilder.Build(
+            new PingRequest("hello"),
+            codexContent: null,
+            attachedFiles: [new AttachedFileDto("notes.txt", "explicit content")],
+            semanticContext:
+            [
+                new SemanticContextChunk("src/App.cs", 0, 1, 0.91f, "workspace content"),
+            ],
+            sessionAttachmentsIndex:
+            [
+                new SessionAttachmentIndexItem(
+                    "notes",
+                    "notes.txt",
+                    [3],
+                    SessionAttachmentKind.Text,
+                    180),
+            ],
+            sessionAttachmentContext:
+            [
+                new SessionAttachmentRetrievedChunk(
+                    "chunk-1",
+                    Guid.NewGuid(),
+                    attachmentId,
+                    "notes",
+                    3,
+                    "unsafe\nname.txt",
+                    "text/plain",
+                    "abc123",
+                    4,
+                    100,
+                    180,
+                    8,
+                    12,
+                    "retrieved ``` content",
+                    0.93f),
+            ]);
+
+        int explicitIndex = prompt.IndexOf("### Attached Files for this Turn", StringComparison.Ordinal);
+
+        int attachmentRagIndex = prompt.IndexOf("### Retrieved Session Attachment Context", StringComparison.Ordinal);
+
+        int attachmentIndex = prompt.IndexOf("### Session Attachments Index", StringComparison.Ordinal);
+
+        int workspaceRagIndex = prompt.IndexOf("### Semantic Context (Retrieved Codebase)", StringComparison.Ordinal);
+
+        Assert.True(explicitIndex < attachmentRagIndex);
+
+        Assert.True(attachmentRagIndex < attachmentIndex);
+
+        Assert.True(attachmentIndex < workspaceRagIndex);
+
+        Assert.Contains($"attachment-id: {attachmentId}", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("logical-key: notes", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("version: 3", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("chunk/range: 5; chars 100-180; lines 8-12", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("UNTRUSTED DATA", prompt, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("unsafe\nname.txt", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("````", prompt, StringComparison.Ordinal);
 
     }
 

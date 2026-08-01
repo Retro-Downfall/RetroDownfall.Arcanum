@@ -50,6 +50,9 @@ public enum ContextTokenSource
     [JsonStringEnumMemberName("explicitAttachments")]
     ExplicitAttachments,
 
+    [JsonStringEnumMemberName("refreshedFiles")]
+    RefreshedFiles,
+
     [JsonStringEnumMemberName("currentPrompt")]
     CurrentPrompt,
 
@@ -145,6 +148,17 @@ public sealed record ContextTokenBreakdown
     public long? EstimationVarianceTokens { get; init; }
 
     public bool? ProviderReportedInputValid { get; init; }
+
+    public int HistoryTokens => Source(ContextTokenSource.History).TokenCount;
+
+    public int ExplicitAttachmentTokens =>
+        Source(ContextTokenSource.ExplicitAttachments).TokenCount;
+
+    public int RefreshedFileTokens => Source(ContextTokenSource.RefreshedFiles).TokenCount;
+
+    public int AttachmentRagTokens => Source(ContextTokenSource.AttachmentRag).TokenCount;
+
+    public int WorkspaceRagTokens => Source(ContextTokenSource.WorkspaceRag).TokenCount;
 
     public TokenEstimate Source(ContextTokenSource source)
     {

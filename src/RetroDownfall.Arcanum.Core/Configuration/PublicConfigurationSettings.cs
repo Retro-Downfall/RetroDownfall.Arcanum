@@ -166,6 +166,12 @@ public sealed record AttachmentIndexingIntegrationSettings
 
     public int MaxRetrievedChunks { get; set; } = 5;
 
+    public int MaxRetrievedAttachments { get; set; } = 4;
+
+    public int MaxRetrievedBytes { get; set; } = 256 * 1024;
+
+    public int MaxRetrievedTokens { get; set; } = 32 * 1024;
+
 }
 
 /// <summary>

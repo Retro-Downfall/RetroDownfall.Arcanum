@@ -50,6 +50,27 @@ work only: it records/delays indexing and never fails the logical turn. Default 
 turns uses only the newest Bound version for each logical key in the same session; older indexed
 versions remain available only through explicit historical search.
 
+## 5.1 Unified per-turn materialization ledger
+
+The logical turn owns exactly one in-memory `ContextMaterializationLedger`; buffered and streaming
+paths use the same instance and the same model/tool loop. Its stable key combines source kind,
+opaque source id, version/content hash, and whole/chunk range. It records origin, label, hash,
+estimated tokens, bytes, trust, injected state, and provider round for current attachments,
+attachment references, context pins, `attach_session_file`, `refresh_session_file`, attachment RAG,
+workspace RAG, and Saga.
+
+Admission order is explicit-first: current attachment → attachment reference → context pin → model
+attach → model refresh → attachment RAG → workspace RAG → Saga. Attachment semantic limits are
+chunks, represented attachments, UTF-8 bytes, estimated tokens, and similarity. Identical
+content/ranges are injected once. A whole explicit version removes same-version semantic chunks; a
+refresh also removes older versions before the next provider call. Failed materialization does not
+enter the ledger, and turn finalization clears it.
+
+Initial DATA ordering is `Attached Files for this Turn` → `Retrieved Session Attachment Context` →
+`Session Attachments Index` → workspace semantic context. Every retrieved chunk includes sanitized
+filename, logical key, version, opaque attachment id, character/line range, hash, an explicit
+untrusted-DATA warning, and an adaptive fence.
+
 ## 8. Transcript and injection order
 
 For a model response containing several calls, Arcanum appends every assistant-call/tool-result pair
@@ -66,7 +87,7 @@ flowchart TD
     E --> F{"Any validated attachment content queued?"}
     F -- Yes --> G["Append one User message with all queued content"]
     F -- No --> H["Continue without attachment extras"]
-    G --> I["Fresh context and cost admission"]
+    G --> I["Reconcile ledger; fresh context and cost admission"]
     H --> I
     I --> J["Next IModelCallExecutor request"]
 ```
@@ -79,7 +100,9 @@ pair an untrusted notice with `DataContent` and are never truncated.
 Expected unsafe/unavailable cases return a structured tool result and no content. Unexpected
 post-processing exceptions follow the shared mode policy: streaming invocation failures are
 tolerated with `toolError` plus a synthetic result, while buffered behavior follows
-`TolerateToolFailures`. A successful refresh emits native `attachmentRefreshed` observability after
+`TolerateToolFailures`. Before every provider call, including structured-output correction, context
+admission drops Saga, workspace RAG, then attachment RAG before complete tool exchanges; explicit
+accepted files are never dropped and overflow returns `Hub.ContextBudgetExceeded`. A successful refresh emits native `attachmentRefreshed` observability after
 its `toolResult`; OpenAI projections ignore that native-only event.
 
 ## 12. Command Center context UI rendering

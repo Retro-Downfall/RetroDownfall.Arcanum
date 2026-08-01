@@ -26,7 +26,8 @@ public static class SessionAttachmentTurnService
         IndexItems: [],
         RehydratedContents: [],
         PendingTurnId: null,
-        ErrorMessage: null);
+        ErrorMessage: null,
+        ExplicitMaterializations: []);
 
     /// <summary>
     /// When <see cref="AttachmentsSettings.Enabled"/> is false, returns an empty preparation.
@@ -90,11 +91,14 @@ public static class SessionAttachmentTurnService
             string? effectivePending = sessionId is null ? pendingTurnId : null;
             Guid? entryId = turnEntryId;
             HashSet<Guid> explicitlyVisibleAttachmentIds = [];
+            List<SessionAttachmentExplicitMaterialization> explicitMaterializations = [];
 
             if (request.AttachedFiles is { Count: > 0 })
             {
-                foreach (AttachedFileDto file in request.AttachedFiles)
+                for (int attachedFileIndex = 0; attachedFileIndex < request.AttachedFiles.Count; attachedFileIndex++)
                 {
+                    AttachedFileDto file = request.AttachedFiles[attachedFileIndex];
+
                     string nameHint = Path.GetFileName(file.RelativePath);
 
                     if (string.IsNullOrWhiteSpace(nameHint))
@@ -119,6 +123,13 @@ public static class SessionAttachmentTurnService
                             cancellationToken)
                         .ConfigureAwait(false);
                     explicitlyVisibleAttachmentIds.Add(persisted.Id);
+
+                    explicitMaterializations.Add(
+                        new SessionAttachmentExplicitMaterialization(
+                            persisted,
+                            ContextMaterializationSourceKind.CurrentTurnAttachment,
+                            [],
+                            attachedFileIndex));
                 }
             }
 
@@ -160,6 +171,13 @@ public static class SessionAttachmentTurnService
                             cancellationToken)
                         .ConfigureAwait(false);
                     explicitlyVisibleAttachmentIds.Add(persisted.Id);
+
+                    explicitMaterializations.Add(
+                        new SessionAttachmentExplicitMaterialization(
+                            persisted,
+                            ContextMaterializationSourceKind.CurrentTurnAttachment,
+                            [],
+                            ScryingFocusIndex: i));
                 }
             }
 
@@ -196,6 +214,8 @@ public static class SessionAttachmentTurnService
 
                     explicitlyVisibleAttachmentIds.Add(record.Id);
 
+                    List<AIContent> referenceContents = [];
+
                     operation = "read-reference";
 
                     ReadOnlyMemory<byte> bytes = await store
@@ -231,9 +251,21 @@ public static class SessionAttachmentTurnService
                             imageLabel = "image";
                         }
 
-                        rehydrated.Add(new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(imageLabel)));
+                        referenceContents.Add(
+                            new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(imageLabel))
+                            {
 
-                        rehydrated.Add(new DataContent(bytes, record.MimeType));
+                                AdditionalProperties = ExplicitAttachmentContextProperties(),
+
+                            });
+
+                        referenceContents.Add(
+                            new DataContent(bytes, record.MimeType)
+                            {
+
+                                AdditionalProperties = ExplicitAttachmentContextProperties(),
+
+                            });
                     }
                     else
                     {
@@ -254,8 +286,22 @@ public static class SessionAttachmentTurnService
                             label = "attachment";
                         }
 
-                        rehydrated.Add(new TextContent(SystemPromptBuilder.FormatUntrusted(label, text)));
+                        referenceContents.Add(
+                            new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))
+                            {
+
+                                AdditionalProperties = ExplicitAttachmentContextProperties(),
+
+                            });
                     }
+
+                    rehydrated.AddRange(referenceContents);
+
+                    explicitMaterializations.Add(
+                        new SessionAttachmentExplicitMaterialization(
+                            record,
+                            ContextMaterializationSourceKind.ExplicitAttachmentReference,
+                            referenceContents));
                 }
             }
 
@@ -290,7 +336,8 @@ public static class SessionAttachmentTurnService
                 rehydrated,
                 effectivePending,
                 ErrorMessage: null,
-                visibleAttachmentIds);
+                visibleAttachmentIds,
+                explicitMaterializations);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -370,6 +417,14 @@ public static class SessionAttachmentTurnService
 
     }
 
+    private static AdditionalPropertiesDictionary ExplicitAttachmentContextProperties() =>
+        new()
+        {
+
+            ["arcanum.context_source"] = "explicitAttachment",
+
+        };
+
     /// <summary>
     /// Obsolete wrapper — prefer <see cref="Utf8Truncation.TruncateUtf8BytesToCodepointBoundary"/>.
     /// </summary>
@@ -388,4 +443,12 @@ public sealed record SessionAttachmentTurnPreparation(
     IReadOnlyList<AIContent> RehydratedContents,
     string? PendingTurnId,
     string? ErrorMessage,
-    IReadOnlySet<Guid>? VisibleAttachmentIds = null);
+    IReadOnlySet<Guid>? VisibleAttachmentIds = null,
+    IReadOnlyList<SessionAttachmentExplicitMaterialization>? ExplicitMaterializations = null);
+
+public sealed record SessionAttachmentExplicitMaterialization(
+    SessionAttachmentRecord Record,
+    ContextMaterializationSourceKind SourceKind,
+    IReadOnlyList<AIContent> Contents,
+    int? AttachedFileIndex = null,
+    int? ScryingFocusIndex = null);

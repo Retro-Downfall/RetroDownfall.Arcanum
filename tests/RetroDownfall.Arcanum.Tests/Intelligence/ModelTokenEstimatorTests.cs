@@ -189,6 +189,8 @@ public sealed class ModelTokenEstimatorTests
             public sealed class Widget {}
             ### Session Attachments Index
             - design.md versions=1
+            ### Retrieved Session Attachment Context
+            attachment excerpt
             ### Attached Files for this Turn
             launch checklist
             ### Active Operational Spell (review)
@@ -217,6 +219,71 @@ public sealed class ModelTokenEstimatorTests
         Assert.True(attachment.TokenCount >= 2_048);
         Assert.Equal(TokenEstimateClassification.Unknown, attachment.Classification);
         Assert.Equal(TokenEstimateClassification.Unknown, breakdown.OverallClassification);
+    }
+
+    [Fact]
+
+    public void EstimateContext_ReportsRequiredContextSourceTelemetryFields()
+    {
+
+        TextContent refreshed = new("refreshed attachment bytes")
+        {
+
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+
+                ["arcanum.context_source"] = "refreshedFile",
+
+            },
+
+        };
+
+        TextContent explicitAttachment = new("explicit attachment bytes")
+        {
+
+            AdditionalProperties = new AdditionalPropertiesDictionary
+            {
+
+                ["arcanum.context_source"] = "explicitAttachment",
+
+            },
+
+        };
+
+        ContextTokenBreakdown breakdown = CreateEstimator().EstimateContext(
+            new ModelTokenizationRequest(
+                Provider("gpt-4o"),
+                "gpt-4o",
+                [
+                    new ChatMessage(ChatRole.Assistant, "history"),
+                    new ChatMessage(ChatRole.User, [explicitAttachment, refreshed]),
+                ],
+                new ChatOptions(),
+                ReservedAnswerTokens: 0,
+                ReservedReasoningTokens: 0));
+
+        Assert.True(breakdown.HistoryTokens > 0);
+
+        Assert.True(breakdown.RefreshedFileTokens > 0);
+
+        Assert.True(breakdown.ExplicitAttachmentTokens > 0);
+
+        Assert.Equal(
+            breakdown.Source(ContextTokenSource.RefreshedFiles).TokenCount,
+            breakdown.RefreshedFileTokens);
+
+        Assert.Equal(
+            breakdown.Source(ContextTokenSource.ExplicitAttachments).TokenCount,
+            breakdown.ExplicitAttachmentTokens);
+
+        Assert.Equal(
+            breakdown.Source(ContextTokenSource.AttachmentRag).TokenCount,
+            breakdown.AttachmentRagTokens);
+
+        Assert.Equal(
+            breakdown.Source(ContextTokenSource.WorkspaceRag).TokenCount,
+            breakdown.WorkspaceRagTokens);
+
     }
 
     [Fact]

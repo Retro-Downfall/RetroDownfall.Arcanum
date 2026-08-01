@@ -484,6 +484,12 @@ public static class ArcanumSettingClamps
 
     public static int EmbeddingsAttachmentMaxRetrievedChunks(int value) => Math.Clamp(value, 1, 50);
 
+    public static int EmbeddingsAttachmentMaxRetrievedAttachments(int value) => Math.Clamp(value, 1, 100);
+
+    public static int EmbeddingsAttachmentMaxRetrievedBytes(int value) => Math.Clamp(value, 1_024, 16 * 1024 * 1024);
+
+    public static int EmbeddingsAttachmentMaxRetrievedTokens(int value) => Math.Clamp(value, 128, 1024 * 1024);
+
     public static int EmbeddingsSagaMaxMemoriesPerSession(int value) => Math.Clamp(value, 1, 1_000);
 
     public static int EmbeddingsSagaMaxMemoriesTotal(int value) => Math.Clamp(value, 100, 1_000_000);

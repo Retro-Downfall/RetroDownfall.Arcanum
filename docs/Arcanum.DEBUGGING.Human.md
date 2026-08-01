@@ -109,8 +109,17 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     formats become `NotEligible`, and no partial chunks survive dimension/provider failure. For a
     retrieval probe, inspect `SessionAttachmentRetrievalService.SearchAsync()` and verify its scope
     column is `RetrievalScope` for latest-only search or `SessionId` only for explicit historical
-    search. Queue overflow must return without failing attachment creation; reconciliation should
-    rediscover the missing Bound row.
+    search. Continue through `AcceptAttachmentRagMaterializations()` and inspect the single
+    `ContextMaterializationLedger`: session ids must match; explicit whole versions must suppress
+    semantic chunks; configured chunk/attachment/byte/token bounds must reject excess results; and
+    filenames/ranges must render under `### Retrieved Session Attachment Context` as adaptive-fenced
+    untrusted DATA. On a later attach/refresh tool call, `ReconcileSuppressedSemanticContext()` must
+    rebuild the active system prompt before both buffered and streaming continuation calls. Under
+    context pressure, verify Saga, workspace RAG, and attachment RAG disappear in that order while
+    accepted explicit files remain and complete tool exchanges stay paired. `ContextTokenBreakdown`
+    should report history, explicit-attachment, refreshed-file, attachment-RAG, and workspace-RAG
+    token fields. Queue overflow must return without failing attachment creation; reconciliation
+    should rediscover the missing Bound row.
 14. **Trace Workspace/Campaign CLI mapping:** run `arcanum workspace current` inside a registered
     root, break in `WorkspaceCommands.Current()`, and compare its deepest containing Workspace and
     Campaign independently. Continue through `ResolveWorkspaceAsync()` for a file/search/index

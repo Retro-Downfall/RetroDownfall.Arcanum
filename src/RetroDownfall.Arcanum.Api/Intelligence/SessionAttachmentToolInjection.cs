@@ -79,8 +79,18 @@ public static class SessionAttachmentToolInjection
 
             contents =
             [
-                new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(label)),
-                new DataContent(bytes, mime),
+                new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(label))
+                {
+
+                    AdditionalProperties = ExplicitAttachmentContextProperties(),
+
+                },
+                new DataContent(bytes, mime)
+                {
+
+                    AdditionalProperties = ExplicitAttachmentContextProperties(),
+
+                },
             ];
         }
         else
@@ -102,10 +112,20 @@ public static class SessionAttachmentToolInjection
 
             string label = FrameLabel(record);
 
-            contents = [new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))];
+            contents =
+            [
+                new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))
+                {
+
+                    AdditionalProperties = ExplicitAttachmentContextProperties(),
+
+                },
+            ];
         }
 
-        if (!SessionAttachmentTurnBudget.TryConsumeAndMarkInjected(record.LogicalKey, record.Version))
+        if (!TryAcceptToolMaterialization(
+                record,
+                ContextMaterializationSourceKind.AttachSessionFile))
         {
             return null;
         }
@@ -148,8 +168,18 @@ public static class SessionAttachmentToolInjection
 
             contents =
             [
-                new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(label)),
-                new DataContent(bytes, record.MimeType),
+                new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(label))
+                {
+
+                    AdditionalProperties = RefreshedContextProperties(),
+
+                },
+                new DataContent(bytes, record.MimeType)
+                {
+
+                    AdditionalProperties = RefreshedContextProperties(),
+
+                },
             ];
         }
         else
@@ -158,13 +188,107 @@ public static class SessionAttachmentToolInjection
                 bytes,
                 ArcanumSettingClamps.MaxAttachFileSizeBytes(
                     ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes));
-            contents = [new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))];
+            contents =
+            [
+                new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))
+                {
+
+                    AdditionalProperties = RefreshedContextProperties(),
+
+                },
+            ];
         }
 
-        return SessionAttachmentTurnBudget.TryConsumeAndMarkInjected(record.LogicalKey, record.Version)
+        return TryAcceptToolMaterialization(
+                record,
+                ContextMaterializationSourceKind.RefreshSessionFile)
             ? contents
             : null;
     }
+
+    private static bool TryAcceptToolMaterialization(
+        SessionAttachmentRecord record,
+        ContextMaterializationSourceKind sourceKind)
+    {
+
+        ContextMaterializationLedger? ledger = ContextMaterializationLedgerAmbient.Ledger;
+
+        if (ledger is null)
+        {
+
+            return SessionAttachmentTurnBudget.TryConsumeAndMarkInjected(
+                record.LogicalKey,
+                record.Version);
+
+        }
+
+        if (SessionAttachmentTurnBudget.Remaining <= 0)
+        {
+
+            return false;
+
+        }
+
+        ContextMaterializationEntry entry = ledger.Accept(
+            new ContextMaterializationCandidate(
+                record.SessionId,
+                sourceKind,
+                record.Id.ToString("N"),
+                record.Version.ToString(CultureInfo.InvariantCulture),
+                record.Version,
+                ContextMaterializationRange.Whole,
+                ContextMaterializationOrigin.ModelRequested,
+                FrameLabel(record),
+                record.ContentSha256,
+                EstimatedTokens: EstimateTokens(record.ByteLength),
+                MaterializedBytes: int.CreateSaturating(record.ByteLength),
+                ContextMaterializationTrust.UntrustedData),
+            materialized: true);
+
+        if (!entry.Accepted || !SessionAttachmentTurnBudget.TryConsume())
+        {
+
+            return false;
+
+        }
+
+        if (record.Source is
+            {
+
+                Kind: AttachmentSourceKind.WorkspaceFile,
+                WorkspaceRelativePath: { Length: > 0 } workspaceRelativePath,
+
+            })
+        {
+
+            ledger.RegisterExplicitWorkspaceSource(workspaceRelativePath);
+
+        }
+
+        return ledger.TryMarkInjected(
+            entry.Identity,
+            ContextMaterializationLedgerAmbient.ProviderRound);
+
+    }
+
+    private static int EstimateTokens(long materializedBytes) =>
+        int.CreateSaturating((Math.Max(0L, materializedBytes) + 3L) / 4L);
+
+    private static AdditionalPropertiesDictionary RefreshedContextProperties() =>
+        new()
+        {
+
+            ["arcanum.context_source"] = "refreshedFile",
+
+        };
+
+    private static AdditionalPropertiesDictionary ExplicitAttachmentContextProperties() =>
+        new()
+        {
+
+            ["arcanum.context_source"] = "explicitAttachment",
+
+        };
 
     private static string FrameLabel(SessionAttachmentRecord record)
     {

@@ -217,6 +217,9 @@ recursion cap and per-call token/cost/turn delegation are code-owned safety requ
 | `integrations.embeddings.attachmentIndexing.retryDelaySeconds` | `int`, `5` | 1–300 | Delay between transient retries. |
 | `integrations.embeddings.attachmentIndexing.processingTimeoutSeconds` | `int`, `60` | 5–600 | Per-attempt wall-clock bound. |
 | `integrations.embeddings.attachmentIndexing.maxRetrievedChunks` | `int`, `5` | 1–50 | Maximum attachment excerpts injected into a turn. |
+| `integrations.embeddings.attachmentIndexing.maxRetrievedAttachments` | `int`, `4` | 1–100 | Maximum distinct session attachments represented by semantic excerpts in one turn. |
+| `integrations.embeddings.attachmentIndexing.maxRetrievedBytes` | `int`, `262,144` | 1,024–16,777,216 | Maximum UTF-8 bytes of semantically retrieved attachment excerpts in one turn. |
+| `integrations.embeddings.attachmentIndexing.maxRetrievedTokens` | `int`, `32,768` | 128–1,048,576 | Maximum provider-profile estimated tokens consumed by attachment semantic excerpts in one turn. |
 | `integrations.mcp.allowedHttpHosts` | `string[]`, `[]` | hostnames | Explicit plaintext-HTTP MCP exceptions; empty permits none and HTTPS remains the default. |
 | `integrations.webResearch.searchProvider` | `string`, `"perplexity"` | nonblank registered provider name | Provider used by `web_search`. |
 | `integrations.webResearch.perplexityModel` | `string`, `"sonar"` | `sonar` or `sonar-pro` | Perplexity Sonar model used for synthesized search. |

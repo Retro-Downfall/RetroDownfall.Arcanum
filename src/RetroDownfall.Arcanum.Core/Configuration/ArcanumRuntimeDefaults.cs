@@ -327,6 +327,9 @@ public static class ArcanumRuntimeSettings
                 RetryDelaySeconds = attachmentIndexing.RetryDelaySeconds,
                 ProcessingTimeoutSeconds = attachmentIndexing.ProcessingTimeoutSeconds,
                 MaxRetrievedChunks = attachmentIndexing.MaxRetrievedChunks,
+                MaxRetrievedAttachments = attachmentIndexing.MaxRetrievedAttachments,
+                MaxRetrievedBytes = attachmentIndexing.MaxRetrievedBytes,
+                MaxRetrievedTokens = attachmentIndexing.MaxRetrievedTokens,
             },
             SagaEnabled = sagaEnabled,
             Saga = defaults.Saga with

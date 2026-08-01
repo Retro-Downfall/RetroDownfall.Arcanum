@@ -1,0 +1,564 @@
+namespace RetroDownfall.Arcanum.Api.Intelligence;
+
+/// <summary>
+/// Describes every context source that may materialize during one logical inference turn.
+/// The ordinal values are the deterministic admission priority: lower values outrank higher ones.
+/// </summary>
+public enum ContextMaterializationSourceKind
+{
+
+    CurrentTurnAttachment = 0,
+
+    ExplicitAttachmentReference = 1,
+
+    ExplicitContextPin = 2,
+
+    AttachSessionFile = 3,
+
+    RefreshSessionFile = 4,
+
+    AttachmentRag = 5,
+
+    WorkspaceRag = 6,
+
+    SagaMemory = 7,
+
+}
+
+public enum ContextMaterializationOrigin
+{
+
+    Explicit,
+
+    ModelRequested,
+
+    Semantic,
+
+}
+
+public enum ContextMaterializationTrust
+{
+
+    UntrustedData,
+
+    TrustedSystem,
+
+}
+
+public enum ContextMaterializationRejection
+{
+
+    None,
+
+    MaterializationFailed,
+
+    SessionMismatch,
+
+    DuplicateIdentity,
+
+    DuplicateContentRange,
+
+    ExplicitSourceAlreadyMaterialized,
+
+    StaleVersion,
+
+    RetrievedChunkLimit,
+
+    RetrievedAttachmentLimit,
+
+    RetrievedByteLimit,
+
+    RetrievedTokenLimit,
+
+}
+
+public readonly record struct ContextMaterializationRange(int Start, int End)
+{
+
+    public static ContextMaterializationRange Whole { get; } = new(-1, -1);
+
+    public bool IsWhole => Start < 0 && End < 0;
+
+}
+
+public readonly record struct ContextMaterializationIdentity(
+    ContextMaterializationSourceKind SourceKind,
+    string SourceId,
+    string VersionOrContentHash,
+    ContextMaterializationRange Range);
+
+public sealed record ContextMaterializationLimits(
+    int MaxRetrievedChunks,
+    int MaxRetrievedAttachments,
+    int MaxRetrievedBytes,
+    int MaxRetrievedTokens);
+
+public sealed record ContextMaterializationCandidate(
+    Guid? SessionId,
+    ContextMaterializationSourceKind SourceKind,
+    string SourceId,
+    string VersionOrContentHash,
+    int? VersionOrdinal,
+    ContextMaterializationRange Range,
+    ContextMaterializationOrigin Origin,
+    string SourceLabel,
+    string ContentHash,
+    int EstimatedTokens,
+    int MaterializedBytes,
+    ContextMaterializationTrust Trust)
+{
+
+    public ContextMaterializationIdentity Identity =>
+        new(SourceKind, SourceId, VersionOrContentHash, Range);
+
+}
+
+public sealed record ContextMaterializationEntry(
+    ContextMaterializationIdentity Identity,
+    Guid? SessionId,
+    ContextMaterializationSourceKind SourceKind,
+    ContextMaterializationOrigin Origin,
+    string SourceLabel,
+    string ContentHash,
+    int EstimatedTokens,
+    int MaterializedBytes,
+    ContextMaterializationTrust Trust,
+    bool Accepted,
+    ContextMaterializationRejection Rejection,
+    bool Injected = false,
+    int? ProviderRound = null,
+    int? VersionOrdinal = null)
+{
+
+    internal static ContextMaterializationEntry FromCandidate(
+        ContextMaterializationCandidate candidate,
+        bool accepted,
+        ContextMaterializationRejection rejection) =>
+        new(
+            candidate.Identity,
+            candidate.SessionId,
+            candidate.SourceKind,
+            candidate.Origin,
+            candidate.SourceLabel,
+            candidate.ContentHash,
+            Math.Max(0, candidate.EstimatedTokens),
+            Math.Max(0, candidate.MaterializedBytes),
+            candidate.Trust,
+            accepted,
+            rejection,
+            VersionOrdinal: candidate.VersionOrdinal);
+
+}
+
+/// <summary>
+/// One non-persisted ledger for a logical turn. It owns cross-path deduplication, semantic
+/// retrieval bounds, version replacement, injection rounds, and semantic-first eviction.
+/// </summary>
+public sealed class ContextMaterializationLedger
+{
+
+    private readonly Guid? _sessionId;
+
+    private readonly ContextMaterializationLimits _limits;
+
+    private readonly List<ContextMaterializationEntry> _entries = [];
+
+    private readonly HashSet<string> _explicitWorkspaceSources = new(StringComparer.Ordinal);
+
+    public ContextMaterializationLedger(
+        Guid? sessionId,
+        ContextMaterializationLimits limits)
+    {
+
+        ArgumentNullException.ThrowIfNull(limits);
+
+        _sessionId = sessionId;
+
+        _limits = new ContextMaterializationLimits(
+            Math.Max(0, limits.MaxRetrievedChunks),
+            Math.Max(0, limits.MaxRetrievedAttachments),
+            Math.Max(0, limits.MaxRetrievedBytes),
+            Math.Max(0, limits.MaxRetrievedTokens));
+
+    }
+
+    public IReadOnlyList<ContextMaterializationEntry> Entries => _entries;
+
+    public ContextMaterializationEntry Accept(
+        ContextMaterializationCandidate candidate,
+        bool materialized)
+    {
+
+        ArgumentNullException.ThrowIfNull(candidate);
+
+        if (!materialized)
+        {
+
+            return Reject(candidate, ContextMaterializationRejection.MaterializationFailed);
+
+        }
+
+        if (_sessionId is { } expectedSession
+            && candidate.SessionId is { } candidateSession
+            && candidateSession != expectedSession)
+        {
+
+            return Reject(candidate, ContextMaterializationRejection.SessionMismatch);
+
+        }
+
+        if (_entries.Any(entry => entry.Identity == candidate.Identity))
+        {
+
+            return Reject(candidate, ContextMaterializationRejection.DuplicateIdentity);
+
+        }
+
+        if (_entries.Any(
+                entry => string.Equals(
+                        entry.ContentHash,
+                        candidate.ContentHash,
+                        StringComparison.OrdinalIgnoreCase)
+                    && entry.Identity.Range == candidate.Range))
+        {
+
+            return Reject(candidate, ContextMaterializationRejection.DuplicateContentRange);
+
+        }
+
+        if (IsStaleAttachmentVersion(candidate))
+        {
+
+            return Reject(candidate, ContextMaterializationRejection.StaleVersion);
+
+        }
+
+        if (candidate.SourceKind == ContextMaterializationSourceKind.AttachmentRag
+            && _entries.Any(entry => ExplicitWholeSourceMatches(entry, candidate)))
+        {
+
+            return Reject(
+                candidate,
+                ContextMaterializationRejection.ExplicitSourceAlreadyMaterialized);
+
+        }
+
+        if (candidate.SourceKind == ContextMaterializationSourceKind.WorkspaceRag
+            && IsExplicitWorkspaceSource(candidate.SourceId))
+        {
+
+            return Reject(
+                candidate,
+                ContextMaterializationRejection.ExplicitSourceAlreadyMaterialized);
+
+        }
+
+        if (candidate.Origin == ContextMaterializationOrigin.Semantic
+            && TryGetSemanticLimitRejection(candidate, out ContextMaterializationRejection rejection))
+        {
+
+            return Reject(candidate, rejection);
+
+        }
+
+        if (candidate.Origin != ContextMaterializationOrigin.Semantic
+            && candidate.Range.IsWhole)
+        {
+
+            RemoveSuppressedAttachmentSemantic(candidate);
+
+        }
+
+        ContextMaterializationEntry accepted = ContextMaterializationEntry.FromCandidate(
+            candidate,
+            accepted: true,
+            ContextMaterializationRejection.None);
+
+        _entries.Add(accepted);
+
+        return accepted;
+
+    }
+
+    public bool TryMarkInjected(
+        ContextMaterializationIdentity identity,
+        int providerRound)
+    {
+
+        int index = _entries.FindIndex(entry => entry.Identity == identity);
+
+        if (index < 0 || _entries[index].Injected)
+        {
+
+            return false;
+
+        }
+
+        _entries[index] = _entries[index] with
+        {
+            Injected = true,
+            ProviderRound = Math.Max(0, providerRound),
+        };
+
+        return true;
+
+    }
+
+    public bool Contains(ContextMaterializationIdentity identity) =>
+        _entries.Any(entry => entry.Identity == identity);
+
+    public void RegisterExplicitWorkspaceSource(string relativePath)
+    {
+
+        string normalized = NormalizeWorkspaceSource(relativePath);
+
+        if (normalized.Length == 0 || !_explicitWorkspaceSources.Add(normalized))
+        {
+
+            return;
+
+        }
+
+        _entries.RemoveAll(
+            entry => entry.SourceKind == ContextMaterializationSourceKind.WorkspaceRag
+                && IsExplicitWorkspaceSource(entry.Identity.SourceId));
+
+    }
+
+    public ContextMaterializationEntry? DropLowestPrioritySemantic()
+    {
+
+        int index = -1;
+
+        for (int i = 0; i < _entries.Count; i++)
+        {
+
+            ContextMaterializationEntry entry = _entries[i];
+
+            if (entry.Origin != ContextMaterializationOrigin.Semantic)
+            {
+
+                continue;
+
+            }
+
+            if (index < 0
+                || entry.SourceKind > _entries[index].SourceKind
+                || entry.SourceKind == _entries[index].SourceKind && i > index)
+            {
+
+                index = i;
+
+            }
+
+        }
+
+        if (index < 0)
+        {
+
+            return null;
+
+        }
+
+        ContextMaterializationEntry removed = _entries[index];
+
+        _entries.RemoveAt(index);
+
+        return removed;
+
+    }
+
+    private bool IsStaleAttachmentVersion(ContextMaterializationCandidate candidate)
+    {
+
+        if (candidate.SourceKind != ContextMaterializationSourceKind.AttachmentRag
+            || candidate.VersionOrdinal is not { } candidateVersion)
+        {
+
+            return false;
+
+        }
+
+        return _entries.Any(
+            entry => entry.SourceKind == ContextMaterializationSourceKind.RefreshSessionFile
+                && string.Equals(entry.Identity.SourceId, candidate.SourceId, StringComparison.Ordinal)
+                && entry.VersionOrdinal is { } currentVersion
+                && currentVersion > candidateVersion);
+
+    }
+
+    private static bool ExplicitWholeSourceMatches(
+        ContextMaterializationEntry entry,
+        ContextMaterializationCandidate candidate) =>
+        entry.Origin != ContextMaterializationOrigin.Semantic
+        && entry.Identity.Range.IsWhole
+        && string.Equals(entry.Identity.SourceId, candidate.SourceId, StringComparison.Ordinal)
+        && string.Equals(
+            entry.Identity.VersionOrContentHash,
+            candidate.VersionOrContentHash,
+            StringComparison.Ordinal);
+
+    private bool IsExplicitWorkspaceSource(string sourceId)
+    {
+
+        int rangeSeparator = sourceId.IndexOf('\u001f', StringComparison.Ordinal);
+
+        string path = rangeSeparator < 0 ? sourceId : sourceId[..rangeSeparator];
+
+        return _explicitWorkspaceSources.Contains(NormalizeWorkspaceSource(path));
+
+    }
+
+    private static string NormalizeWorkspaceSource(string value) =>
+        value.Trim().Replace('\\', '/');
+
+    private void RemoveSuppressedAttachmentSemantic(ContextMaterializationCandidate explicitSource)
+    {
+
+        if (explicitSource.VersionOrdinal is not { } currentVersion)
+        {
+
+            return;
+
+        }
+
+        _entries.RemoveAll(
+            entry => entry.Origin == ContextMaterializationOrigin.Semantic
+                && entry.SourceKind == ContextMaterializationSourceKind.AttachmentRag
+                && string.Equals(entry.Identity.SourceId, explicitSource.SourceId, StringComparison.Ordinal)
+                && entry.VersionOrdinal is { } existingVersion
+                && (existingVersion == currentVersion
+                    || explicitSource.SourceKind == ContextMaterializationSourceKind.RefreshSessionFile
+                        && existingVersion < currentVersion));
+
+    }
+
+    private bool TryGetSemanticLimitRejection(
+        ContextMaterializationCandidate candidate,
+        out ContextMaterializationRejection rejection)
+    {
+
+        if (candidate.SourceKind != ContextMaterializationSourceKind.AttachmentRag)
+        {
+
+            rejection = ContextMaterializationRejection.None;
+
+            return false;
+
+        }
+
+        ContextMaterializationEntry[] semantic = _entries
+            .Where(entry => entry.SourceKind == ContextMaterializationSourceKind.AttachmentRag)
+            .ToArray();
+
+        if (semantic.Length >= _limits.MaxRetrievedChunks)
+        {
+
+            rejection = ContextMaterializationRejection.RetrievedChunkLimit;
+
+            return true;
+
+        }
+
+        int representedAttachments = semantic
+            .Where(entry => entry.SourceKind == ContextMaterializationSourceKind.AttachmentRag)
+            .Select(entry => entry.Identity.SourceId)
+            .Append(candidate.SourceId)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+        if (candidate.SourceKind == ContextMaterializationSourceKind.AttachmentRag
+            && representedAttachments > _limits.MaxRetrievedAttachments)
+        {
+
+            rejection = ContextMaterializationRejection.RetrievedAttachmentLimit;
+
+            return true;
+
+        }
+
+        long bytes = semantic.Sum(static entry => (long)entry.MaterializedBytes)
+            + Math.Max(0, candidate.MaterializedBytes);
+
+        if (bytes > _limits.MaxRetrievedBytes)
+        {
+
+            rejection = ContextMaterializationRejection.RetrievedByteLimit;
+
+            return true;
+
+        }
+
+        long tokens = semantic.Sum(static entry => (long)entry.EstimatedTokens)
+            + Math.Max(0, candidate.EstimatedTokens);
+
+        if (tokens > _limits.MaxRetrievedTokens)
+        {
+
+            rejection = ContextMaterializationRejection.RetrievedTokenLimit;
+
+            return true;
+
+        }
+
+        rejection = ContextMaterializationRejection.None;
+
+        return false;
+
+    }
+
+    private static ContextMaterializationEntry Reject(
+        ContextMaterializationCandidate candidate,
+        ContextMaterializationRejection rejection) =>
+        ContextMaterializationEntry.FromCandidate(candidate, accepted: false, rejection);
+
+}
+
+/// <summary>
+/// Makes the owning turn ledger visible to post-tool attachment materialization without creating
+/// another tool loop or persisting turn-local content state.
+/// </summary>
+public static class ContextMaterializationLedgerAmbient
+{
+
+    private static readonly AsyncLocal<State?> Current = new();
+
+    public static ContextMaterializationLedger? Ledger => Current.Value?.Ledger;
+
+    public static int ProviderRound => Current.Value?.ProviderRound ?? 0;
+
+    public static void Begin(ContextMaterializationLedger ledger)
+    {
+
+        ArgumentNullException.ThrowIfNull(ledger);
+
+        Current.Value = new State(ledger, 0);
+
+    }
+
+    public static void SetProviderRound(int providerRound)
+    {
+
+        if (Current.Value is { } state)
+        {
+
+            state.ProviderRound = Math.Max(0, providerRound);
+
+        }
+
+    }
+
+    public static void End() => Current.Value = null;
+
+    private sealed class State(
+        ContextMaterializationLedger ledger,
+        int providerRound)
+    {
+
+        public ContextMaterializationLedger Ledger { get; } = ledger;
+
+        public int ProviderRound { get; set; } = providerRound;
+
+    }
+
+}
