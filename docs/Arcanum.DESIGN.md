@@ -264,6 +264,9 @@ Single-host failure behavior:
 | POST | `/api/intelligence/human-response` | Submit human-in-the-loop answer. |
 | POST | `/api/intelligence/arsenal` | Spell names, metadata-only `SpellSummary[]`, native tools, and MCP server status. |
 | POST | `/api/intelligence/mana` | Read-only diagnostic Mana (token) counter (`ApiResponse<ManaCountResult>`; body `ManaCountRequest` { `messages`, `prompt`, `model`, `tools` }). |
+| POST | `/api/web/search` | First-class bounded web search (`WebSearchWorkflowRequest` → `ApiResponse<WebSearchWorkflowResult>`; citations and provider usage; §11.27). |
+| POST | `/api/web/browse` | First-class bounded static page read (`WebBrowseWorkflowRequest` → `ApiResponse<WebBrowseWorkflowResult>`; JavaScript mode degrades explicitly when no renderer is configured; §11.27). |
+| POST | `/api/web/research` | Server-owned bounded multi-hop research as NDJSON `WebResearchStreamFrame` lines (limits/progress/result/error; §11.27). |
 | GET | `/api/mcp` | List managed MCP servers (`ApiResponse<McpServerInfo[]>`; §5.6). |
 | GET | `/api/mcp/{name}` | One managed MCP server (`ApiResponse<McpServerInfo>`); optional `workingDirectory` query for disambiguation. |
 | POST | `/api/mcp/{name}/start` | Start one MCP server (`ApiResponse<bool>`); optional `workingDirectory` query. |
@@ -530,6 +533,9 @@ while `cli-context.json.sessionId` is the active-context authority.
 | `doctor` | Environment diagnostics across panels — **System** (version/OS/runtime/TTY/color), **Paths**, **Configuration** (`arcanum.json` parse), **MCP** (`mcp.json`), and a **Tokenizer** smoke test — plus an **API Health** probe (`GET /api/health`) with a code-owned 2-second timeout. A hard-check failure exits **1**; an unreachable or timed-out API is a **non-fatal warning** (still exits 0). Pass `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. No infrastructure services required beyond `IHttpClientFactory`, `ISecretStore`, and `IOptions<ArcanumSettings>`. |
 | `mcp list\|show\|start\|stop\|restart\|reload\|trust\|tools\|invoke` | Authenticated MCP administration over `/api/mcp*`. Safe status projection includes scope, transport, derived trust, lifecycle, tool count, and last error while omitting command/URL/arguments/environment. Server/tool ambiguity uses the picker only on an interactive TTY; redirected/JSON invocations reject deterministically. `--workspace` is the explicit workspace-scope input. |
 | `tool list\|show\|invoke` | Workspace-aware built-in diagnostic discovery via `/api/intelligence/arsenal` and execution via `/api/tools/invoke`. The arsenal projects `IBuiltInToolRegistry.GetToolNames()` so enabled native web tools are included. |
+| `search <query>` | First-class search through `POST /api/web/search`. `--count`, `--freshness day\|week\|month\|year`, repeatable `--include-domain` / `--exclude-domain`, recursive `--json`, `--save`, and `--attach-to-session` preserve typed citations and provider usage without a chat prompt. |
+| `browse <url>` | First-class page read through `POST /api/web/browse`. `--render static\|javascript` makes rendering intent explicit; the current static provider preserves SSRF/redirect/content bounds, while unavailable JavaScript rendering returns an actionable retry with `--render static`. Supports `--json`, `--save`, and `--attach-to-session`. |
+| `research <question>` | Server-owned multi-hop research through NDJSON `POST /api/web/research`. Bounds are visible on stderr before work (`--max-sources`, `--max-hops`, `--token-budget`, optional `--cost-budget`); progress stays on stderr and final terminal/Markdown/JSON content stays on stdout. `--model`, `--continue-session`, `--attach-to-session`, `--save`, and `--format terminal\|markdown\|json` are supported. |
 | `key show` | Prints the stored master API key from the OS credential store (`ISecretStore` → keychain with `security.dat` fallback) to **stderr**. CLI-only, **no HTTP** (§16.3). |
 | `key set` | Stores a master API key into the OS credential store (mirrors to `security.dat`). Argument, stdin, or interactive secret prompt (§16.3). |
 | `use campaign\|workspace\|model\|session <value>` | Validate and select an owner-local active CLI default. Selection never updates a server resource row. |
@@ -2423,8 +2429,36 @@ structured JSON envelopes bounded below the generic tool-result materializer cei
 `web_search` returns a synthesized, untrusted-framed answer, ordered one-based citations, truncation
 metadata, and provider usage. `read_url` returns untrusted-framed Markdown, final URL, title, and
 bounded links. Artifact Attunement applies to both. A legacy spell declaration of `browse_web`
-canonicalizes to `read_url`; `browse_web` remains on direct invoke and the existing CLI only for
-compatibility and is not advertised in new model toolsets.
+canonicalizes to `read_url`; `browse_web` remains only as a direct-invoke compatibility alias and
+is not advertised in new model toolsets. The first-class CLI uses the typed `/api/web/*` workflow
+endpoints rather than exposing the legacy tool schema.
+
+**First-class workflow surface:** `POST /api/web/search` accepts a result/citation count (1–20),
+optional freshness (`day`, `week`, `month`, `year`), and bounded include/exclude domain lists.
+Perplexity receives `search_recency_filter` and a combined `search_domain_filter` (excluded domains
+use the provider's `-domain` notation); the configured citation ceiling remains authoritative.
+`POST /api/web/browse` accepts `static` or `javascript`. Static mode delegates to
+`LocalHttpWebProvider`; JavaScript mode returns **503**
+`WebResearch.JavaScriptRenderingUnavailable` with an explicit static-mode fallback until a
+server renderer is configured. No client-side renderer or egress bypass exists.
+
+`POST /api/web/research` is the only research orchestrator. `WebResearchWorkflowService` validates
+1–20 sources, 1–5 hops, 64–32,768 synthesis tokens, and a nonnegative optional reported-cost
+ceiling. It emits NDJSON `limits`, `progress`, `result`, or `error` frames. Search hops execute on
+the server, citation URLs are deduplicated before at most `maxSources` static reads, and the final
+model call receives a bounded untrusted-data prompt with all tools disabled. The synthesis model,
+token accounting, inference audit (`requestType:research`), and optional existing `SessionId` stay
+inside the host. Reported search-provider cost is checked between hops; no additional hop begins
+after the ceiling is exceeded. Progress stages are `searching`, `fetching`, `rendering`, and
+`synthesizing`.
+
+The CLI reserves stdout for the final payload and stderr for visible limits, progress, save/attach
+receipts, and errors, so piping remains deterministic. Terminal and Markdown outputs contain
+numbered citation references; JSON emits one source-generated `Web*WorkflowResult`. `--save`
+performs a same-directory temporary write followed by atomic replacement. `--attach-to-session`
+persists the final Markdown through `ISessionAttachmentStore` only when attachments are enabled and
+the target session exists. `--continue-session` binds the server synthesis turn to the selected
+session; session selectors use the shared exact-ID/exact-name/unique-prefix rules.
 
 **Providers:** `PerplexityWebProvider` performs one non-streaming
 `POST https://api.perplexity.ai/v1/sonar` call and preserves provider citation indices/order,
@@ -2466,7 +2500,8 @@ bypassed) and infinite client timeout because the linked operation-level deadlin
 **Key types:** `IWebResearchProvider`, `IWebResearchProviderCatalog`, `WebResearchProviderCatalog`,
 `PerplexityWebProvider`, `LocalHttpWebProvider`, `WebResearchCredentialStore`,
 `ArcanumWebSearchTool`, `ArcanumReadUrlTool`, `WebToolResultSerializer`, and
-`WebResearchTelemetry`.
+`WebResearchTelemetry`, plus `WebResearchWorkflowService`, `WebWorkflowEndpoints`,
+`WebWorkflowCommands`, and the `Web*WorkflowRequest` / `Web*WorkflowResult` contracts.
 
 ---
 

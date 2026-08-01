@@ -27,7 +27,16 @@ internal static class ArcanumErrorMapper
             // FeatureDisabled means an operator turned Embeddings off in config, not that the caller
             // lacks permission — 503 (retry later / ask an operator to enable it) fits better than the
             // 403 this used to share with genuine access-control failures below.
-            ErrorCodes.Api.TooManyConnections or ErrorCodes.Embeddings.ProviderUnavailable or ErrorCodes.Embeddings.FeatureDisabled or ErrorCodes.Session.RestQueueFull =>
+            ErrorCodes.Api.TooManyConnections
+                or ErrorCodes.Embeddings.ProviderUnavailable
+                or ErrorCodes.Embeddings.FeatureDisabled
+                or ErrorCodes.Session.RestQueueFull
+                or ErrorCodes.WebResearch.MissingCredential
+                or ErrorCodes.WebResearch.AuthenticationOrCreditsFailed
+                or ErrorCodes.WebResearch.QuotaExhausted
+                or ErrorCodes.WebResearch.ProviderUnavailable
+                or ErrorCodes.WebResearch.UnsupportedOperation
+                or ErrorCodes.WebResearch.JavaScriptRenderingUnavailable =>
                 StatusCodes.Status503ServiceUnavailable,
 
             ErrorCodes.Hub.ContextBudgetExceeded =>
@@ -39,13 +48,13 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Spell.NotFound or ErrorCodes.Prompt.NotFound or ErrorCodes.Campaign.NotFound or ErrorCodes.Session.NotFound or ErrorCodes.Session.EntryNotFound or ErrorCodes.Grimoire.LoreNotFound or ErrorCodes.Apprentice.NotFound or ErrorCodes.Workspace.NotFound or ErrorCodes.Mcp.ServerNotFound or ErrorCodes.Mcp.ToolNotFound or ErrorCodes.Daemon.NotFound or ErrorCodes.Intelligence.HumanPromptNotFound or ErrorCodes.ProvingGrounds.SpellNotFound or ErrorCodes.ProvingGrounds.PromptNotFound or ErrorCodes.Workspace.FileNotFound or ErrorCodes.Workspace.ReplacementNotFound or ErrorCodes.Saga.NotFound or ErrorCodes.Files.NotFound or ErrorCodes.Batches.NotFound or ErrorCodes.Batches.InputFileNotFound =>
                 StatusCodes.Status404NotFound,
 
-            ErrorCodes.Spell.PathNotAllowed or ErrorCodes.Campaign.PathNotAllowed or ErrorCodes.Workspace.PathNotAllowed or ErrorCodes.Workspace.FileWriteDisabled or ErrorCodes.Workspace.AccessDenied or ErrorCodes.WebBrowsing.SsrfBlocked or ErrorCodes.Mcp.DiagnosticBlocked or ErrorCodes.Mcp.WorkspaceNotTrusted =>
+            ErrorCodes.Spell.PathNotAllowed or ErrorCodes.Campaign.PathNotAllowed or ErrorCodes.Workspace.PathNotAllowed or ErrorCodes.Workspace.FileWriteDisabled or ErrorCodes.Workspace.AccessDenied or ErrorCodes.WebBrowsing.SsrfBlocked or ErrorCodes.WebResearch.SsrfBlocked or ErrorCodes.Mcp.DiagnosticBlocked or ErrorCodes.Mcp.WorkspaceNotTrusted =>
                 StatusCodes.Status403Forbidden,
 
-            ErrorCodes.Workspace.FileTooLarge or ErrorCodes.Scrying.ImageTooLarge or ErrorCodes.Files.TooLarge =>
+            ErrorCodes.Workspace.FileTooLarge or ErrorCodes.Scrying.ImageTooLarge or ErrorCodes.Files.TooLarge or ErrorCodes.WebResearch.ResponseTooLarge =>
                 StatusCodes.Status413PayloadTooLarge,
 
-            ErrorCodes.Scrying.VisionNotSupported or ErrorCodes.Scrying.TooManyImages or ErrorCodes.Scrying.UnsupportedMimeType or ErrorCodes.Files.InvalidMimeType or ErrorCodes.Batches.InvalidEndpoint or ErrorCodes.WebBrowsing.InvalidUrl or ErrorCodes.WebBrowsing.TooLarge or ErrorCodes.ClientTools.Disabled or ErrorCodes.ClientTools.TooMany or ErrorCodes.ClientTools.InvalidSchema or ErrorCodes.Guardrails.PiiDetected or ErrorCodes.Guardrails.Blocked =>
+            ErrorCodes.Scrying.VisionNotSupported or ErrorCodes.Scrying.TooManyImages or ErrorCodes.Scrying.UnsupportedMimeType or ErrorCodes.Files.InvalidMimeType or ErrorCodes.Batches.InvalidEndpoint or ErrorCodes.WebBrowsing.InvalidUrl or ErrorCodes.WebBrowsing.TooLarge or ErrorCodes.WebResearch.InvalidUrl or ErrorCodes.WebResearch.RequestRejected or ErrorCodes.ClientTools.Disabled or ErrorCodes.ClientTools.TooMany or ErrorCodes.ClientTools.InvalidSchema or ErrorCodes.Guardrails.PiiDetected or ErrorCodes.Guardrails.Blocked =>
                 StatusCodes.Status400BadRequest,
 
             ErrorCodes.Scrying.FeatureDisabled =>
@@ -66,13 +75,17 @@ internal static class ArcanumErrorMapper
             ErrorCodes.RateLimit.TooManyRequests =>
                 StatusCodes.Status429TooManyRequests,
 
+            ErrorCodes.WebResearch.RateLimited
+                or ErrorCodes.WebResearch.BudgetExceeded =>
+                StatusCodes.Status429TooManyRequests,
+
             ErrorCodes.Budget.Exceeded =>
                 StatusCodes.Status429TooManyRequests,
 
             ErrorCodes.Security.MissingApiKey =>
                 StatusCodes.Status401Unauthorized,
 
-            ErrorCodes.Connection.Timeout or ErrorCodes.WebBrowsing.Timeout or ErrorCodes.Mcp.DiagnosticTimeout =>
+            ErrorCodes.Connection.Timeout or ErrorCodes.WebBrowsing.Timeout or ErrorCodes.WebResearch.Timeout or ErrorCodes.Mcp.DiagnosticTimeout =>
                 StatusCodes.Status504GatewayTimeout,
 
             ErrorCodes.Connection.Unreachable =>

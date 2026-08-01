@@ -129,6 +129,10 @@ public sealed class NativeWebResearchProviderTests : IDisposable
             {
                 Model = " sonar-pro ",
                 MaxCitations = 1,
+                ResultCount = 3,
+                Freshness = "week",
+                IncludeDomains = ["example.test"],
+                ExcludeDomains = ["ads.example.test"],
             });
 
         Assert.True(result.IsSuccess);
@@ -138,6 +142,10 @@ public sealed class NativeWebResearchProviderTests : IDisposable
         Assert.Equal("secret-value", bearer);
         Assert.Contains("\"model\":\"sonar-pro\"", requestJson);
         Assert.Contains("\"stream\":false", requestJson);
+        Assert.Contains("\"search_recency_filter\":\"week\"", requestJson);
+        Assert.Contains(
+            "\"search_domain_filter\":[\"example.test\",\"-ads.example.test\"]",
+            requestJson);
         Assert.Equal("Bounded answer [1] [2]", result.Value.Answer);
         WebCitation citation = Assert.Single(result.Value.Citations);
         Assert.Equal(1, citation.Index);

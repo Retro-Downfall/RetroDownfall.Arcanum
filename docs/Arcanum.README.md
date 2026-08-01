@@ -443,8 +443,28 @@ and `read_url` for bounded static HTTP/HTTPS pages converted to Markdown. `read_
 or embed a browser and does not execute JavaScript; bot-protected and empty JavaScript shells return
 a structured error suggesting `web_search`. Both operations have a strict 15-second overall
 deadline, bounded bodies/results, SSRF protection, untrusted-content framing, and aggregate-only
-usage/token/cost/latency telemetry. The old `browse_web` direct-invoke/CLI behavior remains for
+usage/token/cost/latency telemetry. The old `browse_web` direct-invoke alias remains for
 compatibility but is not advertised in new model toolsets.
+
+The same capabilities are first-class CLI workflows, so no chat prompt or raw tool JSON is needed:
+
+```bash
+arcanum search "current .NET support policy" --count 5 --freshness month
+arcanum search "release notes" --include-domain dotnet.microsoft.com --json
+arcanum browse https://example.com/article --render static --save article.md
+arcanum research "Compare the current proposals" --max-sources 8 --max-hops 3 \
+  --token-budget 2500 --cost-budget 0.25 --format markdown
+```
+
+`search` also accepts repeatable `--include-domain` / `--exclude-domain`. `browse --render
+javascript` reports a clear unavailable-renderer error and recommends `static`; it never silently
+pretends static HTML is rendered JavaScript. `research` prints the selected source/hop/token/cost
+limits and `Searching` / `Fetching` / `Rendering` / `Synthesizing` progress to stderr, while the
+final cited terminal, Markdown, or single JSON payload remains on stdout. All orchestration and
+model accounting stay in the server. `--save <path>` atomically exports Markdown;
+`--attach-to-session <session>` stores it as an encrypted session attachment; and research
+`--continue-session <session>` continues the server-side synthesis turn. Session values accept a
+GUID, exact title, or unique title prefix.
 
 Use only keys in [Compendium's retained reference](Compendium.README.md#complete-configuration-reference).
 After changing `arcanum.json`, restart Arcanum. Configuration-only changes do not require deleting
@@ -835,6 +855,9 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
 | `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Argument or stdin / interactive secret prompt. |
 | `key provider set\|status\|delete perplexity` | Manage the Perplexity key used by native `web_search`. Status never prints the secret; all operations are CLI-only and perform no HTTP. |
+| `search <query>` | Search without a chat prompt. Options: `--count`, `--freshness day\|week\|month\|year`, repeatable `--include-domain` / `--exclude-domain`, `--save`, `--attach-to-session`, and recursive `--json`. Final citations stay on stdout. |
+| `browse <url>` | Read bounded page Markdown through the typed server workflow. `--render static\|javascript` is explicit; unavailable JavaScript rendering degrades with a static retry hint. Supports `--save`, `--attach-to-session`, and `--json`. |
+| `research <question>` | Bounded server-side multi-hop research with citations. Options: `--max-sources`, `--max-hops`, `--model`, `--token-budget`, `--cost-budget`, `--continue-session`, `--format terminal\|markdown\|json`, `--save`, and `--attach-to-session`. Limits/progress use stderr; final content uses stdout. |
 | `config path\|show\|get\|set\|validate\|edit\|open` | Inspect or change `arcanum.json` without manual file discovery. Host API first; explicit canonical local bootstrap on unavailability; redacted reads, typed dot paths, full-snapshot validation, secure sensitive input, and atomic writes. |
 | `lore list\|get\|set\|delete` | Operator key-value memory via `/api/lore` (needs `serve`). Args: `get <KEY>`, `set <KEY> <VALUE>`, `delete <KEY>`. |
 | `daemon install\|uninstall\|status` | OS background-service lifecycle. |
@@ -854,6 +877,5 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `model list` | List configured models across all providers via `GET /api/models` (needs `serve`); endpoint redacted. |
 | `provider list` | List configured providers via `GET /api/providers` (needs `serve`); endpoint redacted and only the credential environment-variable reference returned. |
 | `operation list\|show\|cancel\|retry\|reconcile` | Inspect and repair the durable operation ledger via authenticated `/api/operations*` routes (needs `serve`). `list` accepts `--kind` / `--state`; `show <id>` returns only safe checkpoint presence/version/summary; `cancel <id>` requests `Cancelling`; `retry <id>` resets failed/abandoned/repair-required work; `reconcile` runs a bounded pass and exits 2 when operator attention remains. |
-| `browse <url>` | Compatibility CLI for the legacy `browse_web` direct-invoke surface (requires `Arcanum:Features:WebBrowsing`; needs `serve`). New inference toolsets use `read_url`. |
 
 **Inference flags** (`ask`/`chat`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format`, penalties, `-c`/`--campaign`, `--workspace`, and `--session`. Scrying: `ask --image` / chat `@path`. Full slash-command suite, context precedence, and error formatting: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).

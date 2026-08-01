@@ -15,6 +15,12 @@ internal sealed record PerplexityRequest
 
     [JsonPropertyName("stream")]
     public bool Stream { get; init; }
+
+    [JsonPropertyName("search_recency_filter")]
+    public string? SearchRecencyFilter { get; init; }
+
+    [JsonPropertyName("search_domain_filter")]
+    public string[]? SearchDomainFilter { get; init; }
 }
 
 internal sealed record PerplexityMessage

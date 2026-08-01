@@ -112,6 +112,10 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
                         1,
                         128_000),
                     Stream = false,
+
+                    SearchRecencyFilter = NormalizeFreshness(options.Freshness),
+
+                    SearchDomainFilter = BuildDomainFilter(options),
                 };
 
                 byte[] requestJson = JsonSerializer.SerializeToUtf8Bytes(
@@ -391,7 +395,13 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
             || options.MaxResponseBytes <= 0
             || options.MaxAnswerBytes <= 0
             || options.MaxCitations < 0
-            || options.MaxCitationUrlChars <= 0)
+            || options.MaxCitationUrlChars <= 0
+            || options.ResultCount is < 1 or > 20
+            || !IsValidFreshness(options.Freshness)
+            || options.IncludeDomains.Length > 20
+            || options.ExcludeDomains.Length > 20
+            || options.IncludeDomains.Any(static domain => !IsValidDomain(domain))
+            || options.ExcludeDomains.Any(static domain => !IsValidDomain(domain)))
         {
             error = new Error(
                 ErrorCodes.WebResearch.RequestRejected,
@@ -401,6 +411,43 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
 
         error = Error.None;
         return true;
+    }
+
+    private static string? NormalizeFreshness(string? freshness) =>
+        string.IsNullOrWhiteSpace(freshness)
+            ? null
+            : freshness.Trim().ToLowerInvariant();
+
+    private static bool IsValidFreshness(string? freshness) =>
+        string.IsNullOrWhiteSpace(freshness)
+        || freshness.Trim().ToLowerInvariant()
+            is "day" or "week" or "month" or "year";
+
+    private static bool IsValidDomain(string? domain)
+    {
+        if (string.IsNullOrWhiteSpace(domain)
+            || domain.Length > 253
+            || domain.Contains('/')
+            || domain.Contains(':')
+            || domain.Any(char.IsWhiteSpace))
+        {
+            return false;
+        }
+
+        return Uri.CheckHostName(domain.Trim().TrimStart('.'))
+            is UriHostNameType.Dns or UriHostNameType.IPv4 or UriHostNameType.IPv6;
+    }
+
+    private static string[]? BuildDomainFilter(WebSearchOptions options)
+    {
+        string[] domains = options.IncludeDomains
+            .Select(static domain => domain.Trim().TrimStart('.'))
+            .Concat(
+                options.ExcludeDomains.Select(
+                    static domain => "-" + domain.Trim().TrimStart('.')))
+            .ToArray();
+
+        return domains.Length == 0 ? null : domains;
     }
 
     private static async Task<byte[]> ReadErrorBodyAsync(

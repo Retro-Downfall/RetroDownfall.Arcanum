@@ -176,7 +176,7 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.scrying` | `bool`, `true` | — | Accepts images for vision-capable models. |
 | `features.attachments` | `bool`, `true` | — | Persists encrypted session attachment snapshots and exposes `attach_session_file` plus host-authorized `refresh_session_file`; refresh accepts no path, revalidates source provenance and Sanctum, and shares version/byte/reference budgets. |
 | `features.clientTools` | `bool`, `false` | — | Forwards client-declared tools to compatible providers. |
-| `features.webBrowsing` | `bool`, `false` | — | Advertises the native `web_search` and `read_url` tools. The deprecated `browse_web` name remains available only as a compatibility surface. |
+| `features.webBrowsing` | `bool`, `false` | — | Advertises native `web_search` / `read_url` and enables authenticated `search`, `browse`, and server-orchestrated `research` CLI workflows. The deprecated `browse_web` name remains only as a direct-invoke compatibility alias. |
 | `features.guardrails` | `bool`, `false` | — | Runs configured input/output guardrails. |
 | `features.workspaceChecks` | `bool`, `true` | — | Allows `workspace_check` advertisement when all platform and trust checks pass. |
 | `features.memoryManagement` | `bool`, `false` | — | Enables session deletion, pinning, and compaction. |
@@ -233,6 +233,14 @@ recursion cap and per-call token/cost/turn delegation are code-owned safety requ
 | `daemon.jobs.enabled` | `bool`, `true` | — | Makes the schedule eligible to run. |
 | `cli.theme` | enum `"SystemDefault"` | `Light`, `Dark`, `SystemDefault` | CLI color theme. |
 | `cli.showManaBar` | `bool`, `true` | — | Shows the chat token-budget indicator. |
+
+The web workflow limits exposed by `arcanum search` and `arcanum research` are per-invocation inputs,
+not retained configuration. The server validates search count 1–20, research sources 1–20, hops
+1–5, and synthesis output 64–32,768 tokens. Freshness is `day`, `week`, `month`, or `year`; include
+and exclude domain lists are bounded. An optional research cost ceiling applies to provider-reported
+search cost between hops. Static URL reads retain code-owned timeout, body, redirect, SSRF, and
+content limits. No configuration switch implies that JavaScript rendering exists: `--render
+javascript` returns an explicit unavailable-renderer error until a server renderer is installed.
 
 Compendium edits MCP transport policy but does not operate server lifecycle or approve a
 workspace-local `mcp.json`. Use `arcanum mcp trust [workspace]`, then `arcanum mcp

@@ -512,6 +512,11 @@ public static class ErrorCodes
 
         public const string UnsupportedOperation = "WebResearch.UnsupportedOperation";
 
+        public const string JavaScriptRenderingUnavailable =
+            "WebResearch.JavaScriptRenderingUnavailable";
+
+        public const string BudgetExceeded = "WebResearch.BudgetExceeded";
+
     }
 
     /// <summary>ClientTools — client-supplied tool forwarding errors.</summary>

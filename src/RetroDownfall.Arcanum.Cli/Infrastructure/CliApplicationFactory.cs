@@ -213,6 +213,8 @@ internal static class CliApplicationFactory
 
         services.AddTransient<ToolCommands>();
 
+        services.AddTransient<WebWorkflowCommands>();
+
         services.AddTransient<OperationCommands>();
         services.AddTransient<DataEncryptionCommands>();
         services.AddTransient<ContextCommands>();

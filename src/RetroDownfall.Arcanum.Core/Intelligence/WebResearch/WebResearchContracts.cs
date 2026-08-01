@@ -16,6 +16,14 @@ public sealed record WebSearchOptions
     public int MaxCitations { get; init; } = 20;
 
     public int MaxCitationUrlChars { get; init; } = 2_048;
+
+    public int ResultCount { get; init; } = 5;
+
+    public string? Freshness { get; init; }
+
+    public string[] IncludeDomains { get; init; } = [];
+
+    public string[] ExcludeDomains { get; init; } = [];
 }
 
 /// <summary>Code-owned limits for a single direct URL read.</summary>

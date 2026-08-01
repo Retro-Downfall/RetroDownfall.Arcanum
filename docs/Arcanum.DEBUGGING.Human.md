@@ -108,6 +108,18 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     `arcanum-internal`, blocked names, untrusted workspaces, server ambiguity, timeout, and output
     truncation remain server-enforced. Safe CLI output must omit command, URL, arguments,
     environment, and secret values.
+15. **Trace first-class web workflows:** run `arcanum research "question" --max-sources 2
+    --max-hops 2 --format markdown`, break in `WebWorkflowCommands.Research()`,
+    `ArcanumApiClient.ResearchWebAsync()`, and `WebResearchWorkflowService.ResearchAsync()`. Confirm
+    the CLI only consumes NDJSON and never performs a search, fetch, or model call itself. On the
+    server, verify the `limits` frame precedes `searching`, citation URLs deduplicate before
+    `fetching`/`rendering`, and the synthesis `PingRequest` has `DisableAllTools=true`, the requested
+    `MaxOutputTokens`, and the resolved continuation `SessionId`. Redirect stdout and stderr
+    separately: only final terminal/Markdown/JSON belongs on stdout. For `browse --render
+    javascript`, confirm no provider call occurs and the response is 503
+    `WebResearch.JavaScriptRenderingUnavailable` with the `--render static` hint. For domain
+    filters, inspect the Perplexity request for `search_recency_filter` and bounded
+    `search_domain_filter`; never log the query, URL, page content, or credential.
 
 ## Related documents
 

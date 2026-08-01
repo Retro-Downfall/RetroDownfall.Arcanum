@@ -166,6 +166,8 @@ The repository also includes `Compendium.Ux` (Avalonia desktop config editor —
 
 One binary; the CLI verb selects the role (`serve` = long-running Kestrel host; `ask`/`chat`/`look`/etc. = short-lived clients). `ServeCommand` uses `WebApplication.CreateSlimBuilder()` with `ClearProviders()` (Serilog replaces default logging), explicit `AddArcanumConfiguration()` (JSON file under `Arcanum:` only), `AddArcanumApiServices()` (registers Infrastructure + daemon services + `ApiKeyEndpointFilter` + OpenAPI + JSON contexts + `IChatClientFactory` + tokenizer), and `ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync()` before `Build()`.
 
+Web work no longer requires prompting the Mage to discover tools. `arcanum search`, `arcanum browse`, and `arcanum research` call authenticated typed `/api/web/*` endpoints. Search exposes count, freshness, and domain filters; browse declares static versus JavaScript rendering and fails clearly when a JavaScript renderer is unavailable. Research orchestration lives entirely in `WebResearchWorkflowService`: the CLI supplies visible source/hop/token/cost bounds, the host searches and deduplicates citations, performs bounded SSRF-guarded static reads, runs one tool-disabled synthesis call with server accounting/session continuation, and streams limits/progress separately from the final cited result. `--save` exports atomically and `--attach-to-session` uses encrypted attachment storage.
+
 `PidFileService` writes `arcanum.pid` during host `StartAsync` and deletes it only on clean shutdown when it still names this process. Auto-launched serve (from interactive `chat`/`ask`/Command Center) suppresses the key print and redirects stdout/stderr to `auto-serve-bootstrap.log`; it never deletes the PID file.
 
 ---
@@ -337,7 +339,7 @@ and an exact-path/`config edit` fallback when Compendium is unavailable.
 
 Wire contracts: `ApiResponse<T>` for `/api` JSON; `IntelligenceEvent` NDJSON (`type` camelCase string discriminator); `ChronicleFrame` flattened (pass-through `toolCall`/`toolResult`/`warded`/`wardResolved` are top-level, not nested `wizardEvent`); `WardDto` uses `string` `WardId`; `BatchRequest` uses `AiProviderKind.OpenAICompatible` only. The Forge never duplicates `Arcanum.DESIGN.md` contracts or `Compendium.README.md` configuration details; it links to them.
 
-Limitations (`DESIGN.md` §19.11): no true PTY Hearth; no provider/pricing/model editor; no full import-conflict wizard; no push/rebase in Ledger; no native math/Mermaid/binary images in Illumination; native web research requires the `WebBrowsing` feature flag and `read_url` cannot execute JavaScript; diagnostic MCP remains external-only; Forbidden Arts require Master pipeline (`POST /api/wards`). No Forge documentation is added beyond this section.
+Limitations (`DESIGN.md` §19.11): no true PTY Hearth; no provider/pricing/model editor; no full import-conflict wizard; no push/rebase in Ledger; no native math/Mermaid/binary images in Illumination; native web research requires the `WebBrowsing` feature flag, and `browse --render javascript` remains an explicit degraded path until a server renderer is configured; diagnostic MCP remains external-only; Forbidden Arts require Master pipeline (`POST /api/wards`). No Forge documentation is added beyond this section.
 
 ---
 

@@ -3373,6 +3373,209 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
 
     #region Tool Invoke
 
+    public Task<Result<WebSearchWorkflowResult>> SearchWebAsync(
+        WebSearchWorkflowRequest request,
+        CancellationToken cancellationToken = default)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.WebSearchWorkflowRequest);
+
+        return SendRequestAsync(
+            HttpMethod.Post,
+            "api/web/search",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseWebSearchWorkflowResult,
+            cancellationToken);
+
+    }
+
+    public Task<Result<WebBrowseWorkflowResult>> BrowseWebAsync(
+        WebBrowseWorkflowRequest request,
+        CancellationToken cancellationToken = default)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.WebBrowseWorkflowRequest);
+
+        return SendRequestAsync(
+            HttpMethod.Post,
+            "api/web/browse",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseWebBrowseWorkflowResult,
+            cancellationToken);
+
+    }
+
+    public async IAsyncEnumerable<WebResearchStreamFrame> ResearchWebAsync(
+        WebResearchWorkflowRequest body,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+
+        string? apiKey = await TryGetApiKeyAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (apiKey is null)
+        {
+
+            yield return ResearchError(MissingApiKeyError);
+
+            yield break;
+
+        }
+
+        HttpClient client = httpClientFactory.CreateClient(
+            StreamingHttpClientName);
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            body,
+            ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "api/web/research");
+
+        request.Content = new ByteArrayContent(json);
+
+        request.Content.Headers.ContentType = JsonUtf8ContentType;
+
+        _ = request.Headers.TryAddWithoutValidation(
+            ArcanumApiHeaders.ApiKey,
+            apiKey);
+
+        HttpResponseMessage? response = null;
+
+        Error? sendError = null;
+
+        try
+        {
+
+            response = await client
+                .SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            sendError = RequestTimeoutError;
+
+        }
+        catch (HttpRequestException)
+        {
+
+            sendError = RequestUnreachableError;
+
+        }
+
+        if (sendError is Error error)
+        {
+
+            yield return ResearchError(error);
+
+            yield break;
+
+        }
+
+        if (response is null)
+        {
+
+            yield break;
+
+        }
+
+        using (response)
+        {
+
+            if (!response.IsSuccessStatusCode)
+            {
+
+                yield return ResearchError(
+                    new Error(
+                        "Api.HttpError",
+                        $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
+
+                yield break;
+
+            }
+
+            await using Stream stream = await response.Content
+                .ReadAsStreamAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            using StreamReader reader = new(
+                stream,
+                Encoding.UTF8,
+                detectEncodingFromByteOrderMarks: false,
+                bufferSize: 4_096,
+                leaveOpen: true);
+
+            while (await reader.ReadLineAsync(cancellationToken)
+                .ConfigureAwait(false) is { } line)
+            {
+
+                if (string.IsNullOrWhiteSpace(line))
+                {
+
+                    continue;
+
+                }
+
+                WebResearchStreamFrame? frame;
+
+                try
+                {
+
+                    frame = JsonSerializer.Deserialize(
+                        line,
+                        ArcanumJsonContext.Default.WebResearchStreamFrame);
+
+                }
+                catch (JsonException)
+                {
+
+                    frame = null;
+
+                }
+
+                yield return frame
+                    ?? ResearchError(
+                        new Error(
+                            "Api.InvalidResponse",
+                            "Malformed research progress received from the API."));
+
+            }
+
+        }
+
+    }
+
+    private static WebResearchStreamFrame ResearchError(Error error) =>
+        new()
+        {
+
+            Type = WebResearchStreamFrameType.Error,
+
+            Code = error.Code,
+
+            Message = error.Message,
+
+        };
+
     public async Task<Result<ToolInvokeResponse>> InvokeToolAsync(
         string toolName,
         JsonElement arguments,

@@ -390,6 +390,8 @@ public static class ApiBootstrapper
 
         services.AddScoped<IArcanumIntelligenceProvider>(static sp => sp.GetRequiredService<WizardIntelligenceProvider>());
 
+        services.AddScoped<WebResearchWorkflowService>();
+
         services.AddScoped<IBuiltInToolRegistry, BuiltInToolRegistry>();
 
         services.AddSingleton<BatchProcessingService>();
@@ -591,6 +593,8 @@ public static class ApiBootstrapper
         apiGroup.MapIntelligenceEndpoints();
 
         apiGroup.MapToolInvokeEndpoints();
+
+        apiGroup.MapWebWorkflowEndpoints();
 
         apiGroup.MapAuditEndpoints();
 
