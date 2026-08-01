@@ -4,8 +4,14 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
-public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
+public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, IContextPreviewService
 {
+
+    public ContextPreviewResult NextContextPreview { get; set; } = ContextPreviewTestData.Create();
+
+    public ContextPreviewRequest? LastContextPreviewRequest { get; private set; }
+
+    public int PreviewContextCallCount { get; private set; }
 
     public string NextText { get; set; } = "pong";
 
@@ -99,6 +105,30 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
                 Reasoning = NextReasoning ?? [],
                 PreserveProviderToolCallIds = request.ForwardClientTools,
             }));
+
+    }
+
+    public Task<Result<ContextPreviewResult>> PreviewContextAsync(
+
+        ContextPreviewRequest request,
+
+        CancellationToken cancellationToken = default)
+
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        PreviewContextCallCount++;
+
+        LastContextPreviewRequest = request;
+
+        ContextPreviewResult result = request.ShowContent
+
+            ? ContextPreviewTestData.Create(showContent: true)
+
+            : NextContextPreview with { Content = null };
+
+        return Task.FromResult(Result<ContextPreviewResult>.Success(result));
 
     }
 

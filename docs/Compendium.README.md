@@ -273,6 +273,13 @@ keys and are not editable in Compendium. They are per-invocation automation auth
 only that command's confirmation prompts. Persisting any of them would make interactive and
 destructive behavior surprising.
 
+The same per-invocation rule applies to `arcanum context inspect|tools|sources` and `arcanum mana`:
+`--show-content` is an explicit one-run operator reveal and `--no-retrieval` is a one-run request to
+skip embedding/RAG work. Compendium does not persist either switch. Use these commands after editing
+model, tool, Spell, retrieval, or context-window settings to verify the effective provider, tool
+surface, source-token allocation, reserve, and compression decision before spending main-inference
+tokens.
+
 `arcanum file upload|list|show|download|delete` and `arcanum batch
 create|list|show|watch|cancel|reset|output|errors` add no configuration keys. They call the existing
 authenticated OpenAI-compatible routes and inherit `security.allowedUploadMimeTypes`, the

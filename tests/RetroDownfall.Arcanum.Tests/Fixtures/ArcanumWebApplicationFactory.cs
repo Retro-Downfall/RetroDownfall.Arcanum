@@ -146,6 +146,10 @@ public sealed class ArcanumWebApplicationFactory : WebApplicationFactory<Program
 
             services.AddScoped<IArcanumIntelligenceProvider>(_ => _fakeIntelligence);
 
+            services.RemoveAll<IContextPreviewService>();
+
+            services.AddScoped<IContextPreviewService>(_ => _fakeIntelligence);
+
             services.RemoveAll<DbContextOptions<ArcanumDbContext>>();
 
             services.RemoveAll<ArcanumDbContext>();

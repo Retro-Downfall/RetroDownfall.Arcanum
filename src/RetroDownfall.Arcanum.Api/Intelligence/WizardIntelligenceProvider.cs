@@ -50,7 +50,7 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 [ExcludeFromCodeCoverage] // Reason: intelligence hub coordinating external LLM providers, MCP tools, and Grimoire persistence; covered via WizardIntelligenceProvider scenario matrix and ApiHost integration tests.
-public sealed class WizardIntelligenceProvider(
+public sealed partial class WizardIntelligenceProvider(
     IChatClientFactory chatClientFactory,
     IOptionsSnapshot<ArcanumSettings> settings,
     ILogger<WizardIntelligenceProvider> logger,
@@ -88,7 +88,7 @@ public sealed class WizardIntelligenceProvider(
     SessionContextPinMaterializer? sessionContextPinMaterializer = null,
     ISubagentRunner? subagentRunner = null,
     ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
-    IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null) : IArcanumIntelligenceProvider, ITurnPipelineRunner
+    IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
 {
     private readonly TokenAccountingDependencies _tokenAccounting =
         TokenAccountingDependencies.Create(
@@ -3829,7 +3829,8 @@ public sealed class WizardIntelligenceProvider(
         ProviderSettings mainProvider,
         string mainModel,
         string? spellWorkspaceRoot,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string, int>? observeEmbedding = null)
     {
         long maxSpellFileSizeBytes = ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(settings.Value);
 
@@ -3897,7 +3898,7 @@ public sealed class WizardIntelligenceProvider(
             string semanticProbe = GetSemanticRouterUserProbe(request);
 
             SpellRoutingDecision routingDecision = await semanticSpellRouter
-                .ResolveAsync(spellMetadata, semanticProbe, cancellationToken)
+                .ResolveAsync(spellMetadata, semanticProbe, cancellationToken, observeEmbedding)
                 .ConfigureAwait(false);
 
             if (routingDecision.Mode == SpellRoutingDecisionMode.DirectResonance)
@@ -4250,6 +4251,26 @@ public sealed class WizardIntelligenceProvider(
             {
                 return null;
             }
+
+            EmbeddingSettings embeddingSettings = settings.Value.ResolveEmbeddings();
+
+            PreviewAuxiliaryObserver.Value?.Invoke(
+
+                new ContextPreviewAuxiliaryCall(
+
+                    "retrieval-embedding",
+
+                    true,
+
+                    embeddingSettings.Provider,
+
+                    embeddingSettings.Model,
+
+                    null,
+
+                    TokenEstimateClassification.Unknown,
+
+                    "The shared retrieval embedding was invoked; this provider does not report token usage."));
 
             Result<Embedding<float>> embedResult = await weaveService.EmbedAsync(prompt, cancellationToken).ConfigureAwait(false);
 
@@ -5104,7 +5125,8 @@ public sealed class WizardIntelligenceProvider(
         ResolvedSpell? resolvedSpell,
         Guid? sessionIdForTurn,
         Guid? assistantEntryIdForTurn,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        List<ContextPreviewTool>? previewExclusions = null)
     {
         if (request.DisableAllTools)
         {
@@ -5215,6 +5237,26 @@ public sealed class WizardIntelligenceProvider(
                 mcpTools.Count,
                 attunement.Excluded.Count,
                 string.Join(", ", attunement.Excluded));
+
+            if (previewExclusions is not null)
+
+            {
+
+                previewExclusions.AddRange(
+
+                    attunement.Excluded.Select(
+
+                        static name => new ContextPreviewTool(
+
+                            name,
+
+                            "mcp",
+
+                            false,
+
+                            "Excluded by active Spell tool attunement.")));
+
+            }
         }
 
         AttachmentsSettings attachments = settings.Value.ResolveAttachments();
@@ -6202,12 +6244,38 @@ public sealed class WizardIntelligenceProvider(
         string? provider,
         string? model)
     {
+        ChatCompletionUsage? mapped = MapUsageDetails(usage);
+
+        PreviewAuxiliaryObserver.Value?.Invoke(
+
+            new ContextPreviewAuxiliaryCall(
+
+                purpose,
+
+                true,
+
+                provider,
+
+                model,
+
+                mapped?.TotalTokens,
+
+                mapped is null
+
+                    ? TokenEstimateClassification.Unknown
+
+                    : TokenEstimateClassification.ProviderReported,
+
+                mapped is null
+
+                    ? "The auxiliary model call was invoked, but provider token usage was unavailable."
+
+                    : "The auxiliary model call was invoked; token usage is provider-reported."));
+
         if (TurnAccountingAmbient.Current is not TurnAccountingHandle accounting)
         {
             return;
         }
-
-        ChatCompletionUsage? mapped = MapUsageDetails(usage);
 
         if (mapped is null || string.IsNullOrWhiteSpace(model))
         {

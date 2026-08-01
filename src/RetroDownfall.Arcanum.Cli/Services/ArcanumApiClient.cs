@@ -446,6 +446,36 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             : Result<string>.Failure(result.Error);
     }
 
+    public async Task<Result<ContextPreviewResult>> PreviewContextAsync(
+
+        ContextPreviewRequest request,
+
+        CancellationToken cancellationToken = default)
+
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+
+            request,
+
+            ArcanumJsonContext.Default.ContextPreviewRequest);
+
+        return await SendRequestAsync(
+
+            HttpMethod.Post,
+
+            "api/intelligence/context/inspect",
+
+            json,
+
+            JsonUtf8ContentType,
+
+            ArcanumJsonContext.Default.ApiResponseContextPreviewResult,
+
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
     public async Task<Result<SemanticSearchResult>> DivineSessionsAsync(
         SemanticSearchRequest request,
         CancellationToken cancellationToken)

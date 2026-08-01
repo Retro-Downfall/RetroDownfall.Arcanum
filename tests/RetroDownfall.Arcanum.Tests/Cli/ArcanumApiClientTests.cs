@@ -12,10 +12,66 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 
+using RetroDownfall.Arcanum.Tests.Fixtures;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class ArcanumApiClientTests
 {
+
+    [Fact]
+
+    public async Task PreviewContextAsync_posts_typed_read_only_request()
+
+    {
+
+        ContextPreviewResult preview = ContextPreviewTestData.Create();
+
+        string? sentJson = null;
+
+        RecordingHandler handler = new(request =>
+
+        {
+
+            sentJson = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+
+            {
+
+                Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(
+
+                    new ApiResponse<ContextPreviewResult>(preview, true, null),
+
+                    ArcanumJsonContext.Default.ApiResponseContextPreviewResult)),
+
+            };
+
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        ContextPreviewRequest request = new(
+
+            Prompt: "hello",
+
+            ShowContent: true,
+
+            NoRetrieval: true);
+
+        Result<ContextPreviewResult> result = await client.PreviewContextAsync(request);
+
+        Assert.True(result.IsSuccess);
+
+        HttpRequestMessage sent = Assert.Single(handler.Requests);
+
+        Assert.Equal("/api/intelligence/context/inspect", sent.RequestUri!.AbsolutePath);
+
+        Assert.Contains("\"showContent\":true", sentJson, StringComparison.Ordinal);
+
+        Assert.Contains("\"noRetrieval\":true", sentJson, StringComparison.Ordinal);
+
+    }
 
     [Fact]
 

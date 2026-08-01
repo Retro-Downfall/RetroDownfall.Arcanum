@@ -6746,6 +6746,160 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         return Assert.IsType<Result>(method.Invoke(wizard, arguments));
     }
 
+    [Fact]
+
+    public async Task ContextPreview_NoRetrieval_UsesProductionAssemblyWithoutModelCallOrContent()
+
+    {
+
+        ScriptingChatClient chat = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<ContextPreviewResult> preview = await wizard.PreviewContextAsync(
+
+            new ContextPreviewRequest(
+
+                Prompt: "inspect this turn",
+
+                Model: ModelName,
+
+                NoRetrieval: true),
+
+            CancellationToken.None);
+
+        Assert.True(preview.IsSuccess);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+        Assert.Equal(0, chat.StreamingCallCount);
+
+        Assert.Equal("disabledByNoRetrieval", preview.Value.RoutingMode);
+
+        Assert.Null(preview.Value.Content);
+
+        Assert.True(preview.Value.Tokens.TotalTokens > 0);
+
+        Assert.Contains(
+
+            preview.Value.Sources,
+
+            static source => source.Source == ContextTokenSource.WorkspaceRag
+
+                && !source.Included
+
+                && source.Reason.Contains("noRetrieval", StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+
+    public async Task ContextPreview_ShowContent_ReturnsExactAssembledPromptOnlyWhenRequested()
+
+    {
+
+        ScriptingChatClient chat = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<ContextPreviewResult> preview = await wizard.PreviewContextAsync(
+
+            new ContextPreviewRequest(
+
+                Prompt: "visible prompt",
+
+                Model: ModelName,
+
+                ShowContent: true,
+
+                NoRetrieval: true),
+
+            CancellationToken.None);
+
+        Assert.True(preview.IsSuccess);
+
+        Assert.NotNull(preview.Value.Content);
+
+        Assert.Contains("## DATA", preview.Value.Content.SystemPrompt, StringComparison.Ordinal);
+
+        Assert.Contains(
+
+            preview.Value.Content.Messages,
+
+            static message => message.Role == "user"
+
+                && message.Content == "visible prompt");
+
+    }
+
+    [Fact]
+
+    public async Task ContextPreview_AccountsAuxiliaryRoutingAndExplainsAttunementExclusions()
+
+    {
+
+        await CreateSpellWithDeclaredToolsAsync("preview-spell", ["allowed_tool"]);
+
+        ScriptingChatClient chat = new()
+
+        {
+
+            UsageTotalTokens = 30,
+
+        };
+
+        chat.EnqueueText("""{"spellName":"preview-spell","entities":[]}""");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("allowed_tool"));
+
+        mcp.Tools.Add(CreateMcpTool("blocked_tool"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        Result<ContextPreviewResult> preview = await wizard.PreviewContextAsync(
+
+            new ContextPreviewRequest(
+
+                Prompt: "inspect routing",
+
+                Model: ModelName,
+
+                WorkingDirectory: _workspace.Root),
+
+            CancellationToken.None);
+
+        Assert.True(preview.IsSuccess);
+
+        Assert.Equal(1, chat.BufferedCallCount);
+
+        Assert.Equal("preview-spell", preview.Value.SelectedSpell);
+
+        Assert.Contains("selected", preview.Value.SpellReason, StringComparison.OrdinalIgnoreCase);
+
+        ContextPreviewAuxiliaryCall routing = Assert.Single(
+
+            preview.Value.AuxiliaryCalls,
+
+            static call => call.Purpose == "routing");
+
+        Assert.Equal(30, routing.Tokens);
+
+        Assert.Equal(TokenEstimateClassification.ProviderReported, routing.Classification);
+
+        Assert.Contains(
+
+            preview.Value.Tools,
+
+            static tool => tool.Name == "blocked_tool"
+
+                && !tool.Included
+
+                && tool.Reason.Contains("attunement", StringComparison.OrdinalIgnoreCase));
+
+    }
+
     private WizardIntelligenceProvider CreateWizard(
         ScriptingChatClient chatClient,
         ArcanumSettings? settings = null,

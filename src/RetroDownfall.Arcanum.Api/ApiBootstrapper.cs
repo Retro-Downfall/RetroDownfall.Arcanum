@@ -390,6 +390,8 @@ public static class ApiBootstrapper
 
         services.AddScoped<IArcanumIntelligenceProvider>(static sp => sp.GetRequiredService<WizardIntelligenceProvider>());
 
+        services.AddScoped<IContextPreviewService>(static sp => sp.GetRequiredService<WizardIntelligenceProvider>());
+
         services.AddScoped<WebResearchWorkflowService>();
 
         services.AddScoped<IBuiltInToolRegistry, BuiltInToolRegistry>();

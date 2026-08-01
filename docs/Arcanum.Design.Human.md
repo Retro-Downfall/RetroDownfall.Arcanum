@@ -410,6 +410,7 @@ The fantasy names are functional labels:
 | Spell / Prompt | Reusable instruction and parameterized template |
 | Ward / Sanctum | Tool policy and filesystem boundary |
 | Mana | Token and context budget |
+| Context preview | A dry, read-only rehearsal of the exact model context before the expensive turn starts |
 | Scrying | Image input |
 | Eye of the World | Workspace perception |
 | Weave / Divination / Imprint | Embedding substrate, search, and stored vector |
@@ -419,6 +420,8 @@ The fantasy names are functional labels:
 | Comm Link | Notification integration |
 | Chronicle | Durable workflow event stream |
 | Proving Grounds / Trial / Inquisitor | Ephemeral validation run |
+
+`arcanum context inspect [prompt]` is Arcanum's equivalent of Claude Code's live context breakdown: it shows where the window goes, which Spell and resonant instructions are active, which tools are advertised or excluded, whether compression would apply, and which numbers are estimates. `context tools` and `context sources` focus the same response; `mana [prompt]` focuses the budget. The normal view deliberately shows labels, reasons, and counts rather than private prompt text. `--show-content` is the explicit operator reveal, while `--no-retrieval` answers the same planning question without embedding or RAG work.
 
 The full vocabulary and cross-references are in
 [`Arcanum.DESIGN.md` §17](Arcanum.DESIGN.md#17-glossary).

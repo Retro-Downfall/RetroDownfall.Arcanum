@@ -35,6 +35,7 @@ test, and documentation citations remain stable.
 | POST | `/api/intelligence/human-response` | Submit human-in-the-loop answer. |
 | POST | `/api/intelligence/arsenal` | Spell names, metadata-only `SpellSummary[]`, native tools, and MCP server status. |
 | POST | `/api/intelligence/mana` | Read-only diagnostic Mana (token) counter (`ApiResponse<ManaCountResult>`; body `ManaCountRequest` { `messages`, `prompt`, `model`, `tools` }). |
+| POST | `/api/intelligence/context/inspect` | Read-only effective-turn preview (`ContextPreviewRequest` → `ApiResponse<ContextPreviewResult>`); reuses production routing, retrieval, tool policy, DCI assembly, compression, and token accounting without main inference, tool invocation, or assistant-entry persistence. |
 | POST | `/api/web/search` | First-class bounded web search (`WebSearchWorkflowRequest` → `ApiResponse<WebSearchWorkflowResult>`; citations and provider usage; DESIGN §11.27). |
 | POST | `/api/web/browse` | First-class bounded static page read (`WebBrowseWorkflowRequest` → `ApiResponse<WebBrowseWorkflowResult>`; JavaScript mode degrades explicitly when no renderer is configured; DESIGN §11.27). |
 | POST | `/api/web/research` | Server-owned bounded multi-hop research as NDJSON `WebResearchStreamFrame` lines (limits/progress/result/error; DESIGN §11.27). |
@@ -333,6 +334,14 @@ The buffered ping endpoint wraps a **`PromptResponseDto`** (Core) inside `ApiRes
 ### 8.10.1 Mana counter (`POST /api/intelligence/mana`)
 
 Read-only model-aware estimate (`ManaCountRequest` → `ManaCountResult`); no inference/Grimoire writes. `model` resolves the configured provider/canonical model profile, while an unconfigured model uses the conservative fallback. The result retains legacy `manaCount` / `encoding` / per-message fields and adds classification, profile id, safety margin, and the complete `ContextTokenBreakdown`. `tools:true` materializes the current native + MCP declarations and includes their names, descriptions, and full JSON schemas in both the total and source breakdown. **400** when neither `messages` nor `prompt` is supplied.
+
+### 8.10.2 Effective context preview (`POST /api/intelligence/context/inspect`)
+
+`ContextPreviewRequest` accepts an optional `prompt`, `model`, `workingDirectory`, `sessionId`, and `campaignId`, plus `showContent` and `noRetrieval`. An empty prompt is valid so an existing Session can be inspected as it stands. The response reports the effective provider/model and context window, selected Spell and routing mode, resonant dependencies, included and excluded tools with reasons, every `ContextTokenSource` row with estimate classification, reserved output, the production compression decision, and auxiliary routing/embedding work.
+
+Prompt input uses the production ping bound. When `campaignId` is supplied without `workingDirectory`, the endpoint resolves the Campaign's server-host path exactly as buffered and streaming inference do; an unknown Campaign returns **404**.
+
+The endpoint uses `WizardIntelligenceProvider`'s production routing, RAG readers, tool builder and policy filters, `SystemPromptBuilder.BuildDocument`, `InferenceContextBuilder.TryApplyContextCompressionIfNeeded`, and `IModelTokenEstimator`. It never enters the turn coordinator, invokes a tool, reserves turn budget, creates an assistant Entry, or calls the main inference model. `noRetrieval:true` skips embedding/RAG and automatic semantic Spell routing, with explicit unavailable reasons. Model-visible content is omitted unless `showContent:true`; that opt-in returns the assembled system prompt and messages through the authenticated operator API. Pre-call token values are labeled `exact`, `estimated`, `unknown`, or `reserved`; provider-reported values are never fabricated.
 
 ### 8.11 Daemon event SSE bus (`GET /api/events/daemon`)
 

@@ -68,6 +68,7 @@ internal static partial class CliCommandTree
         Command data = BuildData(serviceProvider);
         Command use = BuildUse(serviceProvider);
         Command context = BuildContext(serviceProvider);
+        Command mana = BuildMana(serviceProvider);
         Command config = BuildConfig(serviceProvider);
 
         root.Add(serve);
@@ -100,6 +101,7 @@ internal static partial class CliCommandTree
         root.Add(data);
         root.Add(use);
         root.Add(context);
+        root.Add(mana);
         root.Add(config);
 
         return root;

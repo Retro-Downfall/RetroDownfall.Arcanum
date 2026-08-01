@@ -342,6 +342,140 @@ internal static class IntelligenceEndpoints
         apiGroup.MapPost("/intelligence/mana", HandleCountManaAsync)
             .WithName("PostIntelligenceMana");
 
+        apiGroup.MapPost(
+
+            "/intelligence/context/inspect",
+
+            async (
+
+                ContextPreviewRequest? body,
+
+                IContextPreviewService previewService,
+
+                IOptionsSnapshot<ArcanumSettings> settings,
+
+                ICampaignRepository campaignRepository,
+
+                HttpContext httpContext,
+
+                CancellationToken cancellationToken) =>
+
+            {
+
+                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                if (body is null)
+
+                {
+
+                    Result<ContextPreviewResult> invalid = Result<ContextPreviewResult>.Failure(
+
+                        new Error(ErrorCodes.Validation.InvalidBody, "A context preview request is required."));
+
+                    return Results.Json(
+
+                        ApiResponse<ContextPreviewResult>.FromResult(invalid, traceId),
+
+                        ArcanumJsonContext.Default.ApiResponseContextPreviewResult,
+
+                        statusCode: StatusCodes.Status400BadRequest);
+
+                }
+
+                PingRequest previewTurn = new(
+
+                    body.Prompt ?? string.Empty,
+
+                    body.Model,
+
+                    body.WorkingDirectory ?? string.Empty,
+
+                    SessionId: body.SessionId,
+
+                    CampaignId: body.CampaignId);
+
+                Result previewBounds = PingRequestBoundsValidator.Validate(
+
+                    previewTurn,
+
+                    settings.Value);
+
+                if (previewBounds.IsFailure)
+
+                {
+
+                    Result<ContextPreviewResult> invalid = Result<ContextPreviewResult>.Failure(
+
+                        previewBounds.Error);
+
+                    return Results.Json(
+
+                        ApiResponse<ContextPreviewResult>.FromResult(invalid, traceId),
+
+                        ArcanumJsonContext.Default.ApiResponseContextPreviewResult,
+
+                        statusCode: StatusCodes.Status400BadRequest);
+
+                }
+
+                Result<PingRequest> resolvedTurn = await PingRequestResolver
+
+                    .ResolveCampaignAsync(previewTurn, campaignRepository, cancellationToken)
+
+                    .ConfigureAwait(false);
+
+                if (resolvedTurn.IsFailure)
+
+                {
+
+                    Result<ContextPreviewResult> unresolved = Result<ContextPreviewResult>.Failure(
+
+                        resolvedTurn.Error);
+
+                    return Results.Json(
+
+                        ApiResponse<ContextPreviewResult>.FromResult(unresolved, traceId),
+
+                        ArcanumJsonContext.Default.ApiResponseContextPreviewResult,
+
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(resolvedTurn.Error.Code));
+
+                }
+
+                ContextPreviewRequest effectiveRequest = body with
+
+                {
+
+                    WorkingDirectory = resolvedTurn.Value.WorkingDirectory,
+
+                };
+
+                Result<ContextPreviewResult> preview = await previewService
+
+                    .PreviewContextAsync(effectiveRequest, cancellationToken)
+
+                    .ConfigureAwait(false);
+
+                ApiResponse<ContextPreviewResult> response =
+
+                    ApiResponse<ContextPreviewResult>.FromResult(preview, traceId);
+
+                return preview.IsSuccess
+
+                    ? Results.Ok(response)
+
+                    : Results.Json(
+
+                        response,
+
+                        ArcanumJsonContext.Default.ApiResponseContextPreviewResult,
+
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(preview.Error.Code));
+
+            })
+
+            .WithName("PostIntelligenceContextInspect");
+
         return apiGroup;
     }
 

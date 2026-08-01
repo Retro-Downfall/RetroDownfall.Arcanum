@@ -83,7 +83,8 @@ public sealed class SpellWeaveCache(
 
     public async Task<ConcurrentDictionary<string, Embedding<float>>?> GetOrCreateAsync(
         IReadOnlyList<SpellMetadata> metadata,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string, int>? observeEmbedding = null)
     {
 
         CatalogKey currentKey = BuildCatalogKey(metadata);
@@ -128,6 +129,8 @@ public sealed class SpellWeaveCache(
                 descriptions[i] = metadata[i].Description;
 
             }
+
+            observeEmbedding?.Invoke("spell-catalog-embedding", descriptions.Length);
 
             Result<Embedding<float>[]> embedResult = await weaveService
                 .EmbedBatchAsync(descriptions, cancellationToken)

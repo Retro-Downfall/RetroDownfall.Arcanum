@@ -98,6 +98,40 @@ public sealed class SemanticSpellRouterTests
     }
 
     [Fact]
+
+    public async Task ResolveAsync_ReportsEveryAuxiliaryEmbeddingInvocation()
+
+    {
+
+        FakeWeaveService weave = new() { QueryVector = [1f, 0f] };
+
+        weave.BatchVectorsByText["alpha description"] = [1f, 0f];
+
+        List<(string Purpose, int InputCount)> observed = [];
+
+        SemanticSpellRouter router = CreateRouter(weave, BaseSettings(enabled: true));
+
+        SpellRoutingDecision decision = await router.ResolveAsync(
+
+            [AlphaSpell],
+
+            "prompt",
+
+            CancellationToken.None,
+
+            (purpose, inputCount) => observed.Add((purpose, inputCount)));
+
+        Assert.Equal(SpellRoutingDecisionMode.DirectResonance, decision.Mode);
+
+        Assert.Equal(
+
+            [("spell-catalog-embedding", 1), ("spell-routing-embedding", 1)],
+
+            observed);
+
+    }
+
+    [Fact]
     public async Task ResolveAsync_PureMode_NoSpellAboveThreshold_ReturnsDirectResonanceWithNullSpell()
     {
         FakeWeaveService weave = new() { QueryVector = [1f, 0f] };

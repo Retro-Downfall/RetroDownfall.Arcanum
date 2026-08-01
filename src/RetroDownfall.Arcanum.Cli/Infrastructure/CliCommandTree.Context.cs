@@ -82,7 +82,143 @@ internal static partial class CliCommandTree
 
         context.Add(current);
 
+        context.Add(BuildContextPreview(handler, "inspect", ContextPreviewView.Inspect));
+
+        context.Add(BuildContextPreview(handler, "tools", ContextPreviewView.Tools));
+
+        context.Add(BuildContextPreview(handler, "sources", ContextPreviewView.Sources));
+
         return context;
+
+    }
+
+    private static Command BuildMana(IServiceProvider serviceProvider) =>
+
+        BuildContextPreview(
+
+            serviceProvider.GetRequiredService<ContextCommands>(),
+
+            "mana",
+
+            ContextPreviewView.Mana);
+
+    private static Command BuildContextPreview(
+
+        ContextCommands handler,
+
+        string name,
+
+        ContextPreviewView view)
+
+    {
+
+        Command command = new(
+
+            name,
+
+            view == ContextPreviewView.Mana
+
+                ? "Estimate the effective turn token allocation without main inference."
+
+                : $"Inspect effective turn {name} without main inference.");
+
+        Argument<string[]> prompt = new("prompt")
+
+        {
+
+            Arity = ArgumentArity.ZeroOrMore,
+
+            Description = "Optional prompt text used for routing and retrieval.",
+
+        };
+
+        Option<bool> showContent = new("--show-content")
+
+        {
+
+            Description = "Include model-visible content for explicit operator inspection.",
+
+        };
+
+        Option<bool> noRetrieval = new("--no-retrieval")
+
+        {
+
+            Description = "Skip embedding and RAG retrieval work.",
+
+        };
+
+        Option<string?> campaign = new("--campaign", "-c")
+
+        {
+
+            Description = "Campaign GUID or name; defaults to saved/detected context.",
+
+        };
+
+        Option<string?> workspace = new("--workspace", "-w")
+
+        {
+
+            Description = "Workspace ID or path; defaults to saved/detected context.",
+
+        };
+
+        Option<string?> model = new("--model", "-m")
+
+        {
+
+            Description = "Model name; defaults to saved/server context.",
+
+        };
+
+        Option<string?> session = new("--session", "-s")
+
+        {
+
+            Description = "Session GUID, title, or prefix; defaults to saved context.",
+
+        };
+
+        command.Add(prompt);
+
+        command.Add(showContent);
+
+        command.Add(noRetrieval);
+
+        command.Add(campaign);
+
+        command.Add(workspace);
+
+        command.Add(model);
+
+        command.Add(session);
+
+        command.SetAction(
+
+            async (ParseResult parseResult, CancellationToken cancellationToken) =>
+
+                await handler.Preview(
+
+                    view,
+
+                    string.Join(' ', parseResult.GetValue(prompt) ?? []),
+
+                    parseResult.GetValue(showContent),
+
+                    parseResult.GetValue(noRetrieval),
+
+                    parseResult.GetValue(campaign),
+
+                    parseResult.GetValue(workspace),
+
+                    parseResult.GetValue(model),
+
+                    parseResult.GetValue(session),
+
+                    cancellationToken).ConfigureAwait(false));
+
+        return command;
 
     }
 

@@ -3,6 +3,12 @@
 This document is the focused companion to `Arcanum.DESIGN.md` §10.7. It describes the one shared
 buffered/streaming model-tool loop and the ordering contract for attachment content.
 
+## Read-only preflight preview
+
+Before the normal loop, operators can run `arcanum context inspect [prompt]`, `arcanum context tools`, `arcanum context sources`, or `arcanum mana [prompt]`. These commands resolve the same saved/explicit Campaign, Workspace, Model, and Session context as `ask`/`chat`, then call `POST /api/intelligence/context/inspect`.
+
+The preview resolves a production model lease, loads Session history and explicit context pins, reads CODEX, applies production Spell routing and resonant dependencies, optionally retrieves Workspace/attachment RAG plus Saga/Lexicon context, builds and filters the production tool set, calls `SystemPromptBuilder.BuildDocument`, evaluates the production compression rule, and runs the model-aware token estimator. It stops before the turn coordinator: no main inference, tool call, budget reservation, assistant Entry, or response persistence occurs. `--no-retrieval` omits embedding/RAG work and automatic semantic Spell routing. `--show-content` explicitly includes the assembled prompt/messages; otherwise only metadata, reasons, and token counts leave the host.
+
 ## 1. One logical turn, multiple provider requests
 
 A tool response cannot change the provider request that produced the tool call. “Refresh in the

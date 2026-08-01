@@ -42,7 +42,8 @@ public sealed class SemanticSpellRouter(
     public async Task<SpellRoutingDecision> ResolveAsync(
         IReadOnlyList<SpellMetadata> spells,
         string userPrompt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string, int>? observeEmbedding = null)
     {
 
         EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
@@ -65,7 +66,7 @@ public sealed class SemanticSpellRouter(
         {
 
             ConcurrentDictionary<string, Embedding<float>>? spellEmbeddings = await spellWeaveCache
-                .GetOrCreateAsync(spells, cancellationToken)
+                .GetOrCreateAsync(spells, cancellationToken, observeEmbedding)
                 .ConfigureAwait(false);
 
             if (spellEmbeddings is null)
@@ -85,6 +86,8 @@ public sealed class SemanticSpellRouter(
                 return SpellRoutingDecision.FullGrimoire();
 
             }
+
+            observeEmbedding?.Invoke("spell-routing-embedding", 1);
 
             Result<Embedding<float>> promptEmbedResult = await weaveService
                 .EmbedAsync(userPrompt, cancellationToken)
