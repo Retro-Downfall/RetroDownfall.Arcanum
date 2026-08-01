@@ -40,9 +40,11 @@ case-insensitively but fail if that would select more than one case-distinct key
 
 The latest Bound version must carry verified workspace provenance. The resolver checks workspace
 identity, lexical and canonical containment, unchanged symlink target, path/open-handle identity,
-and Sanctum against the actual canonical path. Bytes come from the verified handle under the text
-or image size cap. Two complete handle reads must have identical SHA-256 hashes. MIME, strict UTF-8
-for text, Scrying allowlists, and model vision capability are reapplied.
+and Sanctum against the actual canonical path. Bytes come from the verified handle under the
+maximum supported attachment read bound because the source kind may have changed. Two complete
+handle reads must have identical SHA-256 hashes. Detected MIME determines the refreshed
+Text/Image/Binary kind; that kind's size, strict UTF-8, and Scrying policy are reapplied, and model
+vision capability is required before a refreshed image can enter the next model round.
 
 An unchanged hash reuses the latest row and encrypted blob. Changed bytes create the next version
 under the existing per-session/per-logical-key locks and `MaxBytesPerSession` /
@@ -158,6 +160,30 @@ chunk text, vectors, source hashes, or raw ledger entries.
 `/attachments refresh <logicalName>` resolves the latest backend row and posts its opaque attachment
 id to `/api/sessions/{id}/attachments/{attachmentId}/refresh`. The endpoint invokes the same secure
 refresh core used after `refresh_session_file`; it rechecks Sanctum and source identity, persists or
-reuses the verified version, and returns the sanitized `AttachmentRefreshEvent`. Because this is an
-operator action outside a model round, no content injection is queued. Command Center reports Live
+reuses the verified version with its currently detected kind, and returns the sanitized
+`AttachmentRefreshEvent`. Because this is an operator action outside a model round, no content
+injection is queued and no default-model vision capability is required. Command Center reports Live
 only from that successful response.
+
+## 7. Standalone lifecycle and turn entry
+
+`arcanum attachment add|reference|list|show|versions|refresh|pin|unpin|export|reveal` manages the
+same bound rows without entering this model loop. `add` uploads client-read bytes as a snapshot;
+`reference` sends a server-workspace-relative path that only the host resolves, authorizes, stably
+reads, and persists. Refresh calls the service described in §2 but stops before queued injection.
+No standalone metadata command materializes content or spends the turn reference budget.
+
+Content enters a turn only through an explicit current upload, a bound GUID passed to repeatable
+`ask --attachment` / `chat --attachment`, an admitted text context pin, a successful model attach or
+refresh tool, or bounded attachment RAG. Direct CLI GUIDs are validated against the effective
+Session and enter the §3 ledger as explicit attachment references. Text pins follow the same
+dedupe/admission path. Image pins stay durable but produce `Unsupported` for implicit
+materialization; the user must pass the image GUID explicitly to a vision-capable turn. Binary
+attachments remain manageable/exportable but are rejected as direct model-context materialization.
+
+Export and reveal remain outside turn assembly. Export streams the authenticated stored snapshot
+to a same-directory stage and atomically publishes plaintext only after success; it refuses stdout.
+Reveal opens a locally present `ARCABLOB` stored snapshot artifact, never the live source or a
+decrypted copy; remote/mismatched clients are directed to export.
+List/show/versions/refresh/pin/unpin/reveal and `show --privacy` are metadata/disclosure only, never
+attachment-byte terminal output and never an acknowledgement gate.

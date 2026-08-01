@@ -372,7 +372,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             "binary.pdf",
             new byte[] { 0x00, 0x01, 0x02 },
             "application/pdf",
-            SessionAttachmentKind.Text);
+            SessionAttachmentKind.Binary);
 
         FakeWeaveService weave = new();
 

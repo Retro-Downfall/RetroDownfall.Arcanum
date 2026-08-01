@@ -25,13 +25,14 @@ internal static partial class CliCommandTree
         Option<string?> presencePenalty = new("--presence-penalty");
         Option<string?> frequencyPenalty = new("--frequency-penalty");
         Option<string[]> image = new("--image") { AllowMultipleArgumentsPerToken = true };
+        Option<string[]> attachment = new("--attachment");
         Argument<string[]> prompt = new("prompt");
 
         ask.Add(model); ask.Add(@new); ask.Add(unattended); ask.Add(campaign);
         ask.Add(workspace); ask.Add(session);
         ask.Add(temperature); ask.Add(topP); ask.Add(maxTokens); ask.Add(seed);
         ask.Add(stop); ask.Add(responseFormat); ask.Add(presencePenalty);
-        ask.Add(frequencyPenalty); ask.Add(image); ask.Add(prompt);
+        ask.Add(frequencyPenalty); ask.Add(image); ask.Add(attachment); ask.Add(prompt);
 
         ask.SetAction(async (ParseResult pr, CancellationToken ct) =>
         {
@@ -55,6 +56,7 @@ internal static partial class CliCommandTree
                 pr.GetValue(presencePenalty),
                 pr.GetValue(frequencyPenalty),
                 pr.GetValue(image) ?? [],
+                pr.GetValue(attachment) ?? [],
                 words).ConfigureAwait(false);
         });
         return ask;

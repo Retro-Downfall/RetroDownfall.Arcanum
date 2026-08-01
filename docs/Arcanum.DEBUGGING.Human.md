@@ -31,8 +31,9 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
 | `WizardIntelligenceProvider` (`Api/Intelligence/`) | Turn entry (`ValidateReasoningForCandidate()`); provider resolution (`ProviderResolver.ResolveCandidates()`); model-call execution (`ModelCallExecutor`); context admission (`BuildModelCallContext()`); streaming writer (`InferenceExecuteWriter.WriteStreamAsync()`); interrupted/finalized cleanup (`GrimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync()`); audit (`WriteAuditRecordAsync()`). |
 | `TurnExecutionCoordinator` / `TurnEngine` (`Api/Intelligence/TurnEngine/`) | Semantic source (`ITurnEventSource.RunTurnAsync()`); projection selection (`ITurnPipelineRunner`); commitment tracking (`ProviderAttemptCommitTracker`); budget admission (`TurnAccountingAmbient`); event emission (`TurnEventEmitter`). |
 | `ArcanumDelegateTaskTool` / `SubagentRunner` / `DelegatedManaTracker` (`Api/Intelligence/Tools/` + `Subagents/`) | Parent tool arguments; sterile stateless child request; attachment ids intersected with the parent's current-turn materialized allowlist; `MaxSubagentDepth = 1`; provider-call charging; exact budget failure; `subagent` durable operation completion/failure; single terminal telemetry roll-up. |
-| `ToolExecutionPipeline` (`Api/Intelligence/`) | Preflight (`ManaPreflight`), attunement (`BuiltInToolRegistry`), `WardedToolExecution`, `PublicToolFailureMessage`, structured-error logging; shared attachment refresh core used by `ProcessRefreshSessionFileAsync()` and operator `RefreshSessionAttachmentAsync()` for selection, hidden-source Sanctum, MIME/model policy, persistence, structured result, and optional queued injection. |
+| `ToolExecutionPipeline` (`Api/Intelligence/`) | Preflight (`ManaPreflight`), attunement (`BuiltInToolRegistry`), `WardedToolExecution`, `PublicToolFailureMessage`, structured-error logging; shared attachment refresh core used by `ProcessRefreshSessionFileAsync()` and operator `RefreshSessionAttachmentAsync()` for selection, hidden-source Sanctum, MIME-derived kind policy, persistence, structured result, and optional queued injection. Model vision applies only to the injection path. |
 | `AttachmentSourceResolver` / `SessionAttachmentStore` | Refresh path reconstruction from encrypted provenance; canonical/link and path-vs-handle identity; double-read stability; session-scoped `RevalidateBoundSourcesAsync()` for authoritative list badges; `PersistRefreshedAsync()` hash reuse/new version under existing gates and byte/version budgets. |
+| `SessionEndpoints` / `AttachmentCommands` / `ArcanumApiClient` | Standalone multipart snapshot creation with per-file and aggregate declared/chunked bounds; server-only workspace reference resolution; attachment DTO/error mapping; authenticated plaintext content stream; selector/picker behavior; metadata-only terminal output; staged atomic export; encrypted stored-snapshot reveal; privacy disclosure without confirmation. |
 | `AttachmentMemoryGateAmbient` / `AttachmentMemoryProvenanceStore` | Current-turn promotion authority across provider/tool tasks; typed session/attachment/key/version/hash/materialized-time/source metadata; metadata-only consultation persistence; dynamic Available/Unavailable source status. |
 | `SessionContextPinMaterializer` | File/symbol lexical containment; `SecureFileReader.TryOpenRegularFile()` no-follow single-link admission; 64 MiB source ceiling; incremental full-handle SHA-256 with bounded retained content; streamed line-range and CRLF normalization. |
 | `CommandCenterAttachmentDriftMonitor` / `ShellCommandDispatcher` | Debounced workspace `FileSystemWatcher` invalidation; authenticated attachment-list revalidation; backend-only Snapshot/Live/Stale transitions; loaded/disk hash rendering; `/attachments refresh <name>` confirmation. No UI-thread hashing or client-side Live assumption. |
@@ -110,16 +111,23 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
     `AttachmentSourceResolver.ResolveCurrentAsync()`, and
     `SessionAttachmentStore.PersistRefreshedAsync()`. Confirm the selected id/key was visible at
     turn start; the model supplied no path; Sanctum sees the actual canonical path before either
-    handle read; both reads hash identically; unchanged content reuses the row; changed content
-    creates one next version; `TryBuildRefreshedContentsAsync()` consumes inject-once only after
-    materialization; and the User extras follow every tool result in the round. Native streams emit
+    handle read; both reads hash identically; detected MIME selects the refreshed kind; unchanged
+    content reuses the row; changed content creates one next version with current kind/MIME;
+    `TryBuildRefreshedContentsAsync()` consumes inject-once only after materialization; and the User
+    extras follow every tool result in the round. Native streams emit
     `attachmentRefreshed` after `toolResult`; OpenAI streams omit it.
     For an operator refresh, start at `ShellCommandDispatcher.RefreshAttachmentAsync()`, continue
     through `POST /api/sessions/{id}/attachments/{attachmentId}/refresh` and
     `ToolExecutionPipeline.RefreshSessionAttachmentAsync()`, and confirm the same resolver/persistence
-    core runs with injection disabled. For drift, edit a tracked source and break in
+    core runs with injection and the model-vision gate disabled. For drift, edit a tracked source and break in
     `CommandCenterAttachmentDriftMonitor.PumpAsync()` and `RevalidateBoundSourcesAsync()`; the watcher
     callback must not hash or set Live itself.
+    For standalone creation, break at the named `CreateSessionAttachmentSnapshot` or
+    `CreateSessionAttachmentReference` route handler inside `SessionEndpoints.MapSessionEndpoints()`:
+    snapshot upload must call `PersistNewAsync()` with no source
+    claim, while reference must call `ResolveForReferenceAsync()` and then
+    `PersistNewResolvedSourceAsync()` without rereading by path. Confirm failures contain no source
+    path and map through `ArcanumErrorMapper` rather than a blanket conflict.
 14. **Trace attachment extraction and retrieval:** break at
     `SessionAttachmentIndexingService.TryEnqueue()`, `SessionAttachmentIndexProcessor.ProcessAsync()`,
     and `SessionAttachmentIndexRepository.ReplaceAsync()`. Confirm bytes arrive through
@@ -189,6 +197,20 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
     original destination survives and the unique stage file is cleaned. Redirect output with an
     existing destination: without `--yes`, confirmation must fail before the content GET; with
     `--json`, stdout must contain exactly one source-generated object and no progress text.
+20. **Trace standalone attachment automation:** create one snapshot with `arcanum attachment add -
+    --name probe.txt --mime text/plain --session <id>` and one live row with `attachment reference
+    probe.txt --workspace <workspace> --session <id>`. Break in `AttachmentCommands`, the three
+    attachment endpoints, `AttachmentSourceResolver`, and `SessionAttachmentStore`. The snapshot
+    must be `SnapshotOnly`; only the reference may carry refreshable provenance. Modify the server
+    file, run `attachment refresh`, and verify the shared service creates exactly one next version.
+    Run `versions`, pin/unpin, and confirm an image pin reports `Unsupported` during implicit
+    materialization rather than disappearing. `show --privacy` must print without reading stdin or
+    requiring acknowledgement. For `export`, interrupt the content stream and confirm the old
+    destination survives and the staged file is cleaned; `--output -` must fail before a content
+    GET. `reveal` must target a locally present `ARCABLOB` snapshot path, never the live source;
+    missing/non-envelope local targets must recommend export without launching. Redirect every
+    metadata command with `--json` and verify no plaintext bytes or absolute source path reaches
+    stdout/stderr.
 
 ## Related documents
 

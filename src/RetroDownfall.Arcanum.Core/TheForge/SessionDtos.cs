@@ -144,7 +144,13 @@ public sealed record SessionAttachmentDto(
     string? LastObservedSourceContentSha256 = null,
     DateTimeOffset? LastObservedSourceWriteTime = null,
     long? LastObservedSourceByteLength = null,
-    SessionAttachmentIndexStatus IndexingStatus = SessionAttachmentIndexStatus.NotEligible);
+    SessionAttachmentIndexStatus IndexingStatus = SessionAttachmentIndexStatus.NotEligible,
+    Guid? SessionId = null);
+
+public sealed record CreateSessionAttachmentReferenceRequest(
+    string WorkspacePath,
+    string? WorkspaceId = null,
+    string? LogicalName = null);
 
 public sealed record CreateSessionContextPinRequest(
     SessionContextPinKind Kind,

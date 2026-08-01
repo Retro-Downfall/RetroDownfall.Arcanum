@@ -88,11 +88,15 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<IConsoleDispatcher, ConsoleDispatcher>();
 
+        services.AddSingleton(new CliStandardInput(Console.In));
+
         services.AddSingleton<IConfirmationPrompt, ConfirmationPrompt>();
 
         services.AddSingleton<IResourcePicker, SpectreResourcePicker>();
 
         services.AddSingleton<IRecentResourceStore, RecentResourceStore>();
+
+        services.AddSingleton<IAttachmentRevealLauncher, AttachmentRevealLauncher>();
 
         services.AddSingleton<TelemetryService>();
 
@@ -220,6 +224,8 @@ internal static class CliApplicationFactory
         services.AddTransient<WebWorkflowCommands>();
 
         services.AddTransient<FileBatchCommands>();
+
+        services.AddTransient<AttachmentCommands>();
 
         services.AddTransient<OperationCommands>();
         services.AddTransient<DataEncryptionCommands>();

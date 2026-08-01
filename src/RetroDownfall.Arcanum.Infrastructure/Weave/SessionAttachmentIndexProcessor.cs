@@ -62,7 +62,7 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         int maxBytes = ArcanumSettingClamps.EmbeddingsAttachmentMaxBytes(settings.MaxAttachmentBytes);
 
-        if (attachment.Kind == SessionAttachmentKind.Image || attachment.ByteLength > maxBytes)
+        if (attachment.Kind != SessionAttachmentKind.Text || attachment.ByteLength > maxBytes)
         {
 
             await MarkWithoutIndexAsync(

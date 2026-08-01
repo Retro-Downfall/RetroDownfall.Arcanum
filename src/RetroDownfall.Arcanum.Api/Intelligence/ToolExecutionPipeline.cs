@@ -537,7 +537,6 @@ public sealed class ToolExecutionPipeline(
             }
 
         }
-
         else if (executedSuccessfully
             && string.Equals(toolName, "refresh_session_file", StringComparison.Ordinal))
         {
@@ -660,7 +659,7 @@ public sealed class ToolExecutionPipeline(
 
             return Result<AttachmentRefreshEvent>.Failure(
 
-                new Error("Attachment.Refresh.InvalidSelector", "A session and attachment are required."));
+                new Error(ErrorCodes.Attachment.InvalidRequest, "A session and attachment are required."));
 
         }
 
@@ -672,7 +671,7 @@ public sealed class ToolExecutionPipeline(
 
                 new Error(
 
-                    "Attachment.Refresh.Disabled",
+                    ErrorCodes.Attachment.Disabled,
 
                     "Session attachments are disabled."));
 
@@ -734,11 +733,31 @@ public sealed class ToolExecutionPipeline(
 
             new Error(
 
-                "Attachment.Refresh." + (failure?.ErrorCode ?? "Failed"),
+                MapAttachmentRefreshErrorCode(failure?.ErrorCode),
 
                 failure?.Message ?? "The tracked attachment could not be refreshed."));
 
     }
+
+    private static string MapAttachmentRefreshErrorCode(string? errorCode) =>
+
+        errorCode switch
+
+        {
+
+            "attachment_not_visible" => ErrorCodes.Attachment.NotFound,
+
+            "source_unavailable" => ErrorCodes.Attachment.SourceUnavailable,
+
+            "image_policy_denied" or "invalid_content" => ErrorCodes.Attachment.InvalidContent,
+
+            "attachment_budget_exhausted" => ErrorCodes.Attachment.LimitExceeded,
+
+            "ambiguous_logical_key" => ErrorCodes.Attachment.InvalidRequest,
+
+            _ => ErrorCodes.Attachment.InvalidReference,
+
+        };
 
     private async Task<RefreshPostProcess> ProcessRefreshSessionFileCoreAsync(
 
@@ -822,19 +841,7 @@ public sealed class ToolExecutionPipeline(
                 "The selected attachment is snapshot-only or lacks verified refreshable source metadata.");
         }
 
-        if (latest.Kind == SessionAttachmentKind.Image
-            && SessionAttachmentToolInjection.ValidateImageAttach(
-                latest,
-                byteLength: 0,
-                settings.Value,
-                request.Model) is { } imagePolicyError)
-        {
-            return RefreshError("image_policy_denied", imagePolicyError);
-        }
-
-        long maxBytes = latest.Kind == SessionAttachmentKind.Image
-            ? ArcanumSettingClamps.ScryingMaxImageBytes(settings.Value.ResolveScrying().MaxImageBytes)
-            : ArcanumSettingClamps.MaxAttachFileSizeBytes(ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+        long maxBytes = SessionAttachmentContentPolicy.ResolveMaximumReadBytes(settings.Value);
 
         async Task<bool> AuthorizePathAsync(string canonicalPath, CancellationToken ct)
         {
@@ -868,10 +875,35 @@ public sealed class ToolExecutionPipeline(
                 current.Metadata.DiagnosticReason ?? "The attachment source could not be safely refreshed.");
         }
 
-        string? contentError = ValidateRefreshedContent(latest, current, settings.Value);
+        string? contentError = ValidateRefreshedContent(
+            current,
+            settings.Value,
+            out SessionAttachmentKind refreshedKind);
+
         if (contentError is not null)
         {
             return RefreshError("invalid_content", contentError);
+        }
+
+        if (includeAdditionalContext && refreshedKind == SessionAttachmentKind.Image)
+        {
+            SessionAttachmentRecord refreshedImage = latest with
+            {
+                MimeType = current.DetectedMimeType!,
+
+                ByteLength = current.VerifiedBytes.Length,
+
+                Kind = refreshedKind,
+            };
+
+            if (SessionAttachmentToolInjection.ValidateImageAttach(
+                    refreshedImage,
+                    refreshedImage.ByteLength,
+                    settings.Value,
+                    request.Model) is { } imagePolicyError)
+            {
+                return RefreshError("image_policy_denied", imagePolicyError);
+            }
         }
 
         SessionAttachmentRefreshPersistence persisted;
@@ -1004,49 +1036,24 @@ public sealed class ToolExecutionPipeline(
     }
 
     private static string? ValidateRefreshedContent(
-        SessionAttachmentRecord latest,
         AttachmentSourceResolution current,
-        ArcanumSettings settings)
+        ArcanumSettings settings,
+        out SessionAttachmentKind refreshedKind)
     {
-        string mime = current.DetectedMimeType ?? string.Empty;
-        if (latest.Kind == SessionAttachmentKind.Image)
+        if (string.IsNullOrWhiteSpace(current.DetectedMimeType))
         {
-            if (!mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-            {
-                return "The refreshed source no longer contains a supported image type.";
-            }
+            refreshedKind = default;
 
-            string[] allowed = settings.ResolveScrying().AllowedMimeTypes ?? [];
-            return allowed.Length == 0 || allowed.Contains(mime, StringComparer.OrdinalIgnoreCase)
-                ? null
-                : $"Image type '{mime}' is not permitted by Scrying policy.";
+            return "Attachment content type is required.";
         }
 
-        bool textualMime = mime.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
-            || mime is "application/json" or "application/xml" or "application/yaml" or "application/toml";
-        if (!textualMime)
-        {
-            return $"Content type '{mime}' is not a supported textual attachment type.";
-        }
+        refreshedKind = SessionAttachmentContentPolicy.Classify(current.DetectedMimeType);
 
-        string[] allowedUploads = settings.ResolveFiles().AllowedMimeTypes ?? [];
-        if (allowedUploads.Length > 0
-            && !allowedUploads.Contains(mime, StringComparer.OrdinalIgnoreCase))
-        {
-            return $"Content type '{mime}' is not permitted by upload MIME policy.";
-        }
-
-        try
-        {
-            string decoded = new UTF8Encoding(false, true).GetString(current.VerifiedBytes.Span);
-            return decoded.Contains('\0', StringComparison.Ordinal)
-                ? "Refreshed textual content contains NUL bytes."
-                : null;
-        }
-        catch (DecoderFallbackException)
-        {
-            return "Refreshed textual content is not valid UTF-8.";
-        }
+        return SessionAttachmentContentPolicy.Validate(
+            refreshedKind,
+            current.VerifiedBytes,
+            current.DetectedMimeType,
+            settings);
     }
 
     private static List<FunctionCallContent> CollectFunctionCalls(ChatResponse response)

@@ -59,7 +59,8 @@ internal static class SessionMapping
             source.LastObservedContentSha256,
             source.LastObservedWriteTime,
             source.LastObservedByteLength,
-            indexingStatus);
+            indexingStatus,
+            record.SessionId);
     }
 
 }

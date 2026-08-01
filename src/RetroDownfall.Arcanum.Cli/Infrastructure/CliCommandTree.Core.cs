@@ -26,12 +26,13 @@ internal static partial class CliCommandTree
         Option<string?> responseFormat = new("--response-format") { Description = "Response format: text | json_object | json_schema." };
         Option<string?> presencePenalty = new("--presence-penalty") { Description = "Presence penalty -2..2." };
         Option<string?> frequencyPenalty = new("--frequency-penalty") { Description = "Frequency penalty -2..2." };
+        Option<string[]> attachment = new("--attachment") { Description = "Bound attachment GUID to use on the next successful turn; repeatable." };
 
         chat.Add(model); chat.Add(@new); chat.Add(noTools); chat.Add(unattended);
         chat.Add(campaign); chat.Add(workspace); chat.Add(session);
         chat.Add(temperature); chat.Add(topP); chat.Add(maxTokens);
         chat.Add(seed); chat.Add(stop); chat.Add(responseFormat); chat.Add(presencePenalty);
-        chat.Add(frequencyPenalty);
+        chat.Add(frequencyPenalty); chat.Add(attachment);
 
         chat.SetAction(async (ParseResult pr, CancellationToken ct) =>
         {
@@ -51,7 +52,8 @@ internal static partial class CliCommandTree
                 pr.GetValue(stop) ?? [],
                 pr.GetValue(responseFormat),
                 pr.GetValue(presencePenalty),
-                pr.GetValue(frequencyPenalty)).ConfigureAwait(false);
+                pr.GetValue(frequencyPenalty),
+                pr.GetValue(attachment) ?? []).ConfigureAwait(false);
         });
         return chat;
     }

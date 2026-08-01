@@ -4,21 +4,26 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Streaming;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
@@ -32,6 +37,8 @@ internal static class SessionEndpoints
     private static readonly byte[] SseDataPrefix = "data: "u8.ToArray();
 
     private static readonly byte[] SseLineBreak = "\n\n"u8.ToArray();
+
+    private const long AttachmentMultipartEnvelopeAllowanceBytes = 64L * 1024L;
 
     public static RouteGroupBuilder MapSessionEndpoints(this RouteGroupBuilder apiGroup)
     {
@@ -247,6 +254,946 @@ internal static class SessionEndpoints
 
         apiGroup.MapPost(
 
+            "/sessions/{id:guid}/attachments",
+
+            async (
+
+                Guid id,
+
+                ISessionRepository repo,
+
+                ISessionAttachmentStore store,
+
+                ISessionAttachmentRetrievalService attachmentRetrieval,
+
+                IOptionsMonitor<ArcanumSettings> options,
+
+                HttpContext ctx) =>
+
+            {
+
+                ArcanumSettings settings = options.CurrentValue;
+
+                if (!settings.ResolveAttachments().Enabled)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.Disabled,
+
+                        "Session attachments are disabled.");
+
+                }
+
+                Session? session = await repo
+
+                    .GetByIdAsync(id, ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                if (session is null)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Session.NotFound,
+
+                        "Session was not found.");
+
+                }
+
+                if (!ctx.Request.HasFormContentType)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.InvalidRequest,
+
+                        "A multipart form with a 'file' field is required.");
+
+                }
+
+                long maximumReadBytes = SessionAttachmentContentPolicy
+
+                    .ResolveMaximumReadBytes(settings);
+
+                long maximumRequestBytes = ResolveAttachmentMultipartRequestLimit(
+
+                    maximumReadBytes);
+
+                if (ctx.Request.ContentLength is { } contentLength
+
+                    && contentLength > maximumRequestBytes)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.TooLarge,
+
+                        $"The multipart attachment request exceeds the {maximumRequestBytes}-byte aggregate limit.");
+
+                }
+
+                IHttpMaxRequestBodySizeFeature? requestBodySize = ctx.Features
+
+                    .Get<IHttpMaxRequestBodySizeFeature>();
+
+                if (requestBodySize is { IsReadOnly: false })
+
+                {
+
+                    requestBodySize.MaxRequestBodySize =
+
+                        ResolveAttachmentMultipartTransportLimit(maximumRequestBytes);
+
+                }
+
+                IFormCollection form;
+
+                Stream originalBody = ctx.Request.Body;
+
+                using AttachmentMultipartAggregateReadStream aggregateBody = new(
+
+                    originalBody,
+
+                    maximumRequestBytes);
+
+                try
+
+                {
+
+                    ctx.Request.Body = aggregateBody;
+
+                    form = await ctx.Request
+
+                        .ReadFormAsync(
+
+                            CreateAttachmentFormOptions(maximumReadBytes),
+
+                            ctx.RequestAborted)
+
+                        .ConfigureAwait(false);
+
+                }
+                catch (Exception exception) when (exception is InvalidDataException or BadHttpRequestException)
+
+                {
+
+                    string errorCode = ResolveAttachmentFormErrorCode(exception);
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        errorCode,
+
+                        errorCode == ErrorCodes.Attachment.TooLarge
+
+                            ? "The attachment exceeds the multipart read limit."
+
+                            : "The multipart attachment request could not be read.");
+
+                }
+                finally
+
+                {
+
+                    ctx.Request.Body = originalBody;
+
+                }
+
+                IFormFile? file = form.Files.GetFile("file");
+
+                if (file is null)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.InvalidRequest,
+
+                        "A multipart 'file' field is required.");
+
+                }
+
+                string submittedFileName = GetSubmittedFileName(file.FileName);
+
+                if (!SessionAttachmentPathSanitizer.TrySanitize(
+
+                        submittedFileName,
+
+                        out string safeFileName,
+
+                        out _))
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.InvalidRequest,
+
+                        "The attachment filename is invalid.");
+
+                }
+
+                string logicalNameHint = form["logicalName"].ToString();
+
+                if (string.IsNullOrWhiteSpace(logicalNameHint))
+
+                {
+
+                    logicalNameHint = safeFileName;
+
+                }
+
+                if (!SessionAttachmentPathSanitizer.TrySanitize(
+
+                        logicalNameHint,
+
+                        out string safeLogicalName,
+
+                        out _))
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.InvalidRequest,
+
+                        "The attachment logical name is invalid.");
+
+                }
+
+                string declaredMimeType = NormalizeMimeType(file.ContentType);
+
+                if (UploadedFileMimeValidator.IsExtensionMimeMismatch(
+
+                        safeFileName,
+
+                        declaredMimeType))
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.InvalidContent,
+
+                        "The attachment filename extension does not match its declared content type.");
+
+                }
+
+                if (file.Length > maximumReadBytes || file.Length > int.MaxValue)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.TooLarge,
+
+                        $"The attachment exceeds the {maximumReadBytes}-byte read limit.");
+
+                }
+
+                byte[] bytes;
+
+                await using (Stream source = file.OpenReadStream())
+
+                {
+
+                    using MemoryStream buffer = new((int)file.Length);
+
+                    await source
+
+                        .CopyToAsync(buffer, ctx.RequestAborted)
+
+                        .ConfigureAwait(false);
+
+                    if (buffer.Length > maximumReadBytes)
+
+                    {
+
+                        return AttachmentFailure(
+
+                            ctx,
+
+                            ErrorCodes.Attachment.TooLarge,
+
+                            $"The attachment exceeds the {maximumReadBytes}-byte read limit.");
+
+                    }
+
+                    bytes = buffer.ToArray();
+
+                }
+
+                string detectedMimeType = AttachmentMimeDetector.Detect(bytes, safeFileName);
+
+                string mimeType = ResolveSnapshotMimeType(
+
+                    declaredMimeType,
+
+                    detectedMimeType);
+
+                SessionAttachmentKind kind = SessionAttachmentContentPolicy.Classify(mimeType);
+
+                string? validationError = SessionAttachmentContentPolicy.Validate(
+
+                    kind,
+
+                    bytes,
+
+                    mimeType,
+
+                    settings);
+
+                if (validationError is not null)
+
+                {
+
+                    string errorCode = validationError.Contains(
+
+                        "byte limit",
+
+                        StringComparison.OrdinalIgnoreCase)
+
+                            ? ErrorCodes.Attachment.TooLarge
+
+                            : ErrorCodes.Attachment.InvalidContent;
+
+                    return AttachmentFailure(ctx, errorCode, validationError);
+
+                }
+
+                SessionAttachmentRecord attachment;
+
+                try
+
+                {
+
+                    attachment = await store
+
+                        .PersistNewAsync(
+
+                            id,
+
+                            pendingTurnId: null,
+
+                            entryId: null,
+
+                            safeLogicalName,
+
+                            safeFileName,
+
+                            bytes,
+
+                            mimeType,
+
+                            kind,
+
+                            ctx.RequestAborted)
+
+                        .ConfigureAwait(false);
+
+                }
+                catch (InvalidOperationException)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.LimitExceeded,
+
+                        "The session attachment storage limit would be exceeded.");
+
+                }
+
+                SessionAttachmentDto dto = await ToAttachmentDtoAsync(
+
+                    attachment,
+
+                    attachmentRetrieval,
+
+                    ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                return Results.Created(
+
+                    $"/api/sessions/{id:D}/attachments/{attachment.Id:D}/content",
+
+                    ApiResponse<SessionAttachmentDto>.FromResult(
+
+                        Result<SessionAttachmentDto>.Success(dto),
+
+                        traceId));
+
+            })
+
+        .WithName("CreateSessionAttachmentSnapshot");
+
+        apiGroup.MapPost(
+
+            "/sessions/{id:guid}/attachments/reference",
+
+            async (
+
+                Guid id,
+
+                ISessionRepository repo,
+
+                ISessionAttachmentStore store,
+
+                IAttachmentSourceResolver sourceResolver,
+
+                ISessionAttachmentRetrievalService attachmentRetrieval,
+
+                ISanctumGuard sanctumGuard,
+
+                IWorkspaceRegistry workspaceRegistry,
+
+                IOptionsMonitor<ArcanumSettings> options,
+
+                HttpContext ctx) =>
+
+            {
+
+                ArcanumSettings settings = options.CurrentValue;
+
+                if (!settings.ResolveAttachments().Enabled)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.Disabled,
+
+                        "Session attachments are disabled.");
+
+                }
+
+                Session? session = await repo
+
+                    .GetByIdAsync(id, ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                if (session is null)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Session.NotFound,
+
+                        "Session was not found.");
+
+                }
+
+                CreateSessionAttachmentReferenceRequest? request;
+
+                IResult? jsonError;
+
+                (request, jsonError) = await ApiRequestJson.ReadAsync(
+
+                    ctx,
+
+                    ArcanumJsonContext.Default.CreateSessionAttachmentReferenceRequest,
+
+                    static httpContext => ApiRequestJson.InvalidBodyResult<SessionAttachmentDto>(
+
+                        httpContext,
+
+                        ApiRequestJson.MalformedJsonMessage,
+
+                        ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto),
+
+                    ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                if (jsonError is not null)
+
+                {
+
+                    return jsonError;
+
+                }
+
+                if (request is null || string.IsNullOrWhiteSpace(request.WorkspacePath))
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.InvalidRequest,
+
+                        "A workspace path is required.");
+
+                }
+
+                string? workspaceRoot;
+
+                bool explicitRegisteredWorkspace = false;
+
+                if (!string.IsNullOrWhiteSpace(request.WorkspaceId))
+
+                {
+
+                    WorkspaceInfo? workspace = await workspaceRegistry
+
+                        .GetAsync(request.WorkspaceId.Trim(), ctx.RequestAborted)
+
+                        .ConfigureAwait(false);
+
+                    if (workspace is null)
+
+                    {
+
+                        return AttachmentFailure(
+
+                            ctx,
+
+                            ErrorCodes.Workspace.NotFound,
+
+                            "No workspace exists with that id.");
+
+                    }
+
+                    workspaceRoot = workspace.Path;
+
+                    explicitRegisteredWorkspace = true;
+
+                }
+                else
+
+                {
+
+                    workspaceRoot = settings.ResolveDefaultWorkspace();
+
+                }
+
+                if (string.IsNullOrWhiteSpace(workspaceRoot))
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.SourceUnavailable,
+
+                        "No server workspace is available for attachment references.");
+
+                }
+
+                string normalizedRoot;
+
+                string candidate;
+
+                try
+
+                {
+
+                    normalizedRoot = Path.GetFullPath(workspaceRoot);
+
+                    candidate = Path.IsPathRooted(request.WorkspacePath)
+
+                        ? Path.GetFullPath(request.WorkspacePath)
+
+                        : Path.GetFullPath(Path.Combine(normalizedRoot, request.WorkspacePath));
+
+                }
+                catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.InvalidReference,
+
+                        "The workspace attachment path is invalid.");
+
+                }
+
+                string submittedFileName = GetSubmittedFileName(request.WorkspacePath);
+
+                if (!SessionAttachmentPathSanitizer.TrySanitize(
+
+                        submittedFileName,
+
+                        out string safeFileName,
+
+                        out _))
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.InvalidRequest,
+
+                        "The attachment filename is invalid.");
+
+                }
+
+                string logicalNameHint = string.IsNullOrWhiteSpace(request.LogicalName)
+
+                    ? safeFileName
+
+                    : request.LogicalName;
+
+                if (!SessionAttachmentPathSanitizer.TrySanitize(
+
+                        logicalNameHint,
+
+                        out string safeLogicalName,
+
+                        out _))
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.InvalidRequest,
+
+                        "The attachment logical name is invalid.");
+
+                }
+
+                async Task<bool> AuthorizeCanonicalPathAsync(
+
+                    string canonicalPath,
+
+                    CancellationToken cancellationToken)
+
+                {
+
+                    if (session.CampaignId is not { } campaignId)
+
+                    {
+
+                        return true;
+
+                    }
+
+                    SanctumResult result = await sanctumGuard
+
+                        .ValidatePathAsync(
+
+                            campaignId.ToString("D"),
+
+                            canonicalPath,
+
+                            "attachment source read",
+
+                            "attachment_reference",
+
+                            cancellationToken)
+
+                        .ConfigureAwait(false);
+
+                    return result.Allowed;
+
+                }
+
+                long maximumReadBytes = SessionAttachmentContentPolicy
+
+                    .ResolveMaximumReadBytes(settings);
+
+                AttachmentSourceResolution resolution = await sourceResolver
+
+                    .ResolveForReferenceAsync(
+
+                        new AttachmentSourceClaim(
+
+                            candidate,
+
+                            explicitRegisteredWorkspace ? normalizedRoot : null),
+
+                        maximumReadBytes,
+
+                        AuthorizeCanonicalPathAsync,
+
+                        ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                IResult? resolutionError = ResolveAttachmentReferenceError(
+
+                    ctx,
+
+                    resolution,
+
+                    maximumReadBytes);
+
+                if (resolutionError is not null)
+
+                {
+
+                    return resolutionError;
+
+                }
+
+                string mimeType = resolution.DetectedMimeType!;
+
+                SessionAttachmentKind kind = SessionAttachmentContentPolicy.Classify(mimeType);
+
+                string? validationError = SessionAttachmentContentPolicy.Validate(
+
+                    kind,
+
+                    resolution.VerifiedBytes,
+
+                    mimeType,
+
+                    settings);
+
+                if (validationError is not null)
+
+                {
+
+                    string errorCode = validationError.Contains(
+
+                        "byte limit",
+
+                        StringComparison.OrdinalIgnoreCase)
+
+                            ? ErrorCodes.Attachment.TooLarge
+
+                            : ErrorCodes.Attachment.InvalidContent;
+
+                    return AttachmentFailure(ctx, errorCode, validationError);
+
+                }
+
+                SessionAttachmentRecord attachment;
+
+                try
+
+                {
+
+                    attachment = await store
+
+                        .PersistNewResolvedSourceAsync(
+
+                            id,
+
+                            pendingTurnId: null,
+
+                            entryId: null,
+
+                            safeLogicalName,
+
+                            safeFileName,
+
+                            kind,
+
+                            resolution,
+
+                            ctx.RequestAborted)
+
+                        .ConfigureAwait(false);
+
+                }
+                catch (InvalidOperationException)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.LimitExceeded,
+
+                        "The session attachment storage limit would be exceeded.");
+
+                }
+
+                SessionAttachmentDto dto = await ToAttachmentDtoAsync(
+
+                    attachment,
+
+                    attachmentRetrieval,
+
+                    ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                return Results.Created(
+
+                    $"/api/sessions/{id:D}/attachments/{attachment.Id:D}/content",
+
+                    ApiResponse<SessionAttachmentDto>.FromResult(
+
+                        Result<SessionAttachmentDto>.Success(dto),
+
+                        traceId));
+
+            })
+
+        .WithName("CreateSessionAttachmentReference");
+
+        apiGroup.MapGet(
+
+            "/sessions/{id:guid}/attachments/{attachmentId:guid}/content",
+
+            async (
+
+                Guid id,
+
+                Guid attachmentId,
+
+                ISessionRepository repo,
+
+                ISessionAttachmentStore store,
+
+                IOptionsMonitor<ArcanumSettings> options,
+
+                HttpContext ctx) =>
+
+            {
+
+                if (!options.CurrentValue.ResolveAttachments().Enabled)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.Disabled,
+
+                        "Session attachments are disabled.");
+
+                }
+
+                Session? session = await repo
+
+                    .GetByIdAsync(id, ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                if (session is null)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Session.NotFound,
+
+                        "Session was not found.");
+
+                }
+
+                SessionAttachmentRecord? attachment = await store
+
+                    .GetByIdAsync(attachmentId, ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                if (attachment is null
+
+                    || attachment.State != SessionAttachmentState.Bound
+
+                    || attachment.SessionId != id)
+
+                {
+
+                    return AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.NotFound,
+
+                        "Attachment was not found in this session.");
+
+                }
+
+                Stream plaintext = await store
+
+                    .OpenReadAsync(attachment, ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                string downloadName = SessionAttachmentPathSanitizer.TrySanitize(
+
+                    attachment.OriginalFileName,
+
+                    out string safeFileName,
+
+                    out _)
+
+                        ? safeFileName
+
+                        : "attachment";
+
+                string mimeType = string.IsNullOrWhiteSpace(attachment.MimeType)
+
+                    ? "application/octet-stream"
+
+                    : attachment.MimeType;
+
+                ctx.Response.Headers.CacheControl = "no-store";
+
+                ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+
+                return Results.Stream(
+
+                    plaintext,
+
+                    mimeType,
+
+                    fileDownloadName: downloadName,
+
+                    enableRangeProcessing: false);
+
+            })
+
+        .WithName("DownloadSessionAttachment");
+
+        apiGroup.MapPost(
+
             "/sessions/{id:guid}/attachments/{attachmentId:guid}/refresh",
 
             async (
@@ -315,7 +1262,7 @@ internal static class SessionEndpoints
 
                         ArcanumJsonContext.Default.ApiResponseAttachmentRefreshEvent,
 
-                        statusCode: StatusCodes.Status409Conflict);
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
 
                 }
 
@@ -997,6 +1944,486 @@ internal static class SessionEndpoints
         .WithName("UnpinSessionEntry");
 
         return apiGroup;
+    }
+
+    private static IResult AttachmentFailure(
+
+        HttpContext ctx,
+
+        string errorCode,
+
+        string message)
+
+    {
+
+        string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+        return Results.Json(
+
+            ApiResponse<SessionAttachmentDto>.FromResult(
+
+                Result<SessionAttachmentDto>.Failure(new Error(errorCode, message)),
+
+                traceId),
+
+            ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto,
+
+            statusCode: ArcanumErrorMapper.ResolveStatusCode(errorCode));
+
+    }
+
+    private static string GetSubmittedFileName(string? input)
+
+    {
+
+        if (string.IsNullOrWhiteSpace(input))
+
+        {
+
+            return string.Empty;
+
+        }
+
+        string normalized = input.Replace('\\', '/');
+
+        int finalSeparator = normalized.LastIndexOf('/');
+
+        return finalSeparator >= 0
+
+            ? normalized[(finalSeparator + 1)..]
+
+            : normalized;
+
+    }
+
+    private static string NormalizeMimeType(string? mimeType)
+
+    {
+
+        if (string.IsNullOrWhiteSpace(mimeType))
+
+        {
+
+            return "application/octet-stream";
+
+        }
+
+        int parameterSeparator = mimeType.IndexOf(';');
+
+        return (parameterSeparator >= 0
+
+                ? mimeType[..parameterSeparator]
+
+                : mimeType)
+
+            .Trim()
+
+            .ToLowerInvariant();
+
+    }
+
+    internal static long ResolveAttachmentMultipartRequestLimit(long maximumReadBytes)
+
+    {
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumReadBytes);
+
+        return checked(
+
+            maximumReadBytes + AttachmentMultipartEnvelopeAllowanceBytes);
+
+    }
+
+    internal static FormOptions CreateAttachmentFormOptions(long maximumReadBytes)
+
+    {
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumReadBytes);
+
+        return new FormOptions
+
+        {
+
+            MultipartBodyLengthLimit = maximumReadBytes,
+
+        };
+
+    }
+
+    internal static long ResolveAttachmentMultipartTransportLimit(
+
+        long aggregateRequestLimit)
+
+    {
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(aggregateRequestLimit);
+
+        return checked(aggregateRequestLimit + 1L);
+
+    }
+
+    internal static string ResolveAttachmentFormErrorCode(Exception exception)
+
+    {
+
+        ArgumentNullException.ThrowIfNull(exception);
+
+        bool payloadTooLarge = exception is BadHttpRequestException
+
+            {
+
+                StatusCode: StatusCodes.Status413PayloadTooLarge,
+
+            }
+
+            || exception is InvalidDataException
+
+            && exception.Message.Contains(
+
+                "length limit",
+
+                StringComparison.OrdinalIgnoreCase);
+
+        return payloadTooLarge
+
+            ? ErrorCodes.Attachment.TooLarge
+
+            : ErrorCodes.Attachment.InvalidRequest;
+
+    }
+
+    private sealed class AttachmentMultipartAggregateReadStream : Stream
+
+    {
+
+        private readonly Stream _inner;
+
+        private readonly long _maximumBytes;
+
+        private long _bytesRead;
+
+        public AttachmentMultipartAggregateReadStream(
+
+            Stream inner,
+
+            long maximumBytes)
+
+        {
+
+            ArgumentNullException.ThrowIfNull(inner);
+
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
+
+            _inner = inner;
+
+            _maximumBytes = maximumBytes;
+
+        }
+
+        public override bool CanRead => _inner.CanRead;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+
+        {
+
+            get => throw new NotSupportedException();
+
+            set => throw new NotSupportedException();
+
+        }
+
+        public override void Flush()
+
+        {
+
+        }
+
+        public override int Read(
+
+            byte[] buffer,
+
+            int offset,
+
+            int count)
+
+        {
+
+            int read = _inner.Read(
+
+                buffer,
+
+                offset,
+
+                ResolveReadCount(count));
+
+            return RecordRead(read);
+
+        }
+
+        public override int Read(Span<byte> buffer)
+
+        {
+
+            int read = _inner.Read(
+
+                buffer[..ResolveReadCount(buffer.Length)]);
+
+            return RecordRead(read);
+
+        }
+
+        public override async Task<int> ReadAsync(
+
+            byte[] buffer,
+
+            int offset,
+
+            int count,
+
+            CancellationToken cancellationToken)
+
+        {
+
+            int read = await _inner
+
+                .ReadAsync(
+
+                    buffer,
+
+                    offset,
+
+                    ResolveReadCount(count),
+
+                    cancellationToken)
+
+                .ConfigureAwait(false);
+
+            return RecordRead(read);
+
+        }
+
+        public override async ValueTask<int> ReadAsync(
+
+            Memory<byte> buffer,
+
+            CancellationToken cancellationToken = default)
+
+        {
+
+            int read = await _inner
+
+                .ReadAsync(
+
+                    buffer[..ResolveReadCount(buffer.Length)],
+
+                    cancellationToken)
+
+                .ConfigureAwait(false);
+
+            return RecordRead(read);
+
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) =>
+
+            throw new NotSupportedException();
+
+        public override void SetLength(long value) =>
+
+            throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+
+            throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+
+        {
+
+            base.Dispose(disposing);
+
+        }
+
+        private int ResolveReadCount(int requestedCount)
+
+        {
+
+            if (requestedCount <= 0)
+
+            {
+
+                return requestedCount;
+
+            }
+
+            long remainingWithSentinel = checked(
+
+                _maximumBytes - _bytesRead + 1L);
+
+            return checked((int)Math.Min(
+
+                requestedCount,
+
+                remainingWithSentinel));
+
+        }
+
+        private int RecordRead(int read)
+
+        {
+
+            _bytesRead = checked(_bytesRead + read);
+
+            if (_bytesRead > _maximumBytes)
+
+            {
+
+                throw new InvalidDataException(
+
+                    $"Multipart aggregate length limit {_maximumBytes} exceeded.");
+
+            }
+
+            return read;
+
+        }
+
+    }
+
+    private static string ResolveSnapshotMimeType(
+
+        string declaredMimeType,
+
+        string detectedMimeType)
+
+    {
+
+        if (!string.Equals(
+
+                detectedMimeType,
+
+                "application/octet-stream",
+
+                StringComparison.OrdinalIgnoreCase))
+
+        {
+
+            return detectedMimeType;
+
+        }
+
+        return declaredMimeType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
+
+            || declaredMimeType is "application/json" or "application/xml" or "application/yaml" or "application/toml"
+
+                ? declaredMimeType
+
+                : detectedMimeType;
+
+    }
+
+    private static IResult? ResolveAttachmentReferenceError(
+
+        HttpContext ctx,
+
+        AttachmentSourceResolution resolution,
+
+        long maximumReadBytes)
+
+    {
+
+        if (resolution.Metadata.Kind == AttachmentSourceKind.WorkspaceFile
+
+            && resolution.Metadata.Status == AttachmentSourceStatus.Refreshable
+
+            && !string.IsNullOrWhiteSpace(resolution.DetectedMimeType))
+
+        {
+
+            return null;
+
+        }
+
+        return resolution.Metadata.Status switch
+
+        {
+
+            AttachmentSourceStatus.Missing or AttachmentSourceStatus.Moved => AttachmentFailure(
+
+                ctx,
+
+                ErrorCodes.Attachment.SourceNotFound,
+
+                "The workspace attachment source was not found."),
+
+            AttachmentSourceStatus.Inaccessible
+
+                when resolution.Metadata.DiagnosticReason?.Contains(
+
+                    "exceeds",
+
+                    StringComparison.OrdinalIgnoreCase) is true => AttachmentFailure(
+
+                        ctx,
+
+                        ErrorCodes.Attachment.TooLarge,
+
+                        $"The workspace attachment exceeds the {maximumReadBytes}-byte read limit."),
+
+            AttachmentSourceStatus.Inaccessible
+
+                or AttachmentSourceStatus.WorkspaceUnavailable => AttachmentFailure(
+
+                    ctx,
+
+                    ErrorCodes.Attachment.SourceUnavailable,
+
+                    "The workspace attachment source could not be read."),
+
+            _ => AttachmentFailure(
+
+                ctx,
+
+                ErrorCodes.Attachment.InvalidReference,
+
+                "The workspace attachment reference is unsafe or no longer valid."),
+
+        };
+
+    }
+
+    private static async Task<SessionAttachmentDto> ToAttachmentDtoAsync(
+
+        SessionAttachmentRecord attachment,
+
+        ISessionAttachmentRetrievalService attachmentRetrieval,
+
+        CancellationToken cancellationToken)
+
+    {
+
+        IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus> statuses = await attachmentRetrieval
+
+            .GetStatusesAsync([attachment.Id], cancellationToken)
+
+            .ConfigureAwait(false);
+
+        return SessionMapping.ToAttachmentDto(
+
+            attachment,
+
+            statuses.GetValueOrDefault(
+
+                attachment.Id,
+
+                SessionAttachmentIndexStatus.NotEligible));
+
     }
 
     private static SessionContextPinDto ToContextPinDto(SessionContextPinRecord pin) => new(

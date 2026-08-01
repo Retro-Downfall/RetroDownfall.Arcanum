@@ -44,6 +44,7 @@ public sealed class AskCommand(
     /// <param name="presencePenalty">Presence penalty -2..2 (positive discourages repetition).</param>
     /// <param name="frequencyPenalty">Frequency penalty -2..2 (positive penalizes frequent tokens).</param>
     /// <param name="image">Attach an image (Scrying focus) for this turn; repeatable. Requires a vision-capable model.</param>
+    /// <param name="attachment">Bound session attachment GUID to reference; repeatable.</param>
     /// <param name="prompt">The prompt text: all words after ask, or after --.</param>
     public async Task<int> Ask(
         string[] escapedArguments,
@@ -63,6 +64,7 @@ public sealed class AskCommand(
         string? presencePenalty = null,
         string? frequencyPenalty = null,
         string[]? image = null,
+        string[]? attachment = null,
         params string[] prompt)
     {
         string promptText = BuildPrompt(prompt, escapedArguments);
@@ -76,6 +78,20 @@ public sealed class AskCommand(
                         "Prompt is required. Examples: arcanum ask What time is it? or arcanum ask -- local time")));
 
             return 1;
+        }
+
+        if (!AttachmentReferenceInput.TryParse(
+                attachment,
+                out List<Guid>? attachmentReferences,
+                out string? attachmentError))
+        {
+
+            AnsiConsole.MarkupLine(
+                palette.ErrorMarkup(
+                    Markup.Escape(attachmentError!)));
+
+            return 1;
+
         }
 
         InferenceFlagInputs flagInputs = new(temperature, topP, maxTokens, seed, stop, responseFormat, presencePenalty, frequencyPenalty);
@@ -295,7 +311,8 @@ public sealed class AskCommand(
                 PresencePenalty: flags.PresencePenalty,
                 FrequencyPenalty: flags.FrequencyPenalty,
                 CampaignId: campaignId,
-                ScryingFoci: scryingFoci);
+                ScryingFoci: scryingFoci,
+                AttachmentReferences: attachmentReferences);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {

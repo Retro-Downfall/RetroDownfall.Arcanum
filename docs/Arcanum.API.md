@@ -59,6 +59,9 @@ test, and documentation citations remain stable.
 | POST | `/api/sessions/{id}/rest` | Enqueue Campaign Log consolidation (**202** + `ApiResponse<bool>` when accepted; **503** + `Session.RestQueueFull` when the bounded queue rejects). |
 | GET | `/api/sessions/{id}/stream` | SSE replay + live entry stream. |
 | GET | `/api/sessions/{id}/attachments` | Revalidate tracked sources asynchronously, then list **bound** session attachments (`ApiResponse<SessionAttachmentDto[]>`; includes `indexingStatus`, the snapshot `RelativePath` for Reveal, and sanitized source provenance/refreshability; never an absolute source path; DESIGN §10.2.5). |
+| POST | `/api/sessions/{id}/attachments` | Create a snapshot-only bound attachment from multipart field `file` (optional `logicalName` form field); returns `201` + `ApiResponse<SessionAttachmentDto>`. The filename and declared MIME are hints; the server validates name, detected content, kind-specific byte limit, MIME/Scrying policy, strict encoding for text, and Session byte/version budgets. Unsupported binary/PDF/Office content remains a valid `Binary` attachment with `NotEligible` indexing status. |
+| POST | `/api/sessions/{id}/attachments/reference` | Create a refreshable live reference from `CreateSessionAttachmentReferenceRequest` (`workspacePath`, optional `workspaceId`, optional `logicalName`); the server alone resolves/authorizes/reads the source and persists the already-verified bytes; returns `201` + `ApiResponse<SessionAttachmentDto>`. |
+| GET | `/api/sessions/{id}/attachments/{attachmentId}/content` | Stream the authenticated plaintext of that stored bound snapshot with `Content-Disposition: attachment`, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`. Never returns or redirects to a live source path. |
 | POST | `/api/sessions/{id}/attachments/{attachmentId}/refresh` | Operator-triggered secure refresh through the same source-validation/persistence core as `refresh_session_file`; returns `ApiResponse<AttachmentRefreshEvent>` only after the backend has reused or persisted the confirmed current version. |
 | GET | `/api/sessions/{id}/context-pins` | List durable, structured session context pins. |
 | POST | `/api/sessions/{id}/context-pins` | Create or update a context pin by `(session, kind, stable target)`; accepts file, directory snapshot, symbol/range, session entry, attachment, URL, and diagnostic kinds. |
@@ -377,6 +380,53 @@ The CLI exposes this boundary directly as `arcanum workspace list|current|regist
 
 Search, export, analytics, CRUD, manual entry append, SSE live stream, and Campaign Log **`/rest`** use the Grimoire-backed **`/api/sessions`** surface. See **DESIGN §11.16 Session lifecycle** for persistence and lifecycle architecture.
 
+#### 8.18.1 Standalone session attachments
+
+All routes are API-key protected and operate only on a bound attachment belonging to the route
+Session. Successes use the native `ApiResponse<T>` envelope except the content stream.
+
+- **Snapshot:** `POST /api/sessions/{id}/attachments` requires multipart form field `file`; an
+  optional `logicalName` chooses the version family. It persists the supplied bytes as an immutable
+  encrypted snapshot with `SourceKind=SnapshotOnly` / `SourceStatus=NotApplicable`. The request may
+  originate from any client-readable path or stdin because no client path is sent or retained.
+  Unsupported binary/PDF/Office content is stored as `Binary` and remains `NotEligible` for text
+  extraction; it is not rejected merely because Arcanum cannot materialize it into model context.
+  The parser admits a maximum-size file plus 64 KiB of multipart envelope, but rejects aggregate
+  overflow with `Attachment.TooLarge` for both declared-length and chunked requests.
+- **Live reference:** `POST /api/sessions/{id}/attachments/reference` accepts
+  `{ "workspacePath": "docs/notes.md", "workspaceId": "optional-id", "logicalName": "optional-key" }`.
+  `workspacePath` is interpreted only on the server, relative to the selected registered workspace
+  or the configured active/default workspace. Absolute values do not widen authority: canonical
+  containment, link/file identity, stable bounded reads, and Campaign Sanctum must all pass. The
+  response exposes only opaque/sanitized provenance; canonical paths and file identities stay
+  encrypted server metadata.
+- **List/versions:** `GET /api/sessions/{id}/attachments` returns all bound versions. Clients derive
+  a latest-per-logical-key list or a version history without a second persistence authority.
+  `SessionAttachmentDto.SessionId` enables direct CLI output; `RelativePath` names the encrypted
+  stored snapshot, never the live source. CLI Reveal uses it only when the corresponding local file
+  is present and has an `ARCABLOB` envelope; otherwise the user is directed to authenticated export.
+- **Refresh:** `POST /api/sessions/{id}/attachments/{attachmentId}/refresh` accepts no body or path.
+  It calls the same `ToolExecutionPipeline.RefreshSessionAttachmentAsync` core used by
+  `refresh_session_file`. An unchanged hash reuses the row; changed verified bytes create the next
+  version under the existing per-Session byte and per-key version caps. Detected MIME determines the
+  refreshed version's current Text/Image/Binary kind. Kind-specific policy is reapplied, but this
+  operator endpoint does not require model vision capability because it injects no content.
+- **Content:** `GET /api/sessions/{id}/attachments/{attachmentId}/content` opens only the authenticated
+  stored snapshot through `ISessionAttachmentStore.OpenReadAsync`. It returns a download, never
+  inline content, with `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and no source
+  path in headers. Attachment bytes are therefore available for atomic client export without ever
+  being printed by metadata commands.
+- **Pins:** the existing context-pin routes create/delete `kind=attachment` pins whose target is an
+  attachment id and whose content version is its snapshot hash. Text pins may materialize
+  implicitly within the shared pin/turn budgets. Image pins remain stored but materialize with
+  `Unsupported`; a vision-capable turn must explicitly pass that bound attachment id.
+
+`Attachment.Disabled` → **403**; `Attachment.InvalidRequest`, `InvalidContent`,
+`InvalidReference`, and `SourceUnavailable` → **400**; `Attachment.NotFound` and `SourceNotFound` →
+**404**; `Attachment.LimitExceeded` → **409**; `Attachment.TooLarge` → **413**. Error messages are
+bounded and never echo a source path. Refresh failures use this same mapping instead of collapsing
+every outcome to a conflict.
+
 ### 8.19 Server lifecycle (PID file)
 
 The code-owned path is `~/.config/arcanum/arcanum.pid`. Startup fails if a live PID is present; a stale file is overwritten. Shutdown deletes the file only if it still names this process. DevHost and `serve` share the same path and therefore cannot run concurrently.
@@ -402,13 +452,13 @@ Wire-stable codes live on `ErrorCodes` (Core). HTTP mapping authority: `ArcanumE
 | `Validation.InvalidPrompt`, `InvalidBody`, `InvalidQuery`, `InvalidProviderType`, `AttachedFiles` | 400 | Request shape / bounds validation |
 | `Hub.Model` | 404 | Model not in any provider `models` |
 | `Hub.Error` | 500 | Generic inference failure (mapper default arm) |
-| `Campaign.NotFound`; `Session.NotFound` / `EntryNotFound`; `Grimoire.LoreNotFound`; `Apprentice.NotFound`; `Workspace.NotFound` / `FileNotFound`; `Spell.NotFound`; `Prompt.NotFound`; `Intelligence.HumanPromptNotFound`; `Mcp.ServerNotFound` / `ToolNotFound`; `Daemon.NotFound`; `Files.NotFound`; `Batches.NotFound` / `InputFileNotFound`; `Saga.NotFound`; `ProvingGrounds.SpellNotFound` / `PromptNotFound`; `Workspace.ReplacementNotFound` | 404 | Missing resource |
-| `Campaign.InvalidPath` / `MaxReached`; `Session.Archived` / `InvalidStatus` / `TooManyEntries` / `EntryTooLarge` / `MemoryManagementDisabled` / `EmptyContent`; `Apprentice.Disabled` / `PendingQueueFull` / `InvalidGuidance` / `InvalidPlan` / `InvalidGoal` / `InvalidWorkspace`; `Workspace.NameEmpty` / `SymbolicLinkEscape` / `PathTraversal` / `DirectoryNotEmpty` / `ReplacementAmbiguous` / `PathIsDirectory` / `PathIsFile`; `Spell.NoWorkspace` / `InvalidWorkspace` / `InvalidName` / `NameCollision` / `BuiltinReadOnly` / `DuplicateVersion` / `InvalidVersion`; `Prompt.CodexPathNotContained` / `DuplicateVersion` / `InvalidName` / `InvalidVersion` / `InvalidRequest`; `Mcp.AmbiguousServer` / `MissingWorkspace` / `ServerNotRunning` / `AmbiguousTool` / `ToolError`; `Sending.TaskRejected`; `Security.BlockedOutboundUrl` / `IdempotencyKeyTooLong`; `Files.InvalidMimeType`; `Batches.InvalidEndpoint`; `Embeddings.ConfirmationRequired`; `ProvingGrounds.InvalidTrial` / `WorkspaceNotAllowed`; `Saga.NotEmpty`; `Scrying.VisionNotSupported` / `TooManyImages` / `UnsupportedMimeType`; `WebBrowsing.TooLarge` (reserved; today truncates) / `InvalidUrl`; `ClientTools.Disabled` / `TooMany` / `InvalidSchema`; `Guardrails.PiiDetected` / `Blocked`; `StructuredOutput.ValidationFailed` / `SchemaInvalid` | 400 | Domain validation / policy refusal (non-auth) |
-| `Campaign.PathNotAllowed`; `Workspace.PathNotAllowed` / `AccessDenied` / `FileWriteDisabled`; `Spell.PathNotAllowed`; `Sending.Disabled` / `AgentNotAllowed`; `Mcp.WorkspaceNotTrusted` / `DiagnosticBlocked`; `Scrying.FeatureDisabled`; `WebBrowsing.SsrfBlocked` | 403 | Path/network/feature deny |
+| `Campaign.NotFound`; `Session.NotFound` / `EntryNotFound`; `Attachment.NotFound` / `SourceNotFound`; `Grimoire.LoreNotFound`; `Apprentice.NotFound`; `Workspace.NotFound` / `FileNotFound`; `Spell.NotFound`; `Prompt.NotFound`; `Intelligence.HumanPromptNotFound`; `Mcp.ServerNotFound` / `ToolNotFound`; `Daemon.NotFound`; `Files.NotFound`; `Batches.NotFound` / `InputFileNotFound`; `Saga.NotFound`; `ProvingGrounds.SpellNotFound` / `PromptNotFound`; `Workspace.ReplacementNotFound` | 404 | Missing resource |
+| `Campaign.InvalidPath` / `MaxReached`; `Session.Archived` / `InvalidStatus` / `TooManyEntries` / `EntryTooLarge` / `MemoryManagementDisabled` / `EmptyContent`; `Attachment.InvalidRequest` / `InvalidContent` / `InvalidReference` / `SourceUnavailable`; `Apprentice.Disabled` / `PendingQueueFull` / `InvalidGuidance` / `InvalidPlan` / `InvalidGoal` / `InvalidWorkspace`; `Workspace.NameEmpty` / `SymbolicLinkEscape` / `PathTraversal` / `DirectoryNotEmpty` / `ReplacementAmbiguous` / `PathIsDirectory` / `PathIsFile`; `Spell.NoWorkspace` / `InvalidWorkspace` / `InvalidName` / `NameCollision` / `BuiltinReadOnly` / `DuplicateVersion` / `InvalidVersion`; `Prompt.CodexPathNotContained` / `DuplicateVersion` / `InvalidName` / `InvalidVersion` / `InvalidRequest`; `Mcp.AmbiguousServer` / `MissingWorkspace` / `ServerNotRunning` / `AmbiguousTool` / `ToolError`; `Sending.TaskRejected`; `Security.BlockedOutboundUrl` / `IdempotencyKeyTooLong`; `Files.InvalidMimeType`; `Batches.InvalidEndpoint`; `Embeddings.ConfirmationRequired`; `ProvingGrounds.InvalidTrial` / `WorkspaceNotAllowed`; `Saga.NotEmpty`; `Scrying.VisionNotSupported` / `TooManyImages` / `UnsupportedMimeType`; `WebBrowsing.TooLarge` (reserved; today truncates) / `InvalidUrl`; `ClientTools.Disabled` / `TooMany` / `InvalidSchema`; `Guardrails.PiiDetected` / `Blocked`; `StructuredOutput.ValidationFailed` / `SchemaInvalid` | 400 | Domain validation / policy refusal (non-auth) |
+| `Campaign.PathNotAllowed`; `Workspace.PathNotAllowed` / `AccessDenied` / `FileWriteDisabled`; `Spell.PathNotAllowed`; `Sending.Disabled` / `AgentNotAllowed`; `Mcp.WorkspaceNotTrusted` / `DiagnosticBlocked`; `Scrying.FeatureDisabled`; `Attachment.Disabled`; `WebBrowsing.SsrfBlocked` | 403 | Path/network/feature deny |
 | `Security.MissingApiKey` | 401 | Missing/invalid API key |
-| `Session.TooManyPinned`; `Apprentice.AlreadyRunning` / `Running` / `NotPaused` / `CannotReweave` / `NotEscalated` / `MaxReached` / `ConclaveDisabled`; `Security.IdempotencyConflict`; `Security.IdempotencyInProgress` | 409 | State or idempotency conflict |
+| `Session.TooManyPinned`; `Attachment.LimitExceeded`; `Apprentice.AlreadyRunning` / `Running` / `NotPaused` / `CannotReweave` / `NotEscalated` / `MaxReached` / `ConclaveDisabled`; `Security.IdempotencyConflict`; `Security.IdempotencyInProgress` | 409 | State or idempotency conflict |
 | `Sending.MaxTasksReached`; `RateLimit.TooManyRequests` | 429 | Concurrency / rate limit |
-| `Workspace.FileTooLarge`; `Files.TooLarge`; `Scrying.ImageTooLarge` | 413 | Payload too large |
+| `Workspace.FileTooLarge`; `Files.TooLarge`; `Scrying.ImageTooLarge`; `Attachment.TooLarge` | 413 | Payload too large |
 | `Sending.AgentUnreachable` / `AgentCardInvalid`; `CommLink.Suppressed` | 502 | Downstream / webhook failure |
 | `Api.TooManyConnections`; `Connection.Unreachable`; `Embeddings.ProviderUnavailable` / `FeatureDisabled`; `Session.RestQueueFull` | 503 | Capacity / provider unavailable, or bounded Campaign Logger queue rejection |
 | `Mcp.DiagnosticTimeout`; `Connection.Timeout`; `WebBrowsing.Timeout` | 504 | Bounded downstream transport/diagnostic operation timeout |

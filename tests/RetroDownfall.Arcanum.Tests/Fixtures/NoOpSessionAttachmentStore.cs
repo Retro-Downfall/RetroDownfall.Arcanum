@@ -3,7 +3,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 /// <summary>No-op <see cref="ISessionAttachmentStore"/> for WizardIntelligenceProvider test factories.</summary>
-internal sealed class NoOpSessionAttachmentStore : ISessionAttachmentStore
+internal sealed class NoOpSessionAttachmentStore(
+    SessionAttachmentRecord? record = null) : ISessionAttachmentStore
 {
 
     public Task<SessionAttachmentRecord> PersistNewAsync(
@@ -40,14 +41,23 @@ internal sealed class NoOpSessionAttachmentStore : ISessionAttachmentStore
         Task.CompletedTask;
 
     public Task<SessionAttachmentRecord?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
-        Task.FromResult<SessionAttachmentRecord?>(null);
+        Task.FromResult(
+            record?.Id == id
+                ? record
+                : null);
 
     public Task<SessionAttachmentRecord?> GetByLogicalAsync(
         Guid sessionId,
         string logicalKey,
         int? version,
         CancellationToken cancellationToken = default) =>
-        Task.FromResult<SessionAttachmentRecord?>(null);
+        Task.FromResult(
+            record is not null
+                && record.SessionId == sessionId
+                && string.Equals(record.LogicalKey, logicalKey, StringComparison.Ordinal)
+                && (version is null || record.Version == version)
+                    ? record
+                    : null);
 
     public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
         Guid sessionId,

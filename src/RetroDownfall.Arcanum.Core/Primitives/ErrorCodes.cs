@@ -103,6 +103,30 @@ public static class ErrorCodes
 
     }
 
+    /// <summary>Attachment — standalone session-attachment lifecycle.</summary>
+    public static class Attachment
+    {
+
+        public const string Disabled = "Attachment.Disabled";
+
+        public const string InvalidRequest = "Attachment.InvalidRequest";
+
+        public const string InvalidContent = "Attachment.InvalidContent";
+
+        public const string InvalidReference = "Attachment.InvalidReference";
+
+        public const string NotFound = "Attachment.NotFound";
+
+        public const string SourceNotFound = "Attachment.SourceNotFound";
+
+        public const string SourceUnavailable = "Attachment.SourceUnavailable";
+
+        public const string TooLarge = "Attachment.TooLarge";
+
+        public const string LimitExceeded = "Attachment.LimitExceeded";
+
+    }
+
     /// <summary>Grimoire — lore and knowledge store.</summary>
     public static class Grimoire
     {

@@ -391,6 +391,9 @@ internal static partial class CliCommandTree
     private static Command BuildSession(IServiceProvider sp)
     {
         SessionCommands handler = sp.GetRequiredService<SessionCommands>();
+
+        AttachmentCommands attachmentHandler = sp.GetRequiredService<AttachmentCommands>();
+
         Command session = new("session", "Manage and continue sessions through the Arcanum API.");
 
         Command list = new("list", "List recent sessions.");
@@ -603,7 +606,9 @@ internal static partial class CliCommandTree
         attachments.Add(attachmentsIdentifier);
 
         attachments.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Attachments(pr.GetValue(attachmentsIdentifier), ct).ConfigureAwait(false));
+            await attachmentHandler
+                .List(pr.GetValue(attachmentsIdentifier), ct)
+                .ConfigureAwait(false));
 
         session.Add(attachments);
 

@@ -8,6 +8,13 @@ public static class AttachmentMimeDetector
 {
     public static string Detect(ReadOnlySpan<byte> bytes, string? fileName)
     {
+        if (bytes.Length >= 5
+            && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44
+            && bytes[3] == 0x46 && bytes[4] == 0x2D)
+        {
+            return "application/pdf";
+        }
+
         if (bytes.Length >= 8
             && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47)
         {
@@ -49,6 +56,14 @@ public static class AttachmentMimeDetector
             ".xml" => "application/xml",
             ".yaml" or ".yml" => "application/yaml",
             ".toml" => "application/toml",
+            ".pdf" => "application/pdf",
+            ".doc" => "application/msword",
+            ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xls" => "application/vnd.ms-excel",
+            ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".ppt" => "application/vnd.ms-powerpoint",
+            ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".zip" => "application/zip",
             ".png" => "image/png",
             ".jpg" or ".jpeg" => "image/jpeg",
             ".gif" => "image/gif",

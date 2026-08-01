@@ -59,6 +59,16 @@ public static class SessionAttachmentToolInjection
             return null;
         }
 
+        if (record.Kind is not SessionAttachmentKind.Text
+
+            and not SessionAttachmentKind.Image)
+
+        {
+
+            return null;
+
+        }
+
         ReadOnlyMemory<byte> bytes = await store
             .ReadBytesAsync(record, cancellationToken)
             .ConfigureAwait(false);
@@ -153,6 +163,16 @@ public static class SessionAttachmentToolInjection
             || record.RelativePath.Contains("..", StringComparison.Ordinal))
         {
             return null;
+        }
+
+        if (record.Kind is not SessionAttachmentKind.Text
+
+            and not SessionAttachmentKind.Image)
+
+        {
+
+            return null;
+
         }
 
         ReadOnlyMemory<byte> bytes = await store.ReadBytesAsync(record, cancellationToken)

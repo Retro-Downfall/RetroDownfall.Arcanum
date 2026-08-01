@@ -26,6 +26,17 @@ using Spectre.Console.Rendering;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
+internal enum ChatTurnOutcome
+{
+
+    Completed,
+
+    Failed,
+
+    Cancelled,
+
+}
+
 [ExcludeFromCodeCoverage] // Reason: interactive multi-turn REPL; sliced helpers are covered via internal static unit tests.
 public sealed class ChatCommand(
     IEyeOfTheWorld eye,
@@ -108,6 +119,7 @@ public sealed class ChatCommand(
     /// <param name="responseFormat">Response format: text | json_object | json_schema.</param>
     /// <param name="presencePenalty">Presence penalty -2..2.</param>
     /// <param name="frequencyPenalty">Frequency penalty -2..2.</param>
+    /// <param name="attachment">Bound session attachment GUID to reference; repeatable and retained until a turn succeeds.</param>
     public async Task<int> Chat(
         CancellationToken cancellationToken,
         string? model = null,
@@ -124,7 +136,8 @@ public sealed class ChatCommand(
         string[]? stop = null,
         string? responseFormat = null,
         string? presencePenalty = null,
-        string? frequencyPenalty = null)
+        string? frequencyPenalty = null,
+        string[]? attachment = null)
     {
         if (@new && !string.IsNullOrWhiteSpace(sessionIdOption))
         {
@@ -133,6 +146,20 @@ public sealed class ChatCommand(
                     Markup.Escape("--new and --session cannot be used together.")));
 
             return 1;
+        }
+
+        if (!AttachmentReferenceInput.TryParse(
+                attachment,
+                out List<Guid>? initialAttachmentReferences,
+                out string? attachmentError))
+        {
+
+            AnsiConsole.MarkupLine(
+                themePalette.ErrorMarkup(
+                    Markup.Escape(attachmentError!)));
+
+            return 1;
+
         }
 
         InferenceFlagInputs flagInputs = new(temperature, topP, maxTokens, seed, stop, responseFormat, presencePenalty, frequencyPenalty);
@@ -227,6 +254,10 @@ public sealed class ChatCommand(
 
         HashSet<string> stagedImages = new(StringComparer.Ordinal);
 
+        List<Guid> stagedAttachmentReferences = initialAttachmentReferences is null
+            ? []
+            : [.. initialAttachmentReferences];
+
         int exitCode = 0;
 
         while (true)
@@ -250,10 +281,12 @@ public sealed class ChatCommand(
 
             string? raw;
 
-            int stagedCount = stagedFiles.Count + stagedImages.Count;
+            int stagedCount = stagedFiles.Count
+                + stagedImages.Count
+                + stagedAttachmentReferences.Count;
 
             string promptMarkup = stagedCount > 0
-                ? $"{themePalette.HighlightMarkup(Markup.Escape($"[{stagedCount} file(s) staged]"))} {themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >"
+                ? $"{themePalette.HighlightMarkup(Markup.Escape($"[{stagedCount} item(s) staged]"))} {themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >"
                 : $"{themePalette.HeadingBoldMarkup(Markup.Escape("Mage"))} >";
 
             if (cliEnvironment.ShouldShowManaBar
@@ -299,7 +332,9 @@ public sealed class ChatCommand(
 
             if (string.IsNullOrWhiteSpace(prompt))
             {
-                if (stagedFiles.Count == 0 && stagedImages.Count == 0)
+                if (stagedFiles.Count == 0
+                    && stagedImages.Count == 0
+                    && stagedAttachmentReferences.Count == 0)
                 {
                     continue;
                 }
@@ -530,11 +565,7 @@ public sealed class ChatCommand(
                 }
             }
 
-            stagedFiles.Clear();
-
-            stagedImages.Clear();
-
-            bool turnOk = await RunTurnAsync(
+            ChatTurnOutcome turnOutcome = await RunTurnAsync(
                     prompt,
                     session,
                     unattended,
@@ -542,10 +573,23 @@ public sealed class ChatCommand(
                     cancellationToken,
                     flags,
                     attachedFilesForRequest,
-                    scryingFociForRequest)
+                    scryingFociForRequest,
+                    stagedAttachmentReferences.Count == 0
+                        ? null
+                        : stagedAttachmentReferences.ToList())
                 .ConfigureAwait(false);
 
-            if (!turnOk)
+            if (ShouldClearStagedInputs(turnOutcome))
+            {
+
+                stagedFiles.Clear();
+
+                stagedImages.Clear();
+
+                stagedAttachmentReferences.Clear();
+
+            }
+            else if (turnOutcome == ChatTurnOutcome.Failed)
             {
                 exitCode = 1;
             }
@@ -1574,7 +1618,7 @@ public sealed class ChatCommand(
         AnsiConsole.Write(logPanel);
     }
 
-    private async Task<bool> RunTurnAsync(
+    private async Task<ChatTurnOutcome> RunTurnAsync(
         string prompt,
         SessionMut session,
         bool unattended,
@@ -1582,7 +1626,8 @@ public sealed class ChatCommand(
         CancellationToken cancellationToken,
         InferenceFlagBinder.Parsed flags,
         List<AttachedFileDto>? attachedFiles = null,
-        List<ScryingFocusDto>? scryingFoci = null)
+        List<ScryingFocusDto>? scryingFoci = null,
+        List<Guid>? attachmentReferences = null)
     {
         using CancellationTokenSource perTurnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -1660,7 +1705,8 @@ public sealed class ChatCommand(
                 PresencePenalty: flags.PresencePenalty,
                 FrequencyPenalty: flags.FrequencyPenalty,
                 CampaignId: session.CampaignId,
-                ScryingFoci: scryingFoci);
+                ScryingFoci: scryingFoci,
+                AttachmentReferences: attachmentReferences);
 
             if (ShouldUseLiveLayout(cliEnvironment, AnsiConsole.Console))
             {
@@ -1855,7 +1901,7 @@ public sealed class ChatCommand(
 
             AnsiConsole.Write(errorPanel);
 
-            return false;
+            return ChatTurnOutcome.Failed;
 
         }
         finally
@@ -1873,12 +1919,12 @@ public sealed class ChatCommand(
                 Style = themePalette.MutedStyle(),
             });
 
-            return true;
+            return ChatTurnOutcome.Cancelled;
         }
 
         if (errored)
         {
-            return false;
+            return ChatTurnOutcome.Failed;
         }
 
         string body = finalText ?? streamContent.AnswerText;
@@ -1887,7 +1933,7 @@ public sealed class ChatCommand(
         {
             AnsiConsole.WriteLine();
 
-            return true;
+            return ChatTurnOutcome.Completed;
         }
 
         if (streamWithMarkdownRewrite && streamContent.AnswerLength > 0)
@@ -1914,10 +1960,10 @@ public sealed class ChatCommand(
 
         AnsiConsole.WriteLine();
 
-        return true;
+        return ChatTurnOutcome.Completed;
     }
 
-    private async Task<bool> RunTurnLiveAsync(
+    private async Task<ChatTurnOutcome> RunTurnLiveAsync(
         PingRequest ping,
         SessionMut session,
         bool unattended,
@@ -2178,7 +2224,7 @@ public sealed class ChatCommand(
 
             AnsiConsole.Write(errorPanel);
 
-            return false;
+            return ChatTurnOutcome.Failed;
         }
 
         _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, themePalette);
@@ -2201,12 +2247,12 @@ public sealed class ChatCommand(
                 AnsiConsole.WriteLine();
             }
 
-            return true;
+            return ChatTurnOutcome.Cancelled;
         }
 
         if (errored)
         {
-            return false;
+            return ChatTurnOutcome.Failed;
         }
 
         string body = finalText ?? streamContent.AnswerText;
@@ -2215,16 +2261,19 @@ public sealed class ChatCommand(
         {
             AnsiConsole.WriteLine();
 
-            return true;
+            return ChatTurnOutcome.Completed;
         }
 
         AnsiConsole.Write(markdig.Render(body));
 
         AnsiConsole.WriteLine();
 
-        return true;
+        return ChatTurnOutcome.Completed;
 
     }
+
+    internal static bool ShouldClearStagedInputs(ChatTurnOutcome outcome) =>
+        outcome == ChatTurnOutcome.Completed;
 
     private string FormatManaSummary(SessionMut session)
     {

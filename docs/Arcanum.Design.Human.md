@@ -155,13 +155,28 @@ labels and fences it so instructions inside that data do not become system autho
 ## 7. Attachments, refresh, and durable memory
 
 Session attachments contain encrypted bytes plus Grimoire metadata. Snapshot attachments preserve
-the bytes supplied at one point in time. Bound attachments also retain verified provenance to a
-file inside the active registered workspace.
+the bytes supplied at one point in time. A live reference adds verified provenance to a file inside
+a server Workspace, but its stored attachment is still a snapshot: inference and export never read
+an arbitrary client path on demand.
 
-A bound refresh never trusts a model-supplied path. The model selects an opaque attachment id or
-logical key. The server reconstructs the stored source, rechecks workspace containment, symlinks,
-file identity, Sanctum, MIME, size, UTF-8, and vision support, then performs two stable handle reads.
-Unchanged content reuses the existing version; changed content creates the next bounded version.
+`arcanum attachment add` reads a local file or stdin and uploads a snapshot without requiring that
+client file to be inside a Workspace. `attachment reference` instead sends a workspace-relative
+name for the server to resolve and authorize. That distinction preserves useful freedom for the
+operator without turning a remote client path into server authority. Listing, metadata display,
+version history, refresh, pin/unpin, export, stored-snapshot reveal, and the privacy disclosure are
+all standalone commands; none requires an inference turn.
+
+Files do not become invalid merely because Arcanum cannot extract them. Binary, PDF, and Office
+snapshots remain encrypted, versioned, exportable attachments marked `NotEligible`; only text and
+explicit vision-capable images can enter model context.
+
+A bound refresh never trusts a model-supplied path. A model tool or standalone operator command
+selects an opaque attachment id or logical key. The server reconstructs the stored source, rechecks
+workspace containment, symlinks, file identity, and Sanctum, then performs two stable handle reads.
+Detected MIME reclassifies the current bytes and reapplies that kind's size, UTF-8, and Scrying
+policy. Model vision support is required only when the refreshed image will enter a model turn;
+standalone refresh adds no such unrelated gate. Unchanged content reuses the existing version;
+changed content creates the next bounded version with its current kind and MIME.
 
 The Command Center displays backend-authoritative state:
 
@@ -170,6 +185,18 @@ The Command Center displays backend-authoritative state:
 - `Stale` means the source drifted, disappeared, became unsafe, or no longer matches its workspace.
 
 File watcher events are only refresh hints. The UI does not hash files or infer `Live` on its own.
+
+Text attachment pins can be admitted implicitly within the existing pin and turn budgets. Image
+pins remain durable but report `Unsupported` for implicit materialization, because silently adding
+an image would bypass explicit vision intent; pass the bound attachment GUID to `ask` or `chat`
+instead. Those direct IDs use the same explicit-first ledger and reference budget.
+
+Attachment metadata commands never write content to the terminal. Export is the deliberate
+plaintext boundary: it uses a same-directory staged download and atomic replacement, asks before
+overwriting unless `--yes` is present, and refuses stdout. Reveal opens the encrypted stored
+snapshot artifact rather than the source or a decrypted copy, but only when the local artifact has
+a valid `ARCABLOB` envelope; remote clients use export. The privacy explanation is
+disclosure only and never adds an acknowledgement gate.
 
 Attachment-derived facts may enter durable Lexicon or Saga memory only when their source was
 materialized in the current turn. Index rows, failed reads, suppressed excerpts, and instructions
@@ -186,6 +213,10 @@ transactional SQL migrations. Important records include sessions and ordered ent
 interactions, attachments, context pins, Campaign data, Spells and Prompts, Wards, MCP trust,
 memory, embeddings, operations, idempotency claims, inference runs, billable operations, budget
 reservations, and audit data.
+
+The persistence inventory in `Arcanum.DESIGN.md` is authoritative; there is no separate persistence
+document. Attachment metadata belongs to the Grimoire while its authenticated encrypted snapshots
+belong to the external attachment blob tree, and neither half is a complete backup by itself.
 
 Several rules make persistence reliable:
 
@@ -293,6 +324,12 @@ the final cited result to stdout, with optional atomic export or encrypted sessi
 The normal CLI is good for scripts and focused commands. Interactive selectors are TTY-only;
 non-interactive and JSON invocations never guess. Saved context can hold active Campaign,
 Workspace, model, and session selections, with explicit command values taking precedence.
+
+The `attachment list|add|reference|show|versions|refresh|pin|unpin|export|reveal` family is an HTTP
+client for the host-owned attachment lifecycle. Snapshot add may read any client-local path;
+reference never does. `ask --attachment <guid>` and `chat --attachment <guid>` name bound Session
+versions directly. Metadata and JSON remain content-free, while export is the explicit atomic
+plaintext operation.
 
 Command Center is the terminal-native session workbench. It combines streaming chat, Wards, human
 prompts, attachment state, context telemetry, session mutation, and operator refresh without

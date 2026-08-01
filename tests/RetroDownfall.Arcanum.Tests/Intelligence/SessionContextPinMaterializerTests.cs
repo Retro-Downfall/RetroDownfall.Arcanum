@@ -196,6 +196,62 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
     }
 
+    [Fact]
+
+    public async Task Image_attachment_pin_is_retained_but_reports_unsupported_implicit_materialization()
+
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid attachmentId = Guid.NewGuid();
+
+        SessionContextPinRecord pin = new(
+            Guid.NewGuid(),
+            sessionId,
+            SessionContextPinKind.Attachment,
+            attachmentId.ToString("D"),
+            "map.png",
+            "image-version",
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        SessionAttachmentRecord attachment = new(
+            attachmentId,
+            sessionId,
+            EntryId: null,
+            PendingTurnId: null,
+            SessionAttachmentState.Bound,
+            LogicalKey: "map",
+            OriginalFileName: "map.png",
+            Version: 1,
+            RelativePath: "session/map/v1/map.png",
+            ContentSha256: new string('a', 64),
+            MimeType: "image/png",
+            ByteLength: 8,
+            SessionAttachmentKind.Image,
+            DateTimeOffset.UtcNow);
+
+        SessionContextPinMaterializer materializer = new(
+            new StaticPinStore(pin),
+            new NoOpSessionAttachmentStore(attachment),
+            _db!);
+
+        SessionContextPinMaterialization result = await materializer.MaterializeAsync(
+            sessionId,
+            _workspace,
+            CancellationToken.None);
+
+        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+        Assert.Contains("status: Unsupported", text, StringComparison.Ordinal);
+
+        Assert.Contains("explicit attachment reference", text, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("status: Missing", text, StringComparison.Ordinal);
+
+    }
+
     private SessionContextPinMaterializer Create(SessionContextPinRecord pin) =>
         new(new StaticPinStore(pin), new NoOpSessionAttachmentStore(), _db!);
 

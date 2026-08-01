@@ -267,7 +267,12 @@ public sealed class CliResourceCatalog(
             new ResourceDescriptor<WorkspaceInfo>(
                 "workspace",
                 ["Name", "Path"],
-                static value => value.Id,
+                value => string.Equals(
+                        value.Path,
+                        identifier,
+                        StringComparison.OrdinalIgnoreCase)
+                    ? value.Path
+                    : value.Id,
                 static value => value.Name,
                 static value => $"{value.Path} ({value.Type})",
                 static value => [value.Name, value.Path]),

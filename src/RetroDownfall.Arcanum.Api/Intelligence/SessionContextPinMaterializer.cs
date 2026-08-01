@@ -493,10 +493,31 @@ public sealed class SessionContextPinMaterializer(
             ? await attachments.GetByIdAsync(id, cancellationToken).ConfigureAwait(false)
             : await attachments.GetByLogicalAsync(sessionId, pin.TargetIdentifier, null, cancellationToken)
                 .ConfigureAwait(false);
-        if (record is null || record.SessionId != sessionId || record.Kind != SessionAttachmentKind.Text)
+        if (record is null || record.SessionId != sessionId)
         {
             return new(SessionContextPinStatus.Missing, null, "Text attachment was not found in this session.");
         }
+
+        if (record.Kind == SessionAttachmentKind.Image)
+        {
+
+            return new(
+                SessionContextPinStatus.Unsupported,
+                null,
+                "Image attachment pins remain selected but require an explicit attachment reference for a vision-capable turn.");
+
+        }
+
+        if (record.Kind != SessionAttachmentKind.Text)
+        {
+
+            return new(
+                SessionContextPinStatus.Unsupported,
+                null,
+                "This attachment kind is not supported for implicit text materialization.");
+
+        }
+
         ReadOnlyMemory<byte> source = await attachments.ReadBytesAsync(record, cancellationToken).ConfigureAwait(false);
         MaterializedPin materialized = FromText(Encoding.UTF8.GetString(source.Span), byteLimit);
 

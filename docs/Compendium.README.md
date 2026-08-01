@@ -176,7 +176,7 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.sagaExtraction` | `bool`, `false` | — | Enables automatic concise Saga extraction and derives Saga/substrate availability; attachment claims must match the source turn's materialized allowlist. |
 | `features.semanticSpellRouting` | `bool`, `false` | — | Enables embedding-assisted spell routing and derives embedding-substrate activation. |
 | `features.scrying` | `bool`, `true` | — | Accepts images for vision-capable models. |
-| `features.attachments` | `bool`, `true` | — | Persists encrypted session attachment snapshots; exposes `attach_session_file`, host-authorized `refresh_session_file`, and Command Center Snapshot/Live/Stale status plus manual refresh. Refresh accepts no path, revalidates source provenance and Sanctum, and shares version/byte budgets. |
+| `features.attachments` | `bool`, `true` | — | Enables encrypted, versioned Session snapshots; standalone snapshot/reference/content APIs and `attachment list|add|reference|show|versions|refresh|pin|unpin|export|reveal`; direct `ask`/`chat --attachment <guid>`; `attach_session_file`; host-authorized `refresh_session_file`; and Command Center Snapshot/Live/Stale state. Snapshot add may upload any client-readable file/stdin, while reference/refresh paths are server-only and Workspace/Sanctum-authorized. Unsupported binary/PDF/Office files remain valid `NotEligible` attachments. Every path shares MIME, Scrying, byte/version, pin, and turn-reference policy; model vision is required only when an image enters model context, not for standalone refresh. Metadata never emits bytes; export is atomic plaintext; reveal requires a locally present encrypted `ARCABLOB` snapshot. |
 | `features.clientTools` | `bool`, `false` | — | Forwards client-declared tools to compatible providers. |
 | `features.webBrowsing` | `bool`, `false` | — | Advertises native `web_search` / `read_url` and enables authenticated `search`, `browse`, and server-orchestrated `research` CLI workflows. The deprecated `browse_web` name remains only as a direct-invoke compatibility alias. |
 | `features.guardrails` | `bool`, `false` | — | Runs configured input/output guardrails. |
@@ -185,6 +185,15 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 
 Feature flags are capability policy. Edition, dependency, security, provider,
 and platform eligibility still apply.
+
+The standalone attachment family adds no public configuration keys or consent setting.
+`attachment show --privacy` is an immediate disclosure, not an acknowledgement gate. Text attachment pins may
+materialize implicitly within the code-owned pin/turn budgets; image pins remain durable but report
+`Unsupported` until a vision-capable turn explicitly names the bound GUID. Attachment export asks
+before overwrite (or honors global `--yes`), stages beside the destination, and never permits
+stdout; all other attachment commands remain metadata-only. Server-side reference authorization,
+MIME/content validation, `MaxBytesPerSession`, `MaxVersionsPerLogicalKey`, and
+`MaxReferencesPerTurn` remain code-owned rather than becoming user restrictions configurable here.
 
 The native `delegate_task` subagent tool has no operator configuration key: its one-level
 recursion cap and per-call token/cost/turn delegation are code-owned safety requirements. Child

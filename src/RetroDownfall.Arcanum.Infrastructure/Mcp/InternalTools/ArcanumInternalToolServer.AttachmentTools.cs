@@ -154,6 +154,18 @@ internal sealed partial class ArcanumInternalToolServer
                 return ToolError(BuildMissingAttachmentMessage(logicalName, args.Version, bound));
             }
 
+            if (record.Kind is not SessionAttachmentKind.Text
+
+                and not SessionAttachmentKind.Image)
+
+            {
+
+                return ToolError(
+
+                    "The selected attachment can be downloaded or exported, but its content cannot be injected into a model turn.");
+
+            }
+
             string text =
                 $"Attached '{record.OriginalFileName}' v{record.Version.ToString(CultureInfo.InvariantCulture)} "
                 + $"({record.Kind}, {record.ByteLength.ToString(CultureInfo.InvariantCulture)} bytes). "

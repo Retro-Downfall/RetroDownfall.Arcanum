@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Platform;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -17,6 +18,80 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class SessionAttachmentToolInjectionTests
 {
+
+    [Fact]
+
+    public async Task Binary_attachment_is_never_read_or_injected_as_text()
+
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord record = new(
+
+            Guid.NewGuid(),
+
+            sessionId,
+
+            null,
+
+            null,
+
+            SessionAttachmentState.Bound,
+
+            "report",
+
+            "report.pdf",
+
+            1,
+
+            "rel/report.pdf",
+
+            "abc",
+
+            "application/pdf",
+
+            5,
+
+            SessionAttachmentKind.Binary,
+
+            DateTimeOffset.UtcNow);
+
+        ThrowingSessionAttachmentStore store = new();
+
+        store.Records.Add(record);
+
+        ArcanumSettings settings = new();
+
+        IReadOnlyList<AIContent>? attached = await SessionAttachmentToolInjection.TryBuildContentsAsync(
+
+            store,
+
+            sessionId,
+
+            record.LogicalKey,
+
+            version: null,
+
+            settings,
+
+            requestModel: null);
+
+        IReadOnlyList<AIContent>? refreshed = await SessionAttachmentToolInjection.TryBuildRefreshedContentsAsync(
+
+            store,
+
+            record,
+
+            settings,
+
+            requestModel: null);
+
+        Assert.Null(attached);
+
+        Assert.Null(refreshed);
+
+    }
 
     [Fact]
     public async Task ProcessSingleToolCall_AttachSessionFile_InjectsTextContent()
@@ -797,10 +872,12 @@ public sealed class SessionAttachmentToolInjectionTests
     }
 
     [Fact]
-    public async Task ProcessSingleToolCall_RefreshSessionFile_RejectsImageForNonVisionModel()
+    public async Task RefreshSessionAttachmentAsync_Image_DoesNotRequireDefaultModelVision()
     {
         Guid sessionId = Guid.NewGuid();
+
         Guid attachmentId = Guid.NewGuid();
+
         AttachmentSourceMetadata source = new(
             AttachmentSourceKind.WorkspaceFile,
             "workspace",
@@ -812,7 +889,9 @@ public sealed class SessionAttachmentToolInjectionTests
             8,
             AttachmentSourceStatus.Refreshable,
             null);
+
         FakeSessionAttachmentStore store = new();
+
         store.Records.Add(RefreshRecord(
             attachmentId,
             sessionId,
@@ -820,6 +899,75 @@ public sealed class SessionAttachmentToolInjectionTests
             source,
             SessionAttachmentKind.Image,
             "image/png"));
+
+        ArcanumSettings settings = new()
+        {
+            DefaultModel = "text-model",
+
+            Features = new FeatureSettings { Attachments = true, Scrying = true },
+
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "test",
+
+                    Models = [new ModelEntry("text-model", SupportsVision: false)],
+                },
+            ],
+        };
+
+        FakeAttachmentSourceResolver resolver = new(CreateImageRefreshResolution(source));
+
+        ToolExecutionPipeline pipeline = CreatePipeline(settings, store, resolver);
+
+        var refreshed = await pipeline.RefreshSessionAttachmentAsync(
+            sessionId,
+            attachmentId,
+            campaignId: null);
+
+        Assert.True(refreshed.IsSuccess, refreshed.Error.Message);
+
+        Assert.True(refreshed.Value.NewVersionCreated);
+
+        Assert.Equal(2, refreshed.Value.Version);
+
+        Assert.Equal(
+            SessionAttachmentContentPolicy.ResolveMaximumReadBytes(settings),
+            resolver.LastMaximumBytes);
+    }
+
+    [Fact]
+    public async Task ProcessSingleToolCall_RefreshSessionFile_RejectsDetectedImageForNonVisionModel()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        Guid attachmentId = Guid.NewGuid();
+
+        AttachmentSourceMetadata source = new(
+            AttachmentSourceKind.WorkspaceFile,
+            "workspace",
+            "artifact.bin",
+            "/workspace/artifact.bin",
+            "HASH",
+            "1:1",
+            DateTimeOffset.UtcNow,
+            8,
+            AttachmentSourceStatus.Refreshable,
+            null);
+
+        FakeSessionAttachmentStore store = new();
+
+        store.Records.Add(RefreshRecord(
+            attachmentId,
+            sessionId,
+            "artifact.bin",
+            source,
+            SessionAttachmentKind.Binary,
+            "application/pdf"));
+
+        FakeAttachmentSourceResolver resolver = new(CreateImageRefreshResolution(source));
+
         ToolExecutionPipeline pipeline = CreatePipeline(
             new ArcanumSettings
             {
@@ -829,16 +977,19 @@ public sealed class SessionAttachmentToolInjectionTests
                     new ProviderSettings
                     {
                         Name = "test",
+
                         Models = [new ModelEntry("text-model", SupportsVision: false)],
                     },
                 ],
             },
             store,
-            new ThrowingAttachmentSourceResolver());
+            resolver);
+
         ChatOptions options = new()
         {
             Tools = [AIFunctionFactory.Create(() => "accepted", "refresh_session_file")],
         };
+
         SessionAttachmentToolAmbient.CurrentSessionId = sessionId;
 
         try
@@ -860,13 +1011,75 @@ public sealed class SessionAttachmentToolInjectionTests
                 CancellationToken.None);
 
             Assert.Contains("image_policy_denied", processed.ResultText, StringComparison.Ordinal);
+
             Assert.Contains("does not support vision", processed.ResultText, StringComparison.OrdinalIgnoreCase);
+
             Assert.Null(processed.AdditionalContextContents);
+
+            Assert.NotNull(resolver.LastMaximumBytes);
+
+            Assert.Single(store.Records);
         }
         finally
         {
             SessionAttachmentToolAmbient.CurrentSessionId = null;
         }
+    }
+
+    [Fact]
+    public async Task RefreshSessionAttachmentAsync_BinaryToImage_AppliesRefreshedImageMimePolicy()
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        Guid attachmentId = Guid.NewGuid();
+
+        AttachmentSourceMetadata source = new(
+            AttachmentSourceKind.WorkspaceFile,
+            "workspace",
+            "artifact.bin",
+            "/workspace/artifact.bin",
+            "HASH",
+            "1:1",
+            DateTimeOffset.UtcNow,
+            8,
+            AttachmentSourceStatus.Refreshable,
+            null);
+
+        FakeSessionAttachmentStore store = new();
+
+        store.Records.Add(RefreshRecord(
+            attachmentId,
+            sessionId,
+            "artifact.bin",
+            source,
+            SessionAttachmentKind.Binary,
+            "application/pdf"));
+
+        ToolExecutionPipeline pipeline = CreatePipeline(
+            new ArcanumSettings
+            {
+                Features = new FeatureSettings { Attachments = true, Scrying = true },
+
+                Security = new SecuritySettings
+                {
+                    AllowedImageMimeTypes = ["image/jpeg"],
+                },
+            },
+            store,
+            new FakeAttachmentSourceResolver(CreateImageRefreshResolution(source)));
+
+        var refreshed = await pipeline.RefreshSessionAttachmentAsync(
+            sessionId,
+            attachmentId,
+            campaignId: null);
+
+        Assert.True(refreshed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Attachment.InvalidContent, refreshed.Error.Code);
+
+        Assert.Contains("not permitted", refreshed.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Single(store.Records);
     }
 
     [Fact]
@@ -960,6 +1173,26 @@ public sealed class SessionAttachmentToolInjectionTests
             kind,
             DateTimeOffset.UtcNow,
             source);
+
+    private static AttachmentSourceResolution CreateImageRefreshResolution(
+        AttachmentSourceMetadata source)
+    {
+        byte[] imageBytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+        return new AttachmentSourceResolution(
+            source with
+            {
+                LastObservedContentSha256 = "NEW",
+
+                LastObservedWriteTime = DateTimeOffset.UtcNow,
+
+                LastObservedByteLength = imageBytes.Length,
+
+                Status = AttachmentSourceStatus.PriorVersion,
+            },
+            imageBytes,
+            "image/png");
+    }
 
     private static ToolExecutionPipeline CreatePipeline(
         ArcanumSettings settings,
@@ -1076,7 +1309,12 @@ public sealed class SessionAttachmentToolInjectionTests
             CancellationToken cancellationToken = default)
         {
             string hash = current.Metadata.LastObservedContentSha256!;
+
+            SessionAttachmentKind refreshedKind = SessionAttachmentContentPolicy.Classify(
+                current.DetectedMimeType!);
+
             SessionAttachmentRecord record;
+
             bool created;
 
             if (string.Equals(latest.ContentSha256, hash, StringComparison.OrdinalIgnoreCase))
@@ -1096,6 +1334,7 @@ public sealed class SessionAttachmentToolInjectionTests
                     ContentSha256 = hash,
                     MimeType = current.DetectedMimeType!,
                     ByteLength = current.VerifiedBytes.Length,
+                    Kind = refreshedKind,
                     CreatedAt = DateTimeOffset.UtcNow,
                     Source = current.Metadata with
                     {
@@ -1233,27 +1472,39 @@ public sealed class SessionAttachmentToolInjectionTests
 
     }
 
-    private sealed class FakeAttachmentSourceResolver(AttachmentSourceResolution resolution)
-        : IAttachmentSourceResolver
+    private sealed class FakeAttachmentSourceResolver : IAttachmentSourceResolver
     {
+        private readonly AttachmentSourceResolution _resolution;
+
+        public FakeAttachmentSourceResolver(AttachmentSourceResolution resolution)
+        {
+            _resolution = resolution;
+        }
+
+        public long? LastMaximumBytes { get; private set; }
+
         public Task<AttachmentSourceResolution> ResolveForPersistenceAsync(
             AttachmentSourceClaim claim,
             ReadOnlyMemory<byte> snapshotBytes,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(resolution);
+            Task.FromResult(_resolution);
 
         public Task<AttachmentSourceMetadata> RevalidateAsync(
             AttachmentSourceMetadata source,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(resolution.Metadata);
+            Task.FromResult(_resolution.Metadata);
 
         public Task<AttachmentSourceResolution> ResolveCurrentAsync(
             AttachmentSourceMetadata source,
             string expectedSnapshotSha256,
             long maxBytes,
             AttachmentSourcePathAuthorizer authorizeCanonicalPath,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(resolution);
+            CancellationToken cancellationToken = default)
+        {
+            LastMaximumBytes = maxBytes;
+
+            return Task.FromResult(_resolution);
+        }
     }
 
     private sealed class ThrowingAttachmentSourceResolver : IAttachmentSourceResolver

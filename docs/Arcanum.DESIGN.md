@@ -540,6 +540,10 @@ Arcanum’s **Session-Based Consolidation model of AI memory** spans two layers:
 
 The Grimoire is the primary persistence authority, but not every durable byte belongs in SQLCipher:
 
+This section and the subsystem sections it links are the canonical persistence authority. There is
+no separate `Arcanum.PERSISTENCE.md`; do not recreate one or split attachment ownership away from
+this inventory and §10.2.5.
+
 - The opt-in inference audit is dated JSONL under `~/.config/arcanum/` (default
   `audit-YYYYMMDD.jsonl`). It records metadata for successfully completed turns only; errors,
   cancellations, timeouts, and interrupted streams create no row. Tool names/counts may be retained,
@@ -1064,7 +1068,19 @@ Closed audit items (writer reuse, scan/cache bounds, Loremaster counter, MCP lin
 
 **Purpose:** Persist text attachments and Scrying images across Command Center turns so conversations can list, Reveal, re-attach, and let the model re-attach — without storing blobs inside SQLCipher.
 
-**Ownership:** host-only `ISessionAttachmentStore` (serve process). CLI stages content via `PingRequest.AttachedFiles` / `ScryingFoci` / `AttachmentReferences`; the host re-validates and persists **before** inference (failure aborts the turn — the model never sees an attachment that did not persist). Listing: `GET /api/sessions/{id}/attachments` first revalidates every tracked source off the UI thread, persists its latest sanitized observations/status, and then returns **bound** rows only.
+**Ownership:** host-only `ISessionAttachmentStore` (serve process). CLI stages content via `PingRequest.AttachedFiles` / `ScryingFoci` / `AttachmentReferences`; the host re-validates and persists **before** inference (failure aborts the turn — the model never sees an attachment that did not persist). The standalone API creates an immutable snapshot with multipart `POST /api/sessions/{id}/attachments`, creates a refreshable server-workspace reference with JSON `POST /api/sessions/{id}/attachments/reference`, and streams one stored snapshot with `GET /api/sessions/{id}/attachments/{attachmentId}/content`. Listing: `GET /api/sessions/{id}/attachments` first revalidates every tracked source off the UI thread, persists its latest sanitized observations/status, and then returns **bound** rows only.
+
+Snapshot upload is intentionally broader than live reference: an authenticated CLI may read any
+client-local file or stdin and upload its bytes. That creates `SnapshotOnly` provenance and grants
+no authority over the originating client path. A live reference contains only a workspace-relative
+server path plus an optional registered workspace id; the server resolves the selected/default
+workspace, canonicalizes and authorizes the source, applies Sanctum when the Session has a Campaign,
+performs the stable bounded read, and passes the already-resolved bytes and provenance to the store.
+The API never reads a client filesystem path, accepts a source path during refresh, or returns the
+canonical source path/file identity. Multipart snapshot creation bounds both the individual file
+section and the complete request: one maximum-size file retains a 64 KiB protocol-envelope
+allowance, while declared-length and chunked aggregate overflow both fail with
+`Attachment.TooLarge` before persistence.
 
 **On-disk layout** (`ArcanumPaths.AttachmentsDirectory` → `{GrimoireDirectory}/attachments/`):
 `_pending/{turnId}/{logicalKey}/v1/{originalFileName}` until session-bound; then
@@ -1081,17 +1097,43 @@ permissions remain defense in depth. Dedupe uses the plaintext SHA-256 retained 
 
 **Retrieval bounds:** attachment semantic admission clamps `MaxRetrievedChunks` (1–50), `MaxRetrievedAttachments` (1–100), `MaxRetrievedBytes` (1 KiB–16 MiB), and `MaxRetrievedTokens` (128–1,048,576), in addition to the shared 0–1 similarity threshold. Explicit sources are admitted first and do not consume these semantic limits.
 
-**Turn budget / injection:** the code-owned per-turn reference cap is shared by user `AttachmentReferences` and model `attach_session_file` / `refresh_session_file` injections. The unified ledger performs inject-once by stable identity and content/range across every explicit and semantic path; subsequent tool rounds cannot re-inject the same materialization. Image re-attach or refresh requires `Arcanum:Features:Scrying`, an allowed image MIME, and a model with `SupportsVision`; oversize images are **rejected, never truncated**.
+**Turn budget / injection:** the code-owned per-turn reference cap is shared by user `AttachmentReferences` and model `attach_session_file` / `refresh_session_file` injections. The unified ledger performs inject-once by stable identity and content/range across every explicit and semantic path; subsequent tool rounds cannot re-inject the same materialization. Image re-attach or model-tool refresh requires `Arcanum:Features:Scrying`, an allowed image MIME, and a model with `SupportsVision`; oversize images are **rejected, never truncated**. Operator refresh still applies Scrying/MIME/size policy, but it does not require a model capability because it queues no inference content.
 
 **Model tool:** `attach_session_file` is an **internal MCP** tool (attunement-aware). After a **successful** call (`!Failed && !Denied` — Ward/Sanctum denials and tool failures do not inject), a dedicated post-tool path materializes `TextContent` / `DataContent`, then atomically consumes the turn budget / inject-once mark, and queues content for the **next** inference round. User extras from a multi-tool model response are appended **only after** every tool call and tool result from that round are on the transcript (never interleaved between tool exchanges). Injected/rehydrated text is framed as untrusted DATA (adaptive fences); attachment headings harden hostile path characters. Unexpected post-processing failures follow the code-owned tolerant mode policy and never partially inject.
 
 `refresh_session_file` is the corresponding host-authorized live-source tool. Its hand-authored schema accepts exactly one `attachmentId` or `logicalKey`; session, source path, model, campaign, assistant Entry, and turn-visible attachment set are host-owned. It resolves only a Bound current-session attachment visible when the logical turn began. A case-insensitive logical-key match that names more than one case-distinct key fails as ambiguous. Snapshot-only, missing, inaccessible, unsafe, changed-workspace, or corrupt provenance fails closed with a structured result.
 
-The source resolver reconstructs only the stored workspace-relative provenance, verifies workspace identity and lexical/canonical containment, rejects a changed symlink target, compares path and open-handle identities, applies Sanctum to the actual canonical source, and reads from that handle under a kind-specific byte cap. It reads the handle twice and requires identical hashes so a file changing during the read is rejected. MIME and strict UTF-8/Scrying/vision policy are reapplied before persistence. A hash matching the latest Bound version reuses its row and encrypted blob; changed bytes use the existing session/logical-key gates to enforce `MaxBytesPerSession` and `MaxVersionsPerLogicalKey` while atomically inserting the next version with current hash, MIME, length, source observations, timestamp, and assistant Entry binding.
+The source resolver reconstructs only the stored workspace-relative provenance, verifies workspace identity and lexical/canonical containment, rejects a changed symlink target, compares path and open-handle identities, applies Sanctum to the actual canonical source, and reads from that handle under the maximum supported attachment read bound because the source kind may have changed. It reads the handle twice and requires identical hashes so a file changing during the read is rejected. Detected MIME reclassifies the current bytes as Text, Image, or Binary; the resulting kind's size, strict UTF-8, MIME, and Scrying policy are applied before persistence, with model vision checked only when a model-tool refresh will inject the image. A hash matching the latest Bound version reuses its row and encrypted blob; changed bytes use the existing session/logical-key gates to enforce `MaxBytesPerSession` and `MaxVersionsPerLogicalKey` while atomically inserting the next version with current hash, kind, MIME, length, source observations, timestamp, and assistant Entry binding.
 
 The structured result reports attachment id, logical key, version, creation/queue booleans, sanitized relative source path, hash, byte length, freshness time, and bounded error information. Refreshed text is untrusted DATA labeled with sanitized filename, logical key, version, and freshness. The original user Entry is never rewritten. `refresh_session_file` participates in Artifact Attunement and `ToolPolicy.ReadOnlyTools`; it is not intrinsically Warded or a default Forbidden Art, but operator-configured Forbidden Arts still apply. Sanctum always evaluates the hidden resolved source when a campaign exists. Successful refreshes emit native `attachmentRefreshed`; OpenAI projections intentionally ignore it.
 
-**Command Center state and manual refresh:** the attachment list maps snapshot-only provenance to `[Snapshot]`, verified matching workspace provenance to `[Live]`, and every other tracked-source condition to `[Stale]`. Each row renders the version and the snapshot `ContentSha256` that is loaded into model context; tracked rows also render the last backend-observed disk hash and write time. `CommandCenterAttachmentDriftMonitor` uses one recursive `FileSystemWatcher` over the active working directory, debounces create/change/delete/rename events, and calls the listing endpoint. It never hashes a file or promotes a badge locally. `/attachments refresh <logicalName>` resolves the latest visible row, calls `POST /api/sessions/{id}/attachments/{attachmentId}/refresh`, and prints `[Live]` only from the returned backend confirmation. The endpoint calls `ToolExecutionPipeline.RefreshSessionAttachmentAsync`, which shares selector ownership, source resolver, Sanctum, MIME/size policy, version gates, encrypted persistence, and indexing enqueue with `refresh_session_file`; because no model turn is active, it does not queue content injection.
+**Command Center state and manual refresh:** the attachment list maps snapshot-only provenance to `[Snapshot]`, verified matching workspace provenance to `[Live]`, and every other tracked-source condition to `[Stale]`. Each row renders the version and the snapshot `ContentSha256` that is loaded into model context; tracked rows also render the last backend-observed disk hash and write time. `CommandCenterAttachmentDriftMonitor` uses one recursive `FileSystemWatcher` over the active working directory, debounces create/change/delete/rename events, and calls the listing endpoint. It never hashes a file or promotes a badge locally. `/attachments refresh <logicalName>` resolves the latest visible row, calls `POST /api/sessions/{id}/attachments/{attachmentId}/refresh`, and prints `[Live]` only from the returned backend confirmation. The endpoint calls `ToolExecutionPipeline.RefreshSessionAttachmentAsync`, which shares selector ownership, source resolver, Sanctum, MIME/kind/size policy, version gates, encrypted persistence, and indexing enqueue with `refresh_session_file`; because no model turn is active, it neither checks an unrelated default model's vision capability nor queues content injection.
+
+**Standalone CLI lifecycle:** `arcanum attachment` is an HTTP client over the same bound rows and
+services; it does not duplicate persistence, version selection, refresh, pin, or source policy.
+
+| Command | Contract |
+|---------|----------|
+| `attachment list [session] [--session <session>]` | List only the latest version per logical key; metadata only. The named option takes precedence over the positional selector. |
+| `attachment add <path\|-> [--mime <type>\|--content-type <type>] [--name <filename>] [--session <session>]` | Read a client-local file or stdin and create a snapshot. With stdin and no MIME/name, use `stdin.txt` + `text/plain`. The MIME is a hint; server detection/policy remains authoritative. Unsupported binary/PDF/Office content remains valid as `Binary` + `NotEligible` under the normal byte/MIME budgets. |
+| `attachment reference <workspace-path> [--workspace <workspace>] [--name <logical-key>] [--session <session>]` | Ask the server to resolve a path inside the selected/default server workspace and persist the verified current bytes as a refreshable version. The CLI never opens this path. |
+| `attachment show [attachment] [--session <session>]` / `attachment versions [attachment] [--session <session>]` | Show safe metadata or every version of the selected logical key. `show --privacy` prints the privacy model immediately; it is disclosure, not an acknowledgement gate. |
+| `attachment refresh [attachment] [--session <session>]` | Call the same secure refresh service as `refresh_session_file`; changed bytes create the next bounded version and unchanged bytes reuse the row. |
+| `attachment pin\|unpin [attachment] [--session <session>]` | Create/delete an Attachment context pin for the selected version. Text pins materialize implicitly under pin budgets. Image pins remain selected but report `Unsupported` for implicit materialization; a vision turn must name the image explicitly. |
+| `attachment export [attachment] [--output <file>\|-o <file>] [--session <session>]` | Stream authenticated plaintext to a same-directory staged file and atomically replace only after success. Existing files require interactive confirmation or global `--yes`; `--output -` is refused. |
+| `attachment reveal [attachment] [--session <session>]` | Reveal the encrypted stored snapshot artifact in the OS file manager only when the API-relative artifact is locally present with an `ARCABLOB` envelope. It never reveals the live source or decrypts content; remote/mismatched clients use export. |
+
+Attachment selectors accept an exact attachment GUID, exact logical key, or unique logical-key
+prefix; omission may open the bounded picker only on an interactive terminal. Session/workspace
+selectors use the shared safe resource selector. `--json` returns source-generated metadata JSON;
+diagnostics remain on stderr. No list/show/versions/refresh/pin/unpin/reveal command writes attachment
+bytes to the terminal, and export never writes them to stdout.
+
+Root `ask` and `chat` accept repeatable `--attachment <bound-guid>` values. These are opaque direct
+references, not names or paths; validation requires every id to belong to the effective Session.
+They enter the existing explicit-first materialization ledger and shared per-turn reference budget.
+Chat retains supplied ids across failed or cancelled attempts and consumes them only after the next
+completed turn; retrying does not create new attachment authority.
 
 **Metadata invariants:** `SessionAttachments` is installed by the embedded
 `20260719180000_AddSessionAttachments` script and accessed through scoped

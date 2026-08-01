@@ -10,6 +10,8 @@ public enum SessionAttachmentKind
 
     Image,
 
+    Binary,
+
 }
 
 public enum SessionAttachmentState
@@ -65,7 +67,9 @@ public sealed record AttachmentSourceMetadata(
 /// <summary>
 /// Host-trusted source claim. API clients must never construct this from an arbitrary path.
 /// </summary>
-public sealed record AttachmentSourceClaim(string AbsolutePath);
+public sealed record AttachmentSourceClaim(
+    string AbsolutePath,
+    string? WorkspaceRoot = null);
 
 public sealed record AttachmentSourceResolution(
     AttachmentSourceMetadata Metadata,
@@ -86,6 +90,13 @@ public interface IAttachmentSourceResolver
     Task<AttachmentSourceMetadata> RevalidateAsync(
         AttachmentSourceMetadata source,
         CancellationToken cancellationToken = default);
+
+    Task<AttachmentSourceResolution> ResolveForReferenceAsync(
+        AttachmentSourceClaim claim,
+        long maxBytes,
+        AttachmentSourcePathAuthorizer authorizeCanonicalPath,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Live attachment references are not supported by this resolver.");
 
     Task<AttachmentSourceResolution> ResolveCurrentAsync(
         AttachmentSourceMetadata source,
@@ -170,6 +181,18 @@ public interface ISessionAttachmentStore
             kind,
             cancellationToken);
 
+    Task<SessionAttachmentRecord> PersistNewResolvedSourceAsync(
+        Guid? sessionId,
+        string? pendingTurnId,
+        Guid? entryId,
+        string logicalNameHint,
+        string originalFileName,
+        SessionAttachmentKind kind,
+        AttachmentSourceResolution source,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            "Resolved attachment source persistence is not supported by this store.");
+
     Task<SessionAttachmentRefreshPersistence> PersistRefreshedAsync(
         SessionAttachmentRecord latest,
         Guid? entryId,
@@ -196,6 +219,15 @@ public interface ISessionAttachmentStore
     Task<IReadOnlyList<SessionAttachmentIndexItem>> BuildIndexAsync(Guid sessionId, int maxItems, CancellationToken cancellationToken = default);
 
     Task<ReadOnlyMemory<byte>> ReadBytesAsync(SessionAttachmentRecord record, CancellationToken cancellationToken = default);
+
+    async Task<Stream> OpenReadAsync(
+        SessionAttachmentRecord record,
+        CancellationToken cancellationToken = default)
+    {
+        ReadOnlyMemory<byte> bytes = await ReadBytesAsync(record, cancellationToken).ConfigureAwait(false);
+
+        return new MemoryStream(bytes.ToArray(), writable: false);
+    }
 
     Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default);
 

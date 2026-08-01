@@ -130,6 +130,75 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         return persisted.Record;
     }
 
+    public async Task<SessionAttachmentRecord> PersistNewResolvedSourceAsync(
+        Guid? sessionId,
+        string? pendingTurnId,
+        Guid? entryId,
+        string logicalNameHint,
+        string originalFileName,
+        SessionAttachmentKind kind,
+        AttachmentSourceResolution source,
+        CancellationToken cancellationToken = default)
+    {
+        AttachmentSourceMetadata persistedSource = ValidateResolvedSource(
+            source,
+            allowPriorVersion: false);
+
+        PersistNewCoreResult persisted = await PersistNewCoreAsync(
+            sessionId,
+            pendingTurnId,
+            entryId,
+            logicalNameHint,
+            originalFileName,
+            source.VerifiedBytes,
+            source.DetectedMimeType!,
+            kind,
+            persistedSource,
+            cancellationToken).ConfigureAwait(false);
+
+        return persisted.Record;
+    }
+
+    private static AttachmentSourceMetadata ValidateResolvedSource(
+        AttachmentSourceResolution source,
+        bool allowPriorVersion)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        bool validStatus = source.Metadata.Status == AttachmentSourceStatus.Refreshable
+            || (allowPriorVersion && source.Metadata.Status == AttachmentSourceStatus.PriorVersion);
+
+        if (source.Metadata.Kind != AttachmentSourceKind.WorkspaceFile
+            || !validStatus
+            || string.IsNullOrWhiteSpace(source.Metadata.WorkspaceIdentity)
+            || string.IsNullOrWhiteSpace(source.Metadata.WorkspaceRelativePath)
+            || string.IsNullOrWhiteSpace(source.Metadata.LastKnownCanonicalPath)
+            || string.IsNullOrWhiteSpace(source.Metadata.LastObservedContentSha256)
+            || string.IsNullOrWhiteSpace(source.Metadata.LastObservedFileIdentity)
+            || source.Metadata.LastObservedWriteTime is null
+            || string.IsNullOrWhiteSpace(source.DetectedMimeType)
+            || source.Metadata.LastObservedByteLength != source.VerifiedBytes.Length)
+        {
+            throw new InvalidOperationException(
+                "The attachment source was not securely resolved with complete provenance and a MIME type.");
+        }
+
+        string verifiedHash = Convert.ToHexString(SHA256.HashData(source.VerifiedBytes.Span));
+
+        if (!verifiedHash.Equals(
+                source.Metadata.LastObservedContentSha256,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The attachment source hash does not match the verified bytes.");
+        }
+
+        return source.Metadata with
+        {
+            Status = AttachmentSourceStatus.Refreshable,
+            DiagnosticReason = null,
+        };
+    }
+
     public async Task<SessionAttachmentRefreshPersistence> PersistRefreshedAsync(
         SessionAttachmentRecord latest,
         Guid? entryId,
@@ -137,34 +206,19 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(latest);
-        ArgumentNullException.ThrowIfNull(current);
 
         if (latest.State != SessionAttachmentState.Bound || latest.SessionId is not { } sessionId)
         {
             throw new InvalidOperationException("Only a bound session attachment can be refreshed.");
         }
 
-        if (current.Metadata.Kind != AttachmentSourceKind.WorkspaceFile
-            || current.Metadata.Status is not (AttachmentSourceStatus.Refreshable or AttachmentSourceStatus.PriorVersion)
-            || string.IsNullOrWhiteSpace(current.DetectedMimeType)
-            || string.IsNullOrWhiteSpace(current.Metadata.LastObservedContentSha256))
-        {
-            throw new InvalidOperationException("The current source was not securely resolved with a MIME type.");
-        }
+        AttachmentSourceMetadata persistedSource = ValidateResolvedSource(
+            current,
+            allowPriorVersion: true);
 
-        string verifiedHash = Convert.ToHexString(SHA256.HashData(current.VerifiedBytes.Span));
-        if (!verifiedHash.Equals(
-                current.Metadata.LastObservedContentSha256,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("The current source hash does not match the verified bytes.");
-        }
+        SessionAttachmentKind refreshedKind = SessionAttachmentContentPolicy.Classify(
+            current.DetectedMimeType!);
 
-        AttachmentSourceMetadata persistedSource = current.Metadata with
-        {
-            Status = AttachmentSourceStatus.Refreshable,
-            DiagnosticReason = null,
-        };
         PersistNewCoreResult persisted = await PersistNewCoreAsync(
             sessionId,
             pendingTurnId: null,
@@ -172,8 +226,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             latest.LogicalKey,
             latest.OriginalFileName,
             current.VerifiedBytes,
-            current.DetectedMimeType,
-            latest.Kind,
+            current.DetectedMimeType!,
+            refreshedKind,
             persistedSource,
             cancellationToken).ConfigureAwait(false);
 
@@ -272,7 +326,17 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         SessionAttachmentRecord? latest = await FindLatestAsync(sessionId, validatedPendingTurnId, logicalKey, cancellationToken)
             .ConfigureAwait(false);
 
-        if (latest is not null && string.Equals(latest.ContentSha256, contentSha256, StringComparison.OrdinalIgnoreCase))
+        if (latest is not null
+
+            && string.Equals(
+
+                latest.ContentSha256,
+
+                contentSha256,
+
+                StringComparison.OrdinalIgnoreCase)
+
+            && HasSameSourceIdentity(latest.Source, source))
         {
             if (source is null)
             {
@@ -763,7 +827,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     }
 
-    public async Task<ReadOnlyMemory<byte>> ReadBytesAsync(
+    public async Task<Stream> OpenReadAsync(
         SessionAttachmentRecord record,
         CancellationToken cancellationToken = default)
     {
@@ -779,22 +843,45 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         }
 
-        await using Stream decrypted = await _blobStore
+        Stream decrypted = await _blobStore
             .OpenCompatibleReadAsync(
                 absolutePath,
                 EncryptedBlobPurpose.SessionAttachment,
                 record.EncryptionVersion,
                 cancellationToken)
             .ConfigureAwait(false);
-        if (decrypted.Length != record.ByteLength)
+
+        try
         {
-            throw new InvalidDataException(
-                $"Attachment plaintext length mismatch for '{record.Id}'.");
+            if (decrypted.Length != record.ByteLength)
+            {
+                throw new InvalidDataException(
+                    $"Attachment plaintext length mismatch for '{record.Id}'.");
+            }
+
+            return decrypted;
         }
+        catch
+        {
+            await decrypted.DisposeAsync().ConfigureAwait(false);
+
+            throw;
+        }
+
+    }
+
+    public async Task<ReadOnlyMemory<byte>> ReadBytesAsync(
+        SessionAttachmentRecord record,
+        CancellationToken cancellationToken = default)
+    {
+
+        await using Stream decrypted = await OpenReadAsync(record, cancellationToken).ConfigureAwait(false);
 
         using MemoryStream output = new(
             record.ByteLength <= int.MaxValue ? checked((int)record.ByteLength) : 0);
+
         await decrypted.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+
         return output.ToArray();
 
     }
@@ -1622,6 +1709,117 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     private static string NormalizeRelativePath(string relativePath) =>
         relativePath.Replace('\\', '/');
+
+    private static bool HasSameSourceIdentity(
+
+        AttachmentSourceMetadata? existing,
+
+        AttachmentSourceMetadata? requested)
+
+    {
+
+        AttachmentSourceMetadata existingSource = existing ?? AttachmentSourceMetadata.SnapshotOnly;
+
+        AttachmentSourceMetadata requestedSource = requested ?? AttachmentSourceMetadata.SnapshotOnly;
+
+        if (existingSource.Kind != requestedSource.Kind)
+
+        {
+
+            return false;
+
+        }
+
+        if (existingSource.Kind == AttachmentSourceKind.SnapshotOnly)
+
+        {
+
+            return true;
+
+        }
+
+        StringComparison pathComparison = OperatingSystem.IsWindows()
+
+            ? StringComparison.OrdinalIgnoreCase
+
+            : StringComparison.Ordinal;
+
+        return string.Equals(
+
+                existingSource.WorkspaceIdentity,
+
+                requestedSource.WorkspaceIdentity,
+
+                StringComparison.Ordinal)
+
+            && string.Equals(
+
+                NormalizeSourceRelativePath(existingSource.WorkspaceRelativePath),
+
+                NormalizeSourceRelativePath(requestedSource.WorkspaceRelativePath),
+
+                pathComparison)
+
+            && SourcePathEquals(
+
+                existingSource.LastKnownCanonicalPath,
+
+                requestedSource.LastKnownCanonicalPath,
+
+                pathComparison);
+
+    }
+
+    private static string? NormalizeSourceRelativePath(string? relativePath) =>
+
+        relativePath?.Replace('\\', '/');
+
+    private static bool SourcePathEquals(
+
+        string? left,
+
+        string? right,
+
+        StringComparison comparison)
+
+    {
+
+        if (left is null || right is null)
+
+        {
+
+            return left is null && right is null;
+
+        }
+
+        try
+
+        {
+
+            return string.Equals(
+
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+
+                comparison);
+
+        }
+        catch (Exception exception) when (
+
+            exception is ArgumentException
+
+                or NotSupportedException
+
+                or PathTooLongException)
+
+        {
+
+            return false;
+
+        }
+
+    }
 
     private async Task<DbConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {

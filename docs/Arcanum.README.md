@@ -256,7 +256,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Inference (OpenAI) | `POST /v1/chat/completions`, `GET /v1/models`, `POST /v1/embeddings` | OpenAI JSON/SSE; Scrying gates images; client tools opt-in |
 | OpenAI stubs | `/v1/moderations`, `/images/*`, `/audio/*` | Always 501 `not_supported` |
 | Files / Batches | `/v1/files*`, `/v1/batches*` | Upload + async JSONL chat batches |
-| Sessions | `/api/sessions/*` (+ entries/stream/attachments/divine/fork/pin/compact) | Grimoire threads; memory-mgmt gated; RAG divine off by default |
+| Sessions | `/api/sessions/*` (+ entries/stream/attachments/divine/fork/pin/compact) | Grimoire threads; standalone attachment snapshot/reference/content/refresh routes; memory-mgmt gated; RAG divine off by default |
 | Lore / Saga | `/api/lore/*`, `/api/saga/*` | Legacy KV lore; Saga auto-memory (divine gated) |
 | Spells / Prompts / Campaigns | `/api/spells/*`, `/prompts/*`, `/campaigns/*`, `/codex` | Forge registry + execute/stream/versions |
 | Apprentices / A2A | `/api/apprentices/*`, `/conclave/a2a/*` | Goal agents + optional A2A (off by default) |
@@ -296,15 +296,18 @@ Summaries only — full contracts live in DESIGN.
   [§10.2.5](Arcanum.DESIGN.md#1025-session-attachments-disk--grimoire-pointers).
   The attunement-aware `refresh_session_file` tool accepts an attachment id or logical key—not a
   path—securely rereads verified workspace provenance through an identity-checked handle, reuses an
-  unchanged version or persists the next encrypted version, and queues it after the complete tool
-  round for the next request in the same logical turn. It shares attachment byte/version/reference
-  budgets, inject-once behavior, MIME/Scrying/vision checks, and Sanctum enforcement. Native NDJSON
-  exposes sanitized `attachmentRefreshed` observability; OpenAI projections ignore it.
+  unchanged version or persists the next encrypted version with its currently detected MIME-derived
+  kind, and queues it after the complete tool round for the next request in the same logical turn. It
+  shares attachment byte/version/reference budgets, inject-once behavior, MIME/Scrying/vision checks,
+  and Sanctum enforcement. Native NDJSON exposes sanitized `attachmentRefreshed` observability;
+  OpenAI projections ignore it.
   Command Center `/attachments` renders `[Snapshot]`, `[Live]`, or `[Stale]` with the loaded version
   hash and last backend-observed disk hash/time. Its filesystem watcher only triggers an asynchronous
   metadata re-read; the host revalidates provenance before the UI changes state. Use
   `/attachments refresh <logicalName>` to run the same secure refresh core manually; `[Live]` is
-  printed only after the backend confirms the persisted/reused version.
+  printed only after the backend confirms the persisted/reused version. Manual refresh applies the
+  content policy without requiring the configured default model to support vision because no model
+  content is queued.
   Semantic retrieval reads only through the encrypted attachment store, exposes bounded
   `indexingStatus` metadata, and fences retrieved excerpts as untrusted DATA.
   Durable memory promotion is fail-closed: Lexicon and Saga accept attachment-derived facts only
@@ -791,6 +794,62 @@ server path components and sanitize the leaf; an existing destination requires i
 confirmation or explicit `--yes`. `file delete` uses the same confirmation boundary. Recursive
 `--json` emits one source-generated JSON document on stdout and keeps progress/diagnostics on
 stderr; `/v1` successes are never reinterpreted as `ApiResponse<T>`.
+
+### Session attachments
+
+The standalone attachment family manages encrypted, versioned snapshots without starting an
+inference turn. Selectors accept an attachment GUID, exact logical key, or unique logical-key
+prefix; omit one in an interactive terminal for the bounded picker. `--session` accepts the shared
+session selector and falls back through active context. Metadata commands never print file bytes.
+
+```bash
+arcanum attachment list [session] [--session <session>]
+arcanum attachment add <local-path|-> [--mime <type>|--content-type <type>] [--name <filename>] [--session <session>]
+arcanum attachment reference <workspace-path> [--workspace <workspace>] [--name <logical-key>] [--session <session>]
+arcanum attachment show [attachment] [--session <session>]
+arcanum attachment show --privacy
+arcanum attachment versions [attachment] [--session <session>]
+arcanum attachment refresh [attachment] [--session <session>]
+arcanum attachment pin|unpin [attachment] [--session <session>]
+arcanum attachment export [attachment] [--output <file>|-o <file>] [--session <session>]
+arcanum attachment reveal [attachment] [--session <session>]
+
+arcanum ask --session <session> --attachment <bound-guid> "use this snapshot"
+arcanum chat --session <session> --attachment <bound-guid>
+```
+
+`attachment add` reads a client-local file or `-` for stdin and uploads bytes; it may snapshot a
+file outside any Workspace because the originating path is neither sent nor retained. Stdin with
+no MIME/name defaults to `stdin.txt` and `text/plain`. `--mime` is only a hint: the server still
+validates detected content, strict text encoding/image policy, size, and shared Session budgets.
+Unsupported binary/PDF/Office content remains a valid `Binary` snapshot with `NotEligible` indexing
+status; it can be managed and exported even though it cannot be injected as text model context. A
+maximum-size file remains valid with normal multipart overhead; aggregate declared or chunked bodies
+beyond the bounded 64 KiB protocol allowance fail before persistence.
+
+`attachment reference` is different: its path belongs to the server host and is resolved only
+inside the selected registered Workspace or server default. The CLI does not open that path. The
+server canonicalizes it, checks containment/file identity and Campaign Sanctum, reads it stably,
+and persists those verified bytes as a refreshable version. A snapshot is always immutable;
+refresh never rereads a client path or accepts a new path. Changed verified bytes create the next
+version with its newly detected Text/Image/Binary kind, while an unchanged hash reuses the existing
+row. Standalone refresh has no model-capability gate because it does not inject content. `versions`
+exposes that history and `list` shows the latest version of each logical key.
+
+`pin` stores a selected version as durable Session context; `unpin` is harmless when no matching
+pin exists. Text pins may be admitted implicitly under the existing pin/turn budgets. An image pin
+remains selected but reports `Unsupported` for implicit materialization; pass its bound GUID with
+repeatable `ask --attachment` or `chat --attachment` for an explicit vision-capable turn. Direct
+IDs must belong to the effective Session and share the normal attachment-reference budget.
+
+`export` is the only command that writes plaintext attachment bytes. It streams to a same-directory
+temporary file and atomically replaces the destination only after a complete authenticated
+download; an existing file requires interactive confirmation or global `--yes`. `--output -` is
+refused, so attachment bytes never reach stdout. `reveal` opens the encrypted stored snapshot
+artifact only when that local path contains an `ARCABLOB` envelope; a remote or mismatched client is
+directed to export. It does not reveal the live source or a decrypted copy. `show
+--privacy` prints these rules as disclosure and exits without an acknowledgement prompt. `--json`
+remains metadata-only with diagnostics on stderr.
 
 ### Workspace versus Campaign
 

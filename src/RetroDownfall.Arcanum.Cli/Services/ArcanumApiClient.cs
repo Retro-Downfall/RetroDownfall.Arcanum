@@ -1276,6 +1276,458 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<Result<SessionAttachmentDto>> UploadSessionAttachmentAsync(
+
+        Guid sessionId,
+
+        Stream contentStream,
+
+        string fileName,
+
+        string mimeType,
+
+        CancellationToken cancellationToken = default)
+
+    {
+
+        string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
+
+        if (apiKey is null)
+
+        {
+
+            return Result<SessionAttachmentDto>.Failure(MissingApiKeyError);
+
+        }
+
+        try
+
+        {
+
+            HttpClient client = httpClientFactory.CreateClient(RequestHttpClientName);
+
+            using MultipartFormDataContent form = new();
+
+            using StreamContent file = new(contentStream);
+
+            _ = file.Headers.TryAddWithoutValidation(
+
+                "Content-Type",
+
+                mimeType);
+
+            form.Add(
+
+                file,
+
+                "file",
+
+                SafeMultipartFilename(fileName));
+
+            using HttpRequestMessage request = new(
+
+                HttpMethod.Post,
+
+                $"api/sessions/{sessionId:D}/attachments")
+
+            {
+
+                Content = form,
+
+            };
+
+            _ = request.Headers.TryAddWithoutValidation(
+
+                ArcanumApiHeaders.ApiKey,
+
+                apiKey);
+
+            using HttpResponseMessage response = await client
+
+                .SendAsync(
+
+                    request,
+
+                    HttpCompletionOption.ResponseHeadersRead,
+
+                    cancellationToken)
+
+                .ConfigureAwait(false);
+
+            byte[]? responseBytes = await TryReadCappedContentAsync(
+
+                    response.Content,
+
+                    MaxResponseBytes,
+
+                    cancellationToken)
+
+                .ConfigureAwait(false);
+
+            if (responseBytes is null)
+
+            {
+
+                return Result<SessionAttachmentDto>.Failure(ResponseTooLargeError);
+
+            }
+
+            ApiResponse<SessionAttachmentDto>? envelope = TryDeserialize(
+
+                responseBytes,
+
+                ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto);
+
+            if (response.IsSuccessStatusCode
+
+                && envelope is { IsSuccess: true, Data: not null })
+
+            {
+
+                return Result<SessionAttachmentDto>.Success(envelope.Data);
+
+            }
+
+            if (envelope?.Error is { } error)
+
+            {
+
+                return Result<SessionAttachmentDto>.Failure(error);
+
+            }
+
+            return Result<SessionAttachmentDto>.Failure(
+
+                new Error(
+
+                    "Api.HttpError",
+
+                    $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+
+        {
+
+            throw;
+
+        }
+        catch (OperationCanceledException)
+
+        {
+
+            return Result<SessionAttachmentDto>.Failure(RequestTimeoutError);
+
+        }
+        catch (HttpRequestException)
+
+        {
+
+            return Result<SessionAttachmentDto>.Failure(RequestUnreachableError);
+
+        }
+        catch (IOException)
+
+        {
+
+            return Result<SessionAttachmentDto>.Failure(RequestDisconnectedError);
+
+        }
+
+    }
+
+    public Task<Result<SessionAttachmentDto>> CreateSessionAttachmentReferenceAsync(
+
+        Guid sessionId,
+
+        CreateSessionAttachmentReferenceRequest request,
+
+        CancellationToken cancellationToken = default)
+
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+
+            request,
+
+            ArcanumJsonContext.Default.CreateSessionAttachmentReferenceRequest);
+
+        return SendRequestAsync(
+
+            HttpMethod.Post,
+
+            $"api/sessions/{sessionId:D}/attachments/reference",
+
+            json,
+
+            JsonUtf8ContentType,
+
+            ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto,
+
+            cancellationToken);
+
+    }
+
+    public async Task<Result<long>> DownloadSessionAttachmentAsync(
+
+        Guid sessionId,
+
+        Guid attachmentId,
+
+        string destinationPath,
+
+        bool overwrite,
+
+        CancellationToken cancellationToken = default)
+
+    {
+
+        string temporaryPath = string.Empty;
+
+        try
+
+        {
+
+            string fullDestination = Path.GetFullPath(destinationPath);
+
+            string directory = Path.GetDirectoryName(fullDestination)
+
+                ?? throw new IOException("The attachment export destination has no parent directory.");
+
+            Directory.CreateDirectory(directory);
+
+            temporaryPath = Path.Combine(
+
+                directory,
+
+                $".{Path.GetFileName(fullDestination)}.{Guid.NewGuid():N}.download");
+
+            string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
+
+            if (apiKey is null)
+
+            {
+
+                return Result<long>.Failure(MissingApiKeyError);
+
+            }
+
+            HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
+
+            using HttpRequestMessage request = new(
+
+                HttpMethod.Get,
+
+                $"api/sessions/{sessionId:D}/attachments/{attachmentId:D}/content");
+
+            _ = request.Headers.TryAddWithoutValidation(
+
+                ArcanumApiHeaders.ApiKey,
+
+                apiKey);
+
+            using HttpResponseMessage response = await client
+
+                .SendAsync(
+
+                    request,
+
+                    HttpCompletionOption.ResponseHeadersRead,
+
+                    cancellationToken)
+
+                .ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+
+            {
+
+                byte[]? errorBytes = await TryReadCappedContentAsync(
+
+                        response.Content,
+
+                        MaxResponseBytes,
+
+                        cancellationToken)
+
+                    .ConfigureAwait(false);
+
+                ApiResponse<SessionAttachmentDto>? envelope = errorBytes is null
+
+                    ? null
+
+                    : TryDeserialize(
+
+                        errorBytes,
+
+                        ArcanumJsonContext.Default.ApiResponseSessionAttachmentDto);
+
+                return Result<long>.Failure(
+
+                    envelope?.Error
+
+                    ?? new Error(
+
+                        "Api.HttpError",
+
+                        $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
+
+            }
+
+            await using Stream network = await response.Content
+
+                .ReadAsStreamAsync(cancellationToken)
+
+                .ConfigureAwait(false);
+
+            long byteCount = 0;
+
+            await using (FileStream destination = new(
+
+                             temporaryPath,
+
+                             FileMode.CreateNew,
+
+                             FileAccess.Write,
+
+                             FileShare.None,
+
+                             bufferSize: 81_920,
+
+                             options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+
+            {
+
+                byte[] buffer = new byte[81_920];
+
+                int read;
+
+                while ((read = await network
+
+                           .ReadAsync(buffer, cancellationToken)
+
+                           .ConfigureAwait(false)) > 0)
+
+                {
+
+                    await destination
+
+                        .WriteAsync(
+
+                            buffer.AsMemory(0, read),
+
+                            cancellationToken)
+
+                        .ConfigureAwait(false);
+
+                    byteCount += read;
+
+                }
+
+                await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            }
+
+            File.Move(temporaryPath, fullDestination, overwrite);
+
+            temporaryPath = string.Empty;
+
+            return Result<long>.Success(byteCount);
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+
+        {
+
+            throw;
+
+        }
+        catch (OperationCanceledException)
+
+        {
+
+            return Result<long>.Failure(RequestTimeoutError);
+
+        }
+        catch (HttpRequestException)
+
+        {
+
+            return Result<long>.Failure(RequestUnreachableError);
+
+        }
+        catch (Exception exception) when (
+
+            exception is IOException or UnauthorizedAccessException)
+
+        {
+
+            return Result<long>.Failure(
+
+                new Error(
+
+                    "Attachment.ExportFailed",
+
+                    "The attachment export could not be written safely."));
+
+        }
+        finally
+
+        {
+
+            if (!string.IsNullOrEmpty(temporaryPath))
+
+            {
+
+                try
+
+                {
+
+                    File.Delete(temporaryPath);
+
+                }
+                catch (Exception exception) when (
+
+                    exception is IOException or UnauthorizedAccessException)
+
+                {
+
+                }
+
+            }
+
+        }
+
+    }
+
+    private static string SafeMultipartFilename(string fileName)
+
+    {
+
+        string leaf = Path.GetFileName(fileName.Replace('\\', '/'));
+
+        if (string.IsNullOrWhiteSpace(leaf)
+
+            || leaf is "." or "..")
+
+        {
+
+            return "attachment.bin";
+
+        }
+
+        return new string(leaf
+
+            .Select(character => character is '\r' or '\n' or '"'
+
+                ? '_'
+
+                : character)
+
+            .ToArray());
+
+    }
+
     public Task<Result<AttachmentRefreshEvent>> RefreshSessionAttachmentAsync(
 
         Guid sessionId,

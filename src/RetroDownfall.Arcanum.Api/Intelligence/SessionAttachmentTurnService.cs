@@ -212,6 +212,24 @@ public static class SessionAttachmentTurnService
                             $"Attachment '{attachmentId}' is not a bound attachment for this session.");
                     }
 
+                    if (record.Kind is not SessionAttachmentKind.Text
+
+                        and not SessionAttachmentKind.Image)
+
+                    {
+
+                        return new SessionAttachmentTurnPreparation(
+
+                            [],
+
+                            [],
+
+                            effectivePending,
+
+                            $"Attachment '{attachmentId}' cannot be injected into model context.");
+
+                    }
+
                     explicitlyVisibleAttachmentIds.Add(record.Id);
 
                     List<AIContent> referenceContents = [];

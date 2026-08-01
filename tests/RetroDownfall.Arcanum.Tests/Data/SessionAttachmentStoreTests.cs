@@ -219,7 +219,6 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 row.Source.LastObservedContentSha256);
 
         }
-
         finally
 
         {
@@ -307,6 +306,58 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task PersistRefreshedAsync_changed_content_reclassifies_kind_from_detected_mime()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] originalBytes = "%PDF-old"u8.ToArray();
+
+        AttachmentSourceResolution originalSource = CreateResolvedSource(
+            originalBytes,
+            "application/pdf");
+
+        SessionAttachmentRecord original = await _store!.PersistNewResolvedSourceAsync(
+            sessionId,
+            pendingTurnId: null,
+            entryId: null,
+            logicalNameHint: "artifact.bin",
+            originalFileName: "artifact.bin",
+            SessionAttachmentKind.Binary,
+            originalSource);
+
+        byte[] refreshedBytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+        AttachmentSourceResolution detectedImage = CreateResolvedSource(
+            refreshedBytes,
+            "image/png");
+
+        AttachmentSourceResolution refreshedSource = detectedImage with
+        {
+            Metadata = detectedImage.Metadata with
+            {
+                Status = AttachmentSourceStatus.PriorVersion,
+            },
+        };
+
+        SessionAttachmentRefreshPersistence refreshed = await _store.PersistRefreshedAsync(
+            original,
+            Guid.NewGuid(),
+            refreshedSource);
+
+        Assert.True(refreshed.NewVersionCreated);
+
+        Assert.Equal(2, refreshed.Record.Version);
+
+        Assert.Equal(SessionAttachmentKind.Image, refreshed.Record.Kind);
+
+        Assert.Equal("image/png", refreshed.Record.MimeType);
+
+        Assert.Equal(refreshedBytes, (await _store.ReadBytesAsync(refreshed.Record)).ToArray());
+    }
+
+    [SkippableFact]
     public async Task PersistNewAsync_bound_v1_writes_row_and_bytes_readable()
     {
 
@@ -356,6 +407,411 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         Assert.Equal(record.Id, byId!.Id);
 
+    }
+
+    [SkippableFact]
+    public async Task PersistNewResolvedSourceAsync_retains_provenance_and_reuses_version_logic()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        ISessionAttachmentStore store = _store!;
+
+        byte[] firstBytes = Encoding.UTF8.GetBytes("first reference");
+
+        AttachmentSourceResolution firstSource = CreateResolvedSource(firstBytes);
+
+        SessionAttachmentRecord first = await store.PersistNewResolvedSourceAsync(
+            sessionId,
+            pendingTurnId: null,
+            entryId: null,
+            logicalNameHint: "reference.txt",
+            originalFileName: "reference.txt",
+            SessionAttachmentKind.Text,
+            firstSource);
+
+        byte[] changedBytes = Encoding.UTF8.GetBytes("changed reference");
+
+        AttachmentSourceResolution changedSource = CreateResolvedSource(changedBytes);
+
+        SessionAttachmentRecord changed = await store.PersistNewResolvedSourceAsync(
+            sessionId,
+            pendingTurnId: null,
+            entryId: null,
+            logicalNameHint: "reference.txt",
+            originalFileName: "reference.txt",
+            SessionAttachmentKind.Text,
+            changedSource);
+
+        SessionAttachmentRecord repeated = await store.PersistNewResolvedSourceAsync(
+            sessionId,
+            pendingTurnId: null,
+            entryId: null,
+            logicalNameHint: "reference.txt",
+            originalFileName: "reference.txt",
+            SessionAttachmentKind.Text,
+            changedSource);
+
+        Assert.Equal(AttachmentSourceKind.WorkspaceFile, first.Source!.Kind);
+
+        Assert.Equal(AttachmentSourceStatus.Refreshable, first.Source.Status);
+
+        Assert.Equal(firstSource.Metadata.WorkspaceIdentity, first.Source.WorkspaceIdentity);
+
+        Assert.Equal(firstSource.Metadata.LastObservedContentSha256, first.Source.LastObservedContentSha256);
+
+        Assert.Equal(1, first.Version);
+
+        Assert.Equal(2, changed.Version);
+
+        Assert.Equal(changed.Id, repeated.Id);
+
+        Assert.Equal(changedBytes, (await store.ReadBytesAsync(changed)).ToArray());
+
+        Assert.Equal(2, (await store.ListBoundAsync(sessionId)).Count);
+    }
+
+    [SkippableFact]
+
+    public async Task Identical_snapshot_after_live_reference_creates_snapshot_version_without_provenance_blur()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] bytes = Encoding.UTF8.GetBytes("same bytes, different attachment mode");
+
+        SessionAttachmentRecord live = await _store!.PersistNewResolvedSourceAsync(
+
+            sessionId,
+
+            pendingTurnId: null,
+
+            entryId: null,
+
+            logicalNameHint: "mode.txt",
+
+            originalFileName: "mode.txt",
+
+            SessionAttachmentKind.Text,
+
+            CreateResolvedSource(bytes));
+
+        SessionAttachmentRecord snapshot = await _store.PersistNewAsync(
+
+            sessionId,
+
+            pendingTurnId: null,
+
+            entryId: null,
+
+            logicalNameHint: "mode.txt",
+
+            originalFileName: "mode.txt",
+
+            bytes,
+
+            mimeType: "text/plain",
+
+            SessionAttachmentKind.Text);
+
+        Assert.NotEqual(live.Id, snapshot.Id);
+
+        Assert.Equal(1, live.Version);
+
+        Assert.Equal(2, snapshot.Version);
+
+        Assert.Equal(AttachmentSourceKind.WorkspaceFile, live.Source!.Kind);
+
+        Assert.Equal(
+
+            AttachmentSourceKind.SnapshotOnly,
+
+            (snapshot.Source ?? AttachmentSourceMetadata.SnapshotOnly).Kind);
+
+        Assert.Equal(2, (await _store.ListBoundAsync(sessionId)).Count);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Identical_live_reference_after_snapshot_creates_live_version_without_provenance_blur()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] bytes = Encoding.UTF8.GetBytes("same bytes, different attachment mode");
+
+        SessionAttachmentRecord snapshot = await _store!.PersistNewAsync(
+
+            sessionId,
+
+            pendingTurnId: null,
+
+            entryId: null,
+
+            logicalNameHint: "mode.txt",
+
+            originalFileName: "mode.txt",
+
+            bytes,
+
+            mimeType: "text/plain",
+
+            SessionAttachmentKind.Text);
+
+        SessionAttachmentRecord live = await _store.PersistNewResolvedSourceAsync(
+
+            sessionId,
+
+            pendingTurnId: null,
+
+            entryId: null,
+
+            logicalNameHint: "mode.txt",
+
+            originalFileName: "mode.txt",
+
+            SessionAttachmentKind.Text,
+
+            CreateResolvedSource(bytes));
+
+        Assert.NotEqual(snapshot.Id, live.Id);
+
+        Assert.Equal(1, snapshot.Version);
+
+        Assert.Equal(2, live.Version);
+
+        Assert.Equal(
+
+            AttachmentSourceKind.SnapshotOnly,
+
+            (snapshot.Source ?? AttachmentSourceMetadata.SnapshotOnly).Kind);
+
+        Assert.Equal(AttachmentSourceKind.WorkspaceFile, live.Source!.Kind);
+
+        Assert.Equal(2, (await _store.ListBoundAsync(sessionId)).Count);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData("registered-workspace-id", "other.txt")]
+
+    [InlineData("other-workspace-id", "reference.txt")]
+
+    public async Task Identical_live_reference_from_different_source_identity_creates_new_version(
+
+        string workspaceIdentity,
+
+        string relativePath)
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] bytes = Encoding.UTF8.GetBytes("same live bytes from a distinct source");
+
+        AttachmentSourceResolution firstSource = CreateResolvedSource(bytes);
+
+        AttachmentSourceResolution distinctSource = firstSource with
+
+        {
+
+            Metadata = firstSource.Metadata with
+
+            {
+
+                WorkspaceIdentity = workspaceIdentity,
+
+                WorkspaceRelativePath = relativePath,
+
+                LastKnownCanonicalPath = Path.GetFullPath(
+
+                    Path.Combine(Path.GetTempPath(), workspaceIdentity, relativePath)),
+
+            },
+
+        };
+
+        SessionAttachmentRecord first = await _store!.PersistNewResolvedSourceAsync(
+
+            sessionId,
+
+            pendingTurnId: null,
+
+            entryId: null,
+
+            logicalNameHint: "mode.txt",
+
+            originalFileName: "mode.txt",
+
+            SessionAttachmentKind.Text,
+
+            firstSource);
+
+        SessionAttachmentRecord distinct = await _store.PersistNewResolvedSourceAsync(
+
+            sessionId,
+
+            pendingTurnId: null,
+
+            entryId: null,
+
+            logicalNameHint: "mode.txt",
+
+            originalFileName: "mode.txt",
+
+            SessionAttachmentKind.Text,
+
+            distinctSource);
+
+        Assert.NotEqual(first.Id, distinct.Id);
+
+        Assert.Equal(1, first.Version);
+
+        Assert.Equal(2, distinct.Version);
+
+        Assert.Equal(workspaceIdentity, distinct.Source!.WorkspaceIdentity);
+
+        Assert.Equal(relativePath, distinct.Source.WorkspaceRelativePath);
+
+    }
+
+    [SkippableFact]
+    public async Task Resolved_source_persistence_rejects_failed_or_incomplete_provenance()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        ISessionAttachmentStore store = _store!;
+
+        AttachmentSourceResolution denied = new(
+            AttachmentSourceMetadata.SnapshotOnly with
+            {
+                Status = AttachmentSourceStatus.Inaccessible,
+                DiagnosticReason = "denied",
+            },
+            ReadOnlyMemory<byte>.Empty);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            store.PersistNewResolvedSourceAsync(
+                sessionId,
+                pendingTurnId: null,
+                entryId: null,
+                logicalNameHint: "denied.txt",
+                originalFileName: "denied.txt",
+                SessionAttachmentKind.Text,
+                denied));
+
+        byte[] bytes = Encoding.UTF8.GetBytes("incomplete");
+
+        AttachmentSourceResolution complete = CreateResolvedSource(bytes);
+
+        AttachmentSourceResolution incomplete = complete with
+        {
+            Metadata = complete.Metadata with
+            {
+                LastObservedByteLength = null,
+            },
+        };
+
+        SessionAttachmentRecord latest = await store.PersistNewAsync(
+            sessionId,
+            pendingTurnId: null,
+            entryId: null,
+            logicalNameHint: "refresh.txt",
+            originalFileName: "refresh.txt",
+            bytes,
+            mimeType: "text/plain",
+            SessionAttachmentKind.Text);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            store.PersistRefreshedAsync(
+                latest,
+                entryId: null,
+                incomplete with
+                {
+                    Metadata = incomplete.Metadata with
+                    {
+                        Status = AttachmentSourceStatus.PriorVersion,
+                    },
+                }));
+
+        Assert.Null(await store.GetByLogicalAsync(sessionId, "denied.txt", version: null));
+    }
+
+    [SkippableFact]
+    public async Task OpenReadAsync_returns_live_decrypted_stream_and_enforces_plaintext_length()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        byte[] expected = Encoding.UTF8.GetBytes("stream without buffering the whole attachment");
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            Guid.NewGuid(),
+            pendingTurnId: null,
+            entryId: null,
+            logicalNameHint: "stream.txt",
+            originalFileName: "stream.txt",
+            expected,
+            mimeType: "text/plain",
+            SessionAttachmentKind.Text);
+
+        ISessionAttachmentStore store = _store;
+
+        await using (Stream stream = await store.OpenReadAsync(record))
+        {
+            Assert.IsNotType<MemoryStream>(stream);
+
+            using MemoryStream copied = new();
+
+            await stream.CopyToAsync(copied);
+
+            Assert.Equal(expected, copied.ToArray());
+        }
+
+        SessionAttachmentRecord wrongLength = record with
+        {
+            ByteLength = record.ByteLength + 1,
+        };
+
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+        {
+            await using Stream _ = await store.OpenReadAsync(wrongLength);
+        });
+    }
+
+    private static AttachmentSourceResolution CreateResolvedSource(
+        byte[] bytes,
+        string mimeType = "text/plain")
+    {
+        string hash = Convert.ToHexString(SHA256.HashData(bytes));
+
+        string canonical = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "registered", "reference.txt"));
+
+        AttachmentSourceMetadata metadata = new(
+            AttachmentSourceKind.WorkspaceFile,
+            "registered-workspace-id",
+            "reference.txt",
+            canonical,
+            hash,
+            "0000000000000001:0000000000000002",
+            DateTimeOffset.UtcNow,
+            bytes.LongLength,
+            AttachmentSourceStatus.Refreshable,
+            null);
+
+        return new AttachmentSourceResolution(metadata, bytes, mimeType);
     }
 
     private sealed class FixedFileEncryptionKeyProvider : IFileEncryptionKeyProvider
