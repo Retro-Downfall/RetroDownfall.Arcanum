@@ -5689,6 +5689,20 @@ public sealed class WizardIntelligenceProvider(
                 context.ReservedAnswerTokens,
                 context.ReservedReasoningTokens));
 
+        if (ledger is not null)
+        {
+            breakdown = breakdown with
+            {
+                DroppedAttachmentRagChunks = ledger.DroppedAttachmentRagChunks,
+
+                DroppedAttachmentRagTokens = ledger.DroppedAttachmentRagTokens,
+
+                DroppedWorkspaceRagChunks = ledger.DroppedWorkspaceRagChunks,
+
+                DroppedWorkspaceRagTokens = ledger.DroppedWorkspaceRagTokens,
+            };
+        }
+
         Result admission = TurnContextGuards.CheckContextBudget(
             breakdown,
             contextWindowLimit);

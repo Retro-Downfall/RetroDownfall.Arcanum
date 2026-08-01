@@ -149,6 +149,29 @@ public sealed record ContextTokenBreakdown
 
     public bool? ProviderReportedInputValid { get; init; }
 
+    /// <summary>Attachment-retrieval chunks evicted by context-window pressure this turn.</summary>
+    public int DroppedAttachmentRagChunks { get; init; }
+
+    /// <summary>Estimated attachment-retrieval tokens evicted by context-window pressure.</summary>
+    public int DroppedAttachmentRagTokens { get; init; }
+
+    /// <summary>Workspace-retrieval chunks evicted by context-window pressure this turn.</summary>
+    public int DroppedWorkspaceRagChunks { get; init; }
+
+    /// <summary>Estimated workspace-retrieval tokens evicted by context-window pressure.</summary>
+    public int DroppedWorkspaceRagTokens { get; init; }
+
+    [JsonIgnore]
+    public int DroppedSemanticRagChunks =>
+        SaturatingInt((long)DroppedAttachmentRagChunks + DroppedWorkspaceRagChunks);
+
+    [JsonIgnore]
+    public int DroppedSemanticRagTokens =>
+        SaturatingInt((long)DroppedAttachmentRagTokens + DroppedWorkspaceRagTokens);
+
+    [JsonIgnore]
+    public bool HasSemanticRagPressure => DroppedSemanticRagChunks > 0;
+
     public int HistoryTokens => Source(ContextTokenSource.History).TokenCount;
 
     public int ExplicitAttachmentTokens =>

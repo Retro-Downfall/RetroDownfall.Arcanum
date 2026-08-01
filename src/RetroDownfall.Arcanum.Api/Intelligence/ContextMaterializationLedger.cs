@@ -174,6 +174,14 @@ public sealed class ContextMaterializationLedger
 
     private readonly HashSet<string> _explicitWorkspaceSources = new(StringComparer.Ordinal);
 
+    private int _droppedAttachmentRagChunks;
+
+    private int _droppedAttachmentRagTokens;
+
+    private int _droppedWorkspaceRagChunks;
+
+    private int _droppedWorkspaceRagTokens;
+
     public ContextMaterializationLedger(
         Guid? sessionId,
         ContextMaterializationLimits limits)
@@ -194,6 +202,14 @@ public sealed class ContextMaterializationLedger
     public IReadOnlyList<ContextMaterializationEntry> Entries => _entries;
 
     public Guid? SessionId => _sessionId;
+
+    public int DroppedAttachmentRagChunks => _droppedAttachmentRagChunks;
+
+    public int DroppedAttachmentRagTokens => _droppedAttachmentRagTokens;
+
+    public int DroppedWorkspaceRagChunks => _droppedWorkspaceRagChunks;
+
+    public int DroppedWorkspaceRagTokens => _droppedWorkspaceRagTokens;
 
     public ContextMaterializationEntry Accept(
         ContextMaterializationCandidate candidate,
@@ -392,9 +408,45 @@ public sealed class ContextMaterializationLedger
 
         _entries.RemoveAt(index);
 
+        RecordContextPressureDrop(removed);
+
         return removed;
 
     }
+
+    private void RecordContextPressureDrop(ContextMaterializationEntry removed)
+    {
+
+        int tokens = Math.Max(0, removed.EstimatedTokens);
+
+        if (removed.SourceKind == ContextMaterializationSourceKind.AttachmentRag)
+        {
+
+            _droppedAttachmentRagChunks = SaturatingIncrement(_droppedAttachmentRagChunks);
+
+            _droppedAttachmentRagTokens = SaturatingAdd(
+                _droppedAttachmentRagTokens,
+                tokens);
+
+        }
+        else if (removed.SourceKind == ContextMaterializationSourceKind.WorkspaceRag)
+        {
+
+            _droppedWorkspaceRagChunks = SaturatingIncrement(_droppedWorkspaceRagChunks);
+
+            _droppedWorkspaceRagTokens = SaturatingAdd(
+                _droppedWorkspaceRagTokens,
+                tokens);
+
+        }
+
+    }
+
+    private static int SaturatingIncrement(int value) =>
+        value == int.MaxValue ? int.MaxValue : value + 1;
+
+    private static int SaturatingAdd(int left, int right) =>
+        int.CreateSaturating((long)Math.Max(0, left) + Math.Max(0, right));
 
     private bool IsStaleAttachmentVersion(ContextMaterializationCandidate candidate)
     {

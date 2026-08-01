@@ -352,6 +352,14 @@ public sealed class ContextMaterializationLedgerTests
 
         Assert.Null(ledger.DropLowestPrioritySemantic());
 
+        Assert.Equal(1, ledger.DroppedAttachmentRagChunks);
+
+        Assert.Equal(3, ledger.DroppedAttachmentRagTokens);
+
+        Assert.Equal(1, ledger.DroppedWorkspaceRagChunks);
+
+        Assert.Equal(3, ledger.DroppedWorkspaceRagTokens);
+
         Assert.Equal(ContextMaterializationSourceKind.CurrentTurnAttachment, Assert.Single(ledger.Entries).SourceKind);
 
     }

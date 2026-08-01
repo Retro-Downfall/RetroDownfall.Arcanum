@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.TheForge;
 
+using RetroDownfall.Arcanum.Core.Weave;
+
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
 /// <summary>
@@ -115,6 +117,8 @@ internal sealed class CommandCenterAttachmentDriftMonitor(
         Signal();
 
     }
+
+    public void RequestRefresh() => Signal();
 
     internal static IReadOnlyList<string> ApplyBackendSnapshot(
 
@@ -224,11 +228,15 @@ internal sealed class CommandCenterAttachmentDriftMonitor(
 
                 }
 
+                string? indexingBefore = state.AttachmentIndexingStatusText;
+
                 IReadOnlyList<string> notices = ApplyBackendSnapshot(
 
                     state,
 
                     result.Value ?? []);
+
+                string? indexingAfter = state.AttachmentIndexingStatusText;
 
                 foreach (string notice in notices)
 
@@ -252,16 +260,37 @@ internal sealed class CommandCenterAttachmentDriftMonitor(
 
                 }
 
+                if (!string.Equals(indexingBefore, indexingAfter, StringComparison.Ordinal))
+                {
+
+                    await uiUpdates.WriteAsync(
+
+                            new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshFooter),
+
+                            cancellationToken)
+
+                        .ConfigureAwait(false);
+
+                }
+
+                if (state.SessionAttachments.Any(
+                        static attachment => attachment.IndexingStatus == SessionAttachmentIndexStatus.Pending))
+                {
+
+                    await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+
+                    Signal();
+
+                }
+
             }
 
         }
-
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 
         {
 
         }
-
         catch (Exception ex)
 
         {
@@ -351,7 +380,6 @@ internal sealed class CommandCenterAttachmentDriftMonitor(
                 await _pump.ConfigureAwait(false);
 
             }
-
             catch (OperationCanceledException)
 
             {

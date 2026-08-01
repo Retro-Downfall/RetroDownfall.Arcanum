@@ -119,8 +119,12 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
     context pressure, verify Saga, workspace RAG, and attachment RAG disappear in that order while
     accepted explicit files remain and complete tool exchanges stay paired. `ContextTokenBreakdown`
     should report history, explicit-attachment, refreshed-file, attachment-RAG, and workspace-RAG
-    token fields. Queue overflow must return without failing attachment creation; reconciliation
-    should rediscover the missing Bound row.
+    token fields; the metadata-only attachment index belongs to system context. Dropped workspace /
+    attachment chunks and estimated tokens should increment only when context admission evicts them,
+    survive provider reconciliation, and produce the Command Center warning. Queue overflow must
+    return without failing attachment creation; reconciliation should rediscover the missing Bound
+    row. In Command Center, confirm the footer advances `Pending` to `Indexed` or `Failed` and the
+    pane total changes from estimated to the valid provider-billed input after the usage frame.
 14. **Trace attachment-derived memory promotion:** start with
     `AttachmentMemoryGateAmbient.RegisterMaterialized()` and confirm only successful ledger or
     attach/refresh materialization publishes an opaque attachment id. Continue through

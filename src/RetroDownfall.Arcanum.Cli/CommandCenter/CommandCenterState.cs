@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -183,7 +184,7 @@ internal sealed class CommandCenterState
                 return FooterHint!;
             }
 
-            return FocusRegion switch
+            string controls = FocusRegion switch
             {
                 CommandCenterFocusRegion.Sessions or CommandCenterFocusRegion.Overlay
                     when Overlay is CommandCenterOverlayKind.SessionPicker or CommandCenterOverlayKind.None
@@ -195,6 +196,56 @@ internal sealed class CommandCenterState
                 _
                     => "Ctrl+Enter send · Enter newline · Ctrl+K commands · Ctrl+O sessions · Ctrl+N new · Ctrl+R refresh · Ctrl+C cancel · Ctrl+Q quit · F1 · Tab",
             };
+
+            string? indexing = AttachmentIndexingStatusText;
+
+            return indexing is null ? controls : $"{indexing} | {controls}";
+        }
+    }
+
+    public string? AttachmentIndexingStatusText
+    {
+        get
+        {
+            int pending = 0;
+
+            int failed = 0;
+
+            int indexed = 0;
+
+            foreach (SessionAttachmentDto attachment in SessionAttachments)
+            {
+                switch (attachment.IndexingStatus)
+                {
+                    case SessionAttachmentIndexStatus.Pending:
+                        pending++;
+                        break;
+
+                    case SessionAttachmentIndexStatus.Failed:
+                        failed++;
+                        break;
+
+                    case SessionAttachmentIndexStatus.Indexed:
+                        indexed++;
+                        break;
+                }
+            }
+
+            if (pending > 0)
+            {
+                string failure = failed > 0 ? $" · {failed:N0} failed" : string.Empty;
+
+                return $"Indexing attachments: {pending:N0} pending{failure}";
+            }
+
+            if (failed > 0)
+            {
+                return $"Attachment indexing failed: {failed:N0}";
+            }
+
+            return indexed > 0
+                ? $"Attachment indexing complete: {indexed:N0} indexed"
+                : null;
         }
     }
 

@@ -487,7 +487,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
 
         if (heading.StartsWith("### Session Attachments Index", StringComparison.OrdinalIgnoreCase))
         {
-            return ContextTokenSource.AttachmentRag;
+            return ContextTokenSource.SystemCodexSpell;
         }
 
         if (heading.StartsWith("### Retrieved Session Attachment Context", StringComparison.OrdinalIgnoreCase))

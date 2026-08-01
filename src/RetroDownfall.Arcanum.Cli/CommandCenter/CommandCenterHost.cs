@@ -875,7 +875,7 @@ internal sealed class CommandCenterHost(
 
             case CommandCenterAction.ToggleTelemetryPane:
                 state.ShowTelemetryPane = !state.ShowTelemetryPane;
-                app.Invoke(() => window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter));
+                app.Invoke(() => window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshSidebar));
                 break;
 
             case CommandCenterAction.SessionSelectUp:
@@ -1571,6 +1571,8 @@ internal sealed class CommandCenterHost(
                             .DispatchAsync(payload, state, linked.Token)
                             .ConfigureAwait(false);
 
+                        attachmentDriftMonitor.RequestRefresh();
+
                         await ui.WriteAsync(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll),
                                 linked.Token)
@@ -1595,6 +1597,7 @@ internal sealed class CommandCenterHost(
                 await HandleSubmitAsync(alternativePrompt, state, ui, app, window, linked)
                     .ConfigureAwait(false);
             }
+
             return;
         }
 
@@ -1617,6 +1620,8 @@ internal sealed class CommandCenterHost(
             await chatRunner
                 .RunTurnAsync(payload, state, ui, turnCts.Token)
                 .ConfigureAwait(false);
+
+            attachmentDriftMonitor.RequestRefresh();
 
             await sessionWorkspace.RefreshSessionsAsync(state, linked.Token).ConfigureAwait(false);
             await ui.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll), linked.Token)

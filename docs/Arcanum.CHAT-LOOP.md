@@ -137,6 +137,17 @@ One recursive, debounced `FileSystemWatcher` watches the active Command Center w
 Create/change/delete/rename events are invalidation hints only: the monitor calls
 `GET /api/sessions/{id}/attachments`, and that endpoint revalidates stored provenance before returning
 DTOs. The UI never reads or hashes the source and never changes Stale to Live from a watcher event.
+The same authenticated DTO projection supplies aggregate indexing state. The footer displays pending
+work (including a failed count), terminal completion, or failure; while any row remains `Pending`, the
+monitor polls once per second until the backend reports a terminal state.
+
+Native `context` frames update a non-focusable left-rail Context pane with chat history, explicit
+attachments, refreshed files, attachment RAG, and workspace RAG. The displayed input total uses the
+local estimate before provider usage arrives and valid provider-reported input afterward. The
+materialization ledger accumulates only context-pressure evictions for attachment/workspace semantic
+chunks, and those counts produce the pane warning. Metadata from `### Session Attachments Index` is
+system context rather than retrieved attachment RAG. Rendering is aggregate-only and never exposes
+chunk text, vectors, source hashes, or raw ledger entries.
 
 `/attachments refresh <logicalName>` resolves the latest backend row and posts its opaque attachment
 id to `/api/sessions/{id}/attachments/{attachmentId}/refresh`. The endpoint invokes the same secure

@@ -170,7 +170,7 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.embeddings` | `bool`, `false` | — | Enables The Weave embedding substrate. |
 | `features.sessionSearch` | `bool`, `false` | — | Enables semantic session search and derives embedding-substrate activation. |
 | `features.codebaseRetrieval` | `bool`, `false` | — | Enables semantic workspace retrieval and derives embedding-substrate activation. |
-| `features.attachmentRetrieval` | `bool`, `false` | — | Enables bounded per-session semantic retrieval over eligible versioned text attachments and derives embedding-substrate activation. |
+| `features.attachmentRetrieval` | `bool`, `false` | — | Enables bounded per-session semantic retrieval over eligible versioned text attachments and derives embedding-substrate activation. Command Center reports aggregate pending/completed/failed indexing and separates retrieved attachment-RAG tokens from attachment metadata. |
 | `features.saga` | `bool`, `false` | — | Enables long-term associative memory retrieval and derives embedding-substrate activation. |
 | `features.sagaExtraction` | `bool`, `false` | — | Enables automatic concise Saga extraction and derives Saga/substrate availability; attachment claims must match the source turn's materialized allowlist. |
 | `features.semanticSpellRouting` | `bool`, `false` | — | Enables embedding-assisted spell routing and derives embedding-substrate activation. |

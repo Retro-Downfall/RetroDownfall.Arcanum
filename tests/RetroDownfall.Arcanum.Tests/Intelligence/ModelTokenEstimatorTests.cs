@@ -222,6 +222,31 @@ public sealed class ModelTokenEstimatorTests
     }
 
     [Fact]
+    public void EstimateContext_AttachmentMetadataIndexDoesNotCountAsRetrievedRag()
+    {
+        ContextTokenBreakdown breakdown = CreateEstimator().EstimateContext(
+            new ModelTokenizationRequest(
+                Provider("gpt-4o"),
+                "gpt-4o",
+                [
+                    new ChatMessage(
+                        ChatRole.System,
+                        """
+                        base
+                        ### Session Attachments Index
+                        - design.md versions=1
+                        """),
+                ],
+                new ChatOptions(),
+                ReservedAnswerTokens: 0,
+                ReservedReasoningTokens: 0));
+
+        Assert.Equal(0, breakdown.AttachmentRagTokens);
+
+        Assert.True(breakdown.Source(ContextTokenSource.SystemCodexSpell).TokenCount > 0);
+    }
+
+    [Fact]
 
     public void EstimateContext_ReportsRequiredContextSourceTelemetryFields()
     {

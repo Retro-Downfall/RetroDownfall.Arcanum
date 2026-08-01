@@ -73,6 +73,8 @@ internal sealed class CommandCenterWindow : Window
 
     private bool _reserveComposerScrollbar;
 
+    private bool _showContextTelemetry = true;
+
     private Action? _requestComposerLayout;
 
     public CommandCenterWindow()
@@ -151,6 +153,31 @@ internal sealed class CommandCenterWindow : Window
         };
         SessionsView.SetSource(_sessionLines);
         SessionsPane.Add(SessionsView);
+
+        ContextTelemetry = new TelemetryPane();
+
+        ContextTelemetryFrame = new FrameView
+        {
+            Title = "Context",
+            BorderStyle = chrome,
+            CanFocus = false,
+            SchemeName = CommandCenterTheme.SidebarScheme,
+        };
+
+        ContextTelemetryBody = new Label
+        {
+            Text = ContextTelemetry.Text,
+            CanFocus = false,
+            X = 0,
+            Y = 0,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(),
+            SchemeName = CommandCenterTheme.SidebarScheme,
+            TextAlignment = Alignment.Start,
+            VerticalTextAlignment = Alignment.Start,
+        };
+
+        ContextTelemetryFrame.Add(ContextTelemetryBody);
 
         TranscriptPane = new FrameView
         {
@@ -317,7 +344,15 @@ internal sealed class CommandCenterWindow : Window
 
         OverlayPane.Add(OverlayFilter, OverlayBody, OverlayList, OverlayAnswer);
 
-        Add(HeaderPane, SessionsPane, TranscriptPane, IncantationsPane, Input, Footer, OverlayPane);
+        Add(
+            HeaderPane,
+            SessionsPane,
+            ContextTelemetryFrame,
+            TranscriptPane,
+            IncantationsPane,
+            Input,
+            Footer,
+            OverlayPane);
         ApplyAbsoluteLayout(80, 24);
     }
 
@@ -334,6 +369,12 @@ internal sealed class CommandCenterWindow : Window
     public FrameView SessionsPane { get; }
 
     public ListView SessionsView { get; }
+
+    public TelemetryPane ContextTelemetry { get; }
+
+    public FrameView ContextTelemetryFrame { get; }
+
+    public Label ContextTelemetryBody { get; }
 
     public FrameView TranscriptPane { get; }
 
@@ -424,6 +465,7 @@ internal sealed class CommandCenterWindow : Window
         {
             return null;
         }
+
         return state.Log.Snapshot().FirstOrDefault(entry => entry.Id == anchor)?.SourceEntryId;
     }
 
@@ -544,6 +586,19 @@ internal sealed class CommandCenterWindow : Window
             if (kind is CommandCenterUiUpdateKind.RefreshAll or CommandCenterUiUpdateKind.RefreshSidebar)
             {
                 RefreshSessionList(state);
+
+                ContextTelemetry.UpdateContext(state.LastContextBreakdown);
+
+                ContextTelemetryBody.Text = ContextTelemetry.Text;
+
+                bool visibilityChanged = _showContextTelemetry != state.ShowTelemetryPane;
+
+                _showContextTelemetry = state.ShowTelemetryPane;
+
+                if (visibilityChanged)
+                {
+                    ApplyAbsoluteLayout(_cols, _rows);
+                }
             }
 
             if (kind is CommandCenterUiUpdateKind.RefreshAll or CommandCenterUiUpdateKind.RefreshLog)
@@ -1207,6 +1262,7 @@ internal sealed class CommandCenterWindow : Window
         LineStyle chrome = CommandCenterTheme.PaneBorderStyle;
         HeaderPane.BorderStyle = chrome;
         SessionsPane.BorderStyle = chrome;
+        ContextTelemetryFrame.BorderStyle = chrome;
         TranscriptPane.BorderStyle = chrome;
         Input.BorderStyle = chrome;
         OverlayPane.BorderStyle = chrome;
@@ -1326,6 +1382,17 @@ internal sealed class CommandCenterWindow : Window
         }
 
         int sidebarW = showSidebar ? Math.Min(SidebarWidth, Math.Max(14, _cols / 4)) : 0;
+
+        bool showContextTelemetry = showSidebar
+            && _showContextTelemetry
+            && bodyH >= ContextTelemetry.Height + ComposerLayout.MinTranscriptHeight;
+
+        int contextTelemetryH = showContextTelemetry
+            ? Math.Min(ContextTelemetry.Height, Math.Max(5, bodyH / 2))
+            : 0;
+
+        int sessionsH = Math.Max(1, bodyH - contextTelemetryH);
+
         int transcriptW = Math.Max(1, _cols - sidebarW);
         _logContentWidth = Math.Max(8, transcriptW - 3);
         _incantationContentWidth = _logContentWidth;
@@ -1356,8 +1423,18 @@ internal sealed class CommandCenterWindow : Window
             SessionsPane.X = 0;
             SessionsPane.Y = headerH;
             SessionsPane.Width = sidebarW;
-            SessionsPane.Height = bodyH;
+            SessionsPane.Height = sessionsH;
             SessionsPane.Visible = true;
+
+            ContextTelemetryFrame.X = 0;
+
+            ContextTelemetryFrame.Y = headerH + sessionsH;
+
+            ContextTelemetryFrame.Width = sidebarW;
+
+            ContextTelemetryFrame.Height = contextTelemetryH;
+
+            ContextTelemetryFrame.Visible = showContextTelemetry;
 
             TranscriptPane.X = sidebarW;
             TranscriptPane.Y = headerH;
@@ -1372,6 +1449,9 @@ internal sealed class CommandCenterWindow : Window
         else
         {
             SessionsPane.Visible = false;
+
+            ContextTelemetryFrame.Visible = false;
+
             TranscriptPane.X = 0;
             TranscriptPane.Y = headerH;
             TranscriptPane.Width = _cols;

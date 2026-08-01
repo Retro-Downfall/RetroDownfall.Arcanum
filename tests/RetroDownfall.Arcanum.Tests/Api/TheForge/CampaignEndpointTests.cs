@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Api.TheForge;
 
+[Collection("ApiHost")]
 public sealed class CampaignEndpointTests
 {
 
