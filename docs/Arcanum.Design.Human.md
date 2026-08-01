@@ -1,400 +1,424 @@
-# Arcanum — Design Companion
-
-This is the complete, readable version of the architecture, design decisions, API contract,
-persistence rules, runtime behavior, and operational constraints that govern Arcanum. It mirrors
-every major section of [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) — the dense, authoritative
-technical reference — but presents the same facts in less compressed prose. Read this document
-first to gain a complete understanding of how Arcanum works; use `DESIGN.md` for exact wire contracts,
-line-level endpoint inventories, code-level invariants, and reference tables.
-
-The repository's documentation contract is exactly five files:
-
-- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) — authoritative, dense, complete.
-- This file (`Arcanum.DESIGN.Human.md`) — complete but readable.
-- [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) — verified breakpoint and debugging recipes.
-- [`Arcanum.README.md`](Arcanum.README.md) — agent/operator primer.
-- [`Compendium.README.md`](Compendium.README.md) — the only complete `arcanum.json` reference.
-
-Any contradiction across these files is resolved in `DESIGN.md` (see its §18). When a code,
-configuration, packaging, or workflow change alters a contract, the owning canonical file is
-updated in the same change set.
-
----
-
-## 1. What Arcanum is
-
-Arcanum is a single-deployable .NET 10 CLI that operates in two modes: the long-running HTTP host
-(`arcanum serve`) and short-lived terminal clients (`ask`, `chat`, `look`, `lore`, `daemon`,
-`campaign`, `session`, `spell`, `prompt`, `ward`, `trial`, `apprentice`, `model`, `provider`, etc.).
-All clients talk to the same Minimal API surface over `/api` and `/v1`. The executable runs as
-Native AOT on Windows and Linux; macOS uses a signed, folder-based self-contained publish (the
-current macOS linker/toolchain limitation prevents a single-file AOT binary for the full closure).
-
-The stack is .NET 10, ASP.NET Core Minimal API, `Microsoft.Extensions.AI`, EF Core 10 with SQLCipher,
-System.CommandLine 2.0.10, Spectre.Console, Terminal.Gui (for the interactive Command Center), and Avalonia
-(for Compendium and The Forge desktop applications).
-
-The codebase is organized as a multi-project solution:
-
-- **Core** — domain primitives (`Result`/`Result<T>`, `Error`, `ApiResponse<T>`), contracts (`IArcanumIntelligenceProvider`, `IGrimoireRepository`), configuration POCOs (`ArcanumSettings`), events, source-generated JSON contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext`), and security abstractions (`ISecretStore`). It sets `IsAotCompatible`.
-- **Infrastructure** — Serilog, Data Protection, the encrypted Grimoire (EF Core 10 + SQLCipher compiled model), workspace scanning (`search_workspace`, `apply_patch`, `workspace_check`), Eye of the World (`IEyeOfTheWorld`), the MCP client layer (`IMcpConnectionManager`, in-process `ArcanumInternalToolServer`, subprocess and Streamable HTTP transports), Comm Link (`ICommLinkDispatcher`), Unseen Servant scheduling, RAG background services (`DivinationService`, `WeaveSchemaInitializer`), and source-generation contexts (`McpJsonSerializerContext`, `CommLinkInfrastructureJsonContext`). It sets `IsTrimmable` and `PublishAot`.
-- **Api** — the HTTP surface composition (class library, not executable). It defines `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `TurnEngine`, `ToolExecutionPipeline`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, and the OpenAI `/v1` compatibility endpoints. It sets `IsAotCompatible` + `EnableRequestDelegateGenerator`.
-- **Cli** — the `arcanum` executable entry point. Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`), and the Command Center (`Terminal.Gui`). It sets `PublishAot` (Windows/Linux) and references `Microsoft.AspNetCore.App`.
-  Command Center attachment rows distinguish `[Snapshot]`, `[Live]`, and `[Stale]`, show the loaded
-  version hash plus backend disk observations, and expose `/attachments refresh <name>`. A local
-  `FileSystemWatcher` only invalidates the view; the API revalidates trusted provenance and confirms
-  refresh persistence before the UI reports Live. Its non-focusable Context pane shows the latest
-  turn's five operator-relevant token sources and provider-billed input total; the footer follows
-  attachment indexing through pending, completed, and failed states.
-- **Api.DevHost** — debug-only F5 host that mirrors `serve` wiring without Spectre.
-- **Tests** — `RetroDownfall.Arcanum.Tests` (xUnit for Core/API/Infrastructure/CLI), `RetroDownfall.Compendium.Tests` (Compendium smoke), and `RetroDownfall.TheForge.Tests` (desktop Forge client).
-
-Dependency direction is strict: `Cli` → `Api` → `Infrastructure` → `Core`. `Cli` also references `Core` and `Infrastructure` directly for lightweight DI (Data Protection, `ISecretStore`, `AddArcanumEyeOfTheWorld`).
-
-Direct CLI verbs cross one process boundary in `CliApplicationFactory`. Recursive `--json`,
-`--plain`, and `--yes` options become an immutable `CliInvocationContext`. `IConsoleDispatcher`
-keeps requested data on stdout and diagnostics/prompts on stderr; `--json` guarantees one
-source-generated JSON document even for older text-rendering verbs. `IConfirmationPrompt` refuses
-to read a redirected pipeline unless `--yes` explicitly approves the action. A closed
-`CliExitCode` set makes shell behavior predictable, while the global exception mapper exposes fixed
-categories instead of raw exception messages. Command Center modals and inference `ask_human`
-remain separate because they are long-lived interactive protocols, not direct-command
-confirmations.
-
-Direct resource commands share a client-side `IResourceSelector<T>` policy rather than teaching
-server APIs fuzzy matching. Exact IDs remain deterministic; otherwise the CLI tries an exact
-case-insensitive name and then a unique prefix. Only a real interactive terminal may open the
-searchable picker when the selector is omitted. MCP server/tool commands additionally opt into the
-same picker for ambiguous names; every other ambiguity remains an error. Redirected or JSON
-invocations always return bounded, actionable candidates without prompting, and Escape cancels
-before the downstream action.
-The typed catalog pages existing list endpoints for large session/prompt/campaign/Apprentice sets.
-Owner-only local recency data improves picker ordering but cannot resolve a tie. Descriptors control
-the visible columns and keep provider endpoints/credentials and MCP connection/process details out
-of picker and safe-detail output.
-
-`arcanum mcp list|show|start|stop|restart|reload|trust|tools|invoke` is the direct operational
-counterpart to the MCP lifecycle and external-only diagnostic APIs. `arcanum tool
-list|show|invoke` covers the bounded built-in diagnostic registry. Both are API clients: they do
-not read server configuration or spawn tools locally. Invoke arguments are a JSON object supplied
-inline, by `@file`, or redirected stdin, bounded to 1 MiB and depth 64. The external MCP command
-cannot target `arcanum-internal` or Forbidden Arts; those remain in the Master pipeline.
-
-Workspace and Campaign are deliberately adjacent, not interchangeable. A **Workspace** is a
-registered server filesystem access/indexing boundary. A **Campaign** is a persistent project
-container for sessions, spells, prompts, Codex, and Sanctum. `arcanum workspace
-list|current|register|show|tree|info|read|search|index|index-status|chunks|unregister` operates
-through the authenticated Workspace API; it never turns a server read into client filesystem I/O.
-`workspace current` independently reports the deepest containing Workspace and Campaign, while
-`campaign use` aliases the shared active-context selector. CLI path copy says “server path” because
-client/server path identity is only safe to infer for the shipping loopback pairing.
-
-The `session` command family is the direct-client counterpart to the full server session lifecycle:
-list/show/chat/entries/watch/fork/rename/archive/export/rest/attachments plus gated entry
-delete/pin/unpin/compact. It never opens the Grimoire. Session selectors use the shared
-GUID/title/prefix picker, while omitted entry selectors page entries after choosing a session.
-`session chat` and root `chat --session` converge on the existing chat loop. Read operations support
-structured output (the live watcher uses newline-delimited JSON); destructive entry deletion uses
-the shared confirmation boundary. Archive, fork, export, and memory-management policy remain owned
-by the server, and API error codes are preserved at the terminal.
-
-The `file` and `batch` command families are direct clients for the bare OpenAI-shaped `/v1/files`
-and `/v1/batches` contracts. `file upload|list|show|download|delete` preserves streaming and never
-opens the server's encrypted storage. Downloads remove remote path components, sanitize the local
-leaf, stage in the destination directory, and require confirmation before replacing an existing
-file. `batch create` accepts either a `file-*` id or local JSONL; local input receives a lightweight
-line-aware wrapper preflight before it is uploaded and submitted, while the server remains the
-authority for chat and batch validation. `batch list|show|watch|cancel|reset|output|errors` exposes
-request counts, terminal state, bounded polling, server cancellation/reset semantics, and safe
-artifact retrieval. JSON output is one source-generated document and bare `/v1` responses are
-never parsed as native `ApiResponse<T>` envelopes.
+# Arcanum — Design Guide
+
+This guide explains Arcanum in ordinary engineering language. It is meant to help a new contributor
+form the right mental model before opening the larger technical reference.
+
+[`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) is authoritative for architecture and design details.
+[`Arcanum.API.md`](Arcanum.API.md) owns exact HTTP routes, wire contracts, status mappings, and
+public error codes. This guide is a readable map of the design, not a second source of truth.
+
+## 1. Start with the document that owns the question
+
+The repository has six canonical documents and one focused companion:
+
+- [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) owns architecture, design, persistence, runtime,
+  packaging, and test contracts.
+- [`Arcanum.API.md`](Arcanum.API.md) owns native and OpenAI-compatible HTTP contracts.
+- [`Arcanum.README.md`](Arcanum.README.md) is the contributor and operator primer.
+- This guide explains how the pieces fit together.
+- [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) is the complete
+  public configuration reference.
+- [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) is the verified breakpoint and
+  debugging recipe guide.
+- [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md) is a focused companion for the shared model/tool
+  loop, attachment continuation, context ledger, and Command Center context projection.
+
+If two documents disagree, correct the one that does not own the contract: architecture follows
+`Arcanum.DESIGN.md`, APIs follow `Arcanum.API.md`, and configuration follows `Compendium.README.md`.
+Documentation changes travel with the behavior they describe.
+
+## 2. What Arcanum is
+
+Arcanum is a local-first AI host and command-line application built on .NET 10. The same executable
+can run a short command or become the long-running HTTP server.
+
+Its main jobs are:
+
+- send prompts to configured OpenAI-compatible providers;
+- preserve sessions and related data in an encrypted local Grimoire;
+- expose native and OpenAI-compatible HTTP contracts;
+- run a bounded model/tool loop with explicit security gates;
+- search registered workspaces and session attachments;
+- manage Campaigns, Spells, Prompts, Wards, Trials, Apprentices, and long-running operations;
+- support CLI, Command Center, Compendium, and The Forge clients through server-owned contracts.
+
+Arcanum does not manage a local inference runtime. Ollama is supported only through its
+OpenAI-compatible `/v1` endpoint.
+
+## 3. The shape of the solution
+
+The important dependency direction is:
+
+```mermaid
+flowchart LR
+    Cli["CLI and serve host"] --> Api["HTTP and inference composition"]
+    Api --> Infrastructure["Storage, OS, MCP, and network services"]
+    Infrastructure --> Core["Domain contracts and configuration"]
+    Infrastructure --> Secrets["Native OS credential stores"]
+    Api --> Core
+    Cli --> Infrastructure
+    Cli --> Core
+    Compendium["Compendium configuration editor"] --> Core
+    Forge["The Forge desktop client"] --> Http["Arcanum HTTP API"]
+    Forge --> Secrets
+    Http --> Api
+```
+
+The projects have deliberately different responsibilities:
+
+| Project | Human description |
+|---|---|
+| `RetroDownfall.Arcanum.Core` | Stable domain types, interfaces, settings, results, events, and source-generated JSON metadata. It does not own operating-system or network behavior. |
+| `RetroDownfall.Arcanum.Secrets` | The small secret-protection boundary shared where credential handling must stay isolated. |
+| `RetroDownfall.Arcanum.Infrastructure` | SQLCipher persistence, encrypted blobs, filesystem safety, workspace indexing, MCP transports, process isolation, logging, and external integrations. |
+| `RetroDownfall.Arcanum.Api` | Endpoint registration, authentication filters, inference orchestration, tool execution, streaming, OpenAI compatibility, and public error mapping. |
+| `RetroDownfall.Arcanum.Cli` | The shipping executable, command tree, API clients, terminal rendering, Command Center, and the `serve` host. |
+| `RetroDownfall.Arcanum.Api.DevHost` | A debug-only host that mirrors server wiring without shipping as the product entry point. |
+| `RetroDownfall.Compendium.Ux` | The Avalonia editor for the supported `arcanum.json` surface. |
+| `RetroDownfall.TheForge.Core` and `.Ux` | The HTTP-only desktop inference client and workbench. |
+| `tests/*` | Separate Arcanum, Compendium, and Forge verification graphs. |
+
+The boundary rule is simple: clients do not reach into server persistence or the server filesystem.
+They ask the API to do the work.
+
+## 4. One executable, two lifetimes
+
+Most commands are short-lived. They validate input, resolve saved context, call the local HTTP API,
+render a result, and exit.
+
+`arcanum serve` takes the other path. It builds the host, loads configuration and protected
+credentials, initializes the Grimoire, maps endpoints, starts background services, and listens on
+the configured address.
+
+The CLI may launch a local server when a supported interactive workflow needs one. That launch has
+an ownership contract: the caller must not stop a server it did not start.
+
+All direct commands share recursive process options:
+
+- `--json` produces one typed JSON document on stdout;
+- `--plain` disables terminal decoration;
+- `--yes` is the only automatic confirmation;
+- `--no-context` ignores saved CLI context for that invocation.
+
+Prompts, progress, and diagnostics belong on stderr. Machine-readable payloads belong on stdout.
+Public exit codes remain bounded to the documented set.
 
----
+## 5. How an inference turn moves through the system
+
+A turn is more than one provider request. A model may ask for tools, receive results, and make
+another request before Arcanum has one final answer.
+
+```mermaid
+flowchart TD
+    A["Validate request and feature gates"] --> B["Resolve provider and model candidates"]
+    B --> C["Load session, context, attachments, and memory"]
+    C --> D["Admit context and reserve worst-case turn cost"]
+    D --> E["Call provider through IModelCallExecutor"]
+    E --> F{"Tool calls?"}
+    F -- Yes --> G["Check mana, attunement, Ward, and Sanctum"]
+    G --> H["Execute tools and record structured results"]
+    H --> I["Reconcile materialized context and remaining budget"]
+    I --> E
+    F -- No --> J["Persist answer, usage, audit, and final state"]
+    J --> K["Return buffered JSON or projected stream"]
+```
 
-## 2. Architectural goals and safe defaults
-
-The design prioritizes strict project boundaries, a hybrid process model (one binary, two roles), Native AOT readiness, Minimal API over MVC, and source-generated JSON/request delegates. These are not preferences — they are enforced by MSBuild properties (`<IsAotCompatible>`, `<EnableRequestDelegateGenerator>`, `<EnableConfigurationBindingGenerator>`) and by the AOT verification gate (`./scripts/verify-aot-il-warnings.sh`).
-
-Safe defaults are deliberate:
-
-- `Arcanum:Edition` defaults to **Local**. Development-only surfaces (`execute_command`, `run_spell_script`, A2A, diagnostic MCP invocation) require `Development` edition plus explicit environment overrides (`ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1`). When `Local` is active, host-process tools are reported as Degraded health.
-- `ListenAny` (`Arcanum:Host:ListenAny` or `ARCANUM_HOST_ANY`) requires HTTPS exclusively. Plaintext HTTP over any interface is refused. Interactive serve requires a first-run acknowledgment (`.listen-any-acknowledged` file) or the `ARCANUM_LISTEN_ANY_ACK=1` environment variable.
-- The OpenAI compatibility subset is exactly Chat Completions (`POST /v1/chat/completions`), embeddings (`POST /v1/embeddings`), models (`GET /v1/models`), files, and batches. Moderation, image generation/editing, and audio routes are `501 not_supported` stubs with no configuration toggle that enables them.
-- Agentic workflows have no hidden turn, step, model-call, tool-call, or correction attempt ceiling. Progress stops only on terminal output, deterministic no-progress, cancellation, context admission failure, or cost admission failure.
-- Client-supplied `tools` and `tool_choice` are rejected with `400 unsupported_parameter` by default. Client tool forwarding is opt-in via `Arcanum:Features:ClientTools`; when enabled, schemas are forwarded but Sanctum, Wards, audit logging, and server-side tool loops are bypassed.
-- Streaming guardrails use a code-owned buffered policy: answer and any client-safe reasoning are withheld until validation succeeds. Provider `ProtectedData` reasoning never enters Grimoire entries, audit logs, traces, or Apprentice handoffs.
-
----
-
-## 3. Naming metaphor
-
-Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms without a clean fantasy equivalent (`Prompt`, `Goal`, `Plan`, `Session`, `Entry`, `Workspaces`) stay as-is. Thematic terms include:
+Buffered native requests, native streaming, OpenAI-compatible requests, Spell execution, Prompt
+execution, daemon jobs, and Apprentice steps all converge on the same inference core. Projection
+differs by surface, but there is not a separate “easy” path that bypasses accounting or security.
 
-- **Workspace** — registered filesystem access/indexing boundary (`/api/workspaces`)
-- **Campaign** — persistent project container for sessions, spells, prompts, Codex, and Sanctum (`/api/campaigns`)
-- **Spell** — versioned markdown skill (`SPELL.md` + optional `SPELL.json`; legacy `SKILL.json` read when present)
-- **Prompt** — parameterized template (`/api/prompts`)
-- **Ward** — approval gate (`/api/wards`)
-- **Sanctum** — per-campaign sandbox (`/api/campaigns/{id}/sanctum`)
-- **Forbidden Arts** — high-risk gated tools (`security.ward.forbiddenArts`)
-- **Apprentice** — autonomous sub-agent (`/api/apprentices`)
-- **The Conclave** — multi-agent coordination (`cast_sending`, `/api/conclave/a2a/*`)
-- **Chronicle** — agent event stream (`GET /api/apprentices/{id}/chronicle`)
-- **Heraldry** — A2A Agent Card (`GET /api/conclave/a2a/agent-card`)
-- **Sending** — A2A task (`/api/conclave/a2a/*`, `dispatch_sending`)
-- **Grimoire** — encrypted persistence (internal EF + SQLCipher)
-- **Unseen Servant** — background scheduler (`/api/unseen-servant/*`)
-- **Eye of the World** — workspace perception (`/api/perception/look`)
-- **Lore** — legacy operator key-value memory (`/api/lore`)
-- **Lexicon** — agent-directed entity memory (`scribe_lexicon` / `delete_lexicon`)
-- **Comm Link** — operator alert (`/api/commlink/send`)
-- **Master** — primary orchestration (`WizardIntelligenceProvider`)
-- **Codex** — scratchpad / instructions (`CODEX.md`, `/api/codex`)
-- **Session** — multi-turn thread (`/api/sessions`; rows are `Entry`)
-- **The Proving Grounds** — validation (`POST /api/proving-grounds/trials/run`)
-- **The Weave** — embedding substrate (`Arcanum:Features:Embeddings`)
-- **Divination** — semantic search (`POST /api/sessions/divine`, `/api/saga/divine`)
-- **Imprint** — vector representation (`IWeaveService.EmbedAsync`)
-- **Saga** — long-term associative memory (`/api/saga/*`)
-- **Arcane Resonance** — recursive spell dependency injection (`SpellDependencyResolver`)
-- **Spell Routing** — pre-flight active-spell selection (`SemanticRouter` + embedding pre-filter)
+The loop stops on a final answer, deterministic lack of progress, cancellation, context failure,
+elapsed-time or cost admission, or a hard `TurnLimits` boundary. The limits are code-owned so an
+operator cannot accidentally configure away safety.
 
-Error codes follow `{Noun}.{Verb}` (`Ward.NotFound`, `Campaign.DuplicateName`). HTTP mapping is centralized in `ArcanumErrorMapper` (§8.23). Config paths follow `Arcanum:{Noun}:{Setting}`. Propose new metaphor names to the Dungeon Master before implementing.
+Reasoning budget is per inference turn (`PingRequest`), not a lifetime cap for a session. An agentic
+turn can make several provider calls, and each call is accounted within the same reserved turn.
 
----
+## 6. Context is admitted, not merely collected
+
+Arcanum can draw context from chat history, the current request, session attachments, context pins,
+workspace retrieval, attachment retrieval, the Lexicon, and Saga memory. Every source competes for
+the model's finite context window.
 
-## 4. Project ownership and dependency graph
+The context materialization ledger records what was actually admitted during the current turn. It
+prevents duplicate injection, tracks provenance, distinguishes explicit material from semantic
+retrieval, and records context-pressure evictions. The ledger is in memory and is cleared when the
+turn ends.
 
-The dependency chain is `Cli → Api → Infrastructure → Core` (`Cli` also references `Core`/`Infrastructure` for lightweight DI). Project roles:
+Explicit user material has priority. When space is tight, Arcanum drops lower-priority semantic
+context before complete tool exchanges. It does not silently truncate an accepted explicit file.
+If the request still cannot fit, the turn fails with a bounded public error.
 
-| Project | Owns | AOT signal |
-|---------|------|------------|
-| Core | Domain contracts (`Result`, `Error`, `ApiResponse<T>`), settings (`ArcanumSettings`), source-gen contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext`) | `IsAotCompatible` |
-| Infrastructure | Grimoire (EF + SQLCipher), workspace tools, MCP layer, Comm Link, Unseen Servant, Eye of the World, `DivinationService` | `IsTrimmable` + `PublishAot` |
-| Api | Endpoints (`MapArcanumEndpoints`), intelligence hub (`WizardIntelligenceProvider`, `TurnEngine`), security filter (`ApiKeyEndpointFilter`), source-gen wire (`ArcanumJsonContext`) | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
-| Cli | `arcanum` executable, Spectre commands, `ArcanumApiClient`, Command Center (`Terminal.Gui`) | `PublishAot` (Windows/Linux); self-contained folder (macOS) |
-| Api.DevHost | Debug-only `serve` mirror (not shipped) | `PublishAot` + `IsAotCompatible` (analysis signal) |
+Content read from a repository, attachment, webpage, tool, or memory is untrusted data. Arcanum
+labels and fences it so instructions inside that data do not become system authority.
 
-The repository also includes `Compendium.Ux` (Avalonia desktop config editor — references `Core` only, never secret values) and `TheForge.Core`/`TheForge.Ux` (desktop Inference IDE — HTTP-only client, no Grimoire/inference duplication). These are self-contained .NET 10 Avalonia applications, not Native AOT.
+## 7. Attachments, refresh, and durable memory
 
----
+Session attachments contain encrypted bytes plus Grimoire metadata. Snapshot attachments preserve
+the bytes supplied at one point in time. Bound attachments also retain verified provenance to a
+file inside the active registered workspace.
 
-## 5. Hybrid hosting model
+A bound refresh never trusts a model-supplied path. The model selects an opaque attachment id or
+logical key. The server reconstructs the stored source, rechecks workspace containment, symlinks,
+file identity, Sanctum, MIME, size, UTF-8, and vision support, then performs two stable handle reads.
+Unchanged content reuses the existing version; changed content creates the next bounded version.
 
-One binary; the CLI verb selects the role (`serve` = long-running Kestrel host; `ask`/`chat`/`look`/etc. = short-lived clients). `ServeCommand` uses `WebApplication.CreateSlimBuilder()` with `ClearProviders()` (Serilog replaces default logging), explicit `AddArcanumConfiguration()` (JSON file under `Arcanum:` only), `AddArcanumApiServices()` (registers Infrastructure + daemon services + `ApiKeyEndpointFilter` + OpenAPI + JSON contexts + `IChatClientFactory` + tokenizer), and `ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync()` before `Build()`.
+The Command Center displays backend-authoritative state:
 
-Web work no longer requires prompting the Mage to discover tools. `arcanum search`, `arcanum browse`, and `arcanum research` call authenticated typed `/api/web/*` endpoints. Search exposes count, freshness, and domain filters; browse declares static versus JavaScript rendering and fails clearly when a JavaScript renderer is unavailable. Research orchestration lives entirely in `WebResearchWorkflowService`: the CLI supplies visible source/hop/token/cost bounds, the host searches and deduplicates citations, performs bounded SSRF-guarded static reads, runs one tool-disabled synthesis call with server accounting/session continuation, and streams limits/progress separately from the final cited result. `--save` exports atomically and `--attach-to-session` uses encrypted attachment storage.
+- `Snapshot` means no live source is tracked;
+- `Live` means the server revalidated a refreshable source;
+- `Stale` means the source drifted, disappeared, became unsafe, or no longer matches its workspace.
 
-`PidFileService` writes `arcanum.pid` during host `StartAsync` and deletes it only on clean shutdown when it still names this process. Auto-launched serve (from interactive `chat`/`ask`/Command Center) suppresses the key print and redirects stdout/stderr to `auto-serve-bootstrap.log`; it never deletes the PID file.
+File watcher events are only refresh hints. The UI does not hash files or infer `Live` on its own.
 
----
+Attachment-derived facts may enter durable Lexicon or Saga memory only when their source was
+materialized in the current turn. Index rows, failed reads, suppressed excerpts, and instructions
+inside attachment text do not grant that authority. Delegated subagents receive only explicitly
+allowed attachment values and remain otherwise sterile.
 
-## 6. Grimoire persistence
+The exact continuation order is illustrated in
+[`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md).
 
-The Grimoire is a local-first, SQLCipher-encrypted SQLite database (`~/.config/arcanum/arcanum.db` on macOS/Linux, `%USERPROFILE%\.config\arcanum\arcanum.db` on Windows). Schema installation uses embedded SQL in `Infrastructure/Data/SqlMigrations/` (14-digit UTC prefix, applied by `GrimoireSqlSchemaMigrator` through a transactional migrator that inserts `__EFMigrationsHistory` rows within the same transaction). The AOT host never calls `Database.MigrateAsync`.
+## 8. Persistence and recovery
 
-Key entities (`ArcanumDbContext`, compiled model):
+The Grimoire is a local SQLCipher database accessed through EF Core repositories and hand-authored,
+transactional SQL migrations. Important records include sessions and ordered entries, tool
+interactions, attachments, context pins, Campaign data, Spells and Prompts, Wards, MCP trust,
+memory, embeddings, operations, idempotency claims, inference runs, billable operations, budget
+reservations, and audit data.
 
-- `Session` (`Sessions`) — `Id` (Guid), optional `CampaignId`, `Status` (`active` / `archived`), `Title`, `CreatedAt`, `UpdatedAt`, `Summary` (nullable), `LastSummarizedMessageAt` (nullable), `TotalTokensUsed`, `UnsummarizedEntryCount`. Cascade-deletes entries.
-- `Entry` (`Entries`) — `Id` (Guid), FK to `Session`, `Role`, `Content`, `Sequence` (`INTEGER NOT NULL`, strict increasing per session), `ModelUsed`, optional `CreatedAt`-only timestamp grouping for summarization, optional tool columns, pinned flag (`IsPinned`). Unique index `(SessionId, Sequence)`; composite `(SessionId, CreatedAt)`; FTS5 virtual `Entries_fts`.
-- `MageSetting` (`MageSettings`) — `Key` (string), `Value`, `UpdatedAt`. Operator-only Lore; not model-directed.
-- `WorkspaceContext` (`WorkspaceContexts`) — `CreatedAt`, `WorkspacePath` (mapped column `RootPath`, max 4096 chars), `SerializedSnapshot` (JSON `PatternSnapshot`). Composite index `(RootPath, CreatedAt)`.
+Several rules make persistence reliable:
 
-The Grimoire has no supported user-data migration path between incompatible schemas. Existing rows before the `Sequence` + `IX_Entries_SessionId_Sequence` baseline must be recreated (delete `.db`, `.db-wal`, `.db-shm` and restart). See `DESIGN.md` §5.4.5 and [Arcanum.README.md `#local-grimoire-reinstall`](Arcanum.README.md#local-grimoire-reinstall).
+- per-session writes are serialized;
+- transient SQLite busy/locked failures use bounded retry with a fresh transaction;
+- transcript order uses explicit `Sequence`, not timestamp guesswork;
+- idempotency claims are durable before eligible work begins;
+- long-running operations checkpoint and reconcile after interruption;
+- atomic files use owner-only staging, durable flush, replacement, and identity-owned cleanup;
+- security-sensitive reads use no-follow handles, size ceilings, and identity revalidation.
 
-Campaign Logger (unseen servant / headless summarization) aggregates entries after `LastSummarizedMessageAt` (timestamp-based, expanded to cover full tied `CreatedAt` groups so no turn is split), builds a stateless `PingRequest` (`SkipSpellRouting`, `DisableMcpTools`, `UnattendedMode`), runs headless summarization, and updates `Session.Summary` + watermark atomically. Attachment consultations enter this request only as typed metadata references; raw bytes, excerpts, hashes, host paths, and index contents never enter the durable summary. The `UnsummarizedEntryCount` is incremented by `SessionEntryPersistence.ReserveSequenceRangeAsync` + append and reset by the summarize commit. Full details: `DESIGN.md` §5.4.1, §5.4.2, §8.7, §5.5.5.
+Arcanum is still in the pre-user-data schema phase. Incompatible local schemas are recreated rather
+than upgraded through compatibility migrations. Follow the destructive recovery procedure in
+[`Arcanum.README.md`](Arcanum.README.md#local-grimoire-reinstall) only after preserving anything
+needed.
 
-CLI defaults live outside the Grimoire in owner-only, versioned `cli-context.json`. `arcanum use
-campaign|workspace|model|session` validates and selects a local preference (`campaign use` is an
-alias); `use clear [scope]`
-removes it; `context current` explains each effective value and source. Resolution order is explicit
-option, active context, current-directory resource detection, then server default, with Campaign
-and Workspace containment resolved independently and
-`--no-context` bypassing saved values once. Confirmed stale references are reported before they are
-cleared, inherited workspaces outside the current directory generate a pre-operation warning, and
-Session/Campaign mismatches stop inference. The document stores identifiers, safe names/paths, and
-a model name—no credentials or conversation bodies—and selecting context never changes server
-rows. Local-path detection is valid only for the shipping loopback CLI; it must not be inferred for
-a future remote host.
+Persisted attachment and operation payloads use authenticated encrypted blobs. The file-encryption
+lifecycle supports migration, verification, key rotation, resumable checkpoints, and safe retained
+key retirement.
 
-Routine settings use `arcanum config path|show|get|set|validate|edit|open`. The commands resolve
-typed dot paths from source-generated configuration metadata, preserve API redaction, take provider
-endpoints only through secure input, validate the whole snapshot, and prefer `/api/config`. When the
-host cannot be used, they visibly fall back to the same local loader, validator, outbound guard, and
-atomic writer rather than defining a parallel configuration model.
+## 9. Security model
 
----
+Arcanum is local-first, not trust-free.
 
-## 7. HTTP wire contracts (`Api` project)
+The API key is operator-equivalent. It protects HTTP routes and can authorize file, network, MCP,
+and inference actions that the configured edition and policies permit. The host defaults to
+loopback and the `Local` edition.
 
-The `Api` class library (`IsAotCompatible` + `EnableRequestDelegateGenerator` + `EnableConfigurationBindingGenerator`) defines the wire contract. Every route lives in `MapArcanumEndpoints`. The default envelope is `ApiResponse<T>` (`Data`, `IsSuccess`, `Error`, `TraceId`). Exceptions: NDJSON (`/api/intelligence/ping-stream`, spell/prompt `execute-stream`), SSE (`/api/events/*`, session stream, Apprentice chronicle), and OpenAI `/v1` (raw shape, no envelope).
+Security checks are layered:
 
-`ArcanumJsonContext` is the public source-generated context (camelCase children, no `[JsonPropertyName]` except for OpenAI `/v1` and MCP JSON-RPC types, which are the explicit exceptions per `DESIGN.md` §8.2). Every new payload type must have a `[JsonSerializable]` registration; every endpoint must return `ApiResponse<T>` via `ApiResponse<T>.FromResult`; no anonymous DTOs; streaming uses `Utf8JsonWriter`; open source is `Results.Json(..., JsonTypeInfo, statusCode)`.
+1. endpoint authentication;
+2. edition and feature gates;
+3. bounded request validation;
+4. Ward policy for tool action;
+5. Sanctum path policy for filesystem scope;
+6. platform containment where supported;
+7. bounded, sanitized output.
 
-The OpenAI `/v1` compatibility subset covers chat completions (`POST /v1/chat/completions`, JSON and SSE), embeddings (`POST /v1/embeddings`), models (`GET /v1/models`), files (`/v1/files*`), and batches (`/v1/batches*`). Moderations (`/v1/moderations`), images (`/v1/images/*`), and audio (`/v1/audio/*`) return `501 not_supported` unconditionally. Client `tools`/`tool_choice` are rejected (`400 unsupported_parameter`) unless `Arcanum:Features:ClientTools` is enabled (then forwarded to provider with `strict` preserved; bypasses server-side tool loop, Sanctum, Wards, audit logging).
+Host-process tools require the `Development` edition plus an explicit environment opt-in.
+`workspace_check` has a narrower eligibility contract and is currently available only on an
+eligible macOS host with active Seatbelt and a trusted .NET launch chain. It can execute
+repository-authored build or test code, so it is never described as harmless file inspection.
 
-Endpoint groups are protected by `ApiKeyEndpointFilter`: `X-Arcanum-Key` (preferred) or `Authorization: Bearer <key>`. Key comparison uses `CryptographicOperations.FixedTimeEquals` on SHA-256 digests with a short TTL cache (digest computed fresh on rotation). Header validation: over 256 UTF-16 chars → `401`; duplicate `X-Arcanum-Key` or `Authorization` headers → `401`. HTTPS-only binding (`ListenAny`) forces metrics auth (`metricsRequireApiKey` forced `true`) and rate limiting (see below).
+Platform containment is not identical:
 
----
+- macOS uses a filesystem-focused Seatbelt profile; child network remains available;
+- Windows uses AppContainer for eligible tool children and assigns a Job Object before resume;
+- Linux tool-child containment remains unavailable and fails closed;
+- configured external MCP processes are trusted operator programs, not sandboxed repository tools.
 
-## 8. Security, identity, and containment
+Remote URLs pass SSRF checks. Public errors are stable and bounded; raw exceptions, secrets,
+provider bodies, paths, and protected reasoning must not cross a client boundary.
 
-Local-first, loopback-default, single-user. The master API key is a cryptographically random 32-byte value stored in the OS credential store (`service=arcanum`, `account=master-api-key`) with a `security.dat` mirror (Data Protection, purpose `Arcanum.Core.ApiKey`). The Forge reads the same OS identity. `arcanum key show` (stderr only, CLI-only, no HTTP) and `arcanum key set` manage this key.
+Credential corruption fails closed. When an existing Grimoire depends on a protected secret,
+Arcanum does not generate a replacement and continue against unreadable data.
 
-Sensitive file creation applies owner-only permissions (`chmod 600/700` Unix; owner ACL Windows) through `SecureFilePermissions`. Startup (`ArcanumSecurityStartupChecks`) warns (does not fail) if group/other can read the Grimoire database, `arcanum.json`, `cli-context.json`, `cli-session.txt`, or log files. Operators fix manually.
+## 10. HTTP and event contracts
 
-Workspace containment (`WorkspacePathPolicy`) is the unconditional primary boundary for file/search/patch tools. It performs lexical containment (normalized, case-insensitive on Windows), walks every existing component, resolves symlink targets, and rejects escaping paths, unresolvable components, symlinks that point outside the workspace, and non-single-link regular files. Symlink cycle termination uses a canonical-path visited-directory set. `SecureFileReader` opens with `O_NOFOLLOW`/`O_NONBLOCK`/`O_CLOEXEC`, accepts only regular single-link files, reads through cleared capped `ArrayPool<byte>` pools, revalidates identity after read, and rejects symlink/hardlink/device/FIFO inputs. `PhysicalFileSystemBrowser` and `AtomicFile` reuse this identity/revalidation boundary.
+Native routes use the `ApiResponse<T>` envelope and camelCase source-generated JSON. Failure
+responses carry a stable code and sanitized message.
 
-Campaign Sanctum (`SanctumGuard`, `SanctumConfig` stored in Grimoire `Campaign.SanctumConfigJson`) is an additional conditional allowlist: disabled by default (`Enabled: false`), opt-in per campaign. When enabled (`Strict` mode denies with synthetic tool result; `AuditOnly` logs breach and allows), it validates tool allowlist, filesystem paths (canonical resolution with symlink checks), and model-supplied network targets (e.g. `read_url`, including the legacy `browse_web` alias). `SanctumBreaches` (raw SQL, not EF entity) records durable breach history with per-campaign retention (`MaxBreachCount` default 1000, clamp 100–100,000). Breach path details are redacted (`SanctumPathRedactor`) before wire serialization.
+The `/v1` surface intentionally follows OpenAI shapes instead of the native envelope. It supports
+the documented Chat Completions subset, embeddings, files, and asynchronous chat-completion
+batches. Moderations, images, and audio are explicit `501 not_supported` stubs rather than partial
+implementations.
 
-Wards (Forbidden Arts) (`WardGate`, singleton `IWard`) gate `execute_command`, `apply_patch`, `workspace_check` (intrinsic) plus operator additions (`security.ward.forbiddenArts`). Unattended mode (`security.ward.unattendedMode`) auto-denies. `delete_lexicon` is a Forbidden Art; `scribe_lexicon` is ungated (append-only; non-destructive). `POST /api/wards/{id}` resolves with exactly one of `--allow`/`--deny` + optional `--reason` (`allow`/`deny` mutually exclusive; `AlreadyResolved` → `409`). Active wards are ephemeral (host restart clears them; `HostRestartedReason` distinguishes from timeout/capacity denial). API routes (`/api/wards`) are protected by the same `ApiKeyEndpointFilter`.
+Streaming contracts are typed:
 
-Host-process tools (`execute_command`, `run_spell_script`) use `ProcessStartInfo.ArgumentList` (no shell). `ArgumentList` rejects embedded null bytes; single-string `arguments` tokenizes through the same quoted-substring algorithm as `SpellScriptTool` and is never assigned directly to `Arguments`. Child environment strips `ARCANUM_*`, loader/hijack variables (`PATH` preserved). `execute_command` and `run_spell_script` read stdout/stderr through `ReadStreamCappedAsync` (bounded combined output cap, UTF-8 boundary-safe truncation, marker appended when exceeded). Child process filesystem jail (`ChildProcessFilesystemJail`, `CappedChildProcessRunner`): macOS Seatbelt (`sandbox-exec`, deprecated but active in beta; filesystem-only jail; profile allows workspace + script roots read+execute, system runtime read+execute, per-invocation owner-only temp). Linux Landlock support is in-tree (`__sandbox-exec` helper) but **not invoked** (inactive for beta; fail-closed unless `security.allowUnsandboxedToolChildren` acknowledged). Windows Job Objects enforce process/memory limits; filesystem jail is unavailable (`NoFilesystemJail` / Degraded health); when Sanctum `Enabled` + `EnforcePathBoundary` is on, command tools are denied (`DeniedByWindowsSanctum`). `workspace_check` is a separate capability: advertised only with eligible macOS Seatbelt + trusted `dotnet` + SDK/runtime + root-owned launch chain; unavailable on Linux/Windows; never enabled by the escape hatch.
+- native inference uses NDJSON `IntelligenceEvent` frames;
+- session and Chronicle subscriptions use SSE;
+- OpenAI streaming projects the shared turn into OpenAI-compatible chunks.
 
-SSRF guard (`OutboundUrlGuard`) applies to untrusted outbound URLs: rejects loopback, RFC1918 (`10/8`, `172.16/12`, `192.168/16`), link-local (`169.254/16`, `fe80::/10`), CGNAT (`100.64.0.0/10`), `localhost`, and `::`. Provider inference uses the same handler with `allowPrivateAndLoopback: true` (loopback/LAN providers allowed; link-local/metadata blocked). `WebhookCommLinkDispatcher` resolves environment-backed webhook URL (`ARCANUM_COMMLINK_WEBHOOK_URL` default) only at dispatch; logs contain at most host; redirects disabled; TLS validation never bypassed; scheme (`https` default) and host allowlists (`Arcanum:Integrations:CommLink:*`) enforced; transport timeout code-owned.
+Clients preflight each event discriminator before strict source-generated deserialization. Unknown
+or malformed frames are skipped with bounded diagnostics where the client contract permits it.
+Reasoning is typed and never transported through protected internal data.
 
----
+The full route, DTO, status, and error-code reference is
+[`Arcanum.API.md`](Arcanum.API.md#1-complete-api-surface).
 
-## 9. Intelligence pipeline (`DESIGN.md` §10)
+## 11. Workspaces, Campaigns, and tools
 
-The intelligence layer is a provider pattern: `Core` defines `IArcanumIntelligenceProvider` (`ExecutePromptAsync` / `StreamPromptAsync`); `Api` implements `WizardIntelligenceProvider` as a facade over `TurnExecutionCoordinator` / `TurnEngine`. `TurnEngine` is a bounded semantic shell (`ITurnEventSource`); it selects buffered/streaming projection over Wizard's `ITurnPipelineRunner`. The root does not duplicate Wizard's loop. Native `delegate_task` deliberately runs one fresh buffered child TurnEngine through the same pipeline, with a stateless isolated prompt/file context, `MaxSubagentDepth = 1`, and `DelegatedManaTracker` token/cost/turn ceilings.
+A Workspace is a registered server-host filesystem boundary. A Campaign is a persistent project
+container for sessions, Spells, Prompts, Codex, and Sanctum policy. They are related but not
+interchangeable.
 
-Provider mapping: `ProviderResolver` resolves `PingRequest.Model` (or `Arcanum:DefaultModel`, or first configured model) → `ProviderSettings`. `IChatClientFactory` (`ChatClientFactory`, singleton) resolves `OpenAICompatible` (including Ollama via `/v1`) through `Microsoft.Extensions.AI.OpenAI` + `AsIChatClient()` over named `HttpClient` pipeline (`OpenAiRequestAugmentingHandler`). `WizardIntelligenceProvider` does not invent provider fields; reasoning is handled through typed `ChatOptions` mapping.
+That distinction matters when a CLI runs on another machine: a local client path is not
+automatically a path on the server. Workspace commands call `/api/workspaces`; they do not bypass
+the host and inspect the client filesystem.
 
-Reasoning request contract (native): `reasoning.effort` (`none|minimal|low|medium|high|extraHigh`); `reasoning.budgetTokens` (positive integer, capped by model `maxBudgetTokens`); `reasoning.output` (`none|summary|full`). `effort` and `budget` are mutually exclusive. When `output` is omitted and model supports it, `full` if `SupportsFull`, else `summary` if `SupportsSummary`; requires `AllowsClientOutput` and `SupportsStreaming` for live output. OpenAI: `reasoning_effort` (`xhigh` → native `extraHigh`), `reasoning_budget` (positive int), `reasoning_output` (`none|summary|full`). Numeric enum values (defined or undefined) fail as strict JSON binding (`invalid_json`, no parameter); unknown strings fail earlier as `invalid_request_error`. Stable native failure codes (`Validation.*`, mapped in `ArcanumErrorMapper`): `InvalidReasoningEffort`, `InvalidReasoningOutput`, `ReasoningEffortAndBudgetMutuallyExclusive`, `InvalidReasoningBudget`, `UnsupportedReasoningControl`, `ReasoningBudgetExceedsModelLimit`, `UnsupportedReasoningOutput`. See `DESIGN.md` §8.8 for OpenAI mappings.
+Built-in tools are advertised only when the current request is eligible. Tool arguments are
+bounded and parsed as structured data. File selectors resolve within registered boundaries.
+Ambiguous resource names fail instead of silently choosing one.
 
-Reasoning separation: native buffered responses expose ordered `reasoning` array; NDJSON uses typed `reasoning` frames; OpenAI buffered/SSE uses additive `reasoning_summary` / `reasoning_content`. Answer fields remain answer-only. Reasoning bodies never enter Grimoire entries, audit/log text, trace export, Apprentice handoff/checkpoints, or Chronicles. Provider `ProtectedData` survives only in same-provider in-memory continuation; client-safe reasoning only projects when `AllowsClientOutput` allows and streaming support exists. Structured-output correction replaces the rejected candidate's answer + reasoning; guardrails inspect accepted answer + projectable reasoning.
+MCP supports operator configuration over stdio and SSRF-guarded Streamable HTTP. Workspace-local
+MCP configuration is merged only after digest-bound trust. Lifecycle, reload, discovery, and
+diagnostic invocation remain server-owned and authenticated.
 
-Turn lifecycle (`DESIGN.md` §10.7): preflight (`GuardrailsPipeline.FilterInputAsync`, attached-file validation, `PingRequestBoundsValidator`, Scrying gate, empty-prompt validation, budget admission) → provider attempt (health-tracker-aware fallback tries each distinct provider once; connectivity failures only may advance; pre-commit commitment rules apply) → model/tool loop (`IModelCallExecutor`, new `ContextTokenBreakdown` + admission per call; `SkipSpellRouting` skips both `SpellScanner` and `SemanticSpellRouter`) → finalization (`GrimoireTurnWriter` writes assistant-only `Entry`; `IncrementSessionTokensAsync` updates session projections atomically; Saga extraction receives the current turn's typed materialized-attachment allowlist; audit row only on success). Streaming uses `InferenceExecuteWriter` (NDJSON `IntelligenceEvent` with typed `type` discriminator); `OpenAiV1Endpoints` owns the production `/v1` SSE mapper. `OpenAiSseProjection` is the semantic helper/characterization path, not the production endpoint instance.
+Web search, browse, and research are also server workflows. The CLI renders progress to stderr and
+the final cited result to stdout, with optional atomic export or encrypted session attachment.
 
-Agentic layers (`DESIGN.md` §10.2): semantic spell routing (`SemanticSpellRouter` with `DirectResonance` pure embedding mode / `FilteredDivination` hybrid mode / `FullGrimoire` when disabled or failed); Arcane Resonance (`SpellDependencyResolver`, depth cap 3, cycle-safe); Artifact Attunement (`declaredTools` allowlist for primary spell only); read-time compression (summary injection when `Session.Summary` + `LastSummarizedMessageAt` present and total above `ContextWindowLimit * threshold / 100`); Wards (`WardGate` per `ForbiddenArts`, `Strict`/`AuditOnly` modes, intrinsic `execute_command` / `apply_patch` / `workspace_check`, `UnattendedMode` auto-deny); Sanctum (`SanctumGuard` validates disabled tools/path/network/model targets before invocation); MCP tool loops (`search_workspace` direct line-scoped filesystem search, `apply_patch` bounded pure parser + sequential observable non-isolated transaction with deterministic receipt, `workspace_check` separate capability); bounded tool results (`Utf8Truncation`, truncation marker); and `attach_session_file` / `refresh_session_file` injection (after the complete round, once per logical key/version, with one shared turn cap). Refresh accepts no path: it revalidates host-trusted provenance, securely rereads the open handle, deduplicates by hash, versions changes, and exposes native-only `attachmentRefreshed` observability.
+## 12. The user-facing applications
 
-Telemetry pane (`DESIGN.md` §10.4): `TelemetryService` continues to project process-level `ArcanumMetrics` into `TelemetrySnapshot` aggregates, including one terminal-only child-run roll-up. Command Center's non-focusable Context pane (`CanFocus` false) instead consumes the latest native `context` frame and renders chat history, explicit attachments, refreshed files, attachment RAG, workspace RAG, and the total input. The total is labeled `estimated` until a valid provider usage frame supplies the authoritative `billed` value. The per-turn materialization ledger records attachment/workspace semantic chunks dropped under context pressure and the pane shows their aggregate chunk/token warning; the attachment metadata index remains system context. `Ctrl+T` toggles `ShowTelemetryPane`. Attachment DTO statuses drive a separate non-intrusive footer (`Pending` refreshes once per second until `Indexed`, `Failed`, or `Stale`). UI updates replace one prepared string and never expose vectors, chunk text, or ledger labels.
+### CLI and Command Center
 
----
+The normal CLI is good for scripts and focused commands. Interactive selectors are TTY-only;
+non-interactive and JSON invocations never guess. Saved context can hold active Campaign,
+Workspace, model, and session selections, with explicit command values taking precedence.
 
-## 10. Local-first security (`DESIGN.md` §11)
+Command Center is the terminal-native session workbench. It combines streaming chat, Wards, human
+prompts, attachment state, context telemetry, session mutation, and operator refresh without
+creating a second backend.
 
-Threat model: single-user, loopback-default, secret-minimizing. The 32-byte master API key guards all `/api` and `/v1` routes. Kestrel binds loopback only (`ListenLocalhost`) unless `ListenAny`/`ARCANUM_HOST_ANY` is enabled (then HTTPS-only `ListenAnyIP` on `HttpsPort`, plaintext any-IP refused). `ApiKeyEndpointFilter` uses SHA-256 digest comparison (`FixedTimeEquals`), `stackalloc` buffers (≤256 bytes; else heap with zeroing), and a short TTL digest cache for rotation propagation. Header rules: duplicate `X-Arcanum-Key` → `401`; over 256 chars → `401` (`Auth.Unauthorized`). Auth accepts both headers; `Bearer` is case-insensitive; only trimmed token after first space is compared.
+### Compendium
 
-Master-key bootstrap fails closed with a sanitized `MasterApiKeyUnavailableException` when its
-credential/mirror is corrupt and an existing Grimoire is present. It neither logs the underlying
-Data Protection message nor generates a replacement key; safe regeneration remains limited to the
-no-database case, and process cleanup can complete normally.
+Compendium is the Avalonia editor for supported public configuration. It edits references to
+credential environment variables, not secret values. Reads are size-bounded, validation operates
+on the complete snapshot, and saves use durable atomic replacement.
 
-Grimoire encryption: PBKDF2-HMAC-SHA256 (600,000 iterations) with unique 16-byte salt in `{db}.kdf` (`GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret`); the sidecar must be a no-follow single-link regular file under 4 KiB and is written through owner-only durable atomic staging. Legacy databases fall back to the prior HKDF path and are transparently re-encrypted to PBKDF2 on unlock. The encryption secret is separate from the master API key; rotating the key does not break the Grimoire for new databases. For legacy DBs encrypted by the master API key, rotation was destructive; recovery requires restoring `security.dat` + the matching `key-{guid}.xml` DP file or reinstalling the Grimoire. A corrupt dedicated secret or key mismatch raises a sanitized `GrimoireDatabaseUnavailableException`: host/CLI startup fails closed without API-key fallback, while ordinary disposal and test-host cleanup still run.
+The public configuration model is intentionally smaller than the internal implementation. Retry
+mechanics, workflow counts, fallback behavior, and other safety internals stay code-owned. Use
+[`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) for every retained
+key, default, bound, dynamic dictionary shape, and credential reference.
 
-File identity boundary: `WorkspacePathPolicy` (primary, unconditional containment); `SecureFileReader` (no-follow/nonblocking, single-link regular-file only); `PhysicalFileSystemBrowser` (canonical path resolution + symlink escape check); `AtomicFile` rollback (backup fingerprint + identity capture). Protected master, Grimoire, file-encryption, and web-research credential mirrors also use `SecureFileReader` with a 64 KiB ceiling before Data Protection decrypts them. Identity-owned cleanup (`IdentityOwnedFileSystemCleanup`): quarantine in same-parent quarantine directory, identity revalidation, then deepest-first recursive delete; swap/replacement/permission failure/unknown metadata/time-deadline retention is logged and retained, not deleted blindly.
+### The Forge
 
-Child process jail: macOS Seatbelt (`sandbox-exec` profile — deprecated but active; filesystem-only jail; workspace + spell script read+execute, per-run owner-only temp, no file-write except workspace; system runtime read+execute, no write; no volume-level read access). Linux Landlock (`__sandbox-exec` helper in-tree but **not activated** — fail-closed unless `security.allowUnsandboxedToolChildren` acknowledged). Windows Job Objects (`ACTIVE_PROCESS`, process/job memory limits from `ResourceLimits`); filesystem jail unavailable (`NoFilesystemJail` / Degraded health); command tools denied when `Sanctum` `Enabled` + `EnforcePathBoundary`. `workspace_check` is separate: only advertised on eligible macOS Seatbelt + trusted native `dotnet` + SDK + root-owned launch chain; unavailable Linux/Windows; never enabled by escape hatch; executes repository code; always Wards when Wards on; open network; best-effort descendant cleanup (not guaranteed against intentionally detached malicious descendants).
+The Forge is the desktop inference IDE and the name of related server-side Campaign, Spell, and
+Prompt surfaces. Its desktop client communicates with Arcanum over HTTP only. The client uses
+bounded response readers, strict typed contracts, asynchronous UI refresh, and atomic downloads.
 
-SSRF / outbound URL guard (`OutboundUrlGuard`): rejects loopback (`127.0.0.0/8`, `::1`), RFC1918 (`10/8`, `172.16/12`, `192.168/16`), link-local (`169.254/16`, `fe80::/10`), carrier-grade NAT (`100.64.0.0/10`), `localhost` hostname. Provider inference uses `allowPrivateAndLoopback: true` (loopback/LAN allowed; link-local/metadata blocked). Webhook dispatcher resolves environment-backed URL at dispatch; redirect disabled; TLS never bypassed; response headers arrive before body processing and only the capped drainer consumes the body. Health probes also stop at headers. Structured-output compatibility fallback inspects at most a 64 KiB provider-error prefix and preserves caller cancellation.
+## 13. Cost, caching, health, and telemetry
 
-Persistent file and symbol-range pins reuse the shared secure-file identity boundary: one no-follow,
-single-link regular-file handle, a 64 MiB source-scan ceiling, incremental full-handle hashing, and
-bounded retained content. Symbol ranges stream selected lines and normalize CRLF output rather than
-loading the complete file.
+Cost admission reserves a conservative worst-case amount before a turn. Completed provider calls
+reconcile that reservation using the pricing snapshot captured for the operation. Daily spend uses
+completed billable operations plus outstanding reservations, not the session display cache.
 
-Public error envelopes (`DESIGN.md` §8.23): wire-stable `ErrorCodes` centralized in `Core/Primitives/ErrorCodes.cs`; HTTP mapping centralized in `Api/TheForge/ArcanumErrorMapper.cs`. Native `/api` uses `ApiResponse<T>` (404 envelope included); `/v1` uses OpenAI-shaped `invalid_request_error`/`invalid_json`/`not_found`/`not_supported`; `PublicInferenceErrorMessages` / `PublicToolFailureMessage` never leak raw exception text. Structured output failure mapping: best-effort → no envelope failure; with `json_schema.strict:true` → `400` `invalid_request_error` (`invalid_json` for numeric/unknown enum binding first; `invalid_schema` for schema errors; `validation_failed` for output errors). See full code catalog in `DESIGN.md` §8.23.
+Prompt caching is a provider request optimization, not a response cache. Arcanum still calls the
+model. Only known OpenAI model families on the official HTTPS endpoint receive the built-in
+key-only profile. Cache keys contain digests and stable identities, never prompt text, tool output,
+attachment bytes, paths, PII, or secrets.
 
----
+Health distinguishes readiness from perfection. A provider failure can make the service Degraded
+while the readiness endpoint remains HTTP 200. An unhealthy Grimoire is the primary HTTP 503 gate.
+Deferred durable-operation recovery is Degraded until repaired or reconciled.
 
-## 11. Inference engine (detailed turn lifecycle, `DESIGN.md` §10.7)
+Metrics use bounded labels. High-cardinality identities, prompt fragments, paths, cache keys,
+session ids, and reasoning bodies do not become labels.
 
-The logical run (`RunStarted` → terminal `RunCompleted` / `RunFailed` / `RunAbandoned`) is owned by `TurnEngine` over a single `ITurnEventSource`. The coordinator (`TurnExecutionCoordinator`) applies exactly one projection per request (`BufferedTurnProjection` → `Result<PromptTurnResult>`; `IntelligenceEventProjection` → channel; `OpenAiSseProjection` is the semantic characterization helper, not the production endpoint instance). `WizardIntelligenceProvider` remains the facade over the engine; it does not run a second loop.
+## 14. Native AOT, packaging, and configuration
 
-Turn order (canonical from `DESIGN.md` §10.7):
+Source-generated JSON, request delegates, generated regexes, and trimming annotations are design
+constraints, not cleanup tasks. Windows and Linux publish the CLI as Native AOT. macOS ships a
+self-contained folder while retaining the same AOT-safe code shape.
 
-1. Preflight: `GuardrailsPipeline` (PII/toxicity/topic policy; opt-in `Arcanum:Features:Guardrails`); `ScryingValidator` (image count/size/MIME; `Scrying.Enabled`; model vision capability check via `ProviderResolver.SupportsVision`); `PingRequestBoundsValidator`; budget admission (`BudgetMonitor.CheckAsync` compares completed `BillableOperations` + `BudgetReservations`; session projection is fallback/projection only; exceeded budget = `Budget.Exceeded` / 429; 80% threshold dispatches Comm Link warning once per threshold per UTC day via `BudgetAlerts` unique index `(Threshold, date(AlertedAt))`); session/attachment/empty-prompt checks; cancellation flows unchanged.
-2. Context seed (`TurnContextSeed`): session + bounded entry window (`GetSessionHeaderAsync` + bounded recent `Entries` via parameterized SQL; no eager `Include`; `Sequence` ordering, not `CreatedAt DESC, Id DESC`); workspace `CODEX.md` (cached concurrent dictionary keyed by path, invalidated by `LastWriteTimeUtc`); active spell/version resolution (`SpellScanner.ScanMetadataAsync` for routing; `LoadFullAsync` after routing picks; `SPELL.json` preferred; `SKILL.json` read fallback); `ChronosyncDelta` (`IChronosyncEngine`); semantic retrieval (`RetrieveSemanticContextAsync` — Weave imprint shared with session/divine); Saga (`RetrieveSagaMemoriesAsync`); DCI ordered document (`SystemPromptBuilder.BuildDocument`) — preamble (base persona + `"INSTRUCTIONS override conflicting DATA"` rule), DATA (`Lexicon` → `Chronosync` → `AttachedFiles` → `SemanticContext` → `Saga` → `DataStreams` — hardened with `[None]` placeholders, adaptive markdown fences, whitespace/newline stripping for data), CONTEXT (`WorkspaceContext` / `TableOfContents` → `MasterCodex` → `CampaignSummary` when compression active), INSTRUCTIONS (active `Spell` from `SemanticRouter`/`SemanticSpellRouter` with optional embedding pre-filter; `SpellDependencyResolver` depth cap 3; `ArcaneResonance`; `AvailableSpellScripts`; terminal formatting directive). The `WorkingDirectory` scopes `McpConnectionManager`, `CodexReader`, and `SpellScanner`.
-3. Tool set (`BuildToolSetWithMcpAsync`): built-in (`get_local_system_time`, `get_arcanum_system_info`, `delegate_task` on the primary loop, `run_spell_script` — Development + `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1`; `web_search` / `read_url` when `WebBrowsing.Enabled`; `attach_session_file` / `refresh_session_file` when `Attachments.Enabled` and a session is bound); MCP merged from global + workspace-local (workspace `mcp.json` only after `POST /api/mcp/trust-workspace` approved; admission bound to exact parsed digest; retirement replaces with current-file digest match). `delegate_task` displays through the ordinary parent `toolCall` / terminal `toolResult`, while the child runs buffered and returns no internal frames. Artifact attunement (`SpellDependencyResolver` resolves `SPELL.json` dependencies, walks recursively depth 3, cycle-safe; primary spell `declaredTools` restricts attunable set; dependency `declaredTools` does not widen allowlist; empty `declaredTools` = no restriction). Native web tools are attunable; legacy `browse_web` declarations map to `read_url`.
-4. Inference loop (evidence-driven; no arbitrary cap on calls/rounds/steps/corrections): build fresh complete `ContextTokenBreakdown` before every provider call; trim oldest complete in-memory tool exchanges when over `ContextWindowLimit * threshold / 100`; reject overflow (`Hub.ContextBudgetExceeded`); invoke `IModelCallExecutor` (identity-validates payload fingerprint, validates provider/model/profile, computes/reuses single `ContextTokenBreakdown`, applies eligible cache/reasoning options to clones not reusable state, records admission metrics, reconciles provider input); collect non-informational `FunctionCallContent`; exit to finalization when no actionable calls; `SkipSpellRouting` skips scanner + router and avoids embed cost; `ForwardClientTools` records `PromptToolCall` values, sets `finishReason=tool_calls`, exits without server execution (bypasses server loop, Sanctum, Wards, audit). For server execution: Ward (`WardGate`: `Strict` synthetic denial / `AuditOnly` log; `ForbiddenArts` intrinsic always Warded regardless of `ToolPolicy.NoForbiddenArts`; `UnattendedMode` + `AutoDenyInUnattendedMode` skips wait; `EnableDivineIntervention` controls escalation); Sanctum (`SanctumGuard` validates disabled tools/path/network/model targets before call; independent `WorkspacePathPolicy` always applies); invocation; unexpected exception caught → `PublicToolFailureMessage` (fixed generic string, never exception message) + `Error` log with safe metadata + exception type; streaming also emits `toolError` event before matching `toolResult`. Normal errors (validation, Ward denial, Sanctum strict, unregistered tool) return structured `toolResult` without throwing. `apply_patch` requires persisted session + assistant turn + exact argument snapshot + deterministic invocation identity; creates one reversible sequential observable non-isolated transaction; exact result persisted as assistant `ToolCall` + system `ToolResult`; receipt outcomes (`NewlyCommitted` / `RecoveredCommitted` / `Failed` / `Ambiguous`). Multiple `apply_patch` calls per turn are independent transactions. `search_workspace` is direct strict-UTF-8 bounded line-scoped filesystem search (non-backtracking + interpreted fallback; no Weave; deterministic order by path/line/column). `workspace_check` runs repository code; advertised only on eligible macOS Seatbelt + trusted `dotnet` + SDK + root-owned chain; unavailable Linux/Windows; always Wards when Wards on.
-5. Streaming pump (inside shared loop): chunk pump (`ModelCallTextDelta` accumulates answer `token`; `ModelCallReasoningUpdate` accumulates reasoning `reasoning`); combine/accumulate usage; collect calls; finish (`finishReason`); `toolCall`/`toolResult`/`toolError`/`warded`/`wardResolved` events; fresh admitted call after each round; output guardrails (buffered hold; strict mode → terminal `Error` with no `Result` on streaming). NDJSON event vocabulary (`type` camelCase string): `status`, `sessionBound` (canonical session id; deprecated `conversationBound` alias emitted), `reasoning` (typed `{text,output}` client-safe; never protected `ProtectedData`; `output` exactly `none`/`summary`/`full`; `none` suppressed by `Policy`), `token`, `toolCall`, `toolResult`, `toolError`, `warded`, `wardResolved`, `context` (pre-call estimate + optional post-call provider-reported variance; profile/source rows with signed absolute/relative variance; never rewritten historically), `result` (structured usage: `usage.prompt_tokens`/`usage.completion_tokens`/`usage.total_tokens`; optional `cached_tokens` (prompt subset); optional `reasoning_tokens` (completion subset); legacy `data` string for backward compatibility), `error`. `OpenAiV1Endpoints` owns production `/v1` SSE mapping (terminal chunk order, `stream_options.include_usage`, `usage` chunk at end when requested, `message.tool_calls` for server-side execution only, `finish_reason: tool_calls` for forwarding). Disconnect (`Auto`): with `Idempotency-Key` → continue-then-replay (`DurableClaim` complete replay; empty terminal replay empty); without key → `Abandoned` (cancel propagation after cleanup). Partial billed usage reconciled either way.
-6. Finalization: structured-output correction loop (`StructuredOutputValidator.ValidateAndRetryAsync`; replacement applies to both answer and reasoning; stops on valid/repeated state/cancel/context admission/cost admission); best-effort streaming post-hoc (no correction after release); guardrail inspection over accepted answer + projectable reasoning (`ReasoningPolicy` suppresses `none`); assistant-only `Entry` persisted; `Session.TotalTokensUsed` + `Session.UnsummarizedEntryCount` updated atomically (provider-reported authoritative; only missing totals derived); `Session.LastSummarizedMessageAt` advanced by `CampaignBackedWorkspaceRegistry`; Saga extraction enqueued; audit row (`InferenceAuditRecord`, JSONL, append-only, successful-turns-only, no reasoning body, default `redactToolArguments=true`) only after success; metrics emitted; `RunCompleted` returns `PromptTurnResult` (answer, usage, observed calls, finish reason, warnings, ordered reasoning segments, session id); failure returns `RunFailed` / terminal `error`.
+Package and distribution scripts live under `scripts/packaging`. Signing and notarization are
+platform workflows; unsigned local artifacts retain the operating system's normal trust warnings.
 
----
+Configuration is loaded from `~/.config/arcanum/arcanum.json`, environment variables, and protected
+credential stores according to the precedence in the technical design. Changing ordinary
+configuration requires a restart, not a Grimoire reinstall.
 
-## 12. Native AOT and trimming (`DESIGN.md` §9)
+## 15. How changes should be developed
 
-`Cli` (`PublishAot` on non-macOS RIDs) produces a native binary. `Infrastructure` (`IsTrimmable` + `PublishAot`) is analyzed in the publish graph. `Core`/`Api` (`IsAotCompatible`) opt into analyzers. `EnableRequestDelegateGenerator` on `Api` ensures Minimal API endpoints in a referenced class library are source-generated. `System.CommandLine 2.0.10` is source-generated (no `TrimmerRootAssembly` / `DynamicDependency` needed). `Terminal.Gui` (only in `Cli`) requires method-level suppressions in `CommandCenterApp` (verified by `verify-aot-il-warnings.sh`). `dotnet build` remains warning-clean.
+Behavior changes use test-driven development:
 
-Constraints for new code: every HTTP payload needs `[JsonSerializable]` on `ArcanumJsonContext`; Grimoire blobs use `GrimoireJsonContext` + explicit `JsonTypeInfo` (no reflection `JsonSerializer`); MCP wire uses `McpJsonSerializerContext`; outbound webhook uses `CommLinkInfrastructureJsonContext`; `AIFunction` uses hand-authored `JsonDocument` schemas (`AIFunctionFactory.Create` forbidden); `ArcanumSettings` uses mutable `{ get; set; }` (not `init` — AOT binding generator skips `init`); Minimal API handlers return no anonymous DTOs. Runtime regex (`search_workspace`) must not use `RegexOptions.Compiled` or input-derived cache; `NonBacktracking` first, interpreted bounded fallback.
+1. add a focused failing regression;
+2. make the smallest production change that satisfies the contract;
+3. run the focused test;
+4. run the broader affected suite;
+5. update every owning document;
+6. run formatting, build, AOT, dependency, coverage-contract, and full-suite gates in proportion to
+   the change.
 
-macOS currently disables Native AOT (macOS 27 / Xcode 26+ `ld-prime` crashes on large AOT closure; `ld_classic` unsupported; single-file apphost unreliable). macOS uses folder-based self-contained publish (untrimmed); Windows/Linux remain Native AOT.
+The source style intentionally places a blank line after each C# statement except around brackets
+and parentheses. Use the repository formatter rather than hand-normalizing unrelated files.
 
----
+Useful entry points are:
 
-## 13. Persistence inventory and crash consistency (`DESIGN.md` §5.4, §5.5)
+- `ApiBootstrapper` for service and route composition;
+- `WizardIntelligenceProvider`, `TurnExecutionCoordinator`, and `TurnEngine` for inference;
+- `ModelCallExecutor` for provider calls and per-call accounting;
+- `ToolExecutionPipeline` for tool gates and results;
+- `GrimoireRepository` and specialized repositories for persistence;
+- `CliCommandTree` and `CliApplicationFactory` for command/process contracts;
+- `ArcanumConfigurationStore` for Compendium reads and saves.
 
-Durable authorities:
+For concrete breakpoints and recipes, use
+[`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md).
 
-| State | Durable authority | Contract |
-|---|---|---|
-| Sessions, Entries, Campaigns, Prompts, Apprentices, WorkspaceContexts, operator Lore (`MageSettings`) | EF-tracked Grimoire tables (`ArcanumDbContext`, compiled model) | Compiled-model entities; `MageSettings` remains operator-only. |
-| Lexicon (`lexicon_entries`, `lexicon_fts`, `lexicon_fact_attachment_provenance`) | Raw SQL; `LexiconSchemaInitializer` (idempotent `IF NOT EXISTS`); no EF entity; source-generated `LexiconJsonContext` | `NameNormalized` upsert; `FactsText` newline-joined for FTS (`bm25`); attachment-derived facts require a matching current-turn materialized attachment id and retain typed provenance; deletion later reports the source unavailable; `delete_lexicon` is Forbidden Art. |
-| Unseen Servant (`UnseenServantWatermarks`) | Raw SQL scalar (`JobKey`, `LastRunAt`, `EffectiveIntervalMinutes`); write-through on initiative change; WAL + `SqliteBusyRetry`; no compiled EF model | Last-run and interval persist; `nextDueAt` reconstructed (`LastRunAt` + interval + jitter); `LastResult` process-local; startup hydration seed `"Overdue (host was down)"` or `"Restored from Grimoire"`; overdue rows remain real `LastRunAt`. |
-| Sanctum breach (`SanctumBreaches`) | Raw SQL; `SanctumBreachRepository` (scoped, same `ArcanumDbContext`); FK `CampaignId`; `ON DELETE CASCADE`; retention enforced per insert (`MaxBreachCount` default 1000, clamp 100–100,000); path details redacted (`SanctumPathRedactor`) | Insert within same request scope; no separate `BackgroundService` needed; missing `CampaignId` for unknown campaigns logs only (no persistence). |
-| Idempotency (`IdempotencyClaims`) | Raw SQL; `DurableClaim` before execution; `HeartbeatAsync` from claim time (not local); replay only `Complete` terminal in-cap claims; local-flight `ConcurrentDictionary` coordinator acquired before durable lookup; foreign live claim → `409` (`IdempotencyInProgress`) without invoking handler; claim owner `{process-instance-guid}:{execution-guid}`; lease five minutes (renewable); heartbeat interval/minute; expiry deletes (`UnseenServantService` startup sweep + hourly); `ReplayEligibleAsync` checks fingerprint match + terminal in-cap + not partial/non-claimed/past-cap-abandoned. | Partial/over-cap/non-terminal responses are `Abandoned`; same-fingerprint `Complete` replay replays verbatim (status/body/content-type); `ReplayResponse` never rewrites the historical estimate/provider-reported value; empty explicitly-terminal responses replay empty. |
-| Inference accounting (`InferenceRuns`?, `BillableOperations`, `BudgetReservations`, `CostAdjustments`) | Parameterized raw SQL through `ITurnRunWriter` / `IBudgetReservationService`; outside compiled EF model; `BillableOperations.ReasoningTokens INTEGER NOT NULL DEFAULT 0` installed by embedded SQL (`20260721010000_...`); no `DbSet`; no EF migration/regeneration | Per completed provider call (not loop/session); reservation = per-call max-not-sum (`SaturatingMultiply`/`SaturatingAdd`); context admission trims before reserve and raises atomically (`BEGIN IMMEDIATE`); reconciliation uses provider-reported authority (`TotalTokenCount` authoritative when present; derived only when missing); `CachedTokens` never exceeds prompt count; missing usage produces no billable row. Budget gate (`BudgetMonitor.CheckAsync`) prefers completed + outstanding; session projection (`Sessions.TotalCostUsd`) is projection/cache, not admission authority. |
-| Isolated subagents (`LongRunningOperations`, kind `subagent`) | Shared durable operation ledger; `AbandonSafely`; child run id stored in `RunId`; no child transcript checkpoint | Child receives only its isolated system message, task prompt, and explicit file values. Attachment files must intersect the parent's current-turn materialized allowlist. `DelegatedManaTracker` charges provider-authoritative usage; completion/failure returns only a summary/status to the parent; crash expiry abandons instead of replaying. |
-| Budget alert (`BudgetAlerts`) | `UNIQUE (Threshold, date(AlertedAt))`; `RecordAlertAsync` inserts before dispatch; duplicate insert → `SQLITE_CONSTRAINT`; `HasAlertedTodayAsync` is pre-check but not sole gate | Alert once per threshold per UTC day; `BudgetAlertRepository` uses `BEGIN IMMEDIATE`; decimal bound as decimal parameter (not string). |
-| OpenAI files (`UploadedFiles`) | Grimoire row `UploadedFileRecord`; bytes on disk under `files/{guid}` (never client filename) with owner-only permissions; `UploadedFileMimeValidator` cross-checks extension/MIME; `Content-Type` on `/v1/files/{id}/content` is stored MIME (not hardcoded `octet-stream`); `Content-Disposition: attachment` always (primary XSS defense) | Upload validation: file non-empty + purpose non-empty (`missing_required_parameter`); filename ≤ 255 chars, no embedded null (`invalid_value`); size cap (`ToLarge` / 413); known-extension/type mismatch (`invalid_value`); optional allowlist (`invalid_value`). |
-| Session attachments (`SessionAttachments`, `session_attachment_chunks`, `session_attachment_embeddings`, `session_attachment_index_state`) | Raw SQL plus encrypted bytes under `attachments/`; every eligible version keeps session/logical/file/hash/character/line provenance and `NotEligible`/`Pending`/`Indexed`/`Failed`/`Stale` status. Text is read only through the encrypted blob abstraction. | Bound create/promotion/refresh/fork enqueue bounded indexing; latest versions are retrieved only inside the owning session, while historical chunks remain explicit-only. Overflow/provider failure degrades without failing creation or inference. Purge and reconciliation remove orphans. PDF/Office/OCR remain disabled. |
-| Per-turn context materialization ledger and attachment consultation provenance | The materialization ledger is process-local and logical-turn-only; typed metadata consultations persist in `attachment_memory_consultations` and link to the finalized assistant entry. | Only successfully materialized explicit attachments, attach/refresh results, and accepted attachment RAG publish promotion authority. Campaign summaries receive metadata-only references from the exact entry-time summary window. Stable prompt-cache segments, audit logs, and child context exclude raw attachment content, paths, and hashes. |
-| Blob encryption migration / key rotation | `UploadedFiles` + `SessionAttachments` encryption version/key metadata; `LongRunningOperations` kinds `blob-encryption-migration` and `blob-encryption-key-rotation`; portable DP-wrapped single- or multi-key value | Version-zero reads remain available only during migration; an envelope written before its metadata commit is still readable and reconciled. Each file is length/hash checked before and after verified atomic replacement. Rotation retains old read keys until all files verify on the new active key and no row references the old id. CLI: `arcanum data encryption status|migrate|verify|rotate-key`; output is aggregate-only. |
-| OpenAI batches (`Batches`) | `Batches` table (`Id`, `InputFileId`, `Endpoint`, `Status`, `CreatedAt`, `CompletedAt`, `OutputFileId`, `ErrorFileId`); no request-count columns; `BatchRequestCounter` derives from input/output/error JSONL file line counts; `BatchProcessingService` (Api-hosted, not Infrastructure `BackgroundService`) polls 5s, bounded by `execution.maxConcurrentBatches`; `Parallel.ForEachAsync` bounded by `execution.maxConcurrentRequestsPerBatch`; batch-level cancellation token watched every 2s; file deletion best-effort. | No EF `DbSet`; `IBatchRecoveryService` startup reconcile (`ReconcileStrandedAsync`) CAS-resets `in_progress` (→ `validating` if input file exists; else `failed`); `POST /v1/batches/{id}/reset` resets with 409 when in-flight (best-effort `ConcurrentDictionary.TryAdd` race). |
-| Embedding / RAG (`entry_embeddings`, workspace/attachment/Saga companions, `saga_memory_attachment_provenance`, optional `vec0`) | `WeaveSchemaInitializer` creates canonical raw-SQL tables after migrations; `EmbeddingBlobCodec` is the BLOB authority and `DivinationService` preserves managed cosine fallback. While there are no users, schema changes replace canonical definitions and local/test databases are recreated instead of upgraded. | Saga extraction accepts concise conclusions only and rejects attachment claims absent from the source turn's materialized allowlist. Typed provenance survives source deletion with availability `Unavailable`. Dimension change requires `POST /api/embeddings/reset?confirm=true` plus optional scope, including `sessionAttachment`; managed cosine scans at most 50,000 rows. |
-| Daemon execution history | Process memory (`InMemoryDaemonExecutionRepository`); restart clears; no Grimoire persistence | `DaemonExecutionSummary` / `DaemonExecutionDetail` wire DTOs; `GET /api/daemons/{id}/history` paginated. |
-| Apprentice Chronicle, active Wards, A2A mappings | Process memory (bounded `ChronicleHub` `DropOldest`); no Grimoire persistence; replay from persisted Apprentice/plan/checkpoint/state only | Chronicle subscriber full on restart; `eventsDropped` marker emitted on overflow; `GET /api/apprentices/{id}/chronicle` streams live only; replay emits `apprenticeEscalated` when status `Escalated`; `wizardEvent` nested name not used; pass-through `toolCall`/`toolResult` flattened. |
+## 16. Important limitations
 
-`apply_patch` intentionally crosses filesystem/Grimoire boundary without distributed atomicity: same-directory outputs/backups created sequentially; exact assistant `ToolCall` then system `ToolResult` appended in one SQLite transaction; committed/recovered → irreversible after bounded cleanup; failed → rollback; ambiguous → retains applied patch + relative recovery artifacts + fails turn. A process failure may leave `.arcanum-*` artifacts; cleanup removes only after identity-safe quarantine/re-check/deletion. See `DESIGN.md` §10.2.1 and §5.4.5.
+Keep these boundaries in mind:
 
----
+- provider support is OpenAI-compatible HTTP only;
+- one request contains one user prompt; a session supplies multi-turn history;
+- routing selects one model, with bounded provider fallback only before response commitment;
+- there is no cross-provider load balancing;
+- explicit accepted files are not silently truncated to fit context;
+- `arcanum chat` and frameless `ask` file/image staging is ephemeral rather than a durable
+  `SessionAttachment`;
+- Command Center uses a fixed terminal viewport and hard modal overlays;
+- macOS child containment does not block network access;
+- Linux tool-child containment is unavailable;
+- external MCP subprocesses are trusted operator configuration;
+- Comm Link webhooks are not HMAC-signed;
+- the product is single-operator; `PromptId` acts as the human-input ownership capability;
+- macOS packaging is self-contained rather than Native AOT;
+- SQLCipher tests may skip when the native asset is unavailable.
 
-## 14. Desktop (The Forge / Compendium) — `DESIGN.md` §19
+The complete and more precise limitations list is
+[`Arcanum.DESIGN.md` §16](Arcanum.DESIGN.md#16-known-limitations-and-operator-constraints).
 
-The Forge Inference IDE (`TheForge.Core` / `TheForge.Ux`) is a cross-platform Avalonia desktop application (self-contained .NET 10, not Native AOT). It consumes Arcanum exclusively over HTTP; it never reaches into the Grimoire, runs inference, or duplicates server business logic. The desktop bundles independently and does not share AOT packaging with the CLI/host.
+## 17. Vocabulary
 
-Key surfaces (vocabulary in `DESIGN.md` §19.10): Center workbench (`The Workbench` / Spell editor, Tome session viewer with live reasoning role, `Scriptorium` prompt designer, `Codex` scratchpad, `Proving Grounds` trials); `Atelier` (Campaign/workspace tree, Spell/Prompt/Session management); `War Table` (Apprentice orchestration); `Gatehouse` (Ward approvals); `Arsenal` (MCP lifecycle + `Scrying Pool` diagnostics); `Treasury` (read-only budget snapshot); `Anvil` (connection/health/status bar); `Foundry Floor` (detailed output behind `Whispers` toasts); `Ledger` (local Git status/diff/commit; no push/pull/rebase); `Illumination` (Markdown source/split/preview via `Markdig`, no inline JS); `Hearth` (local terminal; not a PTY); `Echo` (notification toasts); `Echo` details stay in Foundry Floor.
+The fantasy names are functional labels:
 
-The Forge authentication resolves the master API key through: OS credential store (`service=arcanum`, `account=master-api-key`) → migrate-and-strip legacy `apiKey` → trimmed `THEFORGE_ARCANUM_KEY` (process-only, never persisted) → `arcanum key show` (persisted to OS store when possible) → operator paste dialog (persisted or process-only). The key is never retained as active plaintext in `the-forge.json`. `BaseUrl` defaults to `http://localhost:5001`; when the host uses `ListenAny`, the HTTPS URL (`https://localhost:{HttpsPort}`) or remote HTTPS authority is required; clients never disable TLS validation.
+| Term | Meaning |
+|---|---|
+| Grimoire | Encrypted local database |
+| Campaign | Persistent project container |
+| Workspace | Registered server filesystem boundary |
+| Session / Entry | Conversation and ordered transcript item |
+| Spell / Prompt | Reusable instruction and parameterized template |
+| Ward / Sanctum | Tool policy and filesystem boundary |
+| Mana | Token and context budget |
+| Scrying | Image input |
+| Eye of the World | Workspace perception |
+| Weave / Divination / Imprint | Embedding substrate, search, and stored vector |
+| Lexicon / Saga | Entity memory and associative memory |
+| Apprentice | Durable agentic workflow |
+| Unseen Servant | Scheduled background job |
+| Comm Link | Notification integration |
+| Chronicle | Durable workflow event stream |
+| Proving Grounds / Trial / Inquisitor | Ephemeral validation run |
 
-Desktop settings (`~/.config/arcanum/the-forge.json`, `reloadOnChange:true`; old `forge.json` renamed): base URL, theme (`SystemDefault` / `Light` / `Dark`), last Campaign (`CampaignId`), dock layout (`layoutState`), auto-connect (`autoConnect`), active session (`activeSessionId`). A fresh install uses `light` theme; existing `dark` selections remain honored and change live through **View → Theme**. Layout reset through **View → Reset Window Layout**. `ArcanumSseClient` handles server events; `ArcanumConnectionService` polls health every 5s when `AutoConnect` is true.
-
-The macOS application-menu **Settings...** action launches Compendium through the same tested
-launcher used by Forge setup/settings surfaces; `arcanum config open` provides the CLI equivalent
-and an exact-path/`config edit` fallback when Compendium is unavailable.
-
-Wire contracts: `ApiResponse<T>` for `/api` JSON; `IntelligenceEvent` NDJSON (`type` camelCase string discriminator); `ChronicleFrame` flattened (pass-through `toolCall`/`toolResult`/`warded`/`wardResolved` are top-level, not nested `wizardEvent`); `WardDto` uses `string` `WardId`; `BatchRequest` uses `AiProviderKind.OpenAICompatible` only. The Forge never duplicates `Arcanum.DESIGN.md` contracts or `Compendium.README.md` configuration details; it links to them.
-
-Limitations (`DESIGN.md` §19.11): no true PTY Hearth; no provider/pricing/model editor; no full import-conflict wizard; no push/rebase in Ledger; no native math/Mermaid/binary images in Illumination; native web research requires the `WebBrowsing` feature flag, and `browse --render javascript` remains an explicit degraded path until a server renderer is configured; diagnostic MCP remains external-only; Forbidden Arts require Master pipeline (`POST /api/wards`). No Forge documentation is added beyond this section.
-
----
-
-## 15. Testing (`DESIGN.md` §13)
-
-Tests (`tests/RetroDownfall.Arcanum.Tests`, `RetroDownfall.Compendium.Tests`, `RetroDownfall.TheForge.Tests`) cover contracts, configuration, workspace policy, SQLCipher/API-host safety, reasoning coverage, reliable editing-loop matrices, and desktop wire contracts. Key rules: `ARCANUM_TEST_HOME` set before any path access; scratch Grimoire fixtures only; `GrimoireFixture.SqlCipherAvailable` skips SQLCipher tests when native asset absent; `ArcanumWebApplicationFactory` seeds encrypted DB copies under unique temp roots and explicitly stops its captured host before restoring process-global paths; checkpoint tests populate a pooling-disabled, auto-checkpoint-disabled WAL explicitly and keep its idle owner open while exercising truncation; concurrency tests use state-transition signals rather than narrow scheduler delays; parallel xUnit collections (`Grimoire`, `ApiHost`, `ProcessEnvironment`, `OutboundUrlGuardDns`, `WorkspacePathPolicy`); serial `ProcessEnvironment` for global mutation; no developer `~/.config/arcanum` mutation; no real database migration/reinstall inside tests.
-
-Coverage thresholds (`scripts/coverage.sh`, `scripts/coverage_threshold.py`, `tests/RetroDownfall.Arcanum.Tests/coverage.runsettings`): line ≥ 80% and branch ≥ 70% locally and in Ubuntu CI; security-critical branch 100% (`ApiKeyEndpointFilter`, `DataProtectionSecretStore`, `GrimoireKeyDerivation`, `McpSecurityLimits`, `TrustedMcpWorkspaceStore`, `SandboxedFileIo`, `SecureFileReader`, `SanctumGuard`, `OutboundUrlGuard`, `HostProcessToolPolicy`, `IdempotencyClaimStore`, `BudgetReservationService`, `WardGate`). Environment overrides remain available for platform-specific validation without relaxing security-critical enforcement. `Dir.Build.props` `Directory.Build.props` MSBuild exclusions cover source-generated JSON contexts and framework artifacts.
-
-Reliable editing-loop tests (`DESIGN.md` §13.6) cover `WorkspaceSearchToolTests` (line scope/mixed newlines/no cross-line regex/ordinal literal/AOT non-backtracking fallback/deterministic order/UTF-8 binary/symlink policy/cancellation), `ApplyPatchToolTests` (parser/planner/all-files-before-mutation/text/newline/mode/unique relocation/alias/cycle/topology/metadata rejection/dry-run/order/caps/receipt outcomes/rollback/recovery/non-isolated boundary), `MultiFileCommitCoordinatorTests` (all-stage-before-mutation/visibility/concurrent/cancel/reverse rollback/incomplete cleanup/identity-safe retention), `MandatoryGrimoireRepositoryTests` (deterministic receipt/entry IDs/payload readback/assisted-call-before-system-result/recovered-idempotence/ambiguous classification/cancellation), `WorkspaceCheckToolTests` (`msBuild`/`vsTest`/`dotNetFormat` profiles, trusted executable/SDK/global.json/package identity, read-only source/package-cache/SDK, owner-only per-run outputs, seeding caps 128/640/64MiB + 64/8MiB per project, deadline admission/cleanup, timeout/cancel, macOS advertisement/unavailability, open network, malicious-descendant boundary). See full contract matrix in `DESIGN.md` §13.6.
-
-Reasoning coverage (`DESIGN.md` §13.4) covers contracts/config (`ReasoningContractsJsonTests`), provider/engine (`ReasoningChatOptionsAdapterTests`), projection/usage (`ReasoningProjectionEndpointTests`), clients (`ArcanumApiClientNdjsonTests`), desktop (`TomeViewModelTests`, `InferenceTraceViewModelTests`, `ApprenticeStreamFramePolicyTests`), accounting (`CostCalculatorTests`), and persistence (`InferenceAuditLoggerTests`). The Forge client uses the same `IntelligenceEvent` NDJSON contract (preflight `type` before strict `ArcanumJsonContext` / `TheForgeJsonContext` deserialization); malformed JSON/non-string/blank/padded types are skipped with diagnostics retained; direct strict deserialization remains strict. The `Reasoning` event carries typed `{text,output}`; protected `ProtectedData` never surfaces.
-
----
-
-## 16. Known limitations (`DESIGN.md` §16)
-
-- **Inference:** single user prompt per HTTP request; multi-turn via `sessionId`; single-model routing only; no cross-model load balancing; provider-level automatic fallback (next distinct provider with same model after pre-commit connectivity failure); no hidden turn/model-call/tool-call/step/correction cap; `501` for moderation/images/audio; batch (`/v1/batches`) supports chat completions only (`endpoint: "/v1/chat/completions"`), forces tools off per line; `Ollama` uses `/v1` (no `OllamaSharp`); `contextWindowLimit` feeds compression threshold and CLI mana bar (operator must match Ollama's `OLLAMA_NUM_CTX` to Arcanum config); exact `o200k_base` tokenizer profiles only for verified families; unknown providers use estimated accounting + safety margin; no user-model cache profile settings in public config.
-- **Child confinement:** macOS Seatbelt filesystem-only jail (deprecated `sandbox-exec`); Linux inactive fail-closed (`__sandbox-exec` helper in-tree, not invoked); Windows Job Objects (`NoFilesystemJail` / Degraded); no platform child-process network isolation; `workspace_check` unavailable Linux/Windows; `execute_command` open network always; malicious detached descendants best-effort only (not guaranteed).
-- **Security / identity:** loopback default; key rotation safe for new Grimoire (independent encryption secret) but destructive for legacy DBs encrypted by master API key; `arcanum key show` CLI-only (no HTTP); no HMAC-signed webhooks (`CommLink` generic JSON); `sandbox-exec` deprecated; no OS-level floating tool windows.
-- **Desktop / CLI UX:** Command Center fixed viewport (hard-modals; no floating); `chat` `@image` ephemeral (not persisted as `SessionAttachment`); `chat` `@path` file staging inline; multi-cell glyph count naive (line swap may over/under-erase); `workspace_check` executes repository-authored arbitrary code; `ChatCompletionUsage` snake_case preserved inside native envelope; `IntelligenceEvent` `reasoning` never protected; `apprentice chronicle` returns `130` on Ctrl+C; `trial run` exits `1` on Trial failure. Direct commands accept recursive `--json`/`--plain`/`--yes`/`--no-context`; JSON is one stdout document, redirected confirmations fail closed without `--yes`, and public exit codes are limited to `0/1/2/3/130`.
-- **Distribution:** macOS folder-based self-contained (not Native AOT); unsigned by default; Windows SmartScreen warning for unsigned; macOS CI requires six Apple secrets (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD`); manual `Release macOS arm64` workflow with version input `MAJOR.MINOR.PATCH` + prerelease suffix (rejected build metadata); `CFBundleShortVersionString` numeric; zip not stapled; DMG stapled; rerun replaces assets (`--clobber`).
-- **Testing:** SQLCipher tests skip without native asset (`e_sqlcipher` unavailable); `GrimoireFixture` scratch/template copies only; process-environment mutations serialized via `ProcessEnvironment` collection; `ApiHost` test factory disables PID file; `DOCTOR_REPORT` programmatic (`--json`) exits `0` healthy / `1` unhealthy with structured `DoctorReport`; coverage exclusions include CLI interactive, Command Center, source-gen JSON, framework artifacts, and migration scripts.
-- **Documentation contract:** exactly five files; `DEBUGGING.Human.md` is the verified breakpoint/recipe file; `DESIGN.md` §18 owns maintenance; no `The Forge` mention in docs (per instruction); all docs kept current with same change set.
-
----
-
-## 17. Glossary (`DESIGN.md` §17)
-
-Key thematic terms (`Campaign`, `Spell`, `Prompt`, `Ward`, `Sanctum`, `Forbidden Arts`, `Apprentice`, `The Conclave`, `Chronicle`, `Heraldry`, `Sending`, `Archmage Client`, `Grimoire`, `Unseen Servant`, `Eye of the World`, `Lore`, `Lexicon`, `Comm Link`, `Master`, `Codex`, `Session`/`Entry`, `Proving Grounds`/`Trial`/`Inquisitor`, `Weave`/`Divination`/`Imprint`, `Saga`, `Arcane Resonance`, `Spell Routing`); infrastructure terms (`RDG`, `NDJSON`, `SSE`); and security terms (`SSRF`, `Seatbelt`, `Job Objects`). See full table in `DESIGN.md` §17.
+The full vocabulary and cross-references are in
+[`Arcanum.DESIGN.md` §17](Arcanum.DESIGN.md#17-glossary).

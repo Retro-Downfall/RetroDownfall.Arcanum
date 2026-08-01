@@ -2,7 +2,8 @@
 
 > **Agent orientation document.** This README gives an AI coding agent or operator the shortest
 > useful context for Arcanum. **[`Arcanum.DESIGN.md`](Arcanum.DESIGN.md)** is authoritative for
-> architecture, APIs, persistence, runtime behavior, packaging, and testing.
+> architecture, persistence, runtime behavior, packaging, and testing. Exact HTTP contracts belong
+> to [`Arcanum.API.md`](Arcanum.API.md).
 > **[`Compendium.README.md`](Compendium.README.md#complete-configuration-reference)** is the only
 > complete configuration reference, and **[`Arcanum.Design.Human.md`](Arcanum.Design.Human.md)** is
 > the human-readable navigation companion.
@@ -49,7 +50,7 @@ See [DESIGN.md §9](Arcanum.DESIGN.md#9-native-aot-and-trimming).
 
 ### 3. OpenAI Chat Completions compatibility subset
 
-Arcanum exposes a **Chat Completions compatibility subset** so common OpenAI clients work for chat. See [DESIGN.md §8.8](Arcanum.DESIGN.md#88-openai-v1-chat-completions-compatibility-subset). Moderations/images/audio remain `501 not_supported`.
+Arcanum exposes a **Chat Completions compatibility subset** so common OpenAI clients work for chat. See [API §8.8](Arcanum.API.md#88-openai-v1-chat-completions-compatibility-subset). Moderations/images/audio remain `501 not_supported`.
 
 - **`POST /v1/chat/completions`** (JSON or SSE) and **`GET /v1/models`** (auto-discovery across all configured providers).
 - Request parsing including multimodal `content` parts, `tool`/`assistant` tool-call replay, `stream_options.include_usage`, `response_format`, etc.
@@ -65,7 +66,7 @@ Inference flows through one hub behind a single `IChatClient` abstraction. See [
 - **`ProviderResolver`** maps model → provider from `Arcanum:Providers` (no hard-coded model names).
 - Agentic layers: MCP tool loops, semantic spell routing, read-time context compression, Wards, Sanctum.
 - **Session attachment retrieval:** when `Arcanum:Features:AttachmentRetrieval` is enabled, supported UTF-8 text/Markdown/source/JSON/YAML/XML/CSV/log attachments and bounded visible HTML are indexed per version and retrieved only inside their owning session. One per-turn materialization ledger deduplicates current attachments, references, pins, model attach/refresh calls, attachment/workspace RAG, and Saga; explicit whole files suppress equivalent semantic chunks, and refreshes replace stale versions before continuation. Attachment RAG is bounded by chunk, attachment, UTF-8 byte, estimated-token, and similarity limits. Latest Bound versions are preferred; historical provenance is retained; PDFs, Office files, binaries, and images remain unindexed. Queue/provider failures never fail the turn.
-- **Structured output / pricing / budgets / capability-driven provider prompt caching / guardrails** — see [DESIGN.md §22](Arcanum.DESIGN.md#22-structured-output-cost-tracking-and-prompt-caching) and [§8.27](Arcanum.DESIGN.md#827-content-guardrails-pii--toxicity--topics). Arcanum never caches or replays inference responses.
+- **Structured output / pricing / budgets / capability-driven provider prompt caching / guardrails** — see [DESIGN.md §22](Arcanum.DESIGN.md#22-structured-output-cost-tracking-and-prompt-caching) and [API §8.27](Arcanum.API.md#827-content-guardrails-pii--toxicity--topics). Arcanum never caches or replays inference responses.
 
 ### The Proving Grounds
 
@@ -91,7 +92,7 @@ Single-user, loopback-by-default, secret-minimizing. See [DESIGN.md §11](Arcanu
 ### 7. C# house style
 
 - **One blank line after each line of C# code** (visual breathing room) — applied throughout the codebase. Within reason. Curly braces do not require blank lines around them. Neither do control statements like if and loops, etc. Also, long-running Linq statements do not require blank lines either.
-- File-scoped namespaces; positional records for DTOs/contracts; **no `[JsonPropertyName]`** on `/api` wire types (casing comes from `[JsonSourceGenerationOptions]`); OpenAI `/v1` and MCP JSON-RPC types are explicit exceptions (§8.2); primary constructors for DI; `IDisposable` where a service owns a `SemaphoreSlim`/`ServiceProvider`. See [DESIGN.md §12](Arcanum.DESIGN.md#12-c-language-and-coding-conventions).
+- File-scoped namespaces; positional records for DTOs/contracts; **no `[JsonPropertyName]`** on `/api` wire types (casing comes from `[JsonSourceGenerationOptions]`); OpenAI `/v1` and MCP JSON-RPC types are explicit exceptions (API §8.2); primary constructors for DI; `IDisposable` where a service owns a `SemaphoreSlim`/`ServiceProvider`. See [DESIGN.md §12](Arcanum.DESIGN.md#12-c-language-and-coding-conventions).
 
 > **Note on org-wide rules:** Corp-wide standards scoped to `Corp.Solution.*` solutions (Dapper + SQL Server stored procedures, the `Corp.Lib.*` NuGet stack, Refit "Service Libraries") **do not apply to Arcanum** — it is local-first over its own EF Core + SQLCipher Grimoire and retains AOT-safe contracts across Native AOT Windows/Linux and self-contained macOS packaging. The always-on house rules (blank lines, strict CSP, docs-in-same-change-set) still hold.
 
@@ -101,10 +102,10 @@ Arcanum uses Dungeons & Dragons and/or fantasy metaphors for domain concepts. Ne
 
 ### 9. Docs travel with code
 
-The repository maintains exactly five docs (`Arcanum.DESIGN.md`, `Arcanum.README.md`, `Arcanum.Design.Human.md`, `Compendium.README.md`, `Arcanum.DEBUGGING.Human.md`). Architecture, APIs, persistence, runtime behavior,
-testing, and packaging update `Arcanum.DESIGN.md`; the complete public configuration contract updates
+The repository maintains six canonical docs (`Arcanum.DESIGN.md`, `Arcanum.API.md`, `Arcanum.README.md`, `Arcanum.Design.Human.md`, `Compendium.README.md`, `Arcanum.DEBUGGING.Human.md`) plus the focused `Arcanum.CHAT-LOOP.md` companion. Architecture, persistence, runtime behavior,
+testing, and packaging update `Arcanum.DESIGN.md`; API contracts update `Arcanum.API.md`; the complete public configuration contract updates
 `Compendium.README.md`; agent/operator orientation updates this file; human navigation updates
-`Arcanum.Design.Human.md`; debugging guides update `Arcanum.DEBUGGING.Human.md`. Keep the owning documents current in the same change set. See
+`Arcanum.Design.Human.md`; debugging guides update `Arcanum.DEBUGGING.Human.md`; shared model/tool-loop and attachment continuation changes also update `Arcanum.CHAT-LOOP.md`. Keep the owning documents current in the same change set. See
 [DESIGN.md §18](Arcanum.DESIGN.md#18-document-maintenance).
 
 ---
@@ -115,11 +116,12 @@ testing, and packaging update `Arcanum.DESIGN.md`; the complete public configura
 `serve` (long-running Kestrel host) vs. short-lived commands. See
 [DESIGN.md §5](Arcanum.DESIGN.md#5-hybrid-hosting-model).
 
-**Dependency chain:** `Cli → Api → Infrastructure → Core` (`Cli` also references `Core`/`Infrastructure` directly for lightweight DI). Strict project boundaries are a deliberate goal.
+**Primary dependency chain:** `Cli → Api → Infrastructure → Core` (`Cli` also references `Core`/`Infrastructure` directly for lightweight DI). `Infrastructure` also references the isolated `Secrets` project. Strict project boundaries are a deliberate goal.
 
 | Project | Role | Owns | AOT |
 |---------|------|------|-----|
 | **`Core`** | Domain primitives, contracts, configuration | `Result`/`Result<T>`, `Error`, `ApiResponse<T>`, `ArcanumSettings`, `IArcanumIntelligenceProvider`, `PingRequest`, `IGrimoireRepository`, `IEyeOfTheWorld`, events, source-gen contexts (`GrimoireJsonContext`, `ConfigurationJsonContext`, `TheForgeJsonContext`) | `IsAotCompatible` |
+| **`Secrets`** | Native credential boundary | macOS Keychain, Windows Credential Manager, Linux Secret Service, fixed Arcanum credential identity | `IsAotCompatible` + `IsTrimmable` |
 | **`Infrastructure`** | OS-adjacent services | Serilog, Data Protection, encrypted Grimoire (EF Core 10 + SQLCipher, compiled model), authenticated encrypted blob storage + OS-backed file key, workspace scanning, reliable `search_workspace` / `apply_patch` / `workspace_check` engines, Eye of the World, the **MCP client layer** (subprocess + in-process transports, `ArcanumInternalToolServer`), Comm Link | `IsTrimmable` + `PublishAot` (analysis signal) |
 | **`Api`** | HTTP surface composition (class library, **not** executable) | `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `TurnExecutionCoordinator`/`TurnEngine`, `ToolExecutionPipeline`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, `/v1` OpenAI endpoints | `IsAotCompatible` + `EnableRequestDelegateGenerator` |
 | **`Cli`** | Shipping CLI/host entry point | Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`) | `PublishAot` on Windows/Linux; self-contained folder on macOS |
@@ -138,6 +140,7 @@ testing, and packaging update `Arcanum.DESIGN.md`; the complete public configura
 src/
   RetroDownfall.Arcanum.Core/            # domain, contracts, config, source-gen JSON contexts
     ProvingGrounds/                      # Trial / Inquisitor models and IProvingGroundsArbiter
+  RetroDownfall.Arcanum.Secrets/         # native OS credential-store implementations
   RetroDownfall.Arcanum.Infrastructure/  # Grimoire, MCP, perception, Comm Link, Serilog
     Generated/                           # EF Core compiled model (commit regenerations)
     Data/Migrations/                     # EF Core migrations
@@ -153,10 +156,13 @@ tests/
   RetroDownfall.Arcanum.Tests/           # xUnit tests (MCP, security, config, workspace policy, SQLCipher Grimoire)
   RetroDownfall.Compendium.Tests/        # Compendium round-trip smoke tests (assembly: RetroDownfall.Compendium.Ux.Tests)
   RetroDownfall.TheForge.Tests/          # Forge client/UI tests
-docs/                                    # the complete four-document contract
+docs/                                    # canonical documentation and focused companions
   Arcanum.README.md                      # this agent orientation document
   Arcanum.DESIGN.md                      # authoritative technical reference
+  Arcanum.API.md                         # native and OpenAI-compatible API reference
   Arcanum.Design.Human.md                # non-authoritative human reading companion
+  Arcanum.DEBUGGING.Human.md             # verified breakpoint map and debugging recipes
+  Arcanum.CHAT-LOOP.md                    # focused model/tool-loop and attachment ordering guide
   Compendium.README.md                   # sole complete arcanum.json reference
 scripts/coverage.sh                      # run tests, generate Cobertura + HTML coverage; pass --threshold to enforce gates
 scripts/coverage_threshold.py            # tiered coverage threshold enforcement
@@ -175,13 +181,13 @@ Directory.Build.props                    # shared MSBuild props + CVE pin (Micro
 
 These are the recurring shapes. Matching them is what makes a change "fit."
 
-- **Wire envelope.** JSON under `/api` returns `ApiResponse<T>` (`Data`, `IsSuccess`, `Error`, `TraceId`). Map from domain with `ApiResponse<T>.FromResult`. Exceptions: streaming (NDJSON), SSE event buses, and OpenAI `/v1` (raw OpenAI shape). See [DESIGN.md §8.1](Arcanum.DESIGN.md#81-wire-contract-the-apiresponset-envelope).
+- **Wire envelope.** JSON under `/api` returns `ApiResponse<T>` (`Data`, `IsSuccess`, `Error`, `TraceId`). Map from domain with `ApiResponse<T>.FromResult`. Exceptions: streaming (NDJSON), SSE event buses, and OpenAI `/v1` (raw OpenAI shape). See [API §8.1](Arcanum.API.md#81-wire-contract-the-apiresponset-envelope).
 - **Result flow.** Domain ops return `Result` / `Result<T>` and rely on implicit conversions; the endpoint is the single place that turns a `Result` into an envelope + status code.
 - **New endpoint checklist:** add to `MapArcanumEndpoints` → return `ApiResponse<T>` (or documented streaming shape) → register every new payload type on `ArcanumJsonContext` → `.WithName(...)` for OpenAPI → use explicit `JsonTypeInfo` on failable `Results.Json` → update DESIGN.md §4.3 + this README's API map.
 - **New CLI verb:** add the handler under `Cli/Commands` and wire it in `CliCommandTree`; use `IConsoleDispatcher` for stdout payloads/stderr diagnostics, `IConfirmationPrompt` for destructive approval, an explicit source-generated `JsonTypeInfo` for structured output, and a defined `CliExitCode`. Prefer `AddArcanumEyeOfTheWorld()` over full infrastructure for lightweight verbs.
 - **New inference provider:** add an `AiProviderKind` and extend `IChatClientFactory`; keep the `WizardIntelligenceProvider` contract intact.
 - **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema via `McpJsonSerializerContext`; honor unconditional `WorkspacePathPolicy` containment and `ToolOutputCapBytes`; decide whether it belongs in `ToolRiskClassifier.IntrinsicWardToolNames`. Do not treat campaign Sanctum as the primary filesystem boundary.
-- **Treat all wire types as versioned contracts.** Casing is fixed at the context level; don't add `[JsonPropertyName]` except on OpenAI `/v1` and MCP JSON-RPC types (see [DESIGN.md §8.2](Arcanum.DESIGN.md#82-arcanumjsoncontext--source-generated-public)).
+- **Treat all wire types as versioned contracts.** Casing is fixed at the context level; don't add `[JsonPropertyName]` except on OpenAI `/v1` and MCP JSON-RPC types (see [API §8.2](Arcanum.API.md#82-arcanumjsoncontext--source-generated-public)).
 - **Register long-running work.** Use the scoped `ILongRunningOperationCoordinator`; add the kind
   and exactly one recovery policy to `LongRunningOperationPolicyCatalog`, implement an idempotent
   recovery handler, store only minimum encrypted checkpoint state, and expose only a bounded safe
@@ -237,11 +243,11 @@ Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms with n
 
 ## API surface map
 
-Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the API key** (`X-Arcanum-Key` or `Authorization: Bearer`). Grouped overview — exhaustive inventory: [DESIGN §4.3](Arcanum.DESIGN.md#43-retrodownfallarcanumapi-class-library-not-executable).
+Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the API key** (`X-Arcanum-Key` or `Authorization: Bearer`). This is a grouped overview; the exhaustive inventory is in [Arcanum.API.md §1](Arcanum.API.md#1-complete-api-surface).
 
 | Area | Routes | Contract / purpose |
 |------|--------|-------------------|
-| Metrics | `GET /metrics` | Prometheus text; API key on by default (forced on ListenAny). [§8.22](Arcanum.DESIGN.md#822-metrics-endpoint-get-metrics) |
+| Metrics | `GET /metrics` | Prometheus text; API key on by default (forced on ListenAny). [API §8.22](Arcanum.API.md#822-metrics-endpoint-get-metrics) |
 | Health & meta | `/api/health`, `/meta`, `/grimoire/stats`, `/budget` | Readiness + spend snapshot; 503 mainly when Grimoire Unhealthy |
 | Durable operations | `/api/operations*` | Safe list/show plus CAS cancel/retry and bounded manual reconciliation; checkpoint bytes/references never leave SQLCipher |
 | Config | `/api/config`, `/config/validate` | GET redacts secrets; PUT preserves `"***"` placeholders |
@@ -262,7 +268,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Trials / Logs / Audit | `/proving-grounds/trials/run`, `/logs`, `/audit`, `/guardrails/audit` | Ephemeral trials; ring buffer; JSONL audits |
 | Tools / Docs | `POST /api/tools/invoke`, `/openapi/v1.json`, `/scalar` | Built-in invoke; OpenAPI; Scalar opt-in |
 
-**Wire shapes:** `ApiResponse<T>` for `/api` JSON; NDJSON for streams; SSE for events/session/Chronicle; OpenAI shapes for `/v1`. Native NDJSON includes additive `context` frames with the pre-call estimate and optional post-call provider variance; OpenAI SSE intentionally filters those Arcanum diagnostics. Native clients preflight `type`: unknown nonblank future strings are silently skipped, while malformed JSON or missing/non-string/blank/whitespace-padded discriminators retain diagnostics and the stream continues. The Forge caps buffered JSON/error bodies at 64 MiB, protocol lines at 1 MiB, aggregate SSE events at 8 MiB, and resumes after an over-cap frame; JSONL previews enforce their byte ceiling even without newlines, downloads replace the destination only after the staged transfer completes, and The Hearth truncates individual local-terminal lines after 64 Ki characters while continuing the stream. Direct source-generated enum deserialization stays strict. Compression + Idempotency-Key: [§8.25](Arcanum.DESIGN.md#825-http-response-compression) / [§11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
+**Wire shapes:** `ApiResponse<T>` for `/api` JSON; NDJSON for streams; SSE for events/session/Chronicle; OpenAI shapes for `/v1`. Native NDJSON includes additive `context` frames with the pre-call estimate and optional post-call provider variance; OpenAI SSE intentionally filters those Arcanum diagnostics. Native clients preflight `type`: unknown nonblank future strings are silently skipped, while malformed JSON or missing/non-string/blank/whitespace-padded discriminators retain diagnostics and the stream continues. The Forge caps buffered JSON/error bodies at 64 MiB, protocol lines at 1 MiB, aggregate SSE events at 8 MiB, and resumes after an over-cap frame; JSONL previews enforce their byte ceiling even without newlines, downloads replace the destination only after the staged transfer completes, and The Hearth truncates individual local-terminal lines after 64 Ki characters while continuing the stream. Direct source-generated enum deserialization stays strict. Compression + Idempotency-Key: [API §8.25](Arcanum.API.md#825-http-response-compression) / [DESIGN §11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
 
 
 ## Inference engine details
@@ -508,10 +514,11 @@ of at most 64 KiB; linked, oversized, or undecryptable ciphertext fails closed a
 The Grimoire `.kdf` sidecar follows the same identity rule with a 4 KiB ceiling and owner-only,
 durable atomic publication.
 
-**A reinstall is required now.** `Entries` gained a `Sequence` column and a unique
-`(SessionId, Sequence)` index, which give a session's transcript an explicit append order instead of
-inferring one from timestamps that a prompt and its answer share. Existing rows never recorded that
-order, so there is nothing to backfill and the database is recreated instead
+The current canonical schema requires recreation of any database whose `Entries` table lacks the
+`Sequence` column and unique `(SessionId, Sequence)` index. Those fields give a session's transcript
+an explicit append order instead of inferring one from timestamps that a prompt and its answer
+share. Existing rows never recorded that order, so there is nothing to backfill and the database is
+recreated instead
 ([DESIGN §5.4.1](Arcanum.DESIGN.md#541-grimoire-data-model), [§5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)).
 
 macOS/Linux (Bash):
@@ -909,7 +916,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | Command | Purpose |
 |---------|---------|
 | *(bare)* | Open Command Center (interactive TTY). Non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage, exit 0. |
-| `serve` | Run the host (default loopback :5001). ListenAny is HTTPS-only + first-run ack. Auto-launched suppresses key print. Details: [DESIGN §5](Arcanum.DESIGN.md#5-hybrid-hosting-model).
+| `serve [quit]` | Run the host (default loopback :5001), or ask the authenticated running host to shut down with `serve quit`. ListenAny is HTTPS-only + first-run ack. Auto-launched suppresses key print. Details: [DESIGN §5](Arcanum.DESIGN.md#5-hybrid-hosting-model). |
 | `ask <prompt>` | Single-turn inference (NDJSON stream). Flags: `-n` / `--new` (new session), `-m <model>`, `-c` / `--campaign <id-or-name>`, `--workspace <id-or-path>`, `--session <id>`, `--unattended`, `--image <path>` (repeatable — attach a Scrying focus; requires a vision-capable model), plus inference flags (below). `--new` and `--session` are mutually exclusive. Use `--` to pass a prompt that starts with a flag. Ctrl+C cancels the in-flight turn (exit 130). Interactive sessions print effective context and auto-start `serve` when needed. |
 | `chat` | Interactive multi-turn REPL (Figlet banner, effective-context header, Markdig rendering, mana bar, live multi-panel layout on wide color terminals). Flags: `-n` / `--new`, `-m`, `-c` / `--campaign <id-or-name>`, `--workspace <id-or-path>`, `--session <id-or-title>`, `--no-tools`, `--unattended`, plus inference flags. `--session` accepts a GUID, exact title, or unique title prefix through the shared resolver. `--new` and `--session` are mutually exclusive. **Slash commands:** `/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`. Stage text files inline with `@path`; image extensions stage a Scrying focus. Auto-starts `serve` when needed. |
 | `use campaign\|workspace\|model\|session <value>` | Validate and save an active local default without modifying server rows. |

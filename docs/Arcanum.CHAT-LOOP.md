@@ -3,7 +3,7 @@
 This document is the focused companion to `Arcanum.DESIGN.md` §10.7. It describes the one shared
 buffered/streaming model-tool loop and the ordering contract for attachment content.
 
-## 6. One logical turn, multiple provider requests
+## 1. One logical turn, multiple provider requests
 
 A tool response cannot change the provider request that produced the tool call. “Refresh in the
 current message” therefore means refresh during the same logical Arcanum turn and include the
@@ -26,7 +26,7 @@ sequenceDiagram
     Loop->>Model: next admitted request in same logical turn
 ```
 
-## 7. Refresh security and persistence
+## 2. Refresh security and persistence
 
 `refresh_session_file` accepts exactly one attachment selector and never a filesystem path. The host
 supplies session, turn-visible IDs, model, campaign, and assistant Entry. Logical keys match
@@ -50,7 +50,7 @@ work only: it records/delays indexing and never fails the logical turn. Default 
 turns uses only the newest Bound version for each logical key in the same session; older indexed
 versions remain available only through explicit historical search.
 
-## 5.1 Unified per-turn materialization ledger
+## 3. Unified per-turn materialization ledger
 
 The logical turn owns exactly one in-memory `ContextMaterializationLedger`; buffered and streaming
 paths use the same instance and the same model/tool loop. Its stable key combines source kind,
@@ -71,7 +71,7 @@ Initial DATA ordering is `Attached Files for this Turn` → `Retrieved Session A
 filename, logical key, version, opaque attachment id, character/line range, hash, an explicit
 untrusted-DATA warning, and an adaptive fence.
 
-## 5.2 Attachment memory promotion gate
+## 4. Attachment memory promotion gate
 
 Materialization is the only authority for attachment-derived durable memory. A successful explicit
 attachment, attach/refresh tool result, or accepted attachment-RAG excerpt publishes typed
@@ -90,7 +90,7 @@ materialized allowlist, and only its explicitly supplied value crosses the child
 the source keeps the historical provenance record but changes its source availability to
 `Unavailable`; no durable memory silently loses its origin.
 
-## 8. Transcript and injection order
+## 5. Transcript and injection order
 
 For a model response containing several calls, Arcanum appends every assistant-call/tool-result pair
 first. Successful `attach_session_file` and `refresh_session_file` materializations accumulate in a
@@ -124,7 +124,7 @@ admission drops Saga, workspace RAG, then attachment RAG before complete tool ex
 accepted files are never dropped and overflow returns `Hub.ContextBudgetExceeded`. A successful refresh emits native `attachmentRefreshed` observability after
 its `toolResult`; OpenAI projections ignore that native-only event.
 
-## 12. Command Center context UI rendering
+## 6. Command Center context UI rendering
 
 Command Center treats attachment state as a backend projection, not a client inference. The
 `/attachments` list renders `[Snapshot]` for snapshot-only rows, `[Live]` only for a tracked row whose

@@ -1,7 +1,8 @@
 # Arcanum — Developer Debugging Guide
 
 This is the verified breakpoint and debugging recipe guide for developers working on the
-RetroDownfall.Arcanum repository. It complements `Arcanum.DESIGN.md` (authoritative contracts) and
+RetroDownfall.Arcanum repository. It complements `Arcanum.DESIGN.md` (architecture and design),
+`Arcanum.API.md` (HTTP contracts), and
 `Arcanum.Design.Human.md` (conceptual navigation) rather than duplicating them. Every class and
 method referenced below exists in the current source; nothing here is speculative.
 
@@ -9,7 +10,8 @@ method referenced below exists in the current source; nothing here is speculativ
 
 Use this document when you need to understand how to debug a failing endpoint, trace an inference
 turn, verify workspace tool containment, inspect persistence behavior, or confirm a security
-boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, read
+boundary. For architecture decisions, read `DESIGN.md`; for route and wire contracts, read
+`Arcanum.API.md`. For a quick overview, read
 `Arcanum.Design.Human.md`. For the complete `arcanum.json` reference, see `Compendium.README.md`.
 
 ## Running Arcanum under a debugger
@@ -188,8 +190,10 @@ boundary. For architecture decisions, read `DESIGN.md`. For a quick overview, re
 
 ## Related documents
 
-- Authoritative contracts: [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md)
+- Architecture and design source of truth: [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md)
+- API source of truth: [`Arcanum.API.md`](Arcanum.API.md)
 - Human navigation guide: [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md)
 - Agent/operator primer: [`Arcanum.README.md`](Arcanum.README.md)
 - Complete configuration reference: [`Compendium.README.md`](Compendium.README.md)
-- Source of truth for `DEBUGGING.Human.md`: the verified breakpoints above are drawn directly from the code; any discrepancy should be corrected in this file and then verified against `DESIGN.md` §13–§18.
+- The breakpoints above are verified against the code. Correct any discrepancy here and update the
+  owning architecture, API, or configuration document when its contract also changed.
