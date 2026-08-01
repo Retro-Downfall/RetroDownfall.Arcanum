@@ -1246,6 +1246,28 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             cancellationToken).ConfigureAwait(false);
     }
 
+    public Task<Result<AttachmentRefreshEvent>> RefreshSessionAttachmentAsync(
+
+        Guid sessionId,
+
+        Guid attachmentId,
+
+        CancellationToken cancellationToken = default) =>
+
+        SendRequestAsync(
+
+            HttpMethod.Post,
+
+            $"api/sessions/{sessionId:D}/attachments/{attachmentId:D}/refresh",
+
+            null,
+
+            null,
+
+            ArcanumJsonContext.Default.ApiResponseAttachmentRefreshEvent,
+
+            cancellationToken);
+
     public Task<Result<SessionContextPinDto[]>> GetSessionContextPinsAsync(
         Guid sessionId,
         CancellationToken cancellationToken = default) =>

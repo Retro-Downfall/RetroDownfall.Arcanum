@@ -294,6 +294,11 @@ Summaries only — full contracts live in DESIGN.
   round for the next request in the same logical turn. It shares attachment byte/version/reference
   budgets, inject-once behavior, MIME/Scrying/vision checks, and Sanctum enforcement. Native NDJSON
   exposes sanitized `attachmentRefreshed` observability; OpenAI projections ignore it.
+  Command Center `/attachments` renders `[Snapshot]`, `[Live]`, or `[Stale]` with the loaded version
+  hash and last backend-observed disk hash/time. Its filesystem watcher only triggers an asynchronous
+  metadata re-read; the host revalidates provenance before the UI changes state. Use
+  `/attachments refresh <logicalName>` to run the same secure refresh core manually; `[Live]` is
+  printed only after the backend confirms the persisted/reused version.
   Semantic retrieval reads only through the encrypted attachment store, exposes bounded
   `indexingStatus` metadata, and fences retrieved excerpts as untrusted DATA.
   See [the chat-loop ordering guide](Arcanum.CHAT-LOOP.md).
@@ -846,6 +851,11 @@ arcanum operation list --plain
 ```
 
 **Command Center:** interactive Terminal.Gui workbench (sessions sidebar, transcript, composer, HITL/Ward hard modals). Bare interactive `arcanum` opens it; non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage. Slash allowlist and attach flows: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
+
+Attachment status is authoritative and versioned: `/attachments` shows `[Snapshot]`, `[Live]`, or
+`[Stale]`, the snapshot hash loaded into context, and tracked-source observations. External workspace
+edits are debounced through `FileSystemWatcher` and rechecked by the host; use
+`/attachments refresh <name>` to securely load the current version after backend confirmation.
 
 Session branching is first-class in Command Center. `/fork` copies the complete active session;
 select a transcript entry and use `/fork at` for an inclusive cutoff branch. Select an assistant

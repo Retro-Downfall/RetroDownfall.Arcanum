@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -202,6 +203,142 @@ public sealed class SessionEndpointTests
         Assert.True(body.IsSuccess);
         Assert.NotNull(body.Data);
         Assert.Empty(body.Data);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Tracked_attachment_get_detects_drift_and_refresh_endpoint_confirms_live_version()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionWithEntriesAsync(0);
+
+        string sourcePath = Path.Combine(
+
+            _factory.TempHome,
+
+            "issue16-" + Guid.NewGuid().ToString("N") + ".txt");
+
+        try
+
+        {
+
+            byte[] before = Encoding.UTF8.GetBytes("before");
+
+            await File.WriteAllBytesAsync(sourcePath, before);
+
+            SessionAttachmentRecord original;
+
+            using (IServiceScope scope = _factory.Services.CreateScope())
+
+            {
+
+                ISessionAttachmentStore store = scope.ServiceProvider
+
+                    .GetRequiredService<ISessionAttachmentStore>();
+
+                original = await store.PersistNewFromSourceAsync(
+
+                    sessionId,
+
+                    pendingTurnId: null,
+
+                    entryId: null,
+
+                    logicalNameHint: "notes",
+
+                    originalFileName: "notes.txt",
+
+                    before,
+
+                    mimeType: "text/plain",
+
+                    SessionAttachmentKind.Text,
+
+                    new AttachmentSourceClaim(sourcePath));
+
+            }
+
+            await File.WriteAllBytesAsync(sourcePath, Encoding.UTF8.GetBytes("after"));
+
+            HttpClient client = _factory.CreateAuthenticatedClient();
+
+            ApiResponse<SessionAttachmentDto[]>? stale = await client
+
+                .GetFromJsonAsync(
+
+                    $"/api/sessions/{sessionId:D}/attachments",
+
+                    ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray);
+
+            SessionAttachmentDto staleRow = Assert.Single(stale!.Data!);
+
+            Assert.Equal(AttachmentSourceStatus.PriorVersion, staleRow.SourceStatus);
+
+            Assert.False(staleRow.IsRefreshable);
+
+            HttpResponseMessage response = await client.PostAsync(
+
+                $"/api/sessions/{sessionId:D}/attachments/{original.Id:D}/refresh",
+
+                content: null);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            ApiResponse<AttachmentRefreshEvent>? refreshed = await response.Content
+
+                .ReadFromJsonAsync(
+
+                    ArcanumJsonContext.Default.ApiResponseAttachmentRefreshEvent);
+
+            Assert.NotNull(refreshed?.Data);
+
+            Assert.True(refreshed.IsSuccess);
+
+            Assert.True(refreshed.Data.NewVersionCreated);
+
+            Assert.Equal(2, refreshed.Data.Version);
+
+            Assert.Equal("notes", refreshed.Data.LogicalKey);
+
+            ApiResponse<SessionAttachmentDto[]>? live = await client
+
+                .GetFromJsonAsync(
+
+                    $"/api/sessions/{sessionId:D}/attachments",
+
+                    ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray);
+
+            SessionAttachmentDto latest = live!.Data!
+
+                .OrderByDescending(static row => row.Version)
+
+                .First();
+
+            Assert.Equal(AttachmentSourceStatus.Refreshable, latest.SourceStatus);
+
+            Assert.True(latest.IsRefreshable);
+
+            Assert.Equal(refreshed.Data.ContentSha256, latest.ContentSha256);
+
+        }
+
+        finally
+
+        {
+
+            if (File.Exists(sourcePath))
+
+            {
+
+                File.Delete(sourcePath);
+
+            }
+
+        }
 
     }
 

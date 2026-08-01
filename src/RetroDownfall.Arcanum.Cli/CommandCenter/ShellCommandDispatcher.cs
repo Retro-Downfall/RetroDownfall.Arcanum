@@ -79,6 +79,18 @@ internal sealed class ShellCommandDispatcher(
                         cancellationToken)
                     .ConfigureAwait(false);
 
+            case ShellCommandKind.AttachmentsRefresh:
+
+                return await RefreshAttachmentAsync(
+
+                        state,
+
+                        parsed.Argument,
+
+                        cancellationToken)
+
+                    .ConfigureAwait(false);
+
             case ShellCommandKind.ContextList:
                 return await ListContextPinsAsync(state, cancellationToken).ConfigureAwait(false);
 
@@ -330,7 +342,11 @@ internal sealed class ShellCommandDispatcher(
             return ShellDispatchResult.Continue;
         }
 
-        state.Log.Append(SessionLogEntryKind.Command, FormatAttachmentsList(result.Value ?? []));
+        SessionAttachmentDto[] current = result.Value ?? [];
+
+        _ = CommandCenterAttachmentDriftMonitor.ApplyBackendSnapshot(state, current);
+
+        state.Log.Append(SessionLogEntryKind.Command, FormatAttachmentsList(current));
         return ShellDispatchResult.Continue;
     }
 
@@ -424,6 +440,154 @@ internal sealed class ShellCommandDispatcher(
             : $"{absolutePath} — {revealStatus}";
         state.Log.Append(SessionLogEntryKind.Status, line);
         return ShellDispatchResult.Continue;
+    }
+
+    private async Task<ShellDispatchResult> RefreshAttachmentAsync(
+
+        CommandCenterState state,
+
+        string? logicalName,
+
+        CancellationToken cancellationToken)
+
+    {
+
+        if (!TryRequireSession(state, out Guid sessionId))
+
+        {
+
+            return ShellDispatchResult.Continue;
+
+        }
+
+        if (string.IsNullOrWhiteSpace(logicalName))
+
+        {
+
+            state.Log.Append(
+
+                SessionLogEntryKind.Error,
+
+                "Usage: /attachments refresh <logicalName>");
+
+            return ShellDispatchResult.Continue;
+
+        }
+
+        Result<SessionAttachmentDto[]> listed = await apiClient
+
+            .GetSessionAttachmentsAsync(sessionId, cancellationToken)
+
+            .ConfigureAwait(false);
+
+        if (listed.IsFailure)
+
+        {
+
+            state.Log.Append(SessionLogEntryKind.Error, listed.Error.Message);
+
+            return ShellDispatchResult.Continue;
+
+        }
+
+        if (!TryResolveAttachment(
+
+                listed.Value ?? [],
+
+                logicalName,
+
+                version: null,
+
+                out SessionAttachmentDto row,
+
+                out string resolveError))
+
+        {
+
+            state.Log.Append(SessionLogEntryKind.Error, resolveError);
+
+            return ShellDispatchResult.Continue;
+
+        }
+
+        if (row.SourceKind != AttachmentSourceKind.WorkspaceFile)
+
+        {
+
+            state.Log.Append(
+
+                SessionLogEntryKind.Error,
+
+                $"Attachment `{row.LogicalKey}` is a Snapshot and cannot be refreshed.");
+
+            return ShellDispatchResult.Continue;
+
+        }
+
+        state.TransientStatus = $"Refreshing {row.LogicalKey}…";
+
+        try
+
+        {
+
+            Result<AttachmentRefreshEvent> refreshed = await apiClient
+
+                .RefreshSessionAttachmentAsync(sessionId, row.Id, cancellationToken)
+
+                .ConfigureAwait(false);
+
+            if (refreshed.IsFailure || refreshed.Value is null)
+
+            {
+
+                state.Log.Append(SessionLogEntryKind.Error, refreshed.Error.Message);
+
+                return ShellDispatchResult.Continue;
+
+            }
+
+            AttachmentRefreshEvent detail = refreshed.Value;
+
+            Result<SessionAttachmentDto[]> confirmed = await apiClient
+
+                .GetSessionAttachmentsAsync(sessionId, cancellationToken)
+
+                .ConfigureAwait(false);
+
+            if (confirmed.IsSuccess)
+
+            {
+
+                _ = CommandCenterAttachmentDriftMonitor.ApplyBackendSnapshot(
+
+                    state,
+
+                    confirmed.Value ?? []);
+
+            }
+
+            state.Log.Append(
+
+                SessionLogEntryKind.Status,
+
+                $"[Live] Refreshed {detail.LogicalKey} v{detail.Version} "
+
+                + $"loaded={ShortHash(detail.ContentSha256)} "
+
+                + $"at {detail.SourceFreshnessTimestamp:O}.");
+
+            return ShellDispatchResult.Continue;
+
+        }
+
+        finally
+
+        {
+
+            state.TransientStatus = null;
+
+        }
+
     }
 
     private static bool TryRequireSession(CommandCenterState state, out Guid sessionId)
@@ -529,14 +693,54 @@ internal sealed class ShellCommandDispatcher(
         foreach (SessionAttachmentDto row in rows.OrderBy(static r => r.LogicalKey, StringComparer.OrdinalIgnoreCase)
                      .ThenBy(static r => r.Version))
         {
+
+            string badge = row.SourceKind == AttachmentSourceKind.SnapshotOnly
+
+                ? "Snapshot"
+
+                : row.SourceStatus == AttachmentSourceStatus.Refreshable && row.IsRefreshable
+
+                    ? "Live"
+
+                    : "Stale";
+
+            string version = $"loaded={ShortHash(row.ContentSha256)}";
+
+            string observed = row.SourceKind == AttachmentSourceKind.WorkspaceFile
+
+                ? $"  disk={ShortHash(row.LastObservedSourceContentSha256)}"
+
+                  + (row.LastObservedSourceWriteTime is { } observedAt
+
+                      ? $"  observed={observedAt:O}"
+
+                      : string.Empty)
+
+                : string.Empty;
+
             lines.Add(
-                $"  {row.LogicalKey}  v{row.Version}  {row.Kind}  {row.ByteLength} B  {row.OriginalFileName}  {row.Id:D}");
+                $"  [{badge}] {row.LogicalKey}  v{row.Version}  {version}{observed}  "
+
+                + $"{row.Kind}  {row.ByteLength} B  {row.OriginalFileName}  {row.Id:D}");
         }
 
         lines.Add("");
         lines.Add("Re-attach: /attachments add <logicalName> [vN]");
         lines.Add("Reveal:    /attachments reveal <logicalName> [vN]");
+
+        lines.Add("Refresh:   /attachments refresh <logicalName>");
+
         return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string ShortHash(string? value)
+
+    {
+
+        string hash = value?.Trim() ?? string.Empty;
+
+        return hash.Length <= 8 ? hash : hash[..8];
+
     }
 
     private async Task<ShellDispatchResult> ListContextPinsAsync(
@@ -761,6 +965,7 @@ internal sealed class ShellCommandDispatcher(
                 "  /attachments          List bound session attachments",
                 "  /attachments add <name> [vN]  Stage a prior attachment as AttachmentReferences",
                 "  /attachments reveal <name> [vN]  Reveal attachment file in OS file manager",
+                "  /attachments refresh <name>  Securely load the current tracked file version",
                 "  /context              Inspect persistent session context pins",
                 "  /context pin <kind> <target>  Pin file/directorySnapshot/symbolRange/sessionEntry/attachment/url/diagnostic",
                 "  /context unpin <id>   Remove a context pin",

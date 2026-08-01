@@ -185,6 +185,14 @@ public interface ISessionAttachmentStore
 
     Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(Guid sessionId, CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<SessionAttachmentRecord>> RevalidateBoundSourcesAsync(
+
+        Guid sessionId,
+
+        CancellationToken cancellationToken = default) =>
+
+        ListBoundAsync(sessionId, cancellationToken);
+
     Task<IReadOnlyList<SessionAttachmentIndexItem>> BuildIndexAsync(Guid sessionId, int maxItems, CancellationToken cancellationToken = default);
 
     Task<ReadOnlyMemory<byte>> ReadBytesAsync(SessionAttachmentRecord record, CancellationToken cancellationToken = default);

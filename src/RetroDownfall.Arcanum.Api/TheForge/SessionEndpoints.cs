@@ -221,7 +221,7 @@ internal static class SessionEndpoints
                 }
 
                 IReadOnlyList<SessionAttachmentRecord> bound = await store
-                    .ListBoundAsync(id, ctx.RequestAborted)
+                    .RevalidateBoundSourcesAsync(id, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 IReadOnlyDictionary<Guid, SessionAttachmentIndexStatus> statuses = await attachmentRetrieval
@@ -244,6 +244,88 @@ internal static class SessionEndpoints
                         traceId));
             })
         .WithName("GetSessionAttachments");
+
+        apiGroup.MapPost(
+
+            "/sessions/{id:guid}/attachments/{attachmentId:guid}/refresh",
+
+            async (
+
+                Guid id,
+
+                Guid attachmentId,
+
+                ISessionRepository repo,
+
+                ToolExecutionPipeline refreshPipeline,
+
+                HttpContext ctx) =>
+
+            {
+
+                string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+                Session? session = await repo
+
+                    .GetByIdAsync(id, ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                if (session is null)
+
+                {
+
+                    return Results.Json(
+
+                        ApiResponse<AttachmentRefreshEvent>.FromResult(
+
+                            Result<AttachmentRefreshEvent>.Failure(
+
+                                new Error(ErrorCodes.Session.NotFound, "Session was not found.")),
+
+                            traceId),
+
+                        ArcanumJsonContext.Default.ApiResponseAttachmentRefreshEvent,
+
+                        statusCode: StatusCodes.Status404NotFound);
+
+                }
+
+                Result<AttachmentRefreshEvent> result = await refreshPipeline
+
+                    .RefreshSessionAttachmentAsync(
+
+                        id,
+
+                        attachmentId,
+
+                        session.CampaignId,
+
+                        ctx.RequestAborted)
+
+                    .ConfigureAwait(false);
+
+                if (result.IsFailure)
+
+                {
+
+                    return Results.Json(
+
+                        ApiResponse<AttachmentRefreshEvent>.FromResult(result, traceId),
+
+                        ArcanumJsonContext.Default.ApiResponseAttachmentRefreshEvent,
+
+                        statusCode: StatusCodes.Status409Conflict);
+
+                }
+
+                return Results.Ok(
+
+                    ApiResponse<AttachmentRefreshEvent>.FromResult(result, traceId));
+
+            })
+
+        .WithName("RefreshSessionAttachment");
 
         apiGroup.MapGet(
             "/sessions/{id:guid}/context-pins",

@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Wards;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
@@ -231,6 +232,60 @@ internal sealed class CommandCenterChatRunner(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
                                 cancellationToken)
                             .ConfigureAwait(false);
+                        break;
+
+                    case IntelligenceEventType.AttachmentRefreshed
+
+                        when evt.AttachmentRefresh is { } refresh:
+
+                        await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
+
+                        state.Log.Append(
+
+                            SessionLogEntryKind.Status,
+
+                            $"[Live] Refreshed {refresh.LogicalKey} v{refresh.Version} "
+
+                            + $"loaded={ShortHash(refresh.ContentSha256)} "
+
+                            + $"at {refresh.SourceFreshnessTimestamp:O}.");
+
+                        if (state.SessionId is { } refreshedSessionId)
+
+                        {
+
+                            Result<SessionAttachmentDto[]> current = await apiClient
+
+                                .GetSessionAttachmentsAsync(refreshedSessionId, cancellationToken)
+
+                                .ConfigureAwait(false);
+
+                            if (current.IsSuccess)
+
+                            {
+
+                                _ = CommandCenterAttachmentDriftMonitor.ApplyBackendSnapshot(
+
+                                    state,
+
+                                    current.Value ?? []);
+
+                            }
+
+                        }
+
+                        await uiUpdates.WriteAsync(
+
+                                new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog),
+
+                                cancellationToken)
+
+                            .ConfigureAwait(false);
+
+                        break;
+
+                    case IntelligenceEventType.AttachmentRefreshed:
+
                         break;
 
                     case IntelligenceEventType.SessionBound:
@@ -511,6 +566,16 @@ internal sealed class CommandCenterChatRunner(
                 cancellationToken)
             .ConfigureAwait(false);
         return true;
+    }
+
+    private static string ShortHash(string? value)
+
+    {
+
+        string hash = value?.Trim() ?? string.Empty;
+
+        return hash.Length <= 8 ? hash : hash[..8];
+
     }
 
     private static void IngestToolCall(CommandCenterState state, IntelligenceEvent evt)

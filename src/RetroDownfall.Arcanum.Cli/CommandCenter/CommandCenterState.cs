@@ -70,6 +70,8 @@ internal sealed class CommandCenterState
     /// </summary>
     public HashSet<Guid> StagedAttachmentReferences { get; } = [];
 
+    public IReadOnlyList<SessionAttachmentDto> SessionAttachments { get; set; } = [];
+
     /// <summary>
     /// Forbidden Arts the operator chose "always allow" for this Command Center run (in-memory).
     /// </summary>
@@ -236,6 +238,8 @@ internal sealed class CommandCenterState
         ForkedFromSessionId = null;
         SelectedSessionId = null;
         LastContextBreakdown = null;
+
+        SessionAttachments = [];
     }
 
     public void ApplySessionMeta(

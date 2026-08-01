@@ -140,6 +140,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.TheForge.SessionAttachmentDto))]
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.TheForge.SessionAttachmentDto[]))]
 [JsonSerializable(typeof(ApiResponse<RetroDownfall.Arcanum.Core.TheForge.SessionAttachmentDto[]>))]
+[JsonSerializable(typeof(ApiResponse<AttachmentRefreshEvent>))]
 [JsonSerializable(typeof(SessionContextPinKind))]
 [JsonSerializable(typeof(SessionContextPinStatus))]
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.TheForge.CreateSessionContextPinRequest))]

@@ -237,6 +237,24 @@ public sealed class ShellCommandParserAttachTests
         Assert.Equal(ShellCommandKind.AttachmentsList, list.Kind);
         Assert.Equal(ShellCommandKind.Attach, attach.Kind);
     }
+
+    [Theory]
+
+    [InlineData("/attachments refresh notes", "notes")]
+
+    [InlineData("/attachments refresh notes.txt", "notes.txt")]
+
+    public void Attachments_refresh_parses_logical_name(string input, string logicalName)
+
+    {
+
+        ParsedShellCommand parsed = _parser.Parse(input);
+
+        Assert.Equal(ShellCommandKind.AttachmentsRefresh, parsed.Kind);
+
+        Assert.Equal(logicalName, parsed.Argument);
+
+    }
 }
 
 public sealed class SessionAttachmentRevealTests
@@ -352,6 +370,184 @@ public sealed class ShellCommandDispatcherAttachmentsTests
         Assert.Contains("notes", text, StringComparison.Ordinal);
         Assert.Contains("v1", text, StringComparison.Ordinal);
         Assert.Contains("notes.txt", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+
+    public async Task Attachments_list_renders_authoritative_snapshot_live_and_stale_badges_with_versions()
+
+    {
+
+        Guid sessionId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+
+        DateTimeOffset observed = DateTimeOffset.Parse("2026-08-01T15:04:05Z");
+
+        SessionAttachmentDto[] payload =
+
+        [
+
+            Attachment(sessionId, "snapshot", "SNAPSHOT-HASH"),
+
+            Attachment(
+
+                sessionId,
+
+                "live",
+
+                "LIVE-CONTENT-HASH",
+
+                AttachmentSourceKind.WorkspaceFile,
+
+                AttachmentSourceStatus.Refreshable,
+
+                true,
+
+                "src/live.txt",
+
+                "LIVE-CONTENT-HASH",
+
+                observed),
+
+            Attachment(
+
+                sessionId,
+
+                "stale",
+
+                "LOADED-CONTENT-HASH",
+
+                AttachmentSourceKind.WorkspaceFile,
+
+                AttachmentSourceStatus.PriorVersion,
+
+                false,
+
+                "src/stale.txt",
+
+                "DISK-CONTENT-HASH",
+
+                observed),
+
+        ];
+
+        ShellCommandDispatcher dispatcher = CreateDispatcher(_ => OkAttachments(payload));
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(sessionId, "S", "Active", 1);
+
+        _ = await dispatcher.DispatchAsync("/attachments", state, CancellationToken.None);
+
+        string text = state.Log.RenderPlainText();
+
+        Assert.Contains("[Snapshot]", text, StringComparison.Ordinal);
+
+        Assert.Contains("[Live]", text, StringComparison.Ordinal);
+
+        Assert.Contains("[Stale]", text, StringComparison.Ordinal);
+
+        Assert.Contains("loaded=LIVE-CON", text, StringComparison.Ordinal);
+
+        Assert.Contains("disk=DISK-CON", text, StringComparison.Ordinal);
+
+        Assert.Contains("2026-08-01T15:04:05", text, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+
+    public async Task Attachments_refresh_posts_selected_attachment_and_renders_backend_confirmation()
+
+    {
+
+        Guid sessionId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+
+        Guid attachmentId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        SessionAttachmentDto row = Attachment(
+
+            sessionId,
+
+            "notes",
+
+            "OLD-HASH",
+
+            AttachmentSourceKind.WorkspaceFile,
+
+            AttachmentSourceStatus.PriorVersion,
+
+            false,
+
+            "src/notes.txt",
+
+            "NEW-HASH",
+
+            DateTimeOffset.Parse("2026-08-01T15:00:00Z"),
+
+            attachmentId);
+
+        int requests = 0;
+
+        ShellCommandDispatcher dispatcher = CreateDispatcher(request =>
+
+        {
+
+            requests++;
+
+            if (request.Method == HttpMethod.Get)
+
+            {
+
+                return OkAttachments([row]);
+
+            }
+
+            Assert.Equal(HttpMethod.Post, request.Method);
+
+            Assert.Equal(
+
+                $"/api/sessions/{sessionId:D}/attachments/{attachmentId:D}/refresh",
+
+                request.RequestUri!.AbsolutePath);
+
+            return OkAttachmentRefresh(new AttachmentRefreshEvent(
+
+                Guid.Parse("bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"),
+
+                "notes",
+
+                2,
+
+                true,
+
+                false,
+
+                "src/notes.txt",
+
+                "CURRENT-HASH",
+
+                12,
+
+                DateTimeOffset.Parse("2026-08-01T15:05:00Z")));
+
+        });
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        state.ApplySessionMeta(sessionId, "S", "Active", 1);
+
+        _ = await dispatcher.DispatchAsync("/attachments refresh notes", state, CancellationToken.None);
+
+        string text = state.Log.RenderPlainText();
+
+        Assert.Equal(3, requests);
+
+        Assert.Contains("Live", text, StringComparison.Ordinal);
+
+        Assert.Contains("v2", text, StringComparison.Ordinal);
+
+        Assert.Contains("CURRENT-", text, StringComparison.Ordinal);
+
     }
 
     [Fact]
@@ -495,6 +691,88 @@ public sealed class ShellCommandDispatcherAttachmentsTests
         return response;
     }
 
+    private static SessionAttachmentDto Attachment(
+
+        Guid sessionId,
+
+        string logicalKey,
+
+        string contentSha256,
+
+        AttachmentSourceKind sourceKind = AttachmentSourceKind.SnapshotOnly,
+
+        AttachmentSourceStatus sourceStatus = AttachmentSourceStatus.NotApplicable,
+
+        bool isRefreshable = false,
+
+        string? sourceRelativePath = null,
+
+        string? observedSha256 = null,
+
+        DateTimeOffset? observedWriteTime = null,
+
+        Guid? id = null) =>
+
+        new(
+
+            id ?? Guid.NewGuid(),
+
+            logicalKey,
+
+            logicalKey + ".txt",
+
+            1,
+
+            $"{sessionId:N}/{logicalKey}/v1/{logicalKey}.txt",
+
+            "text/plain",
+
+            11,
+
+            SessionAttachmentKind.Text,
+
+            contentSha256,
+
+            DateTimeOffset.Parse("2026-08-01T14:00:00Z"),
+
+            sourceKind,
+
+            SourceWorkspaceIdentity: sourceKind == AttachmentSourceKind.WorkspaceFile ? "workspace" : null,
+
+            sourceRelativePath,
+
+            isRefreshable,
+
+            sourceStatus,
+
+            LastObservedSourceContentSha256: observedSha256,
+
+            LastObservedSourceWriteTime: observedWriteTime);
+
+    private static HttpResponseMessage OkAttachmentRefresh(AttachmentRefreshEvent payload)
+
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+
+            new ApiResponse<AttachmentRefreshEvent>(payload, true, null),
+
+            ArcanumJsonContext.Default.ApiResponseAttachmentRefreshEvent);
+
+        HttpResponseMessage response = new(HttpStatusCode.OK)
+
+        {
+
+            Content = new ByteArrayContent(json),
+
+        };
+
+        response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        return response;
+
+    }
+
     private static HttpResponseMessage Down() =>
         new(HttpStatusCode.ServiceUnavailable)
         {
@@ -546,4 +824,94 @@ public sealed class ShellCommandDispatcherAttachmentsTests
 
         public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
     }
+}
+
+public sealed class CommandCenterAttachmentDriftMonitorTests
+
+{
+
+    [Fact]
+
+    public void Backend_snapshot_is_the_only_authority_for_live_to_stale_transition()
+
+    {
+
+        Guid id = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        CommandCenterState state = new(new SessionLogBuffer())
+
+        {
+
+            SessionAttachments =
+
+            [
+
+                Attachment(id, AttachmentSourceStatus.Refreshable, true, "LOADED"),
+
+            ],
+
+        };
+
+        IReadOnlyList<string> notices = CommandCenterAttachmentDriftMonitor.ApplyBackendSnapshot(
+
+            state,
+
+            [Attachment(id, AttachmentSourceStatus.PriorVersion, false, "DISK")]);
+
+        string notice = Assert.Single(notices);
+
+        Assert.Contains("[Stale]", notice, StringComparison.Ordinal);
+
+        Assert.Contains("DISK", notice, StringComparison.Ordinal);
+
+        Assert.Equal(AttachmentSourceStatus.PriorVersion, state.SessionAttachments[0].SourceStatus);
+
+    }
+
+    private static SessionAttachmentDto Attachment(
+
+        Guid id,
+
+        AttachmentSourceStatus status,
+
+        bool refreshable,
+
+        string observedHash) =>
+
+        new(
+
+            id,
+
+            "notes",
+
+            "notes.txt",
+
+            1,
+
+            "session/notes/v1/notes.txt",
+
+            "text/plain",
+
+            10,
+
+            SessionAttachmentKind.Text,
+
+            "LOADED",
+
+            DateTimeOffset.Parse("2026-08-01T14:00:00Z"),
+
+            AttachmentSourceKind.WorkspaceFile,
+
+            "workspace",
+
+            "src/notes.txt",
+
+            refreshable,
+
+            status,
+
+            LastObservedSourceContentSha256: observedHash,
+
+            LastObservedSourceWriteTime: DateTimeOffset.Parse("2026-08-01T15:00:00Z"));
+
 }

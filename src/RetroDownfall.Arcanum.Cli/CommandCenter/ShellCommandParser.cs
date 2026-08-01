@@ -30,6 +30,9 @@ internal enum ShellCommandKind
     AttachmentsList,
     AttachmentsAdd,
     AttachmentsReveal,
+
+    AttachmentsRefresh,
+
     ContextList,
     ContextPin,
     ContextUnpin,
@@ -51,7 +54,7 @@ internal sealed record ParsedShellCommand(
 internal sealed class ShellCommandParser
 {
     private const string AttachmentsUsage =
-        "Usage: /attachments | /attachments add <logicalName> [vN] | /attachments reveal <logicalName> [vN]";
+        "Usage: /attachments | /attachments add <logicalName> [vN] | /attachments reveal <logicalName> [vN] | /attachments refresh <logicalName>";
 
     public ParsedShellCommand Parse(string input)
     {
@@ -196,6 +199,24 @@ internal sealed class ShellCommandParser
         }
 
         string sub = parts[1].ToLowerInvariant();
+        if (sub is "refresh")
+
+        {
+
+            return parts.Length == 3
+
+                ? new ParsedShellCommand(
+
+                    ShellCommandKind.AttachmentsRefresh,
+
+                    raw,
+
+                    Argument: parts[2])
+
+                : Denied(raw, AttachmentsUsage);
+
+        }
+
         if (sub is "add" or "reveal")
         {
             if (parts.Length is < 3 or > 4)

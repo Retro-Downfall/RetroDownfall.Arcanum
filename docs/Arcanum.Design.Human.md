@@ -40,6 +40,10 @@ The codebase is organized as a multi-project solution:
 - **Infrastructure** — Serilog, Data Protection, the encrypted Grimoire (EF Core 10 + SQLCipher compiled model), workspace scanning (`search_workspace`, `apply_patch`, `workspace_check`), Eye of the World (`IEyeOfTheWorld`), the MCP client layer (`IMcpConnectionManager`, in-process `ArcanumInternalToolServer`, subprocess and Streamable HTTP transports), Comm Link (`ICommLinkDispatcher`), Unseen Servant scheduling, RAG background services (`DivinationService`, `WeaveSchemaInitializer`), and source-generation contexts (`McpJsonSerializerContext`, `CommLinkInfrastructureJsonContext`). It sets `IsTrimmable` and `PublishAot`.
 - **Api** — the HTTP surface composition (class library, not executable). It defines `MapArcanumEndpoints`, `ApiBootstrapper`, `WizardIntelligenceProvider`, `TurnEngine`, `ToolExecutionPipeline`, `IChatClientFactory`, `SemanticRouter`, built-in `AIFunction` tools, `ApiKeyEndpointFilter`, `ArcanumJsonContext`, and the OpenAI `/v1` compatibility endpoints. It sets `IsAotCompatible` + `EnableRequestDelegateGenerator`.
 - **Cli** — the `arcanum` executable entry point. Spectre commands, `ArcanumApiClient`, theming, AOT-safe Markdown rendering (`MarkdigSpectreRenderer`), and the Command Center (`Terminal.Gui`). It sets `PublishAot` (Windows/Linux) and references `Microsoft.AspNetCore.App`.
+  Command Center attachment rows distinguish `[Snapshot]`, `[Live]`, and `[Stale]`, show the loaded
+  version hash plus backend disk observations, and expose `/attachments refresh <name>`. A local
+  `FileSystemWatcher` only invalidates the view; the API revalidates trusted provenance and confirms
+  refresh persistence before the UI reports Live.
 - **Api.DevHost** — debug-only F5 host that mirrors `serve` wiring without Spectre.
 - **Tests** — `RetroDownfall.Arcanum.Tests` (xUnit for Core/API/Infrastructure/CLI), `RetroDownfall.Compendium.Tests` (Compendium smoke), and `RetroDownfall.TheForge.Tests` (desktop Forge client).
 

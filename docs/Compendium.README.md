@@ -175,7 +175,7 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.sagaExtraction` | `bool`, `false` | — | Enables automatic Saga extraction and derives Saga/substrate availability. |
 | `features.semanticSpellRouting` | `bool`, `false` | — | Enables embedding-assisted spell routing and derives embedding-substrate activation. |
 | `features.scrying` | `bool`, `true` | — | Accepts images for vision-capable models. |
-| `features.attachments` | `bool`, `true` | — | Persists encrypted session attachment snapshots and exposes `attach_session_file` plus host-authorized `refresh_session_file`; refresh accepts no path, revalidates source provenance and Sanctum, and shares version/byte/reference budgets. |
+| `features.attachments` | `bool`, `true` | — | Persists encrypted session attachment snapshots; exposes `attach_session_file`, host-authorized `refresh_session_file`, and Command Center Snapshot/Live/Stale status plus manual refresh. Refresh accepts no path, revalidates source provenance and Sanctum, and shares version/byte budgets. |
 | `features.clientTools` | `bool`, `false` | — | Forwards client-declared tools to compatible providers. |
 | `features.webBrowsing` | `bool`, `false` | — | Advertises native `web_search` / `read_url` and enables authenticated `search`, `browse`, and server-orchestrated `research` CLI workflows. The deprecated `browse_web` name remains only as a direct-invoke compatibility alias. |
 | `features.guardrails` | `bool`, `false` | — | Runs configured input/output guardrails. |

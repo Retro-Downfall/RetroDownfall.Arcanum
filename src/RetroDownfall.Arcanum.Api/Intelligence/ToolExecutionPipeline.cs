@@ -23,6 +23,8 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Sanctum;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -620,6 +622,146 @@ public sealed class ToolExecutionPipeline(
                 "Exactly one of attachmentId or logicalKey is required.");
         }
 
+        return await ProcessRefreshSessionFileCoreAsync(
+
+                sessionId,
+
+                attachmentId,
+
+                logicalKey,
+
+                request,
+
+                turnContext,
+
+                includeAdditionalContext: true,
+
+                cancellationToken)
+
+            .ConfigureAwait(false);
+
+    }
+
+    public async Task<Result<AttachmentRefreshEvent>> RefreshSessionAttachmentAsync(
+
+        Guid sessionId,
+
+        Guid attachmentId,
+
+        Guid? campaignId,
+
+        CancellationToken cancellationToken = default)
+
+    {
+
+        if (sessionId == Guid.Empty || attachmentId == Guid.Empty)
+
+        {
+
+            return Result<AttachmentRefreshEvent>.Failure(
+
+                new Error("Attachment.Refresh.InvalidSelector", "A session and attachment are required."));
+
+        }
+
+        if (!settings.Value.ResolveAttachments().Enabled)
+
+        {
+
+            return Result<AttachmentRefreshEvent>.Failure(
+
+                new Error(
+
+                    "Attachment.Refresh.Disabled",
+
+                    "Session attachments are disabled."));
+
+        }
+
+        PingRequest request = new(
+
+            Prompt: string.Empty,
+
+            Model: settings.Value.DefaultModel,
+
+            SessionId: sessionId,
+
+            CampaignId: campaignId);
+
+        TurnContext context = new()
+
+        {
+
+            CampaignId = campaignId?.ToString("D", CultureInfo.InvariantCulture),
+
+            SanctumMode = SanctumMode.Strict,
+
+        };
+
+        RefreshPostProcess refreshed = await ProcessRefreshSessionFileCoreAsync(
+
+                sessionId,
+
+                attachmentId,
+
+                logicalKey: null,
+
+                request,
+
+                context,
+
+                includeAdditionalContext: false,
+
+                cancellationToken)
+
+            .ConfigureAwait(false);
+
+        if (refreshed.Event is { } detail)
+
+        {
+
+            return Result<AttachmentRefreshEvent>.Success(detail);
+
+        }
+
+        RefreshSessionFileResultWire? failure = JsonSerializer.Deserialize(
+
+            refreshed.ResultText,
+
+            McpJsonSerializerContext.Default.RefreshSessionFileResultWire);
+
+        return Result<AttachmentRefreshEvent>.Failure(
+
+            new Error(
+
+                "Attachment.Refresh." + (failure?.ErrorCode ?? "Failed"),
+
+                failure?.Message ?? "The tracked attachment could not be refreshed."));
+
+    }
+
+    private async Task<RefreshPostProcess> ProcessRefreshSessionFileCoreAsync(
+
+        Guid sessionId,
+
+        Guid? attachmentId,
+
+        string? logicalKey,
+
+        PingRequest request,
+
+        TurnContext turnContext,
+
+        bool includeAdditionalContext,
+
+        CancellationToken cancellationToken)
+
+    {
+
+        IAttachmentSourceResolver sourceResolver = attachmentSourceResolver
+
+            ?? throw new InvalidOperationException("No attachment source resolver is available.");
+
         IReadOnlyList<SessionAttachmentRecord> bound = await sessionAttachmentStore
             .ListBoundAsync(sessionId, cancellationToken)
             .ConfigureAwait(false);
@@ -711,7 +853,7 @@ public sealed class ToolExecutionPipeline(
             return result.Allowed || turnContext.SanctumMode == SanctumMode.AuditOnly;
         }
 
-        AttachmentSourceResolution current = await attachmentSourceResolver.ResolveCurrentAsync(
+        AttachmentSourceResolution current = await sourceResolver.ResolveCurrentAsync(
                 source,
                 latest.ContentSha256,
                 maxBytes,
@@ -747,14 +889,25 @@ public sealed class ToolExecutionPipeline(
             return RefreshError("attachment_budget_exhausted", ex.Message);
         }
 
-        IReadOnlyList<AIContent>? additional = await SessionAttachmentToolInjection
-            .TryBuildRefreshedContentsAsync(
-                sessionAttachmentStore,
-                persisted.Record,
-                settings.Value,
-                request.Model,
-                cancellationToken)
-            .ConfigureAwait(false);
+        IReadOnlyList<AIContent>? additional = includeAdditionalContext
+
+            ? await SessionAttachmentToolInjection
+
+                .TryBuildRefreshedContentsAsync(
+
+                    sessionAttachmentStore,
+
+                    persisted.Record,
+
+                    settings.Value,
+
+                    request.Model,
+
+                    cancellationToken)
+
+                .ConfigureAwait(false)
+
+            : null;
         bool queued = additional is { Count: > 0 };
         AttachmentSourceMetadata persistedSource = persisted.Record.Source ?? current.Metadata;
         DateTimeOffset freshness = persistedSource.LastObservedWriteTime ?? DateTimeOffset.UtcNow;

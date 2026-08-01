@@ -81,3 +81,24 @@ post-processing exceptions follow the shared mode policy: streaming invocation f
 tolerated with `toolError` plus a synthetic result, while buffered behavior follows
 `TolerateToolFailures`. A successful refresh emits native `attachmentRefreshed` observability after
 its `toolResult`; OpenAI projections ignore that native-only event.
+
+## 12. Command Center context UI rendering
+
+Command Center treats attachment state as a backend projection, not a client inference. The
+`/attachments` list renders `[Snapshot]` for snapshot-only rows, `[Live]` only for a tracked row whose
+revalidated status is `Refreshable`, and `[Stale]` for drift, missing/inaccessible source, changed
+workspace, unsafe provenance, or corrupt metadata. Every row shows the bound version and its
+`ContentSha256`, which identifies the bytes currently available to model context. Tracked rows also
+show the last backend-observed disk hash and write timestamp.
+
+One recursive, debounced `FileSystemWatcher` watches the active Command Center working directory.
+Create/change/delete/rename events are invalidation hints only: the monitor calls
+`GET /api/sessions/{id}/attachments`, and that endpoint revalidates stored provenance before returning
+DTOs. The UI never reads or hashes the source and never changes Stale to Live from a watcher event.
+
+`/attachments refresh <logicalName>` resolves the latest backend row and posts its opaque attachment
+id to `/api/sessions/{id}/attachments/{attachmentId}/refresh`. The endpoint invokes the same secure
+refresh core used after `refresh_session_file`; it rechecks Sanctum and source identity, persists or
+reuses the verified version, and returns the sanitized `AttachmentRefreshEvent`. Because this is an
+operator action outside a model round, no content injection is queued. Command Center reports Live
+only from that successful response.

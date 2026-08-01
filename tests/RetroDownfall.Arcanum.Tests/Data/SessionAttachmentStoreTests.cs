@@ -139,6 +139,98 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+
+    public async Task RevalidateBoundSourcesAsync_marks_changed_workspace_file_as_prior_version()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string workspace = Path.Combine(
+
+            Path.GetTempPath(),
+
+            "arcanum-workspace-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(workspace);
+
+        try
+
+        {
+
+            byte[] before = Encoding.UTF8.GetBytes("before");
+
+            string sourcePath = Path.Combine(workspace, "source.txt");
+
+            await File.WriteAllBytesAsync(sourcePath, before);
+
+            AttachmentSourceResolver resolver = new(new TestWorkspaceContext(workspace));
+
+            SessionAttachmentStore store = new(
+
+                _db!,
+
+                Options.Create(_settings),
+
+                _attachmentsRoot,
+
+                CreateEncryptedBlobStore(),
+
+                sourceResolver: resolver);
+
+            Guid sessionId = Guid.NewGuid();
+
+            _ = await store.PersistNewFromSourceAsync(
+
+                sessionId,
+
+                null,
+
+                null,
+
+                "source.txt",
+
+                "source.txt",
+
+                before,
+
+                "text/plain",
+
+                SessionAttachmentKind.Text,
+
+                new AttachmentSourceClaim(sourcePath));
+
+            await File.WriteAllBytesAsync(sourcePath, Encoding.UTF8.GetBytes("after"));
+
+            IReadOnlyList<SessionAttachmentRecord> revalidated = await store
+
+                .RevalidateBoundSourcesAsync(sessionId);
+
+            SessionAttachmentRecord row = Assert.Single(revalidated);
+
+            Assert.Equal(AttachmentSourceStatus.PriorVersion, row.Source!.Status);
+
+            Assert.False(row.Source.IsRefreshable);
+
+            Assert.Equal(
+
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("after"))),
+
+                row.Source.LastObservedContentSha256);
+
+        }
+
+        finally
+
+        {
+
+            Directory.Delete(workspace, recursive: true);
+
+        }
+
+    }
+
+    [SkippableFact]
     public async Task PersistRefreshedAsync_changed_source_creates_exactly_one_next_version()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);

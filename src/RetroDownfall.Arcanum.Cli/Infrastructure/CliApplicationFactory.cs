@@ -161,6 +161,8 @@ internal static class CliApplicationFactory
 
         services.AddTransient<CommandCenterChatRunner>();
 
+        services.AddTransient<CommandCenterAttachmentDriftMonitor>();
+
         services.AddTransient<CommandCenterApp>();
 
         services.AddTransient<ICommandCenterHost, CommandCenterHost>();

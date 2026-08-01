@@ -27,6 +27,9 @@ internal sealed class CommandCenterHost(
     CommandCenterWardCoordinator wardCoordinator,
     CommandCenterHardModalArbiter hardModalArbiter,
     CommandCenterHumanPromptCoordinator humanPromptCoordinator,
+
+    CommandCenterAttachmentDriftMonitor attachmentDriftMonitor,
+
     ILogger<CommandCenterHost> logger) : ICommandCenterHost
 {
     public const string NoCommandCenterEnvVar = "ARCANUM_NO_COMMAND_CENTER";
@@ -205,6 +208,8 @@ internal sealed class CommandCenterHost(
 
                 using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 CancellationToken runToken = linked.Token;
+
+                attachmentDriftMonitor.Start(state, uiChannel.Writer, runToken);
 
                 Task pump = Task.Run(
                     async () =>
@@ -613,6 +618,8 @@ internal sealed class CommandCenterHost(
         }
         finally
         {
+            await attachmentDriftMonitor.DisposeAsync().ConfigureAwait(false);
+
             await StopHostIfWeStartedItAsync(state).ConfigureAwait(false);
 
             _actionGate.Dispose();

@@ -387,6 +387,92 @@ internal sealed partial class SessionAttachmentStore
         }
     }
 
+    public async Task<IReadOnlyList<SessionAttachmentRecord>> RevalidateBoundSourcesAsync(
+
+        Guid sessionId,
+
+        CancellationToken cancellationToken = default)
+
+    {
+
+        IReadOnlyList<SessionAttachmentRecord> rows = await ListBoundAsync(sessionId, cancellationToken)
+
+            .ConfigureAwait(false);
+
+        if (_sourceResolver is null)
+
+        {
+
+            return rows;
+
+        }
+
+        List<SessionAttachmentRecord> revalidated = new(rows.Count);
+
+        foreach (SessionAttachmentRecord row in rows)
+
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (row.Source is not { Kind: AttachmentSourceKind.WorkspaceFile } source)
+
+            {
+
+                revalidated.Add(row);
+
+                continue;
+
+            }
+
+            AttachmentSourceMetadata current;
+
+            try
+
+            {
+
+                current = await _sourceResolver
+
+                    .RevalidateAsync(source, cancellationToken)
+
+                    .ConfigureAwait(false);
+
+            }
+
+            catch (OperationCanceledException)
+
+            {
+
+                throw;
+
+            }
+
+            catch (Exception)
+
+            {
+
+                current = source with
+
+                {
+
+                    Status = AttachmentSourceStatus.CorruptMetadata,
+
+                    DiagnosticReason = "Source metadata could not be safely revalidated.",
+
+                };
+
+            }
+
+            await UpdateSourceAsync(row.Id, current, cancellationToken).ConfigureAwait(false);
+
+            revalidated.Add(row with { Source = current });
+
+        }
+
+        return revalidated;
+
+    }
+
     private async Task SweepMissingSessionRowsAndDirectoriesAsync(CancellationToken cancellationToken)
     {
 
