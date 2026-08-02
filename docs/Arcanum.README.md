@@ -4,6 +4,8 @@
 > useful context for Arcanum. **[`Arcanum.DESIGN.md`](Arcanum.DESIGN.md)** is authoritative for
 > architecture, persistence, runtime behavior, packaging, and testing. Exact HTTP contracts belong
 > to [`Arcanum.API.md`](Arcanum.API.md).
+> Complete CLI syntax, options, aliases, interactive commands, output modes, and exit behavior
+> belong to [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md).
 > **[`Compendium.README.md`](Compendium.README.md#complete-configuration-reference)** is the only
 > complete configuration reference, and **[`Arcanum.Design.Human.md`](Arcanum.Design.Human.md)** is
 > the human-readable navigation companion.
@@ -102,9 +104,10 @@ Arcanum uses Dungeons & Dragons and/or fantasy metaphors for domain concepts. Ne
 
 ### 9. Docs travel with code
 
-The repository maintains six canonical docs (`Arcanum.DESIGN.md`, `Arcanum.API.md`, `Arcanum.README.md`, `Arcanum.Design.Human.md`, `Compendium.README.md`, `Arcanum.DEBUGGING.Human.md`) plus the focused `Arcanum.CHAT-LOOP.md` companion. Architecture, persistence, runtime behavior,
+The repository maintains seven canonical docs (`Arcanum.DESIGN.md`, `Arcanum.API.md`, `Arcanum.Command.Reference.md`, `Arcanum.README.md`, `Arcanum.Design.Human.md`, `Compendium.README.md`, `Arcanum.DEBUGGING.Human.md`) plus the focused `Arcanum.CHAT-LOOP.md` companion. Architecture, persistence, runtime behavior,
 testing, and packaging update `Arcanum.DESIGN.md`; API contracts update `Arcanum.API.md`; the complete public configuration contract updates
-`Compendium.README.md`; agent/operator orientation updates this file; human navigation updates
+`Compendium.README.md`; CLI command-surface changes update `Arcanum.Command.Reference.md`;
+agent/operator orientation updates this file; human navigation updates
 `Arcanum.Design.Human.md`; debugging guides update `Arcanum.DEBUGGING.Human.md`; shared model/tool-loop and attachment continuation changes also update `Arcanum.CHAT-LOOP.md`. Keep the owning documents current in the same change set. See
 [DESIGN.md §18](Arcanum.DESIGN.md#18-document-maintenance).
 
@@ -160,6 +163,7 @@ docs/                                    # canonical documentation and focused c
   Arcanum.README.md                      # this agent orientation document
   Arcanum.DESIGN.md                      # authoritative technical reference
   Arcanum.API.md                         # native and OpenAI-compatible API reference
+  Arcanum.Command.Reference.md           # complete CLI commands, options, aliases, and exits
   Arcanum.Design.Human.md                # non-authoritative human reading companion
   Arcanum.DEBUGGING.Human.md             # verified breakpoint map and debugging recipes
   Arcanum.CHAT-LOOP.md                    # focused model/tool-loop and attachment ordering guide
@@ -708,6 +712,10 @@ Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](
 
 ## CLI quick reference
 
+This section is intentionally condensed. See
+[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) for the complete command tree and
+option-by-option behavior.
+
 ### Safe resource selection
 
 Commands that target a session, campaign, workspace, prompt, spell, Apprentice, model, provider,
@@ -984,7 +992,7 @@ arcanum --json operation list | jq -r '.output'
 arcanum operation list --plain
 ```
 
-**Command Center:** interactive Terminal.Gui workbench (sessions sidebar, transcript, composer, HITL/Ward hard modals). Bare interactive `arcanum` opens it; non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage. Slash allowlist and attach flows: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
+**Command Center:** interactive Terminal.Gui workbench (sessions sidebar, transcript, composer, HITL/Ward hard modals). Bare interactive `arcanum` opens it; non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage. Slash allowlist and attach flows: [complete command reference](Arcanum.Command.Reference.md#bare-arcanum-command-center).
 
 Attachment status is authoritative and versioned: `/attachments` shows `[Snapshot]`, `[Live]`, or
 `[Stale]`, the snapshot hash loaded into context, and tracked-source observations. External workspace
@@ -1062,4 +1070,4 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `provider list` | List configured providers via `GET /api/providers` (needs `serve`); endpoint redacted and only the credential environment-variable reference returned. |
 | `operation list\|show\|cancel\|retry\|reconcile` | Inspect and repair the durable operation ledger via authenticated `/api/operations*` routes (needs `serve`). `list` accepts `--kind` / `--state`; `show <id>` returns only safe checkpoint presence/version/summary; `cancel <id>` requests `Cancelling`; `retry <id>` resets failed/abandoned/repair-required work; `reconcile` runs a bounded pass and exits 2 when operator attention remains. |
 
-**Inference flags** (`ask`/`chat`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format`, penalties, `-c`/`--campaign`, `--workspace`, and `--session`. Scrying: `ask --image` / chat `@path`. Full slash-command suite, context precedence, and error formatting: [DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
+**Inference flags** (`ask`/`chat`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format`, penalties, `-c`/`--campaign`, `--workspace`, and `--session`. Scrying: `ask --image` / chat `@path`. Full option ranges, slash commands, context precedence, and exit behavior: [complete command reference](Arcanum.Command.Reference.md).

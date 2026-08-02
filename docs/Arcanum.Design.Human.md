@@ -9,11 +9,13 @@ public error codes. This guide is a readable map of the design, not a second sou
 
 ## 1. Start with the document that owns the question
 
-The repository has six canonical documents and one focused companion:
+The repository has seven canonical documents and one focused companion:
 
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) owns architecture, design, persistence, runtime,
   packaging, and test contracts.
 - [`Arcanum.API.md`](Arcanum.API.md) owns native and OpenAI-compatible HTTP contracts.
+- [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) owns complete CLI syntax,
+  options, aliases, interactive commands, output modes, and exit behavior.
 - [`Arcanum.README.md`](Arcanum.README.md) is the contributor and operator primer.
 - This guide explains how the pieces fit together.
 - [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) is the complete
@@ -24,7 +26,8 @@ The repository has six canonical documents and one focused companion:
   loop, attachment continuation, context ledger, and Command Center context projection.
 
 If two documents disagree, correct the one that does not own the contract: architecture follows
-`Arcanum.DESIGN.md`, APIs follow `Arcanum.API.md`, and configuration follows `Compendium.README.md`.
+`Arcanum.DESIGN.md`, APIs follow `Arcanum.API.md`, CLI behavior follows
+`Arcanum.Command.Reference.md`, and configuration follows `Compendium.README.md`.
 Documentation changes travel with the behavior they describe.
 
 ## 2. What Arcanum is
@@ -101,7 +104,9 @@ All direct commands share recursive process options:
 - `--no-context` ignores saved CLI context for that invocation.
 
 Prompts, progress, and diagnostics belong on stderr. Machine-readable payloads belong on stdout.
-Public exit codes remain bounded to the documented set.
+Public exit codes remain bounded to the documented set. The complete syntax, option, alias,
+interactive-command, and exit-code contract is in
+[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md).
 
 ## 5. How an inference turn moves through the system
 
@@ -340,7 +345,8 @@ the final cited result to stdout, with optional atomic export or encrypted sessi
 
 The normal CLI is good for scripts and focused commands. Interactive selectors are TTY-only;
 non-interactive and JSON invocations never guess. Saved context can hold active Campaign,
-Workspace, model, and session selections, with explicit command values taking precedence.
+Workspace, model, and session selections, with explicit command values taking precedence. See
+[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) for every command and option.
 
 The `attachment list|add|reference|show|versions|refresh|pin|unpin|export|reveal` family is an HTTP
 client for the host-owned attachment lifecycle. Snapshot add may read any client-local path;

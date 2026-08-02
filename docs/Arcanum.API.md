@@ -7,7 +7,9 @@ codes. It covers both general `/api` calls and the OpenAI-compatible `/v1` surfa
 Architecture and design decisions belong in [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md). The readable
 architecture guide is [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md). The complete public
 configuration model belongs in
-[`Compendium.README.md`](Compendium.README.md#complete-configuration-reference).
+[`Compendium.README.md`](Compendium.README.md#complete-configuration-reference). Complete CLI
+syntax and option behavior belong in
+[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md).
 
 The established §8 contract numbers are retained in this extracted reference so existing issue,
 test, and documentation citations remain stable.

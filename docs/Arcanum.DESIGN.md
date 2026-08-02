@@ -4,11 +4,12 @@ This document is the **technical architecture, design, persistence, runtime, pac
 source of truth** for the Retro Downfall **Arcanum** solution. The intended audience is
 **senior C# / .NET engineers** who will extend, review, or operate the system.
 
-Arcanum's documentation contract contains six canonical documents and one focused companion:
+Arcanum's documentation contract contains seven canonical documents and one focused companion:
 
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) — the source of truth for architecture and design details and decisions.
 - [`Arcanum.Design.Human.md`](Arcanum.Design.Human.md) — the human-readable companion to DESIGN (conceptual prose, navigation, turn-lifecycle and dependency-direction diagrams, and pointers into DESIGN for contracts).
 - [`Arcanum.API.md`](Arcanum.API.md) — the source of truth for native and OpenAI-compatible API routes, wire contracts, status mapping, and public error codes.
+- [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) — the complete user-facing CLI command, argument, option, alias, interactive-command, output, and exit-code reference.
 - [`Arcanum.README.md`](Arcanum.README.md) — the agent/operator primer for Cursor prompts (summarized architecture/design, repo layout, invariants, verification commands, brief CLI quick reference) plus the required reinstall instruction.
 - [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) — the only complete `arcanum.json` key/default/bounds and credential-reference listing.
 - [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) — the verified breakpoint map and task-based debugging recipes.
@@ -17,7 +18,8 @@ Arcanum's documentation contract contains six canonical documents and one focuse
 When a change under `src/`, packaging scripts, or workflows alters a fact described here, update the
 owning section in the same change set. Pair operator-visible behavior with `Arcanum.README.md`,
 API changes with `Arcanum.API.md`, configuration-surface changes with `Compendium.README.md`,
-navigation updates with `Arcanum.Design.Human.md`, and debugging guides with
+CLI surface changes with `Arcanum.Command.Reference.md`, navigation updates with
+`Arcanum.Design.Human.md`, and debugging guides with
 `Arcanum.DEBUGGING.Human.md`.
 
 ---
@@ -275,7 +277,7 @@ endpoints in a referenced class library), and `EnableConfigurationBindingGenerat
 
 **Role:** Single entry assembly — process argv, dispatch commands, and when asked, construct the ASP.NET Core pipeline and run Kestrel. Carries `<FrameworkReference Include="Microsoft.AspNetCore.App" />` so the same binary can self-host Kestrel for `serve`.
 
-**Commands:**
+**Dispatch and selection architecture:**
 
 **Resource selection contract:** Direct commands that act on sessions, campaigns, workspaces,
 prompts, spells, Apprentices, models, providers, or MCP servers resolve through the client-side
@@ -336,94 +338,18 @@ a future remote-host client must require an explicit server path and cannot infe
 identity from a client path. `cli-session.txt` remains a temporary last-session mirror for older CLI flows,
 while `cli-context.json.sessionId` is the active-context authority.
 
-| Command | Purpose |
-|---------|---------|
-| `serve` | Builds `WebApplication` with slim defaults, configures Kestrel, registers API services, runs the host (§5.3). When `ARCANUM_AUTO_LAUNCHED=1`, suppresses the Listening line and the raw first-run key print (hint: `arcanum key show`); redirects Console.Out/Error to an owner-only bootstrap log under `{ArcanumPaths.GrimoireDirectory}/logs/auto-serve-bootstrap.log`. |
-| `ask` | Single-prompt streaming inference via NDJSON. Resolves effective CLI context, prints it interactively, runs Eye of the World and Chronosync in the effective workspace, and sends `PingRequest` with optional Campaign/Model/Session. Explicit flags: `--campaign`, `--workspace`, `--model`, and `--session`; `--new` conflicts with `--session`. Interactive sessions auto-start the host before context validation and streaming. |
-| `chat` | Interactive multi-turn REPL with Figlet banner, effective-context header, Mana bar, slash commands (`/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`), per-turn cancellation, inline `@` file staging, and swap-at-end Markdig rendering. `--campaign`, `--workspace`, `--model`, and `--session` override active context; `--new` conflicts with `--session`. Wide interactive color terminals use the live dashboard; narrow, redirected, and `NO_COLOR` paths keep simple streaming. |
-| *(bare)* | **Command Center v2** (Terminal.Gui 2.4.17): bare interactive `arcanum` with `ARCANUM_NO_COMMAND_CENTER` unset. Fixed viewport — header / left sessions (UpdatedAt desc; overlay picker when narrow) / transcript (follow-tail) / composer / footer. Chat + allowlisted slash via `ShellCommandDispatcher` / `CommandCenterChatRunner` / `SessionWorkspaceService` (no Spectre, no CAF recursion, no `ChatCommand`). Resume loads ≤200 recent entries; `CliSessionManager` last-session restore with stale → New Session. Branching uses the server fork contract: `/fork`, selected-entry `/fork at`, `/fork alternative`, `/fork confirm`, and `/branch parent|child`; `⑂` marks branches without changing session ordering. Successful forks load branch detail, transcript, and attachments before switching; failures leave the source active. Attachments: `/attach`, `/attachments` (+ `add`/`reveal`/`refresh`), `@path`; `[Snapshot]`, `[Live]`, and `[Stale]` rows show the loaded hash plus the last backend-observed disk hash/time. A debounced recursive `FileSystemWatcher` is only an invalidation hint: Command Center fetches revalidated backend DTOs before changing a badge, and `/attachments refresh <name>` reports Live only after the shared secure refresh core confirms the version. Host persists when `Arcanum:Features:Attachments` is enabled (§10.2.5 / §16.6). Structured persistent context is discoverable through `/help` and managed with `/context`, `/context pin <kind> <target>`, and `/context unpin <id>` (§10.2.6). Coalesced streaming (~50ms). Size gate **inside** the host after TG Init (≥80×12 floor); too small or init failure → exit **1**. Bare non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage/help exit **0**. `NO_COLOR` / `ARCANUM_NO_COLOR` select monochrome theme only — they do **not** block the TUI. Auto-serve via `IArcanumServeLauncher`. Types under `Cli/CommandCenter/`. |
-| `look` | Prints `PatternSnapshot` from Eye of the World (no HTTP dependency). |
-| `doctor` | Environment diagnostics across panels — **System** (version/OS/runtime/TTY/color), **Paths**, **Configuration** (`arcanum.json` parse), **MCP** (`mcp.json`), and a **Tokenizer** smoke test — plus an **API Health** probe (`GET /api/health`) with a code-owned 2-second timeout. A hard-check failure exits **1**; an unreachable or timed-out API is a **non-fatal warning** (still exits 0). Pass `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. No infrastructure services required beyond `IHttpClientFactory`, `ISecretStore`, and `IOptions<ArcanumSettings>`. |
-| `watch session\|apprentice\|logs\|mcp\|daemons\|health` | Unified authenticated terminal observation for every major live source. SSE commands share heartbeat, `[DONE]`, disconnect, reconnect, filtering, UTC timestamp, color, cancellation, and NDJSON behavior; `health` polls the typed readiness snapshot every five seconds by default. Existing `session watch` and `apprentice chronicle` commands are compatibility aliases. |
-| `mcp list\|show\|start\|stop\|restart\|reload\|trust\|tools\|invoke` | Authenticated MCP administration over `/api/mcp*`. Safe status projection includes scope, transport, derived trust, lifecycle, tool count, and last error while omitting command/URL/arguments/environment. Server/tool ambiguity uses the picker only on an interactive TTY; redirected/JSON invocations reject deterministically. `--workspace` is the explicit workspace-scope input. |
-| `tool list\|show\|invoke` | Workspace-aware built-in diagnostic discovery via `/api/intelligence/arsenal` and execution via `/api/tools/invoke`. The arsenal projects `IBuiltInToolRegistry.GetToolNames()` so enabled native web tools are included. |
-| `search <query>` | First-class search through `POST /api/web/search`. `--count`, `--freshness day\|week\|month\|year`, repeatable `--include-domain` / `--exclude-domain`, recursive `--json`, `--save`, and `--attach-to-session` preserve typed citations and provider usage without a chat prompt. |
-| `browse <url>` | First-class page read through `POST /api/web/browse`. `--render static\|javascript` makes rendering intent explicit; the current static provider preserves SSRF/redirect/content bounds, while unavailable JavaScript rendering returns an actionable retry with `--render static`. Supports `--json`, `--save`, and `--attach-to-session`. |
-| `research <question>` | Server-owned multi-hop research through NDJSON `POST /api/web/research`. Bounds are visible on stderr before work (`--max-sources`, `--max-hops`, `--token-budget`, optional `--cost-budget`); progress stays on stderr and final terminal/Markdown/JSON content stays on stdout. `--model`, `--continue-session`, `--attach-to-session`, `--save`, and `--format terminal\|markdown\|json` are supported. |
-| `key show` | Prints the stored master API key from the OS credential store (`ISecretStore` → keychain with `security.dat` fallback) to **stderr**. CLI-only, **no HTTP** (§16.3). |
-| `key set` | Stores a master API key into the OS credential store (mirrors to `security.dat`). Argument, stdin, or interactive secret prompt (§16.3). |
-| `use campaign\|workspace\|model\|session <value>` | Validate and select an owner-local active CLI default. Selection never updates a server resource row. |
-| `use clear [scope]` | Clear all saved CLI context or only `campaign`, `workspace`, `model`, or `session`. |
-| `context current` | Explain every effective value and its source; reports and then clears confirmed stale references. |
-| `context inspect [prompt]`, `context tools`, `context sources`, `mana [prompt]` | Preview effective model context without main inference. Reports provider/model/window, Spell routing and resonances, included/excluded tools, classified per-source tokens, reserved output, compression, and auxiliary work. Content is metadata-only unless `--show-content`; `--no-retrieval` skips embedding/RAG. |
-| `config path\|show\|get <key>\|set <key> [value]\|validate\|edit\|open` | Safe configuration inspection and mutation. Uses `/api/config` when available, otherwise explicitly reports canonical local bootstrap mode. Reads preserve API redaction; provider endpoints require stdin/hidden input. `edit` validates an owner-only temporary copy before atomic replacement; `open` launches Compendium or prints the exact path and `arcanum config edit` fallback. |
-| `lore list\|get\|set\|delete` | CRUD on `MageSettings` via `/api/lore`. |
-| `daemon install\|uninstall\|status` | OS-specific background service lifecycle (Windows `sc`, macOS `launchd`, Linux `systemctl --user`). |
-| `daemon jobs` | Lists Unseen Servant jobs (name, spell, base vs effective interval, enabled) via **`GET /api/unseen-servant/jobs`**; requires **`arcanum serve`** (or equivalent host) and stored API key. |
-| `daemon initiative <JOB_NAME> <MINUTES>` | Sets adaptive initiative for a job via **`POST /api/unseen-servant/jobs/{name}/initiative`** with **`AdjustInitiativeRequestDto`**; prints updated **effective** interval (server-clamped). Same connectivity requirements as `daemon jobs`. |
-| `daemon alert <MESSAGE>` | Sends a **Comm Link** smoke alert via **`POST /api/commlink/send`** with **`CommLinkMessageRequestDto`** (options: `--title`, `--severity`, `--source`). Same connectivity requirements as `daemon jobs`. |
-| `campaign list\|get\|create\|update\|delete\|export\|import\|spells\|prompts\|sessions\|use` | The Forge campaign registry via **`/api/campaigns`**. `campaign use` aliases shared active-context selection. Resource-taking verbs accept an optional campaign ID/name/prefix and use the shared picker when omitted interactively. `list` accepts `--type`; `create` requires `--name`/`--path` (`--type` defaults to `campaign`); export/import round-trip `CampaignExportDto`; scoped lists preserve spell shadowing. |
-| `campaign codex get\|put\|delete` | Manage the campaign's `CODEX.md` via **`/api/campaigns/{id}/codex`**. `put` reads content from `--file` (or inline `@file` convention, see below). |
-| `spell list\|get\|create\|update\|delete\|search\|validate\|execute\|versions\|export\|import\|cast\|clone` | The Forge spell CRUD + execution via **`/api/spells`**. `create`/`update` require `--workspace`; `create` accepts `--body`, repeatable `--tag`/`--declared-tool`/`--dependency` (writes `SPELL.json`); `execute` sends `SpellExecuteRequest` (`--version` takes a **string label**, not an integer) and prints the response text (plus a themed tool-call summary on stderr when `ToolCalls` is non-empty); `search` filters by `--query`/`--tag`/`--tool`/`--source`; `cast <NAME>` is a **dry-run** preview (`POST /api/spells/{name}/cast`) rendering the assembled system prompt, resonant dependencies, attuned tools, and spell scripts without consuming inference tokens; `clone <NAME> --new-name <N>` clones a spell (built-in or workspace) into the workspace (`POST /api/spells/{name}/clone`). |
-| `spell version create\|update\|activate` | Nested branch for named spell **version files** (`SPELL.v{label}.md`) via **`/api/spells/{name}/versions`**. `create`/`update <NAME> --version <LABEL> --body <TEXT_OR_FILE>` write a version file (label: alphanumeric + dots); `activate <NAME> --version <LABEL>` swaps the version into `SPELL.md`, preserving the prior active content as `SPELL.v{previousLabel}.md` (printed as a themed note). |
-| `prompt list\|get\|versions\|create\|update\|delete\|render\|test\|execute\|export\|import\|clone` | The Forge prompt CRUD + rendering via **`/api/prompts`**. Resource-taking verbs accept optional ID/name/prefix selection. `render`/`execute` accept repeatable `--param key=value`; `test` assembles without LLM cost; clone requires the new name/version. |
-| `ward list\|get\|resolve` | Ward approval gates via **`/api/wards`**. `resolve <ID>` requires exactly one of `--allow`/`--deny` (mutually exclusive) plus optional `--reason`; 404 `Ward.NotFound` and 409 `Ward.AlreadyResolved` are rendered as themed messages. |
-| `trial run` | The Proving Grounds via **`POST /api/proving-grounds/trials/run`**. `--target` (`spell`\|`prompt`\|`apprenticeGoal`) + `--target-value`; repeatable `--inquisitor` (inline JSON or `@file`) and `--var key=value`. Renders Passed/Failed, a verdicts table, and the output (truncated to 500 chars); exits `1` when the Trial fails. |
-| `apprentice list\|get\|create\|delete\|start\|pause\|resume\|cancel\|reweave\|intervene\|cast\|chronicle` | The Forge Apprentice orchestration via **`/api/apprentices`**. Resource-taking verbs accept optional ID/name/prefix selection; cancellation occurs before mutation. `create` accepts `--goal`; `reweave` reads `PlanStep[]`; `chronicle` is the compatibility alias for `watch apprentice`. |
-| `model list\|get`, `provider list\|get` | List or safely select configured models/providers. `get` omits endpoints and credential details; model identity is `provider/model` when names collide. |
-| `session list\|show\|get\|chat\|entries\|watch\|fork\|rename\|archive\|export\|rest\|attachments\|delete-entry\|pin-entry\|unpin-entry\|compact\|divine` | Complete session lifecycle and continuation over **`/api/sessions`**. Session arguments accept a GUID, exact title, unique prefix, or an interactive picker; `get` remains an alias for `show`. `list` filters by campaign/status/search/model/from/to; `show` combines metadata with attachment count and displays token/cost telemetry plus fork parent; `watch` is the compatibility alias for `watch session`. Fork/archive/export preserve archived-session semantics and use server APIs. Entry delete requires confirmation; delete/pin/unpin/compact retain the server's memory-management gate. Read commands support recursive `--json` (`watch` emits one JSON object per line). |
-| `memory status [session]`, `memory sources [session]`, `memory explain [session]` | Authenticated read-only inspection over **`/api/memory/*`**. `status` reports gates and persisted counts without hiding retained rows when a prompt-time feature is disabled; `sources` names provenance and retention; `explain` distinguishes stored data from what is actually eligible for a next turn. Optional session selectors use the same GUID/title/prefix and saved-context rules as session commands. |
-| `memory search <query> [--scope ...]` | Lexical inspection across `session`, `attachments`, `workspace`, `saga`, `lexicon`, or `all` (default and always displayed). Results carry an explicit scope, safe provenance, retention text, and source id. Search reads persisted stores even when semantic embeddings are disabled; it never promotes a hit into durable memory. `--session` and `--workspace` narrow their owning stores without merging them. |
-| `memory lexicon list\|show\|search\|delete` | Read and explicitly delete named Lexicon entities through **`/api/memory/lexicon*`**. `delete` requires CLI confirmation/`--yes`, targets exactly one entity, and states that other memory stores are unaffected. There is intentionally no generic `memory delete`. |
-| `workspace list\|current\|register\|show\|tree\|info\|read\|search\|index\|index-status\|chunks\|unregister` | Operate through authenticated **`/api/workspaces`** routes. `register [path]` registers the current directory with one command for the bundled local host; explicit paths are server-host paths. `show` retains `get` as a compatibility alias. File reads/listing remain bounded server operations; `search`, `index`, `index-status`, and `chunks` expose The Weave without The Forge. Optional selectors resolve from explicit ID/name/path, saved Workspace context, then current-directory containment. `current` reports independent Campaign and Workspace mappings and offers the exact Campaign registration command when only a Workspace matches. |
-| `mcp list\|get` | List/select MCP server safe status. Output excludes URL, command, arguments, working directory, and other secret-adjacent configuration. |
-| `saga list` | Paginated listing of Saga memories via **`GET /api/saga`**; options `--query`, `--session`, `--limit`, `--offset` (§21.9). |
-| `saga divine <QUERY>` | Semantic search over Saga memories via **`POST /api/saga/divine`**; option `--limit` (§21.9). |
-| `saga delete <ID>` | Delete a single Saga memory via **`DELETE /api/saga/{id}`** (themed confirmation on success; §21.9). |
-| `saga stats` | Bordered panel summary of Saga memory storage via **`GET /api/saga/stats`** (§21.9). |
+**Command authority:** [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) is the
+complete user-facing reference for CLI syntax, arguments, options, aliases, interactive
+slash commands, output modes, and exit behavior. This design document retains ownership of
+composition, selection/context architecture, security boundaries, and process lifetime.
 
-**`@filename` convention:** `--body`, `--template`, `--goal`, `--plan`, and `--inquisitor` accept either inline text/JSON or `@filename` to read the value from a file. This is a CLI-wide convention for non-interactive commands, distinct from the `chat` REPL's inline `@path` staging within prompt text — both read file contents, but the flag-value form is positional to an option while the REPL form is inline in free text.
-
-**Unified watch contract:** `arcanum watch session [session]`, `watch apprentice [apprentice]`,
-`watch logs`, `watch mcp`, and `watch daemons` consume the existing independent authenticated SSE
-routes; `watch health` polls authenticated `GET /api/health`. The command does not merge those
-server streams or introduce another backend channel. `session watch` and `apprentice chronicle`
-delegate to the same implementation, preserve their established command/selector compatibility,
-and adopt the unified output contract.
-
-Terminal output uses UTC timestamps and event-type palette colors. The shared SSE parser joins
-multi-line `data:` fields without adding a client-only payload ceiling, treats comment/keep-alive
-frames as stderr liveness diagnostics that never enter normal data output, and treats `[DONE]` as
-successful completion. Ctrl+C cancels any watcher and exits
-`130`. An unexpected EOF is a diagnosed failure unless `--reconnect` was supplied. In recursive
-`--json` mode, stdout contains only one compact source event object per line: no ANSI, labels,
-heartbeats, `[DONE]`, reconnect warnings, or other diagnostics. Diagnostics always use stderr.
-
-Repeatable, case-insensitive `--event-type` and `--tool` (alias `--tool-name`) filters remain
-operator-provided free-form text rather than closed client enums. `watch logs` passes the known
-severity `--level` plus free-form `--category` and `--search` to the log endpoint; the API's
-nullable `LogLevel` binding remains the severity authority. `watch session` also accepts
-`--since <entry-guid>`.
-
-Reconnect is deliberately opt-in and continues across retryable transport failures and transient
-HTTP 408/425/429/5xx responses until `[DONE]` or caller cancellation. Permanent validation,
-authentication, not-found, and SSE-cap denials remain terminal. Retries use bounded exponential delays capped at a code-owned
-maximum. Every reconnect prints a stderr warning that events may have been missed. Session watch
-uses the last received valid Entry id as the next `since` cursor when available, but that bounded server
-window is not a replay guarantee; other process-local streams have no cursor. No watcher claims
-that a gap was recovered. `watch health` accepts any positive `--interval <seconds>` (default `5`)
-and treats a well-formed HTTP 503 `ApiResponse<HealthReportDto>` as a valid Unhealthy observation,
-not as a transport failure.
-
-All watch requests send the normal API credential. SSE admission continues to enforce
-`Arcanum:Execution:MaxSseConnections` and `MaxSseConnectionsPerType`, and cap/auth failures remain
-visible errors rather than being retried as successful connections. Filters, interval, and
-reconnect are per-invocation switches; the unified watch surface adds no configuration keys or new
-user-facing limits.
-
-**Inference flag ranges** (`ask` + `chat`, validated by `InferenceFlagBinder` before the request is sent): `--temperature` 0–2, `--top-p` 0–1, `--max-tokens` ≥ 1 (no upper clamp), `--seed` any 64-bit integer (no clamp), `--presence-penalty` / `--frequency-penalty` −2..2, repeatable `--stop` (multiple values), and `--response-format` accepting `text` / `json_object` / `json_schema`. Supplied `-c` / `--campaign` and `-m` / `--model` values use safe ID/name/prefix resolution; omission preserves the existing no-campaign and configured-default-model behavior. Both verbs also accept `-n` / `--new` and `--unattended`; `chat` adds `--no-tools`.
-
-**CLI exit codes:** `ask` returns `0` on success, `1` on empty prompt / flag-parse / stream / API error, and **`130`** when an in-flight turn is cancelled (Ctrl+C). `chat` returns `0` normally and `1` if any turn failed during the session; an in-turn Ctrl+C cancels the current turn and returns to the `Mage >` prompt (it does **not** exit `130`). **Command Center** returns `0` on clean `/exit`/`/quit`, bare non-interactive usage, or `ARCANUM_NO_COMMAND_CENTER=1`; returns `1` when the terminal is too small after TG Init or TG bootstrap fails. Every `watch` command and its compatibility aliases return `0` on `[DONE]`/normal completion, `2` on command-line parse errors or a non-positive health interval, `1` on other validation/API/unexpected-disconnect failures, and `130` on Ctrl+C. `trial run` returns `1` when the Trial fails (`TrialResult.Passed == false`), separate from HTTP/validation failures. Other non-streaming verbs return `0` on success and `1` on failure.
+**Live-observation architecture:** The unified watch client consumes the existing independent
+authenticated Session, Apprentice, log, MCP, and daemon SSE routes plus the authenticated
+health endpoint; it does not merge those streams or add another backend channel. The shared
+transport preserves source events, reports keep-alives and reconnect gaps only as diagnostics,
+uses a Session Entry cursor when available without claiming replay guarantees, and keeps
+authentication, validation, not-found, and connection-cap denials terminal. Invocation syntax
+and per-command filters are documented in the command reference.
 
 **Composition:** `ArcanumApiClient`, CAF command tree (`CliApplicationFactory`), theme/Spectre UX, Command Center (`Cli/CommandCenter/`), `IArcanumServeLauncher`. Discover verbs in `Cli/Commands/`.
 
@@ -461,7 +387,8 @@ construction and rebuilds perform no diagnostic file I/O.
 
 ### 5.1 Process roles
 
-One binary; the CLI verb selects the process role (per-command detail in §4.4). The defining axis is process lifetime:
+One binary; the CLI verb selects the process role (per-command detail in
+[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md)). The defining axis is process lifetime:
 
 - **No arguments** — opens Command Center on an interactive TTY; prints standard usage when
   noninteractive or `ARCANUM_NO_COMMAND_CENTER=1`.
@@ -474,7 +401,7 @@ One binary; the CLI verb selects the process role (per-command detail in §4.4).
 
 Source-generated parsing (AOT-clean, no reflection). Spectre remains for rendering. `RepeatableOptionMerger` rewrites repeated flags into CAF JSON-array syntax; XML-doc aliases preserve legacy camelCase option spellings.
 
-Every direct command inherits three recursive root options, accepted before or after the verb:
+Every direct command inherits four recursive root options, accepted before or after the verb:
 
 - `--json` forces one valid JSON document on stdout. Commands with typed structured output write
   that type through `IConsoleDispatcher.WriteJson` and an explicit source-generated
@@ -487,6 +414,8 @@ Every direct command inherits three recursive root options, accepted before or a
   it is present; otherwise a redirected-output invocation fails closed with
   `NonInteractiveConfirmationException` before reading stdin or writing a prompt. Command Center
   modals and inference `ask_human` are separate interactive protocols.
+- `--no-context` bypasses owner-local saved CLI context for one invocation while retaining
+  independent current-directory Campaign and Workspace detection.
 
 `IConsoleDispatcher` owns the process stream contract: requested text/JSON payloads go to stdout;
 diagnostics, warnings, progress, and confirmation copy go to stderr. `CliInvocationContext` carries
@@ -1151,31 +1080,15 @@ The structured result reports attachment id, logical key, version, creation/queu
 
 **Command Center state and manual refresh:** the attachment list maps snapshot-only provenance to `[Snapshot]`, verified matching workspace provenance to `[Live]`, and every other tracked-source condition to `[Stale]`. Each row renders the version and the snapshot `ContentSha256` that is loaded into model context; tracked rows also render the last backend-observed disk hash and write time. `CommandCenterAttachmentDriftMonitor` uses one recursive `FileSystemWatcher` over the active working directory, debounces create/change/delete/rename events, and calls the listing endpoint. It never hashes a file or promotes a badge locally. `/attachments refresh <logicalName>` resolves the latest visible row, calls `POST /api/sessions/{id}/attachments/{attachmentId}/refresh`, and prints `[Live]` only from the returned backend confirmation. The endpoint calls `ToolExecutionPipeline.RefreshSessionAttachmentAsync`, which shares selector ownership, source resolver, Sanctum, MIME/kind/size policy, version gates, encrypted persistence, and indexing enqueue with `refresh_session_file`; because no model turn is active, it neither checks an unrelated default model's vision capability nor queues content injection.
 
-**Standalone CLI lifecycle:** `arcanum attachment` is an HTTP client over the same bound rows and
-services; it does not duplicate persistence, version selection, refresh, pin, or source policy.
+**Standalone CLI projection:** The attachment CLI delegates to the same authenticated listing,
+snapshot, live-reference, secure refresh, version-selection, pin, export, and reveal services as
+the host and Command Center; it does not duplicate persistence or source policy. Complete
+invocation, selector, privacy, overwrite, and output behavior belongs to
+[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md).
 
-| Command | Contract |
-|---------|----------|
-| `attachment list [session] [--session <session>]` | List only the latest version per logical key; metadata only. The named option takes precedence over the positional selector. |
-| `attachment add <path\|-> [--mime <type>\|--content-type <type>] [--name <filename>] [--session <session>]` | Read a client-local file or stdin and create a snapshot. With stdin and no MIME/name, use `stdin.txt` + `text/plain`. The MIME is a hint; server detection/policy remains authoritative. Unsupported binary/PDF/Office content remains valid as `Binary` + `NotEligible` under the normal byte/MIME budgets. |
-| `attachment reference <workspace-path> [--workspace <workspace>] [--name <logical-key>] [--session <session>]` | Ask the server to resolve a path inside the selected/default server workspace and persist the verified current bytes as a refreshable version. The CLI never opens this path. |
-| `attachment show [attachment] [--session <session>]` / `attachment versions [attachment] [--session <session>]` | Show safe metadata or every version of the selected logical key. `show --privacy` prints the privacy model immediately; it is disclosure, not an acknowledgement gate. |
-| `attachment refresh [attachment] [--session <session>]` | Call the same secure refresh service as `refresh_session_file`; changed bytes create the next bounded version and unchanged bytes reuse the row. |
-| `attachment pin\|unpin [attachment] [--session <session>]` | Create/delete an Attachment context pin for the selected version. Text pins materialize implicitly under pin budgets. Image pins remain selected but report `Unsupported` for implicit materialization; a vision turn must name the image explicitly. |
-| `attachment export [attachment] [--output <file>\|-o <file>] [--session <session>]` | Stream authenticated plaintext to a same-directory staged file and atomically replace only after success. Existing files require interactive confirmation or global `--yes`; `--output -` is refused. |
-| `attachment reveal [attachment] [--session <session>]` | Reveal the encrypted stored snapshot artifact in the OS file manager only when the API-relative artifact is locally present with an `ARCABLOB` envelope. It never reveals the live source or decrypts content; remote/mismatched clients use export. |
-
-Attachment selectors accept an exact attachment GUID, exact logical key, or unique logical-key
-prefix; omission may open the bounded picker only on an interactive terminal. Session/workspace
-selectors use the shared safe resource selector. `--json` returns source-generated metadata JSON;
-diagnostics remain on stderr. No list/show/versions/refresh/pin/unpin/reveal command writes attachment
-bytes to the terminal, and export never writes them to stdout.
-
-Root `ask` and `chat` accept repeatable `--attachment <bound-guid>` values. These are opaque direct
-references, not names or paths; validation requires every id to belong to the effective Session.
-They enter the existing explicit-first materialization ledger and shared per-turn reference budget.
-Chat retains supplied ids across failed or cancelled attempts and consumes them only after the next
-completed turn; retrying does not create new attachment authority.
+Direct inference attachment references remain opaque Bound attachment IDs owned by the effective
+Session. They enter the explicit-first materialization ledger and shared per-turn reference
+budget. Failed or cancelled chat attempts retain staged IDs; only a completed turn consumes them.
 
 **Metadata invariants:** `SessionAttachments` is installed by the embedded
 `20260719180000_AddSessionAttachments` script and accessed through scoped
@@ -2153,16 +2066,11 @@ flush/verify/rename behavior is §5.4.6.
 
 **Key types:** `FilesSettings`, `IUploadedFileRepository`, `UploadedFileRecord`, `UploadedFileRepository` (Infrastructure), `UploadedFileStorage` (pure path helper), `UploadedFileMimeValidator`, `OpenAiFileObject`, `OpenAiFileListResponse`, `OpenAiFileDeleteResponse`.
 
-**Native CLI surface:** `arcanum file upload <path>` streams multipart bytes through
-`FileBatchApiClient` and defaults `purpose` to `batch`; `--purpose` and `--content-type` make both
-wire fields explicit. `file list [--purpose]`, `file show <id>`, `file download <id> [--output]`,
-and `file delete <id>` call only the authenticated `/v1/files` routes. Successful JSON mode emits
-the bare OpenAI wire object/list/delete response, not `ApiResponse<T>`. Downloads first retrieve
-metadata, discard all server-supplied path components, sanitize the leaf filename, stream content
-to a same-directory uniquely named stage file, flush, and atomically replace the destination.
-Existing destinations and deletion require `IConfirmationPrompt`; redirected/noninteractive use
-fails closed unless recursive `--yes` grants the mutation. The API filename is metadata only and
-never becomes an unchecked local path.
+**Native CLI projection:** The file CLI is a thin authenticated client over `/v1/files`.
+Uploads/downloads retain streaming, sanitized-filename, staged-write, atomic-replacement, and
+confirmation boundaries; structured success remains the bare OpenAI wire shape. Complete
+command syntax and options belong to
+[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md).
 
 ### 11.21 OpenAI batches (`/v1/batches`)
 
@@ -2227,19 +2135,11 @@ column). Same recovery path powers `/reset`.
 
 **Key types:** `BatchesSettings`, `IBatchRepository`, `BatchRecord`, `BatchStatuses`, `BatchRepository` (Infrastructure), `BatchProcessingService`, `IBatchRecoveryService` / `BatchRecoveryService`, `BatchRequestCounter`, `OpenAiBatchRequest`, `OpenAiBatchObject`, `OpenAiBatchRequestCounts`, `OpenAiBatchListResponse`, `BatchJsonlRequestLine`, `BatchJsonlResponseLine`, `BatchJsonlResponseBody`, `BatchJsonlError`, `BatchJsonlParseError`.
 
-**Native CLI surface:** `arcanum batch create <input-file>` accepts either an existing `file-*`
-id or a local JSONL path. A local path is streamed through a client preflight that catches only
-obvious wrapper errors (valid JSON object, unique nonblank `custom_id`, exact `POST`, exact
-`/v1/chat/completions`, object `body`) with a line number; the server remains authoritative for
-the full chat request and batch policy. A passing local file is uploaded with `purpose: batch` and
-`application/jsonl`, then its returned id is posted to `/v1/batches`, so one command starts the
-asynchronous batch. `batch list [--status]`, `show`, `cancel`, and `reset` preserve the server's
-request-count, idempotent cancellation, and stuck-only reset semantics. `batch watch <id>` polls
-with cancellation-aware exponential backoff bounded from 1 ms through 10 seconds and stops only
-on `completed`, `failed`, `cancelled`, or `expired`; JSON mode writes only the terminal object.
-`batch output|errors <id> [--output]` resolves the server-owned artifact id and uses the same safe,
-atomic, overwrite-confirmed download path as `file download`. All successful structured output is
-the bare OpenAI shape or a source-generated local download receipt.
+**Native CLI projection:** The batch CLI remains a thin client over `/v1/batches` and the
+file-artifact routes. Local JSONL preflight is deliberately shallow, server validation remains
+authoritative, polling is cancellation-aware, and artifact downloads reuse the safe atomic file
+path. Complete command syntax, polling options, and JSON behavior belong to
+[`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md).
 
 ### 11.27 Native web research (`web_search` / `read_url`)
 
@@ -2902,13 +2802,15 @@ surrogate-safe; SQLCipher contention uses `SqliteBusyRetry`; and
 
 ## 18. Document maintenance
 
-The repository maintains six canonical documents plus the focused chat-loop companion. Resolve a
+The repository maintains seven canonical documents plus the focused chat-loop companion. Resolve a
 contradiction in the document that owns that contract. Update the owning document in every change set.
 
 - `Arcanum.DESIGN.md` for architecture, design decisions, persistence, runtime behavior, testing,
   and packaging;
 - `Arcanum.API.md` for native and OpenAI-compatible routes, wire contracts, status mapping, and
   public error codes;
+- `Arcanum.Command.Reference.md` for CLI commands, arguments, options, aliases, interactive
+  commands, output modes, and exit behavior;
 - `Compendium.README.md` for the complete public configuration surface and editor behavior;
 - `Arcanum.README.md` for concise agent/operator orientation and runnable commands;
 - `Arcanum.Design.Human.md` for human navigation without duplicating technical or configuration

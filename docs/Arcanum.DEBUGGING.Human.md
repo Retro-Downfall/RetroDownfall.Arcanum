@@ -3,6 +3,7 @@
 This is the verified breakpoint and debugging recipe guide for developers working on the
 RetroDownfall.Arcanum repository. It complements `Arcanum.DESIGN.md` (architecture and design),
 `Arcanum.API.md` (HTTP contracts), and
+`Arcanum.Command.Reference.md` (complete CLI usage), and
 `Arcanum.Design.Human.md` (conceptual navigation) rather than duplicating them. Every class and
 method referenced below exists in the current source; nothing here is speculative.
 
@@ -12,7 +13,9 @@ Use this document when you need to understand how to debug a failing endpoint, t
 turn, verify workspace tool containment, inspect persistence behavior, or confirm a security
 boundary. For architecture decisions, read `DESIGN.md`; for route and wire contracts, read
 `Arcanum.API.md`. For a quick overview, read
-`Arcanum.Design.Human.md`. For the complete `arcanum.json` reference, see `Compendium.README.md`.
+`Arcanum.Design.Human.md`. For command syntax and options, read
+`Arcanum.Command.Reference.md`. For the complete `arcanum.json` reference, see
+`Compendium.README.md`.
 
 ## Running Arcanum under a debugger
 
