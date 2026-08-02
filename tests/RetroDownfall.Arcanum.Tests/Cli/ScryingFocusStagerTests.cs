@@ -158,6 +158,31 @@ public sealed class ScryingFocusStagerTests : IDisposable
 
     }
 
+    [Fact]
+    public void Stage_FileGrowsAfterSizeCheck_StopsAfterLimitSentinel()
+    {
+
+        const int maximumBytes = 1024;
+
+        CountingReadStream stream = new(PngMagicBytes(maximumBytes * 4));
+
+        ScryingFocusStager.StagingResult result = ScryingFocusStager.Stage(
+            Path.Combine(_tempDir, "growing.png"),
+            maximumBytes,
+            DefaultAllowedMimeTypes,
+            static _ => 64,
+            _ => stream);
+
+        Assert.Null(result.Focus);
+
+        Assert.NotNull(result.Error);
+
+        Assert.Contains(maximumBytes.ToString(), result.Error, StringComparison.Ordinal);
+
+        Assert.Equal(maximumBytes + 1, stream.BytesRead);
+
+    }
+
     [Theory]
     [InlineData(512, "512 B")]
     [InlineData(2048, "2 KiB")]
@@ -205,6 +230,25 @@ public sealed class ScryingFocusStagerTests : IDisposable
         bytes[7] = 0x0A;
 
         return bytes;
+
+    }
+
+    private sealed class CountingReadStream(byte[] contents)
+        : MemoryStream(contents, writable: false)
+    {
+
+        public int BytesRead { get; private set; }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+
+            int read = base.Read(buffer, offset, count);
+
+            BytesRead += read;
+
+            return read;
+
+        }
 
     }
 

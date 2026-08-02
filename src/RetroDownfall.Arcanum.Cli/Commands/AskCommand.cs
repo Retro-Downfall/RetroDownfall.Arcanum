@@ -45,6 +45,7 @@ public sealed class AskCommand(
     /// <param name="frequencyPenalty">Frequency penalty -2..2 (positive penalizes frequent tokens).</param>
     /// <param name="image">Attach an image (Scrying focus) for this turn; repeatable. Requires a vision-capable model.</param>
     /// <param name="attachment">Bound session attachment GUID to reference; repeatable.</param>
+    /// <param name="preparedContext">Already-resolved effective context for an internal composed CLI route.</param>
     /// <param name="prompt">The prompt text: all words after ask, or after --.</param>
     public async Task<int> Ask(
         string[] escapedArguments,
@@ -65,6 +66,10 @@ public sealed class AskCommand(
         string? frequencyPenalty = null,
         string[]? image = null,
         string[]? attachment = null,
+        IReadOnlyList<AttachedFileDto>? attachedFiles = null,
+        IReadOnlyList<ScryingFocusDto>? preparedScryingFoci = null,
+        string? overrideSpellName = null,
+        CliEffectiveContext? preparedContext = null,
         params string[] prompt)
     {
         string promptText = BuildPrompt(prompt, escapedArguments);
@@ -101,7 +106,10 @@ public sealed class AskCommand(
             return flagsExit == 0 ? 1 : flagsExit;
         }
 
-        List<ScryingFocusDto>? scryingFoci = null;
+        List<ScryingFocusDto>? scryingFoci =
+            preparedScryingFoci is { Count: > 0 }
+                ? [.. preparedScryingFoci]
+                : null;
 
         if (image is { Length: > 0 } imagePaths)
         {
@@ -111,7 +119,10 @@ public sealed class AskCommand(
             string[] allowedMimeTypes =
                 arcanumSettings.Value.Security.AllowedImageMimeTypes ?? [];
 
-            List<ScryingFocusDto> foci = new(imagePaths.Length);
+            List<ScryingFocusDto> foci =
+                scryingFoci is null
+                    ? new(imagePaths.Length)
+                    : new(scryingFoci);
 
             foreach (string imagePath in imagePaths)
             {
@@ -188,7 +199,10 @@ public sealed class AskCommand(
 
         Console.CancelKeyPress += OnCancelKeyPress;
 
-        IAnsiConsole stderrConsole = AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) });
+        IAnsiConsole stderrConsole = CreateStderrConsole(
+            Console.Error,
+            cliEnvironment.ColorEnabled,
+            cliEnvironment.IsInteractive);
 
         bool streamedTokens = false;
 
@@ -225,39 +239,58 @@ public sealed class AskCommand(
 
             string invocationDirectory = Environment.CurrentDirectory;
 
-            CliInferenceContextResult contextResult = await contextResolver
-                .ResolveAsync(
-                    new CliInferenceContextRequest(
-                        campaign,
-                        workspace,
-                        model,
-                        sessionIdOption,
-                        invocationDirectory,
-                        CliInvocationContext.Current.NoContext,
-                        @new),
-                    linked.Token)
-                .ConfigureAwait(false);
+            CliEffectiveContext effectiveContext;
 
-            if (!contextResult.IsSuccess)
+            if (preparedContext is not null)
             {
-                if (contextResult.IsCancelled)
+
+                effectiveContext = preparedContext;
+
+            }
+            else
+            {
+
+                CliInferenceContextResult contextResult = await contextResolver
+                    .ResolveAsync(
+                        new CliInferenceContextRequest(
+                            campaign,
+                            workspace,
+                            model,
+                            sessionIdOption,
+                            invocationDirectory,
+                            CliInvocationContext.Current.NoContext,
+                            @new),
+                        linked.Token)
+                    .ConfigureAwait(false);
+
+                if (!contextResult.IsSuccess)
                 {
-                    return 0;
+
+                    if (contextResult.IsCancelled)
+                    {
+
+                        return 0;
+
+                    }
+
+                    stderrConsole.MarkupLine(
+                        palette.ErrorMarkup(
+                            Markup.Escape(contextResult.Error ?? "CLI context could not be resolved.")));
+
+                    return 1;
+
                 }
 
-                stderrConsole.MarkupLine(
-                    palette.ErrorMarkup(
-                        Markup.Escape(contextResult.Error ?? "CLI context could not be resolved.")));
+                effectiveContext = contextResult.Context!;
 
-                return 1;
-            }
+                foreach (string warning in contextResult.Warnings)
+                {
 
-            CliEffectiveContext effectiveContext = contextResult.Context!;
+                    stderrConsole.MarkupLine(
+                        palette.ErrorMarkup(Markup.Escape("Warning: " + warning)));
 
-            foreach (string warning in contextResult.Warnings)
-            {
-                stderrConsole.MarkupLine(
-                    palette.ErrorMarkup(Markup.Escape("Warning: " + warning)));
+                }
+
             }
 
             string cwd = effectiveContext.Workspace.Value
@@ -311,8 +344,12 @@ public sealed class AskCommand(
                 PresencePenalty: flags.PresencePenalty,
                 FrequencyPenalty: flags.FrequencyPenalty,
                 CampaignId: campaignId,
+                AttachedFiles: attachedFiles is null
+                    ? null
+                    : [.. attachedFiles],
                 ScryingFoci: scryingFoci,
-                AttachmentReferences: attachmentReferences);
+                AttachmentReferences: attachmentReferences,
+                OverrideSpellName: overrideSpellName);
 
             await foreach (IntelligenceEvent evt in apiClient.AskStreamAsync(ping, linked.Token).ConfigureAwait(false))
             {
@@ -527,6 +564,30 @@ public sealed class AskCommand(
 
         return string.Join(' ', parts);
     }
+
+    internal static IAnsiConsole CreateStderrConsole(
+        TextWriter output,
+        bool colorEnabled,
+        bool interactive) =>
+        AnsiConsole.Create(
+            new AnsiConsoleSettings
+            {
+
+                Ansi = colorEnabled
+                    ? AnsiSupport.Detect
+                    : AnsiSupport.No,
+
+                ColorSystem = colorEnabled
+                    ? ColorSystemSupport.Detect
+                    : ColorSystemSupport.NoColors,
+
+                Interactive = interactive
+                    ? InteractionSupport.Detect
+                    : InteractionSupport.No,
+
+                Out = new AnsiConsoleOutput(output),
+
+            });
 
     /// <summary>
     /// Chooses an actionable message when the NDJSON stream completes without a Result (or accumulated text).

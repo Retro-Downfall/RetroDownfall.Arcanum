@@ -559,23 +559,15 @@ public sealed partial class WizardIntelligenceProvider(
             return Result<PromptTurnResult>.Failure(guardrailsInput.Error);
         }
 
-        if (!TryValidateAttachedFiles(request, out Error attachedFilesError))
+        Result preflight = PingRequestPreflightValidator.Validate(
+            request,
+            settings.Value);
+
+        if (preflight.IsFailure)
         {
-            return Result<PromptTurnResult>.Failure(attachedFilesError);
-        }
 
-        Result bounds = PingRequestBoundsValidator.Validate(request, settings.Value);
+            return Result<PromptTurnResult>.Failure(preflight.Error);
 
-        if (bounds.IsFailure)
-        {
-            return Result<PromptTurnResult>.Failure(bounds.Error);
-        }
-
-        Result scryingGate = ValidateScryingGate(request);
-
-        if (scryingGate.IsFailure)
-        {
-            return Result<PromptTurnResult>.Failure(scryingGate.Error);
         }
 
         if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
@@ -866,29 +858,19 @@ public sealed partial class WizardIntelligenceProvider(
             yield break;
         }
 
-        if (!TryValidateAttachedFiles(request, out Error streamAttachedError))
+        Result streamPreflight = PingRequestPreflightValidator.Validate(
+            request,
+            settings.Value);
+
+        if (streamPreflight.IsFailure)
         {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, streamAttachedError.Message);
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Error,
+                streamPreflight.Error.Message);
 
             yield break;
-        }
 
-        Result streamBounds = PingRequestBoundsValidator.Validate(request, settings.Value);
-
-        if (streamBounds.IsFailure)
-        {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, streamBounds.Error.Message);
-
-            yield break;
-        }
-
-        Result streamScryingGate = ValidateScryingGate(request);
-
-        if (streamScryingGate.IsFailure)
-        {
-            yield return new IntelligenceEvent(IntelligenceEventType.Error, streamScryingGate.Error.Message);
-
-            yield break;
         }
 
         if (!InferenceContextBuilder.HasStatelessMessages(request) && string.IsNullOrWhiteSpace(prompt))
@@ -6484,47 +6466,6 @@ public sealed partial class WizardIntelligenceProvider(
 
     }
 
-    /// <summary>
-    /// Scrying — early capability/shape gate, run before any inference token is consumed (right
-    /// alongside the other request-shape validators, ahead of model-resolution/lease work). Validates
-    /// image count/MIME/size via <see cref="ScryingValidator"/>, then — only when the request
-    /// actually carries images — resolves the intended model (mirroring
-    /// <see cref="ProviderResolver.TryResolveProviderForModel"/>'s no-resilience resolution, since
-    /// vision support is a client-input mismatch, not a provider-connectivity concern, so it is never
-    /// retried across fallback candidates) and rejects with <see cref="ErrorCodes.Scrying.VisionNotSupported"/>
-    /// when that model does not declare vision support. Model-resolution failure here is not itself an
-    /// error — the existing Hub.Model failure path (single-lease or fallback resolution) reports it.
-    /// </summary>
-    private Result ValidateScryingGate(PingRequest request)
-    {
-
-        if (!ScryingValidator.RequestContainsImages(request))
-        {
-            return Result.Success();
-        }
-
-        ScryingSettings scrying = settings.Value.ResolveScrying();
-
-        Result shapeValidation = ScryingValidator.ValidateRequestImages(request, scrying);
-
-        if (shapeValidation.IsFailure)
-        {
-            return shapeValidation;
-        }
-
-        if (ProviderResolver.TryResolveProviderForModel(settings.Value, request.Model, out ProviderSettings? provider, out string resolvedModel)
-            && provider is not null
-            && !ProviderResolver.SupportsVision(provider, resolvedModel))
-        {
-            return Result.Failure(new Error(
-                ErrorCodes.Scrying.VisionNotSupported,
-                $"Model '{resolvedModel}' does not support vision. Use a vision-capable model."));
-        }
-
-        return Result.Success();
-
-    }
-
     private static bool HasSessionAttachmentPayload(PingRequest request) =>
         request.AttachedFiles is { Count: > 0 }
         || request.ScryingFoci is { Count: > 0 }
@@ -6532,97 +6473,6 @@ public sealed partial class WizardIntelligenceProvider(
 
     private static int EstimateMaterializedTokens(long materializedBytes) =>
         int.CreateSaturating((Math.Max(0L, materializedBytes) + 3L) / 4L);
-
-    private bool TryValidateAttachedFiles(PingRequest request, out Error error)
-    {
-        List<AttachedFileDto>? files = request.AttachedFiles;
-
-        if (files is null || files.Count == 0)
-        {
-            error = Error.None;
-
-            return true;
-        }
-
-        long maxBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
-            ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
-
-        int maxFiles = ArcanumSettingClamps.MaxAttachedFilesPerRequest(
-            ArcanumRuntimeDefaults.CliMaxAttachedFilesPerRequest);
-
-        int maxPathChars = ArcanumSettingClamps.MaxAttachedFileRelativePathChars(
-            ArcanumRuntimeDefaults.CliMaxAttachedFileRelativePathChars);
-
-        if (files.Count > maxFiles)
-        {
-            error = new Error(
-                ErrorCodes.Validation.AttachedFiles,
-                $"At most {maxFiles} attached files are allowed per request.");
-
-            return false;
-        }
-
-        long maxTotalBytes = maxBytes * maxFiles;
-
-        long totalUtf8 = 0;
-
-        for (int i = 0; i < files.Count; i++)
-        {
-            AttachedFileDto? item = files[i];
-
-            if (item is null)
-            {
-                error = new Error(ErrorCodes.Validation.AttachedFiles, "Attached file entries cannot be null.");
-
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(item.RelativePath))
-            {
-                error = new Error(
-                    ErrorCodes.Validation.AttachedFiles,
-                    "Each attached file must have a non-empty relative path.");
-
-                return false;
-            }
-
-            if (item.RelativePath.Length > maxPathChars)
-            {
-                error = new Error(ErrorCodes.Validation.AttachedFiles, "Attached file path is too long.");
-
-                return false;
-            }
-
-            string content = item.Content ?? string.Empty;
-
-            long utf8Len = Encoding.UTF8.GetByteCount(content);
-
-            if (utf8Len > maxBytes)
-            {
-                error = new Error(
-                    ErrorCodes.Validation.AttachedFiles,
-                    $"Attached file content exceeds the maximum size ({maxBytes} bytes UTF-8).");
-
-                return false;
-            }
-
-            totalUtf8 += utf8Len;
-
-            if (totalUtf8 > maxTotalBytes)
-            {
-                error = new Error(
-                    ErrorCodes.Validation.AttachedFiles,
-                    "Total size of attached files exceeds the allowed limit for this request.");
-
-                return false;
-            }
-        }
-
-        error = Error.None;
-
-        return true;
-
-    }
 
     /// <summary>
     /// Runs the guardrails input filter (Tier 3 Phase 4) when a <see cref="GuardrailsPipeline"/> is

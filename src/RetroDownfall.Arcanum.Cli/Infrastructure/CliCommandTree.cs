@@ -39,6 +39,7 @@ internal static partial class CliCommandTree
         globalOptions = new CliGlobalOptions(json, plain, yes, noContext);
         Command serve = BuildServe(serviceProvider);
         Command ask = BuildAsk(serviceProvider);
+        Command run = BuildRun(serviceProvider);
         Command chat = BuildChat(serviceProvider);
         Command look = BuildLook(serviceProvider);
         Command doctor = BuildDoctor(serviceProvider);
@@ -79,6 +80,7 @@ internal static partial class CliCommandTree
 
         root.Add(serve);
         root.Add(ask);
+        root.Add(run);
         root.Add(chat);
         root.Add(look);
         root.Add(doctor);

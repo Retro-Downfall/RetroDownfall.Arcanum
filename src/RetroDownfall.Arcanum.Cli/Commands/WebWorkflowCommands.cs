@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Cli.UX;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 using RetroDownfall.Arcanum.Core.TheForge;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
@@ -189,6 +191,12 @@ public sealed class WebWorkflowCommands(
         string? outputFormat,
         string? save,
         string? attachToSession,
+        string? workingDirectory,
+        Guid? campaignId,
+        IReadOnlyList<AttachedFileDto>? attachedFiles,
+        IReadOnlyList<ScryingFocusDto>? scryingFoci,
+        InferenceFlagBinder.Parsed? inferenceFlags,
+        bool unattendedMode,
         CancellationToken cancellationToken)
     {
 
@@ -250,6 +258,38 @@ public sealed class WebWorkflowCommands(
                     ContinueSessionId = continuation.Id,
 
                     AttachToSessionId = attachment.Id,
+
+                    WorkingDirectory = workingDirectory ?? string.Empty,
+
+                    CampaignId = campaignId,
+
+                    AttachedFiles = attachedFiles is null
+
+                        ? null
+
+                        : [.. attachedFiles],
+
+                    ScryingFoci = scryingFoci is null
+
+                        ? null
+
+                        : [.. scryingFoci],
+
+                    Temperature = inferenceFlags?.Temperature,
+
+                    TopP = inferenceFlags?.TopP,
+
+                    Stop = inferenceFlags?.Stop,
+
+                    Seed = inferenceFlags?.Seed,
+
+                    ResponseFormat = inferenceFlags?.ResponseFormat,
+
+                    PresencePenalty = inferenceFlags?.PresencePenalty,
+
+                    FrequencyPenalty = inferenceFlags?.FrequencyPenalty,
+
+                    UnattendedMode = unattendedMode,
 
                 },
                 cancellationToken)

@@ -28,7 +28,7 @@ CLI surface changes with `Arcanum.Command.Reference.md`, navigation updates with
 
 **Arcanum** is a **single deployable CLI** that can:
 
-1. Run **terminal-oriented commands** — currently `ask` (single-prompt LLM inference with optional Grimoire thread continuation), `chat` (interactive multi-turn REPL), `look` (workspace perception), `lore` (key-value CRUD), `daemon` (OS-level background service lifecycle plus **API-first** monitoring of Unseen Servant jobs via `daemon jobs`, `daemon initiative`, and Comm Link smoke tests via `daemon alert` when Kestrel is up), plus campaign/session/spell/prompt/ward/trial/apprentice/model/provider verbs that are thin clients over the same HTTP API.
+1. Run **terminal-oriented commands** — currently `run` (unified Agent, research, named-Spell, and dry-run execution), `ask` (single-prompt LLM inference with optional Grimoire thread continuation), `chat` (interactive multi-turn REPL), `look` (workspace perception), `lore` (key-value CRUD), `daemon` (OS-level background service lifecycle plus **API-first** monitoring of Unseen Servant jobs via `daemon jobs`, `daemon initiative`, and Comm Link smoke tests via `daemon alert` when Kestrel is up), plus campaign/session/spell/prompt/ward/trial/apprentice/model/provider verbs that are thin clients over the same HTTP API.
 2. Act as a **long-running HTTP host** exposing a Minimal API surface (the `serve` command).
 
 The codebase is organized as a **multi-project solution**: `Core` (domain primitives, contracts, configuration), `Secrets` (native OS credential stores), `Infrastructure` (Serilog, Data Protection, encrypted Grimoire via EF Core + SQLCipher, workspace scanning, Eye of the World perception, MCP client layer with both subprocess and in-process transports), `Api` (HTTP surface, multi-provider intelligence hub, semantic spell routing, API-key security), and `Cli` (System.CommandLine 2.0.10 entry point). All projects target **Native AOT readiness** where the toolchain allows.
@@ -315,7 +315,7 @@ invocation but still permits independent current-directory Campaign and Workspac
 Effective-value precedence is fixed: **explicit command option → active CLI context →
 current-directory resource detection → server default**. The deepest containing Campaign supplies
 Campaign context, while the deepest containing registered Workspace independently supplies
-Workspace context. `ask` and `chat` accept explicit
+Workspace context. `run`, `ask`, and `chat` accept explicit
 `--workspace` and `--session` in addition to `--campaign` and `--model`, resolve every explicit or
 saved server resource through the authenticated API, and use the effective workspace for Eye of
 the World, Chronosync, MCP workspace scope, file staging, and `PingRequest.WorkingDirectory`.
@@ -338,6 +338,65 @@ a future remote-host client must require an explicit server path and cannot infe
 identity from a client path. `cli-session.txt` remains a temporary last-session mirror for older CLI flows,
 while `cli-context.json.sessionId` is the active-context authority.
 
+**Unified execution entry point:** `arcanum run [prompt...]` is the flexible one-turn CLI surface
+over the existing orchestration paths. Its pipeline is intentionally composed from small bounded
+services: `RunInputReader` resolves positional, redirected, or one-line interactive input;
+`CliInferenceContextResolver` resolves Campaign, Workspace, Session, and Model through the normal
+explicit → saved → current-directory → server precedence; `RunAttachmentStager` converts piped and
+`--with` sources into typed turn content; and `RunExecutionDispatcher` selects ordinary Agent,
+research, forced-Spell, or preview execution. The command reuses `AskCommand`,
+`WebWorkflowCommands`, `ContextCommands`, `InferenceFlagBinder`, and `IResourceSelector<T>` rather
+than creating a second inference client or routing policy.
+
+Positional words remain the user instruction. Redirected stdin is a separate untrusted text source,
+so a pipe and an instruction compose without ambiguous concatenation. If neither is supplied and
+stdin is a TTY, the reader requests exactly one interactive line. Redirected content is counted as
+UTF-8 while it is read and admitted through an exact 10 MiB (10,485,760-byte) ceiling; an oversized
+stream produces no partial content and never reaches context resolution or an API request. An
+unreadable stream also fails before dispatch instead of dropping piped content and continuing with
+only the positional instruction.
+
+Repeated `--with @path` values are bounded client-side current-turn staging, not filesystem
+authority or a request to create a context pin.
+Relative paths resolve against the effective working directory and an explicitly supplied absolute
+path is accepted. Non-image files are decoded as strict UTF-8 without an extension allowlist and
+split on UTF-8 boundaries into the existing server-sized `AttachedFileDto` chunks. Staged text and
+stdin share the server's 32-part, 1-MiB-per-part, 32-MiB aggregate authority; the stdin reader's
+10 MiB ceiling is not imposed on each `--with` file. Existing path and byte checks remain
+authoritative. Recognized images pass through `ScryingFocusStager` and its configured
+MIME/size policy. Text diagnostics report UTF-8 bytes, part count, and lowercase SHA-256; image
+diagnostics report decoded bytes and lowercase SHA-256. Stdin is materialized as the labeled
+`stdin.txt` source. Only typed content and a relative display label cross the API boundary. On live
+routes, the server performs normal current-turn materialization and model-policy checks. With
+Attachments enabled, it persists and Session-binds those text/image values before inference; with
+Attachments disabled, it keeps them in memory for the current turn. The client path itself grants
+no server filesystem authority, and a dry-run never persists staged content.
+
+With no route option, dispatch enters the standard Agent Loop. `--research` calls the sole
+server-owned multi-hop research workflow, preserving effective context, current-turn files/images,
+and supported synthesis controls. `--spell <name>` resolves an exact case-insensitive name or a
+unique case-insensitive name prefix through the shared Spell catalog, then sets the production
+`OverrideSpellName`; forced selection does not replace normal Spell loading, dependency, attunement,
+Ward, or Sanctum policy. `--research` plus `--spell` is the only route conflict. Route selection
+does not add capability restrictions: ordinary and forced-Spell turns retain the production tool
+policy, while research synthesis keeps its pre-existing server-owned `DisableAllTools` untrusted-
+source boundary.
+
+`--dry-run` carries the resolved prompt, context, forced Spell, preview-only files/images, output
+reserve, sampling options, and research-only system/tool policy into
+`POST /api/intelligence/context/inspect`. It always disables retrieval and automatic semantic Spell
+routing, while still resolving an explicitly named Spell. The result is a spend-free static
+pre-inference payload/context plan: it never searches, embeds, calls a provider model, executes a
+tool, reserves turn spend, persists an assistant Entry, or persists staged content. It is not an
+identity-equal copy of the later live `PingRequest`; live Agent dispatch may still add local
+`PatternSnapshot` and `ChronosyncDelta` context at handoff. `--show-content` is the explicit
+authenticated content reveal. Common route flags (`--new`, `--unattended`, model, context,
+temperature, top-p, max tokens, seed, stops, and response format (`json` aliases `json_object`),
+plus penalties) and research bounds remain available on the unified surface. `--new` simply clears
+the continuation Session,
+including when `--session` is also present, rather than adding a second option conflict. Recursive
+`--plain`, `--json`, and `--no-context` retain the process-wide contracts below.
+
 **Command authority:** [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) is the
 complete user-facing reference for CLI syntax, arguments, options, aliases, interactive
 slash commands, output modes, and exit behavior. This design document retains ownership of
@@ -356,7 +415,7 @@ and per-command filters are documented in the command reference.
 
 ### 4.4.1 Auto-launch serve lifecycle
 
-Interactive `chat` / `ask` / **Command Center** call `IArcanumServeLauncher.EnsureRunningAsync` after Grimoire init (Command Center: after host entry, before TG Run):
+Interactive `run` / `chat` / `ask` / **Command Center** call `IArcanumServeLauncher.EnsureRunningAsync` after Grimoire init (Command Center: after host entry, before TG Run):
 
 1. Gate: `ICliEnvironment.IsInteractive` and `ARCANUM_NO_AUTO_SERVE` unset. `NO_COLOR` does **not** disable auto-serve (it only gates color + live layout / Command Center theme).
 2. Authenticated `GET /api/health` (re-reads `ISecretStore` on each poll). Map: 200 → already running; 401/403 → auth failed (do not spawn); 503 → brief retry then failed (do not spawn); TLS failure / timeout → failed (do not spawn — something answered); connection refused / network unreachable / DNS → definite no-listener → proceed.
@@ -394,6 +453,8 @@ One binary; the CLI verb selects the process role (per-command detail in
   noninteractive or `ARCANUM_NO_COMMAND_CENTER=1`.
 - **`serve`** — the long-running HTTP host: builds `WebApplication` with slim defaults and blocks until shutdown.
 - **`ask`** — streams single-prompt inference via NDJSON, then exits (0/1/130).
+- **`run`** — composes positional/piped/interactive input and bounded current-turn files, resolves active
+  context, then dispatches one Agent, research, named-Spell, or read-only preview run.
 - **`chat`** — multi-turn REPL with per-turn cancellation and swap-at-end rendering.
 - Short-lived verbs — `look` / `doctor` run local checks (no HTTP for path checks); `lore`, `daemon jobs|initiative|alert` call the running host's `/api` (Unseen Servant interval control via `/api/unseen-servant/*`, §5.5.2; Comm Link smoke tests via `POST /api/commlink/send`); `daemon install|uninstall|status` drives OS service lifecycle. Bare interactive `arcanum` opens the Command Center (long-lived TUI) until `/exit`; direct `chat` remains the frameless Spectre REPL.
 
@@ -449,7 +510,7 @@ messages, paths, PII, API keys, or stack traces. JSON invocations receive a sour
 
 **Composition:**
 
-- **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and applies embedded SQL schema migrations via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSqlSchemaMigrator`** (raw SQLite + `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`. A key mismatch or unreadable dedicated secret throws the sanitized `GrimoireDatabaseUnavailableException`, so startup fails closed while host/test cleanup can unwind normally; it never terminates the embedding process with `Environment.FailFast`. Legacy databases are transparently re-encrypted to the new KDF on unlock. The same bootstrapper runs from the CLI (`ask` / `chat`) so host and CLI share one migration path (§10.5).
+- **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and applies embedded SQL schema migrations via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSqlSchemaMigrator`** (raw SQLite + `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`. A key mismatch or unreadable dedicated secret throws the sanitized `GrimoireDatabaseUnavailableException`, so startup fails closed while host/test cleanup can unwind normally; it never terminates the embedding process with `Environment.FailFast`. Legacy databases are transparently re-encrypted to the new KDF on unlock. The same bootstrapper runs from the CLI (`run` / `ask` / `chat`) so host and CLI share one migration path (§10.5).
 - **`CampaignLoggerQueue` / `Loremaster`** — bounded `Channel<Guid>` (capacity 100 **session IDs**, not Entry rows) with **non-blocking `TryQueue`**: duplicate session ids coalesce via a pending-marker map; a full channel rejects with a warning log and clears the marker so the session remains eligible for a later sweep (internal sweeps fail-open). Explicit `POST /api/sessions/{id}/rest` returns **202** when accepted/coalesced and **503** + `Session.RestQueueFull` when rejected. Background service `Loremaster` (formerly `CampaignLoggerBackgroundService`) runs hybrid sweeps using **`Session.UnsummarizedEntryCount`** (incremented on every entry append — both the inference path and The Forge `POST /api/sessions/{id}/entries` path, each serialized per-session via **`SessionEntryPersistence`** / **`SessionWriteLock`** + **`SqliteBusyRetry`** so concurrent appends never lose an increment; reset on summarize) instead of full-table `Entries` aggregation. The consume path loads session headers via **`GetSessionHeaderAsync`** (no entry hydration). Headless summarization uses a stateless `PingRequest` with `SkipSpellRouting`, `DisableMcpTools`, `UnattendedMode`, optional `Arcanum:FastModel` (else `DefaultModel`); on success, `UpdateSessionCampaignRollupAsync` atomically sets `Session.Summary`, `LastSummarizedMessageAt`, and the remaining unsummarized count. On inference failure, the watermark is **not** advanced.
 - **`ArcanumDbContext`** — compiled model; SQLCipher passphrase from hosted service.
 - **`SessionRepository`** — implements **`ISessionRepository`** for Forge session CRUD, entry append, export, and analytics. Entry writes delegate shared invariants (lock, retry, limits, counter, UpdatedAt) to internal **`SessionEntryPersistence`**. **`AddEntryAsync`** returns **`Result<Entry>`** for expected domain outcomes (not found, archived, entry limits). **`UpdateSessionAsync`** patches Title/Status only — Grimoire-owned counters and rollups are never clobbered from caller-supplied `Session` rows.
@@ -1005,7 +1066,22 @@ After the dynamic system prompt, rehydrated attachments, and final tool set have
 - **Swap:** when over threshold, **`Session.Summary`** and **`Session.LastSummarizedMessageAt`** must both be present; otherwise a **warning** is logged and history is left unfiltered. When present, Grimoire entries with `CreatedAt <= LastSummarizedMessageAt` are omitted from the inference transcript and the summary is injected via **`SystemPromptBuilder.Build(..., campaignSummary: ...)`** as `### Campaign Summary (compressed context)` (see §10.5). **No `Entry` rows are deleted.** The rebuilt payload is measured again with the same profile and tool/options payload.
 - **Per-call admission:** immediately before every provider call, including structured-output retries, `EnsureContextBudget` first removes the lowest-priority semantic materializations (Saga → workspace RAG → attachment RAG), then may remove oldest complete in-memory tool exchanges. It never removes accepted explicit attachments or half of a tool exchange. It finalizes one breakdown, adjusts the reservation, and passes that same object to `IModelCallExecutor` for identity validation and enforcement. This repeats after each tool result and structured-output correction, so a continuation cannot reuse an obsolete initial count; explicit content that still cannot fit returns `Hub.ContextBudgetExceeded` instead of being silently discarded.
 - **Diagnostics and authority:** native streams emit `context` frames; `/api/intelligence/mana`, audit/session telemetry, Command Center `/mana`, and the non-focusable Command Center Context pane expose profile, classification, margin, and source rows. The pane renders chat history, explicit attachments, refreshed files, attachment RAG, and workspace RAG from the latest immutable call breakdown. It initially labels the total `estimated`, then replaces only the displayed total with valid provider-reported input labeled `billed` when the post-usage frame arrives. Provider-reported usage remains authoritative after a call and is attached separately with signed variance; historical reported values are never rewritten. If the per-turn materialization ledger evicts attachment/workspace semantic chunks for context pressure, the same breakdown carries aggregate dropped chunk/token counters and the pane shows a warning.
-- **Pre-inference preview:** `POST /api/intelligence/context/inspect` and the `context inspect|tools|sources` / `mana` CLI family reuse the production model lease, Spell router, retrieval readers, tool builder and filters, `SystemPromptBuilder.BuildDocument`, compression decision, and `IModelTokenEstimator`. The path never enters `TurnExecutionCoordinator`, persists an assistant Entry, reserves billable turn budget, invokes a tool, or calls the main model. Default responses expose metadata and classified counts only. `showContent` is an authenticated operator opt-in; `noRetrieval` skips the shared query embedding and RAG, and disables automatic semantic Spell routing rather than performing hidden embedding work. Auxiliary routing/embedding attempts are explicit, and absent provider usage remains `unknown`.
+- **Pre-inference preview:** `POST /api/intelligence/context/inspect`, `arcanum run --dry-run`, and
+  the `context inspect|tools|sources` / `mana` CLI family reuse the production model lease, Spell
+  router, retrieval readers, tool builder and filters, `SystemPromptBuilder.BuildDocument`,
+  compression decision, and `IModelTokenEstimator`. The request can carry an explicit
+  `OverrideSpellName`, preview-only `AttachedFiles` / `ScryingFoci`, tool suppression, unattended
+  tool policy, an additional system instruction, output reserve, and production sampling controls.
+  The request passes through
+  the shared native preflight pipeline, including attached-file, request-bound, and Scrying checks.
+  The path never enters `TurnExecutionCoordinator`, persists an assistant Entry or attachment,
+  reserves billable turn budget, invokes a tool, or calls the main model. Default responses expose
+  metadata and classified counts only. `showContent` is an authenticated operator opt-in;
+  `noRetrieval` skips the shared query embedding and RAG and disables automatic semantic Spell
+  routing, while an explicit `OverrideSpellName` still loads and resolves its dependencies.
+  Standalone context inspection can opt into auxiliary routing/retrieval. Unified `run --dry-run`
+  always sets `noRetrieval` and is therefore a spend-free static plan, not an exact live payload;
+  `PatternSnapshot` and `ChronosyncDelta` may still be added by the live CLI handoff.
 - **Delegated Mana:** `DelegatedManaTracker` is scoped through `SubagentExecutionAmbient` and charges provider-authoritative total tokens plus dynamically priced USD cost after every child model call. `BeginModelCall` enforces the delegated turn ceiling before provider I/O. Token/cost overrun is detected immediately after usage is available and terminates the child after its billable operation is recorded; `SubagentParentContextInjector` appends the exact system message `Subagent task failed: Delegated budget exhausted.` to the parent context. The tracker uses interlocked counters plus a cost lock so future parallel children cannot race the ceiling.
 - **Native AOT:** tokenizer creation uses the **`Microsoft.ML.Tokenizers.Data.O200kBase`** data assembly; all new wire/audit/config contracts are source-generated and linker-safe.
 
@@ -1025,11 +1101,21 @@ Closed audit items (writer reuse, scan/cache bounds, Loremaster counter, MCP lin
 - `RequestContainsImages(PingRequest)` — scans `StatelessMessages[].ContentParts` (kind `image_url`) and `ScryingFoci`.
 - `ValidateRequestImages(PingRequest, ScryingSettings)` — when images are present: `Scrying.Enabled` (else `Scrying.FeatureDisabled`, 403), per-request image count vs `MaxImagesPerRequest` (else `Scrying.TooManyImages`, 400), and — **for `data:`-URI images only** (native `ScryingFoci` and any `data:`-URI `image_url` part) — MIME allow-list (`Scrying.UnsupportedMimeType`, 400) and decoded byte size vs `MaxImageBytes` (`Scrying.ImageTooLarge`, 413). `http(s)` URL images are counted toward the cap but not size/MIME-checked — the downstream provider fetches and rejects them, avoiding a HEAD-request side-channel and added latency.
 
-**`WizardIntelligenceProvider`** (`ExecutePromptAsync` and `StreamPromptAsync`) runs `ValidateScryingGate` immediately after `PingRequestBoundsValidator.Validate` and before model-lease resolution: it short-circuits when the request carries no images, otherwise runs `ScryingValidator.ValidateRequestImages` and then resolves the intended model via `ProviderResolver.TryResolveProviderForModel` (the same no-resilience resolution used elsewhere) purely to check `SupportsVision` — failing `Scrying.VisionNotSupported` (400) when unsupported. This is a client-input mismatch, not a provider-connectivity concern, so it is **never retried across resilience fallback candidates**; a model-resolution failure here is not itself an error (the existing `Hub.Model` path reports it later). This single gate covers `POST /api/intelligence/ping(-stream)`, spell/prompt execute routes, Unseen Servant daemon jobs, and Apprentice step execution — all route through `WizardIntelligenceProvider`.
+**`WizardIntelligenceProvider`** (`ExecutePromptAsync`, `StreamPromptAsync`, and context preview) and
+research synthesis use `PingRequestPreflightValidator` before model-lease or search-provider work.
+That shared pipeline validates attached-file shape/size, `PingRequestBoundsValidator`, and Scrying
+shape/model capability in order. The Scrying portion short-circuits when the request carries no
+images; otherwise it runs `ScryingValidator.ValidateRequestImages` and resolves the intended model
+via `ProviderResolver.TryResolveProviderForModel` purely to check `SupportsVision`, failing
+`Scrying.VisionNotSupported` (400) when unsupported. This is a client-input mismatch, not a
+provider-connectivity concern, so it is **never retried across resilience fallback candidates**; a
+model-resolution failure here is not itself an error (the existing `Hub.Model` path reports it
+later). This shared preflight covers native ping/stream, spell/prompt execution, preview, research,
+Unseen Servant daemon jobs, and Apprentice step execution through the provider.
 
 **`OpenAiV1Endpoints`** (`/v1/chat/completions`) runs the equivalent gate independently, before the shared provider is called: after resolving `ProviderSettings`/canonical model, it checks `ScryingValidator.RequestContainsImages(ping)` on the mapped `PingRequest`, then `ScryingValidator.ValidateRequestImages`, then `ProviderResolver.SupportsVision(resolvedProvider, resolvedModel)` — returning an OpenAI-shaped `400 invalid_request_error` (`code: "vision_not_supported"`) or `403` (`code: "feature_disabled"`) as appropriate, before any inference call. This means the `WizardIntelligenceProvider`-level gate is a defense-in-depth backstop for `/v1`, not the primary enforcement point for that surface.
 
-**Multimodal content mapping (`InferenceContextBuilder`):** `image_url` parts map to `Microsoft.Extensions.AI` content based on URI scheme — `data:` URIs decode to `DataContent` (raw bytes + parsed MIME) so the provider receives the actual payload; `http(s)` URIs map to `UriContent` unchanged (provider fetches). Native `PingRequest.ScryingFoci` / `AttachedFiles` are appended as `DataContent` / text onto the current turn's final message in `BuildInitialMeAiChatMessages`. When **`Arcanum:Features:Attachments`** is enabled and the host attachment store path is active (Command Center + serve host), those foci/files are **persisted before the model call** as session attachments — bytes under `~/.config/arcanum/attachments/` plus `SessionAttachments` Grimoire metadata (§10.2.5). **`arcanum chat`** (and frameless `ask` staging) remain **ephemeral** — threaded onto the in-memory chat message list only; `Entry` rows still store text content only.
+**Multimodal content mapping (`InferenceContextBuilder`):** `image_url` parts map to `Microsoft.Extensions.AI` content based on URI scheme — `data:` URIs decode to `DataContent` (raw bytes + parsed MIME) so the provider receives the actual payload; `http(s)` URIs map to `UriContent` unchanged (provider fetches). `BuildInitialMeAiChatMessages` appends native `PingRequest.ScryingFoci` as `DataContent` on the current turn's final message; `AttachedFiles` are instead rendered as untrusted text in `SystemPromptBuilder`'s Attached Files DCI block. When **`Arcanum:Features:Attachments`** is enabled and the host attachment store path is active, those foci/files are **persisted and Session-bound before the model call** — bytes under `~/.config/arcanum/attachments/` plus `SessionAttachments` Grimoire metadata (§10.2.5). With Attachments disabled they remain in-memory current-turn content. Live `arcanum run` Agent, named-Spell, and research-synthesis routes use this normal pipeline; `run --dry-run` bypasses persistence. `Entry` rows still store text content only.
 
 **Multimodal token accounting:** an image is charged by a configured/provider formula only when that formula is actually available. Otherwise `UnknownImageTokenReserve` (or the profile override) is applied per image with `unknown` classification and reduced confidence. Arcanum never derives or reports an exact image-token count from encoded byte length.
 
@@ -1240,7 +1326,7 @@ The provider persists through `IGrimoireRepository`. When `sessionId` is set, pr
 
 **Problem:** the API host's cwd is not the operator's shell cwd.
 
-**Solution:** `PingRequest` carries `WorkingDirectory`, `ContextSnapshot` (`PatternSnapshot`), optional `SessionId`, optional `StatelessMessages` (`CoreChatMessage[]` transcript for stateless callers), optional `AttachedFiles`, optional `ChronosyncDelta` (`ChronosyncReport`), and optional `DataStreams` (reserved for future real-time JSON injection). The CLI resolves `Environment.CurrentDirectory`, runs Eye of the World, runs `IChronosyncEngine` inside a DI scope against the local Grimoire, and populates these fields before each HTTP call. CLI bootstrap (`ask`, `chat`) reuses `IGrimoireCliInitialization` once per process so SQLCipher setup and first-run migrations match the host (`GrimoireDatabaseBootstrapper`, shared with `GrimoireDatabaseHostedService`).
+**Solution:** `PingRequest` carries `WorkingDirectory`, `ContextSnapshot` (`PatternSnapshot`), optional `SessionId`, optional `StatelessMessages` (`CoreChatMessage[]` transcript for stateless callers), optional `AttachedFiles`, optional `ChronosyncDelta` (`ChronosyncReport`), and optional `DataStreams` (reserved for future real-time JSON injection). For live `run` Agent/Spell, `ask`, and `chat` inference, the CLI resolves `Environment.CurrentDirectory`, runs Eye of the World, runs `IChronosyncEngine` inside a DI scope against the local Grimoire, and populates these fields before the inference HTTP call; `run --dry-run` deliberately remains a static server preview and may omit the locally produced snapshot/delta until live handoff. CLI bootstrap (`run`, `ask`, `chat`) reuses `IGrimoireCliInitialization` once per process so SQLCipher setup and first-run migrations match the host (`GrimoireDatabaseBootstrapper`, shared with `GrimoireDatabaseHostedService`).
 
 **`SystemPromptBuilder.Build` ordering (DCI blocks):**
 
@@ -2170,13 +2256,21 @@ server renderer is configured. No client-side renderer or egress bypass exists.
 
 `POST /api/web/research` is the only research orchestrator. `WebResearchWorkflowService` validates
 1–20 sources, 1–5 hops, 64–32,768 synthesis tokens, and a nonnegative optional reported-cost
-ceiling. It emits NDJSON `limits`, `progress`, `result`, or `error` frames. Search hops execute on
-the server, citation URLs are deduplicated before at most `maxSources` static reads, and the final
+ceiling. Before any provider search it also resolves Campaign-only context to the server-host
+working directory, validates continuing/attachment target Sessions, and runs the prospective
+synthesis `PingRequest` through the shared native preflight pipeline. It emits NDJSON `limits`,
+`progress`, `result`, or `error` frames. Search hops execute on the server, citation URLs are
+deduplicated before at most `maxSources` static reads, and the final
 model call receives a bounded untrusted-data prompt with all tools disabled. The synthesis model,
 token accounting, inference audit (`requestType:research`), and optional existing `SessionId` stay
-inside the host. Reported search-provider cost is checked between hops; no additional hop begins
-after the ceiling is exceeded. Progress stages are `searching`, `fetching`, `rendering`, and
-`synthesizing`.
+inside the host. The request also accepts effective `WorkingDirectory` / `CampaignId`, current-turn
+`AttachedFiles` / `ScryingFoci`, and production temperature, top-p, stop, seed, response-format,
+and penalty controls. The CLI normalizes `json` to `json_object` before dispatch. Those values are carried into the
+preflighted final synthesis `PingRequest`; live text/image values use the normal attachment pipeline
+and are persisted and Session-bound when Attachments are enabled, or remain in-memory when disabled.
+The research `tokenBudget` remains its output-token authority. Reported search-provider cost is checked
+between hops; no additional hop begins after the ceiling is exceeded. Progress stages are
+`searching`, `fetching`, `rendering`, and `synthesizing`.
 
 The CLI reserves stdout for the final payload and stderr for visible limits, progress, save/attach
 receipts, and errors, so piping remains deterministic. Terminal and Markdown outputs contain
@@ -2184,7 +2278,11 @@ numbered citation references; JSON emits one source-generated `Web*WorkflowResul
 performs a same-directory temporary write followed by atomic replacement. `--attach-to-session`
 persists the final Markdown through `ISessionAttachmentStore` only when attachments are enabled and
 the target session exists. `--continue-session` binds the server synthesis turn to the selected
-session; session selectors use the shared exact-ID/exact-name/unique-prefix rules.
+session; session selectors use the shared exact-ID/exact-name/unique-prefix rules. Persisting the
+final research Markdown is separate from live synthesis-context attachment persistence.
+`arcanum run --research` is the unified projection of the same endpoint: it adds positional/pipe
+composition, repeated current-turn `--with @path` staging, active Campaign/Workspace/Session/Model
+resolution, common inference options, and `--dry-run`, without adding another research loop.
 
 **Providers:** `PerplexityWebProvider` performs one non-streaming
 `POST https://api.perplexity.ai/v1/sonar` call and preserves provider citation indices/order,
@@ -2751,7 +2849,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 ### 16.6 CLI UX surface (Spectre.Console + Command Center)
 
 - **Command Center** (bare interactive `arcanum`): Terminal.Gui fixed viewport; hard-modal arbitration (Wards > HumanPrompt); attachment `[Snapshot]`/`[Live]`/`[Stale]` badges, loaded/disk version metadata, watcher-driven backend revalidation, and `/attachments refresh <name>` when enabled (§10.2.5); `ARCANUM_NO_COMMAND_CENTER=1` escapes to usage.
-- **Frameless `ask`/`chat`:** Spectre banner, effective-context header, mana bar, `@file`/`@image` staging (chat ephemeral; CC host-persists), TTY/`NO_COLOR` theme gating, atomic owner-only `cli-context.json` plus the temporary `cli-session.txt` mirror.
+- **Frameless `run`/`ask`/`chat`:** Spectre input/output, effective-context resolution, and bounded file/image staging; live `run` sources use the normal host attachment pipeline while its dry-run is non-persistent. TTY/`NO_COLOR` theme gating and atomic owner-only `cli-context.json` plus the temporary `cli-session.txt` mirror remain shared CLI infrastructure.
 - **doctor:** themed panels + optional `--json` `DoctorReport`.
 
 ### 16.7 Reliability & Performance Hardening

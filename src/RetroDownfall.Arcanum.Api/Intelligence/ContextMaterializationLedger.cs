@@ -246,7 +246,9 @@ public sealed class ContextMaterializationLedger
                         entry.ContentHash,
                         candidate.ContentHash,
                         StringComparison.OrdinalIgnoreCase)
-                    && entry.Identity.Range == candidate.Range))
+                    && entry.Identity.Range == candidate.Range
+                    && (entry.SourceKind != ContextMaterializationSourceKind.CurrentTurnAttachment
+                        || candidate.SourceKind != ContextMaterializationSourceKind.CurrentTurnAttachment)))
         {
 
             return Reject(candidate, ContextMaterializationRejection.DuplicateContentRange);

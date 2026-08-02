@@ -37,10 +37,10 @@ test, and documentation citations remain stable.
 | POST | `/api/intelligence/human-response` | Submit human-in-the-loop answer. |
 | POST | `/api/intelligence/arsenal` | Spell names, metadata-only `SpellSummary[]`, native tools, and MCP server status. |
 | POST | `/api/intelligence/mana` | Read-only diagnostic Mana (token) counter (`ApiResponse<ManaCountResult>`; body `ManaCountRequest` { `messages`, `prompt`, `model`, `tools` }). |
-| POST | `/api/intelligence/context/inspect` | Read-only effective-turn preview (`ContextPreviewRequest` → `ApiResponse<ContextPreviewResult>`); reuses production routing, retrieval, tool policy, DCI assembly, compression, and token accounting without main inference, tool invocation, or assistant-entry persistence. |
+| POST | `/api/intelligence/context/inspect` | Read-only effective-turn preview (`ContextPreviewRequest` → `ApiResponse<ContextPreviewResult>`); accepts optional forced-Spell, preview-only text/image context, tool/system-prompt shaping, and inference-option fields while reusing production assembly components without main inference, tool invocation, attachment persistence, or assistant-entry persistence. |
 | POST | `/api/web/search` | First-class bounded web search (`WebSearchWorkflowRequest` → `ApiResponse<WebSearchWorkflowResult>`; citations and provider usage; DESIGN §11.27). |
 | POST | `/api/web/browse` | First-class bounded static page read (`WebBrowseWorkflowRequest` → `ApiResponse<WebBrowseWorkflowResult>`; JavaScript mode degrades explicitly when no renderer is configured; DESIGN §11.27). |
-| POST | `/api/web/research` | Server-owned bounded multi-hop research as NDJSON `WebResearchStreamFrame` lines (limits/progress/result/error; DESIGN §11.27). |
+| POST | `/api/web/research` | Server-owned bounded multi-hop research as NDJSON `WebResearchStreamFrame` lines (limits/progress/result/error); the request can carry effective Campaign/Workspace/Session/Model context, current-turn text/image context, and synthesis sampling controls (DESIGN §11.27). |
 | GET | `/api/mcp` | List managed MCP servers (`ApiResponse<McpServerInfo[]>`; DESIGN §5.6). |
 | GET | `/api/mcp/{name}` | One managed MCP server (`ApiResponse<McpServerInfo>`); optional `workingDirectory` query for disambiguation. |
 | POST | `/api/mcp/{name}/start` | Start one MCP server (`ApiResponse<bool>`); optional `workingDirectory` query. |
@@ -225,6 +225,7 @@ test, and documentation citations remain stable.
 | Route | Wire format | Section |
 |-------|-------------|---------|
 | `POST /api/intelligence/ping-stream` | NDJSON event lines (`application/x-ndjson`) | §8.5 |
+| `POST /api/web/research` | NDJSON `WebResearchStreamFrame` lines (`limits`, `progress`, `result`, or `error`) | §8.10.3 / DESIGN §11.27 |
 | `POST /api/spells/{name}/execute-stream` | NDJSON `IntelligenceEvent` lines (`application/x-ndjson`) | DESIGN §19 |
 | `POST /api/prompts/{id}/execute-stream` | NDJSON `IntelligenceEvent` lines (`application/x-ndjson`) | DESIGN §19 |
 | `GET /api/events/daemon` | SSE `DaemonEvent` frames (`text/event-stream`) | §8.11 |
@@ -353,11 +354,64 @@ Read-only model-aware estimate (`ManaCountRequest` → `ManaCountResult`); no in
 
 ### 8.10.2 Effective context preview (`POST /api/intelligence/context/inspect`)
 
-`ContextPreviewRequest` accepts an optional `prompt`, `model`, `workingDirectory`, `sessionId`, and `campaignId`, plus `showContent` and `noRetrieval`. An empty prompt is valid so an existing Session can be inspected as it stands. The response reports the effective provider/model and context window, selected Spell and routing mode, resonant dependencies, included and excluded tools with reasons, every `ContextTokenSource` row with estimate classification, reserved output, the production compression decision, and auxiliary routing/embedding work.
+`ContextPreviewRequest` accepts optional `prompt`, `model`, `workingDirectory`, `sessionId`, and
+`campaignId`, plus `showContent` and `noRetrieval`. Unified-run previews can additionally supply
+`overrideSpellName`, preview-only `attachedFiles` (`AttachedFileDto[]`) and `scryingFoci`
+(`ScryingFocusDto[]`), `disableAllTools`, `unattendedMode`, `additionalSystemPrompt`,
+`maxOutputTokens`, and the production sampling fields `temperature`, `topP`, `stop`, `seed`, `responseFormat`,
+`presencePenalty`, and `frequencyPenalty`. The assembled request passes through the shared native
+preflight validation pipeline used by live inference, including attached-file, request-bound, and
+Scrying validation. An empty prompt is valid so an existing Session can be inspected as it stands.
+The response reports the effective provider/model and context window, selected Spell and routing
+mode, resonant dependencies, included and excluded tools
+with reasons, every `ContextTokenSource` row with estimate classification, reserved output, the
+production compression decision, and auxiliary routing/embedding work.
 
 Prompt input uses the production ping bound. When `campaignId` is supplied without `workingDirectory`, the endpoint resolves the Campaign's server-host path exactly as buffered and streaming inference do; an unknown Campaign returns **404**.
 
-The endpoint uses `WizardIntelligenceProvider`'s production routing, RAG readers, tool builder and policy filters, `SystemPromptBuilder.BuildDocument`, `InferenceContextBuilder.TryApplyContextCompressionIfNeeded`, and `IModelTokenEstimator`. It never enters the turn coordinator, invokes a tool, reserves turn budget, creates an assistant Entry, or calls the main inference model. `noRetrieval:true` skips embedding/RAG and automatic semantic Spell routing, with explicit unavailable reasons. Model-visible content is omitted unless `showContent:true`; that opt-in returns the assembled system prompt and messages through the authenticated operator API. Pre-call token values are labeled `exact`, `estimated`, `unknown`, or `reserved`; provider-reported values are never fabricated.
+The endpoint uses `WizardIntelligenceProvider`'s production routing, RAG readers, tool builder and
+policy filters, `SystemPromptBuilder.BuildDocument`,
+`InferenceContextBuilder.TryApplyContextCompressionIfNeeded`, and `IModelTokenEstimator`. It never
+enters the turn coordinator, invokes a tool, reserves turn budget, creates an assistant Entry,
+persists preview files/images as attachments, or calls the main inference model.
+`overrideSpellName` uses the same forced-Spell load and dependency resolution as a live turn and
+continues to resolve when `noRetrieval:true`; only automatic semantic Spell routing is skipped.
+`disableAllTools` and `additionalSystemPrompt` let a research dry run reproduce synthesis policy
+without executing it. `noRetrieval:true` skips embedding/RAG and automatic semantic Spell routing,
+with explicit unavailable reasons. Model-visible content is omitted unless `showContent:true`; that
+opt-in returns the assembled system prompt and messages through the authenticated operator API.
+Pre-call token values are labeled `exact`, `estimated`, `unknown`, or `reserved`; provider-reported
+values are never fabricated.
+
+`arcanum run --dry-run` always requests `noRetrieval:true`, making it a spend-free static,
+pre-inference plan rather than an exact copy of the eventual live `PingRequest`. It validates and
+shows the resolved user payload, forced Spell, server context, tool policy, output reserve, and
+sampling controls without search or provider inference. A later live Agent handoff may still add
+locally produced `PatternSnapshot` and `ChronosyncDelta` context before inference.
+
+### 8.10.3 Web research workflow request (`POST /api/web/research`)
+
+`WebResearchWorkflowRequest` retains the bounded `question`, `maxSources`, `maxHops`, `model`,
+`tokenBudget`, optional `costBudgetUsd`, `continueSessionId`, and `attachToSessionId` fields. It also
+accepts optional `workingDirectory`, `campaignId`, current-turn `attachedFiles`, current-turn
+`scryingFoci`, and synthesis controls `temperature`, `topP`, `stop`, `seed`, `responseFormat`,
+`presencePenalty`, `frequencyPenalty`, and `unattendedMode`. These additions let `arcanum run --research` carry the
+same effective Campaign, Workspace, Session, Model, and explicit turn context as the ordinary Agent
+route. `tokenBudget` remains the synthesis output-token authority.
+
+Before any search-provider work, the server validates the research bounds and prospective synthesis
+request, resolves a Campaign-only request to its server-host working directory, and validates the
+continuing and attachment target Sessions. It then performs the search hops and bounded reads and
+uses the preflighted `PingRequest` for final synthesis. The research-only untrusted-source system
+instruction and `DisableAllTools` remain server-owned. Client filesystem paths are never
+dereferenced by this endpoint: callers send typed content, and the host validates and materializes
+it through the normal inference path.
+
+On live synthesis, supplied `attachedFiles` and `scryingFoci` enter the normal attachment pipeline:
+when Attachments are enabled they are persisted and bound to the synthesis Session before model
+inference; when Attachments are disabled they remain in-memory current-turn content. A context
+preview never persists them. `attachToSessionId` is separate: it stores the final research Markdown,
+not the supplied synthesis context.
 
 ### 8.11 Daemon event SSE bus (`GET /api/events/daemon`)
 

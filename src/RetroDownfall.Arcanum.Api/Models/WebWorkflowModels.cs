@@ -1,5 +1,7 @@
 using System.Text.Json.Serialization;
 
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
 namespace RetroDownfall.Arcanum.Api.Models;
 
 public sealed record WebSearchWorkflowRequest
@@ -48,6 +50,30 @@ public sealed record WebResearchWorkflowRequest
     public Guid? ContinueSessionId { get; init; }
 
     public Guid? AttachToSessionId { get; init; }
+
+    public string WorkingDirectory { get; init; } = string.Empty;
+
+    public Guid? CampaignId { get; init; }
+
+    public List<AttachedFileDto>? AttachedFiles { get; init; }
+
+    public List<ScryingFocusDto>? ScryingFoci { get; init; }
+
+    public float? Temperature { get; init; }
+
+    public float? TopP { get; init; }
+
+    public IReadOnlyList<string>? Stop { get; init; }
+
+    public long? Seed { get; init; }
+
+    public string? ResponseFormat { get; init; }
+
+    public float? PresencePenalty { get; init; }
+
+    public float? FrequencyPenalty { get; init; }
+
+    public bool UnattendedMode { get; init; }
 
 }
 

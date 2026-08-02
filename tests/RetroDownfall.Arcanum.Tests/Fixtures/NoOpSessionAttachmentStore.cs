@@ -7,6 +7,8 @@ internal sealed class NoOpSessionAttachmentStore(
     SessionAttachmentRecord? record = null) : ISessionAttachmentStore
 {
 
+    public int PersistNewCallCount { get; private set; }
+
     public Task<SessionAttachmentRecord> PersistNewAsync(
         Guid? sessionId,
         string? pendingTurnId,
@@ -16,22 +18,42 @@ internal sealed class NoOpSessionAttachmentStore(
         ReadOnlyMemory<byte> bytes,
         string mimeType,
         SessionAttachmentKind kind,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult(new SessionAttachmentRecord(
+        CancellationToken cancellationToken = default)
+    {
+
+        PersistNewCallCount++;
+
+        return Task.FromResult(new SessionAttachmentRecord(
+
             Guid.NewGuid(),
+
             sessionId,
+
             entryId,
+
             pendingTurnId,
+
             sessionId is null ? SessionAttachmentState.Pending : SessionAttachmentState.Bound,
+
             logicalNameHint,
+
             originalFileName,
+
             1,
+
             "noop",
+
             "noop",
+
             mimeType,
+
             bytes.Length,
+
             kind,
+
             DateTimeOffset.UtcNow));
+
+    }
 
     public Task PromotePendingAsync(
         string pendingTurnId,

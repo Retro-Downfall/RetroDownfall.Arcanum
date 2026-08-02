@@ -392,7 +392,35 @@ internal static class IntelligenceEndpoints
 
                     SessionId: body.SessionId,
 
-                    CampaignId: body.CampaignId);
+                    AttachedFiles: body.AttachedFiles,
+
+                    OverrideSpellName: body.OverrideSpellName,
+
+                    Temperature: body.Temperature,
+
+                    TopP: body.TopP,
+
+                    MaxOutputTokens: body.MaxOutputTokens,
+
+                    Stop: body.Stop,
+
+                    Seed: body.Seed,
+
+                    ResponseFormat: body.ResponseFormat,
+
+                    PresencePenalty: body.PresencePenalty,
+
+                    FrequencyPenalty: body.FrequencyPenalty,
+
+                    CampaignId: body.CampaignId,
+
+                    AdditionalSystemPrompt: body.AdditionalSystemPrompt,
+
+                    ScryingFoci: body.ScryingFoci,
+
+                    DisableAllTools: body.DisableAllTools,
+
+                    UnattendedMode: body.UnattendedMode);
 
                 Result previewBounds = PingRequestBoundsValidator.Validate(
 

@@ -4989,6 +4989,49 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
+
+    public async Task CurrentTurnAttachedFileParts_WithIdenticalBytes_AllReachTheModel()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("complete");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+
+                Prompt = "inspect every part",
+
+                SkipSpellRouting = true,
+
+                DisableMcpTools = true,
+
+                AttachedFiles =
+                [
+
+                    new AttachedFileDto("repeat.part-0001.txt", "identical chunk"),
+
+                    new AttachedFileDto("repeat.part-0002.txt", "identical chunk"),
+
+                ],
+
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        string systemPrompt = ExtractSystemPromptText(chat.LastBufferedMessages);
+
+        Assert.Contains("repeat.part-0001.txt", systemPrompt, StringComparison.Ordinal);
+
+        Assert.Contains("repeat.part-0002.txt", systemPrompt, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public async Task ScenarioScrying02_VisionCapableModel_AcceptsImageAndSucceeds()
     {
 
@@ -6794,6 +6837,162 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
     [Fact]
 
+    public async Task ContextPreview_ExplicitSpellAndTransientAttachments_AreAssembledWithoutInferenceOrPersistence()
+
+    {
+
+        await CreateSpellAsync(
+
+            "preview-explicit",
+
+            "PreviewExplicit",
+
+            dependencies: null,
+
+            body: "Follow the explicit preview Spell.");
+
+        ArcanumSettings settings = DefaultSettings() with
+
+        {
+
+            Providers =
+
+            [
+
+                DefaultProvider() with
+
+                {
+
+                    Models = [new ModelEntry(ModelName, SupportsVision: true)],
+
+                },
+
+            ],
+
+        };
+
+        ScriptingChatClient chat = new();
+
+        NoOpSessionAttachmentStore attachments = new();
+
+        FakeGrimoireRepository grimoire = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+
+            chat,
+
+            settings,
+
+            grimoire,
+
+            sessionAttachmentStore: attachments);
+
+        Result<ContextPreviewResult> preview = await wizard.PreviewContextAsync(
+
+            new ContextPreviewRequest(
+
+                Prompt: "inspect explicit context",
+
+                Model: ModelName,
+
+                WorkingDirectory: _workspace.Root,
+
+                ShowContent: true,
+
+                NoRetrieval: true,
+
+                OverrideSpellName: "PreviewExplicit",
+
+                AttachedFiles:
+
+                [
+
+                    new AttachedFileDto(
+
+                        "notes.txt",
+
+                        "operator-provided preview notes"),
+
+                ],
+
+                ScryingFoci:
+
+                [
+
+                    new ScryingFocusDto(
+
+                        Convert.ToBase64String([1, 2, 3]),
+
+                        "image/png"),
+
+                ],
+
+                DisableAllTools: true,
+
+                AdditionalSystemPrompt: "Use research synthesis policy.",
+
+                MaxOutputTokens: 1_200),
+
+            CancellationToken.None);
+
+        Assert.True(preview.IsSuccess);
+
+        Assert.Equal("PreviewExplicit", preview.Value.SelectedSpell);
+
+        Assert.Equal("explicitOverride", preview.Value.RoutingMode);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+        Assert.Equal(0, chat.StreamingCallCount);
+
+        Assert.Equal(0, attachments.PersistNewCallCount);
+
+        Assert.Null(grimoire.LastAssistantEntryId);
+
+        Assert.NotNull(preview.Value.Content);
+
+        Assert.Contains(
+
+            "operator-provided preview notes",
+
+            preview.Value.Content.SystemPrompt,
+
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+
+            "Use research synthesis policy.",
+
+            preview.Value.Content.SystemPrompt,
+
+            StringComparison.Ordinal);
+
+        ContextPreviewSource explicitAttachments = Assert.Single(
+
+            preview.Value.Sources,
+
+            static source => source.Source == ContextTokenSource.ExplicitAttachments);
+
+        Assert.True(explicitAttachments.Included);
+
+        Assert.Equal(
+
+            TokenEstimateClassification.Unknown,
+
+            explicitAttachments.Classification);
+
+        Assert.Equal(1_200, preview.Value.Tokens.ReservedOutputTokens);
+
+        Assert.DoesNotContain(
+
+            preview.Value.Tools,
+
+            static tool => tool.Included);
+
+    }
+
+    [Fact]
+
     public async Task ContextPreview_ShowContent_ReturnsExactAssembledPromptOnlyWhenRequested()
 
     {
@@ -6924,7 +7123,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         IBudgetReservationService? budgetReservationService = null,
         ILogger<WizardIntelligenceProvider>? logger = null,
         ILogger<ToolExecutionPipeline>? toolLogger = null,
-        ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null)
+        ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
+        ISessionAttachmentStore? sessionAttachmentStore = null)
     {
         settings ??= DefaultSettings();
 
@@ -6976,6 +7176,8 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         budgetMonitor ??= CreateBudgetMonitor(settings);
 
+        sessionAttachmentStore ??= new NoOpSessionAttachmentStore();
+
         GrimoireTurnWriter grimoireTurnWriter = new(
             grimoire,
             new SessionEventHub(NullLogger<SessionEventHub>.Instance),
@@ -6993,7 +7195,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                 new TestOptionsSnapshot<ArcanumSettings>(settings),
                 ward,
                 sanctumGuard,
-                new NoOpSessionAttachmentStore(),
+                sessionAttachmentStore,
                 toolLogger ?? NullLogger<ToolExecutionPipeline>.Instance,
                 grimoireTurnWriter: grimoireTurnWriter),
             grimoireTurnWriter,
@@ -7012,7 +7214,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             new StructuredOutputValidator(),
             new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
             budgetMonitor,
-            new NoOpSessionAttachmentStore(),
+            sessionAttachmentStore,
             new HumanPromptRegistry(),
             healthTracker: null,
             guardrailsPipeline: guardrailsPipeline,

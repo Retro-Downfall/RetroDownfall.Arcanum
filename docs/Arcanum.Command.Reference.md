@@ -13,7 +13,8 @@ Options marked repeatable may be supplied more than once. System.CommandLine res
 expansion is disabled: an `@filename` value is application syntax only where this reference says
 the command reads from a file. Supported values include spell bodies and execution input, prompt
 templates and execution input, Apprentice goals/plans, Trial inquisitors, and MCP/tool invocation
-JSON. Redirected stdin is used where explicitly documented, notably secret and tool-argument input.
+JSON. Redirected stdin is used where explicitly documented, notably `run`, secret, and
+tool-argument input.
 
 ## Global options
 
@@ -52,6 +53,10 @@ Command-specific refinements:
 
 - `ask` returns `0` on success, `1` for empty prompt, inference-option, stream, or API failure, and
   `130` when the in-flight turn is cancelled.
+- `run` returns `0` when its selected route or dry-run preview succeeds, `1` for a live
+  execution/stream/API failure, `2` for invalid input, staging, context, or route selection, and
+  `130` when cancelled.
+  An over-limit redirected input exits `2` before dispatch and is never truncated.
 - `chat` returns `0` after a clean REPL exit and `1` if any turn failed. Ctrl+C during a turn
   cancels that turn and returns to the prompt rather than exiting `130`.
 - Bare Command Center returns `0` after `/exit` or `/quit`, for non-interactive usage, and when
@@ -71,6 +76,7 @@ Some options are nullable in the generated parser so handlers can resolve saved 
 | Command | Runtime requirement |
 |---|---|
 | `ask` | A non-empty prompt is required. |
+| `run` | A positional/interactive instruction, non-empty redirected stdin, or at least one valid `--with @path` source is required. |
 | `campaign create` | `--name` and `--path` are required. |
 | `campaign import` | `--file` is required. |
 | `campaign codex put` | `--file` is required. |
@@ -193,11 +199,78 @@ Runs one inference turn and streams the answer. Prompt words are joined in order
 | `--max-tokens <max-tokens>` | Maximum output tokens; any positive integer is accepted. |
 | `--seed <seed>` | Optional signed 64-bit sampling seed; provider support varies. |
 | `--stop <stop>` | Stop sequence; repeat the option to supply several sequences. |
-| `--response-format <response-format>` | Response format: text, json_object, or json_schema. |
+| `--response-format <response-format>` | Response format: text, json (alias of json_object), json_object, or json_schema. |
 | `--presence-penalty <presence-penalty>` | Presence penalty from -2 through 2. |
 | `--frequency-penalty <frequency-penalty>` | Frequency penalty from -2 through 2. |
 | `--image <image>` | Local image path to stage as a Scrying focus; repeatable, constrained by configured size and allowed MIME types, and requires a vision-capable model. |
 | `--attachment <attachment>` | Bound attachment GUID to include; repeatable. |
+
+### `arcanum run`
+
+Run one prompt through the unified execution entry point. Interactive use can auto-start the local
+host.
+
+The optional positional words are joined in order as the instruction. Redirected standard input
+is additional, untrusted turn context rather than a replacement for that instruction, so
+`cat error.log | arcanum run "Explain this"` preserves both values. With no positional input and
+an interactive stdin, `run` prompts once for one line. Redirected input is buffered to an exact
+10 MiB (10,485,760 UTF-8 byte) ceiling; one byte beyond the ceiling or a stream read failure fails
+clearly with no partial dispatch, silent truncation, or positional-only fallback.
+
+Repeat `--with @path` to stage files for this turn. Relative paths resolve from the effective
+working directory, while an explicitly supplied absolute path is honored. Text staging uses strict
+UTF-8 and does not impose a filename-extension allowlist; recognized images use the existing
+Scrying MIME, size, and model-capability checks. Text and stdin share the existing request authority:
+at most 32 UTF-8-safe `AttachedFileDto` parts of 1 MiB each, and 32 MiB aggregate. The 10 MiB stdin
+reader ceiling is not a separate per-file ceiling for `--with`. Diagnostics report UTF-8 byte count,
+part count, and SHA-256 for text; image diagnostics report decoded byte count and SHA-256. The client
+sends images as `ScryingFocusDto` values, and the client filesystem
+path is never treated as server authority. On a live route, these values enter the normal attachment
+pipeline: an Attachments-enabled host persists and Session-binds them before inference, while an
+Attachments-disabled host keeps them in memory for the current turn. A dry-run never persists them.
+
+The default route is the ordinary Agent Loop. `--research` selects the bounded server-owned web
+research workflow. `--spell <spell>` forces a named Spell resolved by exact case-insensitive name
+or unique case-insensitive prefix. `--research` and `--spell` are the only route conflict; prompt,
+stdin, `--with`, context, sampling, output, and dry-run options otherwise compose. `--dry-run`
+performs a spend-free static, pre-inference preview of the resolved route, context, staged values,
+Spell override, and inference options without search, embedding/RAG, automatic semantic Spell
+routing, provider inference, tools, or persistence. A forced named Spell still resolves without
+retrieval. The preview is not an exact copy of the eventual live `PingRequest`: a live Agent handoff
+may add locally produced `PatternSnapshot` and `ChronosyncDelta` context.
+
+Explicit context options follow the shared precedence over active local context, current-directory
+detection, and server defaults. Campaign, Workspace, Session, and Model are resolved before the
+route is dispatched; `--no-context` bypasses only saved context. Recursive `--plain` and `--json`
+retain their global meanings and may appear before or after `run`.
+
+**Syntax:** `arcanum run [<prompt>...]`
+
+| Option | Meaning |
+|---|---|
+| `--research` | Route through bounded server-side multi-hop research. Cannot be combined with `--spell`. |
+| `--spell <spell>` | Force a Spell by exact name or unique name prefix. Cannot be combined with `--research`. |
+| `--with <@path>` | Stage one turn-scoped text file or image; repeat for several files. Relative and explicitly supplied absolute paths are supported. |
+| `--dry-run` | Preview the resolved static pre-inference payload/context plan without provider spend, search, tools, or persistence. |
+| `--show-content` | With `--dry-run`, include model-visible content in the authenticated preview. |
+| `-m, --model <model>` | Use this configured model instead of the effective context or server default. |
+| `-n, --new` | Start without continuing the effective Session. If `--session` is also supplied, `--new` wins instead of creating another option conflict. |
+| `--unattended` | Apply unattended human-prompt and Ward behavior to the selected live route; dry-run reflects the resulting tool policy. |
+| `-c, --campaign <campaign>` | Use the selected Campaign GUID, exact name, or unique prefix. |
+| `-w, --workspace <workspace>` | Use the selected Workspace ID, name, or server-host path. This is also the base for relative `--with` paths in the bundled local client. |
+| `-s, --session <session>` | Continue the selected Session by GUID, exact title, or unique title prefix. |
+| `--temperature <temperature>` | Sampling temperature from 0 through 2. |
+| `--top-p <top-p>` | Nucleus sampling cutoff from 0 through 1. |
+| `--max-tokens <max-tokens>` | Maximum Agent/Spell output tokens; any positive integer is accepted. Research uses `--token-budget`. |
+| `--seed <seed>` | Optional signed 64-bit sampling seed; provider support varies. |
+| `--stop <stop>` | Stop sequence; repeat the option to supply several sequences. |
+| `--response-format <response-format>` | Response format: text, json (alias of json_object), json_object, or json_schema. |
+| `--presence-penalty <presence-penalty>` | Presence penalty from -2 through 2. |
+| `--frequency-penalty <frequency-penalty>` | Frequency penalty from -2 through 2. |
+| `--max-sources <max-sources>` | Research source limit (1-20; default 5). |
+| `--max-hops <max-hops>` | Research hop limit (1-5; default 2). |
+| `--token-budget <token-budget>` | Research synthesis output-token limit (64-32768; default 2000). |
+| `--cost-budget <cost-budget>` | Optional nonnegative research search-provider cost limit in USD. |
 
 ### `arcanum chat`
 
@@ -221,7 +294,7 @@ Starts the multi-turn Mage REPL. Inference controls apply to every turn, while `
 | `--max-tokens <max-tokens>` | Maximum output tokens per turn. |
 | `--seed <seed>` | Seed for sampling determinism (provider support varies). Applies to every turn. |
 | `--stop <stop>` | Stop sequence(s); pass --stop multiple times for several stops. |
-| `--response-format <response-format>` | Response format: text \| json_object \| json_schema. |
+| `--response-format <response-format>` | Response format: text \| json (alias of json_object) \| json_object \| json_schema. |
 | `--presence-penalty <presence-penalty>` | Presence penalty -2..2. |
 | `--frequency-penalty <frequency-penalty>` | Frequency penalty -2..2. |
 | `--attachment <attachment>` | Bound attachment GUID to use on the next successful turn; repeatable. |

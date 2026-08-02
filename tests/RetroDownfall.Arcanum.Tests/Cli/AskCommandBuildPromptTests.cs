@@ -1,6 +1,8 @@
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Services;
 
+using Spectre.Console;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class AskCommandBuildPromptTests
@@ -80,6 +82,24 @@ public sealed class AskCommandBuildPromptTests
         string formatted = AskCommand.FormatStreamTransportError(ArcanumApiClient.StreamTimeoutMessage);
 
         Assert.Equal($"{ArcanumApiClient.StreamTimeoutMessage} {ArcanumApiClient.StreamDoctorHint}", formatted);
+
+    }
+
+    [Fact]
+
+    public void CreateStderrConsole_DisablesAnsiWhenInvocationColorIsDisabled()
+    {
+
+        StringWriter output = new();
+
+        IAnsiConsole console = AskCommand.CreateStderrConsole(
+            output,
+            colorEnabled: false,
+            interactive: false);
+
+        console.MarkupLine("[red]diagnostic[/]");
+
+        Assert.Equal("diagnostic" + System.Environment.NewLine, output.ToString());
 
     }
 

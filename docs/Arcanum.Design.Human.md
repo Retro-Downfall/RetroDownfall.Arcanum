@@ -89,6 +89,12 @@ They ask the API to do the work.
 Most commands are short-lived. They validate input, resolve saved context, call the local HTTP API,
 render a result, and exit.
 
+`arcanum run` is the main flexible short-lived inference entry. It accepts an instruction, bounded
+piped context, or a one-line interactive prompt; stages repeated current-turn `--with @path` text or
+images; resolves active Campaign, Workspace, Session, and Model; and selects the ordinary Agent
+Loop, bounded research, a named Spell, or a read-only dry run. It does not create another host or
+model loop.
+
 `arcanum serve` takes the other path. It builds the host, loads configuration and protected
 credentials, initializes the Grimoire, maps endpoints, starts background services, and listens on
 the configured address.
@@ -128,8 +134,10 @@ flowchart TD
     J --> K["Return buffered JSON or projected stream"]
 ```
 
-Buffered native requests, native streaming, OpenAI-compatible requests, Spell execution, Prompt
-execution, daemon jobs, and Apprentice steps all converge on the same inference core. Projection
+Buffered native requests, native streaming, `arcanum run` Agent/named-Spell execution,
+OpenAI-compatible requests, Spell execution, Prompt execution, daemon jobs, and Apprentice steps
+all converge on the same inference core. The `run --research` route uses the sole server research
+orchestrator and brings its final synthesis back through the shared provider path. Projection
 differs by surface, but there is not a separate “easy” path that bypasses accounting or security.
 
 The loop stops on a final answer, deterministic lack of progress, cancellation, context failure,
@@ -156,6 +164,19 @@ If the request still cannot fit, the turn fails with a bounded public error.
 
 Content read from a repository, attachment, webpage, tool, or memory is untrusted data. Arcanum
 labels and fences it so instructions inside that data do not become system authority.
+
+Unified `run` input follows the same rule. Positional words remain the instruction, while piped
+stdin is a separate untrusted text source; neither replaces the other. The CLI reads at most
+10 MiB of UTF-8 stdin and fails rather than truncating or dropping an unreadable pipe. Repeated
+`--with @path` accepts strict-UTF-8 text regardless of extension and configured Scrying images,
+including an explicitly supplied
+absolute client path. Text diagnostics record byte/part counts and SHA-256; image diagnostics record
+decoded bytes and SHA-256. Files and stdin share the existing 32-part, 1-MiB-per-part, 32-MiB
+aggregate text authority; `--with` files do not inherit stdin's 10 MiB reader ceiling. The CLI then
+sends typed content for server-side materialization. The
+client path grants no durable permission or server filesystem authority. On a live route, an
+Attachments-enabled host persists and Session-binds the supplied content before inference; an
+Attachments-disabled host keeps it in memory for that turn. A dry-run never persists it.
 
 ## 7. Attachments, refresh, and durable memory
 
@@ -336,8 +357,11 @@ MCP supports operator configuration over stdio and SSRF-guarded Streamable HTTP.
 MCP configuration is merged only after digest-bound trust. Lifecycle, reload, discovery, and
 diagnostic invocation remain server-owned and authenticated.
 
-Web search, browse, and research are also server workflows. The CLI renders progress to stderr and
-the final cited result to stdout, with optional atomic export or encrypted session attachment.
+Web search, browse, and research are also server workflows. Research validates its limits and
+prospective synthesis payload, resolves Campaign/Session context, and only then begins provider
+search. Live synthesis uses the normal attachment pipeline. The CLI renders progress to stderr and
+the final cited result to stdout, with optional atomic export or encrypted session attachment of the
+final Markdown as a separate operation.
 
 ## 12. The user-facing applications
 
@@ -347,6 +371,16 @@ The normal CLI is good for scripts and focused commands. Interactive selectors a
 non-interactive and JSON invocations never guess. Saved context can hold active Campaign,
 Workspace, model, and session selections, with explicit command values taking precedence. See
 [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) for every command and option.
+
+The unified `run` verb defaults to ordinary inference. `--research` chooses bounded server-owned
+research, while `--spell <exact-name-or-unique-prefix>` forces one named Spell without bypassing
+normal loading, resonances, tools, Wards, or Sanctum. Those two route flags are the only conflict;
+stdin, repeated `--with`, context, common sampling controls, and recursive `--plain` / `--json`
+compose normally. `--dry-run` sends the resolved route and payload to the authenticated context
+preview with retrieval disabled. It is a spend-free static pre-inference plan—not an exact live
+request—and stops before search, embedding, main/synthesis inference, tools, spend reservation, and
+persistence. A named Spell still resolves in the plan; a later live Agent handoff may add local
+PatternSnapshot and Chronosync context.
 
 The `attachment list|add|reference|show|versions|refresh|pin|unpin|export|reveal` family is an HTTP
 client for the host-owned attachment lifecycle. Snapshot add may read any client-local path;
@@ -445,8 +479,8 @@ Keep these boundaries in mind:
 - routing selects one model, with bounded provider fallback only before response commitment;
 - there is no cross-provider load balancing;
 - explicit accepted files are not silently truncated to fit context;
-- `arcanum chat` and frameless `ask` file/image staging is ephemeral rather than a durable
-  `SessionAttachment`;
+- Attachments-disabled live requests keep staged file/image content in memory for that turn, while
+  Attachments-enabled live requests persist and Session-bind it before inference;
 - Command Center uses a fixed terminal viewport and hard modal overlays;
 - macOS child containment does not block network access;
 - Linux tool-child containment is unavailable;
@@ -472,7 +506,7 @@ The fantasy names are functional labels:
 | Spell / Prompt | Reusable instruction and parameterized template |
 | Ward / Sanctum | Tool policy and filesystem boundary |
 | Mana | Token and context budget |
-| Context preview | A dry, read-only rehearsal of the exact model context before the expensive turn starts |
+| Context preview | A dry, read-only pre-inference plan; live handoff may still add local context |
 | Scrying | Image input |
 | Eye of the World | Workspace perception |
 | Weave / Divination / Imprint | Embedding substrate, search, and stored vector |
@@ -484,7 +518,17 @@ The fantasy names are functional labels:
 | Chronicle | Bounded process-local Apprentice event stream; durable workflow/checkpoint rows are the recovery authority |
 | Proving Grounds / Trial / Inquisitor | Ephemeral validation run |
 
-`arcanum context inspect [prompt]` is Arcanum's equivalent of Claude Code's live context breakdown: it shows where the window goes, which Spell and resonant instructions are active, which tools are advertised or excluded, whether compression would apply, and which numbers are estimates. `context tools` and `context sources` focus the same response; `mana [prompt]` focuses the budget. The normal view deliberately shows labels, reasons, and counts rather than private prompt text. `--show-content` is the explicit operator reveal, while `--no-retrieval` answers the same planning question without embedding or RAG work.
+`arcanum context inspect [prompt]` and `arcanum run --dry-run` are Arcanum's context planning
+surfaces: they show where the window goes, which Spell and resonant instructions are active, which
+tools are advertised or excluded, whether compression would apply, and which numbers are estimates.
+The unified preview can also carry preview-only files/images, research synthesis policy, and common
+inference options without executing or persisting them. It always disables retrieval and provider
+work, so the result is a spend-free static plan rather than an exact live payload; an explicit Spell
+still resolves, while local PatternSnapshot and Chronosync context may be added only at live handoff.
+`context tools` and `context sources` focus the same response; `mana [prompt]` focuses the budget.
+The normal view deliberately shows labels, reasons, and counts rather than private prompt text.
+`--show-content` is the explicit operator reveal. The standalone context commands retain
+`--no-retrieval` for the same no-embedding/RAG planning mode.
 
 `arcanum memory status|sources|search|explain` answers the separate persistence question: what is
 stored, where it came from, how long it remains, and whether it could participate in the next turn.

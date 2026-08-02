@@ -5,9 +5,27 @@ buffered/streaming model-tool loop and the ordering contract for attachment cont
 
 ## Read-only preflight preview
 
-Before the normal loop, operators can run `arcanum context inspect [prompt]`, `arcanum context tools`, `arcanum context sources`, or `arcanum mana [prompt]`. These commands resolve the same saved/explicit Campaign, Workspace, Model, and Session context as `ask`/`chat`, then call `POST /api/intelligence/context/inspect`.
+Before the normal loop, operators can run `arcanum context inspect [prompt]`, `arcanum context
+tools`, `arcanum context sources`, `arcanum mana [prompt]`, or `arcanum run --dry-run`. These
+commands resolve the same saved/explicit Campaign, Workspace, Model, and Session context as
+`ask`/`chat`/`run`, then call `POST /api/intelligence/context/inspect`.
 
-The preview resolves a production model lease, loads Session history and explicit context pins, reads CODEX, applies production Spell routing and resonant dependencies, optionally retrieves Workspace/attachment RAG plus Saga/Lexicon context, builds and filters the production tool set, calls `SystemPromptBuilder.BuildDocument`, evaluates the production compression rule, and runs the model-aware token estimator. It stops before the turn coordinator: no main inference, tool call, budget reservation, assistant Entry, or response persistence occurs. `--no-retrieval` omits embedding/RAG work and automatic semantic Spell routing. `--show-content` explicitly includes the assembled prompt/messages; otherwise only metadata, reasons, and token counts leave the host.
+The preview resolves a production model lease, loads Session history and explicit context pins,
+reads CODEX, applies production Spell routing and resonant dependencies, optionally retrieves
+Workspace/attachment RAG plus Saga/Lexicon context, builds and filters the production tool set,
+calls `SystemPromptBuilder.BuildDocument`, evaluates the production compression rule, and runs the
+model-aware token estimator. A `run` preview can additionally carry a forced Spell, preview-only
+`AttachedFiles` / `ScryingFoci`, research synthesis policy, output reserve, and sampling options.
+It stops before the turn coordinator: no main/synthesis inference, tool call, budget reservation,
+assistant Entry, attachment persistence, or response persistence occurs. The standalone context
+commands expose `--no-retrieval`. Unified `run --dry-run` always disables retrieval, so it performs
+no embedding, RAG, automatic semantic Spell routing, search, or provider inference. An explicitly
+named Spell still resolves and loads with retrieval disabled. `--show-content` explicitly includes
+the assembled prompt/messages; otherwise only metadata, reasons, and token counts leave the host.
+
+A unified dry run is a spend-free static pre-inference plan, not an identity-equal copy of the live
+Agent payload. It verifies the resolved user input and server-side context plan; the live handoff
+may still add locally produced `PatternSnapshot` and `ChronosyncDelta` context.
 
 `arcanum memory explain [session]` is intentionally less expensive and answers a different question.
 It reads persisted counts and feature gates to explain which source categories are candidates for a
@@ -15,6 +33,37 @@ next turn and why; it does not route a Spell, embed a query, assemble content, r
 promise that a conditional Lexicon/Saga/workspace/attachment candidate will be selected. Use
 `memory status|sources|search` for retention/provenance inspection and `context inspect` for the
 actual planned turn projection.
+
+## Unified `run` entry path
+
+`arcanum run` is an entry adapter, not another model loop. Positional words become the instruction;
+redirected stdin remains a separate untrusted current-turn source, and both are preserved when
+supplied together. With neither source on a TTY, the command asks for one interactive line. The
+stdin reader counts UTF-8 while buffering and accepts at most 10 MiB (10,485,760 bytes). Crossing
+that boundary or failing to read the stream stops dispatch without retaining, dropping, or
+dispatching a partial source.
+
+Repeated `--with @path` values are staged before dispatch. Relative paths use the effective working
+directory, explicitly supplied absolute paths are accepted, and strict-UTF-8 text has no extension
+allowlist. Text and stdin are SHA-256 hashed, split on UTF-8 boundaries into the server's existing
+`AttachedFileDto` limits (32 parts, 1 MiB per part, and 32 MiB aggregate), and labeled as untrusted
+data. The 10 MiB reader ceiling applies to stdin, not to each `--with` file. Recognized images are
+SHA-256 hashed and staged as `ScryingFocusDto` through the existing Scrying policy. The client
+staging grants no
+Session pin or server filesystem authority. On a live route, the server uses the normal attachment
+pipeline: Attachments-enabled hosts persist and Session-bind the sources before model inference,
+while Attachments-disabled hosts keep them only in memory for the current turn. A dry-run stops at
+the static plan and never persists them.
+
+The default and `--spell <exact-or-unique-prefix>` routes both enter the ordinary Agent Loop below;
+the latter supplies `OverrideSpellName` and then uses normal Spell loading, resonances, tool policy,
+Wards, and Sanctum. `--research` enters the sole server-owned research orchestrator, which validates
+and resolves the prospective synthesis request before any provider search. Its final synthesis
+still uses the shared provider and attachment paths with the effective Campaign, Workspace,
+Session, Model, current-turn files/images, unattended mode, and supported inference options. Its all-tools-disabled
+synthesis is the existing untrusted-web boundary, not a new restriction on the Agent or Spell routes.
+`--research` and `--spell` are the only route conflict. `--dry-run` follows the preview path above
+and never enters either live loop.
 
 ## 1. One logical turn, multiple provider requests
 
@@ -181,12 +230,17 @@ reads, and persists. Refresh calls the service described in §2 but stops before
 No standalone metadata command materializes content or spends the turn reference budget.
 
 Content enters a turn only through an explicit current upload, a bound GUID passed to repeatable
-`ask --attachment` / `chat --attachment`, an admitted text context pin, a successful model attach or
-refresh tool, or bounded attachment RAG. Direct CLI GUIDs are validated against the effective
-Session and enter the §3 ledger as explicit attachment references. Text pins follow the same
-dedupe/admission path. Image pins stay durable but produce `Unsupported` for implicit
-materialization; the user must pass the image GUID explicitly to a vision-capable turn. Binary
-attachments remain manageable/exportable but are rejected as direct model-context materialization.
+`ask --attachment` / `chat --attachment`, `run --with @path` or piped current-turn content, an admitted
+text context pin, a successful model attach or refresh tool, or bounded attachment RAG. Direct CLI
+GUIDs are validated against the effective Session and enter the §3 ledger as explicit attachment
+references. Unified-run text and images arrive as typed current-turn content and are eligible for
+model context only through normal server materialization. On a live route, Attachments-enabled
+hosts persist and bind them before inference; otherwise they remain in memory. The CLI SHA-256
+diagnostic alone grants no durable memory provenance. Text pins follow the same dedupe/admission
+path. Image pins stay durable but produce `Unsupported` for implicit materialization; the user must
+pass the image GUID explicitly to a vision-capable turn. Binary attachments remain
+manageable/exportable but are
+rejected as direct model-context materialization.
 
 Export and reveal remain outside turn assembly. Export streams the authenticated stored snapshot
 to a same-directory stage and atomically publishes plaintext only after success; it refuses stdout.

@@ -25,24 +25,25 @@ public static class InferenceFlagBinder
         IInferenceFlagInputs settings,
         IThemePalette palette,
         out Parsed parsed,
-        out int exitCode)
+        out int exitCode,
+        Action<string>? writeDiagnostic = null)
     {
 
         parsed = default;
 
         exitCode = 0;
 
-        float? temperature = ParseFloat(settings.Temperature, "--temperature", palette, ref exitCode, 0f, 2f);
+        float? temperature = ParseFloat(settings.Temperature, "--temperature", palette, writeDiagnostic, ref exitCode, 0f, 2f);
 
-        float? topP = ParseFloat(settings.TopP, "--top-p", palette, ref exitCode, 0f, 1f);
+        float? topP = ParseFloat(settings.TopP, "--top-p", palette, writeDiagnostic, ref exitCode, 0f, 1f);
 
-        int? maxOutput = ParseInt(settings.MaxTokens, "--max-tokens", palette, ref exitCode, min: 1);
+        int? maxOutput = ParseInt(settings.MaxTokens, "--max-tokens", palette, writeDiagnostic, ref exitCode, min: 1);
 
-        long? seed = ParseLong(settings.Seed, "--seed", palette, ref exitCode);
+        long? seed = ParseLong(settings.Seed, "--seed", palette, writeDiagnostic, ref exitCode);
 
-        float? presence = ParseFloat(settings.PresencePenalty, "--presence-penalty", palette, ref exitCode, -2f, 2f);
+        float? presence = ParseFloat(settings.PresencePenalty, "--presence-penalty", palette, writeDiagnostic, ref exitCode, -2f, 2f);
 
-        float? frequency = ParseFloat(settings.FrequencyPenalty, "--frequency-penalty", palette, ref exitCode, -2f, 2f);
+        float? frequency = ParseFloat(settings.FrequencyPenalty, "--frequency-penalty", palette, writeDiagnostic, ref exitCode, -2f, 2f);
 
         if (exitCode != 0)
         {
@@ -53,10 +54,11 @@ public static class InferenceFlagBinder
 
         if (responseFormat is null && !string.IsNullOrWhiteSpace(settings.ResponseFormat))
         {
-            AnsiConsole.MarkupLine(
-                palette.ErrorLabelMarkup(
-                    Markup.Escape("--response-format"),
-                    Markup.Escape("must be one of: text, json_object, json_schema.")));
+            WriteError(
+                "--response-format",
+                "must be one of: text, json, json_object, json_schema.",
+                palette,
+                writeDiagnostic);
 
             exitCode = 1;
 
@@ -83,6 +85,7 @@ public static class InferenceFlagBinder
         string? raw,
         string flag,
         IThemePalette palette,
+        Action<string>? writeDiagnostic,
         ref int exitCode,
         float? min = null,
         float? max = null)
@@ -96,7 +99,7 @@ public static class InferenceFlagBinder
         if (float.TryParse(raw.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float value))
         {
 
-            if (!TryValidateFloatRange(value, flag, palette, ref exitCode, min, max))
+            if (!TryValidateFloatRange(value, flag, palette, writeDiagnostic, ref exitCode, min, max))
             {
                 return null;
             }
@@ -105,10 +108,11 @@ public static class InferenceFlagBinder
 
         }
 
-        AnsiConsole.MarkupLine(
-            palette.ErrorLabelMarkup(
-                Markup.Escape(flag),
-                Markup.Escape($"must be a number (got '{raw}').")));
+        WriteError(
+            flag,
+            $"must be a number (got '{raw}').",
+            palette,
+            writeDiagnostic);
 
         exitCode = 1;
 
@@ -120,6 +124,7 @@ public static class InferenceFlagBinder
         string? raw,
         string flag,
         IThemePalette palette,
+        Action<string>? writeDiagnostic,
         ref int exitCode,
         int? min = null,
         int? max = null)
@@ -136,10 +141,11 @@ public static class InferenceFlagBinder
             if (min is not null && value < min.Value)
             {
 
-                AnsiConsole.MarkupLine(
-                    palette.ErrorLabelMarkup(
-                        Markup.Escape(flag),
-                        Markup.Escape($"must be at least {min.Value} (got '{raw}').")));
+                WriteError(
+                    flag,
+                    $"must be at least {min.Value} (got '{raw}').",
+                    palette,
+                    writeDiagnostic);
 
                 exitCode = 1;
 
@@ -150,10 +156,11 @@ public static class InferenceFlagBinder
             if (max is not null && value > max.Value)
             {
 
-                AnsiConsole.MarkupLine(
-                    palette.ErrorLabelMarkup(
-                        Markup.Escape(flag),
-                        Markup.Escape($"must be at most {max.Value} (got '{raw}').")));
+                WriteError(
+                    flag,
+                    $"must be at most {max.Value} (got '{raw}').",
+                    palette,
+                    writeDiagnostic);
 
                 exitCode = 1;
 
@@ -165,10 +172,11 @@ public static class InferenceFlagBinder
 
         }
 
-        AnsiConsole.MarkupLine(
-            palette.ErrorLabelMarkup(
-                Markup.Escape(flag),
-                Markup.Escape($"must be an integer (got '{raw}').")));
+        WriteError(
+            flag,
+            $"must be an integer (got '{raw}').",
+            palette,
+            writeDiagnostic);
 
         exitCode = 1;
 
@@ -180,18 +188,35 @@ public static class InferenceFlagBinder
         float value,
         string flag,
         IThemePalette palette,
+        Action<string>? writeDiagnostic,
         ref int exitCode,
         float? min,
         float? max)
     {
 
+        if (!float.IsFinite(value))
+        {
+
+            WriteError(
+                flag,
+                $"must be a finite number (got '{value.ToString(CultureInfo.InvariantCulture)}').",
+                palette,
+                writeDiagnostic);
+
+            exitCode = 1;
+
+            return false;
+
+        }
+
         if (min is not null && value < min.Value)
         {
 
-            AnsiConsole.MarkupLine(
-                palette.ErrorLabelMarkup(
-                    Markup.Escape(flag),
-                    Markup.Escape($"must be at least {min.Value.ToString(CultureInfo.InvariantCulture)} (got '{value.ToString(CultureInfo.InvariantCulture)}').")));
+            WriteError(
+                flag,
+                $"must be at least {min.Value.ToString(CultureInfo.InvariantCulture)} (got '{value.ToString(CultureInfo.InvariantCulture)}').",
+                palette,
+                writeDiagnostic);
 
             exitCode = 1;
 
@@ -202,10 +227,11 @@ public static class InferenceFlagBinder
         if (max is not null && value > max.Value)
         {
 
-            AnsiConsole.MarkupLine(
-                palette.ErrorLabelMarkup(
-                    Markup.Escape(flag),
-                    Markup.Escape($"must be at most {max.Value.ToString(CultureInfo.InvariantCulture)} (got '{value.ToString(CultureInfo.InvariantCulture)}').")));
+            WriteError(
+                flag,
+                $"must be at most {max.Value.ToString(CultureInfo.InvariantCulture)} (got '{value.ToString(CultureInfo.InvariantCulture)}').",
+                palette,
+                writeDiagnostic);
 
             exitCode = 1;
 
@@ -217,7 +243,12 @@ public static class InferenceFlagBinder
 
     }
 
-    private static long? ParseLong(string? raw, string flag, IThemePalette palette, ref int exitCode)
+    private static long? ParseLong(
+        string? raw,
+        string flag,
+        IThemePalette palette,
+        Action<string>? writeDiagnostic,
+        ref int exitCode)
     {
 
         if (string.IsNullOrWhiteSpace(raw))
@@ -230,14 +261,38 @@ public static class InferenceFlagBinder
             return value;
         }
 
-        AnsiConsole.MarkupLine(
-            palette.ErrorLabelMarkup(
-                Markup.Escape(flag),
-                Markup.Escape($"must be a 64-bit integer (got '{raw}').")));
+        WriteError(
+            flag,
+            $"must be a 64-bit integer (got '{raw}').",
+            palette,
+            writeDiagnostic);
 
         exitCode = 1;
 
         return null;
+
+    }
+
+    private static void WriteError(
+        string flag,
+        string message,
+        IThemePalette palette,
+        Action<string>? writeDiagnostic)
+    {
+
+        if (writeDiagnostic is not null)
+        {
+
+            writeDiagnostic($"{flag}: {message}");
+
+            return;
+
+        }
+
+        AnsiConsole.MarkupLine(
+            palette.ErrorLabelMarkup(
+                Markup.Escape(flag),
+                Markup.Escape(message)));
 
     }
 

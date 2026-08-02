@@ -11,8 +11,8 @@
 > the human-readable navigation companion.
 
 **Arcanum** is a **.NET 10, local-first AI assistant and inference hub.** The `arcanum` executable
-runs either as the long-lived HTTP host (`arcanum serve`) or as thin terminal clients (`ask`,
-`chat`, `watch`, `look`, `lore`, `daemon`, `campaign`, `session`, `memory`, `saga`, `spell`, `prompt`, `ward`, `trial`,
+runs either as the long-lived HTTP host (`arcanum serve`) or as thin terminal clients (`run`,
+`ask`, `chat`, `watch`, `look`, `lore`, `daemon`, `campaign`, `session`, `memory`, `saga`, `spell`, `prompt`, `ward`, `trial`,
 `apprentice`, `model`, `provider`) over the same API. Windows and Linux ship the CLI/host as one
 self-contained Native AOT executable; the current macOS arm64 release is a signed, notarized,
 folder-based self-contained publish because of the supported linker/toolchain limitation. Arcanum
@@ -256,7 +256,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Durable operations | `/api/operations*` | Safe list/show plus CAS cancel/retry and bounded manual reconciliation; checkpoint bytes/references never leave SQLCipher |
 | Config | `/api/config`, `/config/validate` | GET redacts secrets; PUT preserves `"***"` placeholders |
 | Models / providers | `GET /api/models`, `/providers`, `/providers/test` | Listings + connectivity probe (no persist) |
-| Inference (native) | `/api/intelligence/ping(-stream)`, `/human-response`, `/arsenal`, `/mana` | Buffered / NDJSON `IntelligenceEvent`; model-aware Mana/source breakdown |
+| Inference (native) | `/api/intelligence/ping(-stream)`, `/human-response`, `/arsenal`, `/mana`, `/context/inspect` | Buffered / NDJSON `IntelligenceEvent`; model-aware Mana/source breakdown and read-only effective-turn preview |
 | Inference (OpenAI) | `POST /v1/chat/completions`, `GET /v1/models`, `POST /v1/embeddings` | OpenAI JSON/SSE; Scrying gates images; client tools opt-in |
 | OpenAI stubs | `/v1/moderations`, `/images/*`, `/audio/*` | Always 501 `not_supported` |
 | Files / Batches | `/v1/files*`, `/v1/batches*` | Upload + async JSONL chat batches |
@@ -481,6 +481,8 @@ arcanum search "release notes" --include-domain dotnet.microsoft.com --json
 arcanum browse https://example.com/article --render static --save article.md
 arcanum research "Compare the current proposals" --max-sources 8 --max-hops 3 \
   --token-budget 2500 --cost-budget 0.25 --format markdown
+cat local-notes.txt | arcanum run --research "Reconcile these notes with current sources" \
+  --with @requirements.unusual --max-sources 8
 ```
 
 `search` also accepts repeatable `--include-domain` / `--exclude-domain`. `browse --render
@@ -492,6 +494,16 @@ model accounting stay in the server. `--save <path>` atomically exports Markdown
 `--attach-to-session <session>` stores it as an encrypted session attachment; and research
 `--continue-session <session>` continues the server-side synthesis turn. Session values accept a
 GUID, exact title, or unique title prefix.
+
+`arcanum run --research` reaches the same server-owned workflow through the unified execution
+surface. It preserves the resolved Campaign, Workspace, Session, and Model, combines an optional
+instruction with piped text, accepts repeatable current-turn `--with @path` text/images, and forwards
+the common sampling controls into synthesis. The host validates the prospective synthesis request
+and resolves Campaign/Session context before provider search. Research's existing untrusted-source
+instruction and tool-disabled final synthesis remain server-owned; selecting the route does not
+impose new restrictions on ordinary Agent or named-Spell execution. Live synthesis uses the normal
+attachment pipeline. Use `--dry-run` for a spend-free static pre-inference plan without search,
+synthesis, tool execution, or persistence.
 
 Use only keys in [Compendium's retained reference](Compendium.README.md#complete-configuration-reference).
 After changing `arcanum.json`, restart Arcanum. Configuration-only changes do not require deleting
@@ -739,6 +751,56 @@ arcanum workspace show
 arcanum mcp show
 ```
 
+### Unified prompt execution
+
+`arcanum run` is the primary flexible one-turn entry point. The default route is the ordinary Agent
+Loop; `--research` selects bounded server-side research, and `--spell <name-or-unique-prefix>`
+forces a named Spell through the same production Spell/dependency/tool policy. Only `--research`
+plus `--spell` conflicts. All routes resolve explicit Campaign, Workspace, Session, and Model first,
+then active context, current-directory detection, and server defaults. Recursive `--no-context`,
+`--plain`, and `--json` keep their normal meanings.
+
+```bash
+arcanum run "Fix this bug"
+cat error.log | arcanum run "Explain this failure"
+arcanum run --spell code-review "Review this change" --with @src/Feature.cs
+arcanum run --research "What changed upstream?" --max-sources 8
+arcanum run --dry-run --show-content "Show the planned static turn"
+```
+
+Positional words form the instruction. Redirected stdin remains a separate untrusted text source,
+so supplying both never drops or replaces either value. With neither and a real TTY, the command
+prompts once for one line. Stdin is counted while reading and capped at exactly 10 MiB
+(10,485,760 UTF-8 bytes); oversized or unreadable input fails before dispatch, with no silent
+truncation, positional-only fallback, or partial model context.
+
+Repeat `--with @path` to stage current-turn context. Relative paths resolve from the effective
+working directory; an explicitly supplied absolute path is also accepted. Any strict-UTF-8 text
+file is eligible regardless of extension, while recognized images pass through the existing
+Scrying MIME, size, and vision checks. Text diagnostics report UTF-8 bytes, part count, and SHA-256;
+image diagnostics report decoded bytes and SHA-256. The CLI splits text and stdin into at most 32
+UTF-8-safe 1 MiB parts and enforces the existing 32 MiB aggregate request authority; stdin retains
+its separate 10 MiB reader ceiling, but `--with` files do not inherit it. Typed content is sent for
+server-side materialization. The client path is a
+display/resolution input, not server filesystem authority. On a live route, an
+Attachments-enabled host persists and Session-binds these sources before inference; an
+Attachments-disabled host keeps them in memory for the current turn. A dry-run never persists them.
+
+`--dry-run` uses the authenticated context-preview path with the resolved route, Spell, preview-only
+sources, context, output reserve, and common inference flags. It always skips retrieval, automatic
+semantic Spell routing, search, and provider inference, while an explicit named Spell still
+resolves. The result is a spend-free static pre-inference plan, not an exact live request: live
+Agent dispatch may still add local `PatternSnapshot` and `ChronosyncDelta` context. It does not
+start the selected Agent/research synthesis turn, execute tools, persist an assistant Entry, or
+persist the staged sources. `--show-content` explicitly reveals model-visible preview content. All
+live routes accept `--new`, `--unattended`, model/context options, temperature, top-p,
+seed, repeatable stops, response format (`json` aliases `json_object`), and penalties; Agent and
+Spell also use `--max-tokens`, while research uses its synthesis token budget. On this
+permissive unified surface, `--new` suppresses Session continuation even when `--session` is also
+present. Research additionally
+accepts `--max-sources`, `--max-hops`, `--token-budget`, and `--cost-budget`; its token budget is
+the synthesis output cap.
+
 ### Unified live watch
 
 Use one command family for the existing Session, Apprentice Chronicle, log, MCP, daemon, and host
@@ -950,7 +1012,7 @@ arcanum use clear             # every scope
 Precedence is explicit option, active context, current-directory resource detection, then server
 default. Campaign and Workspace containment are detected independently. `--no-context` bypasses
 saved values for one invocation without disabling directory
-detection. `context current` explains the source of each effective value. `ask`/`chat` validate
+detection. `context current` explains the source of each effective value. `ask`/`chat`/`run` validate
 saved references before inference, report confirmed stale references before clearing them, warn
 when the current directory is outside an inherited workspace, and refuse a Session/Campaign
 mismatch. Explicit options always win and are never persisted merely by use.
@@ -969,7 +1031,7 @@ directory with server paths.
 
 All commands run as `dotnet run --project src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj -- <cmd>` in development, or `arcanum <cmd>` after an AOT publish.
 
-**Default command:** bare interactive `arcanum` (no arguments) opens the **Command Center** (Terminal.Gui fixed-viewport TUI). Bare non-interactive `arcanum`, or `ARCANUM_NO_COMMAND_CENTER=1`, prints usage and exits **0**. Explicit commands (`serve`, `ask`, `chat`, `--help`, …) stay frameless Spectre/CAF as before.
+**Default command:** bare interactive `arcanum` (no arguments) opens the **Command Center** (Terminal.Gui fixed-viewport TUI). Bare non-interactive `arcanum`, or `ARCANUM_NO_COMMAND_CENTER=1`, prints usage and exits **0**. Explicit commands (`serve`, `run`, `ask`, `chat`, `--help`, …) stay frameless Spectre/CAF as before.
 
 **Global automation contract:** every direct command accepts these flags before or after its verb:
 
@@ -1020,13 +1082,13 @@ other pins have deterministic count/byte limits. Materialized values are source-
 participate in normal context/mana estimates, and do not change transcript `Entries.IsPinned`
 compression behavior. Existing `@path` text/image staging remains unchanged and turn-scoped.
 
-**Ephemeral reasoning:** `ask` and `chat` render client-safe reasoning in a dimmed, labeled block separate from the Mage answer; their reasoning buffer has a 64 KiB default cap with an explicit truncation marker, and the live `chat` layout coalesces reasoning on the same refresh cadence as answer tokens. Command Center stops its synthetic Thinking indicator and refreshes the header exactly once on the first token or reasoning frame, coalesces reasoning into one separately bounded in-memory `Reasoning (ephemeral)` entry, and preserves both the source entry and exact line offset of a scrolled multiline viewport. Reasoning is never appended to stdout answer text, mana totals, structured output, or reloaded session history.
+**Ephemeral reasoning:** live `run` Agent/Spell, `ask`, and `chat` render client-safe reasoning in a dimmed, labeled block separate from the Mage answer; their reasoning buffer has a 64 KiB default cap with an explicit truncation marker, and the live `chat` layout coalesces reasoning on the same refresh cadence as answer tokens. Command Center stops its synthetic Thinking indicator and refreshes the header exactly once on the first token or reasoning frame, coalesces reasoning into one separately bounded in-memory `Reasoning (ephemeral)` entry, and preserves both the source entry and exact line offset of a scrolled multiline viewport. Reasoning is never appended to stdout answer text, mana totals, structured output, or reloaded session history.
 
 
 
 **Operator communication tools (canonical catalog):** `ask_human` (attended streaming only — wait for operator), `petition_dungeon_master` (async Apprentice escalation; may send Critical Comm Link), `send_commlink_alert` (one-way external notification; no replies). Comm Link webhooks receive generic JSON (`title`/`body`/`severity`/`source`/`timestampUtc`) — Telegram/WhatsApp need a relay.
 
-**Auto-start serve:** interactive Command Center / `chat` / `ask` spawn `arcanum serve` on definite no-listener (refused), wait ~20s for authenticated health. Disabled via `ARCANUM_NO_AUTO_SERVE=1`. Never auto-acks ListenAny. Bootstrap log: `~/.config/arcanum/logs/auto-serve-bootstrap.log`. Key via `arcanum key show`.
+**Auto-start serve:** interactive Command Center / `run` / `chat` / `ask` spawn `arcanum serve` on definite no-listener (refused), wait ~20s for authenticated health. Disabled via `ARCANUM_NO_AUTO_SERVE=1`. Never auto-acks ListenAny. Bootstrap log: `~/.config/arcanum/logs/auto-serve-bootstrap.log`. Key via `arcanum key show`.
 
 
 
@@ -1034,6 +1096,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 |---------|---------|
 | *(bare)* | Open Command Center (interactive TTY). Non-interactive / `ARCANUM_NO_COMMAND_CENTER=1` → usage, exit 0. |
 | `serve [quit]` | Run the host (default loopback :5001), or ask the authenticated running host to shut down with `serve quit`. ListenAny is HTTPS-only + first-run ack. Auto-launched suppresses key print. Details: [DESIGN §5](Arcanum.DESIGN.md#5-hybrid-hosting-model). |
+| `run [prompt...]` | Unified one-turn Agent (default), `--research`, named `--spell`, or spend-free static `--dry-run` planning. Positional input composes with bounded 10 MiB stdin; repeat `--with @path` for current-turn arbitrary-extension UTF-8 text or Scrying images. Live sources use normal attachment persistence when enabled; dry-run sources never persist. Resolves Campaign/Workspace/Session/Model context and supports the common inference flags plus research bounds. Only `--research` + `--spell` conflicts; recursive `--plain`/`--json` apply normally. |
 | `ask <prompt>` | Single-turn inference (NDJSON stream). Flags: `-n` / `--new` (new session), `-m <model>`, `-c` / `--campaign <id-or-name>`, `--workspace <id-or-path>`, `--session <id>`, `--unattended`, `--image <path>` (repeatable — attach a Scrying focus; requires a vision-capable model), plus inference flags (below). `--new` and `--session` are mutually exclusive. Use `--` to pass a prompt that starts with a flag. Ctrl+C cancels the in-flight turn (exit 130). Interactive sessions print effective context and auto-start `serve` when needed. |
 | `chat` | Interactive multi-turn REPL (Figlet banner, effective-context header, Markdig rendering, mana bar, live multi-panel layout on wide color terminals). Flags: `-n` / `--new`, `-m`, `-c` / `--campaign <id-or-name>`, `--workspace <id-or-path>`, `--session <id-or-title>`, `--no-tools`, `--unattended`, plus inference flags. `--session` accepts a GUID, exact title, or unique title prefix through the shared resolver. `--new` and `--session` are mutually exclusive. **Slash commands:** `/exit`, `/quit`, `/clear`, `/help`, `/new`, `/model [name]`, `/look`, `/tools`, `/mcp reload`, `/arsenal`, `/history`, `/resume <id>`, `/delete <id>`, `/rest`, `/log`, `/memory`, `/summary`, `/mana`, `/attach`. Stage text files inline with `@path`; image extensions stage a Scrying focus. Auto-starts `serve` when needed. |
 | `use campaign\|workspace\|model\|session <value>` | Validate and save an active local default without modifying server rows. |
@@ -1070,4 +1133,4 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `provider list` | List configured providers via `GET /api/providers` (needs `serve`); endpoint redacted and only the credential environment-variable reference returned. |
 | `operation list\|show\|cancel\|retry\|reconcile` | Inspect and repair the durable operation ledger via authenticated `/api/operations*` routes (needs `serve`). `list` accepts `--kind` / `--state`; `show <id>` returns only safe checkpoint presence/version/summary; `cancel <id>` requests `Cancelling`; `retry <id>` resets failed/abandoned/repair-required work; `reconcile` runs a bounded pass and exits 2 when operator attention remains. |
 
-**Inference flags** (`ask`/`chat`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format`, penalties, `-c`/`--campaign`, `--workspace`, and `--session`. Scrying: `ask --image` / chat `@path`. Full option ranges, slash commands, context precedence, and exit behavior: [complete command reference](Arcanum.Command.Reference.md).
+**Inference flags** (`run`/`ask`/`chat`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format` (`json` aliases `json_object`), penalties, `-c`/`--campaign`, `--workspace`, and `--session`. Scrying: `run --with @path`, `ask --image`, or chat `@path`. Full option ranges, slash commands, context precedence, and exit behavior: [complete command reference](Arcanum.Command.Reference.md).

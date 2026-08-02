@@ -151,6 +151,41 @@ public sealed class ContextMaterializationLedgerTests
 
     [Fact]
 
+    public void IdenticalCurrentTurnParts_AreAllAcceptedAsExplicitOperatorInput()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        ContextMaterializationLedger ledger = CreateLedger(sessionId);
+
+        ContextMaterializationEntry first = ledger.Accept(
+            Candidate(
+                sessionId,
+                ContextMaterializationSourceKind.CurrentTurnAttachment,
+                "current-part-1",
+                contentHash: "same-content",
+                range: ContextMaterializationRange.Whole),
+            materialized: true);
+
+        ContextMaterializationEntry second = ledger.Accept(
+            Candidate(
+                sessionId,
+                ContextMaterializationSourceKind.CurrentTurnAttachment,
+                "current-part-2",
+                contentHash: "same-content",
+                range: ContextMaterializationRange.Whole),
+            materialized: true);
+
+        Assert.True(first.Accepted);
+
+        Assert.True(second.Accepted);
+
+        Assert.Equal(2, ledger.Entries.Count);
+
+    }
+
+    [Fact]
+
     public void RefreshedCurrentVersion_RemovesStaleSemanticVersion()
     {
 

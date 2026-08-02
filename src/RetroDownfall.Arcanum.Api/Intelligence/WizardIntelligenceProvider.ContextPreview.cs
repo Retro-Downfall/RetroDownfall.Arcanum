@@ -51,7 +51,49 @@ public sealed partial class WizardIntelligenceProvider
 
             SessionId: request.SessionId,
 
-            CampaignId: request.CampaignId);
+            AttachedFiles: request.AttachedFiles,
+
+            OverrideSpellName: request.OverrideSpellName,
+
+            Temperature: request.Temperature,
+
+            TopP: request.TopP,
+
+            MaxOutputTokens: request.MaxOutputTokens,
+
+            Stop: request.Stop,
+
+            Seed: request.Seed,
+
+            ResponseFormat: request.ResponseFormat,
+
+            PresencePenalty: request.PresencePenalty,
+
+            FrequencyPenalty: request.FrequencyPenalty,
+
+            CampaignId: request.CampaignId,
+
+            AdditionalSystemPrompt: request.AdditionalSystemPrompt,
+
+            ScryingFoci: request.ScryingFoci,
+
+            DisableAllTools: request.DisableAllTools,
+
+            UnattendedMode: request.UnattendedMode);
+
+        Result preflight = PingRequestPreflightValidator.Validate(
+
+            turn,
+
+            settings.Value);
+
+        if (preflight.IsFailure)
+
+        {
+
+            return Result<ContextPreviewResult>.Failure(preflight.Error);
+
+        }
 
         ChatClientLease lease;
 
@@ -66,7 +108,6 @@ public sealed partial class WizardIntelligenceProvider
                 .ConfigureAwait(false);
 
         }
-
         catch (InvalidOperationException)
 
         {
@@ -104,7 +145,6 @@ public sealed partial class WizardIntelligenceProvider
                     cancellationToken).ConfigureAwait(false);
 
             }
-
             finally
 
             {
@@ -185,14 +225,19 @@ public sealed partial class WizardIntelligenceProvider
 
         string routingMode;
 
-        if (previewRequest.NoRetrieval)
+        bool hasExplicitSpell = !string.IsNullOrWhiteSpace(turn.OverrideSpellName)
+
+            || !string.IsNullOrWhiteSpace(turn.OverrideSpellPath);
+
+        if (previewRequest.NoRetrieval
+
+            && !hasExplicitSpell)
 
         {
 
             routingMode = "disabledByNoRetrieval";
 
         }
-
         else
 
         {
@@ -235,7 +280,11 @@ public sealed partial class WizardIntelligenceProvider
 
             resolvedSpell = routed.Value;
 
-            routingMode = "production";
+            routingMode = previewRequest.NoRetrieval
+
+                ? "explicitOverride"
+
+                : "production";
 
         }
 
@@ -311,6 +360,8 @@ public sealed partial class WizardIntelligenceProvider
 
             resolvedSpell?.Primary,
 
+            attachedFiles: turn.AttachedFiles,
+
             dependencySpells: resolvedSpell?.Resonants,
 
             maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
@@ -354,6 +405,12 @@ public sealed partial class WizardIntelligenceProvider
             excludedTools).ConfigureAwait(false);
 
         IReadOnlyList<AITool> includedTools = ApplyToolPolicyFilters(turn, candidateTools);
+
+        includedTools = turn.UnattendedMode
+
+            ? FilterToolsForUnattended(includedTools)
+
+            : includedTools;
 
         includedTools = FilterAskHumanUnlessAvailable(includedTools, humanInteractionAvailable: false);
 
@@ -508,6 +565,12 @@ public sealed partial class WizardIntelligenceProvider
             routingMode,
 
             previewRequest.NoRetrieval
+
+                && resolvedSpell?.Primary is not null
+
+                ? "The explicit Spell override was resolved while automatic routing and retrieval were skipped."
+
+                : previewRequest.NoRetrieval
 
                 ? "Automatic Spell routing was skipped because noRetrieval was requested."
 

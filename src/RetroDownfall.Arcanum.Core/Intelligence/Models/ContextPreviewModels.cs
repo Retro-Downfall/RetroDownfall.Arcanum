@@ -19,7 +19,35 @@ public sealed record ContextPreviewRequest(
 
     bool ShowContent = false,
 
-    bool NoRetrieval = false);
+    bool NoRetrieval = false,
+
+    string? OverrideSpellName = null,
+
+    List<AttachedFileDto>? AttachedFiles = null,
+
+    List<ScryingFocusDto>? ScryingFoci = null,
+
+    bool DisableAllTools = false,
+
+    bool UnattendedMode = false,
+
+    string? AdditionalSystemPrompt = null,
+
+    int? MaxOutputTokens = null,
+
+    float? Temperature = null,
+
+    float? TopP = null,
+
+    IReadOnlyList<string>? Stop = null,
+
+    long? Seed = null,
+
+    string? ResponseFormat = null,
+
+    float? PresencePenalty = null,
+
+    float? FrequencyPenalty = null);
 
 public sealed record ContextPreviewTool(
 

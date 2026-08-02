@@ -1,6 +1,8 @@
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 
+using RetroDownfall.Arcanum.Cli.UX;
+
 using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -102,7 +104,7 @@ public sealed class ContextCommands(
 
     }
 
-    public async Task<int> Preview(
+    public Task<int> Preview(
 
         ContextPreviewView view,
 
@@ -122,79 +124,290 @@ public sealed class ContextCommands(
 
         CancellationToken cancellationToken)
 
+        => PreviewCore(
+
+            view,
+
+            prompt,
+
+            showContent,
+
+            noRetrieval,
+
+            newSession: false,
+
+            campaign,
+
+            workspace,
+
+            model,
+
+            session,
+
+            attachedFiles: null,
+
+            scryingFoci: null,
+
+            overrideSpellName: null,
+
+            disableAllTools: false,
+
+            unattendedMode: false,
+
+            additionalSystemPrompt: null,
+
+            maxOutputTokens: null,
+
+            inferenceFlags: null,
+
+            preparedContext: null,
+
+            cancellationToken);
+
+    internal Task<int> PreviewRun(
+
+        ContextPreviewView view,
+
+        string prompt,
+
+        bool showContent,
+
+        bool noRetrieval,
+
+        bool newSession,
+
+        string? campaign,
+
+        string? workspace,
+
+        string? model,
+
+        string? session,
+
+        IReadOnlyList<AttachedFileDto>? attachedFiles,
+
+        IReadOnlyList<ScryingFocusDto>? scryingFoci,
+
+        string? overrideSpellName,
+
+        bool disableAllTools,
+
+        bool unattendedMode,
+
+        string? additionalSystemPrompt,
+
+        int? maxOutputTokens,
+
+        InferenceFlagBinder.Parsed? inferenceFlags,
+
+        CliEffectiveContext preparedContext,
+
+        CancellationToken cancellationToken)
+
+        => PreviewCore(
+
+            view,
+
+            prompt,
+
+            showContent,
+
+            noRetrieval,
+
+            newSession,
+
+            campaign,
+
+            workspace,
+
+            model,
+
+            session,
+
+            attachedFiles,
+
+            scryingFoci,
+
+            overrideSpellName,
+
+            disableAllTools,
+
+            unattendedMode,
+
+            additionalSystemPrompt,
+
+            maxOutputTokens,
+
+            inferenceFlags,
+
+            preparedContext,
+
+            cancellationToken);
+
+    private async Task<int> PreviewCore(
+
+        ContextPreviewView view,
+
+        string prompt,
+
+        bool showContent,
+
+        bool noRetrieval,
+
+        bool newSession,
+
+        string? campaign,
+
+        string? workspace,
+
+        string? model,
+
+        string? session,
+
+        IReadOnlyList<AttachedFileDto>? attachedFiles,
+
+        IReadOnlyList<ScryingFocusDto>? scryingFoci,
+
+        string? overrideSpellName,
+
+        bool disableAllTools,
+
+        bool unattendedMode,
+
+        string? additionalSystemPrompt,
+
+        int? maxOutputTokens,
+
+        InferenceFlagBinder.Parsed? inferenceFlags,
+
+        CliEffectiveContext? preparedContext,
+
+        CancellationToken cancellationToken)
+
     {
 
         string invocationDirectory = Environment.CurrentDirectory;
 
-        CliInferenceContextResult resolved = await contextResolver
+        CliEffectiveContext effective;
 
-            .ResolveAsync(
-
-                new CliInferenceContextRequest(
-
-                    campaign,
-
-                    workspace,
-
-                    model,
-
-                    session,
-
-                    invocationDirectory,
-
-                    CliInvocationContext.Current.NoContext,
-
-                    NewSession: false),
-
-                cancellationToken)
-
-            .ConfigureAwait(false);
-
-        if (!resolved.IsSuccess)
+        if (preparedContext is not null)
 
         {
 
-            if (resolved.IsCancelled)
+            effective = preparedContext;
+
+        }
+        else
+
+        {
+
+            CliInferenceContextResult resolved = await contextResolver
+
+                .ResolveAsync(
+
+                    new CliInferenceContextRequest(
+
+                        campaign,
+
+                        workspace,
+
+                        model,
+
+                        session,
+
+                        invocationDirectory,
+
+                        CliInvocationContext.Current.NoContext,
+
+                        NewSession: newSession),
+
+                    cancellationToken)
+
+                .ConfigureAwait(false);
+
+            if (!resolved.IsSuccess)
 
             {
 
-                return (int)CliExitCode.Success;
+                if (resolved.IsCancelled)
+
+                {
+
+                    return (int)CliExitCode.Success;
+
+                }
+
+                dispatcher.WriteDiagnostic(
+
+                    resolved.Error ?? "CLI context could not be resolved.");
+
+                return (int)CliExitCode.ConfigurationError;
 
             }
 
-            dispatcher.WriteDiagnostic(
+            foreach (string warning in resolved.Warnings)
 
-                resolved.Error ?? "CLI context could not be resolved.");
+            {
 
-            return (int)CliExitCode.ConfigurationError;
+                dispatcher.WriteDiagnostic("Warning: " + warning);
 
-        }
+            }
 
-        foreach (string warning in resolved.Warnings)
-
-        {
-
-            dispatcher.WriteDiagnostic("Warning: " + warning);
+            effective = resolved.Context!;
 
         }
-
-        CliEffectiveContext effective = resolved.Context!;
 
         ContextPreviewRequest request = new(
 
-            prompt,
+            Prompt: prompt,
 
-            effective.Model.Value,
+            Model: effective.Model.Value,
 
-            effective.Workspace.Value ?? invocationDirectory,
+            WorkingDirectory: effective.Workspace.Value ?? invocationDirectory,
 
-            effective.Session.Value,
+            SessionId: effective.Session.Value,
 
-            effective.Campaign.Value,
+            CampaignId: effective.Campaign.Value,
 
-            showContent,
+            ShowContent: showContent,
 
-            noRetrieval);
+            NoRetrieval: noRetrieval,
+
+            OverrideSpellName: overrideSpellName,
+
+            AttachedFiles: attachedFiles is null
+
+                ? null
+
+                : [.. attachedFiles],
+
+            ScryingFoci: scryingFoci is null
+
+                ? null
+
+                : [.. scryingFoci],
+
+            DisableAllTools: disableAllTools,
+
+            UnattendedMode: unattendedMode,
+
+            AdditionalSystemPrompt: additionalSystemPrompt,
+
+            MaxOutputTokens: maxOutputTokens,
+
+            Temperature: inferenceFlags?.Temperature,
+
+            TopP: inferenceFlags?.TopP,
+
+            Stop: inferenceFlags?.Stop,
+
+            Seed: inferenceFlags?.Seed,
+
+            ResponseFormat: inferenceFlags?.ResponseFormat,
+
+            PresencePenalty: inferenceFlags?.PresencePenalty,
+
+            FrequencyPenalty: inferenceFlags?.FrequencyPenalty);
 
         Result<ContextPreviewResult> response = await apiClient
 

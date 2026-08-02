@@ -236,6 +236,50 @@ public sealed class InferenceFlagBinderTests
 
     }
 
+    [Theory]
+
+    [InlineData("NaN")]
+
+    [InlineData("Infinity")]
+
+    [InlineData("-Infinity")]
+
+    public void TryParse_rejects_non_finite_float_values(string value)
+    {
+
+        TestConsole console = new();
+
+        IAnsiConsole prior = AnsiConsole.Console;
+
+        AnsiConsole.Console = console;
+
+        try
+        {
+
+            TestInferenceInputs inputs = new() { Temperature = value };
+
+            ConfiguredThemePalette palette = CreatePalette();
+
+            bool ok = InferenceFlagBinder.TryParse(inputs, palette, out _, out int exitCode);
+
+            Assert.False(ok);
+
+            Assert.Equal(1, exitCode);
+
+            Assert.Contains("--temperature", console.Output);
+
+            Assert.Contains("finite number", console.Output, StringComparison.OrdinalIgnoreCase);
+
+        }
+        finally
+        {
+
+            AnsiConsole.Console = prior;
+
+        }
+
+    }
+
     [Fact]
     public void TryParse_rejects_unknown_response_format()
     {

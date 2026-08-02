@@ -30,6 +30,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.TheForge;
 
+using RetroDownfall.Arcanum.Core.Workspaces;
+
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 using RetroDownfall.Arcanum.Tests.Support;
@@ -220,8 +222,37 @@ public sealed class WebWorkflowEndpointTests
 
         HttpClient client = factory.CreateAuthenticatedClient();
 
-        Guid sessionId = Guid.Parse(
-            "11111111-1111-1111-1111-111111111111");
+        HttpResponseMessage createdSessionResponse = await client.PostAsJsonAsync(
+
+            "/api/sessions",
+
+            new CreateSessionRequest(null, "Research continuation"),
+
+            ArcanumJsonContext.Default.CreateSessionRequest);
+
+        ApiResponse<SessionDetailDto>? createdSession = JsonSerializer.Deserialize(
+
+            await createdSessionResponse.Content.ReadAsStringAsync(),
+
+            ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+
+        Guid sessionId = Assert.IsType<Guid>(createdSession?.Data?.Id);
+
+        Guid campaignId = Guid.Parse(
+
+            "22222222-2222-2222-2222-222222222222");
+
+        AttachedFileDto attachedFile = new(
+
+            "research-notes.txt",
+
+            "trusted operator context");
+
+        ScryingFocusDto scryingFocus = new(
+
+            Convert.ToBase64String([1, 2, 3]),
+
+            "image/png");
 
         using HttpRequestMessage request = new(
             HttpMethod.Post,
@@ -241,6 +272,30 @@ public sealed class WebWorkflowEndpointTests
                     TokenBudget = 1_200,
 
                     ContinueSessionId = sessionId,
+
+                    WorkingDirectory = "/workspace/project",
+
+                    CampaignId = campaignId,
+
+                    AttachedFiles = [attachedFile],
+
+                    ScryingFoci = [scryingFocus],
+
+                    Temperature = 0.2f,
+
+                    TopP = 0.8f,
+
+                    Stop = ["END"],
+
+                    Seed = 42,
+
+                    ResponseFormat = "text",
+
+                    PresencePenalty = 0.1f,
+
+                    FrequencyPenalty = -0.1f,
+
+                    UnattendedMode = true,
 
                 },
                 ArcanumJsonContext.Default.WebResearchWorkflowRequest),
@@ -277,6 +332,30 @@ public sealed class WebWorkflowEndpointTests
 
         Assert.Equal(sessionId, intelligence.Request.SessionId);
 
+        Assert.Equal("/workspace/project", intelligence.Request.WorkingDirectory);
+
+        Assert.Equal(campaignId, intelligence.Request.CampaignId);
+
+        Assert.Equal(attachedFile, Assert.Single(intelligence.Request.AttachedFiles!));
+
+        Assert.Equal(scryingFocus, Assert.Single(intelligence.Request.ScryingFoci!));
+
+        Assert.Equal(0.2f, intelligence.Request.Temperature);
+
+        Assert.Equal(0.8f, intelligence.Request.TopP);
+
+        Assert.Equal(["END"], intelligence.Request.Stop);
+
+        Assert.Equal(42, intelligence.Request.Seed);
+
+        Assert.Equal("text", intelligence.Request.ResponseFormat);
+
+        Assert.Equal(0.1f, intelligence.Request.PresencePenalty);
+
+        Assert.Equal(-0.1f, intelligence.Request.FrequencyPenalty);
+
+        Assert.True(intelligence.Request.UnattendedMode);
+
         Assert.Contains(
             "[1]",
             intelligence.Request.Prompt,
@@ -284,17 +363,349 @@ public sealed class WebWorkflowEndpointTests
 
     }
 
+    [SkippableFact]
+
+    public async Task Research_rejects_invalid_synthesis_payload_before_provider_work()
+
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            intelligence);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        string oversized = new(
+            'x',
+            (int)ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes + 1);
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "Reject before search",
+
+                    MaxSources = 2,
+
+                    MaxHops = 2,
+
+                    TokenBudget = 1_200,
+
+                    AttachedFiles =
+                    [
+
+                        new AttachedFileDto(
+                            "oversized.txt",
+                            oversized),
+
+                    ],
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string ndjson = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains(
+            ErrorCodes.Validation.AttachedFiles,
+            ndjson,
+            StringComparison.Ordinal);
+
+        Assert.Equal(0, provider.SearchCalls);
+
+        Assert.Equal(0, provider.ReadCalls);
+
+        Assert.Null(intelligence.Request);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Research_rejects_unknown_synthesis_model_before_provider_work()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            intelligence);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "Reject before search",
+
+                    MaxSources = 2,
+
+                    MaxHops = 2,
+
+                    TokenBudget = 1_200,
+
+                    Model = "provider/unknown-model",
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string ndjson = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains(ErrorCodes.Hub.Model, ndjson, StringComparison.Ordinal);
+
+        Assert.Equal(0, provider.SearchCalls);
+
+        Assert.Equal(0, provider.ReadCalls);
+
+        Assert.Null(intelligence.Request);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Research_rejects_disabled_result_attachment_before_provider_work()
+
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            intelligence,
+            attachmentsEnabled: false);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage createdSessionResponse = await client.PostAsJsonAsync(
+
+            "/api/sessions",
+
+            new CreateSessionRequest(null, "Disabled attachment target"),
+
+            ArcanumJsonContext.Default.CreateSessionRequest);
+
+        ApiResponse<SessionDetailDto>? createdSession = JsonSerializer.Deserialize(
+
+            await createdSessionResponse.Content.ReadAsStringAsync(),
+
+            ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+
+        Guid sessionId = Assert.IsType<Guid>(createdSession?.Data?.Id);
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "Reject disabled result attachment before search",
+
+                    MaxSources = 2,
+
+                    MaxHops = 2,
+
+                    TokenBudget = 1_200,
+
+                    AttachToSessionId = sessionId,
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string ndjson = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains(
+            ErrorCodes.WebResearch.RequestRejected,
+            ndjson,
+            StringComparison.Ordinal);
+
+        Assert.Contains("disabled", ndjson, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(0, provider.SearchCalls);
+
+        Assert.Equal(0, provider.ReadCalls);
+
+        Assert.Null(intelligence.Request);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Research_resolves_campaign_only_context_before_search_and_synthesis()
+
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            intelligence);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        string campaignPath = Path.Combine(
+            factory.TempHome,
+            $"research-campaign-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(campaignPath);
+
+        RegisterCampaignRequest registration = new(
+            "Research Campaign",
+            campaignPath,
+            WorkspaceType.Campaign,
+            null);
+
+        HttpResponseMessage campaignResponse = await client.PostAsync(
+            "/api/campaigns",
+            new StringContent(
+                JsonSerializer.Serialize(
+                    registration,
+                    ArcanumJsonContext.Default.RegisterCampaignRequest),
+                Encoding.UTF8,
+                "application/json"));
+
+        ApiResponse<CampaignDto>? campaign = JsonSerializer.Deserialize(
+            await campaignResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseCampaignDto);
+
+        Assert.NotNull(campaign?.Data);
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "Use Campaign context",
+
+                    MaxSources = 1,
+
+                    MaxHops = 1,
+
+                    TokenBudget = 1_200,
+
+                    CampaignId = campaign.Data.Id,
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        _ = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(1, provider.SearchCalls);
+
+        Assert.NotNull(intelligence.Request);
+
+        Assert.Equal(campaign.Data.Id, intelligence.Request.CampaignId);
+
+        Assert.Equal(campaignPath, intelligence.Request.WorkingDirectory);
+
+    }
+
     private static ArcanumWebApplicationFactory Factory(
         StubWebProvider provider,
-        StubIntelligence intelligence) =>
+        StubIntelligence intelligence,
+        bool attachmentsEnabled = true) =>
         new()
         {
 
             SettingsOverride = settings => settings with
             {
 
+                DefaultModel = "vision-model",
+
+                Providers =
+                [
+
+                    new ProviderSettings
+                    {
+
+                        Name = "test",
+
+                        Type = AiProviderKind.OpenAICompatible,
+
+                        Endpoint = "https://example.test/v1",
+
+                        Models =
+                        [
+
+                            new ModelEntry(
+                                "vision-model",
+                                SupportsVision: true),
+
+                        ],
+
+                    },
+
+                ],
+
                 Features = settings.Features with
                 {
+
+                    Attachments = attachmentsEnabled,
 
                     WebBrowsing = true,
 

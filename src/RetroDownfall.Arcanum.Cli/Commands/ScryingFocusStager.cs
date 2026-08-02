@@ -1,3 +1,5 @@
+using System.Buffers;
+
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
@@ -11,6 +13,8 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 /// </summary>
 public static class ScryingFocusStager
 {
+
+    private const int FileReadBufferBytes = 81920;
 
     private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -79,9 +83,32 @@ public static class ScryingFocusStager
     /// <summary>
     /// Reads, MIME-sniffs, validates, and base64-encodes an image file into a
     /// <see cref="ScryingFocusDto"/>. Re-checks size (the caller may have only stat'd the file
-    /// earlier via <see cref="CheckSize"/>, and the file could have changed since).
+    /// earlier via <see cref="CheckSize"/>, and the file could have changed since). The read stops
+    /// after one sentinel byte beyond the limit so growth and special streams remain memory-bounded.
     /// </summary>
-    public static StagingResult Stage(string fullPath, long maxImageBytes, string[] allowedMimeTypes)
+    public static StagingResult Stage(
+        string fullPath,
+        long maxImageBytes,
+        string[] allowedMimeTypes) =>
+        Stage(
+            fullPath,
+            maxImageBytes,
+            allowedMimeTypes,
+            static path => new FileInfo(path).Length,
+            static path => new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                FileReadBufferBytes,
+                FileOptions.SequentialScan));
+
+    internal static StagingResult Stage(
+        string fullPath,
+        long maxImageBytes,
+        string[] allowedMimeTypes,
+        Func<string, long> getFileLength,
+        Func<string, Stream> openRead)
     {
 
         long length;
@@ -90,7 +117,7 @@ public static class ScryingFocusStager
 
         try
         {
-            length = new FileInfo(fullPath).Length;
+            length = getFileLength(fullPath);
 
             if (length > maxImageBytes)
             {
@@ -100,7 +127,65 @@ public static class ScryingFocusStager
                     $"Image exceeds the maximum size of {maxImageBytes} bytes.");
             }
 
-            bytes = File.ReadAllBytes(fullPath);
+            using Stream stream = openRead(fullPath);
+
+            using MemoryStream content = new(
+                capacity: length is > 0 and <= int.MaxValue
+                    ? (int)length
+                    : 0);
+
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(FileReadBufferBytes);
+
+            long observedBytes = 0;
+
+            try
+            {
+
+                while (true)
+                {
+
+                    long remainingBytes = maxImageBytes - observedBytes;
+
+                    int requestedBytes = remainingBytes >= buffer.Length
+                        ? buffer.Length
+                        : (int)remainingBytes + 1;
+
+                    int read = stream.Read(buffer, 0, requestedBytes);
+
+                    if (read == 0)
+                    {
+
+                        break;
+
+                    }
+
+                    observedBytes += read;
+
+                    if (observedBytes > maxImageBytes)
+                    {
+
+                        return new StagingResult(
+                            null,
+                            Math.Max(length, observedBytes),
+                            $"Image exceeds the maximum size of {maxImageBytes} bytes.");
+
+                    }
+
+                    content.Write(buffer, 0, read);
+
+                }
+
+            }
+            finally
+            {
+
+                ArrayPool<byte>.Shared.Return(buffer);
+
+            }
+
+            bytes = content.ToArray();
+
+            length = bytes.LongLength;
         }
         catch (IOException ex)
         {

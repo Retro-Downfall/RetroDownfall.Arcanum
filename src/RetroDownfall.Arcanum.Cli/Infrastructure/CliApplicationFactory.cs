@@ -179,6 +179,14 @@ internal static class CliApplicationFactory
 
         services.AddTransient<AskCommand>();
 
+        services.AddTransient<RunCommand>();
+
+        services.AddTransient<IRunInputReader, RunInputReader>();
+
+        services.AddTransient<IRunAttachmentStager, RunAttachmentStager>();
+
+        services.AddTransient<IRunExecutionDispatcher, RunExecutionDispatcher>();
+
         services.AddTransient<ChatCommand>();
 
         services.AddTransient<LookCommand>();

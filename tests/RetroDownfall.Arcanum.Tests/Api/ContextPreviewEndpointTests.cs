@@ -37,6 +37,18 @@ public sealed class ContextPreviewEndpointTests(ArcanumWebApplicationFactory fac
 
         HttpClient client = factory.CreateAuthenticatedClient();
 
+        AttachedFileDto attachedFile = new(
+
+            "notes.txt",
+
+            "preview-only attachment");
+
+        ScryingFocusDto scryingFocus = new(
+
+            Convert.ToBase64String([1, 2, 3]),
+
+            "image/png");
+
         ContextPreviewRequest request = new(
 
             Prompt: string.Empty,
@@ -45,7 +57,35 @@ public sealed class ContextPreviewEndpointTests(ArcanumWebApplicationFactory fac
 
             ShowContent: false,
 
-            NoRetrieval: true);
+            NoRetrieval: true,
+
+            OverrideSpellName: "test-spell",
+
+            AttachedFiles: [attachedFile],
+
+            ScryingFoci: [scryingFocus],
+
+            DisableAllTools: true,
+
+            UnattendedMode: true,
+
+            AdditionalSystemPrompt: "Use research synthesis policy.",
+
+            MaxOutputTokens: 1_200,
+
+            Temperature: 0.2f,
+
+            TopP: 0.8f,
+
+            Stop: ["END"],
+
+            Seed: 42,
+
+            ResponseFormat: "text",
+
+            PresencePenalty: 0.1f,
+
+            FrequencyPenalty: -0.1f);
 
         string payload = JsonSerializer.Serialize(
 
@@ -82,6 +122,38 @@ public sealed class ContextPreviewEndpointTests(ArcanumWebApplicationFactory fac
         Assert.Null(envelope.Data.Content);
 
         Assert.True(factory.FakeIntelligence.LastContextPreviewRequest?.NoRetrieval);
+
+        ContextPreviewRequest forwarded = Assert.IsType<ContextPreviewRequest>(
+
+            factory.FakeIntelligence.LastContextPreviewRequest);
+
+        Assert.Equal("test-spell", forwarded.OverrideSpellName);
+
+        Assert.Equal(attachedFile, Assert.Single(forwarded.AttachedFiles!));
+
+        Assert.Equal(scryingFocus, Assert.Single(forwarded.ScryingFoci!));
+
+        Assert.True(forwarded.DisableAllTools);
+
+        Assert.True(forwarded.UnattendedMode);
+
+        Assert.Equal("Use research synthesis policy.", forwarded.AdditionalSystemPrompt);
+
+        Assert.Equal(1_200, forwarded.MaxOutputTokens);
+
+        Assert.Equal(0.2f, forwarded.Temperature);
+
+        Assert.Equal(0.8f, forwarded.TopP);
+
+        Assert.Equal(["END"], forwarded.Stop);
+
+        Assert.Equal(42, forwarded.Seed);
+
+        Assert.Equal("text", forwarded.ResponseFormat);
+
+        Assert.Equal(0.1f, forwarded.PresencePenalty);
+
+        Assert.Equal(-0.1f, forwarded.FrequencyPenalty);
 
     }
 

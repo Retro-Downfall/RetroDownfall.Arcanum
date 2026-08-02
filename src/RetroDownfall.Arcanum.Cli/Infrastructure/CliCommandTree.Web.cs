@@ -244,6 +244,12 @@ internal static partial class CliCommandTree
                     result.GetValue(format),
                     result.GetValue(save),
                     result.GetValue(attach),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    false,
                     cancellationToken).ConfigureAwait(false));
 
         return command;

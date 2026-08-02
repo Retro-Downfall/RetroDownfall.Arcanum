@@ -57,6 +57,10 @@ internal static partial class CliCommandTree
                 pr.GetValue(frequencyPenalty),
                 pr.GetValue(image) ?? [],
                 pr.GetValue(attachment) ?? [],
+                null,
+                null,
+                null,
+                null,
                 words).ConfigureAwait(false);
         });
         return ask;
