@@ -35,8 +35,13 @@ internal sealed class DaemonExecutionRecord
 }
 
 public sealed class InMemoryDaemonExecutionRepository(
-    ILogRingBuffer logRingBuffer) : IDaemonExecutionRepository
+    ILogRingBuffer logRingBuffer,
+    TimeProvider? timeProvider = null) :
+    IDaemonExecutionRepository,
+    IDaemonExecutionMutationGate
 {
+
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     private readonly ConcurrentDictionary<string, List<DaemonExecutionRecord>> _history = new(StringComparer.Ordinal);
 
@@ -45,6 +50,8 @@ public sealed class InMemoryDaemonExecutionRepository(
     private readonly ConcurrentDictionary<string, DaemonExecutionRecord> _byId = new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, string> _inFlightByDaemon = new(StringComparer.Ordinal);
+
+    private readonly SemaphoreSlim _mutationGate = new(1, 1);
 
     public Task<DaemonExecutionSummary[]> GetHistoryAsync(string? daemonId, CancellationToken ct)
     {
@@ -97,8 +104,16 @@ public sealed class InMemoryDaemonExecutionRepository(
         }
     }
 
-    public Task<string> StartAsync(string daemonId, string daemonName, CancellationToken ct)
+    public async Task<string> StartAsync(
+        string daemonId,
+        string daemonName,
+        CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+
+        await using IAsyncDisposable lease = await AcquireExclusiveAsync(
+            ct).ConfigureAwait(false);
+
         ct.ThrowIfCancellationRequested();
 
         string executionId = Guid.NewGuid().ToString("N");
@@ -127,7 +142,7 @@ public sealed class InMemoryDaemonExecutionRepository(
 
         }
 
-        return Task.FromResult(executionId);
+        return executionId;
     }
 
     // W3.3 Fix 4: atomic single-running reservation for the on-demand path. The
@@ -136,14 +151,23 @@ public sealed class InMemoryDaemonExecutionRepository(
     // for the same daemon loses the TryAdd and returns false without creating a
     // record. The caller supplies the executionId so DaemonRunner can use it for
     // the subsequent GetCancellationTokenSource lookup without a second round-trip.
-    public Task<bool> TryStartAsync(string daemonId, string daemonName, string executionId, CancellationToken ct)
+    public async Task<bool> TryStartAsync(
+        string daemonId,
+        string daemonName,
+        string executionId,
+        CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+
+        await using IAsyncDisposable lease = await AcquireExclusiveAsync(
+            ct).ConfigureAwait(false);
+
         ct.ThrowIfCancellationRequested();
 
         if (!_inFlightByDaemon.TryAdd(daemonId, executionId))
         {
 
-            return Task.FromResult(false);
+            return false;
 
         }
 
@@ -162,7 +186,19 @@ public sealed class InMemoryDaemonExecutionRepository(
 
         }
 
-        return Task.FromResult(true);
+        return true;
+    }
+
+    public async ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
+        CancellationToken cancellationToken = default)
+    {
+
+        await _mutationGate
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return new MutationLease(_mutationGate);
+
     }
 
     private DaemonExecutionRecord CreateRecord(string daemonId, string daemonName, string executionId, CancellationToken ct)
@@ -173,7 +209,7 @@ public sealed class InMemoryDaemonExecutionRepository(
             DaemonId = daemonId,
             DaemonName = daemonName,
             Status = DaemonJobStatus.Running,
-            StartedAt = DateTimeOffset.UtcNow,
+            StartedAt = _timeProvider.GetUtcNow(),
             Cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct),
         };
 
@@ -236,7 +272,7 @@ public sealed class InMemoryDaemonExecutionRepository(
 
             record.Status = DaemonJobStatus.Cancelled;
 
-            record.CompletedAt = DateTimeOffset.UtcNow;
+            record.CompletedAt = _timeProvider.GetUtcNow();
 
             record.ErrorMessage = "Job was cancelled.";
 
@@ -250,6 +286,64 @@ public sealed class InMemoryDaemonExecutionRepository(
 
     public bool HasRunningExecution(string daemonId) =>
         _inFlightByDaemon.ContainsKey(daemonId);
+
+    public Task<bool> TryDeleteTerminalAsync(
+        string executionId,
+        CancellationToken ct)
+        => TryDeleteTerminalBeforeAsync(
+            executionId,
+            DateTimeOffset.MaxValue,
+            ct);
+
+    public Task<bool> TryDeleteTerminalBeforeAsync(
+        string executionId,
+        DateTimeOffset completedAtCutoff,
+        CancellationToken ct)
+    {
+
+        ct.ThrowIfCancellationRequested();
+
+        if (!_byId.TryGetValue(executionId, out DaemonExecutionRecord? record))
+        {
+
+            return Task.FromResult(false);
+
+        }
+
+        lock (GetLock(record.DaemonId))
+        {
+
+            if (!_byId.TryGetValue(executionId, out DaemonExecutionRecord? current)
+                || !ReferenceEquals(record, current)
+                || current.Status is not (
+                    DaemonJobStatus.Completed
+                    or DaemonJobStatus.Failed
+                    or DaemonJobStatus.Cancelled)
+                || current.CompletedAt is not DateTimeOffset completedAt
+                || completedAt > completedAtCutoff)
+            {
+
+                return Task.FromResult(false);
+
+            }
+
+            if (!_history.TryGetValue(
+                    current.DaemonId,
+                    out List<DaemonExecutionRecord>? history)
+                || !history.Remove(current))
+            {
+
+                return Task.FromResult(false);
+
+            }
+
+            _ = _byId.TryRemove(executionId, out _);
+
+            return Task.FromResult(true);
+
+        }
+
+    }
 
     public CancellationTokenSource? GetCancellationTokenSource(string executionId)
     {
@@ -281,7 +375,7 @@ public sealed class InMemoryDaemonExecutionRepository(
 
             record.Status = status;
 
-            record.CompletedAt = DateTimeOffset.UtcNow;
+            record.CompletedAt = _timeProvider.GetUtcNow();
 
             record.ErrorMessage = errorMessage;
 
@@ -362,6 +456,27 @@ public sealed class InMemoryDaemonExecutionRepository(
         record.Cancellation = null;
 
         cts?.Dispose();
+    }
+
+    private sealed class MutationLease(SemaphoreSlim gate) : IAsyncDisposable
+    {
+
+        private int _released;
+
+        public ValueTask DisposeAsync()
+        {
+
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+            {
+
+                _ = gate.Release();
+
+            }
+
+            return ValueTask.CompletedTask;
+
+        }
+
     }
 
 }

@@ -263,6 +263,48 @@ Persisted attachment and operation payloads use authenticated encrypted blobs. T
 lifecycle supports migration, verification, key rotation, resumable checkpoints, and safe retained
 key retirement.
 
+### Retention is plan-first
+
+Unified retention sits above the existing stores instead of pretending they are one database.
+`arcanum data status` reports typed classes across SQLCipher rows, encrypted file trees, dated
+JSONL logs, and derived indexes. `Arcanum:Retention` gives each class an explicit enabled/day rule,
+keeps automatic sweeps and session-bearing deletion off by default, bounds each sweep, checkpoints
+durable progress, applies an accounting minimum, and supports explicit protected-session holds.
+Audit writers rotate and append their current dated files but never perform an unbounded cleanup
+scan. Historical inference and guardrail logs can be removed only by the same bounded, durable
+retention plan/apply boundary as the other typed classes.
+
+Destructive work starts with the same server-owned plan used by dry-run. The plan reports rows,
+files, estimated bytes, derived records, pins/holds, and active-work conflicts. A sweep may continue
+with unrelated eligible candidates while leaving blocked ones untouched; deleting one selected
+session, attachment, or memory scope remains all-or-nothing. Active durable operations, inference,
+idempotency leases, budget reservations, and batches are never treated as old disposable history.
+Status includes the owned companion/index/provenance rows of composite data classes and measures
+only managed files that presently exist. If a sweep candidate becomes protected after planning, it
+is preserved with a `Data.PlanChanged` diagnostic, later independent candidates can continue, and
+the durable cursor remains before the earliest preserved candidate for re-evaluation.
+
+Deletion follows ownership. Attachment bytes, chunks, embeddings, and index state leave with the
+attachment; Entry and workspace embeddings leave with their source rows. Batch references protect
+uploaded files. Saga and Lexicon facts remain separate: deleting a source attachment preserves the
+fact and its typed provenance, which then honestly reports that the source is unavailable.
+
+Checkpoint recovery resumes the bounded candidate snapshot at its saved cursor. Each selected
+candidate rechecks its active-work and ownership conditions, and apply verifies the candidate's
+owned rows, derived records, and files after deletion. This is intentionally a bounded
+candidate-local check, not a global orphan sweep.
+
+Factory reset is bounded to the configured Arcanum data root and explicitly preserves external
+backups, configuration, keys/security material, and data outside that root. Logical SQL deletion and
+file unlinking are not physical secure erasure: SSD wear leveling, copy-on-write snapshots, WAL/free
+pages, caches, replicas, and backups can retain copies. Issue #43 adds no schema migration and does
+not require recreating a local/test database. The Forge-owned local histories are outside this
+implementation boundary and remain untouched; no coordinated cleanup integration is added. A
+successful reset clears prior terminal operation history but necessarily leaves its own completed
+durable-operation marker as the audit/recovery record.
+Managed files first move to identity-verified, owner-only quarantine: rollback restores them,
+successful commit finalizes deletion, and restart recovery resumes any quarantine left by a crash.
+
 ## 9. Security model
 
 Arcanum is local-first, not trust-free.
@@ -303,6 +345,10 @@ Arcanum does not generate a replacement and continue against unreadable data.
 
 Native routes use the `ApiResponse<T>` envelope and camelCase source-generated JSON. Failure
 responses carry a stable code and sanitized message.
+
+The authenticated `/api/data/*` family separates read-only status/planning from confirmed
+operation-specific mutation. API callers can bind apply to a prior preview with `expectedPlanId`;
+the server re-plans and returns `Data.PlanChanged` rather than applying a changed candidate graph.
 
 The `/v1` surface intentionally follows OpenAI shapes instead of the native envelope. It supports
 the documented Chat Completions subset, embeddings, files, and asynchronous chat-completion
@@ -388,6 +434,12 @@ reference never does. `ask --attachment <guid>` and `chat --attachment <guid>` n
 versions directly. Metadata and JSON remain content-free, while export is the explicit atomic
 plaintext operation.
 
+The `data status`, `data retention show|set`, `data prune`, `data delete-session`,
+`data delete-attachment`, `data reset-memory`, and `data factory-reset` family is likewise
+HTTP-only. `prune` requires exactly one of `--dry-run` and
+`--apply`; every mutation requires an interactive confirmation or recursive `--yes`. Factory reset
+states its backup/out-of-root boundary before sending the request.
+
 Command Center is the terminal-native session workbench. It combines streaming chat, Wards, human
 prompts, attachment state, context telemetry, session mutation, and operator refresh without
 creating a second backend.
@@ -402,6 +454,10 @@ The public configuration model is intentionally smaller than the internal implem
 mechanics, workflow counts, fallback behavior, and other safety internals stay code-owned. Use
 [`Compendium.README.md`](Compendium.README.md#complete-configuration-reference) for every retained
 key, default, bound, dynamic dictionary shape, and credential reference.
+
+Retention is a descriptor-driven section. It exposes the real policy choices—typed class rules,
+sweep bounds, accounting floor, and protected-session GUIDs—without inventing a second delete
+engine or additional capability restrictions.
 
 ### The Forge
 
@@ -485,6 +541,8 @@ Keep these boundaries in mind:
 - macOS child containment does not block network access;
 - Linux tool-child containment is unavailable;
 - external MCP subprocesses are trusted operator configuration;
+- retention and factory reset provide logical deletion, not physical secure erasure or backup
+  destruction;
 - Comm Link webhooks are not HMAC-signed;
 - the product is single-operator; `PromptId` acts as the human-input ownership capability;
 - macOS packaging is self-contained rather than Native AOT;

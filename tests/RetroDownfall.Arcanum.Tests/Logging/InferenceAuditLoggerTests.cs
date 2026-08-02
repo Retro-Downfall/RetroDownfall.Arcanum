@@ -334,10 +334,15 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     }
 
     [Fact]
-    public async Task LogAsync_SweepsFilesOlderThanRetention()
+    public async Task LogAsync_WhenUnifiedAutomaticSweepIsEnabled_DoesNotDeleteOldFiles()
     {
 
-        InferenceAuditLogger logger = CreateLogger(enabled: true, retentionDays: 7);
+        InferenceAuditLogger logger = CreateLogger(
+            enabled: true,
+            retentionDays: 7,
+            automaticSweepsEnabled: true,
+            unifiedRetentionEnabled: true,
+            unifiedRetentionDays: 7);
 
         string oldDate = DateTime.UtcNow.AddDays(-30).ToString("yyyyMMdd");
 
@@ -347,15 +352,14 @@ public sealed class InferenceAuditLoggerTests : IDisposable
 
         Assert.True(File.Exists(oldFile));
 
-        // The first write of a "new day" triggers the retention sweep.
         await logger.LogAsync(MakeRecord("ping"), CancellationToken.None);
 
-        Assert.False(File.Exists(oldFile));
+        Assert.True(File.Exists(oldFile));
 
     }
 
     [Fact]
-    public async Task LogAsync_DoesNotSweepFilesWithinRetention()
+    public async Task LogAsync_DoesNotDeleteRecentFiles()
     {
 
         InferenceAuditLogger logger = CreateLogger(enabled: true, retentionDays: 30);
@@ -395,7 +399,10 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     private InferenceAuditLogger CreateLogger(
         bool enabled,
         bool redactToolArguments = true,
-        int retentionDays = 7)
+        int retentionDays = 7,
+        bool automaticSweepsEnabled = true,
+        bool unifiedRetentionEnabled = true,
+        int? unifiedRetentionDays = null)
     {
 
         ArcanumSettings settings = new()
@@ -407,6 +414,15 @@ public sealed class InferenceAuditLoggerTests : IDisposable
                     Enabled = enabled,
                     RetentionDays = retentionDays,
                     RedactToolArguments = redactToolArguments,
+                },
+            },
+            Retention = new RetentionSettings
+            {
+                AutomaticSweepsEnabled = automaticSweepsEnabled,
+                AuditLogs = new RetentionRuleSettings
+                {
+                    Enabled = unifiedRetentionEnabled,
+                    Days = unifiedRetentionDays ?? retentionDays,
                 },
             },
         };

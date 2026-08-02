@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -466,6 +467,10 @@ public sealed class GrimoireRepository : IGrimoireRepository
             () => _attachments.DeleteRowsForSessionInAmbientTransactionAsync(sessionId, cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
+        await DeleteEntryEmbeddingsForSessionInAmbientTransactionAsync(
+            sessionId,
+            cancellationToken).ConfigureAwait(false);
+
         await SqliteBusyRetry.ExecuteAsync(
             () => _db.Entries
                 .Where(m => m.SessionId == sessionId)
@@ -490,6 +495,79 @@ public sealed class GrimoireRepository : IGrimoireRepository
         }
 
         return removed;
+    }
+
+    private async Task DeleteEntryEmbeddingsForSessionInAmbientTransactionAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+
+        IDbContextTransaction? ambient = _db.Database.CurrentTransaction;
+
+        if (ambient is null)
+        {
+
+            throw new InvalidOperationException("Entry embedding purge requires an ambient transaction.");
+
+        }
+
+        DbConnection connection = _db.Database.GetDbConnection();
+
+        DbTransaction transaction = ambient.GetDbTransaction();
+
+        foreach (string table in new[] { "entry_embeddings_vec", "entry_embeddings" })
+        {
+
+            await using DbCommand exists = connection.CreateCommand();
+
+            exists.Transaction = transaction;
+
+            exists.CommandText =
+                "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = @table LIMIT 1";
+
+            DbParameter tableParameter = exists.CreateParameter();
+
+            tableParameter.ParameterName = "@table";
+
+            tableParameter.Value = table;
+
+            exists.Parameters.Add(tableParameter);
+
+            if (await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+            {
+
+                continue;
+
+            }
+
+            await using DbCommand delete = connection.CreateCommand();
+
+            delete.Transaction = transaction;
+
+            delete.CommandText =
+                $"""
+                DELETE FROM "{table}"
+                WHERE lower(replace("EntryId", '-', '')) IN (
+                    SELECT lower(replace(CAST("Id" AS TEXT), '-', ''))
+                    FROM "Entries"
+                    WHERE lower(replace(CAST("SessionId" AS TEXT), '-', '')) = @sessionId
+                )
+                """;
+
+            DbParameter sessionParameter = delete.CreateParameter();
+
+            sessionParameter.ParameterName = "@sessionId";
+
+            sessionParameter.Value = sessionId.ToString("N");
+
+            delete.Parameters.Add(sessionParameter);
+
+            _ = await SqliteBusyRetry.ExecuteAsync(
+                () => delete.ExecuteNonQueryAsync(cancellationToken),
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
     }
 
     public async Task<Session?> GetSessionAsync(

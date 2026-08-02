@@ -4,7 +4,8 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 /// <summary>No-op <see cref="ISessionAttachmentStore"/> for WizardIntelligenceProvider test factories.</summary>
 internal sealed class NoOpSessionAttachmentStore(
-    SessionAttachmentRecord? record = null) : ISessionAttachmentStore
+    SessionAttachmentRecord? record = null,
+    Func<Guid, CancellationToken, Task>? acquireSessionGate = null) : ISessionAttachmentStore
 {
 
     public int PersistNewCallCount { get; private set; }
@@ -110,8 +111,21 @@ internal sealed class NoOpSessionAttachmentStore(
         CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 
-    public Task<IDisposable> AcquireSessionGateAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
-        Task.FromResult<IDisposable>(EmptyDisposable.Instance);
+    public async Task<IDisposable> AcquireSessionGateAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (acquireSessionGate is not null)
+        {
+
+            await acquireSessionGate(sessionId, cancellationToken);
+
+        }
+
+        return EmptyDisposable.Instance;
+
+    }
 
     public Task DeleteRowsForSessionInAmbientTransactionAsync(
         Guid sessionId,

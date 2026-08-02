@@ -64,6 +64,17 @@ public static class GenericSettingsUpdater
         foreach (GenericSettingFieldViewModel field in fields)
         {
 
+            if (field.HasError)
+            {
+
+                logger?.LogWarning(
+                    "Skipped invalid generic setting '{Key}'; the previous value was preserved.",
+                    field.Descriptor.Key);
+
+                continue;
+
+            }
+
             ArcanumSettings? updated = SetByPath(result, field.Descriptor.Key, Coerce(field), logger);
 
             if (updated is null)
@@ -348,6 +359,28 @@ public static class GenericSettingsUpdater
             {
 
                 return text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            }
+
+        }
+
+        if (underlying == typeof(Guid[]))
+        {
+
+            if (value is IEnumerable<string> ids)
+            {
+
+                return ids.Select(Guid.Parse).ToArray();
+
+            }
+
+            if (value is string text)
+            {
+
+                return text
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(Guid.Parse)
+                    .ToArray();
 
             }
 

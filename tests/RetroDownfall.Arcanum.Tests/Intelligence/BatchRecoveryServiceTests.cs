@@ -207,11 +207,23 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
         Guid inputFileId = Guid.NewGuid();
 
+        await _files!.CreateAsync(
+            new UploadedFileRecord(
+                inputFileId,
+                "missing-after-create.jsonl",
+                2,
+                "batch",
+                "application/jsonl",
+                DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
         Guid batchId = Guid.NewGuid();
 
         await _batches!.CreateAsync(
             new BatchRecord(batchId, inputFileId, "/v1/chat/completions", BatchStatuses.InProgress, DateTimeOffset.UtcNow, null, null, null),
             CancellationToken.None);
+
+        await _files.DeleteAsync(inputFileId, CancellationToken.None);
 
         BatchRecoveryService recovery = CreateRecoveryService();
 
@@ -279,8 +291,20 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
 
         Guid batchId = Guid.NewGuid();
 
+        Guid inputFileId = Guid.NewGuid();
+
+        await _files!.CreateAsync(
+            new UploadedFileRecord(
+                inputFileId,
+                "cas-input.jsonl",
+                2,
+                "batch",
+                "application/jsonl",
+                DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
         await _batches!.CreateAsync(
-            new BatchRecord(batchId, Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.Validating, DateTimeOffset.UtcNow, null, null, null),
+            new BatchRecord(batchId, inputFileId, "/v1/chat/completions", BatchStatuses.Validating, DateTimeOffset.UtcNow, null, null, null),
             CancellationToken.None);
 
         bool cas = await _batches.TryCompareAndSetStatusAsync(

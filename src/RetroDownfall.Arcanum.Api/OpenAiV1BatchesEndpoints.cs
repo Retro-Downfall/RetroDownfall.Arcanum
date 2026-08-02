@@ -176,7 +176,23 @@ internal static partial class OpenAiV1Endpoints
             OutputFileId: null,
             ErrorFileId: null);
 
-        await batches.CreateAsync(record, cancellationToken).ConfigureAwait(false);
+        try
+        {
+
+            await batches.CreateAsync(record, cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (BatchFileReferenceException)
+        {
+
+            return JsonError(
+                $"No such file: '{body.InputFileId}'.",
+                "invalid_request_error",
+                "not_found",
+                "input_file_id",
+                StatusCodes.Status404NotFound);
+
+        }
 
         OpenAiBatchObject wire = OpenAiBatchObject.FromRecord(record, OpenAiBatchRequestCounts.Empty);
 

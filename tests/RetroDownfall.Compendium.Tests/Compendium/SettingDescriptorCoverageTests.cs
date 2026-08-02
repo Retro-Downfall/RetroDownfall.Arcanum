@@ -96,6 +96,7 @@ public sealed class SettingDescriptorCoverageTests
             ConfigSection.Integrations,
             ConfigSection.Execution,
             ConfigSection.Cost,
+            ConfigSection.Retention,
             ConfigSection.Daemon,
             ConfigSection.Cli,
         ];

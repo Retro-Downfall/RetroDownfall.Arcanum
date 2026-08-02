@@ -624,6 +624,100 @@ public sealed class IdentityOwnedFileSystemCleanupTests : IDisposable
                 quarantineDirectory));
     }
 
+    [Fact]
+    public void TryQuarantine_preserves_name_and_can_restore_the_owned_file()
+    {
+        IdentityOwnedFileSystemArtifact artifact =
+            CreateCapturedFile("reversible-cleanup.tmp");
+
+        Assert.True(
+            IdentityOwnedFileSystemCleanup.TryQuarantine(
+                artifact,
+                out IdentityOwnedFileSystemQuarantine quarantine));
+
+        Assert.Equal(
+            Path.GetFileName(artifact.Path),
+            Path.GetFileName(quarantine.Quarantined.Path));
+
+        Assert.False(File.Exists(artifact.Path));
+
+        Assert.True(File.Exists(quarantine.Quarantined.Path));
+
+        Assert.True(
+            IdentityOwnedFileSystemCleanup.TryRestoreQuarantined(
+                quarantine));
+
+        Assert.True(File.Exists(artifact.Path));
+
+        Assert.Equal("owned", File.ReadAllText(artifact.Path));
+
+        Assert.False(Directory.Exists(quarantine.Directory.Path));
+    }
+
+    [Fact]
+    public void TryQuarantine_exposes_post_move_artifact_for_retryable_restore()
+    {
+        IdentityOwnedFileSystemArtifact artifact =
+            CreateCapturedFile("post-move-retry.tmp");
+
+        int fileMetadataReads = 0;
+
+        FileHandleIdentityInterop
+            .TryGetPathMetadataNoFollowForTests = path =>
+            {
+                if (Directory.Exists(path))
+                {
+                    return ReadActualMetadata(path);
+                }
+
+                fileMetadataReads++;
+
+                return fileMetadataReads == 1
+                    ? artifact.Metadata
+                    : null;
+            };
+
+        Assert.False(
+            IdentityOwnedFileSystemCleanup.TryQuarantine(
+                artifact,
+                out IdentityOwnedFileSystemQuarantine quarantine));
+
+        Assert.NotEqual(default, quarantine);
+
+        Assert.False(File.Exists(artifact.Path));
+
+        FileHandleIdentityInterop
+            .TryGetPathMetadataNoFollowForTests = null;
+
+        Assert.True(
+            IdentityOwnedFileSystemCleanup.TryRestoreQuarantined(
+                quarantine));
+
+        Assert.True(File.Exists(artifact.Path));
+    }
+
+    [Fact]
+    public void TryDeleteQuarantined_finalizes_the_owned_file()
+    {
+        IdentityOwnedFileSystemArtifact artifact =
+            CreateCapturedFile("finalized-cleanup.tmp");
+
+        Assert.True(
+            IdentityOwnedFileSystemCleanup.TryQuarantine(
+                artifact,
+                out IdentityOwnedFileSystemQuarantine quarantine));
+
+        Assert.True(
+            IdentityOwnedFileSystemCleanup.TryDeleteQuarantined(
+                quarantine));
+
+        Assert.False(File.Exists(artifact.Path));
+
+        Assert.False(File.Exists(quarantine.Quarantined.Path));
+
+        Assert.False(Directory.Exists(quarantine.Directory.Path));
+    }
+
     private IdentityOwnedFileSystemArtifact CreateCapturedFile(
         string fileName)
     {

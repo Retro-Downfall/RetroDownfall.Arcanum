@@ -221,11 +221,35 @@ internal sealed partial class SessionAttachmentStore
 
                 await VerifyCopiedFileAsync(destAbsolute, plan.Source, cancellationToken).ConfigureAwait(false);
 
+                if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                        destAbsolute,
+                        FileSystemObjectKind.RegularFile,
+                        out IdentityOwnedFileSystemArtifact blobAuthority))
+                {
+
+                    throw new IOException(
+                        "Fork copy could not capture the owned attachment blob identity.");
+
+                }
+
+                _forkBlobAuthorities.Remove(plan);
+
+                _forkBlobAuthorities.Add(
+                    plan,
+                    new ForkBlobAuthority(blobAuthority));
+
             }
 
         }
         catch
         {
+
+            foreach (SessionAttachmentForkCopyPlan plan in plans)
+            {
+
+                _forkBlobAuthorities.Remove(plan);
+
+            }
 
             _ = TryDeleteSessionDirectory(forkSessionId);
 
@@ -251,36 +275,65 @@ internal sealed partial class SessionAttachmentStore
 
         }
 
-        foreach (SessionAttachmentForkCopyPlan plan in plans)
+        try
         {
 
-            string relativePath = NormalizeRelativePath(BuildRelativePath(
-                forkSessionId,
-                pendingTurnId: null,
-                plan.Source.LogicalKey,
-                plan.Source.Version,
-                plan.Source.OriginalFileName));
+            foreach (SessionAttachmentForkCopyPlan plan in plans)
+            {
 
-            SessionAttachmentRecord row = new(
-                plan.NewAttachmentId,
-                forkSessionId,
-                plan.NewEntryId,
-                PendingTurnId: null,
-                SessionAttachmentState.Bound,
-                plan.Source.LogicalKey,
-                plan.Source.OriginalFileName,
-                plan.Source.Version,
-                relativePath,
-                plan.Source.ContentSha256,
-                plan.Source.MimeType,
-                plan.Source.ByteLength,
-                plan.Source.Kind,
-                plan.Source.CreatedAt,
-                plan.Source.Source,
-                plan.Source.EncryptionVersion,
-                plan.Source.EncryptionKeyId);
+                if (!_forkBlobAuthorities.TryGetValue(
+                        plan,
+                        out ForkBlobAuthority? authority))
+                {
 
-            await InsertRowAsync(row, cancellationToken).ConfigureAwait(false);
+                    throw new IOException(
+                        "Fork attachment row insertion has no owned blob authority.");
+
+                }
+
+                string relativePath = NormalizeRelativePath(BuildRelativePath(
+                    forkSessionId,
+                    pendingTurnId: null,
+                    plan.Source.LogicalKey,
+                    plan.Source.Version,
+                    plan.Source.OriginalFileName));
+
+                SessionAttachmentRecord row = new(
+                    plan.NewAttachmentId,
+                    forkSessionId,
+                    plan.NewEntryId,
+                    PendingTurnId: null,
+                    SessionAttachmentState.Bound,
+                    plan.Source.LogicalKey,
+                    plan.Source.OriginalFileName,
+                    plan.Source.Version,
+                    relativePath,
+                    plan.Source.ContentSha256,
+                    plan.Source.MimeType,
+                    plan.Source.ByteLength,
+                    plan.Source.Kind,
+                    plan.Source.CreatedAt,
+                    plan.Source.Source,
+                    plan.Source.EncryptionVersion,
+                    plan.Source.EncryptionKeyId);
+
+                await InsertRowAsync(
+                    row,
+                    authority.Artifact,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+        }
+        finally
+        {
+
+            foreach (SessionAttachmentForkCopyPlan plan in plans)
+            {
+
+                _forkBlobAuthorities.Remove(plan);
+
+            }
 
         }
 
@@ -438,7 +491,6 @@ internal sealed partial class SessionAttachmentStore
                     .ConfigureAwait(false);
 
             }
-
             catch (OperationCanceledException)
 
             {
@@ -446,7 +498,6 @@ internal sealed partial class SessionAttachmentStore
                 throw;
 
             }
-
             catch (Exception)
 
             {

@@ -29,12 +29,35 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                 cmd.CommandText =
                     """
                     INSERT INTO "Batches" ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt", "OutputFileId", "ErrorFileId")
-                    VALUES (@id, @inputFileId, @endpoint, @status, @createdAt, @completedAt, @outputFileId, @errorFileId)
+                    SELECT @id, @inputFileId, @endpoint, @status, @createdAt, @completedAt, @outputFileId, @errorFileId
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM "UploadedFiles"
+                        WHERE lower(replace("Id", '-', '')) = @inputFileKey
+                    )
+                      AND (
+                          @outputFileId IS NULL
+                          OR EXISTS (
+                              SELECT 1
+                              FROM "UploadedFiles"
+                              WHERE lower(replace("Id", '-', '')) = @outputFileKey
+                          )
+                      )
+                      AND (
+                          @errorFileId IS NULL
+                          OR EXISTS (
+                              SELECT 1
+                              FROM "UploadedFiles"
+                              WHERE lower(replace("Id", '-', '')) = @errorFileKey
+                          )
+                      )
                     """;
 
                 AddParameter(cmd, "@id", record.Id.ToString());
 
                 AddParameter(cmd, "@inputFileId", record.InputFileId.ToString());
+
+                AddParameter(cmd, "@inputFileKey", record.InputFileId.ToString("N"));
 
                 AddParameter(cmd, "@endpoint", record.Endpoint);
 
@@ -46,9 +69,21 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(cmd, "@outputFileId", (object?)record.OutputFileId?.ToString() ?? DBNull.Value);
 
+                AddParameter(cmd, "@outputFileKey", (object?)record.OutputFileId?.ToString("N") ?? DBNull.Value);
+
                 AddParameter(cmd, "@errorFileId", (object?)record.ErrorFileId?.ToString() ?? DBNull.Value);
 
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                AddParameter(cmd, "@errorFileKey", (object?)record.ErrorFileId?.ToString("N") ?? DBNull.Value);
+
+                int rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                if (rows != 1)
+                {
+
+                    throw new BatchFileReferenceException(record.Id);
+
+                }
+
             },
             cancellationToken);
 
@@ -234,6 +269,22 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         "OutputFileId" = @outputFileId,
                         "ErrorFileId" = @errorFileId
                     WHERE "Id" = @id
+                      AND (
+                          @outputFileId IS NULL
+                          OR EXISTS (
+                              SELECT 1
+                              FROM "UploadedFiles"
+                              WHERE lower(replace("Id", '-', '')) = @outputFileKey
+                          )
+                      )
+                      AND (
+                          @errorFileId IS NULL
+                          OR EXISTS (
+                              SELECT 1
+                              FROM "UploadedFiles"
+                              WHERE lower(replace("Id", '-', '')) = @errorFileKey
+                          )
+                      )
                     """;
 
                 AddParameter(cmd, "@id", id.ToString());
@@ -244,9 +295,26 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(cmd, "@outputFileId", (object?)outputFileId?.ToString() ?? DBNull.Value);
 
+                AddParameter(cmd, "@outputFileKey", (object?)outputFileId?.ToString("N") ?? DBNull.Value);
+
                 AddParameter(cmd, "@errorFileId", (object?)errorFileId?.ToString() ?? DBNull.Value);
 
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                AddParameter(cmd, "@errorFileKey", (object?)errorFileId?.ToString("N") ?? DBNull.Value);
+
+                int rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                if (rows == 0
+                    && await BatchExistsAsync(
+                            connection,
+                            id,
+                            cancellationToken)
+                        .ConfigureAwait(false))
+                {
+
+                    throw new BatchFileReferenceException(id);
+
+                }
+
             },
             cancellationToken);
 
@@ -277,6 +345,22 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
                         "OutputFileId" = @outputFileId,
                         "ErrorFileId" = @errorFileId
                     WHERE "Id" = @id AND "Status" = @expectedStatus
+                      AND (
+                          @outputFileId IS NULL
+                          OR EXISTS (
+                              SELECT 1
+                              FROM "UploadedFiles"
+                              WHERE lower(replace("Id", '-', '')) = @outputFileKey
+                          )
+                      )
+                      AND (
+                          @errorFileId IS NULL
+                          OR EXISTS (
+                              SELECT 1
+                              FROM "UploadedFiles"
+                              WHERE lower(replace("Id", '-', '')) = @errorFileKey
+                          )
+                      )
                     """;
 
                 AddParameter(cmd, "@id", id.ToString());
@@ -289,13 +373,40 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
                 AddParameter(cmd, "@outputFileId", (object?)outputFileId?.ToString() ?? DBNull.Value);
 
+                AddParameter(cmd, "@outputFileKey", (object?)outputFileId?.ToString("N") ?? DBNull.Value);
+
                 AddParameter(cmd, "@errorFileId", (object?)errorFileId?.ToString() ?? DBNull.Value);
+
+                AddParameter(cmd, "@errorFileKey", (object?)errorFileId?.ToString("N") ?? DBNull.Value);
 
                 int rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 return rows == 1;
             },
             cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task<bool> BatchExistsAsync(
+        DbConnection connection,
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            """
+            SELECT 1
+            FROM "Batches"
+            WHERE "Id" = @id
+            LIMIT 1
+            """;
+
+        AddParameter(command, "@id", id.ToString());
+
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)
+            is not null;
 
     }
 

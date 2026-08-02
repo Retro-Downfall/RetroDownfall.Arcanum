@@ -181,6 +181,50 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task PurgeSessionAsync_removes_only_the_sessions_entry_embeddings()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid purgedSessionId, Guid purgedEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "purge embedded entry",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        (Guid retainedSessionId, Guid retainedEntryId) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "retain embedded entry",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        await EnsureEntryEmbeddingTablesAsync();
+
+        await InsertEntryEmbeddingAsync(purgedEntryId);
+
+        await InsertEntryEmbeddingAsync(retainedEntryId);
+
+        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings", purgedEntryId));
+
+        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings_vec", purgedEntryId));
+
+        Assert.Equal(1, await repository.PurgeSessionAsync(purgedSessionId, CancellationToken.None));
+
+        Assert.Equal(0, await CountEntryEmbeddingAsync("entry_embeddings", purgedEntryId));
+
+        Assert.Equal(0, await CountEntryEmbeddingAsync("entry_embeddings_vec", purgedEntryId));
+
+        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings", retainedEntryId));
+
+        Assert.Equal(1, await CountEntryEmbeddingAsync("entry_embeddings_vec", retainedEntryId));
+
+        Assert.True(await repository.SessionExistsAsync(retainedSessionId, CancellationToken.None));
+
+    }
+
+    [SkippableFact]
     public async Task IncrementSessionTokensAsync_updates_total()
     {
 
@@ -1085,6 +1129,97 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+
+    }
+
+    private async Task EnsureEntryEmbeddingTablesAsync()
+    {
+
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync(CancellationToken.None);
+
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS entry_embeddings (
+                EntryId TEXT PRIMARY KEY,
+                Embedding BLOB NOT NULL,
+                Dim INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS entry_embeddings_vec (
+                EntryId TEXT PRIMARY KEY,
+                Embedding BLOB NOT NULL
+            );
+            """;
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private async Task InsertEntryEmbeddingAsync(Guid entryId)
+    {
+
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            """
+            INSERT INTO entry_embeddings (EntryId, Embedding, Dim)
+            VALUES (@entryId, @embedding, 64);
+
+            INSERT INTO entry_embeddings_vec (EntryId, Embedding)
+            VALUES (@entryId, @embedding);
+            """;
+
+        System.Data.Common.DbParameter entryIdParameter = command.CreateParameter();
+
+        entryIdParameter.ParameterName = "@entryId";
+
+        entryIdParameter.Value = entryId.ToString();
+
+        command.Parameters.Add(entryIdParameter);
+
+        System.Data.Common.DbParameter embeddingParameter = command.CreateParameter();
+
+        embeddingParameter.ParameterName = "@embedding";
+
+        embeddingParameter.Value = new byte[64 * sizeof(float)];
+
+        command.Parameters.Add(embeddingParameter);
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private async Task<long> CountEntryEmbeddingAsync(string table, Guid entryId)
+    {
+
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = $"SELECT COUNT(*) FROM {table} WHERE EntryId = @entryId";
+
+        System.Data.Common.DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = "@entryId";
+
+        parameter.Value = entryId.ToString();
+
+        command.Parameters.Add(parameter);
+
+        object? result = await command.ExecuteScalarAsync(CancellationToken.None);
+
+        return Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture);
 
     }
 

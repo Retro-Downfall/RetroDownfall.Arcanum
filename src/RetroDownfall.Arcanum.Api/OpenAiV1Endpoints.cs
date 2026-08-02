@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Security;
@@ -18,6 +19,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Configuration;
 
 namespace RetroDownfall.Arcanum.Api;
 
@@ -67,10 +69,13 @@ internal static partial class OpenAiV1Endpoints
 
     private const bool AllModelsSupportStreaming = true;
 
-    private static IResult HandleListModels(IOptionsSnapshot<ArcanumSettings> settings)
+    private static IResult HandleListModels(
+        ConfigurationWriter writer,
+        IOptionsSnapshot<ArcanumSettings> settings)
     {
         // Non-billable (ADR 0002 / NonBillableSurfaces.GetModels): config-only, no provider call.
-        List<ModelInfoDto> models = ModelInfoBuilder.BuildModelInfoList(settings.Value);
+        List<ModelInfoDto> models = ModelInfoBuilder.BuildModelInfoList(
+            ConfigurationEndpoints.ResolveCurrentSettings(writer, settings));
         Dictionary<string, PromptCachingProfile?> sharedPromptCaching = models
             .GroupBy(static model => model.Model, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(

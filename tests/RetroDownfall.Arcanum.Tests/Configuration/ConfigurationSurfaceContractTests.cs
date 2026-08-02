@@ -23,6 +23,7 @@ public sealed class ConfigurationSurfaceContractTests
         "Host",
         "Integrations",
         "Providers",
+        "Retention",
         "Security",
         "Workspaces",
     ];

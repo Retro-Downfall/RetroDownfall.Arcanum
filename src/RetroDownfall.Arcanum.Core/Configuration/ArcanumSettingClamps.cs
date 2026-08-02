@@ -12,6 +12,20 @@ public static class ArcanumSettingClamps
 
     public static int RetainedLogFileCount(int value) => Math.Clamp(value, 1, 366);
 
+    public static int RetentionSweepIntervalHours(int value) => Math.Clamp(value, 1, 168);
+
+    public static int RetentionMaxItemsPerSweep(int value) => Math.Clamp(value, 1, 10_000);
+
+    public static int RetentionCheckpointInterval(int value, int maxItemsPerSweep) =>
+        Math.Clamp(
+            value,
+            1,
+            RetentionMaxItemsPerSweep(maxItemsPerSweep));
+
+    public static int RetentionAccountingMinimumDays(int value) => Math.Clamp(value, 30, 3_650);
+
+    public static int RetentionRuleDays(int value) => Math.Clamp(value, 1, 3_650);
+
     public static int McpRequestTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
     public static int McpMaxPaginationPages(int value) => Math.Clamp(value, 1, 256);

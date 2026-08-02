@@ -58,6 +58,7 @@ public static class ConfigurationBootstrapper
         destination.Execution = source.Execution;
         destination.Cost = source.Cost;
         destination.Daemon = source.Daemon;
+        destination.Retention = source.Retention;
         destination.Cli = source.Cli;
     }
 

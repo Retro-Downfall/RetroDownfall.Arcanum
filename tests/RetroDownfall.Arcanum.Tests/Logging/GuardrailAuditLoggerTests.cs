@@ -115,7 +115,37 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
 
     }
 
-    private GuardrailAuditLogger CreateLogger(bool enabled, int retentionDays = 7)
+    [Fact]
+    public async Task LogAsync_WhenUnifiedAutomaticSweepIsEnabled_DoesNotDeleteOldFiles()
+    {
+
+        GuardrailAuditLogger logger = CreateLogger(
+            enabled: true,
+            retentionDays: 7,
+            automaticSweepsEnabled: true,
+            unifiedRetentionEnabled: true,
+            unifiedRetentionDays: 7);
+
+        string oldDate = DateTime.UtcNow.AddDays(-45).ToString("yyyyMMdd");
+
+        string oldFile = Path.Combine(
+            _tempDirectory,
+            $"guardrails-{oldDate}.jsonl");
+
+        await File.WriteAllTextAsync(oldFile, "{}\n");
+
+        await logger.LogAsync(MakeRecord("pii-email"), CancellationToken.None);
+
+        Assert.True(File.Exists(oldFile));
+
+    }
+
+    private GuardrailAuditLogger CreateLogger(
+        bool enabled,
+        int retentionDays = 7,
+        bool automaticSweepsEnabled = true,
+        bool unifiedRetentionEnabled = true,
+        int? unifiedRetentionDays = null)
     {
 
         ArcanumSettings settings = new()
@@ -130,6 +160,15 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
                         Enabled = enabled,
                         RetentionDays = retentionDays,
                     },
+                },
+            },
+            Retention = new RetentionSettings
+            {
+                AutomaticSweepsEnabled = automaticSweepsEnabled,
+                GuardrailLogs = new RetentionRuleSettings
+                {
+                    Enabled = unifiedRetentionEnabled,
+                    Days = unifiedRetentionDays ?? retentionDays,
                 },
             },
         };

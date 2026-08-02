@@ -73,9 +73,15 @@ public sealed class LongRunningOperationReconciler(
                 Interlocked.Increment(ref claimed);
                 LongRunningOperationRecoveryResult result = await RecoverOneAsync(lease.Operation, ct)
                     .ConfigureAwait(false);
+
+                LongRunningOperation latest = await store.GetAsync(
+                    lease.Operation.Id,
+                    ct).ConfigureAwait(false)
+                    ?? lease.Operation;
+
                 bool transitioned = await store.TryTransitionAsync(
                     lease.Operation.Id,
-                    lease.Operation.Revision,
+                    latest.Revision,
                     ownerId,
                     result.State,
                     timeProvider.GetUtcNow(),

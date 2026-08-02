@@ -102,6 +102,7 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
             null => string.Empty,
             string s => s,
             string[] arr => string.Join(", ", arr),
+            Guid[] ids => string.Join(", ", ids),
             IEnumerable<string> items => string.Join(", ", items),
             IDictionary<string, string> dict => string.Join(", ", dict.Select(kv => $"{kv.Key}={kv.Value}")),
             _ => Value.ToString() ?? string.Empty,
@@ -180,6 +181,35 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
             }
         }
 
+        if (Descriptor.Key == "retention.protectedSessionIds")
+        {
+
+            IEnumerable<string> sessionIds = Value switch
+            {
+
+                Guid[] ids => ids.Select(static id => id.ToString()),
+
+                IEnumerable<string> ids => ids,
+
+                string text => text.Split(
+                    ',',
+                    StringSplitOptions.RemoveEmptyEntries
+                    | StringSplitOptions.TrimEntries),
+
+                _ => [],
+
+            };
+
+            if (sessionIds.Any(static id => !Guid.TryParse(id, out _)))
+            {
+
+                errors.Add(
+                    "Protected session IDs must be GUID values separated by commas");
+
+            }
+
+        }
+
         // Validate numeric ranges
         if (Descriptor.Kind is SettingKind.Int or SettingKind.Long or SettingKind.Float)
         {
@@ -205,7 +235,7 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         {
             if (Value is string urlValue && !string.IsNullOrWhiteSpace(urlValue))
             {
-                if (!Uri.TryCreate(urlValue, UriKind.Absolute, out Uri? uri) || 
+                if (!Uri.TryCreate(urlValue, UriKind.Absolute, out Uri? uri) ||
                     (uri.Scheme != "http" && uri.Scheme != "https"))
                 {
                     errors.Add("Must be a valid HTTP or HTTPS URL");

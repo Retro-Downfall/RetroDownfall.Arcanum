@@ -1,4 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -67,6 +70,8 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
         Guid inputFileId = Guid.NewGuid();
 
+        await SeedUploadedFileAsync(inputFileId);
+
         DateTimeOffset createdAt = DateTimeOffset.UtcNow;
 
         BatchRecord record = new(id, inputFileId, "/v1/chat/completions", BatchStatuses.Validating, createdAt, null, null, null);
@@ -93,6 +98,258 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
     }
 
+    [SkippableTheory]
+
+    [InlineData("input")]
+
+    [InlineData("output")]
+
+    [InlineData("error")]
+
+    public async Task CreateAsync_rejects_missing_file_references_atomically(
+        string missingRole)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = Guid.NewGuid();
+
+        Guid outputFileId = Guid.NewGuid();
+
+        Guid errorFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
+        await SeedUploadedFileAsync(outputFileId);
+
+        await SeedUploadedFileAsync(errorFileId);
+
+        Guid missingFileId = missingRole switch
+        {
+
+            "input" => inputFileId,
+
+            "output" => outputFileId,
+
+            "error" => errorFileId,
+
+            _ => throw new ArgumentOutOfRangeException(nameof(missingRole)),
+
+        };
+
+        await DeleteUploadedFileMetadataAsync(missingFileId);
+
+        Guid batchId = Guid.NewGuid();
+
+        BatchRecord record = new(
+            batchId,
+            inputFileId,
+            "/v1/chat/completions",
+            BatchStatuses.Completed,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            outputFileId,
+            errorFileId);
+
+        _ = await Assert.ThrowsAsync<BatchFileReferenceException>(
+            () => _repo!.CreateAsync(record, CancellationToken.None));
+
+        Assert.Null(await _repo!.GetByIdAsync(batchId, CancellationToken.None));
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData("output")]
+
+    [InlineData("error")]
+
+    public async Task UpdateStatusAsync_rejects_missing_artifact_references_atomically(
+        string missingRole)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
+        Guid batchId = Guid.NewGuid();
+
+        await _repo!.CreateAsync(
+            new BatchRecord(
+                batchId,
+                inputFileId,
+                "/v1/chat/completions",
+                BatchStatuses.InProgress,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                null),
+            CancellationToken.None);
+
+        Guid missingFileId = Guid.NewGuid();
+
+        Guid? outputFileId = missingRole == "output" ? missingFileId : null;
+
+        Guid? errorFileId = missingRole == "error" ? missingFileId : null;
+
+        _ = await Assert.ThrowsAsync<BatchFileReferenceException>(
+            () => _repo.UpdateStatusAsync(
+                batchId,
+                BatchStatuses.Completed,
+                DateTimeOffset.UtcNow,
+                outputFileId,
+                errorFileId,
+                CancellationToken.None));
+
+        BatchRecord? unchanged = await _repo.GetByIdAsync(
+            batchId,
+            CancellationToken.None);
+
+        Assert.NotNull(unchanged);
+
+        Assert.Equal(BatchStatuses.InProgress, unchanged.Status);
+
+        Assert.Null(unchanged.OutputFileId);
+
+        Assert.Null(unchanged.ErrorFileId);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData("output")]
+
+    [InlineData("error")]
+
+    public async Task TryCompareAndSetStatusAsync_rejects_missing_artifact_reference(
+        string missingRole)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
+        Guid batchId = Guid.NewGuid();
+
+        await _repo!.CreateAsync(
+            new BatchRecord(
+                batchId,
+                inputFileId,
+                "/v1/chat/completions",
+                BatchStatuses.InProgress,
+                DateTimeOffset.UtcNow,
+                null,
+                null,
+                null),
+            CancellationToken.None);
+
+        Guid missingFileId = Guid.NewGuid();
+
+        Guid? outputFileId = missingRole == "output" ? missingFileId : null;
+
+        Guid? errorFileId = missingRole == "error" ? missingFileId : null;
+
+        bool updated = await _repo.TryCompareAndSetStatusAsync(
+            batchId,
+            BatchStatuses.InProgress,
+            BatchStatuses.Completed,
+            DateTimeOffset.UtcNow,
+            outputFileId,
+            errorFileId,
+            CancellationToken.None);
+
+        Assert.False(updated);
+
+        BatchRecord? unchanged = await _repo.GetByIdAsync(
+            batchId,
+            CancellationToken.None);
+
+        Assert.Equal(BatchStatuses.InProgress, unchanged!.Status);
+
+        Assert.Null(unchanged.OutputFileId);
+
+        Assert.Null(unchanged.ErrorFileId);
+
+    }
+
+    [SkippableFact]
+
+    public async Task CreateAsync_waits_for_concurrent_file_delete_and_rejects_stale_reference()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
+        await using ArcanumDbContext concurrentDb = _fixture.CreateContext(_dbPath);
+
+        BatchRepository concurrentBatches = new(concurrentDb);
+
+        SqliteConnection deleteConnection = Assert.IsType<SqliteConnection>(
+            _db!.Database.GetDbConnection());
+
+        await using SqliteTransaction deleteTransaction =
+            deleteConnection.BeginTransaction(deferred: false);
+
+        await using (SqliteCommand delete = deleteConnection.CreateCommand())
+        {
+
+            delete.Transaction = deleteTransaction;
+
+            delete.CommandText =
+                "DELETE FROM \"UploadedFiles\" WHERE lower(replace(\"Id\", '-', '')) = @id";
+
+            _ = delete.Parameters.AddWithValue("@id", inputFileId.ToString("N"));
+
+            Assert.Equal(
+                1,
+                await delete.ExecuteNonQueryAsync(CancellationToken.None));
+
+        }
+
+        Guid batchId = Guid.NewGuid();
+
+        TaskCompletionSource started = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task create = Task.Run(
+            async () =>
+            {
+
+                started.SetResult();
+
+                await concurrentBatches.CreateAsync(
+                    new BatchRecord(
+                        batchId,
+                        inputFileId,
+                        "/v1/chat/completions",
+                        BatchStatuses.Validating,
+                        DateTimeOffset.UtcNow,
+                        null,
+                        null,
+                        null),
+                    CancellationToken.None);
+
+            });
+
+        await started.Task;
+
+        await Task.Yield();
+
+        await deleteTransaction.CommitAsync(CancellationToken.None);
+
+        _ = await Assert.ThrowsAsync<BatchFileReferenceException>(() => create);
+
+        Assert.Null(await concurrentBatches.GetByIdAsync(batchId, CancellationToken.None));
+
+    }
+
     [SkippableFact]
     public async Task GetByIdAsync_returns_null_for_missing_id()
     {
@@ -113,13 +370,21 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
         Guid id = Guid.NewGuid();
 
+        Guid inputFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
         await _repo!.CreateAsync(
-            new BatchRecord(id, Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.Validating, DateTimeOffset.UtcNow, null, null, null),
+            new BatchRecord(id, inputFileId, "/v1/chat/completions", BatchStatuses.Validating, DateTimeOffset.UtcNow, null, null, null),
             CancellationToken.None);
 
         Guid outputFileId = Guid.NewGuid();
 
         Guid errorFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(outputFileId);
+
+        await SeedUploadedFileAsync(errorFileId);
 
         DateTimeOffset completedAt = DateTimeOffset.UtcNow;
 
@@ -147,11 +412,11 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        await _repo!.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.Completed, now, now, null, null), CancellationToken.None);
+        await CreateBatchAsync(BatchStatuses.Completed, now, now);
 
-        await _repo.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.Validating, now, null, null, null), CancellationToken.None);
+        await CreateBatchAsync(BatchStatuses.Validating, now, null);
 
-        IReadOnlyList<BatchRecord> completedOnly = await _repo.ListAsync(BatchStatuses.Completed, CancellationToken.None);
+        IReadOnlyList<BatchRecord> completedOnly = await _repo!.ListAsync(BatchStatuses.Completed, CancellationToken.None);
 
         Assert.Single(completedOnly);
 
@@ -169,15 +434,15 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        await _repo!.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.Validating, now, null, null, null), CancellationToken.None);
+        await CreateBatchAsync(BatchStatuses.Validating, now, null);
 
-        await _repo.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.InProgress, now, null, null, null), CancellationToken.None);
+        await CreateBatchAsync(BatchStatuses.InProgress, now, null);
 
-        await _repo.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.Completed, now, now, null, null), CancellationToken.None);
+        await CreateBatchAsync(BatchStatuses.Completed, now, now);
 
-        await _repo.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.Cancelled, now, now, null, null), CancellationToken.None);
+        await CreateBatchAsync(BatchStatuses.Cancelled, now, now);
 
-        IReadOnlyList<BatchRecord> active = await _repo.ListActiveAsync(CancellationToken.None);
+        IReadOnlyList<BatchRecord> active = await _repo!.ListActiveAsync(CancellationToken.None);
 
         Assert.Equal(2, active.Count);
 
@@ -193,13 +458,13 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        await _repo!.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.InProgress, now, null, null, null), CancellationToken.None);
+        await CreateBatchAsync(BatchStatuses.InProgress, now, null);
 
-        await _repo.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.InProgress, now, null, null, null), CancellationToken.None);
+        await CreateBatchAsync(BatchStatuses.InProgress, now, null);
 
-        await _repo.CreateAsync(new BatchRecord(Guid.NewGuid(), Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.Validating, now, null, null, null), CancellationToken.None);
+        await CreateBatchAsync(BatchStatuses.Validating, now, null);
 
-        IReadOnlyList<BatchRecord> inProgress = await _repo.ListByStatusAsync(BatchStatuses.InProgress, CancellationToken.None);
+        IReadOnlyList<BatchRecord> inProgress = await _repo!.ListByStatusAsync(BatchStatuses.InProgress, CancellationToken.None);
 
         Assert.Equal(2, inProgress.Count);
 
@@ -215,8 +480,12 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
         Guid id = Guid.NewGuid();
 
+        Guid inputFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
         await _repo!.CreateAsync(
-            new BatchRecord(id, Guid.NewGuid(), "/v1/chat/completions", BatchStatuses.InProgress, DateTimeOffset.UtcNow, null, null, null),
+            new BatchRecord(id, inputFileId, "/v1/chat/completions", BatchStatuses.InProgress, DateTimeOffset.UtcNow, null, null, null),
             CancellationToken.None);
 
         bool first = await _repo.TryCompareAndSetStatusAsync(
@@ -274,6 +543,56 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
         object? result = await cmd.ExecuteScalarAsync(CancellationToken.None);
 
         Assert.NotNull(result);
+
+    }
+
+    private Task SeedUploadedFileAsync(Guid id)
+    {
+
+        UploadedFileRepository files = new(_db!);
+
+        return files.CreateAsync(
+            new UploadedFileRecord(
+                id,
+                id.ToString("N") + ".jsonl",
+                1,
+                "batch",
+                "application/jsonl",
+                DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
+    }
+
+    private async Task CreateBatchAsync(
+        string status,
+        DateTimeOffset createdAt,
+        DateTimeOffset? completedAt)
+    {
+
+        Guid inputFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
+        await _repo!.CreateAsync(
+            new BatchRecord(
+                Guid.NewGuid(),
+                inputFileId,
+                "/v1/chat/completions",
+                status,
+                createdAt,
+                completedAt,
+                null,
+                null),
+            CancellationToken.None);
+
+    }
+
+    private Task DeleteUploadedFileMetadataAsync(Guid id)
+    {
+
+        UploadedFileRepository files = new(_db!);
+
+        return files.DeleteAsync(id, CancellationToken.None);
 
     }
 

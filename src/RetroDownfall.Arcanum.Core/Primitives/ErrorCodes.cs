@@ -340,6 +340,26 @@ public static class ErrorCodes
 
     }
 
+    /// <summary>Data lifecycle planning and destructive execution.</summary>
+    public static class Data
+    {
+
+        public const string InvalidRequest = "Data.InvalidRequest";
+
+        public const string PlanChanged = "Data.PlanChanged";
+
+        public const string Blocked = "Data.Blocked";
+
+        public const string Conflict = "Data.Conflict";
+
+        public const string NotFound = "Data.NotFound";
+
+        public const string ConfirmationRequired = "Data.ConfirmationRequired";
+
+        public const string ReconciliationFailed = "Data.ReconciliationFailed";
+
+    }
+
     /// <summary>Connection — client transport failures.</summary>
     public static class Connection
     {

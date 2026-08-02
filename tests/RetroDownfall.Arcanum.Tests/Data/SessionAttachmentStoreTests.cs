@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Hosting;
@@ -1608,6 +1610,147 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             Assert.False(Directory.Exists(Path.Combine(_attachmentsRoot, forkSessionId.ToString("N"))));
 
         }
+
+    }
+
+    [SkippableFact]
+
+    public async Task InsertForkRowsInAmbientTransactionAsync_AcquiresWriterBeforeBlobValidation()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sourceSessionId = Guid.NewGuid();
+
+        Guid forkSessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sourceSessionId, "fork-writer-source");
+
+        await EnsureSessionAsync(forkSessionId, "fork-writer-destination");
+
+        SessionAttachmentRecord source = await _store!.PersistNewAsync(
+            sourceSessionId,
+            pendingTurnId: null,
+            entryId: null,
+            "writer-lock.txt",
+            "writer-lock.txt",
+            Encoding.UTF8.GetBytes("writer lock bytes"),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        SessionAttachmentForkCopyPlan plan = new(
+            source,
+            Guid.NewGuid(),
+            NewEntryId: null);
+
+        await _store.CopyBytesForForkAsync(forkSessionId, [plan]);
+
+        TaskCompletionSource validationReached = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource releaseValidation = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _store.AfterWriterLockBeforeBlobValidationForTesting = async cancellationToken =>
+        {
+
+            validationReached.TrySetResult();
+
+            await releaseValidation.Task.WaitAsync(cancellationToken);
+
+        };
+
+        SqliteConnection connection =
+            (SqliteConnection)_db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync();
+
+        }
+
+        await using SqliteTransaction sqliteTransaction =
+            connection.BeginTransaction(deferred: true);
+
+        await using IDbContextTransaction ambient =
+            await _db.Database.UseTransactionAsync(sqliteTransaction)
+            ?? throw new InvalidOperationException("The test could not attach its deferred transaction.");
+
+        Task insert = _store.InsertForkRowsInAmbientTransactionAsync(
+            forkSessionId,
+            [plan]);
+
+        try
+        {
+
+            await validationReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Exception? competingFailure;
+
+            await using (ArcanumDbContext competingDb = _fixture.CreateContext(_dbPath))
+            {
+
+                SqliteConnection competingConnection =
+                    (SqliteConnection)competingDb.Database.GetDbConnection();
+
+                competingConnection.DefaultTimeout = 1;
+
+                await competingConnection.OpenAsync();
+
+                await using (SqliteCommand timeout = competingConnection.CreateCommand())
+                {
+
+                    timeout.CommandText = "PRAGMA busy_timeout = 1";
+
+                    _ = await timeout.ExecuteNonQueryAsync();
+
+                }
+
+                try
+                {
+
+                    await using SqliteTransaction competingTransaction =
+                        competingConnection.BeginTransaction(deferred: false);
+
+                    competingFailure = null;
+
+                }
+                catch (SqliteException ex)
+                {
+
+                    competingFailure = ex;
+
+                }
+
+            }
+
+            SqliteException busy = Assert.IsType<SqliteException>(competingFailure);
+
+            Assert.Equal(5, busy.SqliteErrorCode);
+
+        }
+        finally
+        {
+
+            releaseValidation.TrySetResult();
+
+            try
+            {
+
+                await insert;
+
+            }
+            finally
+            {
+
+                _store.AfterWriterLockBeforeBlobValidationForTesting = null;
+
+            }
+
+        }
+
+        await ambient.CommitAsync();
 
     }
 

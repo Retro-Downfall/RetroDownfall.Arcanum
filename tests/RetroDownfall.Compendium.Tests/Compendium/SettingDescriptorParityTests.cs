@@ -45,11 +45,17 @@ public sealed class SettingDescriptorParityTests
 
             ParameterInfo[] parameters = method.GetParameters();
 
-            if (parameters.Length != 1)
+            bool isRelationalCheckpointClamp =
+                descriptor.Key == "retention.checkpointInterval"
+                && method.Name == nameof(ArcanumSettingClamps.RetentionCheckpointInterval)
+                && parameters.Length == 2
+                && parameters.All(static parameter => parameter.ParameterType == typeof(int));
+
+            if (parameters.Length != 1 && !isRelationalCheckpointClamp)
 
             {
 
-                failures.Add((descriptor, $"{descriptor.ClampName} has {parameters.Length} parameters; expected 1."));
+                failures.Add((descriptor, $"{descriptor.ClampName} has an unsupported parameter contract."));
 
                 continue;
 
@@ -61,9 +67,13 @@ public sealed class SettingDescriptorParityTests
 
             object maxInput = GetMaxValue(paramType);
 
-            object clampedMin = method.Invoke(null, [minInput])!;
+            object clampedMin = method.Invoke(
+                null,
+                isRelationalCheckpointClamp ? [minInput, int.MaxValue] : [minInput])!;
 
-            object clampedMax = method.Invoke(null, [maxInput])!;
+            object clampedMax = method.Invoke(
+                null,
+                isRelationalCheckpointClamp ? [maxInput, int.MaxValue] : [maxInput])!;
 
             double actualMin = Convert.ToDouble(clampedMin, System.Globalization.CultureInfo.InvariantCulture);
 
@@ -156,6 +166,91 @@ public sealed class SettingDescriptorParityTests
         Assert.Equal(0, descriptor.Min);
         Assert.Equal(1_000_000, descriptor.Max);
         Assert.Equal(nameof(ArcanumSettingClamps.PricingOutputPer1M), descriptor.ClampName);
+    }
+
+    [Fact]
+
+    public void Retention_checkpoint_descriptor_exposes_and_explains_its_relational_clamp()
+    {
+
+        SettingDescriptor descriptor = Assert.Single(
+            SettingDescriptors.All,
+            static candidate => candidate.Key == "retention.checkpointInterval");
+
+        Assert.Equal(ConfigSection.Retention, descriptor.Section);
+
+        Assert.Equal(1, descriptor.Min);
+
+        Assert.Equal(10_000, descriptor.Max);
+
+        Assert.Equal(
+            nameof(ArcanumSettingClamps.RetentionCheckpointInterval),
+            descriptor.ClampName);
+
+        Assert.Contains(
+            "maximum items per sweep",
+            descriptor.Description,
+            StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+
+    public void Retention_rules_have_editable_enabled_and_days_fields_in_named_groups()
+    {
+
+        string[] ruleKeys =
+        [
+            "activeSessions",
+            "archivedSessions",
+            "entries",
+            "attachments",
+            "uploadedFiles",
+            "completedBatches",
+            "sagaMemories",
+            "lexiconEntries",
+            "workspaceIndexes",
+            "sessionEntryEmbeddings",
+            "auditLogs",
+            "guardrailLogs",
+            "idempotencyClaims",
+            "accounting",
+            "longRunningOperations",
+            "sanctumBreaches",
+            "daemonHistory",
+        ];
+
+        foreach (string ruleKey in ruleKeys)
+        {
+
+            SettingDescriptor enabled = Assert.Single(
+                SettingDescriptors.All,
+                candidate => candidate.Key == $"retention.{ruleKey}.enabled");
+
+            SettingDescriptor days = Assert.Single(
+                SettingDescriptors.All,
+                candidate => candidate.Key == $"retention.{ruleKey}.days");
+
+            Assert.Equal(ConfigSection.Retention, enabled.Section);
+
+            Assert.Equal(SettingKind.Bool, enabled.Kind);
+
+            Assert.False(string.IsNullOrWhiteSpace(enabled.Group));
+
+            Assert.Equal(ConfigSection.Retention, days.Section);
+
+            Assert.Equal(SettingKind.Int, days.Kind);
+
+            Assert.Equal(1, days.Min);
+
+            Assert.Equal(3_650, days.Max);
+
+            Assert.Equal(nameof(ArcanumSettingClamps.RetentionRuleDays), days.ClampName);
+
+            Assert.Equal(enabled.Group, days.Group);
+
+        }
+
     }
 
     [Theory]

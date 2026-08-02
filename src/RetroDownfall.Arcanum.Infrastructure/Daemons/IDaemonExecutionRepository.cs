@@ -26,8 +26,23 @@ public interface IDaemonExecutionRepository
 
     Task<DaemonExecutionSummary> CancelAsync(string executionId, CancellationToken ct);
 
+    Task<bool> TryDeleteTerminalAsync(string executionId, CancellationToken ct);
+
+    Task<bool> TryDeleteTerminalBeforeAsync(
+        string executionId,
+        DateTimeOffset completedAtCutoff,
+        CancellationToken ct);
+
     bool HasRunningExecution(string daemonId);
 
     CancellationTokenSource? GetCancellationTokenSource(string executionId);
+
+}
+
+internal interface IDaemonExecutionMutationGate
+{
+
+    ValueTask<IAsyncDisposable> AcquireExclusiveAsync(
+        CancellationToken cancellationToken = default);
 
 }

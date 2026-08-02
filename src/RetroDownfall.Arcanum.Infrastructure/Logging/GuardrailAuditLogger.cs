@@ -13,30 +13,66 @@ namespace RetroDownfall.Arcanum.Infrastructure.Logging;
 /// <summary>
 /// Persisted guardrails audit log (Tier 3 Phase 4, §8.x) — a durable, append-only JSONL trail of
 /// guardrail violations that blocked an inference turn, one file per UTC day
-/// (<c>{stem}-{yyyyMMdd}.jsonl</c>). Registered as a singleton; a single in-process
-/// <see cref="SemaphoreSlim"/> serializes writes. A complete no-op — no file I/O at all — when
+/// (<c>{stem}-{yyyyMMdd}.jsonl</c>). Registered as a singleton; a private in-process
+/// <see cref="SemaphoreSlim"/> serializes same-family writes, while a shared managed-log gate orders
+/// publication against factory reset. A complete no-op — no file I/O at all — when
 /// <c>Arcanum:Security:Guardrails:AuditLog:Enabled</c> is <see langword="false"/> (the default).
 /// Independent of <see cref="InferenceAuditLogger"/> (which records completed turns): this records
 /// only the violations that rejected a turn, and only when <c>Arcanum:Features:Guardrails</c> is
 /// also <see langword="true"/>.
 /// </summary>
-public sealed class GuardrailAuditLogger(
-    IOptionsMonitor<ArcanumSettings> optionsMonitor,
-    ILogger<GuardrailAuditLogger> logger,
-    string? filePathOverride = null) : IGuardrailAuditLogger, IDisposable
+public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
 {
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+
+    private readonly IOptionsMonitor<ArcanumSettings> _optionsMonitor;
+
+    private readonly ILogger<GuardrailAuditLogger> _logger;
+
+    private readonly string? _filePathOverride;
+
+    private readonly IManagedLogMutationGate _managedLogMutationGate;
 
     private string? _lastPreparedDateStamp;
 
     private bool _sizeCapWarnedForCurrentDate;
 
+    public GuardrailAuditLogger(
+        IOptionsMonitor<ArcanumSettings> optionsMonitor,
+        ILogger<GuardrailAuditLogger> logger,
+        string? filePathOverride = null) :
+        this(
+            optionsMonitor,
+            logger,
+            filePathOverride,
+            new ManagedLogMutationGate())
+    {
+
+    }
+
+    internal GuardrailAuditLogger(
+        IOptionsMonitor<ArcanumSettings> optionsMonitor,
+        ILogger<GuardrailAuditLogger> logger,
+        string? filePathOverride,
+        IManagedLogMutationGate managedLogMutationGate)
+    {
+
+        _optionsMonitor = optionsMonitor;
+
+        _logger = logger;
+
+        _filePathOverride = filePathOverride;
+
+        _managedLogMutationGate = managedLogMutationGate;
+
+    }
+
     public async Task LogAsync(GuardrailAuditRecord record, CancellationToken cancellationToken)
     {
 
         GuardrailsAuditLogSettings config =
-            optionsMonitor.CurrentValue.ResolveGuardrails().AuditLog;
+            _optionsMonitor.CurrentValue.ResolveGuardrails().AuditLog;
 
         if (!config.Enabled)
         {
@@ -45,18 +81,22 @@ public sealed class GuardrailAuditLogger(
 
         try
         {
+            await using IAsyncDisposable managedLogLease =
+                await _managedLogMutationGate.AcquireExclusiveAsync(
+                    cancellationToken).ConfigureAwait(false);
+
             await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             try
             {
                 (string directory, string stem) =
-                    ResolvePathParts(filePathOverride ?? config.FilePath);
+                    ResolvePathParts(_filePathOverride ?? config.FilePath);
 
                 string dateStamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
 
                 if (!string.Equals(_lastPreparedDateStamp, dateStamp, StringComparison.Ordinal))
                 {
-                    PrepareForNewDate(directory, stem, dateStamp, config.RetentionDays);
+                    PrepareForNewDate(directory, dateStamp);
                 }
 
                 string filePath = Path.Combine(directory, $"{stem}-{dateStamp}.jsonl");
@@ -67,7 +107,7 @@ public sealed class GuardrailAuditLogger(
                 {
                     if (!_sizeCapWarnedForCurrentDate)
                     {
-                        logger.LogWarning(
+                        _logger.LogWarning(
                             "Guardrails audit log {FilePath} reached its {MaxSizeMb} MB size cap; further entries for today are dropped.",
                             filePath,
                             config.MaxSizeMb);
@@ -97,7 +137,7 @@ public sealed class GuardrailAuditLogger(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to write guardrails audit log entry.");
+            _logger.LogWarning(ex, "Failed to write guardrails audit log entry.");
 
         }
 
@@ -114,7 +154,7 @@ public sealed class GuardrailAuditLogger(
     {
 
         GuardrailsAuditLogSettings config =
-            optionsMonitor.CurrentValue.ResolveGuardrails().AuditLog;
+            _optionsMonitor.CurrentValue.ResolveGuardrails().AuditLog;
 
         if (!config.Enabled)
         {
@@ -122,7 +162,7 @@ public sealed class GuardrailAuditLogger(
         }
 
         (string directory, string stem) =
-            ResolvePathParts(filePathOverride ?? config.FilePath);
+            ResolvePathParts(_filePathOverride ?? config.FilePath);
 
         if (!Directory.Exists(directory))
         {
@@ -197,7 +237,7 @@ public sealed class GuardrailAuditLogger(
         }
         catch (IOException ex)
         {
-            logger.LogDebug(ex, "Could not read guardrails audit log file {FilePath} for this query; skipping.", filePath);
+            _logger.LogDebug(ex, "Could not read guardrails audit log file {FilePath} for this query; skipping.", filePath);
 
             return;
         }
@@ -264,7 +304,7 @@ public sealed class GuardrailAuditLogger(
 
     }
 
-    private void PrepareForNewDate(string directory, string stem, string dateStamp, int retentionDays)
+    private void PrepareForNewDate(string directory, string dateStamp)
     {
 
         try
@@ -278,7 +318,7 @@ public sealed class GuardrailAuditLogger(
         catch (Exception ex)
         {
 
-            logger.LogError(ex, "Failed to create or secure guardrails audit log directory {Directory}; audit entries for {DateStamp} will be dropped.", directory, dateStamp);
+            _logger.LogError(ex, "Failed to create or secure guardrails audit log directory {Directory}; audit entries for {DateStamp} will be dropped.", directory, dateStamp);
 
             return;
 
@@ -287,49 +327,6 @@ public sealed class GuardrailAuditLogger(
         _lastPreparedDateStamp = dateStamp;
 
         _sizeCapWarnedForCurrentDate = false;
-
-        SweepOldFiles(directory, stem, ArcanumSettingClamps.HostAuditLogRetentionDays(retentionDays));
-
-    }
-
-    private void SweepOldFiles(string directory, string stem, int retentionDays)
-    {
-
-        try
-        {
-            DateTime cutoffUtc = DateTime.UtcNow.AddDays(-retentionDays);
-
-            string searchPattern = $"{stem}-????????.jsonl";
-
-            foreach (string file in Directory.EnumerateFiles(directory, searchPattern))
-            {
-                string fileNameNoExt = Path.GetFileNameWithoutExtension(file);
-
-                if (fileNameNoExt.Length <= stem.Length + 1)
-                {
-                    continue;
-                }
-
-                string datePart = fileNameNoExt[(stem.Length + 1)..];
-
-                if (DateTime.TryParseExact(
-                        datePart,
-                        "yyyyMMdd",
-                        CultureInfo.InvariantCulture,
-                        DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-                        out DateTime fileDateUtc)
-                    && fileDateUtc < cutoffUtc)
-                {
-                    File.Delete(file);
-                }
-
-            }
-
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to sweep expired guardrails audit log files in {Directory}.", directory);
-        }
 
     }
 

@@ -127,7 +127,8 @@ credential environment references, and a minimal file, is
 The public surface uses a strict inclusion rule. A setting remains bindable only when it is a
 genuine deployment choice, factual provider/model contract, credential or secret reference,
 security or permission policy, integration endpoint or allowlist, explicit feature opt-in,
-operator-authored schedule, host-capacity choice, pricing fact, or user preference. Convenience,
+operator-authored schedule, host-capacity choice, pricing fact, explicit data-lifecycle policy, or
+user preference. Convenience,
 diagnostic, retry, fallback, workflow-count, and implementation-mechanic knobs are code-owned.
 Removed mechanics must not return as profile enums, an `Advanced` section, generic override bags,
 compatibility aliases, or duplicate feature-toggle hierarchies. Opaque collections are limited to
@@ -167,7 +168,16 @@ as override sources without printing their values.
 
 Unknown and obsolete paths are hard failures: they are grouped into one actionable diagnostic and
 are never silently ignored or accepted through deprecated aliases. Operators correct
-`arcanum.json` and restart. A configuration-only correction does not require a Grimoire reinstall;
+`arcanum.json` and restart. Full `PUT /api/config` holds the configuration writer lock across its
+current-file read, endpoint-mask merge, outbound validation, semantic validation, and atomic
+replacement. Retention-rule read-modify-write uses that same lock and the same validated,
+size-capped loader, so it cannot commit between a full PUT's snapshot and replacement; an oversized
+or unknown-path file is preserved unchanged instead of being deserialized permissively and
+rewritten with fields dropped. `GET /api/config`, `GET /api/models`, `GET /api/providers`, and
+`GET /v1/models` project the writer's latest successfully persisted snapshot and therefore agree
+immediately after either write path. Other non-retention runtime consumers remain bound to the
+process-start settings and require a host restart to adopt those changes. A
+configuration-only correction does not require a Grimoire reinstall;
 changing embedding dimensions still requires clearing/re-indexing embeddings or recreating the
 local database.
 
@@ -176,6 +186,12 @@ types, `SettingDescriptors`, validation, source-generated metadata, Compendium c
 `Compendium.README.md` must remain in parity. Every generated bindable property uses mutable
 `{ get; set; }`; `init` is prohibited because the Native AOT configuration binding generator can
 silently skip it.
+
+`Arcanum:Retention` is the unified data-lifecycle policy root. It owns opt-in sweep scheduling,
+bounded/checkpointed execution values, typed per-class enable/day rules, the accounting minimum,
+and explicit protected-session holds. A disabled rule removes that class only from policy sweeps;
+it does not hide retained-data status or add a capability restriction to a separately confirmed,
+item-scoped deletion.
 
 Provider keys, PFX passwords, and CommLink webhook URLs never enter configuration. Configuration
 stores environment-variable names; explicit references replace their defaults, and secret values
@@ -629,6 +645,11 @@ back up anything needed, delete `arcanum.db` plus `-wal`/`-shm`, and restart to 
 intentionally no incremental or data migration in either case below. Copy-pastable developer commands
 are in [Arcanum.README, “Local Grimoire reinstall”](Arcanum.README.md#local-grimoire-reinstall).
 
+Unified retention is an orchestration layer over the existing canonical tables, encrypted blob
+trees, and JSONL files. Issue #43 added no schema or SQL install script, so existing local and test
+databases require neither migration nor recreation for this feature. If a future retention change
+alters a canonical schema, this pre-user-data reinstall policy applies at that time.
+
 - `20260705171559_InitialCreate.sql` now declares `Entries.Sequence INTEGER NOT NULL` and the unique
   `IX_Entries_SessionId_Sequence` index (§5.4.1). Existing rows have no sequence to backfill
   meaningfully — their append order was never recorded — so a Grimoire created before this baseline
@@ -742,6 +763,195 @@ Data Protection `keys/` directory. A complete backup therefore includes the SQLC
 sidecars, `attachments/`, `files/`, the OS credential (or its DP recovery mirror), and the
 Data Protection key ring. Copy ciphertext and database metadata from the same backup generation;
 restoring only one side can leave key ids or file pointers inconsistent.
+
+#### 5.4.7 Unified data lifecycle, retention, and deletion
+
+`IDataRetentionService` / `DataRetentionService` is the single server-owned boundary for retained
+data inventory, deterministic dry-run planning, explicit dependency deletion, bounded policy
+sweeps, scoped memory reset, and factory reset. CLI commands call the authenticated API; they never
+open the Grimoire or unlink server files themselves. The public wire contract is in
+[`Arcanum.API.md` §8.20](Arcanum.API.md#820-unified-data-lifecycle-api-apidata), and complete
+setting defaults are in
+[`Compendium.README.md`](Compendium.README.md#integrations-execution-cost-retention-daemon-and-cli).
+
+`RetentionDataClass` is a closed, source-generated JSON taxonomy rather than a generic store name:
+
+- session ownership: `ActiveSessions`, `ArchivedSessions`, and `Entries`;
+- attachment ownership: `AttachmentVersions`, `AttachmentBytes`, `AttachmentChunks`, and
+  `AttachmentEmbeddings`;
+- OpenAI file/batch ownership: `UploadedFiles`, `BatchInputFiles`, `BatchOutputFiles`,
+  `BatchErrorFiles`, and `CompletedBatches`;
+- durable memory/index ownership: `SagaMemories`, `LexiconEntries`, `WorkspaceChunks`,
+  `WorkspaceEmbeddings`, and `SessionEntryEmbeddings`;
+- audit/security ownership: `AuditLogs`, `GuardrailLogs`, `IdempotencyClaims`, and
+  `SanctumBreaches`;
+- accounting/operation ownership: `InferenceRuns`, `BillableOperations`, `BudgetReservations`,
+  `CostAdjustments`, and `LongRunningOperations`; and
+- `DaemonExecutions`, combining the process-local, count-bounded execution history with durable
+  `UnseenServantWatermarks` schedule state for status and factory-reset accounting.
+
+The Forge-owned local histories are intentionally outside this implementation boundary and remain
+untouched per the issue's delivery scope. This feature adds no coordinated cleanup integration with
+The Forge.
+
+One `RetentionRuleSettings` (`Enabled`, `Days`) can intentionally govern several inseparable or
+related physical classes:
+
+| `RetentionSettings` rule | Typed classes | Default |
+|--------------------------|---------------|---------|
+| `ActiveSessions` | active session roots and their owned dependency graph | disabled / 365 days |
+| `ArchivedSessions` | archived session roots and their owned dependency graph | disabled / 180 days |
+| `Entries` | unpinned Entries plus Entry embeddings | disabled / 180 days |
+| `Attachments` | versions, encrypted bytes, chunks, embeddings, index state | disabled / 180 days |
+| `UploadedFiles` | uploaded files plus batch input/output/error roles | enabled / 30 days |
+| `CompletedBatches` | terminal batch rows | enabled / 30 days |
+| `SagaMemories` | Saga facts and owned embeddings/provenance when the fact itself is selected | disabled / 365 days |
+| `LexiconEntries` | Lexicon entities/facts and owned FTS/provenance when the entity itself is selected | disabled / 365 days |
+| `WorkspaceIndexes` | workspace chunks and corresponding embeddings | enabled / 30 days |
+| `SessionEntryEmbeddings` | derived Entry embeddings | enabled / 30 days |
+| `AuditLogs` / `GuardrailLogs` | dated JSONL files of the corresponding family | enabled / 30 days each |
+| `IdempotencyClaims` | terminal claims only; live leases are conflicts | enabled / 7 days |
+| `Accounting` | runs, billable operations, reservations, and adjustments | enabled / 365 days |
+| `LongRunningOperations` | terminal durable-operation history | enabled / 90 days |
+| `SanctumBreaches` | durable breach rows | enabled / 90 days |
+| `DaemonHistory` | daemon execution-history policy | enabled / 30 days |
+
+All rule days clamp to 1–3,650. `AutomaticSweepsEnabled` defaults false,
+`SweepIntervalHours` defaults 24 and clamps 1–168, `MaxItemsPerSweep` defaults 500 and clamps
+1–10,000, and `CheckpointInterval` defaults 50 and clamps to both 1–10,000 and the effective
+per-sweep maximum. `AccountingMinimumDays` defaults 365 and clamps 30–3,650. The effective
+accounting cutoff is `max(Accounting.Days, AccountingMinimumDays)` and uses `InferenceRuns`,
+`BillableOperations`, `BudgetReservations`, `CostAdjustments`, and `BudgetAlerts`; standalone
+adjustments and budget-alert history age out under the same floor as run-owned accounting chains.
+`Sessions.TotalCostUsd` is never the accounting authority. `ProtectedSessionIds` is an explicit
+operator hold list. Disabling a rule
+prevents policy selection only; status, dry-run, and separately confirmed item-scoped operations
+remain visible rather than acquiring an extra capability gate.
+
+`DataRetentionSweepHostedService` is the optional scheduler. On each host-loop iteration it reads
+the current persisted policy, performs no plan/apply work when `AutomaticSweepsEnabled=false`, and
+otherwise invokes the same `Prune` apply path as the API before waiting the clamped
+`SweepIntervalHours`. It owns no second deletion engine or policy interpretation.
+The inference and guardrail log writers create and secure the current UTC-day file, enforce its
+soft size cap, and append records. They never enumerate or delete historical files, even when
+automatic sweeps and the corresponding typed rule are enabled. Audit-log age removal is therefore
+exclusive to the bounded, durable `DataRetentionService` plan/apply path and its scheduler;
+`host.auditLog.retentionDays` and `security.guardrails.auditLog.retentionDays` remain compatibility
+defaults for omitted query lookbacks, not deletion authorities.
+Both writers retain their private same-family append lock and also enter one singleton managed-log
+publication gate for the short append. Factory reset enters that same gate before taking its
+database writer transaction and holds it through filesystem inventory, quarantine, commit,
+post-commit cleanup, and reconciliation. An append that enters first is therefore included in the
+reset inventory and cleared; an append waiting behind a reset publishes only after the reset's
+linearization point. The gate-before-database lock order avoids a database/log-lock cycle, and a
+log write remains best-effort when its own filesystem operation fails.
+
+**Status and plan identity.** `GetStatusAsync` reports each class independently with row count, file
+count, estimated bytes, effective policy, physical store, and safe provenance, followed by aggregate
+totals and categories that live outside the selected Arcanum data root. Batch input/output/error
+classes report role references and can repeat one uploaded file; aggregate rows/files/bytes exclude
+those reference-only classes and sum physical owners. `DaemonExecutions` status includes both the
+volatile execution summaries and the durable `UnseenServantWatermarks` cleared by factory reset.
+Composite owners count their canonical and owned companion/index/provenance rows; file counts and
+estimated bytes measure managed files that exist at inspection time, not missing metadata targets
+or SQLite page allocation. A
+`DataRetentionPlan`
+contains per-class `Rows`, `Files`, `EstimatedBytes`, and `DerivedRecords`; separate `Blockers` and
+`Conflicts`; deterministic candidate ids; and a content-derived SHA-256 `PlanId`. Planning is
+read-only. Apply always rebuilds the same plan immediately before mutation; an optional
+`ExpectedPlanId` makes a stale preview fail with `Data.PlanChanged` instead of applying a changed
+candidate set.
+
+**Dependency deletion.** The planner and executor use an explicit ownership graph:
+
+| Selected root | Required dependent action |
+|---------------|---------------------------|
+| Session | Delete owned Entries, session attachment rows/envelopes, context bookkeeping, Entry embeddings, attachment chunks/embeddings/vector rows/index state, then the session root. |
+| Attachment version | Delete its authenticated stored bytes, chunks, embeddings/vector rows, and index state with the metadata row. |
+| Workspace chunk | Delete its corresponding embedding/vector row before the chunk. |
+| Uploaded file | Delete metadata and the owned encrypted file only when no retained batch references an input/output/error role; an in-progress batch is also an active conflict. |
+| Saga or Lexicon item | Delete only through that typed rule or explicit memory scope, including its owned embedding/FTS/provenance rows. |
+| Dated audit or guardrail log | Unlink only a file of the selected family beneath the owned log root. |
+
+Managed-file deletion captures no-follow file identity and revalidates that same owned object at
+the deletion boundary. A symlink, substituted object, or identity that cannot be proven is left in
+place and fails reconciliation; metadata is not discarded merely because a lexical path looked
+contained.
+
+Attachment source deletion does **not** silently erase independently retained Saga/Lexicon facts.
+Their typed provenance rows intentionally do not cascade from `SessionAttachments`; readers retain
+the session/attachment/key/version/hash/materialized-time claim and resolve
+`SourceAvailability=Unavailable` after the source disappears. Explicit `ResetMemory` scopes are
+`Entry`, `Attachments`, `Workspace`, `Saga`, and `Lexicon`; there is no ambiguous generic memory
+delete.
+
+**Blockers and conflicts.** Blockers are candidate-local retained relationships: `Entries.IsPinned`,
+durable `SessionContextPins` (including attachment pins), `ProtectedSessionIds`, and retained batch
+references. Conflicts are active work that must finish or be repaired first: active durable
+operations, running inference, live idempotency leases, outstanding budget reservations,
+and in-progress batches. Plans report every discovered item with a stable reason code and resource
+id. A policy sweep leaves blocked/conflicting candidates untouched while still applying unrelated
+eligible candidates, so one pin cannot freeze the whole maintenance pass. Explicit item deletion
+and global/scoped reset remain all-or-nothing when their selected target has a blocker or conflict.
+No destructive path silently removes active accounting or work.
+
+**Bounded durable execution and reconciliation.** A sweep selects at most the clamped
+`MaxItemsPerSweep` in stable age/id order. Apply creates a `data-retention-prune`
+`LongRunningOperation` with `RestartIdempotently`, acquires its lease, and stores the bounded
+candidate snapshot plus next-candidate cursor at the effective checkpoint interval. Recovery with a
+checkpoint resumes that snapshot at its cursor; recovery before the first checkpoint builds a fresh
+bounded plan. Stable blocker filtering does not spend the candidate quota, so an oldest pinned or
+active item cannot indefinitely hide the next eligible item; reads remain bounded and deterministically
+ordered. Prune and explicit retention mutations use one atomic cross-kind single-flight start, so
+there is no lease-less pending marker and destructive retention operations cannot overlap. The lease
+is renewed on elapsed time while each candidate runs, in addition to checkpoint boundaries, and
+loss of ownership cancels the candidate and fails closed. If a selected prune candidate gains a pin,
+hold, or active-work conflict after planning, apply preserves it, reports `Data.PlanChanged`, and
+continues later independent candidates. The durable cursor remains before the earliest such candidate
+so recovery re-evaluates the protection rather than silently skipping it. Every resumed candidate rechecks the blocker, active-work, and ownership condition
+relevant to that class. Already-missing selected rows or owned files are success states, so
+interruption and repetition converge without double-counting authority. Multi-row
+session/attachment dependency changes use SQL transactions; other candidate operations use
+individually idempotent, checked deletes.
+
+Before a file-bearing prune candidate or explicit deletion mutates storage, its durable checkpoint
+contains an exact `ARCAMUT2` mutation manifest: mutation subtype and target, managed-root role,
+normalized relative path, captured no-follow file identity metadata, and the operation-scoped
+same-parent quarantine prefix. Restart recovery inspects only the objects named by that manifest;
+an unrelated or malformed quarantine is rejected fail-closed rather than adopted as recovery
+authority. This candidate-bound recovery is intentionally distinct from factory reset recovery,
+which re-inventories the complete managed roots for its idempotent whole-root cleanup.
+
+After each planned candidate, the executor performs the applicable bounded ownership check for its
+selected rows, derived records, and owned files. This candidate-local reconciliation is not a
+global orphan vacuum. `Reconciled=true` is reported only after all applicable candidate checks
+succeed; failures leave durable repair history rather than claiming success.
+
+**Factory reset, backups, and erasure boundary.** Factory reset uses the same global conflict pass
+and requires the exact `factory-reset` API confirmation plus CLI interactive approval (or `--yes`).
+It clears managed data beneath the configured Arcanum root but preserves external backups,
+registered workspace content outside that root, `arcanum.json`, and security/credential/key
+material. Terminal operation history is removed in leaf-first dependency order; the factory reset's
+own operation cannot delete itself and remains as the completed audit/recovery marker for that
+mutation. Persisted daemon schedule watermarks are included in the preview and cleared with the
+daemon lifecycle state. Planning classifies canonical rows separately from dependency/index/
+provenance records and excludes reference-only batch roles, so the preview counts each physical
+record once. Factory database cleanup runs in one immediate transaction, holds new managed work
+behind its final conflict recheck, and is restart-idempotent after interruption. New daemon starts
+wait behind the corresponding in-memory execution gate. Inference and guardrail log publication
+likewise waits behind the reset's managed-log gate; the reset acquires that gate before its database
+writer transaction and retains it through reconciliation. Before commit, each managed file is
+moved without overwrite into an identity-verified, owner-only same-parent quarantine. Rollback
+restores the captured objects; post-commit cleanup removes them, and factory recovery re-inventories
+the managed roots to discover crash-leftover quarantine and resume the idempotent whole-root reset.
+Backups are never silently targeted.
+
+Database deletion and file unlinking are logical deletion, not a promise of physical secure
+erasure. SSD wear leveling, copy-on-write filesystems, filesystem snapshots, SQLCipher free pages
+and WAL copies, OS caches, encrypted-storage replicas, and independent backups can retain copies.
+Encryption protects retained data but a shared key is not destroyed per deleted record. Operators
+with a physical-erasure requirement must separately manage backup media, snapshots, device policy,
+and platform-specific secure-destruction procedures.
 
 ### 5.5 Unseen Servant
 
@@ -1224,6 +1434,12 @@ Grimoire schema must recreate the database when installing the latest version.
 
 **Lifecycle and consistency:**
 
+- New attachment publication captures the encrypted blob's no-follow filesystem identity, acquires
+  SQLite writer ownership, revalidates that exact artifact, and inserts its metadata before
+  releasing the same transaction. Fork row publication performs the same validation after
+  acquiring the writer lock inside the ambient fork transaction. If reset/deletion wins first or
+  the path is replaced, no attachment row is published and identity-bound cleanup preserves the
+  replacement.
 - Before session binding, bytes and rows live under `_pending/{turnId}` with `State=Pending`.
   `SessionBound` / the first persisted user Entry promotes by copying bytes into the Session tree,
   then updates the rows to Bound in a DB transaction. This is not an atomic filesystem move.
@@ -1993,7 +2209,11 @@ macOS profile and per-invocation temp roots are created owner-only and captured 
 **Entries:**
 - Inference turns append via the hub (`IGrimoireRepository`).
 - **`POST /api/sessions/{id}/entries`** — manual append (operator or Studio); rejects archived sessions; publishes to **`SessionEventHub`** for live SSE subscribers.
-- There is **no update API** for entry content after insert. Gated memory-management routes (when **`Arcanum:Features:MemoryManagement`** is true) allow **delete**, **pin** / **unpin**, and **compact** (`DELETE …/entries/{entryId}`, `POST`/`DELETE …/entries/{entryId}/pin`, `POST …/compact`) — see §4.3.
+- There is **no update API** for entry content after insert. Gated memory-management routes (when
+  **`Arcanum:Features:MemoryManagement`** is true) allow **delete**, **pin** / **unpin**, and
+  **compact** (`DELETE …/entries/{entryId}`, `POST`/`DELETE …/entries/{entryId}/pin`, `POST
+  …/compact`) — see §4.3. Entry deletion removes the corresponding `entry_embeddings` and optional
+  vector row in the same transaction before deleting the Entry.
 
 **CLI lifecycle:** `arcanum session` exposes list/show/chat/entries/watch/fork/rename/archive/export/rest/attachments/delete-entry/pin-entry/unpin-entry/compact without opening the Grimoire. Session selectors use the shared ID/title/prefix picker; entry selectors first resolve a session, then page its entry API. `arcanum session chat [session]` and root `arcanum chat --session <id-or-title>` both enter the existing chat loop. `session show` combines `GET /api/sessions/{id}` and the attachments metadata endpoint; `SessionDetailDto` includes the persisted `TotalTokensUsed`, `TotalCostUsd`, and `ForkedFromSessionId` projections. Archived sessions remain readable, exportable, and forkable. API error codes flow through unchanged so feature-gate and lifecycle failures remain actionable.
 
@@ -2118,15 +2338,38 @@ and verify the envelope without exposing key material. During the supported migr
 version-zero rows use the mixed-mode rules in §5.4.6; new uploads always record version one, key id,
 length, and SHA-256.
 
+**Linearizable publication:** upload and batch-artifact publishers write the encrypted envelope
+first, capture its no-follow owned regular-file identity before waiting for the SQLite writer, then
+begin an immediate transaction and revalidate that exact identity before inserting metadata and
+committing. If a concurrent reset/delete writer wins, publication rejects without metadata and
+cleanup targets only the captured identity; it never blindly unlinks a replacement. If publication
+wins, the next reset/delete writer observes both the committed metadata and the same bytes. Public
+upload failures remain the sanitized **500** `internal_error` envelope.
+
 **Endpoints:**
 - **`POST /v1/files`** — `multipart/form-data`: `file` (binary, required) + `purpose` (string,
   required — any non-empty value; Arcanum does not enforce OpenAI's specific purpose enum because
   it has no per-purpose behavior beyond what `/v1/batches` expects for `purpose: "batch"`).
-  Plaintext is streamed directly into an atomic encrypted write. Returns **201** +
-  `OpenAiFileObject`.
+  Plaintext is streamed directly into an atomic encrypted write, then published with the
+  linearizable metadata boundary above. Returns **201** + `OpenAiFileObject`.
 - **`GET /v1/files?purpose=`** — list, optionally filtered; **200** + `OpenAiFileListResponse`.
 - **`GET /v1/files/{id}`** — metadata; **404** `not_found` for an unknown or malformed id.
-- **`DELETE /v1/files/{id}`** — deletes the Grimoire row and the on-disk file (best-effort on the disk side — a failed disk delete never blocks the metadata delete); **200** + `OpenAiFileDeleteResponse`.
+- **`DELETE /v1/files/{id}`** — first checks every batch input/output/error role. Any reference,
+  including one from a terminal batch, preserves both metadata and bytes and returns OpenAI-shaped
+  **409** `file_referenced_by_batch` with `param: "id"`. For an unreferenced file, one immediate
+  mutation transaction serializes that check with the conditional metadata delete. Every `Batches`
+  insert resolves all supplied file roles, and every status update that introduces output/error ids
+  resolves those new artifact roles, inside the same conditional SQL write. SQLite writer
+  serialization therefore produces one of two
+  outcomes under concurrency: the reference commits first and blocks deletion, or deletion commits
+  first and the reference write is rejected without creating a dangling id. Before the row
+  changes, the endpoint captures the regular file's no-follow identity and moves it into an
+  owner-only same-parent `.arcanum-file-delete-{id}-*` quarantine. A rejected or failed database
+  mutation rolls back and restores the same verified object; bytes are unlinked only after commit.
+  **200** + `OpenAiFileDeleteResponse` with `deleted: true` therefore means both metadata and bytes
+  are absent. Identity conflicts fail closed as **500** `file_delete_storage_conflict`; failed
+  finalization or recognizable quarantine left by an interrupted attempt returns **500**
+  `file_delete_recovery_required` instead of reporting deletion or silently orphaning bytes.
 - **`GET /v1/files/{id}/content`** — authenticates and streams decrypted bytes; it never buffers
   the complete file. **`Content-Type`** is the file's stored MIME type (falling back to
   `application/octet-stream` only if none was recorded — not hardcoded to octet-stream).
@@ -2148,7 +2391,7 @@ length, and SHA-256.
 get owner-only permissions via `SecureFilePermissions` (600 Unix / owner ACL Windows). Atomic
 flush/verify/rename behavior is §5.4.6.
 
-**Error codes:** `Files.NotFound` (404), `Files.TooLarge` (413), `Files.InvalidMimeType` (400) — registered in the shared catalog (API §8.23) for consistency and reuse by `/v1/batches`, even though the `/v1/files` handlers themselves construct their OpenAI-shaped error envelopes directly (matching every other `/v1` endpoint) rather than routing through `ArcanumErrorMapper`.
+**Error codes:** `Files.NotFound` (404), `Files.TooLarge` (413), `Files.InvalidMimeType` (400) — registered in the shared catalog (API §8.23) for consistency and reuse by `/v1/batches`, even though the `/v1/files` handlers themselves construct their OpenAI-shaped error envelopes directly (matching every other `/v1` endpoint) rather than routing through `ArcanumErrorMapper`. Delete also emits route-local `file_referenced_by_batch` (409), `file_delete_storage_conflict` (500), `file_delete_recovery_required` (500), or `file_delete_failed` (500); none of those failure envelopes contains `deleted: true`.
 
 **Key types:** `FilesSettings`, `IUploadedFileRepository`, `UploadedFileRecord`, `UploadedFileRepository` (Infrastructure), `UploadedFileStorage` (pure path helper), `UploadedFileMimeValidator`, `OpenAiFileObject`, `OpenAiFileListResponse`, `OpenAiFileDeleteResponse`.
 
@@ -2165,7 +2408,7 @@ command syntax and options belong to
 **Layering note (why the processor lives in the Api project, not Infrastructure):** every other background poller (`EntryWeavingService`, `SagaExtractionService`, `UnseenServantService`, ...) lives in `RetroDownfall.Arcanum.Infrastructure`. `BatchProcessingService` is the one exception — it must call `IArcanumIntelligenceProvider.ExecutePromptAsync` and construct/parse the `/v1` OpenAI DTOs (`OpenAiChatRequest`/`OpenAiChatResponse`/the JSONL wrapper types), all of which live in the **Api** project, and the dependency direction only ever goes Api → Infrastructure. Rather than move those DTOs down into Core (a large, unrelated refactor) or duplicate them, `BatchProcessingService` is registered and hosted from the Api project (`ApiBootstrapper.AddArcanumApiServices`, `services.AddHostedService(sp => sp.GetRequiredService<BatchProcessingService>())`), exactly mirroring how `IArcanumIntelligenceProvider`'s own concrete implementation (`WizardIntelligenceProvider`) is Api-hosted despite the interface living in Core.
 
 **Endpoints** (metadata CRUD only — see below for the actual JSONL processing):
-- **`POST /v1/batches`** — body `{input_file_id, endpoint, completion_window}` (`completion_window` is accepted but not enforced; expiry is code-owned). Validates `input_file_id` resolves to an existing uploaded file (§11.20) and `endpoint` equals `/v1/chat/completions`. Creates a `Batches` row with `status: "validating"` and returns immediately — **200** + `OpenAiBatchObject`. The actual processing happens out-of-band.
+- **`POST /v1/batches`** — body `{input_file_id, endpoint, completion_window}` (`completion_window` is accepted but not enforced; expiry is code-owned). Validates `input_file_id` resolves to an existing uploaded file (§11.20) and `endpoint` equals `/v1/chat/completions`. The final conditional insert rechecks that metadata atomically with creating the `Batches` row; if a concurrent file deletion committed after preliminary validation, creation returns the same **404** `not_found` input-file response and leaves no batch row. Otherwise it creates `status: "validating"` and returns immediately — **200** + `OpenAiBatchObject`. The actual processing happens out-of-band.
 - **`GET /v1/batches/{id}`** — current status + `request_counts`; **404** for unknown/malformed id.
 - **`GET /v1/batches?status=`** — list, optional status filter; `{object: "list", data: [...], has_more: false}` (`has_more` is always `false` — no pagination cursor yet).
 - **`POST /v1/batches/{id}/cancel`** — sets `status: "cancelled"` if not already terminal; idempotent (cancelling an already-terminal batch just returns its current state, matching OpenAI rather than erroring on a double-cancel). `BatchProcessingService`'s cancellation watcher (below) observes this and stops in-flight processing promptly.
@@ -2642,7 +2885,7 @@ reinstall.
 | Test area | Contract locked down |
 |-----------|----------------------|
 | `BudgetMonitorTests` | `IOptionsMonitor` + scope-factory singleton shape; record-before-dispatch ordering; duplicate suppression when `RecordAlertAsync` returns false. |
-| `GuardrailsPipelineTests` / `GuardrailAuditLoggerTests` | Awaited (not fire-and-forget) audit writes, multiple violations, balanced-parentheses phone regex, bounded topic-regex cache. |
+| `GuardrailsPipelineTests` / `GuardrailAuditLoggerTests` | Awaited (not fire-and-forget) audit writes, writer-local historical deletion prohibited, multiple violations, balanced-parentheses phone regex, bounded topic-regex cache. |
 | `JsonSchemaHelperTests` / `StructuredOutputValidatorTests` | Nullable type arrays; enum short-circuit only for string/absent type; decimal numeric-enum equality. |
 | `ArcanumErrorMapperTests` | Prompt invalid request, Session invalid status, query/embedding/structured-output codes, and preservation of all explicit 500 mappings. |
 | `GrimoireRepositoryTests` | Sargable half-open UTC spend range with decimal sum in C#; hard-delete unsummarized-count decrement; negative token/cost clamp. |
@@ -2653,6 +2896,7 @@ reinstall.
 | `OpenAiV1EndpointTests` / `OpenAiV1BatchesEndpointTests` | Structured-output maps to `validation_failed`/`invalid_schema`, not generic inference failure; batch reset removes orphan output/error files. |
 | `EncryptedBlobStoreTests` / `FileEncryptionKeyProviderTests` / attachment-file-batch tests | Empty/boundary/large streaming round trips; random nonces; purpose/key separation; bit flips, truncation, trailing data, cancellation cleanup, and concurrent readers; OS/DP key persistence and missing/corrupt fail-closed behavior; no plaintext attachment/upload/batch artifact at rest. |
 | `EncryptedBlobCompatibilityTests` / `BlobEncryptionFileProcessorTests` / `BlobEncryptionOperationPolicyTests` | Metadata-led legacy reads; no encrypted-to-plaintext downgrade; crash retry after atomic replace but before metadata commit; reconciliation classifications; retained-key rotation; durable migration/rotation policy registration. |
+| `RetentionSettingsTests` / `DataRetentionServiceTests` / `DataRetentionSweepHostedServiceTests` / `DataRetentionEndpointTests` / `DataRetentionCommandTests` | Safe defaults and clamps; opt-in scheduled sweeps; dry-run/apply plan parity; bounded candidates/checkpoints and restart convergence; pins/holds/active-work/accounting/batch blockers; dependency deletion and candidate-local post-delete reconciliation; provenance preservation; authenticated API-only CLI mutations and confirmations; factory-reset boundaries. |
 | `SessionEndpointTests` | Entry-GUID `since` replays only later Entries; missing and foreign cursors return 404 with no leaked SSE headers; stable `Session.EntryNotFound` / `Session.InvalidStatus` constants. |
 | `CostCalculatorTests` | Cached tokens clamp to the prompt subset and use `CachedPer1M` (zero or nonzero); potential/actual savings use the nonnegative input-minus-cached rate delta. |
 | `PromptCachingChatOptionsAdapterTests` / `PromptCachePlannerTests` | Golden buffered/streaming root fields (`prompt_cache_key`, exact `in_memory`/`24h` retention), reasoning composition, unchanged ineligible bodies, contiguous-prefix planning, deterministic tool digests, stable keys, and plaintext exclusion. |
@@ -2808,6 +3052,11 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   every retained read key; copying only one extracted key is not a valid backup. Restore installs
   that mirror plus its matching Data Protection ring before startup, and the provider accepts
   archives with multiple active key ids.
+- **Retention and physical erasure:** Unified retention (§5.4.7) deletes logical rows and unlinks
+  owned files; it cannot promise physical erasure from SSD wear-leveling cells, copy-on-write
+  extents, snapshots, WAL/free pages, OS caches, encrypted replicas, or external backups. Factory
+  reset deliberately preserves configuration, key/security material, external backups, and data
+  outside the configured root. Issue #43 changed no schema and requires no database recreation.
 
 ### 16.3 Security and identity
 

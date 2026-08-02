@@ -22,6 +22,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Daemons;
+using RetroDownfall.Arcanum.Api.Data;
 using RetroDownfall.Arcanum.Api.Mcp;
 using RetroDownfall.Arcanum.Api.Operations;
 using RetroDownfall.Arcanum.Api.Perception;
@@ -591,6 +592,8 @@ public static class ApiBootstrapper
         apiGroup.MapLongRunningOperationEndpoints();
 
         apiGroup.MapConfigurationEndpoints();
+
+        apiGroup.MapDataRetentionEndpoints();
 
         apiGroup.MapIntelligenceEndpoints();
 
