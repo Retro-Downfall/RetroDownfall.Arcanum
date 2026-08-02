@@ -401,6 +401,8 @@ internal sealed class NullAtelierDataSource : RetroDownfall.TheForge.Ux.ViewMode
 
     public Task<IReadOnlyList<CampaignDto>> GetCampaignsAsync(CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<CampaignDto>>([]);
 
+    public Task<CampaignDto?> GetCampaignAsync(Guid campaignId, CancellationToken cancellationToken) => Task.FromResult<CampaignDto?>(null);
+
     public Task<IReadOnlyList<WorkspaceInfo>> GetWorkspacesAsync(CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<WorkspaceInfo>>([]);
 
     public Task<IReadOnlyList<SpellSummary>> GetGlobalSpellsAsync(CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<SpellSummary>>([]);

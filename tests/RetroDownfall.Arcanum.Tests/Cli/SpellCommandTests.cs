@@ -5,10 +5,16 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
+using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Workspaces;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -78,6 +84,153 @@ public sealed class SpellCommandTests
         HttpRequestMessage request = handler.Requests[1];
 
         Assert.Equal("/api/spells/greet", request.RequestUri!.AbsolutePath);
+
+    }
+
+    [Fact]
+
+    public void Spell_get_end_of_options_preserves_name_equal_to_private_launcher_flag()
+    {
+
+        const string SpellName = "--arcanum-deep-link";
+
+        SpellDetail detail = Detail(SpellName, "/tmp/ws");
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SpellDetail>(detail, true, null),
+            ArcanumJsonContext.Default.ApiResponseSpellDetail));
+
+        FakeResourceCatalog resources = new()
+        {
+
+            SpellResult = ResourceSelectionResult<SpellSummary>.Selected(
+                new SpellSummary(
+                    SpellName,
+                    "A valid hyphenated Spell name.",
+                    SpellSource.Workspace,
+                    [])),
+
+        };
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["spell", "get", "--", SpellName],
+            resources);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Equal(1, resources.SpellSelectionCount);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.EndsWith(
+            "/api/spells/--arcanum-deep-link",
+            request.RequestUri!.AbsolutePath,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "Command Center application link",
+            result.Output + result.Error,
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Spell_get_resolves_workspace_id_to_server_path_before_spell_calls()
+    {
+
+        const string WorkspaceId = "workspace-opaque-42";
+
+        const string WorkspacePath = "/server/workspaces/Spell Lab";
+
+        SpellDetail detail = Detail("greet", WorkspacePath);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<SpellDetail>(detail, true, null),
+            ArcanumJsonContext.Default.ApiResponseSpellDetail));
+
+        FakeResourceCatalog resources = new()
+        {
+
+            WorkspaceResult = ResourceSelectionResult<WorkspaceInfo>.Selected(
+                Workspace(WorkspaceId, WorkspacePath)),
+
+            SpellResult = ResourceSelectionResult<SpellSummary>.Selected(
+                new SpellSummary(
+                    "greet",
+                    "Say hello",
+                    SpellSource.Workspace,
+                    [])),
+
+        };
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["spell", "get", "greet", "--workspace", WorkspaceId],
+            resources);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Equal(WorkspaceId, resources.WorkspaceIdentifier);
+
+        Assert.Equal(WorkspacePath, resources.SpellWorkspace);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+
+        Assert.Equal("/api/spells/greet", request.RequestUri!.AbsolutePath);
+
+        Assert.Contains(
+            $"workspace={Uri.EscapeDataString(WorkspacePath)}",
+            request.RequestUri.Query,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            WorkspaceId,
+            request.RequestUri.Query,
+            StringComparison.Ordinal);
+
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Spell_get_workspace_cancel_or_error_stops_before_spell_calls(
+        bool cancelled)
+    {
+
+        const string WorkspaceId = "workspace-opaque-42";
+
+        RecordingHandler handler = new();
+
+        FakeResourceCatalog resources = new()
+        {
+
+            WorkspaceResult = cancelled
+                ? ResourceSelectionResult<WorkspaceInfo>.Cancelled()
+                : ResourceSelectionResult<WorkspaceInfo>.Failure(
+                    "The workspace is unavailable."),
+
+            SpellResult = ResourceSelectionResult<SpellSummary>.Selected(
+                new SpellSummary(
+                    "greet",
+                    "Say hello",
+                    SpellSource.Workspace,
+                    [])),
+
+        };
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["spell", "get", "greet", "--workspace", WorkspaceId],
+            resources);
+
+        Assert.Equal(cancelled ? 0 : 1, result.ExitCode);
+
+        Assert.Equal(WorkspaceId, resources.WorkspaceIdentifier);
+
+        Assert.Equal(0, resources.SpellSelectionCount);
+
+        Assert.Empty(handler.Requests);
 
     }
 
@@ -165,7 +318,10 @@ public sealed class SpellCommandTests
 
     }
 
-    private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
+    private static CliTestResult RunCommand(
+        RecordingHandler handler,
+        string[] args,
+        ICliResourceCatalog? resourceCatalog = null)
     {
 
         ServiceCollection services = new();
@@ -182,9 +338,43 @@ public sealed class SpellCommandTests
 
         services.AddSingleton<ISecretStore>(new FakeSecretStore("test-key"));
 
+        if (resourceCatalog is not null)
+        {
+
+            services.RemoveAll<ICliResourceCatalog>();
+
+            services.AddSingleton(resourceCatalog);
+
+        }
+
         return CliTestHarness.Run(services, args);
 
     }
+
+    private static SpellDetail Detail(string name, string workspacePath) =>
+        new(
+            name,
+            "Say hello",
+            SpellSource.Workspace,
+            [],
+            null,
+            null,
+            "Hello!",
+            null,
+            null,
+            [],
+            [],
+            workspacePath,
+            $"{workspacePath}/spells/{name}/SPELL.md");
+
+    private static WorkspaceInfo Workspace(string id, string path) =>
+        new(
+            id,
+            "Spell Lab",
+            path,
+            WorkspaceType.Spell,
+            new DateTimeOffset(2026, 8, 2, 12, 0, 0, TimeSpan.Zero),
+            Persisted: true);
 
     private static HttpResponseMessage CreateResponse<T>(
         ApiResponse<T> envelope,
@@ -237,6 +427,97 @@ public sealed class SpellCommandTests
             {
                 BaseAddress = new Uri("http://localhost:5001/"),
             };
+
+    }
+
+    private sealed class FakeResourceCatalog : ICliResourceCatalog
+    {
+
+        public ResourceSelectionResult<WorkspaceInfo> WorkspaceResult { get; init; } =
+            ResourceSelectionResult<WorkspaceInfo>.Failure(
+                "Unexpected workspace selection.");
+
+        public ResourceSelectionResult<SpellSummary> SpellResult { get; init; } =
+            ResourceSelectionResult<SpellSummary>.Failure(
+                "Unexpected spell selection.");
+
+        public string? WorkspaceIdentifier { get; private set; }
+
+        public string? SpellWorkspace { get; private set; }
+
+        public int SpellSelectionCount { get; private set; }
+
+        public Task<ResourceSelectionResult<WorkspaceInfo>> SelectWorkspaceAsync(
+            string? identifier,
+            CancellationToken cancellationToken)
+        {
+
+            WorkspaceIdentifier = identifier;
+
+            return Task.FromResult(WorkspaceResult);
+
+        }
+
+        public Task<ResourceSelectionResult<SpellSummary>> SelectSpellAsync(
+            string? identifier,
+            string? workspace,
+            CancellationToken cancellationToken)
+        {
+
+            SpellSelectionCount++;
+
+            SpellWorkspace = workspace;
+
+            return Task.FromResult(SpellResult);
+
+        }
+
+        public Task<ResourceSelectionResult<CampaignDto>> SelectCampaignAsync(
+            string? identifier,
+            CancellationToken cancellationToken) =>
+            Unexpected<CampaignDto>();
+
+        public Task<ResourceSelectionResult<SessionSummaryDto>> SelectSessionAsync(
+            string? identifier,
+            CancellationToken cancellationToken) =>
+            Unexpected<SessionSummaryDto>();
+
+        public Task<ResourceSelectionResult<EntryDto>> SelectSessionEntryAsync(
+            Guid sessionId,
+            string? identifier,
+            CancellationToken cancellationToken) =>
+            Unexpected<EntryDto>();
+
+        public Task<ResourceSelectionResult<PromptSummaryDto>> SelectPromptAsync(
+            string? identifier,
+            CancellationToken cancellationToken) =>
+            Unexpected<PromptSummaryDto>();
+
+        public Task<ResourceSelectionResult<ApprenticeSummaryDto>> SelectApprenticeAsync(
+            string? identifier,
+            CancellationToken cancellationToken) =>
+            Unexpected<ApprenticeSummaryDto>();
+
+        public Task<ResourceSelectionResult<ModelInfoDto>> SelectModelAsync(
+            string? identifier,
+            CancellationToken cancellationToken) =>
+            Unexpected<ModelInfoDto>();
+
+        public Task<ResourceSelectionResult<ProviderInfoDto>> SelectProviderAsync(
+            string? identifier,
+            CancellationToken cancellationToken) =>
+            Unexpected<ProviderInfoDto>();
+
+        public Task<ResourceSelectionResult<McpServerInfo>> SelectMcpServerAsync(
+            string? identifier,
+            CancellationToken cancellationToken) =>
+            Unexpected<McpServerInfo>();
+
+        private static Task<ResourceSelectionResult<T>> Unexpected<T>()
+            where T : class =>
+            Task.FromResult(
+                ResourceSelectionResult<T>.Failure(
+                    "Unexpected resource selection."));
 
     }
 

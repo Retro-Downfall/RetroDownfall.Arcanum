@@ -102,6 +102,18 @@ the configured address.
 The CLI may launch a local server when a supported interactive workflow needs one. That launch has
 an ownership contract: the caller must not stop a server it did not start.
 
+Application launch is a separate explicit workflow. `arcanum center` and `arcanum open center`
+enter the same Command Center host in the current process. `arcanum open theforge`,
+`open compendium`, and the Session/Campaign/Spell/Prompt/Apprentice forms first resolve the normal
+friendly selector and then start the desktop client. Their versioned deep link contains only safe,
+opaque server references and an initial view. It contains no credential, endpoint, prompt/file
+content, attachment, or server path, and it is passed as one argument without a shell. If the app
+is absent, Arcanum shows all attempted safe locations plus copyable development and CLI fallbacks.
+Side-by-side extracted Windows/Linux release folders are normal discovery candidates; Linux uses
+the folder matching the running `x64` or `arm64` architecture.
+Those displayed commands use PowerShell quoting on Windows and POSIX-shell quoting elsewhere;
+normal launch still uses structured arguments directly.
+
 All direct commands share recursive process options:
 
 - `--json` produces one typed JSON document on stdout;
@@ -444,11 +456,20 @@ Command Center is the terminal-native session workbench. It combines streaming c
 prompts, attachment state, context telemetry, session mutation, and operator refresh without
 creating a second backend.
 
+Bare `arcanum` remains the convenient automatic entry and respects
+`ARCANUM_NO_COMMAND_CENTER`. The explicit `center` and `open center` commands are deliberate user
+requests and are not suppressed by that automatic-launch escape hatch; they retain the ordinary
+terminal/UI prerequisites.
+
 ### Compendium
 
 Compendium is the Avalonia editor for supported public configuration. It edits references to
 credential environment variables, not secret values. Reads are size-bounded, validation operates
 on the complete snapshot, and saves use durable atomic replacement.
+
+`arcanum open compendium` opens its settings surface; `arcanum config open` remains available.
+Absent, malformed, wrong-target, or unsupported future deep links safely leave the default Edition
+section selected.
 
 The public configuration model is intentionally smaller than the internal implementation. Retry
 mechanics, workflow counts, fallback behavior, and other safety internals stay code-owned. Use
@@ -464,6 +485,15 @@ engine or additional capability restrictions.
 The Forge is the desktop inference IDE and the name of related server-side Campaign, Spell, and
 Prompt surfaces. Its desktop client communicates with Arcanum over HTTP only. The client uses
 bounded response readers, strict typed contracts, asynchronous UI refresh, and atomic downloads.
+
+The Forge accepts the shared startup deep link only after its ordinary authenticated connection is
+ready. Session, Prompt, and Spell routes open Workbench documents, Campaign focuses the Atelier,
+and Apprentice focuses the War Table. Workspace Spells carry the opaque Workspace ID; The Forge
+resolves it through the authenticated API and uses the server-returned path only inside the client.
+Campaigns and Apprentices can be fetched directly by canonical ID even when they are outside a
+visible list page, and a truly missing ID is reported as not routed.
+The portable launcher starts a new instance and never claims it focused an existing window unless a
+platform integration actually supports that operation.
 
 ## 13. Cost, caching, health, and telemetry
 

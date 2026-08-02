@@ -51,6 +51,21 @@ public sealed class AtelierDataSource : IAtelierDataSource
 
     }
 
+    public async Task<CampaignDto?> GetCampaignAsync(
+        Guid campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        ApiResponse<CampaignDto>? response = await _campaignService
+            .GetAsync(campaignId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return response is { IsSuccess: true }
+            ? response.Data
+            : null;
+
+    }
+
     public async Task<IReadOnlyList<WorkspaceInfo>> GetWorkspacesAsync(CancellationToken cancellationToken)
     {
 

@@ -193,7 +193,7 @@ public sealed partial class AtelierViewModel : ViewModelBase
     /// Reloads the Campaigns branch and selects/expands the campaign with the given id.
     /// When <paramref name="campaignId"/> is <see cref="Guid.Empty"/>, only refreshes the branch.
     /// </summary>
-    public async Task FocusCampaignAsync(Guid campaignId, CancellationToken cancellationToken = default)
+    public async Task<bool> FocusCampaignAsync(Guid campaignId, CancellationToken cancellationToken = default)
     {
 
         if (Roots.Count == 0)
@@ -208,7 +208,7 @@ public sealed partial class AtelierViewModel : ViewModelBase
         if (campaignsRoot is null)
         {
 
-            return;
+            return false;
 
         }
 
@@ -223,7 +223,7 @@ public sealed partial class AtelierViewModel : ViewModelBase
         if (campaignId == Guid.Empty)
         {
 
-            return;
+            return true;
 
         }
 
@@ -234,7 +234,24 @@ public sealed partial class AtelierViewModel : ViewModelBase
         if (node is null)
         {
 
-            return;
+            CampaignDto? campaign = await _dataSource
+                .GetCampaignAsync(campaignId, cancellationToken)
+                .ConfigureAwait(true);
+
+            if (campaign is null || campaign.Id != campaignId)
+            {
+
+                return false;
+
+            }
+
+            node = CreateCampaignNode(campaign, campaignsRoot);
+
+            campaignsRoot.Children.Add(node);
+
+            _campaignCount = Math.Max(_campaignCount, 1);
+
+            OnPropertyChanged(nameof(ShowZeroCampaignOnboarding));
 
         }
 
@@ -245,6 +262,8 @@ public sealed partial class AtelierViewModel : ViewModelBase
         SelectedNode = node;
 
         node.IsExpanded = true;
+
+        return true;
 
     }
 
@@ -302,32 +321,7 @@ public sealed partial class AtelierViewModel : ViewModelBase
                 }
 
                 return campaigns
-                    .Select(campaign => new CampaignNodeViewModel(
-                        campaign,
-                        _dataSource,
-                        _navigation,
-                        _activeCampaign,
-                        _creationDataSource,
-                        _dialogService,
-                        _foundryFloor,
-                        _campaignManagement,
-                        _campaignDialog,
-                        _confirmation,
-                        _fileDialog,
-                        _whispers,
-                        async refreshCt =>
-                        {
-                            if (root is not null)
-                            {
-
-                                await root.ReloadAsync(refreshCt).ConfigureAwait(true);
-
-                                await UpdateCampaignCountAsync(refreshCt).ConfigureAwait(true);
-
-                                OnPropertyChanged(nameof(ShowZeroCampaignOnboarding));
-
-                            }
-                        }))
+                    .Select(campaign => CreateCampaignNode(campaign, root!))
                     .Cast<AtelierNodeViewModel>()
                     .ToArray();
             });
@@ -335,6 +329,33 @@ public sealed partial class AtelierViewModel : ViewModelBase
         return root;
 
     }
+
+    private CampaignNodeViewModel CreateCampaignNode(
+        CampaignDto campaign,
+        AtelierNodeViewModel campaignsRoot) =>
+        new(
+            campaign,
+            _dataSource,
+            _navigation,
+            _activeCampaign,
+            _creationDataSource,
+            _dialogService,
+            _foundryFloor,
+            _campaignManagement,
+            _campaignDialog,
+            _confirmation,
+            _fileDialog,
+            _whispers,
+            async refreshCt =>
+            {
+
+                await campaignsRoot.ReloadAsync(refreshCt).ConfigureAwait(true);
+
+                await UpdateCampaignCountAsync(refreshCt).ConfigureAwait(true);
+
+                OnPropertyChanged(nameof(ShowZeroCampaignOnboarding));
+
+            });
 
     private AtelierNodeViewModel CreateWorkspacesRoot() =>
         new AtelierRootNodeViewModel(

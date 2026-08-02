@@ -1,5 +1,6 @@
 using Avalonia;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Compendium.Ux.Services;
 
 namespace RetroDownfall.Compendium.Ux;
 
@@ -10,14 +11,16 @@ internal static class Program
     public static void Main(string[] args)
     {
 
+        CompendiumStartupArguments startup = CompendiumDeepLinkStartup.Parse(args);
+
         ServiceProvider services = ServiceCollectionConfigurator.Build();
 
-        App.ConfigureServices(services);
+        App.ConfigureServices(services, startup.DeepLink);
 
         try
         {
 
-            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+            BuildAvaloniaApp().StartWithClassicDesktopLifetime(startup.AvaloniaArguments);
 
         }
         finally

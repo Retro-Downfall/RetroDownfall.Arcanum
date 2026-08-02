@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Cli.Commands;
@@ -7,6 +8,7 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
 
@@ -102,6 +104,212 @@ public sealed class CliApplicationFactoryTests
         {
             global::System.Environment.SetEnvironmentVariable(CommandCenterHost.NoCommandCenterEnvVar, previous);
         }
+    }
+
+    [Fact]
+    public async Task Command_center_deep_link_enters_current_host_without_command_parsing_or_process_launch()
+    {
+
+        FakeCommandCenterHost host = new(exitCode: 0);
+
+        ThrowingApplicationLauncher launcher = new();
+
+        ServiceCollection services = CreateDeepLinkServices(host, launcher);
+
+        ApplicationDeepLink deepLink = new(
+            ApplicationDeepLink.CurrentSchemaVersion,
+            DesktopApplication.CommandCenter,
+            ApplicationResourceKind.None,
+            InitialView: ApplicationInitialView.CommandCenter);
+
+        string payload = ApplicationDeepLinkCodec.Encode(deepLink);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [ApplicationDeepLinkCodec.ArgumentName, payload]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Equal(1, host.RunCount);
+
+        Assert.Null(host.StartupSessionId);
+
+        Assert.Equal(0, launcher.CallCount);
+
+        Assert.DoesNotContain(payload, result.Output + result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Command_center_session_deep_link_resumes_the_canonical_session_in_current_host()
+    {
+
+        Guid sessionId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        FakeCommandCenterHost host = new(exitCode: 0);
+
+        ThrowingApplicationLauncher launcher = new();
+
+        ServiceCollection services = CreateDeepLinkServices(host, launcher);
+
+        ApplicationDeepLink deepLink = new(
+            ApplicationDeepLink.CurrentSchemaVersion,
+            DesktopApplication.CommandCenter,
+            ApplicationResourceKind.Session,
+            sessionId.ToString("D"),
+            InitialView: ApplicationInitialView.CommandCenter);
+
+        string payload = ApplicationDeepLinkCodec.Encode(deepLink);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [ApplicationDeepLinkCodec.ArgumentName, payload]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Equal(1, host.RunCount);
+
+        Assert.Equal(sessionId, host.StartupSessionId);
+
+        Assert.Equal(0, launcher.CallCount);
+
+        Assert.DoesNotContain(payload, result.Output + result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+
+    public async Task Command_center_empty_session_id_is_rejected_without_entering_the_host()
+    {
+
+        ApplicationDeepLink deepLink = new(
+            ApplicationDeepLink.CurrentSchemaVersion,
+            DesktopApplication.CommandCenter,
+            ApplicationResourceKind.Session,
+            Guid.Empty.ToString("D"),
+            InitialView: ApplicationInitialView.CommandCenter);
+
+        string payload = ApplicationDeepLinkCodec.Encode(deepLink);
+
+        FakeCommandCenterHost host = new(exitCode: 0);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateDeepLinkServices(host, new ThrowingApplicationLauncher()),
+            [ApplicationDeepLinkCodec.ArgumentName, payload]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(0, host.RunCount);
+
+        Assert.DoesNotContain(payload, result.Output + result.Error, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Malformed_command_center_deep_link_fails_without_echoing_private_payload()
+    {
+
+        const string SecretMarker = "api-key=must-not-surface";
+
+        string payload = $"{{not-json:{SecretMarker}";
+
+        FakeCommandCenterHost host = new(exitCode: 0);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateDeepLinkServices(host, new ThrowingApplicationLauncher()),
+            [ApplicationDeepLinkCodec.ArgumentName, payload]);
+
+        string combined = result.Output + result.Error;
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(0, host.RunCount);
+
+        Assert.Contains(
+            "Command Center application link is invalid.",
+            combined,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(SecretMarker, combined, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(payload, combined, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Wrong_target_command_center_deep_link_fails_without_echoing_private_payload()
+    {
+
+        const string SecretMarker = "private-marker-must-not-surface";
+
+        ApplicationDeepLink deepLink = new(
+            ApplicationDeepLink.CurrentSchemaVersion,
+            DesktopApplication.Compendium,
+            ApplicationResourceKind.Configuration,
+            SecretMarker,
+            InitialView: ApplicationInitialView.Settings);
+
+        string payload = ApplicationDeepLinkCodec.Encode(deepLink);
+
+        FakeCommandCenterHost host = new(exitCode: 0);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateDeepLinkServices(host, new ThrowingApplicationLauncher()),
+            [ApplicationDeepLinkCodec.ArgumentName, payload]);
+
+        string combined = result.Output + result.Error;
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(0, host.RunCount);
+
+        Assert.Contains(
+            "Command Center application link is invalid.",
+            combined,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(SecretMarker, combined, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(payload, combined, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Unsupported_command_center_resource_fails_with_fixed_safe_diagnostic()
+    {
+
+        const string SecretMarker = "private-resource-must-not-surface";
+
+        ApplicationDeepLink deepLink = new(
+            ApplicationDeepLink.CurrentSchemaVersion,
+            DesktopApplication.CommandCenter,
+            ApplicationResourceKind.Prompt,
+            SecretMarker,
+            InitialView: ApplicationInitialView.CommandCenter);
+
+        string payload = ApplicationDeepLinkCodec.Encode(deepLink);
+
+        FakeCommandCenterHost host = new(exitCode: 0);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            CreateDeepLinkServices(host, new ThrowingApplicationLauncher()),
+            [ApplicationDeepLinkCodec.ArgumentName, payload]);
+
+        string combined = result.Output + result.Error;
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Equal(0, host.RunCount);
+
+        Assert.Contains(
+            "Command Center application link requests an unsupported resource.",
+            combined,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(SecretMarker, combined, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(payload, combined, StringComparison.Ordinal);
+
     }
 
     [Fact]
@@ -395,11 +603,69 @@ public sealed class CliApplicationFactoryTests
     {
         public int RunCount { get; private set; }
 
+        public Guid? StartupSessionId { get; private set; }
+
         public Task<int> RunAsync(CancellationToken cancellationToken)
         {
             RunCount++;
             return Task.FromResult(exitCode);
         }
+
+        public Task<int> RunAsync(
+            Guid? startupSessionId,
+            CancellationToken cancellationToken)
+        {
+
+            StartupSessionId = startupSessionId;
+
+            return RunAsync(cancellationToken);
+
+        }
+    }
+
+    private static ServiceCollection CreateDeepLinkServices(
+        ICommandCenterHost host,
+        IApplicationLauncher launcher)
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.RemoveAll<ICliEnvironment>();
+
+        services.AddSingleton<ICliEnvironment>(
+            new FakeCliEnvironment(interactive: false, colorEnabled: false));
+
+        services.RemoveAll<ICommandCenterHost>();
+
+        services.AddSingleton(host);
+
+        services.RemoveAll<IApplicationLauncher>();
+
+        services.AddSingleton(launcher);
+
+        return services;
+
+    }
+
+    private sealed class ThrowingApplicationLauncher : IApplicationLauncher
+    {
+
+        public int CallCount { get; private set; }
+
+        public ApplicationLaunchResult TryLaunch(ApplicationLaunchRequest request)
+        {
+
+            CallCount++;
+
+            throw new InvalidOperationException(
+                "A Command Center deep link must not create a process.");
+
+        }
+
     }
 
     private sealed class FakeCliEnvironment(bool interactive, bool colorEnabled) : ICliEnvironment

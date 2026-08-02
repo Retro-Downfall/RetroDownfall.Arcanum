@@ -23,9 +23,22 @@ of reproducing the complete key table.
 
 The Forge opens Compendium from **View → Open Compendium**, The Anvil, the setup
 wizard, disabled-feature guidance, and the macOS application-menu **Settings...** item. The CLI
-opens the same editor with `arcanum config open`. Discovery checks installed binaries first and
-then the development project. If launch fails, the exact configuration path and
-`arcanum config edit` fallback are shown.
+opens the same editor with `arcanum open compendium`; `arcanum config open` remains the
+configuration-family entry. Discovery checks installed platform application locations first and
+recognizes a side-by-side extracted `compendium-win-x64` folder or the active
+`compendium-linux-x64|arm64` architecture before the repository development project. If launch
+fails, every attempted candidate is shown with a safe kind/display path, followed by a
+repository-relative `dotnet run --project ...` command and the `arcanum config edit` fallback.
+Copyable command arguments use PowerShell quoting on Windows and POSIX-shell quoting on
+macOS/Linux; actual process launch remains shell-free.
+
+Each launcher passes a versioned settings deep link as one `ProcessStartInfo.ArgumentList` value, never
+through a shell. The envelope carries only the Compendium target, configuration resource kind,
+initial view, and an optional safe connection-profile identifier; it never carries a credential,
+endpoint, configuration value, file content, attachment, or path. Compendium safely selects
+Edition for a valid settings request and also for normal startup, a malformed or wrong-target
+request, an unknown view, or a future schema. Starting a new process is the portable behavior;
+Compendium is reported as reused/focused only if a platform integration actually does so.
 
 Compendium edits:
 

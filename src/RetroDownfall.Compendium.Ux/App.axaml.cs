@@ -3,6 +3,7 @@ using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.Compendium.Ux.Services;
 
 namespace RetroDownfall.Compendium.Ux;
@@ -12,10 +13,16 @@ public partial class App : Application
 
     private static IServiceProvider? _services;
 
-    public static void ConfigureServices(IServiceProvider services)
+    private static ApplicationDeepLink? _startupDeepLink;
+
+    public static void ConfigureServices(
+        IServiceProvider services,
+        ApplicationDeepLink? startupDeepLink = null)
     {
 
         _services = services;
+
+        _startupDeepLink = startupDeepLink;
 
     }
 
@@ -39,6 +46,8 @@ public partial class App : Application
             // supply Light/Dark Forge brushes automatically via ActualThemeVariant.
 
             ViewModels.ConfigurationViewModel viewModel = services.GetRequiredService<ViewModels.ConfigurationViewModel>();
+
+            CompendiumDeepLinkStartup.Apply(_startupDeepLink, viewModel);
 
             Views.MainWindow mainWindow = services.GetRequiredService<Views.MainWindow>();
 

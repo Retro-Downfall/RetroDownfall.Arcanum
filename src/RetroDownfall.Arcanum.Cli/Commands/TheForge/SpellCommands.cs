@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Workspaces;
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
@@ -83,9 +84,44 @@ public sealed class SpellCommands(
     /// Show spell detail (GET /api/spells/{name}).
     /// </summary>
     /// <param name="name">Spell name.</param>
-    /// <param name="workspace">Workspace root to scope the lookup.</param>
+    /// <param name="workspace">Workspace ID, name, or server path used to scope the lookup.</param>
     public async Task<int> Get(string? name, string? workspace = null, CancellationToken cancellationToken = default)
     {
+
+        if (resourceCatalog is not null
+            && !string.IsNullOrWhiteSpace(workspace))
+        {
+
+            ResourceSelectionResult<WorkspaceInfo> workspaceSelection =
+                await resourceCatalog
+                    .SelectWorkspaceAsync(workspace, cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (workspaceSelection.Status == ResourceSelectionStatus.Cancelled)
+            {
+
+                return 0;
+
+            }
+
+            if (workspaceSelection.Status == ResourceSelectionStatus.Error)
+            {
+
+                string message = string.IsNullOrWhiteSpace(workspaceSelection.Error)
+                    ? "Workspace selection failed."
+                    : workspaceSelection.Error;
+
+                AnsiConsole.MarkupLine(
+                    themePalette.ErrorMarkup(Markup.Escape(message)));
+
+                return 1;
+
+            }
+
+            workspace = workspaceSelection.Value!.Path;
+
+        }
+
         if (resourceCatalog is not null)
         {
             ResourceSelectionResult<SpellSummary> selection = await resourceCatalog
@@ -95,6 +131,7 @@ public sealed class SpellCommands(
             {
                 return 0;
             }
+
             if (selection.Status == ResourceSelectionStatus.Error)
             {
                 AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));

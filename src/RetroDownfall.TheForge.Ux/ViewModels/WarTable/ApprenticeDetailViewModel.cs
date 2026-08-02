@@ -66,7 +66,23 @@ public sealed partial class ApprenticeDetailViewModel : ViewModelBase, IDisposab
     public void Deactivate() => Chronicle.Stop();
 
     [RelayCommand]
-    public async Task LoadAsync(CancellationToken cancellationToken)
+    public Task LoadAsync(CancellationToken cancellationToken) =>
+        LoadCoreAsync(initialDetail: null, cancellationToken);
+
+    internal Task LoadKnownDetailAsync(
+        ApprenticeDetailDto detail,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(detail);
+
+        return LoadCoreAsync(detail, cancellationToken);
+
+    }
+
+    private async Task LoadCoreAsync(
+        ApprenticeDetailDto? initialDetail,
+        CancellationToken cancellationToken)
     {
 
         IsBusy = true;
@@ -76,7 +92,9 @@ public sealed partial class ApprenticeDetailViewModel : ViewModelBase, IDisposab
         try
         {
 
-            Detail = await _dataSource.GetApprenticeAsync(ApprenticeId, cancellationToken).ConfigureAwait(true);
+            Detail = initialDetail ?? await _dataSource
+                .GetApprenticeAsync(ApprenticeId, cancellationToken)
+                .ConfigureAwait(true);
 
             if (Detail is not null)
             {
@@ -96,6 +114,12 @@ public sealed partial class ApprenticeDetailViewModel : ViewModelBase, IDisposab
             OnPropertyChanged(nameof(WorkspacePath));
 
             await LoadLineageAsync(cancellationToken).ConfigureAwait(true);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            throw;
 
         }
         catch (Exception ex)

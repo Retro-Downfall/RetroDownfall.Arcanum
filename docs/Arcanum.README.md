@@ -119,6 +119,17 @@ agent/operator orientation updates this file; human navigation updates
 `serve` (long-running Kestrel host) vs. short-lived commands. See
 [DESIGN.md §5](Arcanum.DESIGN.md#5-hybrid-hosting-model).
 
+**Explicit application entry.** `arcanum center` and `arcanum open center` reuse the in-process
+Command Center host. `arcanum open theforge|compendium|session|campaign|spell|prompt|apprentice`
+resolves any friendly selector first, then launches through a versioned one-argument deep link.
+Only canonical server-owned identifiers cross the process boundary; API keys, endpoints, prompt/file content,
+attachments, and server paths do not. Missing desktop applications report every safe candidate plus
+repository-relative `dotnet run` and current-CLI fallbacks. Windows and Linux release archives
+extracted beneath one parent are discovered by their shipped sibling folder names and active
+architecture. See
+[the command reference](Arcanum.Command.Reference.md#arcanum-open) and
+[DESIGN §4.4](Arcanum.DESIGN.md#44-retrodownfallarcanumcli-console-executable).
+
 **Primary dependency chain:** `Cli → Api → Infrastructure → Core` (`Cli` also references `Core`/`Infrastructure` directly for lightweight DI). `Infrastructure` also references the isolated `Secrets` project. Strict project boundaries are a deliberate goal.
 
 | Project | Role | Owns | AOT |
@@ -333,14 +344,17 @@ Summaries only — full contracts live in DESIGN.
 Settings bind under the required `Arcanum` object in **`arcanum.json`** (`~/.config/arcanum/` on macOS/Linux, `%USERPROFILE%\.config\arcanum\` on Windows). General environment overrides keep the wrapper after the prefix, for example `ARCANUM_Arcanum__Host__Port`; `ARCANUM_EDITION` and `ARCANUM_HOST_ANY` are explicit overrides. Before binding, the source-generated configuration schema walks the complete tree and reports every unknown/obsolete path together; dynamic array indices and documented dictionary keys remain valid. Serve then runs semantic validation before listening.
 
 Use `arcanum config path`, `show`, `get <dot.path>`, `set <dot.path> [value]`, `validate`,
-`edit`, or `open` for routine configuration work. These commands prefer the running host's
+`edit`, or `open` for routine configuration work. `arcanum open compendium` is the explicit
+application-launch spelling; `arcanum config open` remains the configuration-family entry. These
+commands prefer the running host's
 authenticated `/api/config` endpoints. When the host cannot be reached (or a first-run key is not
 initialized), stderr clearly identifies local bootstrap mode; that path still uses the canonical
 loader, full validator, outbound URL guard, and atomic writer. `show`/`get` mask provider endpoints,
 environment overrides are named without revealing their values, and sensitive endpoint values must
 be supplied through redirected stdin or the hidden prompt—not argv. `edit` uses an owner-only
-temporary redacted copy and applies it only after full validation. `open` launches Compendium or
-prints the exact file path and `arcanum config edit` fallback.
+temporary redacted copy and applies it only after full validation. Both open forms launch
+Compendium or print the attempted locations, repository-relative development command, exact file
+path where applicable, and `arcanum config edit` fallback.
 
 Public settings are limited to deployment choices, provider/model facts, credential references,
 security and permission policy, integration endpoints/allowlists, feature opt-ins, schedules,
@@ -739,9 +753,13 @@ Expand-Archive .\arcanum-win-x64.zip -DestinationPath .
 .\arcanum-win-x64\arcanum.exe key show
 ```
 
-Run as a normal user; elevation is not required. Launch The Forge and Compendium from their
-extracted archives. Linux shared key discovery requires `libsecret` and a running Secret Service;
-otherwise The Forge prompts for a key or accepts process-only `THEFORGE_ARCANUM_KEY`.
+Run as a normal user; elevation is not required. Extract the Arcanum, The Forge, and Compendium
+archives beneath the same parent directory. `arcanum open ...` discovers the shipped sibling
+folders (`the-forge-win-x64` / `compendium-win-x64`, or the matching
+`the-forge-linux-x64|arm64` / `compendium-linux-x64|arm64` folders for the active architecture).
+The applications can also be launched directly from those extracted archives. Linux shared key
+discovery requires `libsecret` and a running Secret Service; otherwise The Forge prompts for a key
+or accepts process-only `THEFORGE_ARCANUM_KEY`.
 
 Local package creation:
 

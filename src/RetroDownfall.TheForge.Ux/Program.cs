@@ -1,5 +1,6 @@
 using Avalonia;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.TheForge.Ux.Services;
 
 namespace RetroDownfall.TheForge.Ux;
 
@@ -12,14 +13,16 @@ internal static class Program
     public static void Main(string[] args)
     {
 
+        TheForgeStartupArguments startup = TheForgeDeepLinkStartup.Parse(args);
+
         ServiceProvider services = ServiceCollectionConfigurator.Build();
 
-        App.ConfigureServices(services);
+        App.ConfigureServices(services, startup.DeepLink);
 
         try
         {
 
-            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+            BuildAvaloniaApp().StartWithClassicDesktopLifetime(startup.AvaloniaArguments);
 
         }
         finally

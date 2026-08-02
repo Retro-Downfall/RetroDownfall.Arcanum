@@ -13,6 +13,8 @@ public interface IAtelierDataSource
 
     Task<IReadOnlyList<CampaignDto>> GetCampaignsAsync(CancellationToken cancellationToken);
 
+    Task<CampaignDto?> GetCampaignAsync(Guid campaignId, CancellationToken cancellationToken);
+
     Task<IReadOnlyList<WorkspaceInfo>> GetWorkspacesAsync(CancellationToken cancellationToken);
 
     Task<IReadOnlyList<SpellSummary>> GetGlobalSpellsAsync(CancellationToken cancellationToken);
