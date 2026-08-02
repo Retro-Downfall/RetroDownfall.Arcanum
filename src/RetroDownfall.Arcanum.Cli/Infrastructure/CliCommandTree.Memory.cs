@@ -8,6 +8,159 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
+    private static Command BuildMemory(IServiceProvider sp)
+    {
+
+        MemoryCommands handler = sp.GetRequiredService<MemoryCommands>();
+
+        Command memory = new(
+            "memory",
+            "Inspect distinct Arcanum memory sources and retention policies.");
+
+        Argument<string?> statusSession = OptionalMemorySessionArgument();
+
+        Command status = new("status", "Show feature gates and counts by memory store.");
+
+        status.Add(statusSession);
+
+        status.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Status(
+                    ActiveSession(sp, pr.GetValue(statusSession)),
+                    ct).ConfigureAwait(false));
+
+        Argument<string?> sourcesSession = OptionalMemorySessionArgument();
+
+        Command sources = new("sources", "Describe provenance and retention for every memory source.");
+
+        sources.Add(sourcesSession);
+
+        sources.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Sources(
+                    ActiveSession(sp, pr.GetValue(sourcesSession)),
+                    ct).ConfigureAwait(false));
+
+        Command search = new("search", "Search persisted memory with an explicit or displayed scope.");
+
+        Argument<string> query = new("query") { Description = "Search query text." };
+
+        Option<string?> scope = new("--scope")
+        {
+            Description = "session, attachments, workspace, saga, lexicon, or all (default).",
+        };
+
+        Option<string?> searchSession = new("--session")
+        {
+            Description = "Optional session GUID, exact title, or unique title prefix.",
+        };
+
+        Option<string?> workspace = new("--workspace")
+        {
+            Description = "Optional workspace ID; omit to search every indexed workspace.",
+        };
+
+        search.Add(query);
+
+        search.Add(scope);
+
+        search.Add(searchSession);
+
+        search.Add(workspace);
+
+        search.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Search(
+                    pr.GetValue(query)!,
+                    pr.GetValue(scope),
+                    ActiveSession(sp, pr.GetValue(searchSession)),
+                    pr.GetValue(workspace),
+                    ct).ConfigureAwait(false));
+
+        Argument<string?> explainSession = OptionalMemorySessionArgument();
+
+        Command explain = new("explain", "Explain what can be eligible for the next turn and why.");
+
+        explain.Add(explainSession);
+
+        explain.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.Explain(
+                    ActiveSession(sp, pr.GetValue(explainSession)),
+                    ct).ConfigureAwait(false));
+
+        Command lexicon = new("lexicon", "Inspect or explicitly delete Lexicon entities.");
+
+        Command lexiconList = new("list", "List Lexicon entities.");
+
+        lexiconList.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.LexiconList(ct).ConfigureAwait(false));
+
+        Command lexiconShow = new("show", "Show a Lexicon entity by name.");
+
+        Argument<string> showName = new("name") { Description = "Lexicon entity name." };
+
+        lexiconShow.Add(showName);
+
+        lexiconShow.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.LexiconShow(
+                    pr.GetValue(showName)!,
+                    ct).ConfigureAwait(false));
+
+        Command lexiconSearch = new("search", "Search Lexicon names, types, and facts.");
+
+        Argument<string> lexiconQuery = new("query") { Description = "Search query text." };
+
+        lexiconSearch.Add(lexiconQuery);
+
+        lexiconSearch.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.LexiconSearch(
+                    pr.GetValue(lexiconQuery)!,
+                    ct).ConfigureAwait(false));
+
+        Command lexiconDelete = new("delete", "Delete one explicitly named Lexicon entity.");
+
+        Argument<string> deleteName = new("name") { Description = "Lexicon entity name." };
+
+        lexiconDelete.Add(deleteName);
+
+        lexiconDelete.SetAction(
+            async (ParseResult pr, CancellationToken ct) =>
+                await handler.LexiconDelete(
+                    pr.GetValue(deleteName)!,
+                    ct).ConfigureAwait(false));
+
+        lexicon.Add(lexiconList);
+
+        lexicon.Add(lexiconShow);
+
+        lexicon.Add(lexiconSearch);
+
+        lexicon.Add(lexiconDelete);
+
+        memory.Add(status);
+
+        memory.Add(sources);
+
+        memory.Add(search);
+
+        memory.Add(explain);
+
+        memory.Add(lexicon);
+
+        return memory;
+
+    }
+
+    private static Argument<string?> OptionalMemorySessionArgument() => new("session")
+    {
+        Arity = ArgumentArity.ZeroOrOne,
+        Description = "Optional session GUID, exact title, or unique title prefix.",
+    };
+
     private static Command BuildSaga(IServiceProvider sp)
     {
         SagaCommands handler = sp.GetRequiredService<SagaCommands>();

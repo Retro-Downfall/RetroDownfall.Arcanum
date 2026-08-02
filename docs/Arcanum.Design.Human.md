@@ -452,6 +452,7 @@ The fantasy names are functional labels:
 | Eye of the World | Workspace perception |
 | Weave / Divination / Imprint | Embedding substrate, search, and stored vector |
 | Lexicon / Saga | Entity memory and associative memory |
+| Memory inspection | Read-only status, sources, scoped search, eligibility explanation, and explicit Lexicon item deletion across otherwise separate stores |
 | Apprentice | Durable agentic workflow |
 | Unseen Servant | Scheduled background job |
 | Comm Link | Notification integration |
@@ -459,6 +460,12 @@ The fantasy names are functional labels:
 | Proving Grounds / Trial / Inquisitor | Ephemeral validation run |
 
 `arcanum context inspect [prompt]` is Arcanum's equivalent of Claude Code's live context breakdown: it shows where the window goes, which Spell and resonant instructions are active, which tools are advertised or excluded, whether compression would apply, and which numbers are estimates. `context tools` and `context sources` focus the same response; `mana [prompt]` focuses the budget. The normal view deliberately shows labels, reasons, and counts rather than private prompt text. `--show-content` is the explicit operator reveal, while `--no-retrieval` answers the same planning question without embedding or RAG work.
+
+`arcanum memory status|sources|search|explain` answers the separate persistence question: what is
+stored, where it came from, how long it remains, and whether it could participate in the next turn.
+It does not assemble or spend a model turn. Search scope is explicit or visibly defaults to `all`,
+and results stay attributed to Session, attachments, workspace, Saga, or Lexicon. This is a unified
+view, not a unified store; disabling or deleting one source does not imply deletion of another.
 
 The full vocabulary and cross-references are in
 [`Arcanum.DESIGN.md` §17](Arcanum.DESIGN.md#17-glossary).

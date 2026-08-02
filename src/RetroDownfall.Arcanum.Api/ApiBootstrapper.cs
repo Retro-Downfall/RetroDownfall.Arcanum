@@ -612,6 +612,8 @@ public static class ApiBootstrapper
 
         apiGroup.MapSagaEndpoints();
 
+        apiGroup.MapMemoryEndpoints();
+
         apiGroup.MapSpellEndpoints();
 
         apiGroup.MapSpellForgeEndpoints();

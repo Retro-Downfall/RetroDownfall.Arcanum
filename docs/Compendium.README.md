@@ -165,7 +165,7 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.a2AServer` | `bool`, `false` | — | Exposes configured inbound A2A endpoints and derives Conclave availability. |
 | `features.a2AClient` | `bool`, `false` | — | Permits dispatch to allowed remote A2A agents and derives Conclave availability. |
 | `features.apprentices` | `bool`, `true` | — | Enables the Apprentice subsystem. |
-| `features.lexicon` | `bool`, `true` | — | Enables model-writable Lexicon memory; attachment-derived facts require current-turn materialization and retain typed provenance. |
+| `features.lexicon` | `bool`, `true` | — | Enables prompt-time/model-writable Lexicon memory; attachment-derived facts require current-turn materialization and retain typed provenance. Disabling the gate does not delete entities or block authenticated `arcanum memory` inspection. |
 | `features.archiveSearch` | `bool`, `true` | — | Enables search over past sessions. |
 | `features.metrics` | `bool`, `true` | — | Exposes Prometheus metrics. |
 | `features.embeddings` | `bool`, `false` | — | Enables The Weave embedding substrate. |
@@ -181,7 +181,7 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.webBrowsing` | `bool`, `false` | — | Advertises native `web_search` / `read_url` and enables authenticated `search`, `browse`, and server-orchestrated `research` CLI workflows. The deprecated `browse_web` name remains only as a direct-invoke compatibility alias. |
 | `features.guardrails` | `bool`, `false` | — | Runs configured input/output guardrails. |
 | `features.workspaceChecks` | `bool`, `true` | — | Allows `workspace_check` advertisement when all platform and trust checks pass. |
-| `features.memoryManagement` | `bool`, `false` | — | Enables session deletion, pinning, and compaction. |
+| `features.memoryManagement` | `bool`, `false` | — | Enables session deletion, pinning, and compaction. Read-only `arcanum memory status\|sources\|search\|explain` remains available and reports the disabled mutation gate alongside retained counts. |
 
 Feature flags are capability policy. Edition, dependency, security, provider,
 and platform eligibility still apply.

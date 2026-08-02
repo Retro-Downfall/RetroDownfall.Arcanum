@@ -45,7 +45,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Hub.Model =>
                 StatusCodes.Status404NotFound,
 
-            ErrorCodes.Spell.NotFound or ErrorCodes.Prompt.NotFound or ErrorCodes.Campaign.NotFound or ErrorCodes.Session.NotFound or ErrorCodes.Session.EntryNotFound or ErrorCodes.Grimoire.LoreNotFound or ErrorCodes.Apprentice.NotFound or ErrorCodes.Workspace.NotFound or ErrorCodes.Mcp.ServerNotFound or ErrorCodes.Mcp.ToolNotFound or ErrorCodes.Daemon.NotFound or ErrorCodes.Intelligence.HumanPromptNotFound or ErrorCodes.ProvingGrounds.SpellNotFound or ErrorCodes.ProvingGrounds.PromptNotFound or ErrorCodes.Workspace.FileNotFound or ErrorCodes.Workspace.ReplacementNotFound or ErrorCodes.Saga.NotFound or ErrorCodes.Files.NotFound or ErrorCodes.Batches.NotFound or ErrorCodes.Batches.InputFileNotFound =>
+            ErrorCodes.Spell.NotFound or ErrorCodes.Prompt.NotFound or ErrorCodes.Campaign.NotFound or ErrorCodes.Session.NotFound or ErrorCodes.Session.EntryNotFound or ErrorCodes.Grimoire.LoreNotFound or ErrorCodes.Lexicon.NotFound or ErrorCodes.Apprentice.NotFound or ErrorCodes.Workspace.NotFound or ErrorCodes.Mcp.ServerNotFound or ErrorCodes.Mcp.ToolNotFound or ErrorCodes.Daemon.NotFound or ErrorCodes.Intelligence.HumanPromptNotFound or ErrorCodes.ProvingGrounds.SpellNotFound or ErrorCodes.ProvingGrounds.PromptNotFound or ErrorCodes.Workspace.FileNotFound or ErrorCodes.Workspace.ReplacementNotFound or ErrorCodes.Saga.NotFound or ErrorCodes.Files.NotFound or ErrorCodes.Batches.NotFound or ErrorCodes.Batches.InputFileNotFound =>
                 StatusCodes.Status404NotFound,
 
             ErrorCodes.Attachment.NotFound or ErrorCodes.Attachment.SourceNotFound =>

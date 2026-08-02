@@ -359,4 +359,34 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+
+    public async Task ListAsync_ReturnsEveryEntityInStableNameOrder()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _ = await _service!.UpsertAsync(
+            "Zebra",
+            "Project",
+            ["Last alphabetically."],
+            CancellationToken.None);
+
+        _ = await _service.UpsertAsync(
+            "alpha",
+            "Person",
+            ["First alphabetically."],
+            CancellationToken.None);
+
+        Result<IReadOnlyList<LexiconEntryDto>> result = await _service
+            .ListAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(
+            ["alpha", "Zebra"],
+            result.Value.Select(static entry => entry.Name).ToArray());
+
+    }
+
 }

@@ -82,6 +82,14 @@ test, and documentation citations remain stable.
 | DELETE | `/api/saga/{id}` | Delete a single Saga memory (**204**; **404** `Saga.NotFound`; DESIGN §21.9). |
 | DELETE | `/api/saga` | Delete every Saga memory, embedding, and extraction watermark (**204**; requires `?confirm=true`, else **400** `Saga.NotEmpty`; DESIGN §21.9). |
 | GET | `/api/saga/stats` | Aggregate Saga memory summary (`ApiResponse<SagaStats>`: total count, session count, oldest/newest `CreatedAt`; DESIGN §21.9). |
+| GET | `/api/memory/status` | Global gates and persisted counts for each distinct memory store (`ApiResponse<MemoryStatusDto>`). Reads are not blocked when a prompt-time feature is disabled. |
+| GET | `/api/memory/status/{sessionId}` | Session-narrowed memory status; **404** when the session is missing. Session-owned entries, pins, Summary, attachments/chunks, Saga, and Campaign-backed workspace index are counted independently. |
+| GET | `/api/memory/sources[/{sessionId}]` | Safe provenance and retention descriptions plus gates/counts (`ApiResponse<MemorySourcesDto>`); no attachment bytes or host absolute paths. |
+| POST | `/api/memory/search` | Case-insensitive persisted-memory inspection (`MemorySearchRequest` → `ApiResponse<MemorySearchResponse>`). `scope` is `session`, `attachments`, `workspace`, `saga`, `lexicon`, or `all`; default `all` is echoed. Optional `sessionId`/`workspaceId` narrow ownership. Every result includes scope, source id, provenance, and retention. No embeddings or promotion side effect. |
+| GET | `/api/memory/explain[/{sessionId}]` | Explains conditional next-turn eligibility by source (`ApiResponse<MemoryExplainDto>`), distinguishing persisted data from actual inclusion. |
+| GET | `/api/memory/lexicon` | Lists every Lexicon entity (`ApiResponse<LexiconListDto>`); optional `?q=` searches name, type, and facts without the prompt-time match cap. |
+| GET | `/api/memory/lexicon/{name}` | Exact case-insensitive Lexicon lookup (`ApiResponse<LexiconEntryDto>`; **404** `Lexicon.NotFound`). |
+| DELETE | `/api/memory/lexicon/{name}` | Deletes exactly one named Lexicon entity (**204**; **404** `Lexicon.NotFound`). CLI callers must confirm. Other stores are unchanged. |
 | GET | `/api/spells` | List built-in + workspace spells (`ApiResponse<SpellSummary[]>`; optional `workspace` query; §8.14). |
 | GET | `/api/spells/{name}` | Spell detail (`ApiResponse<SpellDetail>`; optional `workspace` query; **404** when missing). |
 | POST | `/api/spells` | Create workspace spell (`ApiResponse<bool>`; optional `workspace` query; **400** validation). |

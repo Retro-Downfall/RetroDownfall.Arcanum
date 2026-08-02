@@ -1,0 +1,225 @@
+using System.Net;
+
+using System.Net.Http.Json;
+
+using System.Text.Json;
+
+using Microsoft.Extensions.DependencyInjection;
+
+using Microsoft.Extensions.DependencyInjection.Extensions;
+
+using RetroDownfall.Arcanum.Api.Serialization;
+
+using RetroDownfall.Arcanum.Core.Lexicon;
+
+using RetroDownfall.Arcanum.Core.Memory;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Tests.Fixtures;
+
+using RetroDownfall.Arcanum.Tests.Support;
+
+namespace RetroDownfall.Arcanum.Tests.Api;
+
+[Collection("ApiHost")]
+
+public sealed class MemoryEndpointTests
+{
+
+    private readonly ArcanumWebApplicationFactory _factory;
+
+    public MemoryEndpointTests(ArcanumWebApplicationFactory factory)
+    {
+
+        _factory = factory;
+
+    }
+
+    [SkippableFact]
+
+    public async Task Status_reports_every_distinct_store_and_retention_without_requiring_features()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/memory/status");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<MemoryStatusDto>? envelope = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto);
+
+        Assert.NotNull(envelope?.Data);
+
+        string[] names = envelope.Data.Stores.Select(static store => store.Name).ToArray();
+
+        Assert.Contains("Session Entries", names);
+
+        Assert.Contains("Pinned Entries", names);
+
+        Assert.Contains("Campaign Summary", names);
+
+        Assert.Contains("Attachments", names);
+
+        Assert.Contains("Indexed Attachment Chunks", names);
+
+        Assert.Contains("Lexicon", names);
+
+        Assert.Contains("Saga", names);
+
+        Assert.Contains("Workspace Index", names);
+
+        Assert.All(envelope.Data.Stores, static store => Assert.False(string.IsNullOrWhiteSpace(store.Retention)));
+
+    }
+
+    [SkippableFact]
+
+    public async Task Search_requires_query_but_not_an_embedding_feature_gate()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage invalid = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("   "),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+
+        HttpResponseMessage invalidScope = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("query", (MemorySearchScope)99),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.BadRequest, invalidScope.StatusCode);
+
+        HttpResponseMessage valid = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("not-present", MemorySearchScope.All),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        Assert.Equal(HttpStatusCode.OK, valid.StatusCode);
+
+        ApiResponse<MemorySearchResponse>? envelope = await ReadAsync(
+            valid,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        Assert.NotNull(envelope?.Data);
+
+        Assert.Equal(MemorySearchScope.All, envelope.Data.Scope);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Lexicon_endpoints_list_show_search_and_delete_only_the_named_entity()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeLexiconService lexicon = new();
+
+        _ = await lexicon.UpsertAsync(
+            "Operator",
+            "Person",
+            ["Prefers dark mode."],
+            CancellationToken.None);
+
+        _ = await lexicon.UpsertAsync(
+            "Arcanum",
+            "Project",
+            ["Uses C#."],
+            CancellationToken.None);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services =>
+            {
+
+                services.RemoveAll<ILexiconService>();
+
+                services.AddSingleton<ILexiconService>(lexicon);
+
+            },
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage list = await client.GetAsync("/api/memory/lexicon");
+
+        Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+
+        ApiResponse<LexiconListDto>? listed = await ReadAsync(
+            list,
+            ArcanumJsonContext.Default.ApiResponseLexiconListDto);
+
+        Assert.Equal(2, listed?.Data?.Entries.Length);
+
+        HttpResponseMessage search = await client.GetAsync("/api/memory/lexicon?q=dark");
+
+        ApiResponse<LexiconListDto>? searched = await ReadAsync(
+            search,
+            ArcanumJsonContext.Default.ApiResponseLexiconListDto);
+
+        Assert.Single(searched!.Data!.Entries);
+
+        HttpResponseMessage unifiedSearch = await client.PostAsJsonAsync(
+            "/api/memory/search",
+            new MemorySearchRequest("dark", MemorySearchScope.All),
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        ApiResponse<MemorySearchResponse>? unified = await ReadAsync(
+            unifiedSearch,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse);
+
+        MemorySearchResultDto match = Assert.Single(unified!.Data!.Results);
+
+        Assert.Equal(MemorySearchScope.Lexicon, match.Scope);
+
+        Assert.Contains("Lexicon entity: Operator", match.Provenance, StringComparison.Ordinal);
+
+        Assert.Contains("explicit", match.Retention, StringComparison.OrdinalIgnoreCase);
+
+        HttpResponseMessage show = await client.GetAsync("/api/memory/lexicon/Operator");
+
+        Assert.Equal(HttpStatusCode.OK, show.StatusCode);
+
+        HttpResponseMessage deleted = await client.DeleteAsync("/api/memory/lexicon/Operator");
+
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        Result<LexiconEntryDto?> remainingOperator = await lexicon.GetByNameAsync("Operator");
+
+        Result<LexiconEntryDto?> remainingArcanum = await lexicon.GetByNameAsync("Arcanum");
+
+        Assert.Null(remainingOperator.Value);
+
+        Assert.NotNull(remainingArcanum.Value);
+
+    }
+
+    private static async Task<T?> ReadAsync<T>(
+        HttpResponseMessage response,
+        System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo)
+    {
+
+        byte[] json = await response.Content.ReadAsByteArrayAsync();
+
+        return JsonSerializer.Deserialize(json, typeInfo);
+
+    }
+
+}

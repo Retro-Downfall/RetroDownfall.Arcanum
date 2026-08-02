@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Logging;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
@@ -376,6 +377,29 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<SagaMemoryDto[]>))]
 [JsonSerializable(typeof(ApiResponse<SagaSearchResult>))]
 [JsonSerializable(typeof(ApiResponse<SagaStats>))]
+[JsonSerializable(typeof(MemorySearchScope))]
+[JsonSerializable(typeof(MemoryStoreStatusDto))]
+[JsonSerializable(typeof(MemoryStoreStatusDto[]))]
+[JsonSerializable(typeof(MemoryStatusDto))]
+[JsonSerializable(typeof(ApiResponse<MemoryStatusDto>))]
+[JsonSerializable(typeof(MemorySourceDto))]
+[JsonSerializable(typeof(MemorySourceDto[]))]
+[JsonSerializable(typeof(MemorySourcesDto))]
+[JsonSerializable(typeof(ApiResponse<MemorySourcesDto>))]
+[JsonSerializable(typeof(MemorySearchRequest))]
+[JsonSerializable(typeof(MemorySearchResultDto))]
+[JsonSerializable(typeof(MemorySearchResultDto[]))]
+[JsonSerializable(typeof(MemorySearchResponse))]
+[JsonSerializable(typeof(ApiResponse<MemorySearchResponse>))]
+[JsonSerializable(typeof(MemoryEligibilityDto))]
+[JsonSerializable(typeof(MemoryEligibilityDto[]))]
+[JsonSerializable(typeof(MemoryExplainDto))]
+[JsonSerializable(typeof(ApiResponse<MemoryExplainDto>))]
+[JsonSerializable(typeof(LexiconListDto))]
+[JsonSerializable(typeof(ApiResponse<LexiconListDto>))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Lexicon.LexiconEntryDto))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Lexicon.LexiconEntryDto[]))]
+[JsonSerializable(typeof(ApiResponse<RetroDownfall.Arcanum.Core.Lexicon.LexiconEntryDto>))]
 [JsonSerializable(typeof(FileWriteRequest))]
 [JsonSerializable(typeof(FileWriteResult))]
 [JsonSerializable(typeof(TextBlockReplaceRequest))]

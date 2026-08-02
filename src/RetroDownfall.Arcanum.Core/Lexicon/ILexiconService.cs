@@ -52,4 +52,16 @@ public interface ILexiconService
     /// <summary>Looks up a single entity by case-insensitive name; null when not found.</summary>
     Task<Result<LexiconEntryDto?>> GetByNameAsync(string name, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Lists every Lexicon entity for explicit inspection. This is intentionally not tied to the
+    /// prompt-time match limit because inspection must not hide durable memory from the operator.
+    /// </summary>
+    Task<Result<IReadOnlyList<LexiconEntryDto>>> ListAsync(
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(
+            Result<IReadOnlyList<LexiconEntryDto>>.Failure(
+                new Error(
+                    ErrorCodes.Lexicon.SearchFailed,
+                    "Lexicon listing is unavailable.")));
+
 }

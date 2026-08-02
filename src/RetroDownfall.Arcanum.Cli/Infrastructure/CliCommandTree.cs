@@ -48,6 +48,7 @@ internal static partial class CliCommandTree
         Command campaign = BuildCampaign(serviceProvider);
         Command session = BuildSession(serviceProvider);
         Command saga = BuildSaga(serviceProvider);
+        Command memory = BuildMemory(serviceProvider);
         Command spell = BuildSpell(serviceProvider);
         spell.Add(BuildSpellVersion(serviceProvider));
         Command prompt = BuildPrompt(serviceProvider);
@@ -85,6 +86,7 @@ internal static partial class CliCommandTree
         root.Add(campaign);
         root.Add(session);
         root.Add(saga);
+        root.Add(memory);
         root.Add(spell);
         root.Add(prompt);
         root.Add(ward);

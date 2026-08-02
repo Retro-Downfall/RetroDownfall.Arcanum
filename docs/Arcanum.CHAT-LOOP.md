@@ -9,6 +9,13 @@ Before the normal loop, operators can run `arcanum context inspect [prompt]`, `a
 
 The preview resolves a production model lease, loads Session history and explicit context pins, reads CODEX, applies production Spell routing and resonant dependencies, optionally retrieves Workspace/attachment RAG plus Saga/Lexicon context, builds and filters the production tool set, calls `SystemPromptBuilder.BuildDocument`, evaluates the production compression rule, and runs the model-aware token estimator. It stops before the turn coordinator: no main inference, tool call, budget reservation, assistant Entry, or response persistence occurs. `--no-retrieval` omits embedding/RAG work and automatic semantic Spell routing. `--show-content` explicitly includes the assembled prompt/messages; otherwise only metadata, reasons, and token counts leave the host.
 
+`arcanum memory explain [session]` is intentionally less expensive and answers a different question.
+It reads persisted counts and feature gates to explain which source categories are candidates for a
+next turn and why; it does not route a Spell, embed a query, assemble content, reserve budget, or
+promise that a conditional Lexicon/Saga/workspace/attachment candidate will be selected. Use
+`memory status|sources|search` for retention/provenance inspection and `context inspect` for the
+actual planned turn projection.
+
 ## 1. One logical turn, multiple provider requests
 
 A tool response cannot change the provider request that produced the tool call. “Refresh in the

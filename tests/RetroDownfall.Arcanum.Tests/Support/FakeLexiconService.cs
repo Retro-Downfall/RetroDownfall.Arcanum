@@ -92,4 +92,17 @@ public sealed class FakeLexiconService : ILexiconService
         return Task.FromResult(Result<LexiconEntryDto?>.Success(entry));
     }
 
+    public Task<Result<IReadOnlyList<LexiconEntryDto>>> ListAsync(
+        CancellationToken cancellationToken = default)
+    {
+
+        IReadOnlyList<LexiconEntryDto> entries = _entries.Values
+            .OrderBy(static entry => entry.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return Task.FromResult(
+            Result<IReadOnlyList<LexiconEntryDto>>.Success(entries));
+
+    }
+
 }

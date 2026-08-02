@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -3872,6 +3873,82 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
             ArcanumJsonContext.Default.ApiResponseSagaStats,
             cancellationToken).ConfigureAwait(false);
     }
+
+    #endregion
+
+    #region Memory inspection
+
+    public Task<Result<MemoryStatusDto>> GetMemoryStatusAsync(
+        Guid? sessionId,
+        CancellationToken cancellationToken = default) =>
+        GetApiAsync(
+            sessionId is null
+                ? "api/memory/status"
+                : $"api/memory/status/{sessionId.Value:D}",
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto,
+            cancellationToken);
+
+    public Task<Result<MemorySourcesDto>> GetMemorySourcesAsync(
+        Guid? sessionId,
+        CancellationToken cancellationToken = default) =>
+        GetApiAsync(
+            sessionId is null
+                ? "api/memory/sources"
+                : $"api/memory/sources/{sessionId.Value:D}",
+            ArcanumJsonContext.Default.ApiResponseMemorySourcesDto,
+            cancellationToken);
+
+    public Task<Result<MemoryExplainDto>> ExplainMemoryAsync(
+        Guid? sessionId,
+        CancellationToken cancellationToken = default) =>
+        GetApiAsync(
+            sessionId is null
+                ? "api/memory/explain"
+                : $"api/memory/explain/{sessionId.Value:D}",
+            ArcanumJsonContext.Default.ApiResponseMemoryExplainDto,
+            cancellationToken);
+
+    public Task<Result<MemorySearchResponse>> SearchMemoryAsync(
+        MemorySearchRequest request,
+        CancellationToken cancellationToken = default)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.MemorySearchRequest);
+
+        return SendRequestAsync(
+            HttpMethod.Post,
+            "api/memory/search",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
+            cancellationToken);
+
+    }
+
+    public Task<Result<LexiconListDto>> ListLexiconAsync(
+        string? query,
+        CancellationToken cancellationToken = default) =>
+        GetApiAsync(
+            BuildQueryString("api/memory/lexicon", ("q", query)),
+            ArcanumJsonContext.Default.ApiResponseLexiconListDto,
+            cancellationToken);
+
+    public Task<Result<RetroDownfall.Arcanum.Core.Lexicon.LexiconEntryDto>> GetLexiconAsync(
+        string name,
+        CancellationToken cancellationToken = default) =>
+        GetApiAsync(
+            $"api/memory/lexicon/{Uri.EscapeDataString(name)}",
+            ArcanumJsonContext.Default.ApiResponseLexiconEntryDto,
+            cancellationToken);
+
+    public Task<Result> DeleteLexiconAsync(
+        string name,
+        CancellationToken cancellationToken = default) =>
+        DeleteReturningNoContentAsync(
+            $"api/memory/lexicon/{Uri.EscapeDataString(name)}",
+            cancellationToken);
 
     #endregion
 

@@ -371,6 +371,9 @@ while `cli-context.json.sessionId` is the active-context authority.
 | `apprentice list\|get\|create\|delete\|start\|pause\|resume\|cancel\|reweave\|intervene\|cast\|chronicle` | The Forge Apprentice orchestration via **`/api/apprentices`**. Resource-taking verbs accept optional ID/name/prefix selection; cancellation occurs before mutation. `create` accepts `--goal`; `reweave` reads `PlanStep[]`; `chronicle` is SSE. |
 | `model list\|get`, `provider list\|get` | List or safely select configured models/providers. `get` omits endpoints and credential details; model identity is `provider/model` when names collide. |
 | `session list\|show\|get\|chat\|entries\|watch\|fork\|rename\|archive\|export\|rest\|attachments\|delete-entry\|pin-entry\|unpin-entry\|compact\|divine` | Complete session lifecycle and continuation over **`/api/sessions`**. Session arguments accept a GUID, exact title, unique prefix, or an interactive picker; `get` remains an alias for `show`. `list` filters by campaign/status/search/model/from/to; `show` combines metadata with attachment count and displays token/cost telemetry plus fork parent; `watch` consumes the session SSE stream. Fork/archive/export preserve archived-session semantics and use server APIs. Entry delete requires confirmation; delete/pin/unpin/compact retain the server's memory-management gate. Read commands support recursive `--json` (`watch` emits one JSON object per line). |
+| `memory status [session]`, `memory sources [session]`, `memory explain [session]` | Authenticated read-only inspection over **`/api/memory/*`**. `status` reports gates and persisted counts without hiding retained rows when a prompt-time feature is disabled; `sources` names provenance and retention; `explain` distinguishes stored data from what is actually eligible for a next turn. Optional session selectors use the same GUID/title/prefix and saved-context rules as session commands. |
+| `memory search <query> [--scope ...]` | Lexical inspection across `session`, `attachments`, `workspace`, `saga`, `lexicon`, or `all` (default and always displayed). Results carry an explicit scope, safe provenance, retention text, and source id. Search reads persisted stores even when semantic embeddings are disabled; it never promotes a hit into durable memory. `--session` and `--workspace` narrow their owning stores without merging them. |
+| `memory lexicon list\|show\|search\|delete` | Read and explicitly delete named Lexicon entities through **`/api/memory/lexicon*`**. `delete` requires CLI confirmation/`--yes`, targets exactly one entity, and states that other memory stores are unaffected. There is intentionally no generic `memory delete`. |
 | `workspace list\|current\|register\|show\|tree\|info\|read\|search\|index\|index-status\|chunks\|unregister` | Operate through authenticated **`/api/workspaces`** routes. `register [path]` registers the current directory with one command for the bundled local host; explicit paths are server-host paths. `show` retains `get` as a compatibility alias. File reads/listing remain bounded server operations; `search`, `index`, `index-status`, and `chunks` expose The Weave without The Forge. Optional selectors resolve from explicit ID/name/path, saved Workspace context, then current-directory containment. `current` reports independent Campaign and Workspace mappings and offers the exact Campaign registration command when only a Workspace matches. |
 | `mcp list\|get` | List/select MCP server safe status. Output excludes URL, command, arguments, working directory, and other secret-adjacent configuration. |
 | `saga list` | Paginated listing of Saga memories via **`GET /api/saga`**; options `--query`, `--session`, `--limit`, `--offset` (§21.9). |
@@ -1321,7 +1324,7 @@ when the schema is unavailable. The FTS triggers copy `Name`, `Type`, and the ne
 
 **Injection (DATA, hardened):** `SystemPromptBuilder.Build` accepts `IReadOnlyList<LexiconEntryDto>? lexiconEntries` (default null) and renders `### Lexicon (Known Context)` at the top of the DATA block. Lexicon is model-writable and potentially stale/adversarial, so it is treated strictly as DATA — never instructions; the preamble already states DATA may be stale and never overrides INSTRUCTIONS. Facts are hardened: whitespace collapsed, newlines/control chars stripped, exactly one plain markdown bullet per entity (`- **Name** (Type): "Fact 1"; "Fact 2"`), so facts cannot create headings or break DCI structure. Total rendered bytes are capped by `LexiconMaxInjectedBytes`; entry count by `LexiconMaxMatchedEntries`. Retrieval/injection failures are logged and swallowed — Lexicon never fails an inference turn. Lexicon contents are not persisted into audit logs or exposed on `/v1` tool surfaces.
 
-**Error codes:** `ErrorCodes.Lexicon.InvalidName` / `InvalidFact` / `NotFound` / `WriteFailed` / `SearchFailed` (no HTTP route yet; MCP converts expected failures to tool-result strings).
+**Error codes:** `ErrorCodes.Lexicon.InvalidName` / `InvalidFact` / `NotFound` / `WriteFailed` / `SearchFailed`. `Lexicon.NotFound` maps to HTTP 404. MCP converts expected failures to tool-result strings; authenticated `/api/memory/lexicon*` routes expose list/show/search and item-scoped delete.
 
 #### 10.6.1 Attachment-derived memory promotion and privacy policy
 
@@ -1346,6 +1349,30 @@ Deleting an attachment does not silently delete unrelated conclusions. Lexicon/S
 remain and resolve `Availability=Unavailable` when no Bound source row exists, so downstream users are
 never told that an unavailable source is verifiable. This metadata is a typed side table, not opaque
 text concatenated into the fact or memory.
+
+#### 10.6.2 Unified memory inspection without unified storage
+
+`MemoryEndpoints` is a read model over the existing stores, not a new memory database. `status`
+counts Session Entries, pins, Session Summary presence, logical attachments, indexed attachment
+chunks, Lexicon entities, Saga memories, and workspace chunks. A selected session narrows owned
+session/attachment/Saga data and its Campaign-backed workspace; omission intentionally reports the
+global persisted inventory. Feature flags are reported alongside counts, so a disabled retrieval
+gate never masquerades as deletion.
+
+`POST /api/memory/search` performs case-insensitive lexical inspection of persisted content and does
+not require an embedding provider. Scope defaults to `all` and is echoed in every response. Each hit
+has one source scope, source id, retention category, and sanitized provenance. Attachment hits name
+session/attachment/logical-key/version/hash but never raw bytes or host paths. Workspace hits expose
+registered labels and relative paths, never absolute host roots. Lexicon attachment-derived facts
+retain their typed provenance summary. Search is read-only: no hit is injected, pinned, summarized,
+or promoted.
+
+`explain` reports candidates for the next turn rather than promising inclusion: transcript and pins
+need a selected session, Summary needs a stored rollup and context-pressure policy, attachment chunks
+need the owning session plus prompt retrieval, and Lexicon/Saga/workspace material requires its
+existing gate and prompt match. Disabling or deleting one store never claims to affect another.
+Mutation remains deliberately narrow: `/api/memory/lexicon/{name}` deletes one named Lexicon entity;
+there is no ambiguous generic memory delete.
 
 ### 10.7 End-to-end turn lifecycle and chat loop
 

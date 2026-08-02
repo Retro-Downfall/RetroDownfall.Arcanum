@@ -358,6 +358,78 @@ internal sealed class LexiconService(
 
     }
 
+    public async Task<Result<IReadOnlyList<LexiconEntryDto>>> ListAsync(
+        CancellationToken cancellationToken = default)
+    {
+
+        try
+        {
+
+            return await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                    await using DbCommand command = connection.CreateCommand();
+
+                    command.CommandText =
+                        """
+                        SELECT Id, Name, Type, FactsJson, UpdatedAt
+                        FROM lexicon_entries
+                        ORDER BY Name COLLATE NOCASE, Id
+                        """;
+
+                    await using DbDataReader reader = await command
+                        .ExecuteReaderAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                    List<LexiconEntryDto> entries = [];
+
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+
+                        entries.Add(ReadEntry(reader));
+
+                    }
+
+                    await reader.DisposeAsync().ConfigureAwait(false);
+
+                    for (int index = 0; index < entries.Count; index++)
+                    {
+
+                        LexiconEntryDto entry = entries[index];
+
+                        entries[index] = entry with
+                        {
+                            FactProvenance = await ReadFactProvenanceAsync(
+                                connection,
+                                entry.Id,
+                                cancellationToken).ConfigureAwait(false),
+                        };
+
+                    }
+
+                    return Result<IReadOnlyList<LexiconEntryDto>>.Success(entries);
+
+                },
+                cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+
+            logger.LogWarning(exception, "Lexicon list failed.");
+
+            return new Error(
+                ErrorCodes.Lexicon.SearchFailed,
+                "Lexicon listing failed.");
+
+        }
+
+    }
+
     private static string NormalizeName(string value) =>
         value.Trim().ToUpperInvariant();
 

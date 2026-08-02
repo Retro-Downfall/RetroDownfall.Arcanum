@@ -199,6 +199,8 @@ internal static class CliApplicationFactory
 
         services.AddTransient<SagaCommands>();
 
+        services.AddTransient<MemoryCommands>();
+
         services.AddTransient<SpellCommands>();
 
         services.AddTransient<SpellVersionCommands>();
