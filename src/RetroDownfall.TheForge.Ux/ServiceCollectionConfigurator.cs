@@ -157,6 +157,12 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<INavigationService, NavigationService>();
 
+        services.AddSingleton<ITheForgeDeepLinkTarget, TheForgeDeepLinkTarget>();
+
+        services.AddSingleton<TheForgeDeepLinkRouter>();
+
+        services.AddSingleton<TheForgeDeepLinkCoordinator>();
+
         services.AddSingleton<IActiveCampaignService, ActiveCampaignService>();
 
         services.AddSingleton<ICampaignCommandCoordinator, CampaignCommandCoordinator>();

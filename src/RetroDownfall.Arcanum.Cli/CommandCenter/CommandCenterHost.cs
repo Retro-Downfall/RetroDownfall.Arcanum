@@ -70,7 +70,12 @@ internal sealed class CommandCenterHost(
             || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
     }
 
-    public async Task<int> RunAsync(CancellationToken cancellationToken)
+    public Task<int> RunAsync(CancellationToken cancellationToken) =>
+        RunAsync(startupSessionId: null, cancellationToken);
+
+    public async Task<int> RunAsync(
+        Guid? startupSessionId,
+        CancellationToken cancellationToken)
     {
         SessionLogBuffer log = new();
         CommandCenterState state = new(log)
@@ -92,7 +97,22 @@ internal sealed class CommandCenterHost(
             state.HealthSummary = launch.Guidance;
 
             await dispatcher.RefreshMcpAsync(state, cancellationToken).ConfigureAwait(false);
-            await sessionWorkspace.RestoreStartupSessionAsync(state, cancellationToken).ConfigureAwait(false);
+            if (startupSessionId is { } sessionId)
+            {
+
+                _ = await sessionWorkspace
+                    .ResumeSessionAsync(state, sessionId, cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+            else
+            {
+
+                await sessionWorkspace
+                    .RestoreStartupSessionAsync(state, cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
 
             int tgCode = commandCenterApp.Run(
                 (app, window) =>

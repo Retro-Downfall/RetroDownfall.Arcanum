@@ -18,10 +18,16 @@ public partial class App : Application
 
     private static IServiceProvider? _services;
 
-    public static void ConfigureServices(IServiceProvider services)
+    private static ApplicationDeepLink? _startupDeepLink;
+
+    public static void ConfigureServices(
+        IServiceProvider services,
+        ApplicationDeepLink? startupDeepLink = null)
     {
 
         _services = services;
+
+        _startupDeepLink = startupDeepLink;
 
     }
 
@@ -57,8 +63,14 @@ public partial class App : Application
             // Start AutoConnect only after MainWindow exists so the API-key paste prompt can show.
             services.GetRequiredService<ArcanumConnectionService>().StartAutoConnectIfConfigured();
 
+            CancellationTokenSource? deepLinkCancellation = StartDeepLinkRouting(services);
+
             desktop.MainWindow.Closed += (_, _) =>
             {
+
+                deepLinkCancellation?.Cancel();
+
+                deepLinkCancellation?.Dispose();
 
                 if (desktop.MainWindow.DataContext is IDisposable disposable)
                 {
@@ -75,6 +87,52 @@ public partial class App : Application
         }
 
         base.OnFrameworkInitializationCompleted();
+
+    }
+
+    private static CancellationTokenSource? StartDeepLinkRouting(IServiceProvider services)
+    {
+
+        if (_startupDeepLink is null)
+        {
+
+            return null;
+
+        }
+
+        CancellationTokenSource cancellation = new();
+
+        TaskUtilities.FireAndForget(
+            RouteStartupDeepLinkAsync(
+                services.GetRequiredService<TheForgeDeepLinkCoordinator>(),
+                services.GetRequiredService<IWhispersService>(),
+                _startupDeepLink,
+                cancellation.Token));
+
+        return cancellation;
+
+    }
+
+    private static async Task RouteStartupDeepLinkAsync(
+        TheForgeDeepLinkCoordinator coordinator,
+        IWhispersService whispers,
+        ApplicationDeepLink deepLink,
+        CancellationToken cancellationToken)
+    {
+
+        TheForgeDeepLinkRouteResult result = await coordinator
+            .RouteAsync(deepLink, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!result.Accepted)
+        {
+
+            whispers.Show(
+                WhisperSeverity.Error,
+                "The requested resource could not be opened.",
+                "Application link");
+
+        }
 
     }
 

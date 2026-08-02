@@ -170,6 +170,57 @@ public sealed partial class WarTableViewModel : ViewModelBase, IDisposable
 
     }
 
+    public async Task<bool> SelectApprenticeByIdAsync(
+        Guid apprenticeId,
+        CancellationToken cancellationToken)
+    {
+
+        LastError = null;
+
+        try
+        {
+
+            ApprenticeDetailDto? apprentice = await _dataSource
+                .GetApprenticeAsync(apprenticeId, cancellationToken)
+                .ConfigureAwait(true);
+
+            if (apprentice is null || apprentice.Id != apprenticeId)
+            {
+
+                LastError = "The requested apprentice is unavailable.";
+
+                return false;
+
+            }
+
+            ApprenticeDetailViewModel detail = new(apprenticeId, _dataSource);
+
+            await detail
+                .LoadKnownDetailAsync(apprentice, cancellationToken)
+                .ConfigureAwait(true);
+
+            SelectedApprentice = detail;
+
+            return true;
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            LastError = ex.Message;
+
+            return false;
+
+        }
+
+    }
+
     [RelayCommand]
     public async Task OpenCreatePanelAsync(CancellationToken cancellationToken)
     {

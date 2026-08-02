@@ -255,6 +255,10 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
 
         _navigation.WorkspaceOpenRequested += OnWorkspaceOpenRequested;
 
+        _navigation.CampaignFocusRequested += OnCampaignFocusRequested;
+
+        _navigation.ApprenticeFocusRequested += OnApprenticeFocusRequested;
+
     }
 
     private void OnActiveCampaignChanged(object? sender, EventArgs e) =>
@@ -413,6 +417,10 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         _navigation.ComparisonWorkbenchOpenRequested -= OnComparisonWorkbenchOpenRequested;
 
         _navigation.WorkspaceOpenRequested -= OnWorkspaceOpenRequested;
+
+        _navigation.CampaignFocusRequested -= OnCampaignFocusRequested;
+
+        _navigation.ApprenticeFocusRequested -= OnApprenticeFocusRequested;
 
         _activeCampaign.ActiveCampaignChanged -= OnActiveCampaignChanged;
 
@@ -711,6 +719,54 @@ public sealed partial class MainViewModel : ViewModelBase, IDisposable
         ApplyToolVisibility();
 
         await WorkspaceExplorer.SelectWorkspaceAsync(workspaceId, cancellationToken).ConfigureAwait(true);
+
+    }
+
+    private async Task<bool> OnCampaignFocusRequested(
+        Guid campaignId,
+        CancellationToken cancellationToken)
+    {
+
+        bool focused = await Atelier
+            .FocusCampaignAsync(campaignId, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (!focused)
+        {
+
+            return false;
+
+        }
+
+        DockLayout.FocusTool(DockToolId.Atelier);
+
+        ApplyToolVisibility();
+
+        return true;
+
+    }
+
+    private async Task<bool> OnApprenticeFocusRequested(
+        Guid apprenticeId,
+        CancellationToken cancellationToken)
+    {
+
+        bool selected = await WarTable
+            .SelectApprenticeByIdAsync(apprenticeId, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (!selected)
+        {
+
+            return false;
+
+        }
+
+        DockLayout.FocusTool(DockToolId.WarTable);
+
+        ApplyToolVisibility();
+
+        return true;
 
     }
 

@@ -428,6 +428,32 @@ and per-command filters are documented in the command reference.
 
 **Composition:** `ArcanumApiClient`, CAF command tree (`CliApplicationFactory`), theme/Spectre UX, Command Center (`Cli/CommandCenter/`), `IArcanumServeLauncher`. Discover verbs in `Cli/Commands/`.
 
+**Application launch and deep links:** `center` and `open center` enter the existing
+`ICommandCenterHost` in-process; they do not spawn a second CLI. `open theforge`, `open compendium`,
+and the resource-specific `open` commands use Core's AOT-safe `IApplicationLauncher` and platform
+`IApplicationDiscoveryService`. A resource selector must finish before discovery or process start.
+The versioned `ApplicationDeepLink` envelope contains only the target application, resource kind,
+canonical server resource identifier, optional opaque Workspace scope ID, optional initial view, and reserved
+connection-profile ID. It never carries an API key, endpoint, prompt/file content, attachment, or
+server path. Compact source-generated JSON is passed as one value after
+`--arcanum-deep-link` through `ProcessStartInfo.ArgumentList`; no shell parses resource text.
+When the target is Command Center, the CLI consumes and removes that private argument before normal
+command parsing. A target-only link opens the current host, while a Session link resumes its
+canonical GUID after the host connects; malformed, wrong-target, and unsupported-resource links
+fail with fixed diagnostics that never echo the private payload.
+
+Discovery reports ordered candidates with a typed kind, launch path used only by the starter, and
+a safe display path used by diagnostics. It checks installed platform locations and an ancestry-
+discovered repository project without a fixed parent-depth assumption. Windows/Linux discovery
+also recognizes the exact sibling folders produced by the release packaging scripts; Linux selects
+only the current process architecture's `x64` or `arm64` folder. A development fallback is always
+rendered repository-relative. Failed candidates do not stop later attempts. When no
+candidate starts, the CLI prints every attempted safe candidate, the copyable development command,
+and the equivalent resource/config CLI command. Displayed command arguments use PowerShell quoting
+on Windows and POSIX-shell quoting on macOS/Linux; this has no effect on the shell-free
+`ProcessStartInfo.ArgumentList` launch path. The baseline starts a new instance and reports
+`Started`; reuse/focus may be reported only by a platform activator that actually supports it.
+
 
 ### 4.4.1 Auto-launch serve lifecycle
 
@@ -449,7 +475,7 @@ Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Co
 
 ### 4.6 `RetroDownfall.Compendium.Ux` (.NET 10 Avalonia desktop configuration editor)
 
-Visual editor for §3.4 — reads/writes `arcanum.json` only (no inference/daemon/Grimoire/MCP). References **Core** only and edits credential environment-variable references, never provider/PFX values. Its local certificate generator writes an owner-only PEM pair, avoiding a generated password. `SettingDescriptor` drives controls/clamps; parity + coverage tests guard drift. It launches from `arcanum config open`, existing Forge configuration actions, and the macOS application-menu **Settings...** item. See [`Compendium.README.md`](Compendium.README.md).
+Visual editor for §3.4 — reads/writes `arcanum.json` only (no inference/daemon/Grimoire/MCP). References **Core** only and edits credential environment-variable references, never provider/PFX values. Its local certificate generator writes an owner-only PEM pair, avoiding a generated password. `SettingDescriptor` drives controls/clamps; parity + coverage tests guard drift. It launches from `arcanum open compendium`, the compatibility `arcanum config open`, existing Forge configuration actions, and the macOS application-menu **Settings...** item. A valid settings deep link selects the configuration surface; an absent, malformed, wrong-target, or future-schema link safely retains the default Edition section. See [`Compendium.README.md`](Compendium.README.md).
 
 Descriptor-driven views cache only completed builds. They observe replacement field collections so
 an asynchronous configuration load rebuilds controls even when the view was created first; view
@@ -467,6 +493,11 @@ One binary; the CLI verb selects the process role (per-command detail in
 
 - **No arguments** — opens Command Center on an interactive TTY; prints standard usage when
   noninteractive or `ARCANUM_NO_COMMAND_CENTER=1`.
+- **`center` / `open center`** — explicitly enter that same in-process Command Center host;
+  `ARCANUM_NO_COMMAND_CENTER` suppresses only the automatic no-argument entry.
+- **`open`** — resolve an optional server resource, then launch The Forge or Compendium through the
+  safe versioned deep-link contract; unavailable applications retain copyable development and CLI
+  fallbacks.
 - **`serve`** — the long-running HTTP host: builds `WebApplication` with slim defaults and blocks until shutdown.
 - **`ask`** — streams single-prompt inference via NDJSON, then exits (0/1/130).
 - **`run`** — composes positional/piped/interactive input and bounded current-turn files, resolves active
@@ -3088,6 +3119,10 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   `RetroDownfall.Compendium.Ux.Tests`) covers Compendium settings/converters; and
   `tests/RetroDownfall.TheForge.Tests` covers the desktop client. Integration and coverage behavior
   is defined in §13.
+- Application-launch tests separately cover hostile one-token envelope round trips, safe
+  `ArgumentList` construction, failed-candidate continuation, complete unavailable diagnostics,
+  macOS/Windows/Linux discovery, selector-before-launch behavior, authenticated Forge routing, and
+  Compendium's safe default.
 
 ### 16.5 CLI
 
@@ -3098,6 +3133,10 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 ### 16.6 CLI UX surface (Spectre.Console + Command Center)
 
 - **Command Center** (bare interactive `arcanum`): Terminal.Gui fixed viewport; hard-modal arbitration (Wards > HumanPrompt); attachment `[Snapshot]`/`[Live]`/`[Stale]` badges, loaded/disk version metadata, watcher-driven backend revalidation, and `/attachments refresh <name>` when enabled (§10.2.5); `ARCANUM_NO_COMMAND_CENTER=1` escapes to usage.
+- **Explicit application entry:** `center` and `open center` reuse Command Center in-process.
+  `open theforge|compendium|session|campaign|spell|prompt|apprentice` shares the normal resource
+  selector, passes only server-owned identifiers in a versioned one-argument envelope, and keeps
+  development/current-CLI fallbacks when a desktop application is unavailable.
 - **Frameless `run`/`ask`/`chat`:** Spectre input/output, effective-context resolution, and bounded file/image staging; live `run` sources use the normal host attachment pipeline while its dry-run is non-persistent. TTY/`NO_COLOR` theme gating and atomic owner-only `cli-context.json` plus the temporary `cli-session.txt` mirror remain shared CLI infrastructure.
 - **doctor:** themed panels + optional `--json` `DoctorReport`.
 
@@ -3247,6 +3286,12 @@ The client supports both stream families:
 The desktop bundles as self-contained Avalonia on .NET 10 and is **not Native AOT**. This does not
 relax the Arcanum host's source-generated wire contracts or Native AOT requirements (§9).
 
+At startup The Forge parses the shared Core deep-link envelope before opening a resource. A valid
+link waits for `ConnectionState.Connected` without inventing a timeout, then routes through
+existing ViewModel/navigation services. Wrong-target, malformed, and unsupported future-schema
+links are rejected without exposing their raw payload. Normal startup remains unchanged when no
+link is present.
+
 ### 19.8 Desktop wire contracts
 
 - Native `/api` JSON uses `ApiResponse<T>`:
@@ -3341,6 +3386,10 @@ Forge cannot decrypt Arcanum's `security.dat` fallback.
 Operators connect or disconnect through **View → Connect to Arcanum** or The Anvil connection chip.
 `arcanum doctor` reports whether the shared Master-key identity is present without exposing it.
 
+Deep links do not carry connection endpoints or credentials. The optional connection-profile field
+is a safe identifier reserved for a profile registry; when absent, The Forge uses its ordinary
+settings and authentication flow. Resource routing begins only after that flow reports Connected.
+
 ### 19.10 Desktop vocabulary and implemented surfaces
 
 | Surface | UI name | Responsibility |
@@ -3384,6 +3433,14 @@ Disabled-state banners show retained setting paths and offer copy/open actions w
 complete configuration inventory. Comparison reads pricing from the server configuration surface.
 War Table and Chronicle text retain canonical **Master/Apprentice** terminology.
 
+Deep-link routes use the same surfaces: Session and Prompt open Workbench documents; Campaign
+selects the Atelier; Apprentice selects the War Table; and Spell opens a Workbench document. For a
+Workspace Spell, the CLI sends the opaque `WorkspaceInfo.Id` as `ResourceScopeId`. After
+authentication The Forge resolves that ID through the Workspace API and uses only the returned
+server-host path internally. Campaign and Apprentice navigation falls back to their direct detail
+endpoints when an item is outside the currently visible list, and reports a routing miss when the
+canonical ID does not exist. Remote resources therefore never depend on a client filesystem path.
+
 The Proving Grounds is a singleton Workbench tab opened from **Trial → Proving Grounds**, Spell
 **Create Trial**, or Scriptorium **Open in Proving Grounds**. It targets a Spell, Prompt, or
 Apprentice Goal; supports Regex, JsonSchema, and Semantic Inquisitors; and runs through
@@ -3406,6 +3463,9 @@ persistence or export. Reload/export remains answer-only.
 - Ledger has no push, pull, reset, or rebase.
 - Diagnostic MCP remains external-tool-only; Forbidden Arts and internal handlers require the Master
   pipeline (§11.28).
+- Cross-platform process launch starts a new desktop instance unless a future platform activator can
+  prove that it reused/focused an existing instance; the current launcher never makes a false focus
+  claim.
 
 ### 19.12 Build, packaging, and maintenance
 

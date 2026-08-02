@@ -45,6 +45,14 @@ public interface INavigationService
 
     Task OpenWorkspaceAsync(string workspaceId, CancellationToken cancellationToken = default);
 
+    event Func<Guid, CancellationToken, Task<bool>>? CampaignFocusRequested;
+
+    event Func<Guid, CancellationToken, Task<bool>>? ApprenticeFocusRequested;
+
+    Task<bool> FocusCampaignAsync(Guid campaignId, CancellationToken cancellationToken = default);
+
+    Task<bool> FocusApprenticeAsync(Guid apprenticeId, CancellationToken cancellationToken = default);
+
 }
 
 public sealed class NavigationService : INavigationService
@@ -61,6 +69,10 @@ public sealed class NavigationService : INavigationService
     public event Action? ComparisonWorkbenchOpenRequested;
 
     public event Func<string, CancellationToken, Task>? WorkspaceOpenRequested;
+
+    public event Func<Guid, CancellationToken, Task<bool>>? CampaignFocusRequested;
+
+    public event Func<Guid, CancellationToken, Task<bool>>? ApprenticeFocusRequested;
 
     public void OpenDocument(DocumentKind kind, string id, string? workspace = null) =>
         DocumentOpenRequested?.Invoke(kind, id, WorkspacePathHelper.ForApi(workspace));
@@ -88,6 +100,32 @@ public sealed class NavigationService : INavigationService
         }
 
         return handler(workspaceId, cancellationToken);
+
+    }
+
+    public Task<bool> FocusCampaignAsync(
+        Guid campaignId,
+        CancellationToken cancellationToken = default)
+    {
+
+        Func<Guid, CancellationToken, Task<bool>>? handler = CampaignFocusRequested;
+
+        return handler is null
+            ? Task.FromResult(false)
+            : handler(campaignId, cancellationToken);
+
+    }
+
+    public Task<bool> FocusApprenticeAsync(
+        Guid apprenticeId,
+        CancellationToken cancellationToken = default)
+    {
+
+        Func<Guid, CancellationToken, Task<bool>>? handler = ApprenticeFocusRequested;
+
+        return handler is null
+            ? Task.FromResult(false)
+            : handler(apprenticeId, cancellationToken);
 
     }
 

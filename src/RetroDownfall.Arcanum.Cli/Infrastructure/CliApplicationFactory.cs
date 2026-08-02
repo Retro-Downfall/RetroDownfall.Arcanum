@@ -143,6 +143,13 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<CompendiumLauncher>();
 
+        services.AddSingleton<IApplicationDiscoveryService>(
+            static _ => ApplicationDiscoveryServiceFactory.CreateDefault());
+
+        services.AddSingleton<IApplicationProcessStarter, ApplicationProcessStarter>();
+
+        services.AddSingleton<IApplicationLauncher, ApplicationLauncher>();
+
         services.AddSingleton<ICliResourceCatalog, CliResourceCatalog>();
 
         services.AddSingleton<IServeProcessLauncher, ServeProcessLauncher>();
@@ -249,6 +256,8 @@ internal static class CliApplicationFactory
 
         services.AddTransient<ConfigCommands>();
 
+        services.AddTransient<OpenCommands>();
+
     }
 
     /// <summary>
@@ -264,6 +273,45 @@ internal static class CliApplicationFactory
 
         try
         {
+
+            CommandCenterDeepLinkIntake deepLinkIntake =
+                ParseCommandCenterDeepLink(args);
+
+            args = deepLinkIntake.RemainingArguments;
+
+            if (deepLinkIntake.Status != CommandCenterDeepLinkStatus.Absent)
+            {
+
+                using IDisposable deepLinkInvocationScope =
+                    CliInvocationContext.Push(default);
+
+                if (deepLinkIntake.Status != CommandCenterDeepLinkStatus.Valid)
+                {
+
+                    IConsoleDispatcher dispatcher =
+                        serviceProvider.GetRequiredService<IConsoleDispatcher>();
+
+                    dispatcher.WriteDiagnostic(
+                        deepLinkIntake.Status == CommandCenterDeepLinkStatus.Unsupported
+                            ? "Command Center application link requests an unsupported resource."
+                            : "Command Center application link is invalid.");
+
+                    return (int)CliExitCode.ConfigurationError;
+
+                }
+
+                ICommandCenterHost host =
+                    serviceProvider.GetRequiredService<ICommandCenterHost>();
+
+                int hostExitCode = await host
+                    .RunAsync(
+                        deepLinkIntake.StartupSessionId,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                return NormalizeExitCode(hostExitCode);
+
+            }
 
             if (args.Length == 0)
             {
@@ -492,6 +540,109 @@ internal static class CliApplicationFactory
         Enum.IsDefined((CliExitCode)exitCode)
             ? exitCode
             : (int)CliExitCode.GenericError;
+
+    private static CommandCenterDeepLinkIntake ParseCommandCenterDeepLink(
+        IReadOnlyList<string> arguments)
+    {
+
+        if (arguments.Count == 0
+            || !string.Equals(
+                arguments[0],
+                ApplicationDeepLinkCodec.ArgumentName,
+                StringComparison.Ordinal))
+        {
+
+            return new CommandCenterDeepLinkIntake(
+                CommandCenterDeepLinkStatus.Absent,
+                [.. arguments]);
+
+        }
+
+        if (arguments.Count == 1)
+        {
+
+            return new CommandCenterDeepLinkIntake(
+                CommandCenterDeepLinkStatus.Invalid,
+                []);
+
+        }
+
+        string[] remainingArguments = [.. arguments.Skip(2)];
+
+        ApplicationDeepLink deepLink;
+
+        try
+        {
+
+            deepLink = ApplicationDeepLinkCodec.Decode(
+                arguments[1]);
+
+        }
+        catch
+        {
+
+            return new CommandCenterDeepLinkIntake(
+                CommandCenterDeepLinkStatus.Invalid,
+                remainingArguments);
+
+        }
+
+        if (deepLink.TargetApplication != DesktopApplication.CommandCenter)
+        {
+
+            return new CommandCenterDeepLinkIntake(
+                CommandCenterDeepLinkStatus.Invalid,
+                remainingArguments);
+
+        }
+
+        if (deepLink.ResourceKind == ApplicationResourceKind.None)
+        {
+
+            return new CommandCenterDeepLinkIntake(
+                CommandCenterDeepLinkStatus.Valid,
+                remainingArguments);
+
+        }
+
+        if (deepLink.ResourceKind == ApplicationResourceKind.Session)
+        {
+
+            return Guid.TryParse(deepLink.ResourceId, out Guid sessionId)
+                && sessionId != Guid.Empty
+                ? new CommandCenterDeepLinkIntake(
+                    CommandCenterDeepLinkStatus.Valid,
+                    remainingArguments,
+                    sessionId)
+                : new CommandCenterDeepLinkIntake(
+                    CommandCenterDeepLinkStatus.Invalid,
+                    remainingArguments);
+
+        }
+
+        return new CommandCenterDeepLinkIntake(
+            CommandCenterDeepLinkStatus.Unsupported,
+            remainingArguments);
+
+    }
+
+    private enum CommandCenterDeepLinkStatus
+    {
+
+        Absent = 0,
+
+        Valid = 1,
+
+        Invalid = 2,
+
+        Unsupported = 3,
+
+    }
+
+    private sealed record CommandCenterDeepLinkIntake(
+        CommandCenterDeepLinkStatus Status,
+        string[] RemainingArguments,
+        Guid? StartupSessionId = null);
 
     internal static void WriteBareUsage()
     {

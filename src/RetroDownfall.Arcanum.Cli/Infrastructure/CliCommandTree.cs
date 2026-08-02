@@ -37,6 +37,11 @@ internal static partial class CliCommandTree
         root.Add(yes);
         root.Add(noContext);
         globalOptions = new CliGlobalOptions(json, plain, yes, noContext);
+
+        Command center = BuildCenter(serviceProvider);
+
+        Command open = BuildOpen(serviceProvider);
+
         Command serve = BuildServe(serviceProvider);
         Command ask = BuildAsk(serviceProvider);
         Command run = BuildRun(serviceProvider);
@@ -77,6 +82,10 @@ internal static partial class CliCommandTree
         Command config = BuildConfig(serviceProvider);
 
         Command watch = BuildWatch(serviceProvider);
+
+        root.Add(center);
+
+        root.Add(open);
 
         root.Add(serve);
         root.Add(ask);

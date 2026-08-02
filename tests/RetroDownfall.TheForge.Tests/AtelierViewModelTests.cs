@@ -193,6 +193,78 @@ public class AtelierViewModelTests
 
     }
 
+    [Fact]
+    public async Task FocusCampaignAsync_MissingCanonicalCampaign_ReturnsFalse()
+    {
+
+        Guid existingCampaignId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+
+        Guid missingCampaignId = Guid.Parse("99999999-9999-9999-9999-999999999999");
+
+        FakeAtelierDataSource dataSource = new()
+        {
+
+            Campaigns = [NewCampaign("Existing", existingCampaignId)],
+
+        };
+
+        AtelierViewModel viewModel = CreateAtelier(
+            dataSource,
+            new NavigationService());
+
+        bool focused = await viewModel.FocusCampaignAsync(
+            missingCampaignId,
+            CancellationToken.None);
+
+        Assert.False(focused);
+
+        Assert.Null(viewModel.SelectedNode);
+
+    }
+
+    [Fact]
+    public async Task FocusCampaignAsync_CanonicalCampaignOutsideLoadedPage_UsesDirectDetail()
+    {
+
+        Guid listedCampaignId = Guid.Parse("aaaaaaaa-1111-1111-1111-111111111111");
+
+        Guid olderCampaignId = Guid.Parse("bbbbbbbb-2222-2222-2222-222222222222");
+
+        CampaignDto olderCampaign = NewCampaign("Older", olderCampaignId);
+
+        FakeAtelierDataSource dataSource = new()
+        {
+
+            Campaigns = [NewCampaign("Listed", listedCampaignId)],
+
+            DirectCampaigns =
+            {
+
+                [olderCampaignId] = olderCampaign,
+
+            },
+
+        };
+
+        AtelierViewModel viewModel = CreateAtelier(
+            dataSource,
+            new NavigationService());
+
+        bool focused = await viewModel.FocusCampaignAsync(
+            olderCampaignId,
+            CancellationToken.None);
+
+        Assert.True(focused);
+
+        CampaignNodeViewModel selected = Assert.IsType<CampaignNodeViewModel>(
+            viewModel.SelectedNode);
+
+        Assert.Equal(olderCampaignId, selected.Campaign.Id);
+
+        Assert.Equal([olderCampaignId], dataSource.RequestedCampaignIds);
+
+    }
+
     private static AtelierViewModel CreateAtelier(FakeAtelierDataSource dataSource, NavigationService navigation)
     {
 
@@ -311,7 +383,23 @@ public class AtelierViewModelTests
 
         public IReadOnlyList<SessionSummaryDto> CampaignSessions { get; init; } = [];
 
+        public Dictionary<Guid, CampaignDto> DirectCampaigns { get; } = [];
+
+        public List<Guid> RequestedCampaignIds { get; } = [];
+
         public Task<IReadOnlyList<CampaignDto>> GetCampaignsAsync(CancellationToken cancellationToken) => Task.FromResult(Campaigns);
+
+        public Task<CampaignDto?> GetCampaignAsync(Guid campaignId, CancellationToken cancellationToken)
+        {
+
+            RequestedCampaignIds.Add(campaignId);
+
+            return Task.FromResult(
+                DirectCampaigns.TryGetValue(campaignId, out CampaignDto? campaign)
+                    ? campaign
+                    : null);
+
+        }
 
         public Task<IReadOnlyList<WorkspaceInfo>> GetWorkspacesAsync(CancellationToken cancellationToken) => Task.FromResult(Workspaces);
 

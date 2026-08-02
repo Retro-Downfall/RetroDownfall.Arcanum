@@ -118,6 +118,97 @@ public class WarTableViewModelTests
     }
 
     [Fact]
+    public async Task SelectApprenticeByIdAsync_UsesDirectDetailOutsidePagedSummaryList()
+    {
+
+        Guid olderApprenticeId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+
+        FakeWarTableDataSource dataSource = new()
+        {
+
+            Summaries = Enumerable.Range(0, 100)
+                .Select(index => NewSummary(
+                    Guid.NewGuid(),
+                    $"recent-{index}",
+                    "Running"))
+                .ToArray(),
+
+            Details =
+            {
+
+                [olderApprenticeId] = NewDetail(
+                    olderApprenticeId,
+                    null,
+                    "older-apprentice",
+                    []),
+
+            },
+
+        };
+
+        WarTableViewModel viewModel = new(dataSource);
+
+        await viewModel.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal(100, viewModel.Apprentices.Count);
+
+        Assert.DoesNotContain(
+            viewModel.Apprentices,
+            apprentice => apprentice.Id == olderApprenticeId);
+
+        bool selected = await viewModel.SelectApprenticeByIdAsync(
+            olderApprenticeId,
+            CancellationToken.None);
+
+        Assert.True(selected);
+
+        Assert.Equal(olderApprenticeId, viewModel.SelectedApprentice?.Id);
+
+        Assert.Equal([olderApprenticeId], dataSource.RequestedDetailIds);
+
+        viewModel.Dispose();
+
+    }
+
+    [Fact]
+
+    public async Task SelectApprenticeByIdAsync_PropagatesCancellationDuringDetailLoading()
+    {
+
+        Guid apprenticeId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+
+        FakeWarTableDataSource dataSource = new()
+        {
+
+            ThrowCancellationOnLineage = true,
+
+            Details =
+            {
+
+                [apprenticeId] = NewDetail(
+                    apprenticeId,
+                    null,
+                    "cancelled-apprentice",
+                    []),
+
+            },
+
+        };
+
+        WarTableViewModel viewModel = new(dataSource);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            viewModel.SelectApprenticeByIdAsync(
+                apprenticeId,
+                new CancellationToken(canceled: true)));
+
+        Assert.Null(viewModel.SelectedApprentice);
+
+        viewModel.Dispose();
+
+    }
+
+    [Fact]
     public async Task StartPauseResumeCancelIntervene_RoundTripThroughDataSource()
     {
 
@@ -226,6 +317,8 @@ public class WarTableViewModelTests
 
         public IReadOnlyList<ChronicleFrame> ChronicleFrames { get; init; } = [];
 
+        public bool ThrowCancellationOnLineage { get; init; }
+
         public ApprenticeDetailDto? Created { get; init; }
 
         public CreateApprenticeRequest? LastCreate { get; private set; }
@@ -234,11 +327,22 @@ public class WarTableViewModelTests
 
         public List<string> Actions { get; } = [];
 
+        public List<Guid> RequestedDetailIds { get; } = [];
+
         public Task<IReadOnlyList<ApprenticeSummaryDto>> ListApprenticesAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Summaries);
 
-        public Task<ApprenticeDetailDto?> GetApprenticeAsync(Guid id, CancellationToken cancellationToken) =>
-            Task.FromResult(Details.TryGetValue(id, out ApprenticeDetailDto? detail) ? detail : null);
+        public Task<ApprenticeDetailDto?> GetApprenticeAsync(Guid id, CancellationToken cancellationToken)
+        {
+
+            RequestedDetailIds.Add(id);
+
+            return Task.FromResult(
+                Details.TryGetValue(id, out ApprenticeDetailDto? detail)
+                    ? detail
+                    : null);
+
+        }
 
         public Task<ApprenticeDetailDto?> CreateApprenticeAsync(CreateApprenticeRequest request, CancellationToken cancellationToken)
         {
@@ -301,6 +405,13 @@ public class WarTableViewModelTests
 
         public Task<IReadOnlyList<ApprenticeDetailDto>> GetLineageAsync(Guid id, CancellationToken cancellationToken)
         {
+
+            if (ThrowCancellationOnLineage)
+            {
+
+                throw new OperationCanceledException(cancellationToken);
+
+            }
 
             List<ApprenticeDetailDto> chain = [];
 
