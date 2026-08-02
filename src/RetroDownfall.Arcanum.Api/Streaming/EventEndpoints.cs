@@ -24,7 +24,7 @@ internal static class EventEndpoints
 
     private static readonly byte[] SseLineBreak = "\n\n"u8.ToArray();
 
-    private static readonly byte[] SseLogsConnected = "data: {\"connected\":true}\n\n"u8.ToArray();
+    private static readonly byte[] SseLogsConnectedComment = ": connected\n\n"u8.ToArray();
 
     public static RouteGroupBuilder MapEventEndpoints(this RouteGroupBuilder apiGroup)
     {
@@ -185,8 +185,38 @@ internal static class EventEndpoints
 
         apiGroup.MapGet(
             "/events/logs",
-            async (HttpContext httpContext, ILogQueryService query, SseConnectionGate sseGate, IOptionsSnapshot<ArcanumSettings> settings, CancellationToken cancellationToken) =>
+            async (
+                string? level,
+                string? category,
+                string? search,
+                HttpContext httpContext,
+                ILogQueryService query,
+                SseConnectionGate sseGate,
+                IOptionsSnapshot<ArcanumSettings> settings,
+                CancellationToken cancellationToken) =>
             {
+
+                Core.Logging.LogLevel? minLevel = null;
+
+                if (!string.IsNullOrWhiteSpace(level))
+                {
+
+                    if (!Enum.TryParse(
+                            level,
+                            ignoreCase: true,
+                            out Core.Logging.LogLevel parsedLevel)
+                        || !Enum.IsDefined(parsedLevel))
+                    {
+
+                        return InvalidLogStreamQuery(httpContext, level);
+
+                    }
+
+                    minLevel = parsedLevel;
+
+                }
+
+                LogQueryRequest request = new(minLevel, category, Search: search);
 
                 if (!sseGate.TryAcquire(SseEventTypes.Logs, out SseConnectionLease? sseLease, out SseConnectionDenial denial))
                 {
@@ -215,13 +245,13 @@ internal static class EventEndpoints
                 try
                 {
 
-                    await httpContext.Response.Body.WriteAsync(SseLogsConnected, ct).ConfigureAwait(false);
+                    await httpContext.Response.Body.WriteAsync(SseLogsConnectedComment, ct).ConfigureAwait(false);
 
                     await httpContext.Response.Body.FlushAsync(ct).ConfigureAwait(false);
 
                     await SseStreamWriter.StreamAsync(
                         httpContext,
-                        query.StreamAsync(null, ct),
+                        query.StreamAsync(request, ct),
                         async (LogEntry entry, CancellationToken writeCt) =>
                         {
                             await WriteSseJsonAsync(
@@ -257,6 +287,23 @@ internal static class EventEndpoints
         .WithName("StreamLogs");
 
         return apiGroup;
+    }
+
+    private static IResult InvalidLogStreamQuery(HttpContext httpContext, string level)
+    {
+
+        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+        Result<LogQueryResult> invalid = Result<LogQueryResult>.Failure(
+            new Error(
+                ErrorCodes.Validation.InvalidQuery,
+                $"'level' is not a recognized log level: '{level}'."));
+
+        return Results.Json(
+            ApiResponse<LogQueryResult>.FromResult(invalid, traceId),
+            ArcanumJsonContext.Default.ApiResponseLogQueryResult,
+            statusCode: StatusCodes.Status400BadRequest);
+
     }
 
     private static async Task WriteSseJsonAsync<T>(

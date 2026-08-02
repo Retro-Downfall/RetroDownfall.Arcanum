@@ -32,13 +32,13 @@ public sealed class ArcanumSseClient
 
     }
 
-    /// <summary><c>GET /api/sessions/{id}/stream</c> — replays recent entries, then streams live. The Tome subscribes on open, unsubscribes on close.</summary>
-    public IAsyncEnumerable<EntryDto> StreamSessionEntriesAsync(Guid sessionId, DateTimeOffset? since, CancellationToken cancellationToken)
+    /// <summary><c>GET /api/sessions/{id}/stream</c> — resumes after an optional entry GUID, replays recent entries, then streams live. The Tome subscribes on open, unsubscribes on close.</summary>
+    public IAsyncEnumerable<EntryDto> StreamSessionEntriesAsync(Guid sessionId, Guid? since, CancellationToken cancellationToken)
     {
 
         string path = since is null
             ? $"/api/sessions/{sessionId}/stream"
-            : $"/api/sessions/{sessionId}/stream?since={Uri.EscapeDataString(since.Value.ToString("O"))}";
+            : $"/api/sessions/{sessionId}/stream?since={since.Value:D}";
 
         return DeserializeStreamAsync(path, TheForgeJsonContext.Default.EntryDto, cancellationToken);
 

@@ -746,7 +746,7 @@ public class TomeViewModelTests
 
         }
 
-        public async IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid id, DateTimeOffset? since, [EnumeratorCancellation] CancellationToken cancellationToken)
+        public async IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid id, Guid? since, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
 
             ObserveStarted = true;

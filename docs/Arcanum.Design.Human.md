@@ -286,7 +286,8 @@ implementations.
 Streaming contracts are typed:
 
 - native inference uses NDJSON `IntelligenceEvent` frames;
-- session and Chronicle subscriptions use SSE;
+- Session, Chronicle, live-log, MCP-lifecycle, and daemon-lifecycle subscriptions use separate SSE
+  routes;
 - OpenAI streaming projects the shared turn into OpenAI-compatible chunks.
 
 Clients preflight each event discriminator before strict source-generated deserialization. Unknown
@@ -295,6 +296,22 @@ Reasoning is typed and never transported through protected internal data.
 
 The full route, DTO, status, and error-code reference is
 [`Arcanum.API.md`](Arcanum.API.md#1-complete-api-surface).
+
+The CLI gives these independent streams one observation grammar without merging them on the
+server: `arcanum watch session`, `watch apprentice`, `watch logs`, `watch mcp`, `watch daemons`,
+and `watch health`. `session watch` and `apprentice chronicle` remain compatibility aliases. SSE
+heartbeats stay out of normal data output, `[DONE]` completes successfully, terminal timestamps are
+UTC, event types are colored, and Ctrl+C exits `130`. Recursive `--json` emits only newline-delimited
+source objects on stdout; all diagnostics remain on stderr.
+
+Event-type and tool-name filters are repeatable, case-insensitive free-form values. Log category and
+search remain free-form; level uses the server's known trace/debug/information/warning/error/critical
+severities. Reconnect is opt-in and continues with capped exponential
+delays until completion or cancellation, but every reconnect warns of a possible gap. A Session
+cursor can narrow a gap; it is not a replay guarantee, and the process-local Chronicle/log/MCP/
+daemon streams have none. Health polling defaults to five seconds and treats a valid Unhealthy 503
+envelope as a snapshot. These are per-invocation choices, not new configuration or user limits;
+normal API authentication and SSE connection caps still apply.
 
 ## 11. Workspaces, Campaigns, and tools
 
@@ -365,7 +382,9 @@ attachment bytes, paths, PII, or secrets.
 
 Health distinguishes readiness from perfection. A provider failure can make the service Degraded
 while the readiness endpoint remains HTTP 200. An unhealthy Grimoire is the primary HTTP 503 gate.
-Deferred durable-operation recovery is Degraded until repaired or reconciled.
+That 503 still carries a valid success-envelope `HealthReportDto` with the Unhealthy components;
+watchers should display it instead of collapsing it into a transport error. Deferred durable-operation
+recovery is Degraded until repaired or reconciled.
 
 Metrics use bounded labels. High-cardinality identities, prompt fragments, paths, cache keys,
 session ids, and reasoning bodies do not become labels.
@@ -456,7 +475,7 @@ The fantasy names are functional labels:
 | Apprentice | Durable agentic workflow |
 | Unseen Servant | Scheduled background job |
 | Comm Link | Notification integration |
-| Chronicle | Durable workflow event stream |
+| Chronicle | Bounded process-local Apprentice event stream; durable workflow/checkpoint rows are the recovery authority |
 | Proving Grounds / Trial / Inquisitor | Ephemeral validation run |
 
 `arcanum context inspect [prompt]` is Arcanum's equivalent of Claude Code's live context breakdown: it shows where the window goes, which Spell and resonant instructions are active, which tools are advertised or excluded, whether compression would apply, and which numbers are estimates. `context tools` and `context sources` focus the same response; `mana [prompt]` focuses the budget. The normal view deliberately shows labels, reasons, and counts rather than private prompt text. `--show-content` is the explicit operator reveal, while `--no-retrieval` answers the same planning question without embedding or RAG work.

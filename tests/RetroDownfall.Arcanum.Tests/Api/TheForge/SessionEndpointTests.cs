@@ -98,6 +98,126 @@ public sealed class SessionEndpointTests
     }
 
     [SkippableFact]
+
+    public async Task GetStream_WithEntryCursor_ReplaysOnlyLaterEntries()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionWithEntriesAsync(3);
+
+        Guid[] entryIds = await GetEntryIdsAsync(sessionId);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.GetAsync(
+
+            $"/api/sessions/{sessionId:D}/stream?since={entryIds[0]:D}",
+
+            HttpCompletionOption.ResponseHeadersRead);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+
+        await using Stream stream = await response.Content.ReadAsStreamAsync();
+
+        using StreamReader reader = new(stream, Encoding.UTF8);
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+
+        List<Guid> replayedIds = [];
+
+        while (true)
+
+        {
+
+            string? line = await reader.ReadLineAsync(timeout.Token);
+
+            Assert.NotNull(line);
+
+            if (string.Equals(line, "data: {\"type\":\"live\"}", StringComparison.Ordinal))
+
+            {
+
+                break;
+
+            }
+
+            if (!line.StartsWith("data: ", StringComparison.Ordinal))
+
+            {
+
+                continue;
+
+            }
+
+            EntryDto? entry = JsonSerializer.Deserialize(
+
+                line["data: ".Length..],
+
+                ArcanumJsonContext.Default.EntryDto);
+
+            Assert.NotNull(entry);
+
+            replayedIds.Add(entry.Id);
+
+        }
+
+        Assert.Equal(entryIds[1..], replayedIds);
+
+    }
+
+    [SkippableFact]
+
+    public async Task GetStream_WithMissingOrForeignEntryCursor_Returns404WithoutSseHeaders()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionWithEntriesAsync(1);
+
+        Guid foreignSessionId = await CreateSessionWithEntriesAsync(1);
+
+        Guid foreignEntryId = Assert.Single(await GetEntryIdsAsync(foreignSessionId));
+
+        Guid missingEntryId = Guid.NewGuid();
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        foreach (Guid cursor in new[] { missingEntryId, foreignEntryId })
+
+        {
+
+            using HttpResponseMessage response = await client.GetAsync(
+
+                $"/api/sessions/{sessionId:D}/stream?since={cursor:D}");
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+            Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+
+            Assert.False(response.Headers.Contains("X-Accel-Buffering"));
+
+            Assert.False(response.Headers.CacheControl?.NoCache ?? false);
+
+            ApiResponse<EntryDto>? body = await response.Content
+
+                .ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseEntryDto);
+
+            Assert.NotNull(body);
+
+            Assert.False(body.IsSuccess);
+
+            Assert.Equal(ErrorCodes.Session.EntryNotFound, body.Error?.Code);
+
+        }
+
+    }
+
+    [SkippableFact]
     public async Task GetAttachments_UnknownSession_Returns404()
     {
 
@@ -1230,6 +1350,26 @@ public sealed class SessionEndpointTests
         await db.SaveChangesAsync();
 
         return session.Id;
+
+    }
+
+    private async Task<Guid[]> GetEntryIdsAsync(Guid sessionId)
+
+    {
+
+        using IServiceScope scope = _factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        return await db.Entries
+
+            .Where(entry => entry.SessionId == sessionId)
+
+            .OrderBy(entry => entry.Sequence)
+
+            .Select(entry => entry.Id)
+
+            .ToArrayAsync();
 
     }
 

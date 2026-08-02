@@ -75,6 +75,8 @@ internal static partial class CliCommandTree
         Command mana = BuildMana(serviceProvider);
         Command config = BuildConfig(serviceProvider);
 
+        Command watch = BuildWatch(serviceProvider);
+
         root.Add(serve);
         root.Add(ask);
         root.Add(chat);
@@ -111,6 +113,8 @@ internal static partial class CliCommandTree
         root.Add(context);
         root.Add(mana);
         root.Add(config);
+
+        root.Add(watch);
 
         return root;
     }

@@ -2,6 +2,8 @@ using System.Net;
 
 using System.Text;
 
+using System.Text.Json;
+
 using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -293,6 +295,44 @@ public sealed class FileBatchCommandTests
         Assert.Contains("2 completed", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("1 failed", result.Output, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+
+    public void Batch_watch_json_parse_failure_retains_the_global_error_envelope()
+    {
+
+        RecordingHandler handler = new();
+
+        CliTestResult result = RunCommand(
+            handler,
+            [
+                "--json",
+                "batch",
+                "watch",
+                BatchId,
+                "--poll-interval",
+                "not-a-number",
+            ]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Empty(handler.Requests);
+
+        Assert.False(string.IsNullOrWhiteSpace(result.Output));
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(
+            "The command line is invalid.",
+            document.RootElement.GetProperty("error").GetString());
+
+        Assert.Equal(
+            (int)CliExitCode.ConfigurationError,
+            document.RootElement.GetProperty("exitCode").GetInt32());
+
+        Assert.Contains("invalid", result.Error, StringComparison.OrdinalIgnoreCase);
 
     }
 

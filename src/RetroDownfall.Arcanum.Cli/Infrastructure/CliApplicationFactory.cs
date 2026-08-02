@@ -233,6 +233,8 @@ internal static class CliApplicationFactory
         services.AddTransient<DataEncryptionCommands>();
         services.AddTransient<ContextCommands>();
 
+        services.AddTransient<WatchCommands>();
+
         services.AddTransient<ConfigCommands>();
 
     }
@@ -245,6 +247,8 @@ internal static class CliApplicationFactory
     {
 
         CliInvocationOptions activeOptions = default;
+
+        DeferredJsonTextWriter? activeJsonOutput = null;
 
         try
         {
@@ -298,18 +302,35 @@ internal static class CliApplicationFactory
                 IConsoleDispatcher dispatcher =
                     serviceProvider.GetRequiredService<IConsoleDispatcher>();
                 dispatcher.WriteDiagnostic("The command line is invalid.");
-                dispatcher.WriteJson(
-                    new CliErrorPayload(
-                        "The command line is invalid.",
-                        (int)CliExitCode.ConfigurationError),
-                    CliJsonContext.Default.CliErrorPayload);
+
+                if (!IsJsonStreamInvocation(parseResult))
+                {
+
+                    dispatcher.WriteJson(
+                        new CliErrorPayload(
+                            "The command line is invalid.",
+                            (int)CliExitCode.ConfigurationError),
+                        CliJsonContext.Default.CliErrorPayload);
+
+                }
 
                 return (int)CliExitCode.ConfigurationError;
             }
 
             IAnsiConsole originalAnsiConsole = AnsiConsole.Console;
             TextWriter originalOutput = Console.Out;
-            StringWriter? capturedOutput = options.Json ? new StringWriter() : null;
+            DeferredJsonTextWriter? capturedOutput = options.Json
+                ? new DeferredJsonTextWriter(originalOutput)
+                : null;
+
+            activeJsonOutput = capturedOutput;
+
+            if (capturedOutput is not null)
+            {
+
+                CliInvocationContext.AttachJsonOutput(capturedOutput);
+
+            }
 
             try
             {
@@ -336,11 +357,11 @@ internal static class CliApplicationFactory
                     ? (int)CliExitCode.ConfigurationError
                     : NormalizeExitCode(exitCode);
 
-                if (capturedOutput is not null)
+                if (capturedOutput is { IsStreaming: false })
                 {
                     FlushJsonOutput(
                         originalOutput,
-                        capturedOutput.ToString(),
+                        capturedOutput.BufferedOutput,
                         normalizedExitCode);
                 }
 
@@ -363,7 +384,8 @@ internal static class CliApplicationFactory
             IConsoleDispatcher dispatcher =
                 serviceProvider.GetRequiredService<IConsoleDispatcher>();
 
-            if (activeOptions.Json)
+            if (activeOptions.Json
+                && activeJsonOutput is not { IsStreaming: true })
             {
                 dispatcher.WriteJson(
                     new CliErrorPayload(
@@ -399,6 +421,58 @@ internal static class CliApplicationFactory
             CliJsonContext.Default.CliTextPayload);
 
         output.WriteLine(json);
+
+    }
+
+    private static bool IsJsonStreamInvocation(ParseResult parseResult)
+    {
+
+        for (SymbolResult? current = parseResult.CommandResult;
+            current is not null;
+            current = current.Parent)
+        {
+
+            if (current is not CommandResult commandResult)
+            {
+
+                continue;
+
+            }
+
+            if (string.Equals(
+                    commandResult.Command.Name,
+                    "watch",
+                    StringComparison.Ordinal)
+                && commandResult.Parent is CommandResult watchParent
+                && (watchParent.Parent is null
+                    || string.Equals(
+                        watchParent.Command.Name,
+                        "session",
+                        StringComparison.Ordinal)))
+            {
+
+                return true;
+
+            }
+
+            if (string.Equals(
+                    commandResult.Command.Name,
+                    "chronicle",
+                    StringComparison.Ordinal)
+                && commandResult.Parent is CommandResult parent
+                && string.Equals(
+                    parent.Command.Name,
+                    "apprentice",
+                    StringComparison.Ordinal))
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
 
     }
 

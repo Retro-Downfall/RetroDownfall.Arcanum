@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -105,6 +106,7 @@ internal static class ApprenticeCommandSupport
 public sealed class ApprenticeCommands(
     ArcanumApiClient apiClient,
     IThemePalette themePalette,
+    WatchCommands watchCommands,
     ICliResourceCatalog? resourceCatalog = null)
 {
 
@@ -209,6 +211,7 @@ public sealed class ApprenticeCommands(
             {
                 return 0;
             }
+
             if (selection.Status == ResourceSelectionStatus.Error)
             {
                 AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
@@ -331,6 +334,7 @@ public sealed class ApprenticeCommands(
         {
             return (false, true, default);
         }
+
         if (selection.Status == ResourceSelectionStatus.Error)
         {
             AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(selection.Error!)));
@@ -572,78 +576,12 @@ public sealed class ApprenticeCommands(
     /// Stream live Apprentice events (GET /api/apprentices/{id}/chronicle, SSE).
     /// </summary>
     /// <param name="id">Apprentice GUID.</param>
-    public async Task<int> Chronicle(string? id, CancellationToken cancellationToken)
-    {
-
-        (bool resolved, bool cancelled, Guid apprenticeId) = await ResolveApprenticeIdAsync(id, cancellationToken).ConfigureAwait(false);
-        if (!resolved) return cancelled ? 0 : 1;
-
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-        void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
-        {
-            e.Cancel = true;
-
-            try
-            {
-                linked.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-        }
-
-        Console.CancelKeyPress += OnCancelKeyPress;
-
-        bool sawError = false;
-
-        try
-        {
-
-            await foreach (ChronicleFrame frame in apiClient.StreamApprenticeChronicleAsync(apprenticeId, linked.Token).ConfigureAwait(false))
-            {
-
-                if (string.Equals(frame.Type, "error", StringComparison.Ordinal))
-                {
-                    AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(frame.Message)));
-
-                    sawError = true;
-
-                    break;
-                }
-
-                if (string.Equals(frame.Type, "eventsDropped", StringComparison.Ordinal))
-                {
-                    AnsiConsole.MarkupLine(
-                        themePalette.ErrorMarkup(Markup.Escape("\u26a0 Some Chronicle events were dropped (slow reader).")));
-
-                    continue;
-                }
-
-                string timestampText = frame.Timestamp?.ToString("u") ?? "-";
-
-                bool isFailure = frame.Type.Contains("Failed", StringComparison.OrdinalIgnoreCase);
-
-                string line = isFailure
-                    ? themePalette.ErrorLabelMarkup(Markup.Escape($"[{timestampText}] {frame.Type}"), Markup.Escape(frame.Message))
-                    : themePalette.MutedLabelMarkup(Markup.Escape($"[{timestampText}] {frame.Type}"), Markup.Escape(frame.Message));
-
-                AnsiConsole.MarkupLine(line);
-
-            }
-
-        }
-        catch (OperationCanceledException) when (linked.IsCancellationRequested)
-        {
-            return 130;
-        }
-        finally
-        {
-            Console.CancelKeyPress -= OnCancelKeyPress;
-        }
-
-        return sawError ? 1 : 0;
-
-    }
+    public async Task<int> Chronicle(
+        string? id,
+        CancellationToken cancellationToken) =>
+        await watchCommands.Apprentice(
+            id,
+            new WatchCommandOptions(false, [], []),
+            cancellationToken).ConfigureAwait(false);
 
 }

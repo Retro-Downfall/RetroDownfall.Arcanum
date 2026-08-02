@@ -27,7 +27,7 @@ using RetroDownfall.Arcanum.Core.Workspaces;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
-public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecretStore secretStore)
+public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecretStore secretStore)
 {
 
     public const string StreamingHttpClientName = "ArcanumApi";
@@ -187,7 +187,10 @@ public sealed class ArcanumApiClient(IHttpClientFactory httpClientFactory, ISecr
     {
         try
         {
-            return await secretStore.GetApiKeyAsync().ConfigureAwait(false);
+            return await secretStore
+                .GetApiKeyAsync()
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

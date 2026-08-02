@@ -472,9 +472,11 @@ public sealed class SessionManagementCommandTests
 
         Assert.Equal(1, result.ExitCode);
 
-        Assert.Contains(error.Code, result.Output, StringComparison.Ordinal);
+        Assert.True(string.IsNullOrWhiteSpace(result.Output));
 
-        Assert.Contains(error.Message, result.Output, StringComparison.Ordinal);
+        Assert.Contains(error.Code, result.Error, StringComparison.Ordinal);
+
+        Assert.Contains(error.Message, result.Error, StringComparison.Ordinal);
 
     }
 

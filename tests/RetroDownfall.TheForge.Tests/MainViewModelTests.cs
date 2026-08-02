@@ -596,7 +596,6 @@ internal sealed class NullLogService : RetroDownfall.TheForge.Ux.Services.Servic
 
 }
 
-
 internal sealed class NullWarTableDataSource : RetroDownfall.TheForge.Ux.ViewModels.WarTable.IWarTableDataSource
 {
 
@@ -719,7 +718,7 @@ internal sealed class NullTomeDataSource : RetroDownfall.TheForge.Ux.ViewModels.
 
     }
 
-    public async IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid id, DateTimeOffset? since, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    public async IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid id, Guid? since, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
 
         await Task.CompletedTask;
@@ -753,7 +752,6 @@ internal sealed class NullTomeDataSource : RetroDownfall.TheForge.Ux.ViewModels.
         Task.FromResult(new DataSourceResult<CompactResult>(null, true, null, null));
 
 }
-
 
 internal sealed class NullSpellEditorDataSource : RetroDownfall.TheForge.Ux.ViewModels.Workbench.ISpellEditorDataSource
 {

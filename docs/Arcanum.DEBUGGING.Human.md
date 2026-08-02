@@ -17,7 +17,7 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
 ## Running Arcanum under a debugger
 
 - **Host (`arcanum serve`)**: `ServeCommand.Run()` (`Program.cs`) → `WebApplication.CreateSlimBuilder()` (`ServeCommand`) → `AddArcanumApiServices()` (`ApiBootstrapper`) → `MapArcanumEndpoints()` → `RunAsync()`.
-- **CLI verbs** (`ask`, `chat`, `session`, `memory`, `workspace`, `mcp`, `tool`, `file`, `batch`, `look`, `lore`, `daemon`, `key`, `config`, `serve`): native request/response cycles use `ArcanumApiClient.SendRequestAsync()`; session SSE uses `WatchSessionAsync()`. `file`/`batch` are the deliberate exception: `FileBatchApiClient` parses bare OpenAI success objects, streams multipart/content bodies, and never expects `ApiResponse<T>`. Inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `memory` is HTTP-only: start in `MemoryCommands`, continue through the typed client methods, then `MemoryEndpoints`; verify that reads remain available when a prompt-time feature is disabled and that only named Lexicon deletion mutates. `session` lifecycle commands must remain HTTP-only; debug selection in `CliResourceCatalog`, command routing in `SessionCommands`, and feature-gate failures at `SessionEndpoints`. Workspace `tree`/`info`/`read`/`search`/index inspection must also remain HTTP-only; start in `WorkspaceCommands`, then its typed `ArcanumApiClient` method, and finally the `/api/workspaces` endpoint. MCP lifecycle/diagnostic commands are likewise HTTP-only: start in `McpCommands` or `ToolCommands`, inspect `ToolArgumentReader` and `ResourceSelector<T>`, then continue into `McpEndpoints`, `DiagnosticMcpInvocationEndpoints`, or `ToolInvokeEndpoints`. `config` prefers `/api/config` but deliberately enters labelled local bootstrap through `ConfigurationCommandService` on unavailability. `data encryption ...` is intentionally local: `DataEncryptionCommands` initializes the Grimoire and calls `BlobEncryptionLifecycleService`.
+- **CLI verbs** (`ask`, `chat`, `watch`, `session`, `memory`, `workspace`, `mcp`, `tool`, `file`, `batch`, `look`, `lore`, `daemon`, `key`, `config`, `serve`): native request/response cycles use `ArcanumApiClient.SendRequestAsync()`; unified SSE observation uses `WatchSseAsync()` and health observation uses `GetHealthReportAsync()`. `file`/`batch` are the deliberate exception: `FileBatchApiClient` parses bare OpenAI success objects, streams multipart/content bodies, and never expects `ApiResponse<T>`. Inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `memory` is HTTP-only: start in `MemoryCommands`, continue through the typed client methods, then `MemoryEndpoints`; verify that reads remain available when a prompt-time feature is disabled and that only named Lexicon deletion mutates. `session` lifecycle commands must remain HTTP-only; debug selection in `CliResourceCatalog`, command routing in `SessionCommands`, and feature-gate failures at `SessionEndpoints`. Workspace `tree`/`info`/`read`/`search`/index inspection must also remain HTTP-only; start in `WorkspaceCommands`, then its typed `ArcanumApiClient` method, and finally the `/api/workspaces` endpoint. MCP lifecycle/diagnostic commands are likewise HTTP-only: start in `McpCommands` or `ToolCommands`, inspect `ToolArgumentReader` and `ResourceSelector<T>`, then continue into `McpEndpoints`, `DiagnosticMcpInvocationEndpoints`, or `ToolInvokeEndpoints`. `config` prefers `/api/config` but deliberately enters labelled local bootstrap through `ConfigurationCommandService` on unavailability. `data encryption ...` is intentionally local: `DataEncryptionCommands` initializes the Grimoire and calls `BlobEncryptionLifecycleService`.
 - **CLI process contract**: start at `CliApplicationFactory.RunAsync()` → `CliCommandTree.Build()` →
   `CliInvocationContext.Push()`. Payload/diagnostic routing is `ConsoleDispatcher`; destructive
   approval is `ConfirmationPrompt`; final failure categorization is `CliFailureMapper`.
@@ -55,6 +55,7 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
 | `WizardIntelligenceProvider.ContextPreview` / `ContextCommands` | Read-only effective-turn assembly; no turn coordinator, assistant Entry, tool invocation, budget reservation, or main model call; default content redaction; `noRetrieval` embedding bypass; typed CLI/API output. |
 | `ResourceSelector<T>` / `CliResourceCatalog` / `RecentResourceStore` | Resolution precedence (ID, exact name, unique prefix), ambiguity diagnostics, TTY/`--json` prompt suppression, bounded API page-token progression, cancellation before mutation, safe descriptor columns, recency ordering without authority, and owner-only durable staging with unconditional failure cleanup. |
 | `CliApplicationFactory` / `CliInvocationContext` / `ConsoleDispatcher` | Recursive `--json`/`--plain`/`--yes` binding; JSON stdout capture and typed-output bypass; ANSI suppression; stdout payload vs stderr diagnostic routing; exit-code normalization; fixed-copy exception mapping. |
+| `WatchCommands` / `WatchEventView` / `ArcanumApiClient` | Six-source watch routing; Session/Apprentice selection; authenticated SSE parsing; multi-line `data:` assembly; heartbeat/`[DONE]`/unexpected-EOF classification; UTC/color projection; free-form event/tool filtering; pure NDJSON stdout; stderr diagnostics; health 503 snapshot parsing; reconnect cursor/gap/backoff; Ctrl+C exit 130. |
 | `ConfigCommands` / `ConfigurationCommandService` / `ConfigurationPathAccessor` | Host-API versus local-bootstrap selection; generated-metadata dot-path resolution; typed parse; provider-endpoint secure input/redaction; full-snapshot validation; owner-only editor temp file; atomic write; environment-override diagnostics. |
 | `ArcanumConfigurationStore` / `LocalCertificateGenerator` (`Compendium.Ux/Services/`) | 10 MiB read admission before parse; owner-only durable configuration staging and `finally` cleanup; collision-resistant certificate pair names; staged no-overwrite pair publication and rollback. |
 | `ConfirmationPrompt` | `--yes` short circuit; redirected-output fail-closed check before prompt or input read; stderr prompt copy and cancellation-aware input. |
@@ -96,17 +97,17 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
    still open, `wal_autocheckpoint` is zero, and no read transaction is active; do not infer WAL
    population from migrations or connection close behavior.
 11. **Compare preview with a real turn:** run `arcanum context inspect "probe" --json` and capture the provider/model, source rows, tool names, reserve, and compression decision. Run the same prompt through `ask` only when intentional spending is acceptable, then compare the emitted/audited `ContextTokenBreakdown`. Provider-reported post-call input may replace the displayed total, but category estimates should retain the same profile and assembly policy. Repeat with `--no-retrieval` and confirm Workspace RAG, attachment RAG, and Lexicon/Saga rows explain that they were skipped and that no embedding provider call occurs.
-11. **Verify bounded untrusted I/O:** run `RequestAugmentingHandlerTests`,
+12. **Verify bounded untrusted I/O:** run `RequestAugmentingHandlerTests`,
     `ProviderHealthProbeTests`, `WebhookCommLinkDispatcherTests`, and
     `SessionContextPinMaterializerTests`. Break at the first response/file stream read. Confirm a
     health response body is untouched, strict fallback stops after 64 KiB, webhook drain stops at
     its cap, caller cancellation propagates, and a context pin never retains more than its output
     limit even while hashing the accepted source handle.
-12. **Diagnose SSE heartbeat concurrency tests:** `SseStreamWriterTests` deliberately holds the first
+13. **Diagnose SSE heartbeat concurrency tests:** `SseStreamWriterTests` deliberately holds the first
     `MoveNextAsync` pending until `WriteSignalStream` observes a keep-alive write. If it stalls, inspect
     the pending-move reuse in `SseStreamWriter.StreamAsync`; do not replace the signal with short
     scheduler delays or a cancellation token that can expire while coverage suspends the process.
-13. **Trace `refresh_session_file`:** begin at the internal MCP selector/schema, then break at
+14. **Trace `refresh_session_file`:** begin at the internal MCP selector/schema, then break at
     `ToolExecutionPipeline.ProcessRefreshSessionFileAsync()`,
     `AttachmentSourceResolver.ResolveCurrentAsync()`, and
     `SessionAttachmentStore.PersistRefreshedAsync()`. Confirm the selected id/key was visible at
@@ -128,7 +129,7 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
     claim, while reference must call `ResolveForReferenceAsync()` and then
     `PersistNewResolvedSourceAsync()` without rereading by path. Confirm failures contain no source
     path and map through `ArcanumErrorMapper` rather than a blanket conflict.
-14. **Trace attachment extraction and retrieval:** break at
+15. **Trace attachment extraction and retrieval:** break at
     `SessionAttachmentIndexingService.TryEnqueue()`, `SessionAttachmentIndexProcessor.ProcessAsync()`,
     and `SessionAttachmentIndexRepository.ReplaceAsync()`. Confirm bytes arrive through
     `ISessionAttachmentStore.ReadBytesAsync()`, limits are clamped before extraction, unsupported
@@ -150,7 +151,7 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
     return without failing attachment creation; reconciliation should rediscover the missing Bound
     row. In Command Center, confirm the footer advances `Pending` to `Indexed` or `Failed` and the
     pane total changes from estimated to the valid provider-billed input after the usage frame.
-15. **Trace attachment-derived memory promotion:** start with
+16. **Trace attachment-derived memory promotion:** start with
     `AttachmentMemoryGateAmbient.RegisterMaterialized()` and confirm only successful ledger or
     attach/refresh materialization publishes an opaque attachment id. Continue through
     `ProcessScribeLexiconAsync()` and `SagaExtractionService.ProcessAsync()`; an id absent from the
@@ -160,13 +161,13 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
     verify readers retain the provenance with `SourceAvailability=Unavailable`. Campaign Logger
     prompts, inference audit JSONL, stable prompt-cache segments, and child requests must contain no
     attachment bytes, excerpt text, host path, or hash.
-16. **Trace Workspace/Campaign CLI mapping:** run `arcanum workspace current` inside a registered
+17. **Trace Workspace/Campaign CLI mapping:** run `arcanum workspace current` inside a registered
     root, break in `WorkspaceCommands.Current()`, and compare its deepest containing Workspace and
     Campaign independently. Continue through `ResolveWorkspaceAsync()` for a file/search/index
     command and verify the final operation is an authenticated `ArcanumApiClient` request. For a
     remote-host thought experiment, use a path that is valid only on the server and confirm help and
     output call it a server path; never add `File.*` or `Directory.*` content access to the CLI.
-17. **Trace MCP/tool CLI administration:** run `arcanum mcp show` or `arcanum tool list`, break in
+18. **Trace MCP/tool CLI administration:** run `arcanum mcp show` or `arcanum tool list`, break in
     `McpCommands` / `ToolCommands`, and confirm every operation reaches a typed `ArcanumApiClient`
     request. For invocation, test inline JSON, `@file`, and redirected stdin at
     `ToolArgumentReader.TryRead()`; oversized/non-object input must fail before the API call. Follow
@@ -174,7 +175,7 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
     `arcanum-internal`, blocked names, untrusted workspaces, server ambiguity, timeout, and output
     truncation remain server-enforced. Safe CLI output must omit command, URL, arguments,
     environment, and secret values.
-18. **Trace first-class web workflows:** run `arcanum research "question" --max-sources 2
+19. **Trace first-class web workflows:** run `arcanum research "question" --max-sources 2
     --max-hops 2 --format markdown`, break in `WebWorkflowCommands.Research()`,
     `ArcanumApiClient.ResearchWebAsync()`, and `WebResearchWorkflowService.ResearchAsync()`. Confirm
     the CLI only consumes NDJSON and never performs a search, fetch, or model call itself. On the
@@ -186,7 +187,7 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
     `WebResearch.JavaScriptRenderingUnavailable` with the `--render static` hint. For domain
     filters, inspect the Perplexity request for `search_recency_filter` and bounded
     `search_domain_filter`; never log the query, URL, page content, or credential.
-19. **Trace native file/batch automation:** run `arcanum batch create ./input.jsonl`, break in
+20. **Trace native file/batch automation:** run `arcanum batch create ./input.jsonl`, break in
     `FileBatchCommands.ValidateBatchJsonlAsync()`, `FileBatchApiClient.UploadFileAsync()`, and
     `FileBatchApiClient.CreateBatchAsync()`. Confirm an obvious wrapper failure reports its local
     line and sends no request, while a valid file streams first to `/v1/files` and then submits only
@@ -197,7 +198,7 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
     original destination survives and the unique stage file is cleaned. Redirect output with an
     existing destination: without `--yes`, confirmation must fail before the content GET; with
     `--json`, stdout must contain exactly one source-generated object and no progress text.
-20. **Trace standalone attachment automation:** create one snapshot with `arcanum attachment add -
+21. **Trace standalone attachment automation:** create one snapshot with `arcanum attachment add -
     --name probe.txt --mime text/plain --session <id>` and one live row with `attachment reference
     probe.txt --workspace <workspace> --session <id>`. Break in `AttachmentCommands`, the three
     attachment endpoints, `AttachmentSourceResolver`, and `SessionAttachmentStore`. The snapshot
@@ -211,6 +212,20 @@ boundary. For architecture decisions, read `DESIGN.md`; for route and wire contr
     missing/non-envelope local targets must recommend export without launching. Redirect every
     metadata command with `--json` and verify no plaintext bytes or absolute source path reaches
     stdout/stderr.
+22. **Trace unified watch behavior:** run `arcanum --json watch logs --event-type warning
+    --reconnect`, redirect stdout and stderr separately, and break in `WatchCommands`,
+    `WatchEventView.Matches()`, and `ArcanumApiClient.WatchSseAsync()`. Confirm the request carries
+    the API key and log query filters, multi-line `data:` is reassembled without a client-only size
+    cap, comments produce stderr liveness diagnostics, the Session live sentinel is treated as a
+    heartbeat, `[DONE]` stops cleanly, and stdout contains only valid
+    one-object-per-line JSON. Simulate EOF before `[DONE]`: without reconnect it exits 1 with a
+    stderr diagnostic; with reconnect it warns of a possible gap and uses capped exponential delay
+    without a retry-count ceiling. For Session, verify the next request advances `since` to the last
+    received valid Entry id without claiming replay. Return a valid Unhealthy 503 envelope to `watch
+    health --interval 1` and confirm it renders as data. Cancel every source and both compatibility
+    aliases (`session watch`, `apprentice chronicle`) and confirm exit 130. Cap/auth failures must
+    remain explicit errors, and no heartbeat, `[DONE]`, ANSI, or reconnect diagnostic may enter
+    NDJSON stdout.
 
 ## Related documents
 

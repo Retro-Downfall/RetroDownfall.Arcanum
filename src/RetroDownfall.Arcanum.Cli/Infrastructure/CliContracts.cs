@@ -1,4 +1,7 @@
 using System.Net.Http;
+
+using System.Text;
+
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
@@ -42,6 +45,10 @@ public interface IConsoleDispatcher
     void WriteDiagnostic(string value);
 
     void WriteJson<T>(T value, JsonTypeInfo<T> typeInfo);
+
+    void WriteJson(JsonElement value);
+
+    void BeginJsonStream();
 
 }
 
@@ -92,6 +99,11 @@ public sealed record BatchArtifactPayload(
     string Path,
     long Bytes);
 
+public sealed record HealthWatchSnapshot(
+    DateTimeOffset Timestamp,
+    RetroDownfall.Arcanum.Api.Models.HealthStatus Status,
+    RetroDownfall.Arcanum.Api.Models.HealthComponentDto[] Components);
+
 internal sealed class CliInvocationContext : ICliInvocationContext
 {
 
@@ -105,6 +117,9 @@ internal sealed class CliInvocationContext : ICliInvocationContext
 
     internal static bool StructuredPayloadWritten =>
         AmbientState.Value?.StructuredPayloadWritten ?? false;
+
+    internal static bool JsonStreamStarted =>
+        AmbientState.Value?.JsonStreamStarted ?? false;
 
     internal static IDisposable Push(CliInvocationOptions options)
     {
@@ -129,12 +144,44 @@ internal sealed class CliInvocationContext : ICliInvocationContext
 
     }
 
+    internal static void AttachJsonOutput(DeferredJsonTextWriter output)
+    {
+
+        if (AmbientState.Value is { } state)
+        {
+
+            state.JsonOutput = output;
+
+        }
+
+    }
+
+    internal static void BeginJsonStream()
+    {
+
+        if (AmbientState.Value is { } state)
+        {
+
+            state.StructuredPayloadWritten = true;
+
+            state.JsonStreamStarted = true;
+
+            state.JsonOutput?.BeginStreaming();
+
+        }
+
+    }
+
     private sealed class InvocationState(CliInvocationOptions options)
     {
 
         public CliInvocationOptions Options { get; } = options;
 
         public bool StructuredPayloadWritten { get; set; }
+
+        public bool JsonStreamStarted { get; set; }
+
+        public DeferredJsonTextWriter? JsonOutput { get; set; }
 
     }
 
@@ -209,6 +256,26 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
         WriteLine(StandardOutput, json);
 
         CliInvocationContext.MarkStructuredPayloadWritten();
+
+    }
+
+    public void WriteJson(JsonElement value)
+    {
+
+        string json = JsonSerializer.Serialize(
+            value,
+            CliJsonContext.Default.JsonElement);
+
+        WriteLine(StandardOutput, json);
+
+        CliInvocationContext.MarkStructuredPayloadWritten();
+
+    }
+
+    public void BeginJsonStream()
+    {
+
+        CliInvocationContext.BeginJsonStream();
 
     }
 
@@ -329,6 +396,158 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
         }
 
         return new string(buffer, 0, written);
+
+    }
+
+}
+
+internal sealed class DeferredJsonTextWriter(TextWriter destination) : TextWriter
+{
+
+    private readonly StringWriter _buffer = new();
+
+    private readonly object _gate = new();
+
+    private bool _streaming;
+
+    public override Encoding Encoding => destination.Encoding;
+
+    public bool IsStreaming
+    {
+
+        get
+        {
+
+            lock (_gate)
+            {
+
+                return _streaming;
+
+            }
+
+        }
+
+    }
+
+    public string BufferedOutput
+    {
+
+        get
+        {
+
+            lock (_gate)
+            {
+
+                return _buffer.ToString();
+
+            }
+
+        }
+
+    }
+
+    public void BeginStreaming()
+    {
+
+        lock (_gate)
+        {
+
+            if (_streaming)
+            {
+
+                return;
+
+            }
+
+            destination.Write(_buffer.ToString());
+
+            destination.Flush();
+
+            _streaming = true;
+
+        }
+
+    }
+
+    public override void Write(char value)
+    {
+
+        lock (_gate)
+        {
+
+            ActiveWriter.Write(value);
+
+            FlushDestinationWhenStreaming();
+
+        }
+
+    }
+
+    public override void Write(string? value)
+    {
+
+        lock (_gate)
+        {
+
+            ActiveWriter.Write(value);
+
+            FlushDestinationWhenStreaming();
+
+        }
+
+    }
+
+    public override void WriteLine(string? value)
+    {
+
+        lock (_gate)
+        {
+
+            ActiveWriter.WriteLine(value);
+
+            FlushDestinationWhenStreaming();
+
+        }
+
+    }
+
+    public override void Flush()
+    {
+
+        lock (_gate)
+        {
+
+            ActiveWriter.Flush();
+
+        }
+
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+
+        if (disposing)
+        {
+
+            _buffer.Dispose();
+
+        }
+
+        base.Dispose(disposing);
+
+    }
+
+    private TextWriter ActiveWriter => _streaming ? destination : _buffer;
+
+    private void FlushDestinationWhenStreaming()
+    {
+
+        if (_streaming)
+        {
+
+            destination.Flush();
+
+        }
 
     }
 
@@ -472,4 +691,8 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(SessionShowPayload))]
 [JsonSerializable(typeof(FileDownloadPayload))]
 [JsonSerializable(typeof(BatchArtifactPayload))]
+
+[JsonSerializable(typeof(HealthWatchSnapshot))]
+
+[JsonSerializable(typeof(JsonElement))]
 internal sealed partial class CliJsonContext : JsonSerializerContext;

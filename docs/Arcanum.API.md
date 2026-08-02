@@ -19,7 +19,7 @@ test, and documentation citations remain stable.
 | Method | Path | Contract/purpose |
 |--------|------|-----------------|
 | GET | `/metrics` | Prometheus text-format metrics. |
-| GET | `/api/health` | Health check. |
+| GET | `/api/health` | Authenticated `ApiResponse<HealthReportDto>` readiness snapshot. Healthy/Degraded reports return **200**; a valid Unhealthy report remains a success envelope with its component detail and returns **503**. |
 | GET | `/api/meta` | Instance metadata and feature flags for sidecar discovery (`ApiResponse<InstanceMetadataDto>`). |
 | POST | `/api/server/quit` | Accept an authenticated operator shutdown request (`202` + `ApiResponse<bool>`), then stop the host after the acknowledgement completes. |
 | GET | `/api/budget` | Daily budget snapshot (`ApiResponse<BudgetSummaryDto>`: enabled, daily limit, today's spend, remaining, spent percent, alert threshold; DESIGN §22.2). |
@@ -57,7 +57,7 @@ test, and documentation citations remain stable.
 | DELETE | `/api/sessions/{id}` | Archive session (**204**; soft delete). |
 | GET | `/api/sessions/{id}/export` | Export JSON or Markdown (`ApiResponse<SessionExportResult>`). |
 | POST | `/api/sessions/{id}/rest` | Enqueue Campaign Log consolidation (**202** + `ApiResponse<bool>` when accepted; **503** + `Session.RestQueueFull` when the bounded queue rejects). |
-| GET | `/api/sessions/{id}/stream` | SSE replay + live entry stream. |
+| GET | `/api/sessions/{id}/stream` | SSE replay + live entry stream; optional `since=<entry-guid>` resumes after an Entry in that Session. A missing or foreign cursor returns **404** `Session.EntryNotFound` before SSE headers are written. |
 | GET | `/api/sessions/{id}/attachments` | Revalidate tracked sources asynchronously, then list **bound** session attachments (`ApiResponse<SessionAttachmentDto[]>`; includes `indexingStatus`, the snapshot `RelativePath` for Reveal, and sanitized source provenance/refreshability; never an absolute source path; DESIGN §10.2.5). |
 | POST | `/api/sessions/{id}/attachments` | Create a snapshot-only bound attachment from multipart field `file` (optional `logicalName` form field); returns `201` + `ApiResponse<SessionAttachmentDto>`. The filename and declared MIME are hints; the server validates name, detected content, kind-specific byte limit, MIME/Scrying policy, strict encoding for text, and Session byte/version budgets. Unsupported binary/PDF/Office content remains a valid `Binary` attachment with `NotEligible` indexing status. |
 | POST | `/api/sessions/{id}/attachments/reference` | Create a refreshable live reference from `CreateSessionAttachmentReferenceRequest` (`workspacePath`, optional `workspaceId`, optional `logicalName`); the server alone resolves/authorizes/reads the source and persists the already-verified bytes; returns `201` + `ApiResponse<SessionAttachmentDto>`. |
@@ -155,7 +155,7 @@ test, and documentation citations remain stable.
 | POST | `/api/apprentices/{id}/reweave` | Replace pending plan steps (`ApiResponse<ApprenticeDetailDto>`; **400** `Apprentice.InvalidPlan`; **409** `Apprentice.CannotReweave`; DESIGN §5.7). |
 | POST | `/api/apprentices/{id}/intervene` | Resolve **Escalated** Apprentice with DM guidance (**202**; **409** `Apprentice.NotEscalated`; DESIGN §5.7). |
 | POST | `/api/apprentices/{id}/cast` | **The Conclave** cross-Apprentice delegation: mint a child Apprentice from a parent (`ApiResponse<ApprenticeDetailDto>`; **201**; gated by `Arcanum:Features:Conclave` and the code-owned lineage/capacity limits). |
-| GET | `/api/apprentices/{id}/chronicle` | Chronicle SSE stream (`text/event-stream`; DESIGN §5.7, DESIGN §19.6). |
+| GET | `/api/apprentices/{id}/chronicle` | Chronicle SSE stream (`text/event-stream`; CLI `watch apprentice` / compatibility alias `apprentice chronicle`; DESIGN §5.7, DESIGN §19.6). |
 | — | `/api/conclave/a2a/*` | A2A (Agent-to-Agent) JSON-RPC surface (`MapA2A`), mapped only when `Arcanum:Features:Conclave && Arcanum:Features:A2AServer`. |
 | GET | `/api/conclave/a2a/agent-card` | Authenticated A2A Agent Card ("Heraldry") — not the public, unauthenticated `/.well-known/agent-card.json` convention. |
 | GET | `/api/workspaces` | List registered workspaces (`ApiResponse<WorkspaceInfo[]>`; §8.17). |
@@ -191,9 +191,9 @@ test, and documentation citations remain stable.
 | POST | `/api/operations/{id}/cancel` | CAS-protected transition to `Cancelling`; **404** unknown, **409** stale/terminal. |
 | POST | `/api/operations/{id}/retry` | CAS-protected reset of `Failed`, `Abandoned`, or `ReconciliationRequired` to `Pending`; checkpoint remains available to the recovery policy. |
 | POST | `/api/operations/reconcile` | Run a bounded authenticated recovery pass and return `LongRunningOperationReconciliationSummary`. |
-| GET | `/api/events/daemon` | SSE stream of `DaemonEvent` frames (daemon job lifecycle for scheduled and on-demand runs); **not** wrapped in `ApiResponse<T>`. |
-| GET | `/api/events/mcp` | SSE stream of `McpServerEvent` frames (MCP server lifecycle); **not** wrapped in `ApiResponse<T>`. |
-| GET | `/api/events/logs` | SSE stream of `LogEntry` frames (live log tail from ring buffer); **not** wrapped in `ApiResponse<T>`. |
+| GET | `/api/events/daemon` | SSE stream of `DaemonEvent` frames (daemon job lifecycle for scheduled and on-demand runs; CLI `watch daemons`); **not** wrapped in `ApiResponse<T>`. |
+| GET | `/api/events/mcp` | SSE stream of `McpServerEvent` frames (MCP server lifecycle; CLI `watch mcp`); **not** wrapped in `ApiResponse<T>`. |
+| GET | `/api/events/logs` | SSE stream of `LogEntry` frames after an initial `: connected` comment (live log tail from ring buffer; optional nullable `LogLevel` `level` plus free-form `category` and `search`; CLI `watch logs`); **not** wrapped in `ApiResponse<T>`. An unknown nonblank `level` returns **400** `Validation.InvalidQuery` before SSE headers are written. |
 | POST | `/api/commlink/send` | Dispatch a **Comm Link** alert (`CommLinkMessageRequestDto`); **200** + `ApiResponse<bool>`; **400** validation; **502** + envelope on webhook HTTP failure. |
 | POST | `/api/tools/invoke` | Diagnostic built-in tool invocation (`ApiResponse<ToolInvokeResponse>`; DESIGN §11.27). |
 | POST | `/api/providers/test` | Read-only provider connectivity probe (`ApiResponse<ProviderTestResult>`; body `endpoint`, optional `apiKey`, `type` = `OpenAICompatible`; does not write `arcanum.json`; DESIGN §19). |
@@ -237,6 +237,9 @@ test, and documentation citations remain stable.
 Envelope-payload specifics:
 
 - **`GET /api/meta`** wraps **`InstanceMetadataDto`** (version, OS, runtime, process identity, Grimoire paths, effective host binding, and intelligence feature flags).
+- **`GET /api/health`** wraps **`HealthReportDto`** even when overall status is Unhealthy. An
+  Unhealthy report returns HTTP **503** with `IsSuccess: true` and populated `Data`; clients must
+  not discard that readiness snapshot merely because the status is non-2xx.
 - **`GET /api/config`** / **`PUT /api/config`** / **`POST /api/config/validate`** use **`ArcanumSettings`** as the payload type (§8.12). Read masks provider endpoints and returns only environment-variable references for provider credentials, HTTPS certificate passwords, and CommLink—not their secret values. Raw bodies fail closed on every unknown/obsolete path before source-generated deserialization; writes merge only endpoint masks.
 - **`DELETE /api/sessions/{id}`** returns **204** with no body on success (soft-delete archive; idempotent — DESIGN §11.16); **`POST /api/sessions/{id}/rest`** returns **202** with `ApiResponse<bool>` when the job is queued, or **503** with `Session.RestQueueFull` when enqueue is rejected.
 - **`POST /api/commlink/send`** returns **502** with `ApiResponse<bool>` when the outbound webhook HTTP call fails (non-success status or transport error).
@@ -358,6 +361,10 @@ The endpoint uses `WizardIntelligenceProvider`'s production routing, RAG readers
 
 In-process `IEventBus` uses code-owned bounded per-subscriber channels with `DropOldest`. Wire: `text/event-stream` `DaemonEvent` frames + best-effort `[DONE]`. `Arcanum:Execution:MaxSseConnections` and `MaxSseConnectionsPerType` feed `SseConnectionGate` → **503** `Api.TooManyConnections`. Anti-buffering headers; API key on the `/api` group. Rate limiting admits the HTTP request only, not open-stream duration.
 
+`arcanum watch daemons` is the terminal consumer. It keeps heartbeats and `[DONE]` out of data
+output, supports free-form event/tool filtering, and offers opt-in reconnect. Reconnect cannot
+recover process-local daemon frames and therefore always warns that a gap may exist.
+
 ### 8.12 Configuration API (`GET` / `PUT` / `POST /api/config`)
 
 Read: redacted secret-bearing URLs/endpoints (`***`) plus non-secret credential references; environment values are never read into the response. Write: merge redacted URL placeholders from the current snapshot, validate, and atomically replace `arcanum.json`. Validate-only also merges recognized endpoint masks against the current snapshot before outbound and semantic validation, so an unchanged redacted `GET` document remains a valid update candidate; it never writes. Residual masks for new/unmatched providers fail closed. Provider API keys and PFX passwords are not accepted fields. The source-generated settings snapshot is loaded at process start, so configuration changes require a host restart; referenced secret environment values are resolved only at provider/certificate use. Status: **400** `Configuration.ValidationFailed`, **500** `Configuration.WriteFailed`.
@@ -365,6 +372,8 @@ Read: redacted secret-bearing URLs/endpoints (`***`) plus non-secret credential 
 ### 8.13 MCP server event SSE bus (`GET /api/events/mcp`)
 
 `McpConnectionManager` publishes `McpServerEvent` on state changes. Same SSE back-pressure/caps/auth as §8.11.
+`arcanum watch mcp` uses the common watcher, including repeatable `--tool` / `--tool-name` and
+`--event-type` filters. Reconnect does not imply replay of MCP lifecycle events.
 
 ### 8.14 Spell Management API (`/api/spells`)
 
@@ -376,7 +385,44 @@ Workspace resolution: `?workspace=` → `Arcanum:Workspaces:DefaultRoot` → CWD
 
 ### 8.16 Log ring buffer (`GET /api/logs`, `GET /api/events/logs`)
 
-Serilog → `SerilogLogRingBufferSink` → a code-owned bounded in-memory ring that overwrites the oldest entry. Query filters + `beforeSequence` cursor. Live SSE uses the same caps as §8.11. It is not persisted across restarts. Post-build sink registration avoids a Build()-time logging DI deadlock.
+Serilog → `SerilogLogRingBufferSink` → a code-owned bounded in-memory ring that overwrites the oldest entry. Query filters + `beforeSequence` cursor. Live SSE accepts nullable `LogLevel` `level` (`trace`, `debug`, `information`, `warning`, `error`, or `critical`) plus free-form `category` and `search`. The CLI forwards the level token without adding another client-side allowlist; API enum binding remains authoritative, and an unknown nonblank value returns **400** `Validation.InvalidQuery` before the response becomes SSE. A successful stream begins with the SSE comment `: connected`, not a synthetic data object. The route uses the same caps/auth as §8.11 and is not persisted across restarts. Post-build sink registration avoids a Build()-time logging DI deadlock.
+
+`arcanum watch logs` maps `--level`, `--category`, and `--search` to those server filters and may
+add repeatable client-side `--event-type` / `--tool` filters. Like the other process-local streams,
+an opt-in reconnect continues across retryable disconnects until cancellation or clean completion,
+uses capped exponential delays, warns on every possible gap, and never claims missed log entries
+were replayed. Permanent 4xx/authentication/cap denials remain terminal.
+
+### 8.16.1 Unified CLI watch projection
+
+The six CLI sources map one-to-one to existing server contracts:
+
+| CLI source | Server contract |
+|---|---|
+| `watch session [session]` | `GET /api/sessions/{id}/stream`; optional `since=<entry-guid>` |
+| `watch apprentice [apprentice]` | `GET /api/apprentices/{id}/chronicle` |
+| `watch logs` | `GET /api/events/logs`; optional `level`, `category`, `search` |
+| `watch mcp` | `GET /api/events/mcp` |
+| `watch daemons` | `GET /api/events/daemon` |
+| `watch health` | Repeated `GET /api/health`; `--interval` defaults to five seconds |
+
+`session watch` and `apprentice chronicle` are compatibility aliases. Every request uses the
+normal `/api` credential; the CLI neither widens authorization nor bypasses SSE connection caps.
+The shared SSE consumer joins multi-line `data:` fields without a new client-only payload cap,
+surfaces heartbeat comments as stderr liveness diagnostics while excluding them from data, stops cleanly
+on `[DONE]`, uses UTC timestamps and event-type coloring in terminal mode, and returns **130** on
+Ctrl+C. `--json` reserves stdout for compact newline-delimited source objects and routes all
+diagnostics, including reconnect/gap messages, to stderr.
+
+Repeatable `--event-type` and repeatable `--tool` (alias `--tool-name`) accept arbitrary
+case-insensitive values; blank values are ignored, and log tool matching recognizes structured
+`properties.ToolName` metadata. Reconnect is opt-in, retries unexpected disconnects and transient
+HTTP 408/425/429/5xx failures until cancellation with a code-owned capped exponential delay, and
+always reports a possible gap. Permanent validation/authentication/not-found/cap errors exit. A Session cursor may
+reduce the gap by continuing after the last received valid Entry id, but the bounded Session window is not
+a replay guarantee; Chronicle, log, MCP, and daemon streams have no replay cursor. Health polling
+accepts any positive whole-second interval and renders a valid Unhealthy 503 envelope as an
+observation. These are per-process CLI options and add no configuration surface.
 
 ### 8.17 Workspace registry and file browser/writer (`/api/workspaces`)
 

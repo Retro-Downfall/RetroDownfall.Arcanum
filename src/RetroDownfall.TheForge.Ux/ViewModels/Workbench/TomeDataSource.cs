@@ -58,7 +58,7 @@ public sealed class TomeDataSource : ITomeDataSource
 
     }
 
-    public IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid sessionId, DateTimeOffset? since, CancellationToken cancellationToken) =>
+    public IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid sessionId, Guid? since, CancellationToken cancellationToken) =>
         _sessionService.StreamEntriesAsync(sessionId, since, cancellationToken);
 
     public async Task<DataSourceResult<EntryDto[]>> GetEntriesAsync(Guid sessionId, int? offset, int? limit, CancellationToken cancellationToken)

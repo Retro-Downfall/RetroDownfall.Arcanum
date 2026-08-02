@@ -10,7 +10,7 @@
 
 **Arcanum** is a **.NET 10, local-first AI assistant and inference hub.** The `arcanum` executable
 runs either as the long-lived HTTP host (`arcanum serve`) or as thin terminal clients (`ask`,
-`chat`, `look`, `lore`, `daemon`, `campaign`, `session`, `memory`, `saga`, `spell`, `prompt`, `ward`, `trial`,
+`chat`, `watch`, `look`, `lore`, `daemon`, `campaign`, `session`, `memory`, `saga`, `spell`, `prompt`, `ward`, `trial`,
 `apprentice`, `model`, `provider`) over the same API. Windows and Linux ship the CLI/host as one
 self-contained Native AOT executable; the current macOS arm64 release is a signed, notarized,
 folder-based self-contained publish because of the supported linker/toolchain limitation. Arcanum
@@ -248,7 +248,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Area | Routes | Contract / purpose |
 |------|--------|-------------------|
 | Metrics | `GET /metrics` | Prometheus text; API key on by default (forced on ListenAny). [API §8.22](Arcanum.API.md#822-metrics-endpoint-get-metrics) |
-| Health & meta | `/api/health`, `/meta`, `/grimoire/stats`, `/budget` | Readiness + spend snapshot; 503 mainly when Grimoire Unhealthy |
+| Health & meta | `/api/health`, `/meta`, `/grimoire/stats`, `/budget` | Readiness + spend snapshot; a valid Unhealthy health envelope returns 503 with component detail |
 | Durable operations | `/api/operations*` | Safe list/show plus CAS cancel/retry and bounded manual reconciliation; checkpoint bytes/references never leave SQLCipher |
 | Config | `/api/config`, `/config/validate` | GET redacts secrets; PUT preserves `"***"` placeholders |
 | Models / providers | `GET /api/models`, `/providers`, `/providers/test` | Listings + connectivity probe (no persist) |
@@ -269,7 +269,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Trials / Logs / Audit | `/proving-grounds/trials/run`, `/logs`, `/audit`, `/guardrails/audit` | Ephemeral trials; ring buffer; JSONL audits |
 | Tools / Docs | `POST /api/tools/invoke`, `/openapi/v1.json`, `/scalar` | Built-in invoke; OpenAPI; Scalar opt-in |
 
-**Wire shapes:** `ApiResponse<T>` for `/api` JSON; NDJSON for streams; SSE for events/session/Chronicle; OpenAI shapes for `/v1`. Native NDJSON includes additive `context` frames with the pre-call estimate and optional post-call provider variance; OpenAI SSE intentionally filters those Arcanum diagnostics. Native clients preflight `type`: unknown nonblank future strings are silently skipped, while malformed JSON or missing/non-string/blank/whitespace-padded discriminators retain diagnostics and the stream continues. The Forge caps buffered JSON/error bodies at 64 MiB, protocol lines at 1 MiB, aggregate SSE events at 8 MiB, and resumes after an over-cap frame; JSONL previews enforce their byte ceiling even without newlines, downloads replace the destination only after the staged transfer completes, and The Hearth truncates individual local-terminal lines after 64 Ki characters while continuing the stream. Direct source-generated enum deserialization stays strict. Compression + Idempotency-Key: [API §8.25](Arcanum.API.md#825-http-response-compression) / [DESIGN §11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
+**Wire shapes:** `ApiResponse<T>` for `/api` JSON; NDJSON for streams and machine-readable watch output; SSE for events/session/Chronicle; OpenAI shapes for `/v1`. Native NDJSON includes additive `context` frames with the pre-call estimate and optional post-call provider variance; OpenAI SSE intentionally filters those Arcanum diagnostics. Native clients preflight `type`: unknown nonblank future strings are silently skipped, while malformed JSON or missing/non-string/blank/whitespace-padded discriminators retain diagnostics and the stream continues. The Forge caps buffered JSON/error bodies at 64 MiB, protocol lines at 1 MiB, aggregate SSE events at 8 MiB, and resumes after an over-cap frame; JSONL previews enforce their byte ceiling even without newlines, downloads replace the destination only after the staged transfer completes, and The Hearth truncates individual local-terminal lines after 64 Ki characters while continuing the stream. Direct source-generated enum deserialization stays strict. Compression + Idempotency-Key: [API §8.25](Arcanum.API.md#825-http-response-compression) / [DESIGN §11.17](Arcanum.DESIGN.md#1117-idempotency-key-request-replay).
 
 
 ## Inference engine details
@@ -731,6 +731,46 @@ arcanum workspace show
 arcanum mcp show
 ```
 
+### Unified live watch
+
+Use one command family for the existing Session, Apprentice Chronicle, log, MCP, daemon, and host
+health sources:
+
+```bash
+arcanum watch session [session] [--since <entry-guid>]
+arcanum watch apprentice [apprentice]
+arcanum watch logs [--level information] [--category Api] [--search needle]
+arcanum watch mcp
+arcanum watch daemons
+arcanum watch health [--interval 5]
+```
+
+`session watch` and `apprentice chronicle` remain compatibility aliases. Session and Apprentice
+selectors accept the same GUID/name/prefix and interactive-picker forms as their lifecycle
+commands. All six sources authenticate against the running host; the SSE sources continue to count
+against the existing global and per-type connection caps.
+
+Terminal mode prints UTC timestamps and event-type colors. SSE comments/keep-alives produce stderr
+liveness diagnostics and are never printed as data; `[DONE]` ends successfully. Ctrl+C cancels cleanly with exit
+code `130`. Add recursive `--json` for automation: stdout then contains only one compact source JSON
+object per line, with no ANSI, heartbeat, `[DONE]`, label, or diagnostic text; diagnostics remain on
+stderr.
+
+Repeat `--event-type <value>` or `--tool <value>` (`--tool-name` alias) for case-insensitive
+free-form filters; blank values are ignored and the CLI does not restrict values to a hard-coded
+enum. Log tool matching includes structured `properties.ToolName` metadata. Log category/search remain
+free-form, while `--level` is one of `trace`, `debug`, `information`, `warning`, `error`, or
+`critical` and is validated by the API. `--reconnect` is deliberately opt-in and keeps retrying
+unexpected disconnects with capped exponential backoff until completion or cancellation. Each
+attempt warns on stderr that a gap may exist. Session reconnect advances from the last received valid
+Entry id where possible, but the server replay window is bounded; the other live sources have no
+cursor. Arcanum never claims that missed events were replayed.
+
+`watch health` polls every five seconds by default and accepts any positive whole-second
+`--interval`. A well-formed HTTP 503 health response is still rendered as a valid Unhealthy
+snapshot, including component detail. Filters, reconnect, and polling cadence are invocation-only
+choices; there are no new configuration keys or persistent user restrictions.
+
 ### MCP and diagnostic tools
 
 The MCP family is a safe API client for the existing lifecycle and diagnostic endpoints. Status
@@ -993,6 +1033,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `context inspect [prompt]`, `context tools`, `context sources`, `mana [prompt]` | Read-only production context preview. All accept `--show-content`, `--no-retrieval`, `--campaign`, `--workspace`, `--model`, `--session`, recursive `--no-context`, and `--json`. |
 | `look` | Print the Eye of the World workspace snapshot (no HTTP). |
 | `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer / File Encryption panels) + API health probe, including key availability, encrypted/legacy/corrupt blob counts, and the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0 unless another check fails). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
+| `watch session\|apprentice\|logs\|mcp\|daemons\|health` | Follow the six authenticated live sources with shared UTC/color/heartbeat/`[DONE]`/Ctrl+C/NDJSON behavior. Repeat free-form `--event-type` and `--tool` filters; `watch logs` adds `--level`/`--category`/`--search`; `watch session` adds `--since`; `watch health` adds `--interval` (default 5). `--reconnect` is opt-in, indefinitely retries unexpected SSE disconnects with capped backoff, and always warns of possible gaps/no replay guarantee. |
 | `data encryption status\|migrate\|verify\|rotate-key` | Inspect mixed-mode state; resumably encrypt legacy blobs; authenticate/decrypt/hash-check every blob; or create a new key and incrementally rotate before retiring unreferenced old keys. Worker commands accept `--max-concurrency` and `--max-bytes-per-second`; output contains aggregate files/bytes and issue categories, never names or paths. |
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
 | `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Argument or stdin / interactive secret prompt. |
@@ -1005,7 +1046,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `daemon install\|uninstall\|status` | OS background-service lifecycle. |
 | `daemon jobs\|initiative\|alert` | Unseen Servant inspection + Comm Link smoke test (needs `serve`). `daemon jobs` shows **Last run** / interval from persisted watermarks (survive restart), **Next due** reconstructed from watermark + interval, and **Last result** (process-local diagnostic text). `daemon initiative <JOB_NAME> <MINUTES>` sets adaptive interval. `daemon alert <MESSAGE>` options: `--title`/`-t` (default `"Arcanum alert"`), `--severity`/`-s` (`Info`\|`Warning`\|`Critical`, default `Warning`), `--source`. |
 | `campaign list\|get\|create\|update\|delete\|export\|import\|codex\|spells\|prompts\|sessions\|use` | The Forge campaign registry via `/api/campaigns` (needs `serve`). `campaign use` selects the shared active Campaign context. Resource-taking verbs accept optional ID/name/prefix selection. |
-| `session list\|show\|get\|chat\|entries\|watch\|fork\|rename\|archive\|export\|rest\|attachments\|delete-entry\|pin-entry\|unpin-entry\|compact\|divine` | Manage the complete session lifecycle through the API (needs `serve`). Session arguments accept a GUID/title/prefix or open the interactive picker when omitted; `get` aliases `show`. `list` supports `--campaign`, `--status`, `--search`, `--model`, `--from`, and `--to`. `show` reports status, campaign, entry/attachment counts, token/cost telemetry, and fork parent. `session chat` continues the selected session. `watch` supports `--since`; `fork` supports `--title`, `--up-to-entry`, and destination `--campaign`; `export` supports `json`/`markdown`. Delete-entry requires confirmation (`--yes` for redirected use). Memory commands do not bypass `Arcanum:Features:MemoryManagement`. Read commands support `--json`; watch uses newline-delimited JSON. Archived sessions can still be shown, exported, and forked. |
+| `session list\|show\|get\|chat\|entries\|watch\|fork\|rename\|archive\|export\|rest\|attachments\|delete-entry\|pin-entry\|unpin-entry\|compact\|divine` | Manage the complete session lifecycle through the API (needs `serve`). Session arguments accept a GUID/title/prefix or open the interactive picker when omitted; `get` aliases `show`. `list` supports `--campaign`, `--status`, `--search`, `--model`, `--from`, and `--to`. `show` reports status, campaign, entry/attachment counts, token/cost telemetry, and fork parent. `session chat` continues the selected session. `session watch` is the compatibility alias for `watch session` and supports `--since`; `fork` supports `--title`, `--up-to-entry`, and destination `--campaign`; `export` supports `json`/`markdown`. Delete-entry requires confirmation (`--yes` for redirected use). Memory commands do not bypass `Arcanum:Features:MemoryManagement`. Read commands support `--json`; watch uses newline-delimited JSON. Archived sessions can still be shown, exported, and forked. |
 | `memory status\|sources\|search\|explain\|lexicon` | Inspect what Arcanum retains without conflating stores (needs `serve`). `status [session]`, `sources [session]`, and `explain [session]` distinguish persisted counts, feature gates, provenance, retention, and conditional next-turn eligibility. `search <query>` accepts `--scope session\|attachments\|workspace\|saga\|lexicon\|all` (default `all`, always displayed), plus optional `--session`/`--workspace`; every hit reports provenance and retention and no hit is promoted. `lexicon list\|show\|search\|delete` exposes the named entity store; delete is item-scoped and confirmed. There is no generic `memory delete`. |
 | `workspace list\|current\|register\|show\|tree\|info\|read\|search\|index\|index-status\|chunks\|unregister` | Register, resolve, inspect, search, index, and unregister server-host Workspace boundaries through `/api/workspaces` (needs `serve`). `show` accepts ID/name/path and retains `get` as a compatibility alias. Omitted selectors use saved Workspace context, then current-directory containment. |
 | `saga list\|divine\|delete\|stats` | Saga long-term associative memory via `/api/saga/*` (needs `serve`). `list` (options `--query`, `--session`, `--limit`, `--offset`) and `stats` are always available; `divine <QUERY>` (option `--limit`) requires `Arcanum:Features:Embeddings` + `Arcanum:Features:Saga`; `delete <ID>` removes a single memory. See [Arcanum.DESIGN.md §21.9](Arcanum.DESIGN.md#219-saga-long-term-associative-memory). |
@@ -1014,7 +1055,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `prompt list\|get\|versions\|create\|update\|delete\|render\|test\|execute\|export\|import\|clone` | Prompt CRUD + rendering. Resource-taking verbs accept optional ID/name/prefix selection; `render`/`execute` accept repeatable `--param key=value`. |
 | `ward list\|get\|resolve` | Ward approval gates via `/api/wards` (needs `serve`). `resolve <id>` requires exactly one of `--allow`/`--deny` plus optional `--reason`. |
 | `trial run` | The Proving Grounds via `POST /api/proving-grounds/trials/run` (needs `serve`). `--target spell\|prompt\|apprenticeGoal` + `--target-value`, repeatable `--inquisitor` (JSON or `@file`) and `--var key=value`; exits `1` when the Trial fails. |
-| `apprentice list\|get\|create\|delete\|start\|pause\|resume\|cancel\|reweave\|intervene\|cast\|chronicle` | Apprentice orchestration. Resource-taking verbs accept optional ID/name/prefix selection and picker cancellation never mutates. |
+| `apprentice list\|get\|create\|delete\|start\|pause\|resume\|cancel\|reweave\|intervene\|cast\|chronicle` | Apprentice orchestration. Resource-taking verbs accept optional ID/name/prefix selection and picker cancellation never mutates. `apprentice chronicle` remains the compatibility alias for `watch apprentice`. |
 | `model list\|get`, `provider list\|get` | List/select configured inference resources. Detail output omits endpoints and credential references. |
 | `mcp list\|get` | List/select safe MCP server status without command, URL, arguments, or working-directory details. |
 | `model list` | List configured models across all providers via `GET /api/models` (needs `serve`); endpoint redacted. |

@@ -102,7 +102,7 @@ public sealed class SessionService
     /// sources (daemon jobs, other clients, manual appends). Replays recent entries on connect, then
     /// streams live. The Tome subscribes on open, unsubscribes on close.
     /// </summary>
-    public IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid id, DateTimeOffset? since, CancellationToken cancellationToken) =>
+    public IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid id, Guid? since, CancellationToken cancellationToken) =>
         _sseClient.StreamSessionEntriesAsync(id, since, cancellationToken);
 
     /// <summary><c>GET /api/sessions/{id}/entries</c> — entry history with keyset pagination.</summary>

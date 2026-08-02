@@ -2,6 +2,8 @@ using System.Globalization;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
+using RetroDownfall.Arcanum.Cli.Commands;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
@@ -25,6 +27,7 @@ public sealed class SessionCommands(
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
     ChatCommand chatCommand,
+    WatchCommands watchCommands,
     ICliResourceCatalog? resourceCatalog = null)
 {
 
@@ -255,60 +258,12 @@ public sealed class SessionCommands(
     public async Task<int> Watch(
         string? identifier,
         string? since,
-        CancellationToken cancellationToken = default)
-    {
-
-        SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
-
-        if (!resolution.Success)
-        {
-
-            return resolution.Cancelled ? 0 : 1;
-
-        }
-
-        if (!TryParseOptionalGuid(since, "--since", out Guid? sinceId))
-        {
-
-            return 1;
-
-        }
-
-        await foreach (Result<EntryDto> item in apiClient
-            .WatchSessionAsync(resolution.Id, sinceId, cancellationToken)
-            .ConfigureAwait(false))
-        {
-
-            if (item.IsFailure)
-            {
-
-                WriteError(item.Error);
-
-                return 1;
-
-            }
-
-            EntryDto entry = item.Value;
-
-            if (CliInvocationContext.Current.Json)
-            {
-
-                dispatcher.WriteJson(entry, ArcanumJsonContext.Default.EntryDto);
-
-            }
-            else
-            {
-
-                dispatcher.WritePayload(
-                    $"{entry.CreatedAt:u} {entry.Role}: {entry.Content}");
-
-            }
-
-        }
-
-        return 0;
-
-    }
+        CancellationToken cancellationToken = default) =>
+        await watchCommands.Session(
+            identifier,
+            since,
+            new WatchCommandOptions(false, [], []),
+            cancellationToken).ConfigureAwait(false);
 
     public async Task<int> Fork(
         string? identifier,

@@ -282,6 +282,21 @@ keys and are not editable in Compendium. They are per-invocation automation auth
 only that command's confirmation prompts. Persisting any of them would make interactive and
 destructive behavior surprising.
 
+The unified `arcanum watch session|apprentice|logs|mcp|daemons|health` surface likewise adds no
+configuration keys. Recursive `--json`, opt-in `--reconnect`, repeatable free-form `--event-type`,
+repeatable free-form `--tool` / `--tool-name`, log `--level` / `--category` / `--search`, Session
+`--since`, and health `--interval` are invocation-only choices. Compendium does not impose a fixed
+event/tool allowlist, reconnect-attempt count, or additional polling restriction: reconnect runs
+until completion/cancellation with a code-owned capped backoff, and health accepts any positive
+whole-second interval (default five). Existing `execution.maxSseConnections` and
+`execution.maxSseConnectionsPerType` remain the server admission controls; every watcher still uses
+normal API authentication. A valid Unhealthy 503 health envelope is observable data, while SSE
+reconnect always warns of a possible gap and never promises replay.
+
+For logs, category and search are free-form. Level keeps the API's existing nullable `LogLevel`
+contract: `trace`, `debug`, `information`, `warning`, `error`, or `critical`; Compendium adds no
+second severity policy.
+
 The same per-invocation rule applies to `arcanum context inspect|tools|sources` and `arcanum mana`:
 `--show-content` is an explicit one-run operator reveal and `--no-retrieval` is a one-run request to
 skip embedding/RAG work. Compendium does not persist either switch. Use these commands after editing

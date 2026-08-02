@@ -18,7 +18,7 @@ public interface ITomeDataSource
 
     Task<SessionExportResult?> ExportAsync(Guid sessionId, string format, CancellationToken cancellationToken);
 
-    IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid sessionId, DateTimeOffset? since, CancellationToken cancellationToken);
+    IAsyncEnumerable<EntryDto> StreamEntriesAsync(Guid sessionId, Guid? since, CancellationToken cancellationToken);
 
     Task<DataSourceResult<EntryDto[]>> GetEntriesAsync(Guid sessionId, int? offset, int? limit, CancellationToken cancellationToken);
 
