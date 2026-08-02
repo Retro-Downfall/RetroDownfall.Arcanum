@@ -33,7 +33,8 @@ public sealed record ArcanumSettings
 
     public DaemonSettings Daemon { get; set; } = new();
 
+    public RetentionSettings Retention { get; set; } = new();
+
     public CliSettings Cli { get; set; } = new();
 
 }
-

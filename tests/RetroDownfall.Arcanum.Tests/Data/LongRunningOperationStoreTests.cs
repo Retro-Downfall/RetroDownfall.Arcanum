@@ -15,7 +15,9 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed class LongRunningOperationStoreTests : IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
+
     private string _dbPath = string.Empty;
+
     private ArcanumDbContext? _db;
 
     public LongRunningOperationStoreTests(GrimoireFixture fixture)
@@ -78,6 +80,160 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+
+    public async Task TryStartSingleFlightAsync_OnlyOneActiveOperationPerKind()
+    {
+
+        RequireSqlCipher();
+
+        await using ArcanumDbContext competingDb = _fixture.CreateContext(_dbPath);
+
+        LongRunningOperationStore firstStore = new(_db!);
+
+        LongRunningOperationStore secondStore = new(competingDb);
+
+        DateTimeOffset now = new(2026, 8, 2, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperationCreateRequest prune = new(
+            LongRunningOperationKinds.DataRetentionPrune,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            "Apply one bounded retention sweep.",
+            now);
+
+        Task<LongRunningOperation?> first = firstStore.TryStartSingleFlightAsync(
+            prune,
+            "retention-a",
+            now,
+            now.AddMinutes(5));
+
+        Task<LongRunningOperation?> second = secondStore.TryStartSingleFlightAsync(
+            prune,
+            "retention-b",
+            now,
+            now.AddMinutes(5));
+
+        LongRunningOperation?[] starts = await Task.WhenAll(first, second);
+
+        LongRunningOperation winner = Assert.Single(
+            starts.OfType<LongRunningOperation>());
+
+        Assert.Equal(LongRunningOperationState.Running, winner.State);
+
+        Assert.Equal(1, winner.AttemptCount);
+
+        Assert.Contains(
+            winner.LeaseOwner,
+            new[] { "retention-a", "retention-b" });
+
+        IReadOnlyList<LongRunningOperation> pruneOperations = await firstStore.ListAsync(
+            new LongRunningOperationQuery(
+                Kind: LongRunningOperationKinds.DataRetentionPrune));
+
+        Assert.Single(pruneOperations);
+
+        LongRunningOperation unrelated = await firstStore.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Index an unrelated workspace.",
+                now));
+
+        Assert.Equal(LongRunningOperationState.Pending, unrelated.State);
+
+    }
+
+    [SkippableFact]
+
+    public async Task TryStartSingleFlightAsync_RetentionKindsShareOneActiveSlot()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!);
+
+        DateTimeOffset now = new(2026, 8, 2, 13, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation? prune = await store.TryStartSingleFlightAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionPrune,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Apply one bounded retention sweep.",
+                now),
+            "retention-prune",
+            now,
+            now.AddMinutes(5));
+
+        Assert.NotNull(prune);
+
+        LongRunningOperation? mutation = await store.TryStartSingleFlightAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionMutation,
+                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                "Delete one retained source.",
+                now),
+            "retention-mutation",
+            now,
+            now.AddMinutes(5));
+
+        Assert.Null(mutation);
+
+        IReadOnlyList<LongRunningOperation> operations = await store.ListAsync(
+            new LongRunningOperationQuery(Limit: 10));
+
+        LongRunningOperation only = Assert.Single(operations);
+
+        Assert.Equal(LongRunningOperationKinds.DataRetentionPrune, only.Kind);
+
+        Assert.Equal(LongRunningOperationState.Running, only.State);
+
+    }
+
+    [SkippableFact]
+
+    public async Task RenewLeaseAsync_UsesIndependentEncryptedConnection()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!);
+
+        DateTimeOffset startedAt = new(2026, 8, 2, 14, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation operation = Assert.IsType<LongRunningOperation>(
+            await store.TryStartSingleFlightAsync(
+                new LongRunningOperationCreateRequest(
+                    LongRunningOperationKinds.DataRetentionPrune,
+                    LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                    "Apply one bounded retention sweep.",
+                    startedAt),
+                "retention-owner",
+                startedAt,
+                startedAt.AddMinutes(5)));
+
+        DateTimeOffset heartbeatAt = startedAt.AddMinutes(1);
+
+        DateTimeOffset leaseExpiresAt = heartbeatAt.AddMinutes(5);
+
+        bool renewed = await store.RenewLeaseAsync(
+            operation.Id,
+            "retention-owner",
+            heartbeatAt,
+            leaseExpiresAt);
+
+        LongRunningOperation persisted = Assert.IsType<LongRunningOperation>(
+            await store.GetAsync(operation.Id));
+
+        Assert.True(renewed);
+
+        Assert.Equal(heartbeatAt, persisted.HeartbeatAt);
+
+        Assert.Equal(leaseExpiresAt, persisted.LeaseExpiresAt);
+
+        Assert.Equal(2, persisted.Revision);
+
+    }
+
+    [SkippableFact]
     public async Task SaveCheckpointAsync_IsMonotonicAndRejectsDuplicateVersion()
     {
         RequireSqlCipher();
@@ -105,13 +261,28 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             publicSummary: "must not overwrite",
             now.AddSeconds(11));
 
+        bool progressUpdate = await store.SaveCheckpointAsync(
+            operation.Id,
+            "worker",
+            expectedCheckpointVersion: 1,
+            checkpointVersion: 1,
+            checkpointPayload: [4, 5, 6],
+            checkpointReference: null,
+            publicSummary: "Indexed 20 of 50 safe paths.",
+            now.AddSeconds(12));
+
         LongRunningOperation persisted = Assert.IsType<LongRunningOperation>(
             await store.GetAsync(operation.Id));
         Assert.True(first);
         Assert.False(duplicate);
+
+        Assert.True(progressUpdate);
+
         Assert.Equal(1, persisted.CheckpointVersion);
-        Assert.Equal([1, 2, 3], persisted.CheckpointPayload);
-        Assert.Equal("Indexed 10 of 50 safe paths.", persisted.PublicSummary);
+
+        Assert.Equal([4, 5, 6], persisted.CheckpointPayload);
+
+        Assert.Equal("Indexed 20 of 50 safe paths.", persisted.PublicSummary);
     }
 
     [SkippableFact]
@@ -276,6 +447,74 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(1, corruptSummary.RequiresAttention);
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, afterCorrupt.State);
         Assert.Equal(LongRunningOperationErrorCodes.CorruptCheckpoint, afterCorrupt.TerminalErrorCode);
+    }
+
+    [SkippableFact]
+
+    public async Task RetentionRecoveryAttention_IsDiscoverableAndClaimable_WhileUnrelatedAttentionIsNot()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!);
+
+        DateTimeOffset now = new(2026, 8, 2, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation retention = await store.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionMutation,
+                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                "Recover quarantined retention bytes.",
+                now));
+
+        LongRunningOperation unrelated = await CreateAsync(store, now);
+
+        foreach (LongRunningOperation operation in new[] { retention, unrelated })
+        {
+
+            LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(
+                operation.Id,
+                "first-worker",
+                now,
+                now.AddMinutes(1));
+
+            Assert.True(lease.Acquired);
+
+            Assert.True(
+                await store.TryTransitionAsync(
+                    operation.Id,
+                    lease.Operation.Revision,
+                    "first-worker",
+                    LongRunningOperationState.ReconciliationRequired,
+                    now.AddSeconds(1),
+                    ErrorCodes.Data.ReconciliationFailed));
+
+        }
+
+        IReadOnlyList<LongRunningOperation> recoverable = await store.FindExpiredAsync(
+            now.AddSeconds(2),
+            10);
+
+        Assert.Contains(recoverable, operation => operation.Id == retention.Id);
+
+        Assert.DoesNotContain(recoverable, operation => operation.Id == unrelated.Id);
+
+        LongRunningOperationLeaseResult retentionLease = await store.TryAcquireLeaseAsync(
+            retention.Id,
+            "recovery-worker",
+            now.AddSeconds(2),
+            now.AddMinutes(2));
+
+        LongRunningOperationLeaseResult unrelatedLease = await store.TryAcquireLeaseAsync(
+            unrelated.Id,
+            "recovery-worker",
+            now.AddSeconds(2),
+            now.AddMinutes(2));
+
+        Assert.True(retentionLease.Acquired);
+
+        Assert.False(unrelatedLease.Acquired);
+
     }
 
     [SkippableFact]

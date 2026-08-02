@@ -19,11 +19,15 @@ internal static class ConfigurationEndpoints
 
     public static RouteGroupBuilder MapConfigurationEndpoints(this RouteGroupBuilder apiGroup)
     {
-        apiGroup.MapGet("/config", (IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext) =>
+        apiGroup.MapGet("/config", (
+            ConfigurationWriter writer,
+            IOptionsSnapshot<ArcanumSettings> settings,
+            HttpContext httpContext) =>
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            ArcanumSettings redacted = ConfigurationRedactor.Redact(settings.Value);
+            ArcanumSettings redacted = ConfigurationRedactor.Redact(
+                ResolveCurrentSettings(writer, settings));
 
             Result<ArcanumSettings> settingsResult = redacted;
 
@@ -60,41 +64,60 @@ internal static class ConfigurationEndpoints
                 return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
             }
 
-            ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(request, currentSettings.Value);
+            Result<ArcanumSettings> writeResult = await writer.UpdateAsync(
+                    ResolveCurrentSettings(writer, currentSettings),
+                    async (latest, token) =>
+                    {
 
-            // A residual endpoint mask after merge means a new provider could not be matched to the
-            // current configuration; reject it instead of persisting the literal mask.
-            Result residualMask = ConfigurationRedactor.ValidateNoResidualMask(merged);
+                        ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(
+                            request,
+                            latest);
 
-            if (residualMask.IsFailure)
-            {
-                Result<bool> invalid = Result<bool>.Failure(residualMask.Error);
+                        // A residual endpoint mask after merge means a new provider could not be
+                        // matched to current configuration; reject it instead of persisting the mask.
+                        Result residualMask = ConfigurationRedactor.ValidateNoResidualMask(merged);
 
-                return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
-            }
+                        if (residualMask.IsFailure)
+                        {
 
-            Result outbound = await OutboundUrlGuard.ValidateArcanumSettingsAsync(merged, cancellationToken).ConfigureAwait(false);
+                            return Result<ArcanumSettings>.Failure(residualMask.Error);
 
-            if (outbound.IsFailure)
-            {
-                Result<bool> invalid = Result<bool>.Failure(outbound.Error);
+                        }
 
-                return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
-            }
+                        Result outbound = await OutboundUrlGuard
+                            .ValidateArcanumSettingsAsync(merged, token)
+                            .ConfigureAwait(false);
 
-            Result validation = validator.Validate(merged);
+                        if (outbound.IsFailure)
+                        {
 
-            if (validation.IsFailure)
-            {
-                Result<bool> invalid = Result<bool>.Failure(validation.Error);
+                            return Result<ArcanumSettings>.Failure(outbound.Error);
 
-                return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
-            }
+                        }
 
-            Result writeResult = await writer.WriteAsync(merged, httpContext.RequestAborted).ConfigureAwait(false);
+                        Result validation = validator.Validate(merged);
+
+                        return validation.IsSuccess
+                            ? Result<ArcanumSettings>.Success(merged)
+                            : Result<ArcanumSettings>.Failure(validation.Error);
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             if (writeResult.IsFailure)
             {
+
+                if (IsConfigurationRequestFailure(writeResult.Error))
+                {
+
+                    Result<bool> invalid = Result<bool>.Failure(writeResult.Error);
+
+                    return Results.BadRequest(
+                        ApiResponse<bool>.FromResult(invalid, traceId));
+
+                }
+
                 return Results.Json(
                     ApiResponse<bool>.FromResult(Result<bool>.Failure(writeResult.Error), traceId),
                     ArcanumJsonContext.Default.ApiResponseBoolean,
@@ -107,6 +130,7 @@ internal static class ConfigurationEndpoints
         .WithLargeRequestBody();
 
         apiGroup.MapPost("/config/validate", async (
+            ConfigurationWriter writer,
             ConfigurationValidator validator,
             IOptionsSnapshot<ArcanumSettings> currentSettings,
             HttpContext httpContext,
@@ -134,7 +158,7 @@ internal static class ConfigurationEndpoints
 
             ArcanumSettings merged = ConfigurationRedactor.MergeRedactedSecrets(
                 request,
-                currentSettings.Value);
+                ResolveCurrentSettings(writer, currentSettings));
 
             Result residualMask = ConfigurationRedactor.ValidateNoResidualMask(merged);
 
@@ -167,11 +191,15 @@ internal static class ConfigurationEndpoints
         .WithName("ValidateConfiguration")
         .WithLargeRequestBody();
 
-        apiGroup.MapGet("/models", (IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext) =>
+        apiGroup.MapGet("/models", (
+            ConfigurationWriter writer,
+            IOptionsSnapshot<ArcanumSettings> settings,
+            HttpContext httpContext) =>
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            List<ModelInfoDto> models = ModelInfoBuilder.BuildModelInfoList(settings.Value);
+            List<ModelInfoDto> models = ModelInfoBuilder.BuildModelInfoList(
+                ResolveCurrentSettings(writer, settings));
 
             ApiResponse<ModelInfoDto[]> response = ApiResponse<ModelInfoDto[]>.FromResult(
                 Result<ModelInfoDto[]>.Success(models.ToArray()),
@@ -181,11 +209,16 @@ internal static class ConfigurationEndpoints
         })
         .WithName("GetModels");
 
-        apiGroup.MapGet("/providers", (IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext) =>
+        apiGroup.MapGet("/providers", (
+            ConfigurationWriter writer,
+            IOptionsSnapshot<ArcanumSettings> settings,
+            HttpContext httpContext) =>
         {
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-            ProviderInfoDto[] providers = (settings.Value.Providers ?? [])
+            ArcanumSettings current = ResolveCurrentSettings(writer, settings);
+
+            ProviderInfoDto[] providers = (current.Providers ?? [])
                 .Select(static p => new ProviderInfoDto(
                     p.Name,
                     p.Type.ToString(),
@@ -206,6 +239,16 @@ internal static class ConfigurationEndpoints
 
         return apiGroup;
     }
+
+    internal static ArcanumSettings ResolveCurrentSettings(
+        ConfigurationWriter writer,
+        IOptionsSnapshot<ArcanumSettings> startupSettings) =>
+        writer.Latest ?? startupSettings.Value;
+
+    private static bool IsConfigurationRequestFailure(Error error) =>
+        error.Code == "Config.UnresolvedMask"
+        || error.Code == "Configuration.ValidationFailed"
+        || error.Code == ErrorCodes.Security.BlockedOutboundUrl;
 
     private static async Task<(ArcanumSettings? Request, IResult? Error)> ReadAndValidateSettingsJsonAsync(
         HttpContext httpContext,

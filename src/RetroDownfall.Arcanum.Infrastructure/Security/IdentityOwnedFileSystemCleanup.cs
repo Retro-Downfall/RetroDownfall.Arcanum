@@ -10,6 +10,11 @@ internal readonly record struct IdentityOwnedFileSystemArtifact(
     string Path,
     FileHandleMetadata Metadata);
 
+internal readonly record struct IdentityOwnedFileSystemQuarantine(
+    IdentityOwnedFileSystemArtifact Original,
+    IdentityOwnedFileSystemArtifact Quarantined,
+    IdentityOwnedFileSystemArtifact Directory);
+
 /// <summary>
 /// Best-effort cleanup that refuses to delete a path unless its current
 /// no-follow metadata still identifies the object originally created.
@@ -83,7 +88,38 @@ internal static class IdentityOwnedFileSystemCleanup
     internal static bool TryDelete(
         IdentityOwnedFileSystemArtifact artifact)
     {
+        if (!TryQuarantine(
+                artifact,
+                out IdentityOwnedFileSystemQuarantine quarantine))
+        {
+            return false;
+        }
+
+        return quarantine == default
+            || TryDeleteQuarantined(quarantine);
+    }
+
+    internal static bool TryQuarantine(
+        IdentityOwnedFileSystemArtifact artifact,
+        out IdentityOwnedFileSystemQuarantine quarantine) =>
+        TryQuarantine(
+            artifact,
+            ".arcanum-cleanup-",
+            out quarantine);
+
+    internal static bool TryQuarantine(
+        IdentityOwnedFileSystemArtifact artifact,
+        string quarantineDirectoryPrefix,
+        out IdentityOwnedFileSystemQuarantine quarantine)
+    {
+        quarantine = default;
+
         if (string.IsNullOrWhiteSpace(artifact.Path))
+        {
+            return false;
+        }
+
+        if (!IsSafeQuarantineDirectoryPrefix(quarantineDirectoryPrefix))
         {
             return false;
         }
@@ -120,6 +156,7 @@ internal static class IdentityOwnedFileSystemCleanup
 
         if (!TryCreatePrivateQuarantineDirectory(
                 parentPath,
+                quarantineDirectoryPrefix,
                 out IdentityOwnedFileSystemArtifact
                     quarantineDirectory))
         {
@@ -128,7 +165,7 @@ internal static class IdentityOwnedFileSystemCleanup
 
         string quarantinePath = Path.Combine(
             quarantineDirectory.Path,
-            "artifact");
+            Path.GetFileName(artifact.Path));
 
         try
         {
@@ -152,10 +189,22 @@ internal static class IdentityOwnedFileSystemCleanup
             return false;
         }
 
+        quarantine = new IdentityOwnedFileSystemQuarantine(
+            artifact,
+            new IdentityOwnedFileSystemArtifact(
+                quarantinePath,
+                artifact.Metadata),
+            quarantineDirectory);
+
         if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
                 quarantinePath,
                 out FileHandleMetadata quarantined))
         {
+            if (TryRestoreQuarantined(quarantine))
+            {
+                quarantine = default;
+            }
+
             return false;
         }
 
@@ -163,15 +212,33 @@ internal static class IdentityOwnedFileSystemCleanup
                 quarantined,
                 artifact.Metadata))
         {
+            if (TryRestoreQuarantined(quarantine))
+            {
+                quarantine = default;
+            }
+
             return false;
         }
 
-        if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+        quarantine = new IdentityOwnedFileSystemQuarantine(
+            artifact,
+            new IdentityOwnedFileSystemArtifact(
                 quarantinePath,
-                out quarantined)
+                quarantined),
+            quarantineDirectory);
+
+        return true;
+    }
+
+    internal static bool TryDeleteQuarantined(
+        IdentityOwnedFileSystemQuarantine quarantine)
+    {
+        if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                quarantine.Quarantined.Path,
+                out FileHandleMetadata quarantined)
             || !MatchesOwnedArtifact(
                 quarantined,
-                artifact.Metadata))
+                quarantine.Quarantined.Metadata))
         {
             return false;
         }
@@ -181,25 +248,79 @@ internal static class IdentityOwnedFileSystemCleanup
             if (quarantined.Kind
                 == FileSystemObjectKind.RegularFile)
             {
-                File.Delete(quarantinePath);
+                File.Delete(quarantine.Quarantined.Path);
             }
             else
             {
                 Directory.Delete(
-                    quarantinePath,
+                    quarantine.Quarantined.Path,
                     recursive: true);
             }
 
             if (FileHandleIdentityInterop
                 .TryGetPathMetadataNoFollow(
-                    quarantinePath,
+                    quarantine.Quarantined.Path,
                     out _))
             {
                 return false;
             }
 
+            _ = TryDeleteEmptyOwnedDirectory(
+                quarantine.Directory);
+
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    internal static bool TryRestoreQuarantined(
+        IdentityOwnedFileSystemQuarantine quarantine)
+    {
+        if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                quarantine.Quarantined.Path,
+                out FileHandleMetadata quarantined)
+            || !MatchesOwnedArtifact(
+                quarantined,
+                quarantine.Quarantined.Metadata))
+        {
+            return false;
+        }
+
+        if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                quarantine.Original.Path,
+                out _)
+            || File.Exists(quarantine.Original.Path)
+            || Directory.Exists(quarantine.Original.Path))
+        {
+            return false;
+        }
+
+        try
+        {
+            MoveWithoutOverwrite(
+                quarantine.Quarantined.Path,
+                quarantine.Original.Path,
+                quarantined.Kind);
+
+            if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                    quarantine.Original.Path,
+                    out FileHandleMetadata restored)
+                || !MatchesOwnedArtifact(
+                    restored,
+                    quarantine.Original.Metadata))
+            {
+                return false;
+            }
+
             return TryDeleteEmptyOwnedDirectory(
-                quarantineDirectory);
+                quarantine.Directory);
         }
         catch (IOException)
         {
@@ -241,13 +362,14 @@ internal static class IdentityOwnedFileSystemCleanup
 
     private static bool TryCreatePrivateQuarantineDirectory(
         string parentPath,
+        string quarantineDirectoryPrefix,
         out IdentityOwnedFileSystemArtifact artifact)
     {
         artifact = default;
 
         string quarantinePath = Path.Combine(
             parentPath,
-            $".arcanum-cleanup-{Guid.NewGuid():N}");
+            quarantineDirectoryPrefix + Guid.NewGuid().ToString("N"));
 
         try
         {
@@ -290,6 +412,14 @@ internal static class IdentityOwnedFileSystemCleanup
 
         return true;
     }
+
+    private static bool IsSafeQuarantineDirectoryPrefix(string prefix) =>
+        prefix.StartsWith(".arcanum-", StringComparison.Ordinal)
+        && prefix.EndsWith("-", StringComparison.Ordinal)
+        && string.Equals(prefix, Path.GetFileName(prefix), StringComparison.Ordinal)
+        && prefix.All(static character =>
+            char.IsAsciiLetterOrDigit(character)
+            || character is '.' or '-');
 
     private static bool TryDeleteEmptyOwnedDirectory(
         IdentityOwnedFileSystemArtifact artifact)

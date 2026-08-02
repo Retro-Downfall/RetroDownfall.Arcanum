@@ -70,16 +70,19 @@ The navigation is intentionally limited to:
 8. **Execution** — operator-controlled host concurrency and backpressure for
    Apprentices, SSE streams, and batches.
 9. **Cost** — default/per-model pricing and daily budget policy.
-10. **Daemon** — Unseen Servant schedules and host concurrency.
-11. **CLI** — built-in theme selection and mana-bar preference.
+10. **Retention** — unified sweep bounds, typed per-class policies, accounting
+    floor, and explicit protected-session holds.
+11. **Daemon** — Unseen Servant schedules and host concurrency.
+12. **CLI** — built-in theme selection and mana-bar preference.
 
 ## Complete configuration reference
 
-This is the sole complete documentation reference for `arcanum.json`. The 108
-rows below correspond one-for-one to the current entries in
-`SettingDescriptors.All`. Each key is the descriptor's exact camel-case dot
-path; `providers.models.*` applies to every model in every provider, and
-`daemon.jobs.*` applies to every job. JSON nests these paths beneath an exact
+This is the sole complete documentation reference for `arcanum.json`. All 165 editable paths in
+`SettingDescriptors.All` appear below. Six additional `providers.models.reasoning.*` capability
+declarations are documented because they remain part of the public configuration contract even
+though Compendium treats those provider facts as read-and-preserve rather than editable choices.
+Each key uses the exact camel-case dot path; `providers.models.*` applies to every model in every
+provider, and `daemon.jobs.*` applies to every job. JSON nests these paths beneath an exact
 top-level `"Arcanum"` object.
 
 Arcanum does not flatten arbitrary environment variables into the configuration
@@ -95,7 +98,7 @@ secret values use only the dedicated environment references documented below.
 | `host.corsAllowedOrigins` | `string[]`, `["http://localhost:5001", "http://127.0.0.1:5001", "http://localhost:3000", "http://127.0.0.1:3000"]` | — | Browser origins allowed to read keyed responses. |
 | `host.listenAny` | `bool`, `false` | — | All-interface binding is HTTPS-only and also forces rate limiting and metrics authentication; `ARCANUM_HOST_ANY` overrides it. |
 | `host.auditLog.enabled` | `bool`, `false` | — | Enables the append-only inference audit trail. |
-| `host.auditLog.retentionDays` | `int`, `7` | 1–365 | Compliance retention for dated inference-audit files. |
+| `host.auditLog.retentionDays` | `int`, `7` | 1–365 | Legacy compatibility value used as the default lookback when an inference-audit query omits `from`; it never triggers deletion. |
 | `host.auditLog.redactToolArguments` | `bool`, `true` | — | Records tool names without argument JSON. |
 | `host.https.enabled` | `bool`, `false` | — | Adds TLS on loopback; required for all-interface binding. |
 | `host.https.port` | `int`, `5443` | 1–65,535; must differ from `host.port` | TLS listen port. |
@@ -141,7 +144,7 @@ valid provider and model. A model's optional `reasoning` object defaults to
 | `security.guardrails.allowedTopics` | `string[]`, `[]` | — | Optional topic-pattern allowlist. |
 | `security.guardrails.blockedTopics` | `string[]`, `[]` | — | Optional topic-pattern blocklist. |
 | `security.guardrails.auditLog.enabled` | `bool`, `false` | — | Persists guardrail violations when guardrails are enabled. |
-| `security.guardrails.auditLog.retentionDays` | `int`, `7` | 1–365 | Compliance retention for dated guardrail-audit files. |
+| `security.guardrails.auditLog.retentionDays` | `int`, `7` | 1–365 | Legacy compatibility value used as the default lookback when a guardrail-audit query omits `from`; it never triggers deletion. |
 | `security.perceptionWorkspaceRoots` | `string[]`, `[]` | absolute roots | Roots Perception may scan; empty denies scans. |
 | `security.spellWorkspaceRoots` | `string[]`, `[]` | absolute roots | Roots spell CRUD may access; empty denies workspace spell CRUD. |
 | `security.campaignRoots` | `string[]`, `[]` | absolute roots | Roots from which campaigns may be registered; empty denies registration. |
@@ -180,6 +183,8 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.attachments` | `bool`, `true` | — | Enables encrypted, versioned Session snapshots; standalone snapshot/reference/content APIs and `attachment list|add|reference|show|versions|refresh|pin|unpin|export|reveal`; direct `ask`/`chat --attachment <guid>`; `attach_session_file`; host-authorized `refresh_session_file`; and Command Center Snapshot/Live/Stale state. Snapshot add may upload any client-readable file/stdin, while reference/refresh paths are server-only and Workspace/Sanctum-authorized. Unsupported binary/PDF/Office files remain valid `NotEligible` attachments. Every path shares MIME, Scrying, byte/version, pin, and turn-reference policy; model vision is required only when an image enters model context, not for standalone refresh. Metadata never emits bytes; export is atomic plaintext; reveal requires a locally present encrypted `ARCABLOB` snapshot. |
 | `features.clientTools` | `bool`, `false` | — | Forwards client-declared tools to compatible providers. |
 | `features.webBrowsing` | `bool`, `false` | — | Advertises native `web_search` / `read_url` and enables authenticated `search`, `browse`, and server-orchestrated `research` CLI workflows. The deprecated `browse_web` name remains only as a direct-invoke compatibility alias. |
+| `features.reasoning` | `bool`, `true` | — | Hard gate for reasoning controls and reasoning production; enabling it does not itself request reasoning. |
+| `features.reasoningSummaries` | `bool`, `false` | — | Allows declared client-safe reasoning output to reach responses; disabling it does not prevent provider-internal reasoning. |
 | `features.guardrails` | `bool`, `false` | — | Runs configured input/output guardrails. |
 | `features.workspaceChecks` | `bool`, `true` | — | Allows `workspace_check` advertisement when all platform and trust checks pass. |
 | `features.memoryManagement` | `bool`, `false` | — | Enables session deletion, pinning, and compaction. Read-only `arcanum memory status\|sources\|search\|explain` remains available and reports the disabled mutation gate alongside retained counts. |
@@ -201,7 +206,7 @@ recursion cap and per-call token/cost/turn delegation are code-owned safety requ
 requests inherit no attachment context; an explicit attachment file must name an id from the
 parent's current-turn materialized allowlist.
 
-### Integrations, execution, cost, daemon, and CLI
+### Integrations, execution, cost, retention, daemon, and CLI
 
 | Descriptor key | Type and default | Bounds | Semantics |
 |---|---|---|---|
@@ -254,6 +259,46 @@ parent's current-turn materialized allowlist.
 | `cost.pricing.modelPricing` | `Dictionary<string, ModelPricingEntry>`, `{}` | entry rates 0–1,000,000 | Case-insensitive model-name overrides with the shape described below. |
 | `cost.budget.enabled` | `bool`, `false` | — | Rejects new inference after the UTC-day limit is reached. |
 | `cost.budget.dailyLimitUsd` | `decimal`, `0` | 0–1,000,000 | Maximum UTC-day spend when enforcement is enabled. |
+| `retention.automaticSweepsEnabled` | `bool`, `false` | — | Opts in to scheduled policy sweeps; status, dry-run planning, and explicit item-scoped deletion remain available when disabled. |
+| `retention.sweepIntervalHours` | `int`, `24` | 1–168 | Interval between automatic sweep attempts when scheduling is enabled. |
+| `retention.maxItemsPerSweep` | `int`, `500` | 1–10,000 | Aggregate candidate bound for one policy sweep. |
+| `retention.checkpointInterval` | `int`, `50` | 1–10,000; runtime also caps to `maxItemsPerSweep` | Candidate interval for durable cursor checkpoints and candidate-local post-delete ownership checks. |
+| `retention.accountingMinimumDays` | `int`, `365` | 30–3,650 | Minimum effective retention for inference runs, billable operations, budget reservations, and cost adjustments, regardless of the accounting rule's shorter requested period. |
+| `retention.protectedSessionIds` | `Guid[]`, `[]` | comma-separated GUIDs in Compendium | Explicit operator holds. Every value is validated as a GUID before save; a held session remains visible as a blocked plan candidate and is not deleted. |
+| `retention.activeSessions.enabled` | `bool`, `false` | — | Makes old active sessions eligible for policy sweeps; explicit deletion remains a separate confirmed operation. |
+| `retention.activeSessions.days` | `int`, `365` | 1–3,650 | Age threshold for active sessions. |
+| `retention.archivedSessions.enabled` | `bool`, `false` | — | Makes old archived sessions eligible for policy sweeps. |
+| `retention.archivedSessions.days` | `int`, `180` | 1–3,650 | Age threshold for archived sessions. |
+| `retention.entries.enabled` | `bool`, `false` | — | Enables policy retention for unpinned session Entries; pins and owning-session conflicts remain blockers. |
+| `retention.entries.days` | `int`, `180` | 1–3,650 | Age threshold for eligible Entries. |
+| `retention.attachments.enabled` | `bool`, `false` | — | Enables policy retention for attachment versions together with their owned bytes, chunks, embeddings, and index state. |
+| `retention.attachments.days` | `int`, `180` | 1–3,650 | Age threshold for eligible attachment versions. |
+| `retention.uploadedFiles.enabled` | `bool`, `true` | — | Enables policy retention for uploaded files and batch input/output/error file roles; retained or in-progress batch references block deletion. |
+| `retention.uploadedFiles.days` | `int`, `30` | 1–3,650 | Age threshold for unreferenced uploaded files. |
+| `retention.completedBatches.enabled` | `bool`, `true` | — | Enables policy retention for terminal completed, failed, cancelled, or expired batch rows. |
+| `retention.completedBatches.days` | `int`, `30` | 1–3,650 | Age threshold for terminal batches. |
+| `retention.sagaMemories.enabled` | `bool`, `false` | — | Enables policy retention for Saga memories; deleting only a source attachment does not silently delete an independently retained memory. |
+| `retention.sagaMemories.days` | `int`, `365` | 1–3,650 | Age threshold for Saga memories. |
+| `retention.lexiconEntries.enabled` | `bool`, `false` | — | Enables policy retention for Lexicon entries; deleting only a source attachment preserves the fact and marks its typed provenance unavailable. |
+| `retention.lexiconEntries.days` | `int`, `365` | 1–3,650 | Age threshold for Lexicon entries. |
+| `retention.workspaceIndexes.enabled` | `bool`, `true` | — | Enables policy retention for workspace chunks and their corresponding embeddings. |
+| `retention.workspaceIndexes.days` | `int`, `30` | 1–3,650 | Age threshold for workspace-derived index records. |
+| `retention.sessionEntryEmbeddings.enabled` | `bool`, `true` | — | Enables policy retention for derived session Entry embeddings. |
+| `retention.sessionEntryEmbeddings.days` | `int`, `30` | 1–3,650 | Age threshold for session Entry embeddings. |
+| `retention.auditLogs.enabled` | `bool`, `true` | — | Enables unified retention planning for dated inference-audit JSONL files. Only the bounded durable retention service/scheduler deletes them; the logger never does. |
+| `retention.auditLogs.days` | `int`, `30` | 1–3,650 | Age threshold for dated inference-audit files. |
+| `retention.guardrailLogs.enabled` | `bool`, `true` | — | Enables unified retention planning for dated guardrail-audit JSONL files. Only the bounded durable retention service/scheduler deletes them; the logger never does. |
+| `retention.guardrailLogs.days` | `int`, `30` | 1–3,650 | Age threshold for dated guardrail-audit files. |
+| `retention.idempotencyClaims.enabled` | `bool`, `true` | — | Enables policy retention for terminal idempotency claims; active leases are never eligible. |
+| `retention.idempotencyClaims.days` | `int`, `7` | 1–3,650 | Age threshold for terminal idempotency claims. |
+| `retention.accounting.enabled` | `bool`, `true` | — | Enables policy retention for authoritative accounting chains, subject to the accounting floor and outstanding-reservation blockers. `Sessions.TotalCostUsd` is not accounting authority. |
+| `retention.accounting.days` | `int`, `365` | 1–3,650; effective value is at least `accountingMinimumDays` | Requested age threshold for accounting rows. |
+| `retention.longRunningOperations.enabled` | `bool`, `true` | — | Enables policy retention for terminal durable-operation history; active and repair-required operations remain conflicts. |
+| `retention.longRunningOperations.days` | `int`, `90` | 1–3,650 | Age threshold for terminal operation history. |
+| `retention.sanctumBreaches.enabled` | `bool`, `true` | — | Enables unified policy retention for durable Sanctum breach history. |
+| `retention.sanctumBreaches.days` | `int`, `90` | 1–3,650 | Age threshold for Sanctum breach rows. |
+| `retention.daemonHistory.enabled` | `bool`, `true` | — | Enables age pruning for terminal daemon execution summaries; active executions remain protected. The current history store is process-local and count-bounded, so restart also clears it. |
+| `retention.daemonHistory.days` | `int`, `30` | 1–3,650 | Age threshold for terminal entries in the current process-local daemon history. |
 | `daemon.maxConcurrentJobs` | `int`, `8` | 1–1,024 | Concurrent Unseen Servant jobs. |
 | `daemon.jobs.name` | `string`, `""` | nonblank | Human-readable schedule name. |
 | `daemon.jobs.intervalMinutes` | `int`, `60` | 1–10,080 | Minutes between runs. |
@@ -418,7 +463,7 @@ file.
 ## Editor architecture
 
 The Host, Providers, Daemon, and CLI pages are polished views. Edition,
-Security, Workspaces, Features, Integrations, Execution, and Cost use the
+Security, Workspaces, Features, Integrations, Execution, Cost, and Retention use the
 descriptor-driven generic view.
 
 `SettingDescriptors` contains only editable public choices. Every descriptor is
@@ -429,6 +474,8 @@ mutable setters plus `ConfigurationJsonContext` metadata.
 Provider/model rows and daemon schedules have structured editors. Pricing maps
 and custom workspace-check profiles use multiline JSON editors backed by the
 source-generated configuration JSON context. Allowlists use chip editors.
+`retention.protectedSessionIds` uses the same comma-separated editor while converting each value to
+a `Guid`; the stored contract remains a typed `Guid[]`.
 
 `ConfigurationViewModel` keeps the last loaded settings as a snapshot. Polished
 pages rebuild only their owned records; generic edits clone and update only the

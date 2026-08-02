@@ -238,7 +238,11 @@ internal static class CliApplicationFactory
         services.AddTransient<AttachmentCommands>();
 
         services.AddTransient<OperationCommands>();
+
         services.AddTransient<DataEncryptionCommands>();
+
+        services.AddTransient<DataRetentionCommands>();
+
         services.AddTransient<ContextCommands>();
 
         services.AddTransient<WatchCommands>();

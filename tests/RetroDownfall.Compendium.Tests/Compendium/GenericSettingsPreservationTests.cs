@@ -129,6 +129,112 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     }
 
     [Fact]
+
+    public void Protected_session_ids_use_the_string_array_editor_without_losing_guid_values()
+    {
+
+        Guid protectedId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        Guid addedId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+        ArcanumSettings settings = new()
+        {
+            Retention = new RetentionSettings
+            {
+                ProtectedSessionIds = [protectedId],
+            },
+        };
+
+        SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
+            SettingDescriptors.Find("retention.protectedSessionIds"));
+
+        Assert.Equal(ConfigSection.Retention, descriptor.Section);
+
+        Assert.Equal(SettingKind.StringArray, descriptor.Kind);
+
+        GenericSettingFieldViewModel field = new(
+            descriptor,
+            settings.Retention.ProtectedSessionIds);
+
+        Assert.Equal(protectedId.ToString(), field.StringValue);
+
+        field.StringValue = $"{protectedId}, {addedId}";
+
+        ArcanumSettings updated = GenericSettingsUpdater.ApplyFields(settings, [field]);
+
+        Assert.Equal([protectedId, addedId], updated.Retention.ProtectedSessionIds);
+
+    }
+
+    [Fact]
+
+    public void Protected_session_ids_validate_each_guid_before_save()
+    {
+
+        SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
+            SettingDescriptors.Find("retention.protectedSessionIds"));
+
+        GenericSettingFieldViewModel field = new(descriptor, Array.Empty<Guid>());
+
+        field.StringValue =
+            "11111111-1111-1111-1111-111111111111, not-a-session-id";
+
+        Assert.True(field.HasError);
+
+        Assert.Contains(
+            "GUID",
+            field.ErrorMessage,
+            StringComparison.OrdinalIgnoreCase);
+
+        field.StringValue =
+            "11111111-1111-1111-1111-111111111111, 22222222-2222-2222-2222-222222222222";
+
+        Assert.False(field.HasError);
+
+    }
+
+    [Fact]
+
+    public void Malformed_protected_session_id_does_not_throw_or_replace_saved_ids()
+    {
+
+        Guid protectedId = Guid.Parse(
+            "11111111-1111-1111-1111-111111111111");
+
+        ArcanumSettings settings = new()
+        {
+
+            Retention = new RetentionSettings
+            {
+
+                ProtectedSessionIds = [protectedId],
+
+            },
+
+        };
+
+        SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
+            SettingDescriptors.Find("retention.protectedSessionIds"));
+
+        GenericSettingFieldViewModel field = new(
+            descriptor,
+            settings.Retention.ProtectedSessionIds);
+
+        field.StringValue = "not-a-session-id";
+
+        Assert.True(field.HasError);
+
+        ArcanumSettings updated = GenericSettingsUpdater.ApplyFields(
+            settings,
+            [field]);
+
+        Assert.Equal(
+            [protectedId],
+            updated.Retention.ProtectedSessionIds);
+
+    }
+
+    [Fact]
     public async Task Nullable_reasoning_price_preserves_null_and_can_set_then_clear_zero()
     {
 

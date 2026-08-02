@@ -26,11 +26,20 @@ test, and documentation citations remain stable.
 | POST | `/api/server/quit` | Accept an authenticated operator shutdown request (`202` + `ApiResponse<bool>`), then stop the host after the acknowledgement completes. |
 | GET | `/api/budget` | Daily budget snapshot (`ApiResponse<BudgetSummaryDto>`: enabled, daily limit, today's spend, remaining, spent percent, alert threshold; DESIGN §22.2). |
 | GET | `/api/grimoire/stats` | Grimoire database statistics (`ApiResponse<GrimoireStatsDto>`; database + WAL byte sizes and per-table row counts via `GrimoireStatsService`). |
-| GET | `/api/config` | Read live `ArcanumSettings`; provider endpoints remain redacted, while secret environment-variable references are returned without resolving their values (`ApiResponse<ArcanumSettings>`; §8.12). |
+| GET | `/api/data/status` | Unified retained-data inventory (`ApiResponse<DataRetentionStatus>`): typed rows/files/estimated bytes, effective policy, physical store, safe provenance, aggregate totals, and categories preserved outside the selected root (§8.20). |
+| GET | `/api/data/retention` | Read the effective `Arcanum:Retention` policy (`ApiResponse<RetentionSettings>`; §8.20). |
+| PUT | `/api/data/retention` | Update one typed rule (`RetentionRuleUpdateRequest` → `ApiResponse<RetentionSettings>`); values are normalized and clamped by the server (§8.20). |
+| POST | `/api/data/prune/plan` | Build a non-mutating bounded plan (`DataRetentionRequest` → `ApiResponse<DataRetentionPlan>`; §8.20). |
+| POST | `/api/data/prune` | Re-plan and apply through a durable operation (`DataRetentionApplyRequest` → `ApiResponse<DataRetentionApplyResult>`; optional stale-plan guard; §8.20). |
+| DELETE | `/api/data/sessions/{id}` | Explicit dependency-aware session deletion (`ApiResponse<DataRetentionApplyResult>`; pins, holds, and active work block; §8.20). |
+| DELETE | `/api/data/attachments/{id}` | Explicit attachment-version deletion including owned bytes and derived indexes (`ApiResponse<DataRetentionApplyResult>`; §8.20). |
+| POST | `/api/data/memory/reset` | Reset exactly one `MemoryResetScope` from `MemoryResetRequest` (`ApiResponse<DataRetentionApplyResult>`; §8.20). |
+| POST | `/api/data/factory-reset` | Reset managed data beneath the selected root from `FactoryResetRequest`; requires exact `confirmation: "factory-reset"` and preserves backups/configuration/security material/out-of-root data (`ApiResponse<DataRetentionApplyResult>`; §8.20). |
+| GET | `/api/config` | Read the latest successfully persisted `ArcanumSettings`; provider endpoints remain redacted, while secret environment-variable references are returned without resolving their values (`ApiResponse<ArcanumSettings>`; §8.12). |
 | PUT | `/api/config` | Validate and write a full settings snapshot to `arcanum.json` (`ApiResponse<bool>`; §8.12). |
 | POST | `/api/config/validate` | Validate settings without writing (`ApiResponse<bool>`; §8.12). |
-| GET | `/api/models` | Flatten configured models across all providers (`ApiResponse<ModelInfoDto[]>`; endpoint redacted as `"***"`; read-only, no connectivity checks; §8.12). |
-| GET | `/api/providers` | List configured providers with `apiKey`/`endpoint` redacted (`ApiResponse<ProviderInfoDto[]>`; read-only; §8.12). |
+| GET | `/api/models` | Flatten models from the latest successfully persisted provider snapshot (`ApiResponse<ModelInfoDto[]>`; endpoint redacted as `"***"`; read-only, no connectivity checks; §8.12). |
+| GET | `/api/providers` | List the latest successfully persisted providers with `apiKey`/`endpoint` redacted (`ApiResponse<ProviderInfoDto[]>`; read-only; §8.12). |
 | GET | `/api/perception/look` | Eye of the World snapshot (optional `directory` query; requires `Arcanum:Security:PerceptionWorkspaceRoots`; **403** when unset). |
 | POST | `/api/intelligence/ping` | Buffered inference. |
 | POST | `/api/intelligence/ping-stream` | NDJSON streaming inference (same `PingRequest` extensions as buffered ping). |
@@ -70,7 +79,7 @@ test, and documentation citations remain stable.
 | DELETE | `/api/sessions/{id}/context-pins/{pinId}` | Remove a durable context pin without changing `Entries.IsPinned`. |
 | POST | `/api/sessions/{id}/fork` | Create an independent branch of a session, optionally truncated at `upToEntryId` (**201**; DESIGN §11.16.1). |
 | POST | `/api/embeddings/reset` | Truncate embedding tables for RAG dimension-change recovery (requires `?confirm=true`; optional `?scope=all\|entry\|workspaceFile\|saga\|sessionAttachment`, default `all`). |
-| DELETE | `/api/sessions/{id}/entries/{entryId}` | Delete a single entry from a session (**204**). |
+| DELETE | `/api/sessions/{id}/entries/{entryId}` | Delete a single entry and its `entry_embeddings` / optional vector row in the same transaction (**204**). |
 | POST | `/api/sessions/{id}/entries/{entryId}/pin` | Pin an entry so it is always included in inference context, even when compression would otherwise drop it. |
 | DELETE | `/api/sessions/{id}/entries/{entryId}/pin` | Unpin a previously pinned entry. |
 | POST | `/api/sessions/{id}/compact` | Manually compress session context by deleting the oldest non-pinned entries until the token count is below the effective threshold. |
@@ -209,12 +218,12 @@ test, and documentation citations remain stable.
 | POST | `/v1/audio/transcriptions` | Always **501** `not_supported`. |
 | POST | `/v1/audio/translations` | Always **501** `not_supported`. |
 | POST | `/v1/audio/speech` | Always **501** `not_supported`. |
-| POST | `/v1/files` | Upload standalone file storage, `multipart/form-data`; **201** + `OpenAiFileObject`. |
+| POST | `/v1/files` | Upload standalone file storage, `multipart/form-data`; publication captures the new owned-file identity before waiting for the database writer and revalidates it under the same immediate transaction that inserts metadata. A concurrent reset/delete that wins causes a sanitized **500** `internal_error` with no metadata row; **201** + `OpenAiFileObject` means the committed metadata and exact encrypted bytes were visible together. |
 | GET | `/v1/files` | List uploaded files, optional `?purpose=` filter. |
 | GET | `/v1/files/{id}` | File metadata; **404** for unknown/malformed id. |
-| DELETE | `/v1/files/{id}` | Deletes metadata row + on-disk bytes. |
+| DELETE | `/v1/files/{id}` | Deletes metadata + owned bytes only when no batch input/output/error role references the file. Every batch insert conditionally resolves all supplied file roles, and every artifact-reference update conditionally resolves its new output/error roles, in the same database write; a concurrent delete therefore either observes the committed reference or wins and causes the reference write to be rejected. Bytes move to identity-safe same-parent quarantine around the serialized metadata mutation, are restored on rejection/failure, and are finalized after commit. **200** `deleted: true` means both are absent; terminal or active references return **409** `file_referenced_by_batch`; storage conflict/recovery returns **500** `file_delete_storage_conflict` / `file_delete_recovery_required`. |
 | GET | `/v1/files/{id}/content` | Raw bytes; always `Content-Disposition: attachment`. |
-| POST | `/v1/batches` | Create an async bulk chat-completion job over an uploaded JSONL file; **200** + `OpenAiBatchObject`, `status: "validating"`. |
+| POST | `/v1/batches` | Create an async bulk chat-completion job over an uploaded JSONL file; the final insert conditionally rechecks the input metadata in the same database write and returns **404** if a concurrent file deletion won; otherwise **200** + `OpenAiBatchObject`, `status: "validating"`. |
 | GET | `/v1/batches` | List batches, optional `?status=` filter. |
 | GET | `/v1/batches/{id}` | Batch status + `request_counts`; **404** for unknown/malformed id. |
 | POST | `/v1/batches/{id}/cancel` | Idempotent cancel; stops in-flight processing within ~2s. |
@@ -334,7 +343,10 @@ Arcanum executes MCP tools server-side; `/v1` surfaces calls for observability/r
 
 #### 8.8.2 `GET /v1/models` capability enrichment
 
-`ModelInfoBuilder` is shared with `GET /api/models`. Additive OpenAI fields: `context_window`, `supports_vision`, `provider_name`/`provider_type`, `supports_tools`/`supports_streaming` (always true), plus the same optional typed `reasoning` capability object returned by the native endpoint.
+`ModelInfoBuilder` is shared with `GET /api/models`, and both routes read the same latest successfully
+persisted configuration snapshot. Additive OpenAI fields: `context_window`, `supports_vision`,
+`provider_name`/`provider_type`, `supports_tools`/`supports_streaming` (always true), plus the same
+optional typed `reasoning` capability object returned by the native endpoint.
 
 #### 8.8.3 Client tool security (forwarding mode)
 
@@ -423,7 +435,21 @@ recover process-local daemon frames and therefore always warns that a gap may ex
 
 ### 8.12 Configuration API (`GET` / `PUT` / `POST /api/config`)
 
-Read: redacted secret-bearing URLs/endpoints (`***`) plus non-secret credential references; environment values are never read into the response. Write: merge redacted URL placeholders from the current snapshot, validate, and atomically replace `arcanum.json`. Validate-only also merges recognized endpoint masks against the current snapshot before outbound and semantic validation, so an unchanged redacted `GET` document remains a valid update candidate; it never writes. Residual masks for new/unmatched providers fail closed. Provider API keys and PFX passwords are not accepted fields. The source-generated settings snapshot is loaded at process start, so configuration changes require a host restart; referenced secret environment values are resolved only at provider/certificate use. Status: **400** `Configuration.ValidationFailed`, **500** `Configuration.WriteFailed`.
+Read: redacted secret-bearing URLs/endpoints (`***`) plus non-secret credential references;
+environment values are never read into the response. `GET /api/config`, `GET /api/models`,
+`GET /api/providers`, and `GET /v1/models` resolve one latest-successfully-persisted snapshot, so
+their configuration and discovery projections agree immediately after a successful write. Write:
+under the configuration-writer lock, re-read the current file, merge recognized redacted URL
+placeholders, run outbound and semantic validation, and atomically replace `arcanum.json`. Holding
+that lock across the entire read-validate-write transaction prevents a concurrent retention-rule
+update from committing between the full PUT's snapshot and replacement. Validate-only also merges
+recognized endpoint masks against the current snapshot before outbound and semantic validation, so
+an unchanged redacted `GET` document remains a valid update candidate; it never writes. Residual
+masks for new/unmatched providers fail closed. Provider API keys and PFX passwords are not accepted
+fields. Other non-retention runtime consumers remain bound to the process-start snapshot and require
+a host restart to adopt configuration changes; referenced secret environment values are resolved
+only at provider/certificate use. Status: **400** `Configuration.ValidationFailed`,
+`Config.UnresolvedMask`, or `Security.BlockedOutboundUrl`; **500** `Configuration.WriteFailed`.
 
 ### 8.13 MCP server event SSE bus (`GET /api/events/mcp`)
 
@@ -541,6 +567,167 @@ every outcome to a conflict.
 
 The code-owned path is `~/.config/arcanum/arcanum.pid`. Startup fails if a live PID is present; a stale file is overwritten. Shutdown deletes the file only if it still names this process. DevHost and `serve` share the same path and therefore cannot run concurrently.
 
+### 8.20 Unified data lifecycle API (`/api/data`)
+
+Every route in this family is protected by the normal `/api` key filter. Status and planning are
+read-only. Mutations are operation-specific; there is no generic memory-delete route and the CLI
+never mutates the Grimoire directly. CLI confirmation is an additional operator gate, not a
+substitute for HTTP authentication. Factory reset also requires the exact body token shown below.
+
+**Requests (camel-case property names; canonical enum values retain CLR casing):**
+
+```jsonc
+// POST /api/data/prune/plan
+{
+  "operation": "Prune",
+  "targetId": null,
+  "memoryScope": null
+}
+
+// POST /api/data/prune
+{
+  "request": {
+    "operation": "Prune",
+    "targetId": null,
+    "memoryScope": null
+  },
+  "expectedPlanId": "optional SHA-256 plan id from a prior preview"
+}
+
+// PUT /api/data/retention
+{
+  "dataClass": "archived-sessions",
+  "enabled": true,
+  "days": 180
+}
+
+// PUT /api/data/retention (disable without replacing the prior day value)
+{
+  "dataClass": "archived-sessions",
+  "enabled": false
+}
+
+// POST /api/data/memory/reset
+{
+  "scope": "Entry"
+}
+
+// POST /api/data/factory-reset
+{
+  "confirmation": "factory-reset"
+}
+```
+
+`DataRetentionOperation` is emitted as `Prune`, `DeleteSession`, `DeleteAttachment`, `ResetMemory`,
+or `FactoryReset`. The two DELETE routes construct the corresponding target operation from `{id}`;
+callers do not send a body. `MemoryResetScope` is emitted as `Entry`, `Attachments`, `Workspace`,
+`Saga`, or `Lexicon`. Enum input matching is case-insensitive; responses use the canonical casing
+shown here. `RetentionDataClass` response values likewise retain their CLR casing, such as
+`ActiveSessions`. `RetentionRuleUpdateRequest.dataClass` names one configured rule. Matching is
+case-insensitive after hyphens, underscores, and spaces are removed; grouped aliases include
+`attachments`, `workspace-indexes`, `accounting`, and `daemon-history`, while typed attachment,
+batch-file, workspace, and accounting subclasses resolve to their governing rule. `days` is clamped
+to 1–3,650 and is required when `enabled` is `true`. It is optional when `enabled` is `false`;
+disabling a rule preserves its prior day value and does not add a capability restriction to
+explicit deletion. `GET /api/data/retention`
+returns the complete effective policy, including sweep bounds, accounting floor, and protected
+session ids. A successful PUT persists the normalized rule and makes it immediately authoritative
+for subsequent GET, status, and planning calls.
+The same process-authoritative snapshot controls subsequent inference- and guardrail-log planning
+and apply calls. Log writers only create, secure, and append dated files; they never enumerate or
+delete historical files. The legacy host/security day fields remain default query-lookback values
+and cannot trigger a mutation.
+Mutation selectors and `enabled` are required: omission never selects a default destructive scope
+or silently substitutes `false`. The sole presence-aware field is retention `days`, under the rule
+above. Data-class and memory-scope choices accept documented names and aliases only; JSON/CLI
+numeric enum spellings are rejected before mutation.
+
+**Status.** `DataRetentionStatus` contains `generatedAt`, `items`, aggregate `rows`, `files`, and
+`estimatedBytes`, plus `preservedOutsideSelectedRoot`. Each `DataRetentionStatusItem` has
+`dataClass`, `rows`, `files`, `estimatedBytes`, `policyEnabled`, nullable `retentionDays`, `store`,
+and safe `provenance`. The typed class list and physical ownership are defined in DESIGN §5.4.7.
+For a composite physical owner, `rows` includes its canonical row plus owned companion, index, and
+provenance rows. File counts and `estimatedBytes` describe managed files that actually exist at
+inspection time; they do not estimate missing metadata targets or SQLite page allocation.
+Batch input/output/error items count role references, so one uploaded file may appear in more than
+one of those items; the response-level aggregate totals exclude those reference-only roles and sum
+physical owners. The response contains no plaintext content, secret, or host source path.
+
+**Dry-run plan.** `DataRetentionPlan` contains `planId`, the normalized `request`, `generatedAt`,
+per-class `items`, `blockers`, `conflicts`, aggregate `rows`/`files`/`estimatedBytes`/
+`derivedRecords`, deterministic `candidateIds`, and `requiresConfirmation`. Every item reports
+`dataClass`, `rows`, `files`, `estimatedBytes`, and `derivedRecords`. Blockers report
+`dataClass`, `resourceId`, `reasonCode`, and a sanitized `message`; conflicts report `code`,
+`resourceId`, and `message`. Planning reads the same dependency graph used by apply and does not
+write rows, files, operation history, or checkpoints.
+
+**Apply.** Apply recomputes the current plan. If `expectedPlanId` is present and differs, the server
+returns `Data.PlanChanged`; clients must preview again. The bundled CLI always fetches the exact
+plan immediately before `--apply`, shows it in human mode, confirms its id and totals, and sends
+that id as `expectedPlanId`; `--json --yes` performs the same binding but emits only the final apply
+result as one machine-readable JSON value. Policy prune leaves blocked/conflicting
+candidates untouched while applying unrelated eligible candidates. Explicit session/attachment
+deletion and scoped/global reset fail when their selected target has a blocker or conflict. A
+prune candidate that becomes protected after planning is preserved and reported through a
+`Data.PlanChanged` conflict while later independent candidates may still run. Its checkpoint stays
+before the earliest preserved candidate so recovery re-evaluates that boundary instead of silently
+skipping it. A
+successful `DataRetentionApplyResult` reports `operationId`, the applied `planId`, deleted
+row/file/estimated-byte/derived-record totals, `reconciled`, and the plan diagnostics. Execution is
+bounded, durable-operation-backed, checkpointed, and restart-idempotent. Each planned candidate
+receives a bounded post-delete ownership check for its selected rows, derived records, and owned
+files; `reconciled` is true only after every applicable candidate check succeeds. This is not a
+global orphan-vacuum operation.
+
+For every file-bearing prune candidate and explicit deletion, the durable checkpoint carries an
+exact `ARCAMUT2` manifest with the mutation subtype/target, managed-root role, normalized relative
+path, captured no-follow identity metadata, and operation-scoped same-parent quarantine prefix.
+Recovery examines only that manifest-declared namespace; unrelated or malformed quarantine is
+rejected fail-closed. Factory reset uses a separate whole-root recovery contract and re-inventories
+the complete managed roots when it resumes.
+
+The dependency contract removes owned derived rows and bytes—attachment chunks/embeddings/index
+state with the attachment, Entry embeddings with Entries, and workspace embeddings with chunks.
+Managed-file deletion uses no-follow identity capture and apply-boundary revalidation; an object
+that changes identity is preserved with its metadata and the operation fails closed. Batch
+references protect uploaded files. Pinned Entries/context/attachments, protected sessions,
+active operations/inference/idempotency leases, outstanding budget reservations, and in-progress
+batches remain visible as blockers/conflicts. The effective accounting age is never shorter than
+`accountingMinimumDays`, and `Sessions.TotalCostUsd` is not accounting authority.
+
+Deleting an attachment does not silently delete independently retained Saga or Lexicon facts.
+Their typed provenance remains and resolves the missing source as unavailable. Factory reset clears
+only managed data beneath the configured root and never silently deletes external backups,
+registered out-of-root workspace content, configuration, or security/credential/key material.
+The Forge-owned local histories are outside this API's implementation boundary and remain
+untouched; no coordinated cleanup integration is added by this feature. Prior terminal operation
+history is cleared in dependency order, while the successful factory reset necessarily leaves its
+own completed durable-operation marker as the audit/recovery record for that mutation. The
+`DaemonExecutions` status/plan item includes both process-local execution summaries and persisted
+Unseen Servant schedule watermarks, so factory-reset previews account for both before clearing them.
+Factory previews exclude reference-only batch roles and count dependency/index/provenance rows as
+derived records. Apply uses a restart-idempotent immediate database transaction plus a daemon-start
+gate, so an interrupted reset can resume and new managed work cannot enter after the final conflict
+check. Prune and explicit data mutations also share an atomic cross-kind single-flight start, while
+elapsed-time heartbeats keep ownership during a slow candidate.
+Inference and guardrail audit writers share a singleton managed-log publication gate with factory
+reset. The reset takes that gate before its database writer transaction and holds it through log
+inventory, quarantine, commit, cleanup, and reconciliation: an append that wins is counted and
+cleared, while an append waiting behind the reset is published afterward and is not reported as a
+deleted file. Each logger retains its private append serialization and best-effort failure behavior.
+Managed factory-reset files move into identity-verified, owner-only same-parent quarantine before
+the database commit. Rollback restores them; after commit cleanup removes them, and restart recovery
+re-inventories the managed roots, discovers any quarantine left by a crash, and resumes the
+idempotent whole-root cleanup.
+Logical row deletion and file unlinking do not promise physical secure erasure on SSD,
+copy-on-write, snapshot, WAL/free-page, cache, encrypted-replica, or backup media.
+
+This route family maps `Data.InvalidRequest` and `Data.ConfirmationRequired` to **400**,
+`Data.NotFound` to **404**, `Data.PlanChanged`, `Data.Blocked`, and `Data.Conflict` to **409**, and
+`Data.ReconciliationFailed` to **500**. An unexpected apply failure is also **500**. The retention
+rule PUT route returns **400** for `Data.InvalidRequest`; an unexpected policy-store failure is
+**500**.
+
 ### 8.21 The Proving Grounds (`POST /api/proving-grounds/trials/run`)
 
 Ephemeral Trial + Inquisitors (`regex` / `jsonSchema` / `semantic` FastModel judge). Targets: spell / prompt / apprenticeGoal. Terminology strict — industry LLM-test jargon prohibited. Errors §8.23.
@@ -551,7 +738,14 @@ Prometheus text `0.0.4` via `System.Diagnostics.Metrics` + hand-rolled exporter 
 
 ### 8.23 Error code catalog and HTTP status mapping
 
-Wire-stable codes live on `ErrorCodes` (Core). HTTP mapping authority: `ArcanumErrorMapper.ResolveStatusCode` (Api). `ResolveStatusCodeDefaultBadRequest` treats unmapped codes as **400** on Apprentice/Campaign/Spell/Prompt/ProvingGrounds routes while still honoring explicit **500** mappings (`ProvingGrounds.InferenceFailed`, `Workspace.WriteFailed`, `Workspace.DeleteFailed`, `Saga.SearchFailed`, `Hub.Error`). Unrecognized strings (including `Hub.Error` via default arm) → **500**. Keep in sync with `ErrorCodes.cs` / `ArcanumErrorMapper.cs` (`ArcanumErrorMapperTests`).
+Wire-stable codes live on `ErrorCodes` (Core). General HTTP mapping authority is
+`ArcanumErrorMapper.ResolveStatusCode` (Api); the data-lifecycle family has the route-local mapping
+defined in §8.20. `ResolveStatusCodeDefaultBadRequest` treats unmapped codes as **400** on
+Apprentice/Campaign/Spell/Prompt/ProvingGrounds routes while still honoring explicit **500**
+mappings (`ProvingGrounds.InferenceFailed`, `Workspace.WriteFailed`, `Workspace.DeleteFailed`,
+`Saga.SearchFailed`, `Hub.Error`). Unrecognized strings (including `Hub.Error` via default arm) →
+**500**. Keep in sync with `ErrorCodes.cs`, `ArcanumErrorMapper.cs`, and the route-local endpoint
+mappers and tests.
 
 **Default / unmapped:** unlisted codes → **500**; `ResolveStatusCodeDefaultBadRequest` downgrades unmapped → **400** except the explicit **500** set above.
 
@@ -566,6 +760,9 @@ Wire-stable codes live on `ErrorCodes` (Core). HTTP mapping authority: `ArcanumE
 | `Campaign.InvalidPath` / `MaxReached`; `Session.Archived` / `InvalidStatus` / `TooManyEntries` / `EntryTooLarge` / `MemoryManagementDisabled` / `EmptyContent`; `Attachment.InvalidRequest` / `InvalidContent` / `InvalidReference` / `SourceUnavailable`; `Apprentice.Disabled` / `PendingQueueFull` / `InvalidGuidance` / `InvalidPlan` / `InvalidGoal` / `InvalidWorkspace`; `Workspace.NameEmpty` / `SymbolicLinkEscape` / `PathTraversal` / `DirectoryNotEmpty` / `ReplacementAmbiguous` / `PathIsDirectory` / `PathIsFile`; `Spell.NoWorkspace` / `InvalidWorkspace` / `InvalidName` / `NameCollision` / `BuiltinReadOnly` / `DuplicateVersion` / `InvalidVersion`; `Prompt.CodexPathNotContained` / `DuplicateVersion` / `InvalidName` / `InvalidVersion` / `InvalidRequest`; `Mcp.AmbiguousServer` / `MissingWorkspace` / `ServerNotRunning` / `AmbiguousTool` / `ToolError`; `Sending.TaskRejected`; `Security.BlockedOutboundUrl` / `IdempotencyKeyTooLong`; `Files.InvalidMimeType`; `Batches.InvalidEndpoint`; `Embeddings.ConfirmationRequired`; `ProvingGrounds.InvalidTrial` / `WorkspaceNotAllowed`; `Saga.NotEmpty`; `Scrying.VisionNotSupported` / `TooManyImages` / `UnsupportedMimeType`; `WebBrowsing.TooLarge` (reserved; today truncates) / `InvalidUrl`; `ClientTools.Disabled` / `TooMany` / `InvalidSchema`; `Guardrails.PiiDetected` / `Blocked`; `StructuredOutput.ValidationFailed` / `SchemaInvalid` | 400 | Domain validation / policy refusal (non-auth) |
 | `Campaign.PathNotAllowed`; `Workspace.PathNotAllowed` / `AccessDenied` / `FileWriteDisabled`; `Spell.PathNotAllowed`; `Sending.Disabled` / `AgentNotAllowed`; `Mcp.WorkspaceNotTrusted` / `DiagnosticBlocked`; `Scrying.FeatureDisabled`; `Attachment.Disabled`; `WebBrowsing.SsrfBlocked` | 403 | Path/network/feature deny |
 | `Security.MissingApiKey` | 401 | Missing/invalid API key |
+| `Data.InvalidRequest` / `ConfirmationRequired` | 400 | Invalid data-lifecycle operation, rule, scope, or required factory-reset confirmation |
+| `Data.NotFound` | 404 | Explicit data-lifecycle target not found |
+| `Data.PlanChanged` / `Blocked` / `Conflict` | 409 | Stale preview, retained dependency/hold, or active-work conflict |
 | `Session.TooManyPinned`; `Attachment.LimitExceeded`; `Apprentice.AlreadyRunning` / `Running` / `NotPaused` / `CannotReweave` / `NotEscalated` / `MaxReached` / `ConclaveDisabled`; `Security.IdempotencyConflict`; `Security.IdempotencyInProgress` | 409 | State or idempotency conflict |
 | `Sending.MaxTasksReached`; `RateLimit.TooManyRequests` | 429 | Concurrency / rate limit |
 | `Workspace.FileTooLarge`; `Files.TooLarge`; `Scrying.ImageTooLarge`; `Attachment.TooLarge` | 413 | Payload too large |
@@ -573,6 +770,7 @@ Wire-stable codes live on `ErrorCodes` (Core). HTTP mapping authority: `ArcanumE
 | `Api.TooManyConnections`; `Connection.Unreachable`; `Embeddings.ProviderUnavailable` / `FeatureDisabled`; `Session.RestQueueFull` | 503 | Capacity / provider unavailable, or bounded Campaign Logger queue rejection |
 | `Mcp.DiagnosticTimeout`; `Connection.Timeout`; `WebBrowsing.Timeout` | 504 | Bounded downstream transport/diagnostic operation timeout |
 | `Workspace.WriteFailed` / `DeleteFailed`; `ProvingGrounds.InferenceFailed`; `Saga.SearchFailed` | 500 | Explicit infra/search failures (never downgraded by DefaultBadRequest) |
+| `Data.ReconciliationFailed` | 500 | Data-lifecycle apply failed or post-delete reconciliation requires operator review |
 
 **Ollama:** providers use the `OpenAICompatible` contract and surface failures as `Hub.Error`.
 
@@ -586,7 +784,7 @@ Brotli+Gzip via ASP.NET ResponseCompression; early pipeline. Excludes `text/even
 
 ### 8.26 Persisted inference audit log
 
-Opt-in JSONL (`Arcanum:Host:AuditLog:*`); dated files, owner-only, soft size + retention. A row is written only after a turn completes successfully (ping / ping-stream / v1-completion today); errors, timeouts, cancellations, and interrupted streams are not audit rows. Tool names and counts are metadata; `Arcanum:Host:AuditLog:RedactToolArguments=true` (default) makes `toolArgumentsJson` null, while opting out records the exact raw argument snapshots at operator risk. Tool results, prompt/answer bodies, and reasoning bodies are never fields in this log. Audit failure is warning-only and never changes the already-successful turn. Query: `GET /api/audit`.
+Opt-in JSONL (`Arcanum:Host:AuditLog:*`); dated files, owner-only, with a soft daily size cap. A row is written only after a turn completes successfully (ping / ping-stream / v1-completion today); errors, timeouts, cancellations, and interrupted streams are not audit rows. The writer never deletes historical files: age-based removal runs only through the bounded, durable unified data-retention planner/service. The legacy `host.auditLog.retentionDays` value remains the default lookback when an audit query omits `from`. Tool names and counts are metadata; `Arcanum:Host:AuditLog:RedactToolArguments=true` (default) makes `toolArgumentsJson` null, while opting out records the exact raw argument snapshots at operator risk. Tool results, prompt/answer bodies, and reasoning bodies are never fields in this log. Audit failure is warning-only and never changes the already-successful turn. Query: `GET /api/audit`.
 
 ### 8.27 Content guardrails (PII / toxicity / topics)
 

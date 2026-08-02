@@ -131,7 +131,7 @@ agent/operator orientation updates this file; human navigation updates
 | **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | `PublishAot` + `IsAotCompatible` (analysis signal; not shipped) |
 | **`tests/RetroDownfall.Arcanum.Tests`** | xUnit test suite (not shipped) | MCP, security, config, workspace policy, SQLCipher Grimoire, and API-host integration tests | — |
 | **`tests/RetroDownfall.Compendium.Tests`** (assembly `RetroDownfall.Compendium.Ux.Tests`) | Compendium smoke tests (not shipped) | Round-trip read/write of factual configuration and credential references | — |
-| **`Compendium.Ux`** | Desktop configuration editor (Avalonia) | Visual editor for the 11 retained configuration sections; polished Host/Providers/Daemon/CLI pages plus descriptor-driven pages that refresh after asynchronous loads without rebuild-time file I/O; reuses Core models and edits credential references, never secret values | — |
+| **`Compendium.Ux`** | Desktop configuration editor (Avalonia) | Visual editor for the 12 retained configuration sections; polished Host/Providers/Daemon/CLI pages plus descriptor-driven pages that refresh after asynchronous loads without rebuild-time file I/O; reuses Core models and edits credential references, never secret values | — |
 | **`TheForge.Core` / `TheForge.Ux`** | Desktop Inference IDE (Avalonia) | HTTP-only Arcanum client with bounded buffered/NDJSON/SSE reads and atomic downloads; Campaign/Spell/Prompt/Session workbench, Wards, MCP, Trials, diagnostics | — |
 | **`tests/RetroDownfall.TheForge.Tests`** | Forge desktop tests (not shipped) | Client contracts, settings, view models, and source-generated JSON | — |
 
@@ -254,6 +254,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Metrics | `GET /metrics` | Prometheus text; API key on by default (forced on ListenAny). [API §8.22](Arcanum.API.md#822-metrics-endpoint-get-metrics) |
 | Health & meta | `/api/health`, `/meta`, `/grimoire/stats`, `/budget` | Readiness + spend snapshot; a valid Unhealthy health envelope returns 503 with component detail |
 | Durable operations | `/api/operations*` | Safe list/show plus CAS cancel/retry and bounded manual reconciliation; checkpoint bytes/references never leave SQLCipher |
+| Data lifecycle | `/api/data/*` | Authenticated retained-data status, typed retention settings, dry-run plans, durable apply, explicit session/attachment deletion, scoped memory reset, and factory reset |
 | Config | `/api/config`, `/config/validate` | GET redacts secrets; PUT preserves `"***"` placeholders |
 | Models / providers | `GET /api/models`, `/providers`, `/providers/test` | Listings + connectivity probe (no persist) |
 | Inference (native) | `/api/intelligence/ping(-stream)`, `/human-response`, `/arsenal`, `/mana`, `/context/inspect` | Buffered / NDJSON `IntelligenceEvent`; model-aware Mana/source breakdown and read-only effective-turn preview |
@@ -362,6 +363,7 @@ binding; there are no compatibility aliases or silent ignores.
 | `Integrations` | A2A identity/allowlist, CommLink reference/allowlists, embedding facts, native web-research provider facts, MCP plaintext-host exceptions, and workspace-check profiles. |
 | `Execution` | Host concurrency/backpressure for Apprentices, SSE, and batches. |
 | `Cost` | Default/per-model pricing and daily budget policy. |
+| `Retention` | Opt-in sweep scheduling, bounded/checkpointed execution, typed per-class rules, accounting floor, and protected-session holds. |
 | `Daemon` | Unseen Servant schedules and concurrency. |
 | `Cli` | Theme and mana-bar preference. |
 
@@ -619,6 +621,92 @@ legacy reads only during this supported window; encrypted metadata never falls b
 Restore accepts archives containing all retained key ids from an in-progress rotation. Full format,
 rotation, and atomicity details:
 [DESIGN §5.4.6](Arcanum.DESIGN.md#546-versioned-authenticated-blob-storage).
+
+### Unified data retention and deletion
+
+`Arcanum:Retention` is the single policy surface for the Grimoire, encrypted blob trees, dated
+JSONL logs, and derived indexes. Automatic sweeps are off by default. Active/archived sessions,
+Entries, attachments, Saga, and Lexicon rules also default disabled so an upgrade does not begin
+deleting user conversation or durable-memory content. Enabled defaults cover shorter-lived or
+derived classes; the exact rules, days, and clamps are in
+[Compendium's configuration reference](Compendium.README.md#integrations-execution-cost-retention-daemon-and-cli).
+Inference and guardrail audit writers only append to the current dated JSONL file; they never scan
+or delete older files. Those files age out only through the same bounded, durable plan/apply path
+used for every other retention class, whether a sweep is started manually or by the scheduler.
+
+Use the API-backed CLI rather than editing storage directly:
+
+```text
+arcanum data status
+arcanum data retention show
+arcanum data retention set archived-sessions 180
+arcanum data prune --dry-run
+arcanum --yes data prune --apply
+arcanum data delete-session <session-guid>
+arcanum data delete-attachment <attachment-guid>
+arcanum data reset-memory --scope entry|attachments|workspace|saga|lexicon
+arcanum data factory-reset
+```
+
+Dry-run and apply call the same server-owned planner. A plan identifies candidates and reports rows,
+files, estimated bytes, derived records, blockers, and conflicts by typed data class. Apply rebuilds
+the plan immediately before mutation; API callers may supply the preview's `planId` as
+`expectedPlanId` to fail if the candidate graph changed. CLI `--dry-run` never mutates. CLI
+`--apply` fetches and displays the exact current plan, confirms its id and totals, and binds that id
+to the apply request without another user step. Under `--json --yes`, the preview remains silent and
+stdout contains exactly one final apply result. Human mode prints concise operator summaries for
+status, settings, plan, and apply results; `--json` preserves the exact API payload. Every mutation
+requires interactive approval or the recursive `--yes` switch and still uses normal API-key
+authentication.
+
+Deletion follows explicit dependencies. An attachment deletion removes its metadata, encrypted
+bytes, chunks, embeddings, and index state; a session deletion additionally removes its Entries and
+Entry embeddings. Workspace chunks and their embeddings move together. Uploaded files are retained
+while any batch still references them, and in-progress batches are conflicts. Pinned Entries,
+pinned context/attachments, `retention.protectedSessionIds`, active durable operations, active
+inference/idempotency work, and outstanding budget reservations block rather than disappear.
+Accounting uses `InferenceRuns`, `BillableOperations`, `BudgetReservations`, and `CostAdjustments`,
+plus standalone adjustments and `BudgetAlerts`; it never uses `Sessions.TotalCostUsd`, and its
+effective age is at least `accountingMinimumDays`. Managed files are captured and revalidated by
+no-follow identity at deletion time, so a substituted path leaves both bytes and metadata intact
+and fails closed.
+
+Saga and Lexicon remain separate durable stores. Deleting a source attachment does not silently
+delete independently retained facts; their typed provenance remains and changes to
+`Unavailable`/unresolved when the source no longer exists. Use an explicit `reset-memory --scope
+saga` or `--scope lexicon` only when those stores themselves are the intended target.
+
+Sweeps are bounded by `maxItemsPerSweep`, skip stable blocked rows without spending that candidate
+quota, checkpoint at the effective checkpoint interval, run as restart-idempotent durable
+operations, and verify the selected rows, derived records, and owned files after each planned
+candidate. Prune and explicit mutations start atomically under one retention single-flight lease;
+elapsed-time heartbeats retain ownership even during one slow candidate. This is candidate-local
+reconciliation, not a global orphan vacuum. A missing selected row or already-unlinked owned file
+is a converged state, so repeating an interrupted sweep is safe. Inspect or repair durable state
+with `arcanum operation`.
+
+Deletion is logical database deletion plus owned-file unlinking, **not a physical secure-erasure
+guarantee**. SSD wear leveling, copy-on-write filesystems, filesystem snapshots, SQLCipher free
+pages/WAL copies, operating-system caches, and independent backups can retain recoverable copies.
+Encryption protects retained bytes but does not make per-record unlinking equivalent to destroying
+all copies.
+
+`arcanum data factory-reset` names this boundary in its confirmation. It clears managed data under
+the configured root only after global conflict checks; it does not silently remove external
+backups, registered workspace content outside that root, `arcanum.json`, or security/credential/key
+material. The Forge-owned local histories are outside this implementation boundary and remain
+untouched; this feature adds no coordinated cleanup integration. Prior terminal durable-operation
+history is cleared in dependency order, while the successful reset necessarily leaves its own
+completed operation marker as the audit/recovery record. The preview counts physical rows once,
+reports dependency/index/provenance rows as derived records, and excludes reference-only batch
+roles. Apply holds an immediate database transaction and daemon-start gate across its final
+conflict check and cleanup; interruption is restart-idempotent. Backups must be selected and
+destroyed separately by the operator.
+
+This feature uses the existing canonical tables and file layouts. It adds no SQL migration and
+requires no local/test database recreation. If a later retention change alters a canonical schema,
+the pre-user-data reinstall policy in [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)
+applies at that time.
 
 ### Optional HTTPS
 
@@ -904,7 +992,16 @@ same-directory temporary file and atomically replace only after success. Default
 server path components and sanitize the leaf; an existing destination requires interactive
 confirmation or explicit `--yes`. `file delete` uses the same confirmation boundary. Recursive
 `--json` emits one source-generated JSON document on stdout and keeps progress/diagnostics on
-stderr; `/v1` successes are never reinterpreted as `ApiResponse<T>`.
+stderr; `/v1` successes are never reinterpreted as `ApiResponse<T>`. A file referenced by any batch
+input/output/error role—including a terminal batch—is preserved and returns an OpenAI-shaped 409
+conflict; deletion can succeed only after no batch role references that file. Batch inserts and
+artifact-reference updates resolve every non-null file role in the same conditional database write,
+so a concurrent deletion cannot leave a new batch pointing at absent metadata or bytes.
+Uploads and generated batch artifacts likewise capture their new encrypted file identity before
+waiting for the database writer, then revalidate that exact owned file inside the immediate
+metadata-insert transaction. A reset/delete that commits first makes publication fail without a
+metadata row; publication that commits first makes both metadata and the same bytes visible to the
+next reset/delete. Upload failures remain sanitized and cleanup never blindly deletes a replacement.
 
 ### Session attachments
 
@@ -1105,6 +1202,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `look` | Print the Eye of the World workspace snapshot (no HTTP). |
 | `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer / File Encryption panels) + API health probe, including key availability, encrypted/legacy/corrupt blob counts, and the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0 unless another check fails). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
 | `watch session\|apprentice\|logs\|mcp\|daemons\|health` | Follow the six authenticated live sources with shared UTC/color/heartbeat/`[DONE]`/Ctrl+C/NDJSON behavior. Repeat free-form `--event-type` and `--tool` filters; `watch logs` adds `--level`/`--category`/`--search`; `watch session` adds `--since`; `watch health` adds `--interval` (default 5). `--reconnect` is opt-in, indefinitely retries unexpected SSE disconnects with capped backoff, and always warns of possible gaps/no replay guarantee. |
+| `data status\|retention show\|retention set\|prune\|delete-session\|delete-attachment\|reset-memory\|factory-reset` | Inspect typed retained stores, configure per-class policy, preview the exact bounded dependency plan, or perform a confirmed server-owned deletion. `prune` requires exactly one of `--dry-run`/`--apply`; every mutation requires confirmation or `--yes`. Factory reset preserves external backups, configuration, security/key material, and data outside the selected root. |
 | `data encryption status\|migrate\|verify\|rotate-key` | Inspect mixed-mode state; resumably encrypt legacy blobs; authenticate/decrypt/hash-check every blob; or create a new key and incrementally rotate before retiring unreferenced old keys. Worker commands accept `--max-concurrency` and `--max-bytes-per-second`; output contains aggregate files/bytes and issue categories, never names or paths. |
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
 | `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Argument or stdin / interactive secret prompt. |
@@ -1129,8 +1227,8 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `apprentice list\|get\|create\|delete\|start\|pause\|resume\|cancel\|reweave\|intervene\|cast\|chronicle` | Apprentice orchestration. Resource-taking verbs accept optional ID/name/prefix selection and picker cancellation never mutates. `apprentice chronicle` remains the compatibility alias for `watch apprentice`. |
 | `model list\|get`, `provider list\|get` | List/select configured inference resources. Detail output omits endpoints and credential references. |
 | `mcp list\|get` | List/select safe MCP server status without command, URL, arguments, or working-directory details. |
-| `model list` | List configured models across all providers via `GET /api/models` (needs `serve`); endpoint redacted. |
-| `provider list` | List configured providers via `GET /api/providers` (needs `serve`); endpoint redacted and only the credential environment-variable reference returned. |
+| `model list` | List models from the latest successfully persisted provider snapshot via `GET /api/models` (needs `serve`); endpoint redacted. Non-retention runtime consumers still require restart to adopt the change. |
+| `provider list` | List providers from the latest successfully persisted snapshot via `GET /api/providers` (needs `serve`); endpoint redacted and only the credential environment-variable reference returned. Non-retention runtime consumers still require restart to adopt the change. |
 | `operation list\|show\|cancel\|retry\|reconcile` | Inspect and repair the durable operation ledger via authenticated `/api/operations*` routes (needs `serve`). `list` accepts `--kind` / `--state`; `show <id>` returns only safe checkpoint presence/version/summary; `cancel <id>` requests `Cancelling`; `retry <id>` resets failed/abandoned/repair-required work; `reconcile` runs a bounded pass and exits 2 when operator attention remains. |
 
 **Inference flags** (`run`/`ask`/`chat`): `--temperature`, `--top-p`, `--max-tokens`, `--seed`, `--stop`, `--response-format` (`json` aliases `json_object`), penalties, `-c`/`--campaign`, `--workspace`, and `--session`. Scrying: `run --with @path`, `ask --image`, or chat `@path`. Full option ranges, slash commands, context precedence, and exit behavior: [complete command reference](Arcanum.Command.Reference.md).

@@ -1,0 +1,3780 @@
+using System.Globalization;
+
+using System.Text;
+
+using Microsoft.Data.Sqlite;
+
+using Microsoft.EntityFrameworkCore;
+
+using Microsoft.Extensions.Logging.Abstractions;
+
+using Microsoft.Extensions.Options;
+
+using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+
+using RetroDownfall.Arcanum.Core.Intelligence;
+
+using RetroDownfall.Arcanum.Core.Operations;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
+using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Core.Storage.Entities;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.Operations;
+
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
+using RetroDownfall.Arcanum.Infrastructure.Storage;
+
+using RetroDownfall.Arcanum.Tests.Fixtures;
+
+using RetroDownfall.Arcanum.Tests.Support;
+
+namespace RetroDownfall.Arcanum.Tests.Data;
+
+[Collection("Grimoire")]
+
+[Trait("Category", "Integration")]
+
+public sealed partial class DataRetentionServiceTests : IAsyncLifetime
+{
+
+    private readonly GrimoireFixture _fixture;
+
+    private string _dbPath = string.Empty;
+
+    private string _attachmentsRoot = string.Empty;
+
+    private string _filesRoot = string.Empty;
+
+    private string _logsRoot = string.Empty;
+
+    private ArcanumDbContext? _db;
+
+    public DataRetentionServiceTests(GrimoireFixture fixture)
+    {
+
+        _fixture = fixture;
+
+    }
+
+    public Task InitializeAsync()
+    {
+
+        _dbPath = _fixture.CopyDatabase();
+
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-retention-tests-" + Guid.NewGuid().ToString("N"));
+
+        _attachmentsRoot = Path.Combine(root, "attachments");
+
+        _filesRoot = Path.Combine(root, "files");
+
+        _logsRoot = Path.Combine(root, "logs");
+
+        Directory.CreateDirectory(_attachmentsRoot);
+
+        Directory.CreateDirectory(_filesRoot);
+
+        Directory.CreateDirectory(_logsRoot);
+
+        _db = _fixture.CreateContext(_dbPath);
+
+        return Task.CompletedTask;
+
+    }
+
+    public async Task DisposeAsync()
+    {
+
+        if (_db is not null)
+        {
+
+            SqliteConnection connection =
+                (SqliteConnection)_db.Database.GetDbConnection();
+
+            await _db.DisposeAsync();
+
+            SqliteConnection.ClearPool(connection);
+
+        }
+
+        if (File.Exists(_dbPath))
+        {
+
+            File.Delete(_dbPath);
+
+        }
+
+        string? root = Directory.GetParent(_attachmentsRoot)?.FullName;
+
+        if (root is not null && Directory.Exists(root))
+        {
+
+            Directory.Delete(root, recursive: true);
+
+        }
+
+    }
+
+    [SkippableFact]
+
+    public async Task PlanAsync_DeleteSession_ReportsImpactAndPinnedEntryBlocker()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: true);
+
+        await SeedEntryEmbeddingAsync(entryId);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.DeleteSession,
+            TargetId: sessionId,
+            MemoryScope: null);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Equal(request, plan.Request);
+
+        Assert.False(string.IsNullOrWhiteSpace(plan.PlanId));
+
+        Assert.True(plan.Rows >= 3);
+
+        Assert.Equal(1, plan.Files);
+
+        Assert.True(plan.EstimatedBytes >= attachment.Bytes.Length);
+
+        Assert.True(plan.DerivedRecords >= 3);
+
+        Assert.Contains(
+            plan.Items,
+            item => item.DataClass == RetentionDataClass.Entries
+                && item.Rows == 1);
+
+        Assert.Contains(
+            plan.Blockers,
+            blocker => blocker.DataClass == RetentionDataClass.Entries
+                && blocker.ResourceId == entryId.ToString("D")
+                && blocker.ReasonCode.Contains("pin", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_DeleteSession_RemovesDerivedIndexesAndBytesButPreservesMemoryProvenance()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        await SeedEntryEmbeddingAsync(entryId);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        await SeedSagaAndLexiconProvenanceAsync(
+            sessionId,
+            attachment.AttachmentId);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.DeleteSession,
+            TargetId: sessionId,
+            MemoryScope: null);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.Equal(0, await CountAsync(
+            "Sessions",
+            "Id",
+            sessionId.ToString()));
+
+        Assert.Equal(0, await CountAsync(
+            "Entries",
+            "Id",
+            entryId.ToString()));
+
+        Assert.Equal(0, await CountAsync(
+            "entry_embeddings",
+            "EntryId",
+            entryId.ToString()));
+
+        Assert.Equal(0, await CountAsync(
+            "SessionAttachments",
+            "Id",
+            attachment.AttachmentId.ToString()));
+
+        Assert.Equal(0, await CountAsync(
+            "session_attachment_chunks",
+            "AttachmentId",
+            attachment.AttachmentId.ToString()));
+
+        Assert.Equal(0, await CountAsync(
+            "session_attachment_embeddings",
+            "ChunkId",
+            attachment.ChunkId));
+
+        Assert.Equal(0, await CountAsync(
+            "session_attachment_index_state",
+            "AttachmentId",
+            attachment.AttachmentId.ToString()));
+
+        Assert.False(File.Exists(attachment.AbsolutePath));
+
+        Assert.Equal(1, await CountAllAsync("saga_memories"));
+
+        Assert.Equal(1, await CountAllAsync(
+            "saga_memory_attachment_provenance"));
+
+        Assert.Equal(1, await CountAllAsync("lexicon_entries"));
+
+        Assert.Equal(1, await CountAllAsync(
+            "lexicon_fact_attachment_provenance"));
+
+        Assert.Equal(0, await ReadAttachmentAvailabilityAsync(
+            "saga_memory_attachment_provenance"));
+
+        Assert.Equal(0, await ReadAttachmentAvailabilityAsync(
+            "lexicon_fact_attachment_provenance"));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_DeleteSession_WhenReconciliationFails_DoesNotCompleteDurableOperation()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER retain_deleted_session
+            AFTER DELETE ON "Sessions"
+            BEGIN
+                INSERT INTO "Sessions" ("Id", "Status", "CreatedAt", "UpdatedAt")
+                VALUES (OLD."Id", OLD."Status", OLD."CreatedAt", OLD."UpdatedAt");
+            END;
+            """);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.DeleteSession,
+            TargetId: sessionId,
+            MemoryScope: null);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = Assert.Single(
+            await operations.ListAsync(
+                new LongRunningOperationQuery(
+                    Kind: LongRunningOperationKinds.DataRetentionMutation)));
+
+        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, operation.TerminalErrorCode);
+
+        Assert.Equal(1, await CountAllAsync("Sessions"));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_DeleteAttachment_WhenFileIdentityChanges_PreservesMetadataAndBytes()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        Assert.True(
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                attachment.AbsolutePath,
+                out FileHandleMetadata originalMetadata));
+
+        Func<string, FileHandleMetadata?>? previousSeam =
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests;
+
+        int identityReads = 0;
+
+        try
+        {
+
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = path =>
+            {
+
+                if (!string.Equals(
+                        Path.GetFullPath(path),
+                        Path.GetFullPath(attachment.AbsolutePath),
+                        StringComparison.Ordinal))
+                {
+
+                    return null;
+
+                }
+
+                identityReads++;
+
+                return identityReads == 1
+                    ? originalMetadata
+                    : originalMetadata with
+                    {
+
+                        Identity = new FileHandleIdentity(
+                            originalMetadata.Identity.VolumeId,
+                            originalMetadata.Identity.FileId + 1),
+
+                    };
+
+            };
+
+            IDataRetentionService service = CreateService();
+
+            DataRetentionRequest request = new(
+                DataRetentionOperation.DeleteAttachment,
+                TargetId: attachment.AttachmentId,
+                MemoryScope: null);
+
+            DataRetentionPlan plan = await service.PlanAsync(
+                request,
+                CancellationToken.None);
+
+            Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+                new DataRetentionApplyRequest(request, plan.PlanId),
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
+
+            Assert.True(File.Exists(attachment.AbsolutePath));
+
+            Assert.Equal(1, await CountAsync(
+                "SessionAttachments",
+                "Id",
+                attachment.AttachmentId.ToString()));
+
+        }
+        finally
+        {
+
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = previousSeam;
+
+        }
+
+    }
+
+    [SkippableFact]
+
+    public async Task PlanAsync_Prune_BlocksUploadedFileReferencedByInProgressBatch()
+    {
+
+        RequireSqlCipher();
+
+        Guid fileId = Guid.NewGuid();
+
+        Guid batchId = Guid.NewGuid();
+
+        string absolutePath = Path.Combine(
+            _filesRoot,
+            fileId.ToString("N"));
+
+        byte[] bytes = [1, 2, 3, 4, 5];
+
+        await File.WriteAllBytesAsync(absolutePath, bytes);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "UploadedFiles"
+                ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt")
+            VALUES
+                (@id, 'batch.jsonl', @bytes, 'batch', 'application/jsonl', @createdAt)
+            """,
+            ("@id", fileId.ToString()),
+            ("@bytes", bytes.Length),
+            ("@createdAt", "2000-01-01T00:00:00.0000000+00:00"));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "Batches"
+                ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt")
+            VALUES
+                (@id, @fileId, '/v1/chat/completions', @status, @createdAt)
+            """,
+            ("@id", batchId.ToString()),
+            ("@fileId", fileId.ToString()),
+            ("@status", BatchStatuses.InProgress),
+            ("@createdAt", "2000-01-01T00:00:00.0000000+00:00"));
+
+        ArcanumSettings settings = new()
+        {
+
+            Retention = new RetentionSettings
+            {
+
+                AutomaticSweepsEnabled = false,
+
+                UploadedFiles = new RetentionRuleSettings
+                {
+
+                    Enabled = true,
+
+                    Days = 1,
+
+                },
+
+                CompletedBatches = new RetentionRuleSettings
+                {
+
+                    Enabled = true,
+
+                    Days = 1,
+
+                },
+
+            },
+
+        };
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.Prune,
+            TargetId: null,
+            MemoryScope: null);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Contains(
+            plan.Blockers,
+            blocker => blocker.DataClass == RetentionDataClass.UploadedFiles
+                && blocker.ResourceId == fileId.ToString("D")
+                && blocker.ReasonCode.Contains("batch", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Contains(
+            plan.Conflicts,
+            conflict => conflict.ResourceId == batchId.ToString("D")
+                && conflict.Code.Contains("batch", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal(1, await CountAsync(
+            "UploadedFiles",
+            "Id",
+            fileId.ToString()));
+
+        Assert.True(File.Exists(absolutePath));
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData("session")]
+
+    [InlineData("batch")]
+
+    [InlineData("entry")]
+
+    [InlineData("idempotency")]
+
+    [InlineData("accounting")]
+
+    public async Task PlanAsync_Prune_WithMaxOne_DoesNotLetOldestBlockedRowStarveEligibleRow(
+        string scenario)
+    {
+
+        RequireSqlCipher();
+
+        (ArcanumSettings settings, string expectedCandidate) =
+            await SeedStarvationScenarioAsync(scenario);
+
+        settings.Retention.MaxItemsPerSweep = 1;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            new DataRetentionRequest(DataRetentionOperation.Prune),
+            CancellationToken.None);
+
+        Assert.Single(plan.CandidateIds);
+
+        Assert.Contains(expectedCandidate, plan.CandidateIds);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenEntryPinAppearsAtBoundary_PreservesEmbedding()
+    {
+
+        RequireSqlCipher();
+
+        (_, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        await SeedEntryEmbeddingAsync(entryId);
+
+        Guid pinId = Guid.NewGuid();
+
+        await ExecuteAsync(
+            $"""
+            CREATE TRIGGER pin_entry_after_retention_start
+            AFTER INSERT ON "LongRunningOperations"
+            WHEN NEW."Kind" = '{LongRunningOperationKinds.DataRetentionPrune}'
+            BEGIN
+                INSERT INTO "SessionContextPins"
+                    ("Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
+                     "ContentVersion", "CreatedAt", "UpdatedAt")
+                SELECT
+                    '{pinId:N}', entry."SessionId", {(int)SessionContextPinKind.SessionEntry},
+                    entry."Id", 'Boundary pin', NULL, NEW."CreatedAt", NEW."CreatedAt"
+                FROM "Entries" entry
+                WHERE lower(replace(entry."Id", '-', '')) = '{entryId:N}';
+            END;
+            """);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.SessionEntryEmbeddings = EnabledRule();
+
+        settings.Retention.MaxItemsPerSweep = 1;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Contains(
+            "entry-embedding:" + entryId.ToString(),
+            plan.CandidateIds);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Contains(
+            result.Value.Conflicts,
+            static conflict => conflict.Code == ErrorCodes.Data.PlanChanged);
+
+        Assert.Equal(1, await CountAsync(
+            "entry_embeddings",
+            "EntryId",
+            entryId.ToString()));
+
+        Assert.Equal(1, await CountAllAsync("SessionContextPins"));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenSessionBecomesHeldAtBoundary_PreservesEntryEmbedding()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        await SeedEntryEmbeddingAsync(entryId);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.SessionEntryEmbeddings = EnabledRule();
+
+        settings.Retention.MaxItemsPerSweep = 1;
+
+        ArcanumSettings heldSettings = CreatePruneSettings();
+
+        heldSettings.Retention.SessionEntryEmbeddings = EnabledRule();
+
+        heldSettings.Retention.MaxItemsPerSweep = 1;
+
+        RetentionSettings held = heldSettings.Retention;
+
+        held.ProtectedSessionIds = [sessionId];
+
+        SequencedRetentionPolicyStore policy = new(
+            settings.Retention,
+            held,
+            initialReads: 2);
+
+        IDataRetentionService service = CreateService(
+            settings,
+            policy);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Contains(
+            "entry-embedding:" + entryId.ToString(),
+            plan.CandidateIds);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Contains(
+            result.Value.Conflicts,
+            static conflict => conflict.Code == ErrorCodes.Data.PlanChanged);
+
+        Assert.Equal(1, await CountAsync(
+            "entry_embeddings",
+            "EntryId",
+            entryId.ToString()));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenSessionOperationAppearsAtBoundary_PreservesEntryEmbedding()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        await SeedEntryEmbeddingAsync(entryId);
+
+        Guid activeOperationId = Guid.NewGuid();
+
+        await ExecuteAsync(
+            $"""
+            CREATE TRIGGER protect_entry_after_retention_start
+            AFTER INSERT ON "LongRunningOperations"
+            WHEN NEW."Kind" = '{LongRunningOperationKinds.DataRetentionPrune}'
+            BEGIN
+                INSERT INTO "LongRunningOperations"
+                    ("Id", "Kind", "State", "RecoveryPolicy", "SessionId", "CreatedAt",
+                     "PublicSummary")
+                SELECT
+                    '{activeOperationId:N}', '{LongRunningOperationKinds.WorkspaceIndex}',
+                    {(int)LongRunningOperationState.Running},
+                    {(int)LongRunningOperationRecoveryPolicy.RestartIdempotently},
+                    session."Id", NEW."CreatedAt", 'Boundary session operation'
+                FROM "Sessions" session
+                WHERE lower(replace(session."Id", '-', '')) = '{sessionId:N}';
+            END;
+            """);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.SessionEntryEmbeddings = EnabledRule();
+
+        settings.Retention.MaxItemsPerSweep = 1;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Contains(
+            result.Value.Conflicts,
+            static conflict => conflict.Code == ErrorCodes.Data.PlanChanged);
+
+        Assert.Equal(1, await CountAsync(
+            "entry_embeddings",
+            "EntryId",
+            entryId.ToString()));
+
+        Assert.Equal(1, await CountAsync(
+            "LongRunningOperations",
+            "Id",
+            activeOperationId.ToString("N")));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenWorkspaceIndexStartsAtBoundary_PreservesWorkspaceCandidate()
+    {
+
+        RequireSqlCipher();
+
+        string chunkId = "boundary-workspace-" + Guid.NewGuid().ToString("N");
+
+        await ExecuteAsync(
+            """
+            INSERT INTO workspace_file_chunks
+                (ChunkId, WorkspacePath, RelativePath, ChunkIndex, Content, CharOffset,
+                 CharLength, FileLastWriteTime, IndexedAt)
+            VALUES
+                (@id, '/workspace', 'boundary.cs', 0, 'old', 0, 3, @at, @at)
+            """,
+            ("@id", chunkId),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO workspace_file_embeddings (ChunkId, Embedding, Dim)
+            VALUES (@id, @embedding, 1)
+            """,
+            ("@id", chunkId),
+            ("@embedding", new byte[] { 0, 0, 128, 63 }));
+
+        Guid activeOperationId = Guid.NewGuid();
+
+        await ExecuteAsync(
+            $"""
+            CREATE TRIGGER protect_workspace_after_retention_start
+            AFTER INSERT ON "LongRunningOperations"
+            WHEN NEW."Kind" = '{LongRunningOperationKinds.DataRetentionPrune}'
+            BEGIN
+                INSERT INTO "LongRunningOperations"
+                    ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "PublicSummary")
+                VALUES
+                    ('{activeOperationId:N}', '{LongRunningOperationKinds.WorkspaceIndex}',
+                     {(int)LongRunningOperationState.Running},
+                     {(int)LongRunningOperationRecoveryPolicy.RestartIdempotently},
+                     NEW."CreatedAt", 'Boundary workspace operation');
+            END;
+            """);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.WorkspaceIndexes = EnabledRule();
+
+        settings.Retention.MaxItemsPerSweep = 1;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Contains("workspace:" + chunkId, plan.CandidateIds);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Contains(
+            result.Value.Conflicts,
+            static conflict => conflict.Code == ErrorCodes.Data.PlanChanged);
+
+        Assert.Equal(1, await CountAsync(
+            "workspace_file_chunks",
+            "ChunkId",
+            chunkId));
+
+        Assert.Equal(1, await CountAsync(
+            "workspace_file_embeddings",
+            "ChunkId",
+            chunkId));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_RepeatedDeleteSession_ReturnsNotFoundAfterFirstDelete()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.DeleteSession,
+            TargetId: sessionId,
+            MemoryScope: null);
+
+        DataRetentionPlan firstPlan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> first = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, firstPlan.PlanId),
+            CancellationToken.None);
+
+        DataRetentionPlan secondPlan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> second = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, secondPlan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess, first.Error.Message);
+
+        Assert.True(second.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.NotFound, second.Error.Code);
+
+    }
+
+    [SkippableFact]
+
+    public async Task PlanAsync_DeleteSession_ReportsActiveOperationAndReservationConflicts()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
+
+        Guid runId = Guid.NewGuid();
+
+        Guid reservationId = Guid.NewGuid();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "InferenceRuns"
+                ("Id", "RequestId", "SessionId", "Surface", "Purpose", "StartedAt", "Status")
+            VALUES
+                (@id, 'request-retention', @sessionId, 'test', 'test', @startedAt, @status)
+            """,
+            ("@id", runId.ToString("N")),
+            ("@sessionId", sessionId.ToString("N")),
+            ("@startedAt", now.ToString("o", CultureInfo.InvariantCulture)),
+            ("@status", (int)InferenceRunStatus.Running));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "BudgetReservations"
+                ("Id", "RunId", "BudgetPeriod", "ReservedUsd", "ReconciledUsd", "Status",
+                 "ExpiresAt", "CreatedAt", "UpdatedAt")
+            VALUES
+                (@id, @runId, '2026-08-02', 1.25, 0, @status, @expiresAt, @createdAt, @updatedAt)
+            """,
+            ("@id", reservationId.ToString("N")),
+            ("@runId", runId.ToString("N")),
+            ("@status", (int)BudgetReservationStatus.Reserved),
+            ("@expiresAt", now.AddHours(1).ToString("o", CultureInfo.InvariantCulture)),
+            ("@createdAt", now.ToString("o", CultureInfo.InvariantCulture)),
+            ("@updatedAt", now.ToString("o", CultureInfo.InvariantCulture)));
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Indexing session workspace.",
+                now,
+                SessionId: sessionId,
+                RunId: runId,
+                InferenceRunId: runId,
+                BudgetReservationId: reservationId));
+
+        _ = await operations.TryAcquireLeaseAsync(
+            operation.Id,
+            "retention-test-worker",
+            now,
+            now.AddMinutes(1));
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.DeleteSession,
+            TargetId: sessionId,
+            MemoryScope: null);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Contains(
+            plan.Conflicts,
+            conflict => conflict.ResourceId == operation.Id.ToString("D")
+                && conflict.Code.Contains("operation", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Contains(
+            plan.Conflicts,
+            conflict => conflict.ResourceId == reservationId.ToString("D")
+                && conflict.Code.Contains("reservation", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [SkippableFact]
+
+    public async Task GetStatusAsync_ReportsEveryTypedRetentionClassExactlyOnce()
+    {
+
+        RequireSqlCipher();
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionStatus status = await service.GetStatusAsync(
+            CancellationToken.None);
+
+        RetentionDataClass[] expected = Enum.GetValues<RetentionDataClass>();
+
+        Assert.Equal(
+            expected.Order(),
+            status.Items.Select(static item => item.DataClass).Order());
+
+        Assert.Equal(
+            expected.Length,
+            status.Items.Select(static item => item.DataClass).Distinct().Count());
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_RemovesTerminalBatchAndItsUnreferencedUploadedFile()
+    {
+
+        RequireSqlCipher();
+
+        Guid fileId = Guid.NewGuid();
+
+        Guid batchId = Guid.NewGuid();
+
+        string absolutePath = Path.Combine(
+            _filesRoot,
+            fileId.ToString("N"));
+
+        await File.WriteAllBytesAsync(absolutePath, [1, 2, 3]);
+
+        await SeedUploadedFileAsync(fileId, 3);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "Batches"
+                ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt")
+            VALUES
+                (@id, @fileId, '/v1/chat/completions', @status, @createdAt, @completedAt)
+            """,
+            ("@id", batchId.ToString()),
+            ("@fileId", fileId.ToString()),
+            ("@status", BatchStatuses.Completed),
+            ("@createdAt", OldTimestamp),
+            ("@completedAt", OldTimestamp));
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.UploadedFiles = EnabledRule();
+
+        settings.Retention.CompletedBatches = EnabledRule();
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Contains(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.CompletedBatches
+                && item.Rows == 1);
+
+        Assert.Contains(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.UploadedFiles
+                && item.Rows == 1
+                && item.Files == 1);
+
+        Assert.DoesNotContain(
+            plan.Blockers,
+            blocker => blocker.ResourceId == fileId.ToString("D"));
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(0, await CountAsync("Batches", "Id", batchId.ToString()));
+
+        Assert.Equal(0, await CountAsync("UploadedFiles", "Id", fileId.ToString()));
+
+        Assert.False(File.Exists(absolutePath));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenAnotherPruneIsActive_ReturnsConflict()
+    {
+
+        RequireSqlCipher();
+
+        IDataRetentionService service = CreateService(CreatePruneSettings());
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        LongRunningOperationStore operations = new(_db!);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperation? active = await operations.TryStartSingleFlightAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionPrune,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Apply a hosted retention sweep.",
+                now),
+            "hosted-retention",
+            now,
+            now.AddMinutes(5));
+
+        Assert.NotNull(active);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.Conflict, result.Error.Code);
+
+        IReadOnlyList<LongRunningOperation> pruneOperations = await operations.ListAsync(
+            new LongRunningOperationQuery(
+                Kind: LongRunningOperationKinds.DataRetentionPrune));
+
+        Assert.Single(pruneOperations);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_DeleteSession_WhenPruneIsActive_ReturnsConflictWithoutPendingMutation()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.DeleteSession,
+            sessionId);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        LongRunningOperationStore operations = new(_db!);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperation? active = await operations.TryStartSingleFlightAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionPrune,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Apply a hosted retention sweep.",
+                now),
+            "hosted-retention",
+            now,
+            now.AddMinutes(5));
+
+        Assert.NotNull(active);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.Conflict, result.Error.Code);
+
+        Assert.True(
+            await _db!.Sessions
+                .AsNoTracking()
+                .AnyAsync(
+                    session => session.Id == sessionId,
+                    CancellationToken.None));
+
+        IReadOnlyList<LongRunningOperation> mutations = await operations.ListAsync(
+            new LongRunningOperationQuery(
+                Kind: LongRunningOperationKinds.DataRetentionMutation));
+
+        Assert.Empty(mutations);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_EnforcesWorkspaceIdempotencyAndAuditPoliciesWithCheckpoint()
+    {
+
+        RequireSqlCipher();
+
+        string chunkId = "workspace-" + Guid.NewGuid().ToString("N");
+
+        Guid claimId = Guid.NewGuid();
+
+        await ExecuteAsync(
+            """
+            INSERT INTO workspace_file_chunks
+                (ChunkId, WorkspacePath, RelativePath, ChunkIndex, Content, CharOffset,
+                 CharLength, FileLastWriteTime, IndexedAt)
+            VALUES
+                (@id, '/workspace', 'old.cs', 0, 'old', 0, 3, @at, @at)
+            """,
+            ("@id", chunkId),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO workspace_file_embeddings (ChunkId, Embedding, Dim)
+            VALUES (@id, @embedding, 1)
+            """,
+            ("@id", chunkId),
+            ("@embedding", new byte[] { 0, 0, 128, 63 }));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "IdempotencyClaims"
+                ("Id", "ClaimKeyHash", "FingerprintHash", "State", "OwnerId",
+                 "LeaseExpiresAt", "HeartbeatAt", "TerminalStreamComplete", "CreatedAt", "UpdatedAt")
+            VALUES
+                (@id, @key, 'fingerprint', @state, 'completed-owner', @at, @at, 1, @at, @at)
+            """,
+            ("@id", claimId.ToString()),
+            ("@key", "key-" + claimId.ToString("N")),
+            ("@state", (int)IdempotencyClaimState.Completed),
+            ("@at", OldTimestamp));
+
+        string auditPath = Path.Combine(_logsRoot, "audit-20000101.jsonl");
+
+        await File.WriteAllTextAsync(auditPath, "{}\n");
+
+        File.SetLastWriteTimeUtc(auditPath, DateTime.UnixEpoch);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.WorkspaceIndexes = EnabledRule();
+
+        settings.Retention.IdempotencyClaims = EnabledRule();
+
+        settings.Retention.AuditLogs = EnabledRule();
+
+        settings.Retention.MaxItemsPerSweep = 10;
+
+        settings.Retention.CheckpointInterval = 1;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Contains(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.WorkspaceChunks
+                && item.Rows == 1);
+
+        Assert.Contains(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.WorkspaceEmbeddings
+                && item.DerivedRecords == 1);
+
+        Assert.Contains(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.IdempotencyClaims
+                && item.Rows == 1);
+
+        Assert.Contains(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.AuditLogs
+                && item.Files == 1);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(0, await CountAsync(
+            "workspace_file_chunks",
+            "ChunkId",
+            chunkId));
+
+        Assert.Equal(0, await CountAsync(
+            "workspace_file_embeddings",
+            "ChunkId",
+            chunkId));
+
+        Assert.Equal(0, await CountAsync(
+            "IdempotencyClaims",
+            "Id",
+            claimId.ToString()));
+
+        Assert.False(File.Exists(auditPath));
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = Assert.Single(
+            await operations.ListAsync(
+                new LongRunningOperationQuery(
+                    Kind: LongRunningOperationKinds.DataRetentionPrune,
+                    Limit: 10)));
+
+        Assert.True(operation.CheckpointVersion > 0);
+
+        Assert.NotNull(operation.CheckpointPayload);
+
+        Assert.Equal(LongRunningOperationState.Completed, operation.State);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenCandidateReconciliationFails_DoesNotAdvanceCheckpointOrComplete()
+    {
+
+        RequireSqlCipher();
+
+        Guid fileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(fileId, 0);
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER retain_deleted_uploaded_file
+            AFTER DELETE ON "UploadedFiles"
+            BEGIN
+                INSERT INTO "UploadedFiles"
+                    ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt")
+                VALUES
+                    (OLD."Id", OLD."Filename", OLD."Bytes", OLD."Purpose", OLD."MimeType", OLD."CreatedAt");
+            END;
+            """);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.UploadedFiles = EnabledRule();
+
+        settings.Retention.CheckpointInterval = 1;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Single(plan.CandidateIds);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = Assert.Single(
+            await operations.ListAsync(
+                new LongRunningOperationQuery(
+                    Kind: LongRunningOperationKinds.DataRetentionPrune)));
+
+        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, operation.TerminalErrorCode);
+
+        byte[] checkpointPayload = Assert.IsType<byte[]>(operation.CheckpointPayload);
+
+        string[] checkpointLines = Encoding.UTF8
+            .GetString(checkpointPayload)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal("0", checkpointLines[2]);
+
+        Assert.Equal(1, await CountAsync(
+            "UploadedFiles",
+            "Id",
+            fileId.ToString()));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenTerminalBatchReappears_DoesNotCheckpointPastCandidate()
+    {
+
+        RequireSqlCipher();
+
+        Guid fileId = Guid.NewGuid();
+
+        Guid batchId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(fileId, 0);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "Batches"
+                ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt")
+            VALUES
+                (@id, @fileId, '/v1/chat/completions', @status, @at, @at)
+            """,
+            ("@id", batchId.ToString()),
+            ("@fileId", fileId.ToString()),
+            ("@status", BatchStatuses.Completed),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER retain_deleted_terminal_batch
+            AFTER DELETE ON "Batches"
+            BEGIN
+                INSERT INTO "Batches"
+                    ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt",
+                     "OutputFileId", "ErrorFileId")
+                VALUES
+                    (OLD."Id", OLD."InputFileId", OLD."Endpoint", OLD."Status", OLD."CreatedAt",
+                     OLD."CompletedAt", OLD."OutputFileId", OLD."ErrorFileId");
+            END;
+            """);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.CompletedBatches = EnabledRule();
+
+        settings.Retention.MaxItemsPerSweep = 1;
+
+        settings.Retention.CheckpointInterval = 1;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Equal(
+            "batch:" + batchId.ToString("D"),
+            Assert.Single(plan.CandidateIds));
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = Assert.Single(
+            await operations.ListAsync(
+                new LongRunningOperationQuery(
+                    Kind: LongRunningOperationKinds.DataRetentionPrune)));
+
+        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+
+        byte[] checkpointPayload = Assert.IsType<byte[]>(operation.CheckpointPayload);
+
+        string[] checkpointLines = Encoding.UTF8
+            .GetString(checkpointPayload)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal("0", checkpointLines[2]);
+
+        Assert.Equal(1, await CountAsync(
+            "Batches",
+            "Id",
+            batchId.ToString()));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_RepeatedPrune_ConvergesWithoutRemovingAdditionalData()
+    {
+
+        RequireSqlCipher();
+
+        Guid fileId = Guid.NewGuid();
+
+        Guid batchId = Guid.NewGuid();
+
+        string absolutePath = Path.Combine(
+            _filesRoot,
+            fileId.ToString("N"));
+
+        await File.WriteAllBytesAsync(absolutePath, [1, 2, 3]);
+
+        await SeedUploadedFileAsync(fileId, 3);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "Batches"
+                ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt")
+            VALUES
+                (@id, @fileId, '/v1/chat/completions', @status, @createdAt, @completedAt)
+            """,
+            ("@id", batchId.ToString()),
+            ("@fileId", fileId.ToString()),
+            ("@status", BatchStatuses.Completed),
+            ("@createdAt", OldTimestamp),
+            ("@completedAt", OldTimestamp));
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.UploadedFiles = EnabledRule();
+
+        settings.Retention.CompletedBatches = EnabledRule();
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan firstPlan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> first = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, firstPlan.PlanId),
+            CancellationToken.None);
+
+        DataRetentionPlan secondPlan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> second = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, secondPlan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess, first.Error.Message);
+
+        Assert.True(second.IsSuccess, second.Error.Message);
+
+        Assert.Empty(secondPlan.CandidateIds);
+
+        Assert.Equal(0, second.Value.RowsDeleted);
+
+        Assert.Equal(0, await CountAllAsync("Batches"));
+
+        Assert.Equal(0, await CountAllAsync("UploadedFiles"));
+
+        Assert.False(File.Exists(absolutePath));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WithDisabledRules_PreservesEligibleLookingData()
+    {
+
+        RequireSqlCipher();
+
+        Guid fileId = Guid.NewGuid();
+
+        string absolutePath = Path.Combine(
+            _filesRoot,
+            fileId.ToString("N"));
+
+        await File.WriteAllBytesAsync(absolutePath, [4, 5, 6]);
+
+        await SeedUploadedFileAsync(fileId, 3);
+
+        IDataRetentionService service = CreateService(CreatePruneSettings());
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.Empty(plan.CandidateIds);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(1, await CountAsync(
+            "UploadedFiles",
+            "Id",
+            fileId.ToString()));
+
+        Assert.True(File.Exists(absolutePath));
+
+    }
+
+    [SkippableFact]
+
+    public async Task RecoverPruneAsync_ResumesCheckpointedCandidateAfterInterruption()
+    {
+
+        RequireSqlCipher();
+
+        Guid fileId = Guid.NewGuid();
+
+        string absolutePath = Path.Combine(
+            _filesRoot,
+            fileId.ToString("N"));
+
+        await File.WriteAllBytesAsync(absolutePath, [7, 8, 9]);
+
+        await SeedUploadedFileAsync(fileId, 3);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.UploadedFiles = EnabledRule();
+
+        DataRetentionService service = CreateService(settings);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            new DataRetentionRequest(DataRetentionOperation.Prune),
+            CancellationToken.None);
+
+        string candidate = Assert.Single(plan.CandidateIds);
+
+        LongRunningOperationStore operations = new(_db!);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        const string ownerId = "interrupted-retention-test";
+
+        LongRunningOperation operation = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionPrune,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Interrupted retention test.",
+                now));
+
+        LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(
+            operation.Id,
+            ownerId,
+            now,
+            now.AddMinutes(5));
+
+        Assert.True(lease.Acquired);
+
+        byte[] checkpoint = Encoding.UTF8.GetBytes(
+            "ARCADATA2\n"
+            + plan.PlanId
+            + "\n0\nG:"
+            + Convert.ToBase64String(
+                Encoding.UTF8.GetBytes(plan.GeneratedAt.ToString("o")))
+            + "\nC:"
+            + Convert.ToBase64String(Encoding.UTF8.GetBytes(candidate))
+            + ":"
+            + Convert.ToBase64String(
+                Encoding.UTF8.GetBytes(plan.GeneratedAt.AddDays(-30).ToString("o")))
+            + "\n");
+
+        bool saved = await operations.SaveCheckpointAsync(
+            operation.Id,
+            ownerId,
+            expectedCheckpointVersion: 0,
+            checkpointVersion: 2,
+            checkpoint,
+            checkpointReference: "retention-prune:" + operation.Id.ToString("N"),
+            "Interrupted before the next candidate.",
+            now);
+
+        Assert.True(saved);
+
+        LongRunningOperation interrupted = Assert.IsType<LongRunningOperation>(
+            await operations.GetAsync(operation.Id));
+
+        LongRunningOperationRecoveryResult recovered = await service.RecoverPruneAsync(
+            interrupted,
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+
+        Assert.Equal(0, await CountAsync(
+            "UploadedFiles",
+            "Id",
+            fileId.ToString()));
+
+        Assert.False(File.Exists(absolutePath));
+
+    }
+
+    [SkippableFact]
+
+    public async Task PlanAsync_FactoryReset_ReportsActiveIdempotencyAndBatchConflicts()
+    {
+
+        RequireSqlCipher();
+
+        Guid fileId = Guid.NewGuid();
+
+        Guid batchId = Guid.NewGuid();
+
+        Guid claimId = Guid.NewGuid();
+
+        DateTimeOffset future = DateTimeOffset.UtcNow.AddHours(1);
+
+        await SeedUploadedFileAsync(fileId, 0);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "Batches"
+                ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt")
+            VALUES
+                (@id, @fileId, '/v1/chat/completions', @status, @createdAt)
+            """,
+            ("@id", batchId.ToString()),
+            ("@fileId", fileId.ToString()),
+            ("@status", BatchStatuses.InProgress),
+            ("@createdAt", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "IdempotencyClaims"
+                ("Id", "ClaimKeyHash", "FingerprintHash", "State", "OwnerId",
+                 "LeaseExpiresAt", "HeartbeatAt", "TerminalStreamComplete", "CreatedAt", "UpdatedAt")
+            VALUES
+                (@id, @key, 'fingerprint', @state, 'active-owner', @lease, @at, 0, @at, @at)
+            """,
+            ("@id", claimId.ToString()),
+            ("@key", "key-" + claimId.ToString("N")),
+            ("@state", (int)IdempotencyClaimState.Running),
+            ("@lease", future.ToString("o", CultureInfo.InvariantCulture)),
+            ("@at", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture)));
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            new DataRetentionRequest(DataRetentionOperation.FactoryReset),
+            CancellationToken.None);
+
+        Assert.Contains(
+            plan.Conflicts,
+            conflict => conflict.ResourceId == batchId.ToString("D")
+                && conflict.Code.Contains("batch", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Contains(
+            plan.Conflicts,
+            conflict => conflict.ResourceId == claimId.ToString("D")
+                && conflict.Code.Contains("idempotency", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [SkippableFact]
+
+    public async Task PlanAsync_FactoryReset_CountsPhysicalAndDerivedRecordsOnce()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        await SeedEntryEmbeddingAsync(entryId);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        await SeedSagaAndLexiconProvenanceAsync(
+            sessionId,
+            attachment.AttachmentId);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO attachment_memory_consultations
+                (SourceEntryId, SessionId, AttachmentId, LogicalKey, Version, ContentHash,
+                 MaterializedAt, SourceType)
+            VALUES
+                ((SELECT Id FROM Entries WHERE lower(replace(Id, '-', '')) = @entryId),
+                 @sessionId, @attachmentId, 'evidence', 1, 'ATTACHMENT-HASH',
+                 @at, 'WorkspaceFile')
+            """,
+            ("@entryId", entryId.ToString("N")),
+            ("@sessionId", sessionId.ToString()),
+            ("@attachmentId", attachment.AttachmentId.ToString()),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "SessionContextPins"
+                ("Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
+                 "CreatedAt", "UpdatedAt")
+            VALUES
+                (@id,
+                 (SELECT Id FROM Sessions WHERE lower(replace(Id, '-', '')) = @sessionId),
+                 0, @entryId, 'Pinned entry', @at, @at)
+            """,
+            ("@id", Guid.NewGuid().ToString()),
+            ("@sessionId", sessionId.ToString("N")),
+            ("@entryId", entryId.ToString()),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "WorkspaceContexts"
+                ("Id", "RootPath", "SerializedSnapshot", "CreatedAt")
+            VALUES
+                (@id, '/workspace', '{}', @at)
+            """,
+            ("@id", Guid.NewGuid().ToString()),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "UnseenServantWatermarks"
+                ("JobKey", "LastRunAt", "EffectiveIntervalMinutes")
+            VALUES
+                ('factory-plan-job', @at, 30)
+            """,
+            ("@at", OldTimestamp));
+
+        Guid fileId = Guid.NewGuid();
+
+        byte[] fileBytes = [1, 2, 3, 4];
+
+        await File.WriteAllBytesAsync(
+            Path.Combine(_filesRoot, fileId.ToString("N")),
+            fileBytes);
+
+        await SeedUploadedFileAsync(fileId, fileBytes.LongLength);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "Batches"
+                ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt",
+                 "OutputFileId", "ErrorFileId")
+            VALUES
+                (@id, @fileId, '/v1/chat/completions', 'completed', @at, @at,
+                 @fileId, @fileId)
+            """,
+            ("@id", Guid.NewGuid().ToString()),
+            ("@fileId", fileId.ToString()),
+            ("@at", OldTimestamp));
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            new DataRetentionRequest(DataRetentionOperation.FactoryReset),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(
+            plan.Items,
+            static item => item.DataClass is RetentionDataClass.BatchInputFiles
+                or RetentionDataClass.BatchOutputFiles
+                or RetentionDataClass.BatchErrorFiles);
+
+        DataRetentionPlanItem uploaded = Assert.Single(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.UploadedFiles);
+
+        Assert.Equal(1, uploaded.Rows);
+
+        Assert.Equal(1, uploaded.Files);
+
+        Assert.Equal(fileBytes.LongLength, uploaded.EstimatedBytes);
+
+        Assert.Equal(
+            1,
+            Assert.Single(
+                plan.Items,
+                static item => item.DataClass == RetentionDataClass.CompletedBatches).Rows);
+
+        DataRetentionPlanItem workspace = Assert.Single(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.WorkspaceChunks);
+
+        Assert.Equal(1, workspace.Rows);
+
+        Assert.Equal(
+            1,
+            Assert.Single(
+                plan.Items,
+                static item => item.DataClass == RetentionDataClass.DaemonExecutions).Rows);
+
+        Assert.True(
+            plan.DerivedRecords >= 10,
+            $"Expected dependency/index/provenance rows in the factory plan, got {plan.DerivedRecords}.");
+
+        Assert.Equal(2, plan.Files);
+
+        Assert.Equal(
+            attachment.Bytes.LongLength + fileBytes.LongLength,
+            plan.EstimatedBytes);
+
+    }
+
+    [SkippableFact]
+
+    public async Task FactoryReset_RecoversDatedLogFromInterruptedQuarantine()
+    {
+
+        RequireSqlCipher();
+
+        string quarantineDirectory = Directory.CreateDirectory(
+            Path.Combine(
+                _logsRoot,
+                ".arcanum-cleanup-" + Guid.NewGuid().ToString("N"))).FullName;
+
+        string auditPath = Path.Combine(
+            quarantineDirectory,
+            "audit-20000101.jsonl");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("{\"event\":\"retained\"}\n");
+
+        await File.WriteAllBytesAsync(auditPath, bytes);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        DataRetentionPlanItem logs = Assert.Single(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.AuditLogs);
+
+        Assert.Equal(1, logs.Files);
+
+        Assert.Equal(bytes.LongLength, logs.EstimatedBytes);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.False(File.Exists(auditPath));
+
+        Assert.False(Directory.Exists(quarantineDirectory));
+
+        Assert.True(result.Value.Reconciled);
+
+    }
+
+    [Fact]
+
+    public void FactoryReset_UsesDedicatedRestartableOperationPolicy()
+    {
+
+        Assert.True(
+            LongRunningOperationPolicyCatalog.IsRegistered(
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently));
+
+    }
+
+    [SkippableFact]
+
+    public async Task PlanAsync_Prune_AccountingFloorPreservesRetainedSessionCosts()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
+
+        Guid retainedRunId = Guid.NewGuid();
+
+        Guid orphanRunId = Guid.NewGuid();
+
+        await SeedCompletedInferenceRunAsync(retainedRunId, sessionId);
+
+        await SeedCompletedInferenceRunAsync(orphanRunId, null);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.Accounting = EnabledRule(days: 1);
+
+        settings.Retention.AccountingMinimumDays = 30;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            new DataRetentionRequest(DataRetentionOperation.Prune),
+            CancellationToken.None);
+
+        Assert.Contains(
+            "accounting:" + orphanRunId.ToString("D"),
+            plan.CandidateIds);
+
+        Assert.DoesNotContain(
+            "accounting:" + retainedRunId.ToString("D"),
+            plan.CandidateIds);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_RemovesOldStandaloneAdjustmentsAndBudgetAlerts()
+    {
+
+        RequireSqlCipher();
+
+        Guid adjustmentId = Guid.NewGuid();
+
+        Guid alertId = Guid.NewGuid();
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "CostAdjustments"
+                ("Id", "BillableOperationId", "RunId", "AmountUsd", "Reason", "CreatedAt")
+            VALUES
+                (@id, NULL, NULL, -1.0, 'standalone correction', @at)
+            """,
+            ("@id", adjustmentId.ToString()),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "BudgetAlerts"
+                ("Id", "Threshold", "AlertedAt", "SpendUsd", "DailyLimitUsd")
+            VALUES
+                (@id, 0.8, @at, 8.0, 10.0)
+            """,
+            ("@id", alertId.ToString()),
+            ("@at", OldTimestamp));
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.Accounting = EnabledRule(days: 1);
+
+        settings.Retention.AccountingMinimumDays = 30;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Contains(
+            "accounting-adjustment:" + adjustmentId.ToString("D"),
+            plan.CandidateIds);
+
+        Assert.Contains(
+            "budget-alert:" + alertId.ToString("D"),
+            plan.CandidateIds);
+
+        Assert.Contains(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.CostAdjustments
+                && item.Rows == 2);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(0, await CountAllAsync("CostAdjustments"));
+
+        Assert.Equal(0, await CountAllAsync("BudgetAlerts"));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenStandaloneAccountingEligibilityChangesAtBoundary_PreservesRows()
+    {
+
+        RequireSqlCipher();
+
+        Guid adjustmentId = Guid.NewGuid();
+
+        Guid alertId = Guid.NewGuid();
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "CostAdjustments"
+                ("Id", "BillableOperationId", "RunId", "AmountUsd", "Reason", "CreatedAt")
+            VALUES
+                (@id, NULL, NULL, -1.0, 'standalone correction', @at)
+            """,
+            ("@id", adjustmentId.ToString()),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "BudgetAlerts"
+                ("Id", "Threshold", "AlertedAt", "SpendUsd", "DailyLimitUsd")
+            VALUES
+                (@id, 0.8, @at, 8.0, 10.0)
+            """,
+            ("@id", alertId.ToString()),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            $"""
+            CREATE TRIGGER protect_standalone_accounting_after_retention_start
+            AFTER INSERT ON "LongRunningOperations"
+            WHEN NEW."Kind" = '{LongRunningOperationKinds.DataRetentionPrune}'
+            BEGIN
+                UPDATE "CostAdjustments"
+                SET "RunId" = 'linked-after-plan'
+                WHERE lower(replace("Id", '-', '')) = '{adjustmentId:N}';
+                UPDATE "BudgetAlerts"
+                SET "AlertedAt" = NEW."CreatedAt"
+                WHERE lower(replace("Id", '-', '')) = '{alertId:N}';
+            END;
+            """);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.Accounting = EnabledRule(days: 1);
+
+        settings.Retention.AccountingMinimumDays = 30;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Contains(
+            "accounting-adjustment:" + adjustmentId.ToString("D"),
+            plan.CandidateIds);
+
+        Assert.Contains(
+            "budget-alert:" + alertId.ToString("D"),
+            plan.CandidateIds);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(1, await CountAllAsync("CostAdjustments"));
+
+        Assert.Equal(1, await CountAllAsync("BudgetAlerts"));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenStandaloneAdjustmentReappears_DoesNotAdvanceCheckpoint()
+    {
+
+        RequireSqlCipher();
+
+        Guid adjustmentId = Guid.NewGuid();
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "CostAdjustments"
+                ("Id", "BillableOperationId", "RunId", "AmountUsd", "Reason", "CreatedAt")
+            VALUES
+                (@id, NULL, NULL, -1.0, 'standalone correction', @at)
+            """,
+            ("@id", adjustmentId.ToString()),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER retain_deleted_standalone_adjustment
+            AFTER DELETE ON "CostAdjustments"
+            BEGIN
+                INSERT INTO "CostAdjustments"
+                    ("Id", "BillableOperationId", "RunId", "AmountUsd", "Reason", "CreatedAt")
+                VALUES
+                    (OLD."Id", OLD."BillableOperationId", OLD."RunId", OLD."AmountUsd",
+                     OLD."Reason", OLD."CreatedAt");
+            END;
+            """);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.Accounting = EnabledRule(days: 1);
+
+        settings.Retention.AccountingMinimumDays = 30;
+
+        settings.Retention.CheckpointInterval = 1;
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Single(plan.CandidateIds);
+
+        Assert.Contains(
+            "accounting-adjustment:" + adjustmentId.ToString("D"),
+            plan.CandidateIds);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.Error.Code);
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = Assert.Single(
+            await operations.ListAsync(
+                new LongRunningOperationQuery(
+                    Kind: LongRunningOperationKinds.DataRetentionPrune)));
+
+        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+
+        byte[] checkpointPayload = Assert.IsType<byte[]>(operation.CheckpointPayload);
+
+        string[] checkpointLines = Encoding.UTF8
+            .GetString(checkpointPayload)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal("0", checkpointLines[2]);
+
+        Assert.Equal(1, await CountAllAsync("CostAdjustments"));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_RollsBackEntryIndexesWhenEntryDeletionFails()
+    {
+
+        RequireSqlCipher();
+
+        (_, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        await SeedEntryEmbeddingAsync(entryId);
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER fail_retention_entry_delete
+            BEFORE DELETE ON "Entries"
+            BEGIN
+                SELECT RAISE(ABORT, 'retention entry delete test');
+            END;
+            """);
+
+        await Assert.ThrowsAsync<SqliteException>(
+            () => ExecuteAsync(
+                "DELETE FROM \"Entries\" WHERE lower(replace(\"Id\", '-', '')) = @id",
+                ("@id", entryId.ToString("N"))));
+
+        Assert.Equal(1, await CountAllAsync("Entries"));
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.Entries = EnabledRule();
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Single(plan.CandidateIds);
+
+        Assert.Contains(
+            "entry:" + entryId.ToString("D"),
+            plan.CandidateIds);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(1, await CountAllAsync("Entries"));
+
+        Assert.Equal(1, await CountAllAsync("entry_embeddings"));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_ResetMemory_RollsBackScopeWhenDependentDeletionFails()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        _ = await SeedAttachmentAsync(sessionId, entryId);
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER fail_retention_chunk_delete
+            BEFORE DELETE ON session_attachment_chunks
+            BEGIN
+                SELECT RAISE(ABORT, 'retention chunk delete test');
+            END;
+            """);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(
+            DataRetentionOperation.ResetMemory,
+            TargetId: null,
+            MemoryResetScope.Attachments);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(1, await CountAllAsync("session_attachment_chunks"));
+
+        Assert.Equal(1, await CountAllAsync("session_attachment_embeddings"));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_FactoryReset_RemovesOwnedDataAndDerivedIndexesButPreservesExternalAndOperationalFiles()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        await SeedEntryEmbeddingAsync(entryId);
+
+        _ = await SeedAttachmentAsync(sessionId, entryId);
+
+        string chunkId = "factory-" + Guid.NewGuid().ToString("N");
+
+        await ExecuteAsync(
+            """
+            INSERT INTO workspace_file_chunks
+                (ChunkId, WorkspacePath, RelativePath, ChunkIndex, Content, CharOffset,
+                 CharLength, FileLastWriteTime, IndexedAt)
+            VALUES
+                (@id, '/workspace', 'factory.cs', 0, 'old', 0, 3, @at, @at)
+            """,
+            ("@id", chunkId),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO workspace_file_embeddings (ChunkId, Embedding, Dim)
+            VALUES (@id, @embedding, 1)
+            """,
+            ("@id", chunkId),
+            ("@embedding", new byte[] { 0, 0, 128, 63 }));
+
+        Guid alertId = Guid.NewGuid();
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "BudgetAlerts"
+                ("Id", "Threshold", "AlertedAt", "SpendUsd", "DailyLimitUsd")
+            VALUES
+                (@id, 0.8, @at, 8.0, 10.0)
+            """,
+            ("@id", alertId.ToString()),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "UnseenServantWatermarks"
+                ("JobKey", "LastRunAt", "EffectiveIntervalMinutes")
+            VALUES
+                ('factory-reset-job', @at, 30)
+            """,
+            ("@at", OldTimestamp));
+
+        LongRunningOperationStore operations = new(_db!);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperation priorOperation = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Completed before factory reset.",
+                now.AddDays(-2)));
+
+        LongRunningOperationLeaseResult priorLease = await operations.TryAcquireLeaseAsync(
+            priorOperation.Id,
+            "completed-before-factory-reset",
+            now.AddDays(-2),
+            now.AddDays(-2).AddMinutes(5));
+
+        Assert.True(priorLease.Acquired);
+
+        bool priorCompleted = await operations.TryTransitionAsync(
+            priorOperation.Id,
+            priorLease.Operation.Revision,
+            "completed-before-factory-reset",
+            LongRunningOperationState.Completed,
+            now.AddDays(-2).AddMinutes(1));
+
+        Assert.True(priorCompleted);
+
+        string auditPath = Path.Combine(_logsRoot, "audit-20000101.jsonl");
+
+        string operationalLogPath = Path.Combine(
+            _logsRoot,
+            "arcanum-api-20260802.json");
+
+        await File.WriteAllTextAsync(auditPath, "{}\n");
+
+        await File.WriteAllTextAsync(operationalLogPath, "{}\n");
+
+        string externalBackup = Path.Combine(
+            Directory.GetParent(_attachmentsRoot)!.FullName,
+            "external-backup.arc");
+
+        await File.WriteAllTextAsync(externalBackup, "backup");
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Contains(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.CostAdjustments
+                && item.Rows == 1);
+
+        Assert.Contains(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.LongRunningOperations
+                && item.Rows == 1);
+
+        Assert.Contains(
+            plan.Items,
+            static item => item.DataClass == RetentionDataClass.DaemonExecutions
+                && item.Rows == 1);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(0, await CountAllAsync("Sessions"));
+
+        Assert.Equal(0, await CountAllAsync("Entries"));
+
+        Assert.Equal(0, await CountAllAsync("entry_embeddings"));
+
+        Assert.Equal(0, await CountAllAsync("workspace_file_chunks"));
+
+        Assert.Equal(0, await CountAllAsync("workspace_file_embeddings"));
+
+        Assert.Equal(0, await CountAllAsync("BudgetAlerts"));
+
+        Assert.Equal(0, await CountAllAsync("UnseenServantWatermarks"));
+
+        if (await TableExistsInTestAsync("entry_embeddings_vec"))
+        {
+
+            Assert.Equal(0, await CountAllAsync("entry_embeddings_vec"));
+
+        }
+
+        if (await TableExistsInTestAsync("workspace_file_embeddings_vec"))
+        {
+
+            Assert.Equal(0, await CountAllAsync("workspace_file_embeddings_vec"));
+
+        }
+
+        Assert.False(File.Exists(auditPath));
+
+        Assert.True(File.Exists(operationalLogPath));
+
+        Assert.True(File.Exists(externalBackup));
+
+        Assert.True(result.Value.Reconciled);
+
+        LongRunningOperation remainingOperation = Assert.Single(
+            await operations.ListAsync(
+                new LongRunningOperationQuery(Limit: 10)));
+
+        Assert.NotEqual(priorOperation.Id, remainingOperation.Id);
+
+        Assert.Equal(LongRunningOperationState.Completed, remainingOperation.State);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_FactoryReset_RollsBackEveryDatabaseDeletionWhenDependencyFails()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        await SeedEntryEmbeddingAsync(entryId);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        await ExecuteAsync(
+            """
+            CREATE TRIGGER fail_factory_session_delete
+            BEFORE DELETE ON "Sessions"
+            BEGIN
+                SELECT RAISE(ABORT, 'factory transaction rollback test');
+            END;
+            """);
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(1, await CountAllAsync("Sessions"));
+
+        Assert.Equal(1, await CountAllAsync("Entries"));
+
+        Assert.Equal(1, await CountAllAsync("entry_embeddings"));
+
+        Assert.Equal(1, await CountAllAsync("SessionAttachments"));
+
+        Assert.Equal(1, await CountAllAsync("session_attachment_chunks"));
+
+        Assert.True(File.Exists(attachment.AbsolutePath));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_FactoryReset_WhenManagedFileIdentityChanges_PreservesDatabaseAndBytes()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        Assert.True(
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                attachment.AbsolutePath,
+                out FileHandleMetadata originalMetadata));
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Func<string, FileHandleMetadata?>? previousSeam =
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests;
+
+        int attachmentReads = 0;
+
+        try
+        {
+
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = path =>
+            {
+
+                if (!string.Equals(
+                        Path.GetFullPath(path),
+                        Path.GetFullPath(attachment.AbsolutePath),
+                        StringComparison.Ordinal))
+                {
+
+                    return ReadActualNoFollowMetadata(path);
+
+                }
+
+                attachmentReads++;
+
+                return attachmentReads == 1
+                    ? originalMetadata
+                    : originalMetadata with
+                    {
+
+                        Identity = new FileHandleIdentity(
+                            originalMetadata.Identity.VolumeId,
+                            originalMetadata.Identity.FileId + 1),
+
+                    };
+
+            };
+
+            Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+                new DataRetentionApplyRequest(request, plan.PlanId),
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(1, await CountAllAsync("Sessions"));
+
+            Assert.Equal(1, await CountAllAsync("SessionAttachments"));
+
+            Assert.True(File.Exists(attachment.AbsolutePath));
+
+        }
+        finally
+        {
+
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = previousSeam;
+
+        }
+
+    }
+
+    [SkippableFact]
+
+    public async Task PlanAsync_FactoryReset_WhenManagedTreeContainsSymlink_FailsClosedWithoutFollowingTarget()
+    {
+
+        RequireSqlCipher();
+
+        Skip.If(OperatingSystem.IsWindows(), "Symbolic-link creation requires platform privileges on Windows.");
+
+        string externalPath = Path.Combine(
+            Directory.GetParent(_attachmentsRoot)!.FullName,
+            "factory-reset-external.txt");
+
+        string linkPath = Path.Combine(
+            _attachmentsRoot,
+            "factory-reset-link.txt");
+
+        await File.WriteAllTextAsync(externalPath, "preserve me");
+
+        File.CreateSymbolicLink(linkPath, externalPath);
+
+        try
+        {
+
+            IDataRetentionService service = CreateService();
+
+            await Assert.ThrowsAnyAsync<IOException>(
+                () => service.PlanAsync(
+                    new DataRetentionRequest(DataRetentionOperation.FactoryReset),
+                    CancellationToken.None));
+
+            Assert.Equal("preserve me", await File.ReadAllTextAsync(externalPath));
+
+        }
+        finally
+        {
+
+            File.Delete(linkPath);
+
+        }
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData(false)]
+
+    [InlineData(true)]
+
+    public async Task PlanAsync_FactoryReset_WhenManagedRootIsNotOrdinaryDirectory_FailsClosed(
+        bool symbolicLink)
+    {
+
+        RequireSqlCipher();
+
+        if (symbolicLink && OperatingSystem.IsWindows())
+        {
+
+            Skip.If(true, "Symbolic-link creation requires platform privileges on Windows.");
+
+            return;
+
+        }
+
+        Directory.Delete(_attachmentsRoot);
+
+        string externalDirectory = Path.Combine(
+            Directory.GetParent(_attachmentsRoot)!.FullName,
+            "factory-reset-root-target");
+
+        if (symbolicLink)
+        {
+
+            Directory.CreateDirectory(externalDirectory);
+
+            Directory.CreateSymbolicLink(_attachmentsRoot, externalDirectory);
+
+        }
+        else
+        {
+
+            await File.WriteAllTextAsync(_attachmentsRoot, "wrong kind");
+
+        }
+
+        try
+        {
+
+            IDataRetentionService service = CreateService();
+
+            await Assert.ThrowsAnyAsync<IOException>(
+                () => service.PlanAsync(
+                    new DataRetentionRequest(DataRetentionOperation.FactoryReset),
+                    CancellationToken.None));
+
+        }
+        finally
+        {
+
+            if (symbolicLink)
+            {
+
+                Directory.Delete(_attachmentsRoot);
+
+            }
+            else
+            {
+
+                File.Delete(_attachmentsRoot);
+
+            }
+
+            Directory.CreateDirectory(_attachmentsRoot);
+
+        }
+
+    }
+
+    [SkippableFact]
+
+    public async Task PlanAsync_FactoryReset_WhenManagedDirectoryIsInaccessible_FailsClosedAndPreservesData()
+    {
+
+        RequireSqlCipher();
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            Skip.If(true, "Unix permission behavior is required by this test.");
+
+            return;
+
+        }
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        string attachmentDirectory = Path.GetDirectoryName(attachment.AbsolutePath)!;
+
+        UnixFileMode originalMode = File.GetUnixFileMode(attachmentDirectory);
+
+        File.SetUnixFileMode(attachmentDirectory, UnixFileMode.None);
+
+        try
+        {
+
+            IDataRetentionService service = CreateService();
+
+            await Assert.ThrowsAnyAsync<IOException>(
+                () => service.PlanAsync(
+                    new DataRetentionRequest(DataRetentionOperation.FactoryReset),
+                    CancellationToken.None));
+
+            Assert.Equal(1, await CountAllAsync("Sessions"));
+
+            Assert.Equal(1, await CountAllAsync("SessionAttachments"));
+
+        }
+        finally
+        {
+
+            File.SetUnixFileMode(attachmentDirectory, originalMode);
+
+        }
+
+        Assert.True(File.Exists(attachment.AbsolutePath));
+
+    }
+
+    [SkippableFact]
+
+    public async Task PersistAttachment_WhenFactoryResetWinsBeforeRowInsert_DoesNotPublishMissingBytes()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        SessionAttachmentStore attachments = new(
+            _db!,
+            Options.Create(new ArcanumSettings()),
+            _attachmentsRoot,
+            new EncryptedBlobStore(
+                new RetentionTestFileEncryptionKeyProvider(),
+                new EncryptedBlobStoreOptions { ChunkSize = 64 }));
+
+        DataRetentionService retention = CreateService();
+
+        Result<DataRetentionApplyResult>? reset = null;
+
+        attachments.AfterBytesCommittedBeforeDbForTesting = async cancellationToken =>
+        {
+
+            DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
+
+            DataRetentionPlan plan = await retention.PlanAsync(
+                request,
+                cancellationToken);
+
+            reset = await retention.ApplyAsync(
+                new DataRetentionApplyRequest(request, plan.PlanId),
+                cancellationToken);
+
+            Assert.True(reset.IsSuccess, reset.Error.Message);
+
+        };
+
+        await Assert.ThrowsAnyAsync<IOException>(
+            () => attachments.PersistNewAsync(
+                sessionId,
+                pendingTurnId: null,
+                entryId,
+                "factory-race.txt",
+                "factory-race.txt",
+                Encoding.UTF8.GetBytes("factory reset race"),
+                "text/plain",
+                SessionAttachmentKind.Text));
+
+        Assert.NotNull(reset);
+
+        Assert.True(reset!.IsSuccess, reset.Error.Message);
+
+        Assert.Equal(0, await CountAllAsync("Sessions"));
+
+        Assert.Equal(0, await CountAllAsync("SessionAttachments"));
+
+        Assert.Empty(
+            Directory.EnumerateFiles(
+                _attachmentsRoot,
+                "*",
+                SearchOption.AllDirectories));
+
+    }
+
+    [SkippableFact]
+
+    public async Task PersistAttachment_WhenOwnedBlobIsReplacedBeforeRowInsert_PreservesReplacement()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        SessionAttachmentStore attachments = new(
+            _db!,
+            Options.Create(new ArcanumSettings()),
+            _attachmentsRoot,
+            new EncryptedBlobStore(
+                new RetentionTestFileEncryptionKeyProvider(),
+                new EncryptedBlobStoreOptions { ChunkSize = 64 }));
+
+        byte[] replacement = Encoding.UTF8.GetBytes("replacement owned by another actor");
+
+        string? attachmentPath = null;
+
+        attachments.AfterBytesCommittedBeforeDbForTesting = async _ =>
+        {
+
+            attachmentPath = Assert.Single(
+                Directory.EnumerateFiles(
+                    _attachmentsRoot,
+                    "*",
+                    SearchOption.AllDirectories));
+
+            File.Delete(attachmentPath);
+
+            await File.WriteAllBytesAsync(attachmentPath, replacement);
+
+        };
+
+        await Assert.ThrowsAnyAsync<IOException>(
+            () => attachments.PersistNewAsync(
+                sessionId,
+                pendingTurnId: null,
+                entryId,
+                "replacement-race.txt",
+                "replacement-race.txt",
+                Encoding.UTF8.GetBytes("original encrypted bytes"),
+                "text/plain",
+                SessionAttachmentKind.Text));
+
+        Assert.NotNull(attachmentPath);
+
+        Assert.Equal(replacement, await File.ReadAllBytesAsync(attachmentPath));
+
+        Assert.Equal(0, await CountAllAsync("SessionAttachments"));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ApplyAsync_FactoryReset_WhenPostCommitFinalizationFails_RemainsRecoverableAndRetries()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        DataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Func<string, FileHandleMetadata?>? previousSeam =
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests;
+
+        int quarantinedFileReads = 0;
+
+        try
+        {
+
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = path =>
+            {
+
+                string? parentName = Path.GetFileName(Path.GetDirectoryName(path));
+
+                if (string.Equals(
+                        Path.GetFileName(path),
+                        Path.GetFileName(attachment.AbsolutePath),
+                        StringComparison.Ordinal)
+                    && parentName?.StartsWith(
+                        ".arcanum-cleanup-",
+                        StringComparison.Ordinal) == true
+                    && ++quarantinedFileReads >= 2)
+                {
+
+                    return null;
+
+                }
+
+                return ReadActualNoFollowMetadata(path);
+
+            };
+
+            Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+                new DataRetentionApplyRequest(request, plan.PlanId),
+                CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+        }
+        finally
+        {
+
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = previousSeam;
+
+        }
+
+        Assert.Equal(0, await CountAllAsync("Sessions"));
+
+        Assert.Equal(0, await CountAllAsync("SessionAttachments"));
+
+        Assert.False(File.Exists(attachment.AbsolutePath));
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation pending = Assert.Single(
+            await operations.ListAsync(new LongRunningOperationQuery(Limit: 10)),
+            static operation =>
+                operation.Kind == LongRunningOperationKinds.DataRetentionFactoryReset);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, pending.State);
+
+        LongRunningOperationReconciler reconciler = new(
+            operations,
+            [new DataRetentionFactoryResetRecoveryHandler(service)],
+            TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance);
+
+        LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileNowAsync(
+            "factory-finalizer-recovery-test",
+            maxOperations: 10,
+            maxConcurrency: 1,
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.Completed);
+
+        Assert.Equal(0, summary.RequiresAttention);
+
+        LongRunningOperation completed = Assert.IsType<LongRunningOperation>(
+            await operations.GetAsync(pending.Id));
+
+        Assert.Equal(LongRunningOperationState.Completed, completed.State);
+
+        Assert.DoesNotContain(
+            Directory.EnumerateFileSystemEntries(
+                _attachmentsRoot,
+                "*",
+                SearchOption.AllDirectories),
+            path => path.Contains(".arcanum-cleanup-", StringComparison.Ordinal));
+
+    }
+
+    [SkippableFact]
+
+    public async Task RecoverFactoryResetAsync_RerunsInterruptedCleanupAndReconcilesOwnMarker()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+
+        DataRetentionService service = CreateService();
+
+        LongRunningOperationStore operations = new(_db!);
+
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow.AddMinutes(-10);
+
+        LongRunningOperation operation = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionFactoryReset,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "Interrupted factory reset.",
+                startedAt));
+
+        LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(
+            operation.Id,
+            "crashed-factory-owner",
+            startedAt,
+            startedAt.AddMinutes(1));
+
+        Assert.True(lease.Acquired);
+
+        LongRunningOperationReconciler reconciler = new(
+            operations,
+            [new DataRetentionFactoryResetRecoveryHandler(service)],
+            TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance);
+
+        LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileNowAsync(
+            "factory-recovery-test",
+            maxOperations: 10,
+            maxConcurrency: 1,
+            CancellationToken.None);
+
+        Assert.Equal(1, summary.Completed);
+
+        Assert.Equal(0, summary.RequiresAttention);
+
+        Assert.Equal(0, await CountAllAsync("Sessions"));
+
+        Assert.Equal(0, await CountAllAsync("Entries"));
+
+        Assert.Equal(0, await CountAllAsync("SessionAttachments"));
+
+        Assert.False(File.Exists(attachment.AbsolutePath));
+
+        LongRunningOperation recovered = Assert.IsType<LongRunningOperation>(
+            await operations.GetAsync(operation.Id));
+
+        Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+
+    }
+
+    private DataRetentionService CreateService(
+        ArcanumSettings? settings = null,
+        IDataRetentionPolicyStore? policyStore = null,
+        TimeProvider? timeProvider = null)
+    {
+
+        LongRunningOperationStore operations = new(_db!);
+
+        return new DataRetentionService(
+            _db!,
+            new TestOptionsMonitor<ArcanumSettings>(settings ?? new ArcanumSettings()),
+            operations,
+            timeProvider ?? TimeProvider.System,
+            NullLogger<DataRetentionService>.Instance,
+            _attachmentsRoot,
+            _filesRoot,
+            _logsRoot,
+            policyStore);
+
+    }
+
+    private const string OldTimestamp =
+        "2000-01-01T00:00:00.0000000+00:00";
+
+    private static RetentionRuleSettings EnabledRule(int days = 1) =>
+        new()
+        {
+
+            Enabled = true,
+
+            Days = days,
+
+        };
+
+    private static RetentionRuleSettings DisabledRule() =>
+        new()
+        {
+
+            Enabled = false,
+
+            Days = 30,
+
+        };
+
+    private static ArcanumSettings CreatePruneSettings() =>
+        new()
+        {
+
+            Retention = new RetentionSettings
+            {
+
+                AutomaticSweepsEnabled = false,
+
+                ActiveSessions = DisabledRule(),
+
+                ArchivedSessions = DisabledRule(),
+
+                Entries = DisabledRule(),
+
+                Attachments = DisabledRule(),
+
+                UploadedFiles = DisabledRule(),
+
+                CompletedBatches = DisabledRule(),
+
+                SagaMemories = DisabledRule(),
+
+                LexiconEntries = DisabledRule(),
+
+                WorkspaceIndexes = DisabledRule(),
+
+                SessionEntryEmbeddings = DisabledRule(),
+
+                AuditLogs = DisabledRule(),
+
+                GuardrailLogs = DisabledRule(),
+
+                IdempotencyClaims = DisabledRule(),
+
+                Accounting = DisabledRule(),
+
+                LongRunningOperations = DisabledRule(),
+
+                SanctumBreaches = DisabledRule(),
+
+                DaemonHistory = DisabledRule(),
+
+            },
+
+        };
+
+    private async Task<(ArcanumSettings Settings, string ExpectedCandidate)>
+        SeedStarvationScenarioAsync(string scenario)
+    {
+
+        const string blockedAt = "1999-01-01T00:00:00.0000000+00:00";
+
+        const string eligibleAt = "2000-01-01T00:00:00.0000000+00:00";
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        switch (scenario)
+        {
+
+            case "session":
+            {
+
+                (Guid blockedSessionId, _) = await SeedSessionAsync(pinned: true);
+
+                (Guid eligibleSessionId, _) = await SeedSessionAsync(pinned: false);
+
+                await ExecuteAsync(
+                    "UPDATE \"Sessions\" SET \"UpdatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                    ("@at", blockedAt),
+                    ("@id", blockedSessionId.ToString("N")));
+
+                await ExecuteAsync(
+                    "UPDATE \"Sessions\" SET \"UpdatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                    ("@at", eligibleAt),
+                    ("@id", eligibleSessionId.ToString("N")));
+
+                settings.Retention.ArchivedSessions = EnabledRule();
+
+                return (
+                    settings,
+                    "session:" + eligibleSessionId.ToString("D"));
+
+            }
+
+            case "batch":
+            {
+
+                Guid blockedFileId = Guid.NewGuid();
+
+                Guid eligibleFileId = Guid.NewGuid();
+
+                Guid blockedBatchId = Guid.NewGuid();
+
+                Guid eligibleBatchId = Guid.NewGuid();
+
+                await SeedUploadedFileAsync(blockedFileId, 0);
+
+                await SeedUploadedFileAsync(eligibleFileId, 0);
+
+                await ExecuteAsync(
+                    """
+                    INSERT INTO "Batches"
+                        ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt")
+                    VALUES
+                        (@id, @fileId, '/v1/chat/completions', @status, @at)
+                    """,
+                    ("@id", blockedBatchId.ToString()),
+                    ("@fileId", blockedFileId.ToString()),
+                    ("@status", BatchStatuses.InProgress),
+                    ("@at", blockedAt));
+
+                await ExecuteAsync(
+                    """
+                    INSERT INTO "Batches"
+                        ("Id", "InputFileId", "Endpoint", "Status", "CreatedAt", "CompletedAt")
+                    VALUES
+                        (@id, @fileId, '/v1/chat/completions', @status, @at, @at)
+                    """,
+                    ("@id", eligibleBatchId.ToString()),
+                    ("@fileId", eligibleFileId.ToString()),
+                    ("@status", BatchStatuses.Completed),
+                    ("@at", eligibleAt));
+
+                settings.Retention.CompletedBatches = EnabledRule();
+
+                return (
+                    settings,
+                    "batch:" + eligibleBatchId.ToString("D"));
+
+            }
+
+            case "entry":
+            {
+
+                (_, Guid blockedEntryId) = await SeedSessionAsync(pinned: true);
+
+                (_, Guid eligibleEntryId) = await SeedSessionAsync(pinned: false);
+
+                await ExecuteAsync(
+                    "UPDATE \"Entries\" SET \"CreatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                    ("@at", blockedAt),
+                    ("@id", blockedEntryId.ToString("N")));
+
+                await ExecuteAsync(
+                    "UPDATE \"Entries\" SET \"CreatedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                    ("@at", eligibleAt),
+                    ("@id", eligibleEntryId.ToString("N")));
+
+                settings.Retention.Entries = EnabledRule();
+
+                return (
+                    settings,
+                    "entry:" + eligibleEntryId.ToString("D"));
+
+            }
+
+            case "idempotency":
+            {
+
+                Guid blockedClaimId = Guid.NewGuid();
+
+                Guid eligibleClaimId = Guid.NewGuid();
+
+                await ExecuteAsync(
+                    """
+                    INSERT INTO "IdempotencyClaims"
+                        ("Id", "ClaimKeyHash", "FingerprintHash", "State", "OwnerId",
+                         "LeaseExpiresAt", "HeartbeatAt", "TerminalStreamComplete", "CreatedAt", "UpdatedAt")
+                    VALUES
+                        (@id, @key, 'blocked-fingerprint', @state, 'blocked-owner',
+                         @at, @at, 0, @at, @at)
+                    """,
+                    ("@id", blockedClaimId.ToString()),
+                    ("@key", "blocked-" + blockedClaimId.ToString("N")),
+                    ("@state", (int)IdempotencyClaimState.Running),
+                    ("@at", blockedAt));
+
+                await ExecuteAsync(
+                    """
+                    INSERT INTO "IdempotencyClaims"
+                        ("Id", "ClaimKeyHash", "FingerprintHash", "State", "OwnerId",
+                         "LeaseExpiresAt", "HeartbeatAt", "TerminalStreamComplete", "CreatedAt", "UpdatedAt")
+                    VALUES
+                        (@id, @key, 'eligible-fingerprint', @state, 'eligible-owner',
+                         @at, @at, 1, @at, @at)
+                    """,
+                    ("@id", eligibleClaimId.ToString()),
+                    ("@key", "eligible-" + eligibleClaimId.ToString("N")),
+                    ("@state", (int)IdempotencyClaimState.Completed),
+                    ("@at", eligibleAt));
+
+                settings.Retention.IdempotencyClaims = EnabledRule();
+
+                return (
+                    settings,
+                    "idempotency-claim:" + eligibleClaimId.ToString("D"));
+
+            }
+
+            case "accounting":
+            {
+
+                (Guid retainedSessionId, _) = await SeedSessionAsync(pinned: false);
+
+                Guid blockedRunId = Guid.NewGuid();
+
+                Guid eligibleRunId = Guid.NewGuid();
+
+                await SeedCompletedInferenceRunAsync(
+                    blockedRunId,
+                    retainedSessionId);
+
+                await SeedCompletedInferenceRunAsync(
+                    eligibleRunId,
+                    null);
+
+                await ExecuteAsync(
+                    "UPDATE \"InferenceRuns\" SET \"StartedAt\" = @at, \"CompletedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                    ("@at", blockedAt),
+                    ("@id", blockedRunId.ToString("N")));
+
+                await ExecuteAsync(
+                    "UPDATE \"InferenceRuns\" SET \"StartedAt\" = @at, \"CompletedAt\" = @at WHERE lower(replace(\"Id\", '-', '')) = @id",
+                    ("@at", eligibleAt),
+                    ("@id", eligibleRunId.ToString("N")));
+
+                settings.Retention.Accounting = EnabledRule();
+
+                settings.Retention.AccountingMinimumDays = 1;
+
+                return (
+                    settings,
+                    "accounting:" + eligibleRunId.ToString("D"));
+
+            }
+
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(scenario),
+                    scenario,
+                    "Unknown starvation scenario.");
+
+        }
+
+    }
+
+    private async Task<(Guid SessionId, Guid EntryId)> SeedSessionAsync(
+        bool pinned)
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid entryId = Guid.NewGuid();
+
+        DateTimeOffset createdAt = DateTimeOffset.Parse(
+            "2000-01-01T00:00:00Z",
+            CultureInfo.InvariantCulture);
+
+        _db!.Sessions.Add(
+            new Session
+            {
+
+                Id = sessionId,
+
+                Status = "archived",
+
+                CreatedAt = createdAt,
+
+                UpdatedAt = createdAt,
+
+            });
+
+        _db.Entries.Add(
+            new Entry
+            {
+
+                Id = entryId,
+
+                SessionId = sessionId,
+
+                Role = MessageRole.User,
+
+                Content = "Retain this test entry.",
+
+                ModelUsed = "test-model",
+
+                CreatedAt = createdAt,
+
+                Sequence = 1,
+
+                IsPinned = pinned,
+
+            });
+
+        await _db.SaveChangesAsync();
+
+        return (sessionId, entryId);
+
+    }
+
+    private Task SeedUploadedFileAsync(Guid fileId, long bytes) =>
+        ExecuteAsync(
+            """
+            INSERT INTO "UploadedFiles"
+                ("Id", "Filename", "Bytes", "Purpose", "MimeType", "CreatedAt")
+            VALUES
+                (@id, 'retention.jsonl', @bytes, 'batch', 'application/jsonl', @createdAt)
+            """,
+            ("@id", fileId.ToString()),
+            ("@bytes", bytes),
+            ("@createdAt", OldTimestamp));
+
+    private Task SeedCompletedInferenceRunAsync(
+        Guid runId,
+        Guid? sessionId) =>
+        ExecuteAsync(
+            """
+            INSERT INTO "InferenceRuns"
+                ("Id", "RequestId", "SessionId", "Surface", "Purpose", "StartedAt",
+                 "CompletedAt", "Status")
+            VALUES
+                (@id, @requestId, @sessionId, 'test', 'retention-test', @at, @at, @status)
+            """,
+            ("@id", runId.ToString()),
+            ("@requestId", "request-" + runId.ToString("N")),
+            ("@sessionId", sessionId is Guid value
+                ? (object)value.ToString()
+                : DBNull.Value),
+            ("@at", OldTimestamp),
+            ("@status", (int)InferenceRunStatus.Completed));
+
+    private Task SeedEntryEmbeddingAsync(Guid entryId) =>
+        ExecuteAsync(
+            """
+            INSERT INTO entry_embeddings (EntryId, Embedding, Dim)
+            VALUES (@entryId, @embedding, 1)
+            """,
+            ("@entryId", entryId.ToString()),
+            ("@embedding", new byte[] { 0, 0, 128, 63 }));
+
+    private async Task<SeededAttachment> SeedAttachmentAsync(
+        Guid sessionId,
+        Guid entryId)
+    {
+
+        Guid attachmentId = Guid.NewGuid();
+
+        string chunkId = "chunk-" + Guid.NewGuid().ToString("N");
+
+        byte[] bytes = [9, 8, 7, 6, 5, 4];
+
+        string relativePath = Path.Combine(
+            sessionId.ToString("N"),
+            attachmentId.ToString("N") + ".bin");
+
+        string absolutePath = Path.Combine(
+            _attachmentsRoot,
+            relativePath);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(absolutePath)!);
+
+        await File.WriteAllBytesAsync(absolutePath, bytes);
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "SessionAttachments"
+                ("Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey",
+                 "OriginalFileName", "Version", "RelativePath", "ContentSha256", "MimeType",
+                 "ByteLength", "Kind", "CreatedAt")
+            VALUES
+                (@id, @sessionId, @entryId, NULL, 'Bound', 'evidence', 'evidence.txt', 1,
+                 @relativePath, 'ATTACHMENT-HASH', 'text/plain', @byteLength, 'Text', @createdAt)
+            """,
+            ("@id", attachmentId.ToString()),
+            ("@sessionId", sessionId.ToString()),
+            ("@entryId", entryId.ToString()),
+            ("@relativePath", relativePath),
+            ("@byteLength", bytes.Length),
+            ("@createdAt", "2000-01-01T00:00:00.0000000+00:00"));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO session_attachment_chunks
+                (ChunkId, SessionId, AttachmentId, LogicalKey, Version, OriginalFileName, MimeType,
+                 ContentSha256, ChunkIndex, CharacterStart, CharacterEnd, StartLine, EndLine, Content,
+                 EmbeddingDimension, ExtractedAt, IndexedAt, RetrievalScope)
+            VALUES
+                (@chunkId, @sessionId, @attachmentId, 'evidence', 1, 'evidence.txt', 'text/plain',
+                 'ATTACHMENT-HASH', 0, 0, 8, 1, 1, 'evidence', 1, @at, @at, 'Latest')
+            """,
+            ("@chunkId", chunkId),
+            ("@sessionId", sessionId.ToString()),
+            ("@attachmentId", attachmentId.ToString()),
+            ("@at", "2000-01-01T00:00:00.0000000+00:00"));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO session_attachment_embeddings (ChunkId, Embedding, Dim)
+            VALUES (@chunkId, @embedding, 1)
+            """,
+            ("@chunkId", chunkId),
+            ("@embedding", new byte[] { 0, 0, 128, 63 }));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO session_attachment_index_state
+                (AttachmentId, Status, ContentSha256, AttemptCount, UpdatedAt)
+            VALUES
+                (@attachmentId, 'Indexed', 'ATTACHMENT-HASH', 1, @at)
+            """,
+            ("@attachmentId", attachmentId.ToString()),
+            ("@at", "2000-01-01T00:00:00.0000000+00:00"));
+
+        return new SeededAttachment(
+            attachmentId,
+            chunkId,
+            bytes,
+            absolutePath);
+
+    }
+
+    private async Task SeedSagaAndLexiconProvenanceAsync(
+        Guid sessionId,
+        Guid attachmentId)
+    {
+
+        await ExecuteAsync(
+            """
+            INSERT INTO saga_memories (Id, Content, CreatedAt, SessionId, Tags, Source)
+            VALUES ('memory-retained', 'Remembered fact', @at, @sessionId, NULL, 'attachment')
+            """,
+            ("@at", "2000-01-01T00:00:00.0000000+00:00"),
+            ("@sessionId", sessionId.ToString()));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO saga_memory_embeddings (MemoryId, Embedding, Dim)
+            VALUES ('memory-retained', @embedding, 1)
+            """,
+            ("@embedding", new byte[] { 0, 0, 128, 63 }));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO saga_memory_attachment_provenance
+                (MemoryId, SessionId, AttachmentId, LogicalKey, Version, ContentHash,
+                 MaterializedAt, SourceType)
+            VALUES
+                ('memory-retained', @sessionId, @attachmentId, 'evidence', 1, 'ATTACHMENT-HASH',
+                 @at, 'WorkspaceFile')
+            """,
+            ("@sessionId", sessionId.ToString()),
+            ("@attachmentId", attachmentId.ToString()),
+            ("@at", "2000-01-01T00:00:00.0000000+00:00"));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO lexicon_entries
+                (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt)
+            VALUES
+                ('lexicon-retained', 'Retained', 'retained', 'concept',
+                 '["retained fact"]', 'retained fact', @at)
+            """,
+            ("@at", "2000-01-01T00:00:00.0000000+00:00"));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO lexicon_fact_attachment_provenance
+                (EntryId, FactHash, Fact, SessionId, AttachmentId, LogicalKey, Version,
+                 ContentHash, MaterializedAt, SourceType)
+            VALUES
+                ('lexicon-retained', 'FACT-HASH', 'retained fact', @sessionId, @attachmentId,
+                 'evidence', 1, 'ATTACHMENT-HASH', @at, 'WorkspaceFile')
+            """,
+            ("@sessionId", sessionId.ToString()),
+            ("@attachmentId", attachmentId.ToString()),
+            ("@at", "2000-01-01T00:00:00.0000000+00:00"));
+
+    }
+
+    private async Task<int> ReadAttachmentAvailabilityAsync(
+        string provenanceTable)
+    {
+
+        SqliteConnection connection =
+            (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"""
+            SELECT EXISTS(
+                SELECT 1
+                FROM "SessionAttachments" attachment
+                WHERE attachment."Id" = provenance.AttachmentId
+                  AND attachment."State" = 'Bound')
+            FROM "{provenanceTable}" provenance
+            LIMIT 1
+            """;
+
+        object? value = await command.ExecuteScalarAsync();
+
+        return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+
+    }
+
+    private async Task<int> CountAllAsync(string table)
+    {
+
+        SqliteConnection connection =
+            (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"SELECT COUNT(*) FROM \"{table}\"";
+
+        object? value = await command.ExecuteScalarAsync();
+
+        return Convert.ToInt32(value, CultureInfo.InvariantCulture);
+
+    }
+
+    private async Task<bool> TableExistsInTestAsync(string table)
+    {
+
+        SqliteConnection connection =
+            (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText =
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = @name)";
+
+        command.Parameters.AddWithValue("@name", table);
+
+        object? value = await command.ExecuteScalarAsync();
+
+        return Convert.ToInt32(value, CultureInfo.InvariantCulture) != 0;
+
+    }
+
+    private async Task<int> CountAsync(
+        string table,
+        string column,
+        string value)
+    {
+
+        SqliteConnection connection =
+            (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"""
+            SELECT COUNT(*)
+            FROM "{table}"
+            WHERE "{column}" = @value
+            """;
+
+        command.Parameters.AddWithValue("@value", value);
+
+        object? count = await command.ExecuteScalarAsync();
+
+        return Convert.ToInt32(count, CultureInfo.InvariantCulture);
+
+    }
+
+    private async Task ExecuteAsync(
+        string sql,
+        params (string Name, object Value)[] parameters)
+    {
+
+        SqliteConnection connection =
+            (SqliteConnection)_db!.Database.GetDbConnection();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        foreach ((string name, object value) in parameters)
+        {
+
+            command.Parameters.AddWithValue(name, value);
+
+        }
+
+        _ = await command.ExecuteNonQueryAsync();
+
+    }
+
+    private static void RequireSqlCipher() =>
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+    private static FileHandleMetadata? ReadActualNoFollowMetadata(string path)
+    {
+
+        Func<string, FileHandleMetadata?>? seam =
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests;
+
+        FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = null;
+
+        try
+        {
+
+            return FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                path,
+                out FileHandleMetadata metadata)
+                ? metadata
+                : null;
+
+        }
+        finally
+        {
+
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = seam;
+
+        }
+
+    }
+
+    private sealed class SequencedRetentionPolicyStore(
+        RetentionSettings initial,
+        RetentionSettings subsequent,
+        int initialReads) : IDataRetentionPolicyStore
+    {
+
+        private int _reads;
+
+        public RetentionSettings Current =>
+            Interlocked.Increment(ref _reads) <= initialReads
+                ? initial
+                : subsequent;
+
+        public Task<Result<RetentionSettings>> UpdateRuleAsync(
+            RetentionRuleUpdateRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("This test policy store is read-only.");
+
+    }
+
+    private sealed class RetentionTestFileEncryptionKeyProvider : IFileEncryptionKeyProvider
+    {
+
+        private readonly FileEncryptionKeyMaterial _material =
+            FileEncryptionKeyMaterial.Create(
+                Enumerable.Range(0, 32)
+                    .Select(static value => (byte)value)
+                    .ToArray());
+
+        public ValueTask<FileEncryptionKeyMaterial> GetForWriteAsync(
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(_material);
+
+        public ValueTask<FileEncryptionKeyMaterial> GetForReadAsync(
+            string keyId,
+            CancellationToken cancellationToken = default)
+        {
+
+            if (!string.Equals(keyId, _material.KeyId, StringComparison.Ordinal))
+            {
+
+                throw new EncryptedBlobKeyException("The test encryption key is unavailable.");
+
+            }
+
+            return ValueTask.FromResult(_material);
+
+        }
+
+    }
+
+    private sealed record SeededAttachment(
+        Guid AttachmentId,
+        string ChunkId,
+        byte[] Bytes,
+        string AbsolutePath);
+
+}

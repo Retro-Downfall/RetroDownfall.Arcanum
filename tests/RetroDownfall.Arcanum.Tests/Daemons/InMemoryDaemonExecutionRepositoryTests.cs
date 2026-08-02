@@ -95,9 +95,23 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
-        string firstId = await repository.StartAsync("daemon-a", "Daemon A", CancellationToken.None);
+        Task<string> firstStart = repository.StartAsync(
+            "daemon-a",
+            "Daemon A",
+            CancellationToken.None);
 
-        string secondId = await repository.StartAsync("daemon-b", "Daemon B", CancellationToken.None);
+        Task<string> secondStart = repository.StartAsync(
+            "daemon-b",
+            "Daemon B",
+            CancellationToken.None);
+
+        string[] executionIds = await Task.WhenAll(
+            firstStart,
+            secondStart);
+
+        string firstId = executionIds[0];
+
+        string secondId = executionIds[1];
 
         Assert.True(repository.HasRunningExecution("daemon-a"));
 
@@ -112,6 +126,73 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         await repository.CompleteAsync(secondId, CancellationToken.None);
 
         Assert.False(repository.HasRunningExecution("daemon-b"));
+
+    }
+
+    [Fact]
+
+    public async Task StartAsync_WaitsForExclusiveMutationLease_ThenStarts()
+    {
+
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+
+        IDaemonExecutionMutationGate gate = repository;
+
+        IAsyncDisposable lease = await gate.AcquireExclusiveAsync(
+            CancellationToken.None);
+
+        Task<string> start = repository.StartAsync(
+            "daemon-gated",
+            "Daemon Gated",
+            CancellationToken.None);
+
+        await Task.Yield();
+
+        Assert.False(start.IsCompleted);
+
+        await lease.DisposeAsync();
+
+        string executionId = await start.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(repository.HasRunningExecution("daemon-gated"));
+
+        DaemonExecutionDetail? detail = await repository.GetAsync(
+            executionId,
+            CancellationToken.None);
+
+        Assert.NotNull(detail);
+
+        Assert.Equal(DaemonJobStatus.Running, detail!.Status);
+
+    }
+
+    [Fact]
+
+    public async Task TryStartAsync_WaitsForExclusiveMutationLease_ThenStarts()
+    {
+
+        InMemoryDaemonExecutionRepository repository = CreateRepository();
+
+        IDaemonExecutionMutationGate gate = repository;
+
+        IAsyncDisposable lease = await gate.AcquireExclusiveAsync(
+            CancellationToken.None);
+
+        Task<bool> start = repository.TryStartAsync(
+            "daemon-gated-try",
+            "Daemon Gated Try",
+            "gated-execution",
+            CancellationToken.None);
+
+        await Task.Yield();
+
+        Assert.False(start.IsCompleted);
+
+        await lease.DisposeAsync();
+
+        Assert.True(await start.WaitAsync(TimeSpan.FromSeconds(2)));
+
+        Assert.True(repository.HasRunningExecution("daemon-gated-try"));
 
     }
 

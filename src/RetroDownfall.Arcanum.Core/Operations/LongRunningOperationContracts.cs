@@ -39,6 +39,12 @@ public static class LongRunningOperationKinds
     public const string IdempotencyClaim = "idempotency-claim";
     public const string BlobEncryptionMigration = "blob-encryption-migration";
     public const string BlobEncryptionKeyRotation = "blob-encryption-key-rotation";
+
+    public const string DataRetentionPrune = "data-retention-prune";
+
+    public const string DataRetentionMutation = "data-retention-mutation";
+
+    public const string DataRetentionFactoryReset = "data-retention-factory-reset";
 }
 
 public static class LongRunningOperationErrorCodes
@@ -68,6 +74,9 @@ public static class LongRunningOperationPolicyCatalog
             [LongRunningOperationKinds.IdempotencyClaim] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
             [LongRunningOperationKinds.BlobEncryptionMigration] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
             [LongRunningOperationKinds.BlobEncryptionKeyRotation] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            [LongRunningOperationKinds.DataRetentionPrune] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            [LongRunningOperationKinds.DataRetentionMutation] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            [LongRunningOperationKinds.DataRetentionFactoryReset] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
         };
 
     public static IReadOnlyDictionary<string, LongRunningOperationRecoveryPolicy> Registered => Policies;
@@ -218,6 +227,13 @@ public interface ILongRunningOperationStore
         LongRunningOperationCreateRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<LongRunningOperation?> TryStartSingleFlightAsync(
+        LongRunningOperationCreateRequest request,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default);
+
     Task<LongRunningOperation?> GetAsync(
         Guid operationId,
         CancellationToken cancellationToken = default);
@@ -244,6 +260,24 @@ public interface ILongRunningOperationStore
         DateTimeOffset utcNow,
         DateTimeOffset leaseExpiresAt,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Renews a lease from an independent persistence path while the owned workload may still be
+    /// using its scoped database connection. Implementations that do not need that separation can
+    /// use the ordinary heartbeat path.
+    /// </summary>
+    Task<bool> RenewLeaseAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        HeartbeatAsync(
+            operationId,
+            ownerId,
+            utcNow,
+            leaseExpiresAt,
+            cancellationToken);
 
     Task<bool> SaveCheckpointAsync(
         Guid operationId,

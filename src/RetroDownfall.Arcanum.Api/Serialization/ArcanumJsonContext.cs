@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Daemons;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -52,6 +53,19 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<LongRunningOperationDto>))]
 [JsonSerializable(typeof(ApiResponse<LongRunningOperationDto[]>))]
 [JsonSerializable(typeof(ApiResponse<LongRunningOperationReconciliationSummary>))]
+[JsonSerializable(typeof(DataRetentionRequest))]
+[JsonSerializable(typeof(DataRetentionApplyRequest))]
+[JsonSerializable(typeof(RetentionRuleUpdateRequest))]
+[JsonSerializable(typeof(MemoryResetRequest))]
+[JsonSerializable(typeof(FactoryResetRequest))]
+[JsonSerializable(typeof(DataRetentionStatus))]
+[JsonSerializable(typeof(DataRetentionPlan))]
+[JsonSerializable(typeof(DataRetentionApplyResult))]
+[JsonSerializable(typeof(RetentionSettings))]
+[JsonSerializable(typeof(ApiResponse<DataRetentionStatus>))]
+[JsonSerializable(typeof(ApiResponse<DataRetentionPlan>))]
+[JsonSerializable(typeof(ApiResponse<DataRetentionApplyResult>))]
+[JsonSerializable(typeof(ApiResponse<RetentionSettings>))]
 [JsonSerializable(typeof(ConfigurationValidationError))]
 [JsonSerializable(typeof(ConfigurationValidationError[]))]
 [JsonSerializable(typeof(ApiResponse<bool>))]

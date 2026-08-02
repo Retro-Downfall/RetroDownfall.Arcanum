@@ -21,6 +21,8 @@ public enum ConfigSection
 
     Cost,
 
+    Retention,
+
     Daemon,
 
     Cli,
@@ -47,6 +49,9 @@ public static class SectionDescriptors
         new(ConfigSection.Integrations, "Integrations", "\ue774", "A2A, CommLink, embeddings, MCP, and checks"),
         new(ConfigSection.Execution, "Execution", "\ue7c3", "Host concurrency and backpressure"),
         new(ConfigSection.Cost, "Cost", "\ue7cc", "Provider pricing and daily budget"),
+
+        new(ConfigSection.Retention, "Retention", "\ue74d", "Data lifecycle, pruning, and protected sessions"),
+
         new(ConfigSection.Daemon, "Daemon", "\ue7a6", "Unseen Servant schedules and concurrency"),
         new(ConfigSection.Cli, "CLI", "\ue7c7", "Terminal preferences"),
     ];

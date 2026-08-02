@@ -138,6 +138,8 @@ internal static partial class OpenAiV1Endpoints
 
         string path = UploadedFileStorage.ResolvePath(id);
 
+        bool publicationOwnsCleanup = false;
+
         try
         {
 
@@ -169,7 +171,11 @@ internal static partial class OpenAiV1Endpoints
                 descriptor.KeyId,
                 plaintextSha256);
 
-            await repository.CreateAsync(record, cancellationToken).ConfigureAwait(false);
+            publicationOwnsCleanup = true;
+
+            await repository
+                .CreateForOwnedFileAsync(record, cancellationToken)
+                .ConfigureAwait(false);
 
             return Results.Json(
                 OpenAiFileObject.FromRecord(record),
@@ -184,7 +190,12 @@ internal static partial class OpenAiV1Endpoints
 
             logger.LogError(ex, "Failed to persist uploaded file {FileId} to disk.", id);
 
-            TryDeleteFile(path);
+            if (!publicationOwnsCleanup)
+            {
+
+                TryDeleteFile(path);
+
+            }
 
             return JsonError("Failed to store the uploaded file.", "server_error", "internal_error", param: null, StatusCodes.Status500InternalServerError);
 
@@ -243,7 +254,11 @@ internal static partial class OpenAiV1Endpoints
 
     }
 
-    private static async Task<IResult> HandleDeleteAsync(string id, IUploadedFileRepository repository, CancellationToken cancellationToken)
+    private static async Task<IResult> HandleDeleteAsync(
+        string id,
+        IUploadedFileRepository repository,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
     {
 
         if (!TryParseFileId(id, out Guid fileGuid))
@@ -253,20 +268,96 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
-        UploadedFileRecord? record = await repository.GetByIdAsync(fileGuid, cancellationToken).ConfigureAwait(false);
+        UploadedFileDeleteStatus status;
 
-        if (record is null)
+        try
+        {
+
+            status = await repository
+                .TryDeleteUnreferencedAsync(fileGuid, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex)
+        {
+
+            ILogger logger = loggerFactory.CreateLogger(typeof(OpenAiV1Endpoints));
+
+            logger.LogError(ex, "Failed to delete uploaded file {FileId} safely.", fileGuid);
+
+            return JsonError(
+                "Failed to delete the uploaded file safely.",
+                "server_error",
+                "file_delete_failed",
+                "id",
+                StatusCodes.Status500InternalServerError);
+
+        }
+
+        if (status == UploadedFileDeleteStatus.NotFound)
         {
 
             return FileNotFoundResult(id);
 
         }
 
-        await repository.DeleteAsync(fileGuid, cancellationToken).ConfigureAwait(false);
+        if (status == UploadedFileDeleteStatus.ReferencedByBatch)
+        {
 
-        TryDeleteFile(UploadedFileStorage.ResolvePath(fileGuid));
+            return JsonError(
+                $"File '{id}' is referenced by a batch and cannot be deleted while that reference is retained.",
+                "invalid_request_error",
+                "file_referenced_by_batch",
+                "id",
+                StatusCodes.Status409Conflict);
 
-        return Results.Json(new OpenAiFileDeleteResponse(id, Deleted: true), ArcanumJsonContext.Default.OpenAiFileDeleteResponse);
+        }
+
+        if (status == UploadedFileDeleteStatus.StorageConflict)
+        {
+
+            return JsonError(
+                $"File '{id}' changed while deletion was being prepared; metadata and bytes were preserved.",
+                "server_error",
+                "file_delete_storage_conflict",
+                "id",
+                StatusCodes.Status500InternalServerError);
+
+        }
+
+        if (status == UploadedFileDeleteStatus.RecoveryRequired)
+        {
+
+            return JsonError(
+                $"File '{id}' could not be deleted completely; storage recovery is required.",
+                "server_error",
+                "file_delete_recovery_required",
+                "id",
+                StatusCodes.Status500InternalServerError);
+
+        }
+
+        if (status != UploadedFileDeleteStatus.Deleted)
+        {
+
+            return JsonError(
+                $"File '{id}' could not be deleted safely.",
+                "server_error",
+                "file_delete_failed",
+                "id",
+                StatusCodes.Status500InternalServerError);
+
+        }
+
+        return Results.Json(
+            new OpenAiFileDeleteResponse(id, Deleted: true),
+            ArcanumJsonContext.Default.OpenAiFileDeleteResponse);
 
     }
 

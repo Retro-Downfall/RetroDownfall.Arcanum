@@ -1,8 +1,10 @@
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Operations;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
@@ -13,8 +15,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunningOperationStore
 {
     private const int MaxKindLength = 100;
+
     private const int MaxSummaryLength = 1_024;
+
     private const int MaxOwnerLength = 200;
+
     private const int MaxErrorCodeLength = 200;
 
     private const string SelectColumns =
@@ -25,6 +30,11 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
         "AttemptCount", "CheckpointVersion", "CheckpointPayload", "CheckpointReference",
         "PublicSummary", "TerminalErrorCode", "Revision"
         """;
+
+    private readonly string? _sqliteConnectionString =
+        db.Database.GetDbConnection() is SqliteConnection sqlite
+            ? sqlite.ConnectionString
+            : null;
 
     public Task<LongRunningOperation> CreateAsync(
         LongRunningOperationCreateRequest request,
@@ -110,6 +120,172 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
             cancellationToken);
     }
 
+    public Task<LongRunningOperation?> TryStartSingleFlightAsync(
+        LongRunningOperationCreateRequest request,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.Kind);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.PublicSummary);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        if (!LongRunningOperationPolicyCatalog.IsRegistered(
+                request.Kind,
+                request.RecoveryPolicy))
+        {
+
+            throw new ArgumentException(
+                $"Operation kind '{request.Kind}' is not registered with recovery policy '{request.RecoveryPolicy}'.",
+                nameof(request));
+
+        }
+
+        if (leaseExpiresAt <= utcNow)
+        {
+
+            throw new ArgumentOutOfRangeException(
+                nameof(leaseExpiresAt),
+                "Lease expiry must be in the future.");
+
+        }
+
+        Guid id = Guid.NewGuid();
+
+        string kind = Bound(request.Kind, MaxKindLength);
+
+        string summary = Bound(request.PublicSummary, MaxSummaryLength);
+
+        string owner = Bound(ownerId, MaxOwnerLength);
+
+        return SqliteBusyRetry.ExecuteAsync<LongRunningOperation?>(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(
+                    cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand command = connection.CreateCommand();
+
+                // A single SQLite write statement is an implicit transaction, so competing
+
+                // connections cannot both pass the active-operation predicate and insert.
+
+                command.CommandText =
+                    """
+                    INSERT INTO "LongRunningOperations"
+                        ("Id", "Kind", "State", "RecoveryPolicy", "RootOperationId", "ParentOperationId",
+                         "SessionId", "RunId", "InferenceRunId", "BudgetReservationId", "IdempotencyClaimId",
+                         "CreatedAt", "StartedAt", "HeartbeatAt", "CompletedAt", "LeaseOwner", "LeaseExpiresAt",
+                         "AttemptCount", "CheckpointVersion", "CheckpointPayload", "CheckpointReference",
+                         "PublicSummary", "TerminalErrorCode", "Revision")
+                    SELECT
+                        @id, @kind, @running, @policy, @root, @parent,
+                        @session, @run, @inference, @reservation, @claim,
+                        @created, @now, @now, NULL, @owner, @lease,
+                        1, 0, NULL, NULL, @summary, NULL, 1
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM "LongRunningOperations"
+                        WHERE (
+                              "Kind" = @kind
+                              OR (@retentionKind = 1 AND "Kind" LIKE 'data-retention-%'))
+                          AND "State" IN (
+                              @pending,
+                              @running,
+                              @waiting,
+                              @cancelling,
+                              @reconciliation))
+                    """;
+
+                Add(command, "@id", Format(id));
+
+                Add(command, "@kind", kind);
+
+                Add(
+                    command,
+                    "@retentionKind",
+                    kind.StartsWith("data-retention-", StringComparison.Ordinal) ? 1 : 0);
+
+                Add(command, "@running", (int)LongRunningOperationState.Running);
+
+                Add(command, "@pending", (int)LongRunningOperationState.Pending);
+
+                Add(command, "@waiting", (int)LongRunningOperationState.Waiting);
+
+                Add(command, "@cancelling", (int)LongRunningOperationState.Cancelling);
+
+                Add(
+                    command,
+                    "@reconciliation",
+                    (int)LongRunningOperationState.ReconciliationRequired);
+
+                Add(command, "@policy", (int)request.RecoveryPolicy);
+
+                Add(command, "@root", FormatNullable(request.RootOperationId));
+
+                Add(command, "@parent", FormatNullable(request.ParentOperationId));
+
+                Add(command, "@session", FormatNullable(request.SessionId));
+
+                Add(command, "@run", FormatNullable(request.RunId));
+
+                Add(command, "@inference", FormatNullable(request.InferenceRunId));
+
+                Add(command, "@reservation", FormatNullable(request.BudgetReservationId));
+
+                Add(command, "@claim", FormatNullable(request.IdempotencyClaimId));
+
+                Add(command, "@created", Format(request.CreatedAt));
+
+                Add(command, "@now", Format(utcNow));
+
+                Add(command, "@owner", owner);
+
+                Add(command, "@lease", Format(leaseExpiresAt));
+
+                Add(command, "@summary", summary);
+
+                int inserted = await command
+                    .ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                return inserted == 0
+                    ? null
+                    : new LongRunningOperation(
+                        Id: id,
+                        Kind: kind,
+                        State: LongRunningOperationState.Running,
+                        RecoveryPolicy: request.RecoveryPolicy,
+                        RootOperationId: request.RootOperationId,
+                        ParentOperationId: request.ParentOperationId,
+                        SessionId: request.SessionId,
+                        RunId: request.RunId,
+                        InferenceRunId: request.InferenceRunId,
+                        BudgetReservationId: request.BudgetReservationId,
+                        IdempotencyClaimId: request.IdempotencyClaimId,
+                        CreatedAt: request.CreatedAt,
+                        StartedAt: utcNow,
+                        HeartbeatAt: utcNow,
+                        CompletedAt: null,
+                        LeaseOwner: owner,
+                        LeaseExpiresAt: leaseExpiresAt,
+                        AttemptCount: 1,
+                        CheckpointVersion: 0,
+                        CheckpointPayload: null,
+                        CheckpointReference: null,
+                        PublicSummary: summary,
+                        TerminalErrorCode: null,
+                        Revision: 1);
+
+            },
+            cancellationToken);
+
+    }
+
     public Task<LongRunningOperation?> GetAsync(
         Guid operationId,
         CancellationToken cancellationToken = default) =>
@@ -176,13 +352,23 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                     $"""
                     SELECT {SelectColumns}
                     FROM "LongRunningOperations"
-                    WHERE "State" IN (@running, @waiting)
+                    WHERE (
+                        "State" IN (@running, @waiting)
+                        OR (
+                            "State" = @attention
+                            AND "Kind" IN (@retentionPrune, @retentionMutation, @retentionFactory)
+                            AND "TerminalErrorCode" = @retentionRecoveryError))
                       AND ("LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
                     ORDER BY COALESCE("LeaseExpiresAt", "CreatedAt"), "Id"
                     LIMIT @limit
                     """;
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
+                Add(cmd, "@attention", (int)LongRunningOperationState.ReconciliationRequired);
+                Add(cmd, "@retentionPrune", LongRunningOperationKinds.DataRetentionPrune);
+                Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
+                Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
+                Add(cmd, "@retentionRecoveryError", ErrorCodes.Data.ReconciliationFailed);
                 Add(cmd, "@now", Format(utcNow));
                 Add(cmd, "@limit", Math.Clamp(limit, 1, 1_000));
                 return await ReadAllAsync(cmd, cancellationToken).ConfigureAwait(false);
@@ -219,12 +405,22 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                         "TerminalErrorCode" = NULL,
                         "Revision" = "Revision" + 1
                     WHERE "Id" = @id
-                      AND "State" IN (@pending, @running, @waiting)
+                      AND (
+                          "State" IN (@pending, @running, @waiting)
+                          OR (
+                              "State" = @attention
+                              AND "Kind" IN (@retentionPrune, @retentionMutation, @retentionFactory)
+                              AND "TerminalErrorCode" = @retentionRecoveryError))
                       AND ("LeaseOwner" IS NULL OR "LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
                     """;
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
+                Add(cmd, "@attention", (int)LongRunningOperationState.ReconciliationRequired);
+                Add(cmd, "@retentionPrune", LongRunningOperationKinds.DataRetentionPrune);
+                Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
+                Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
+                Add(cmd, "@retentionRecoveryError", ErrorCodes.Data.ReconciliationFailed);
                 Add(cmd, "@now", Format(utcNow));
                 Add(cmd, "@owner", Bound(ownerId, MaxOwnerLength));
                 Add(cmd, "@lease", Format(leaseExpiresAt));
@@ -272,6 +468,76 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
             cancellationToken);
     }
 
+    public Task<bool> RenewLeaseAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
+
+        if (leaseExpiresAt <= utcNow)
+        {
+
+            throw new ArgumentOutOfRangeException(nameof(leaseExpiresAt));
+
+        }
+
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                if (_sqliteConnectionString is null)
+                {
+
+                    return await HeartbeatAsync(
+                        operationId,
+                        ownerId,
+                        utcNow,
+                        leaseExpiresAt,
+                        cancellationToken).ConfigureAwait(false);
+
+                }
+
+                await using SqliteConnection connection = new(_sqliteConnectionString);
+
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+                await using SqliteCommand command = connection.CreateCommand();
+
+                command.CommandText =
+                    """
+                    UPDATE "LongRunningOperations"
+                    SET "HeartbeatAt" = @now, "LeaseExpiresAt" = @lease, "Revision" = "Revision" + 1
+                    WHERE "Id" = @id AND "LeaseOwner" = @owner
+                      AND "State" IN (@running, @waiting, @cancelling)
+                      AND "LeaseExpiresAt" > @now
+                    """;
+
+                Add(command, "@id", Format(operationId));
+
+                Add(command, "@owner", Bound(ownerId, MaxOwnerLength));
+
+                Add(command, "@now", Format(utcNow));
+
+                Add(command, "@lease", Format(leaseExpiresAt));
+
+                Add(command, "@running", (int)LongRunningOperationState.Running);
+
+                Add(command, "@waiting", (int)LongRunningOperationState.Waiting);
+
+                Add(command, "@cancelling", (int)LongRunningOperationState.Cancelling);
+
+                return await command.ExecuteNonQueryAsync(
+                    cancellationToken).ConfigureAwait(false) == 1;
+
+            },
+            cancellationToken);
+
+    }
+
     public Task<bool> SaveCheckpointAsync(
         Guid operationId,
         string ownerId,
@@ -285,7 +551,8 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         ArgumentException.ThrowIfNullOrWhiteSpace(publicSummary);
-        if (checkpointVersion <= expectedCheckpointVersion)
+        if (checkpointVersion <= 0
+            || checkpointVersion < expectedCheckpointVersion)
         {
             throw new ArgumentOutOfRangeException(nameof(checkpointVersion));
         }

@@ -21,7 +21,7 @@ public static class SettingDescriptors
         new("host.corsAllowedOrigins", ConfigSection.Host, "Allowed websites", "Websites that can access Arcanum. Add URLs like http://localhost:3000.", SettingKind.StringArray, Placeholder: "http://localhost:3000, http://localhost:8080"),
         new("host.listenAny", ConfigSection.Host, "Allow external connections", "Let other computers on your network connect to Arcanum. Requires HTTPS for security.", SettingKind.Bool),
         new("host.auditLog.enabled", ConfigSection.Host, "Keep conversation logs", "Save a record of all AI conversations for review.", SettingKind.Bool, Group: "Logging"),
-        new("host.auditLog.retentionDays", ConfigSection.Host, "Keep logs for (days)", "How many days to keep conversation logs before automatically deleting them.", SettingKind.Int, 1, 365, 1, ClampName: nameof(ArcanumSettingClamps.HostAuditLogRetentionDays), Group: "Logging", Placeholder: "30"),
+        new("host.auditLog.retentionDays", ConfigSection.Host, "Default audit lookback (days)", "Default lookback when an inference audit query omits its start time. Deletion is controlled by unified retention.", SettingKind.Int, 1, 365, 1, ClampName: nameof(ArcanumSettingClamps.HostAuditLogRetentionDays), Group: "Logging", Placeholder: "30"),
         new("host.auditLog.redactToolArguments", ConfigSection.Host, "Hide sensitive details in logs", "Remove potentially sensitive information from conversation logs.", SettingKind.Bool, Group: "Logging"),
         new("host.https.enabled", ConfigSection.Host, "Enable secure connection (HTTPS)", "Use encryption for all connections. Required for external access.", SettingKind.Bool, Group: "Secure connection"),
         new("host.https.port", ConfigSection.Host, "Secure connection port", "The port number for HTTPS connections. Must be different from the regular port.", SettingKind.Int, 1, 65_535, 1, ClampName: nameof(ArcanumSettingClamps.HostHttpsPort), Group: "Secure connection", Placeholder: "5002"),
@@ -56,7 +56,7 @@ public static class SettingDescriptors
         new("security.guardrails.allowedTopics", ConfigSection.Security, "Allowed topics", "Only allow conversations about these topics. Leave blank to allow all.", SettingKind.StringArray, Group: "Content filters", Placeholder: "programming, science"),
         new("security.guardrails.blockedTopics", ConfigSection.Security, "Blocked topics", "Block conversations about these topics.", SettingKind.StringArray, Group: "Content filters", Placeholder: "politics, religion"),
         new("security.guardrails.auditLog.enabled", ConfigSection.Security, "Log blocked content", "Keep a record of messages that were blocked by filters.", SettingKind.Bool, Group: "Content audit"),
-        new("security.guardrails.auditLog.retentionDays", ConfigSection.Security, "Keep content logs for (days)", "How many days to keep blocked content logs.", SettingKind.Int, 1, 365, 1, ClampName: nameof(ArcanumSettingClamps.HostAuditLogRetentionDays), Group: "Content audit", Placeholder: "30"),
+        new("security.guardrails.auditLog.retentionDays", ConfigSection.Security, "Default content-audit lookback (days)", "Default lookback when a guardrail audit query omits its start time. Deletion is controlled by unified retention.", SettingKind.Int, 1, 365, 1, ClampName: nameof(ArcanumSettingClamps.HostAuditLogRetentionDays), Group: "Content audit", Placeholder: "30"),
         new("security.perceptionWorkspaceRoots", ConfigSection.Security, "Folders AI can read", "Folders the AI is allowed to search and read files from.", SettingKind.StringArray, Group: "Folder access", Placeholder: "/home/user/projects, /home/user/documents"),
         new("security.spellWorkspaceRoots", ConfigSection.Security, "Folders AI can modify", "Folders where the AI can create, edit, or delete files.", SettingKind.StringArray, Group: "Folder access", Placeholder: "/home/user/projects"),
         new("security.campaignRoots", ConfigSection.Security, "Allowed project folders", "Folders where projects can be created or loaded from.", SettingKind.StringArray, Group: "Folder access", Placeholder: "/home/user/projects"),
@@ -149,6 +149,54 @@ public static class SettingDescriptors
         new("cost.budget.enabled", ConfigSection.Cost, "Enable spending limit", "Stop AI usage when daily budget is reached.", SettingKind.Bool, Group: "Budget control"),
         new("cost.budget.dailyLimitUsd", ConfigSection.Cost, "Daily spending limit (USD)", "Maximum amount to spend per day.", SettingKind.Float, 0, 1_000_000, 0.01, ClampName: nameof(ArcanumSettingClamps.BudgetDailyLimitUsd), Group: "Budget control", Placeholder: "100.00"),
 
+        // Retention
+
+        new("retention.automaticSweepsEnabled", ConfigSection.Retention, "Run retention sweeps automatically", "Opt in to scheduled retention sweeps. Manual preview and sweep commands remain available when this is off.", SettingKind.Bool, Group: "Sweep controls"),
+
+        new("retention.sweepIntervalHours", ConfigSection.Retention, "Sweep interval (hours)", "How often the host should start an automatic retention sweep.", SettingKind.Int, 1, 168, 1, ClampName: nameof(ArcanumSettingClamps.RetentionSweepIntervalHours), Group: "Sweep controls", Placeholder: "24"),
+
+        new("retention.maxItemsPerSweep", ConfigSection.Retention, "Maximum items per sweep", "Maximum number of eligible root candidates one retention sweep may select.", SettingKind.Int, 1, 10_000, 1, ClampName: nameof(ArcanumSettingClamps.RetentionMaxItemsPerSweep), Group: "Sweep controls", Placeholder: "500"),
+
+        new("retention.checkpointInterval", ConfigSection.Retention, "Checkpoint interval", "Commit progress after this many removed items. At runtime, the interval is also capped at the maximum items per sweep.", SettingKind.Int, 1, 10_000, 1, ClampName: nameof(ArcanumSettingClamps.RetentionCheckpointInterval), Group: "Sweep controls", Placeholder: "50"),
+
+        new("retention.accountingMinimumDays", ConfigSection.Retention, "Accounting minimum (days)", "Minimum period to retain accounting records, even when the accounting rule requests fewer days.", SettingKind.Int, 30, 3_650, 1, ClampName: nameof(ArcanumSettingClamps.RetentionAccountingMinimumDays), Group: "Accounting", Placeholder: "365"),
+
+        new("retention.protectedSessionIds", ConfigSection.Retention, "Protected session IDs", "Session IDs that retention sweeps must not prune. Enter GUIDs separated by commas.", SettingKind.StringArray, Group: "Protected sessions", Placeholder: "11111111-1111-1111-1111-111111111111"),
+
+        ..RetentionRule("activeSessions", "active sessions", "Sessions and attachments"),
+
+        ..RetentionRule("archivedSessions", "archived sessions", "Sessions and attachments"),
+
+        ..RetentionRule("entries", "conversation entries", "Sessions and attachments"),
+
+        ..RetentionRule("attachments", "attachments", "Sessions and attachments"),
+
+        ..RetentionRule("uploadedFiles", "uploaded files", "Files and batches"),
+
+        ..RetentionRule("completedBatches", "completed batches", "Files and batches"),
+
+        ..RetentionRule("sagaMemories", "Saga memories", "Memory and indexes"),
+
+        ..RetentionRule("lexiconEntries", "Lexicon entries", "Memory and indexes"),
+
+        ..RetentionRule("workspaceIndexes", "workspace indexes", "Memory and indexes"),
+
+        ..RetentionRule("sessionEntryEmbeddings", "session-entry embeddings", "Memory and indexes"),
+
+        ..RetentionRule("auditLogs", "audit logs", "Logs and security"),
+
+        ..RetentionRule("guardrailLogs", "guardrail logs", "Logs and security"),
+
+        ..RetentionRule("idempotencyClaims", "idempotency claims", "Logs and security"),
+
+        ..RetentionRule("accounting", "accounting records", "Accounting and operations"),
+
+        ..RetentionRule("longRunningOperations", "long-running operations", "Accounting and operations"),
+
+        ..RetentionRule("sanctumBreaches", "Sanctum breach records", "Logs and security"),
+
+        ..RetentionRule("daemonHistory", "daemon history records", "Accounting and operations"),
+
         // Daemon
         new("daemon.maxConcurrentJobs", ConfigSection.Daemon, "Max background tasks", "Maximum number of background tasks running at once.", SettingKind.Int, 1, 1_024, 1, ClampName: nameof(ArcanumSettingClamps.DaemonMaxConcurrentJobs), Placeholder: "8"),
         new("daemon.jobs.name", ConfigSection.Daemon, "Task name", "Friendly name for this background task.", SettingKind.String, Placeholder: "Daily report generation"),
@@ -169,5 +217,39 @@ public static class SettingDescriptors
 
     public static SettingDescriptor? Find(string key) =>
         All.FirstOrDefault(descriptor => descriptor.Key == key);
+
+    private static IReadOnlyList<SettingDescriptor> RetentionRule(
+        string key,
+        string subject,
+        string group)
+    {
+
+        string titleSubject = char.ToUpperInvariant(subject[0]) + subject[1..];
+
+        return
+        [
+            new(
+                $"retention.{key}.enabled",
+                ConfigSection.Retention,
+                $"Prune {subject} automatically",
+                $"Allow retention sweeps to remove {subject} after their retention period.",
+                SettingKind.Bool,
+                Group: group),
+
+            new(
+                $"retention.{key}.days",
+                ConfigSection.Retention,
+                $"{titleSubject} retention (days)",
+                $"How many days to keep {subject} before they become eligible for a retention sweep.",
+                SettingKind.Int,
+                1,
+                3_650,
+                1,
+                ClampName: nameof(ArcanumSettingClamps.RetentionRuleDays),
+                Group: group,
+                Placeholder: "30"),
+        ];
+
+    }
 
 }

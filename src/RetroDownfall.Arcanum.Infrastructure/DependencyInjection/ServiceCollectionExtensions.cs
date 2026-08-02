@@ -11,6 +11,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Hosting;
@@ -203,7 +204,13 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddArcanumDaemonServices(this IServiceCollection services, IConfiguration configuration)
     {
-        services.AddSingleton<IDaemonExecutionRepository, InMemoryDaemonExecutionRepository>();
+        services.AddSingleton<InMemoryDaemonExecutionRepository>();
+
+        services.AddSingleton<IDaemonExecutionRepository>(static services =>
+            services.GetRequiredService<InMemoryDaemonExecutionRepository>());
+
+        services.AddSingleton<IDaemonExecutionMutationGate>(static services =>
+            services.GetRequiredService<InMemoryDaemonExecutionRepository>());
 
         services.AddSingleton<DaemonJobRegistry>();
 
@@ -248,6 +255,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ConfigurationWriter>();
 
+        services.AddSingleton<IDataRetentionPolicyStore, DataRetentionPolicyStore>();
+
         services.AddSingleton<WorkspaceCheckCapabilityReporter>();
 
         services.AddSingleton<IWorkspaceCheckCapabilityReporter>(
@@ -273,9 +282,26 @@ public static class ServiceCollectionExtensions
         // Register the ring-buffer sink before AddArcanumSerilog so deferred first-emit resolution succeeds.
         services.AddArcanumSerilog();
 
-        services.AddSingleton<IInferenceAuditLogger, InferenceAuditLogger>();
+        services.AddSingleton<ManagedLogMutationGate>();
 
-        services.AddSingleton<IGuardrailAuditLogger, GuardrailAuditLogger>();
+        services.AddSingleton<IManagedLogMutationGate>(static services =>
+            services.GetRequiredService<ManagedLogMutationGate>());
+
+        services.AddSingleton<IInferenceAuditLogger>(static services =>
+            new InferenceAuditLogger(
+                services.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                services.GetRequiredService<ILogger<InferenceAuditLogger>>(),
+                filePathOverride: null,
+                managedLogMutationGate:
+                    services.GetRequiredService<IManagedLogMutationGate>()));
+
+        services.AddSingleton<IGuardrailAuditLogger>(static services =>
+            new GuardrailAuditLogger(
+                services.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                services.GetRequiredService<ILogger<GuardrailAuditLogger>>(),
+                filePathOverride: null,
+                managedLogMutationGate:
+                    services.GetRequiredService<IManagedLogMutationGate>()));
 
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
@@ -401,7 +427,22 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IBudgetReservationService, BudgetReservationService>();
 
         services.AddScoped<ILongRunningOperationStore, LongRunningOperationStore>();
+
         services.AddScoped<ILongRunningOperationCoordinator, LongRunningOperationCoordinator>();
+
+        services.AddScoped<DataRetentionService>();
+
+        services.AddScoped<IDataRetentionService>(
+            static provider => provider.GetRequiredService<DataRetentionService>());
+
+        services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionRecoveryHandler>();
+
+        services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionMutationRecoveryHandler>();
+
+        services.AddScoped<ILongRunningOperationRecoveryHandler, DataRetentionFactoryResetRecoveryHandler>();
+
+        services.AddHostedService<DataRetentionSweepHostedService>();
+
         services.AddScoped<LongRunningOperationReconciler>();
         services.AddScoped<ILongRunningOperationRecoveryHandler, BudgetReservationRecoveryHandler>();
         services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();

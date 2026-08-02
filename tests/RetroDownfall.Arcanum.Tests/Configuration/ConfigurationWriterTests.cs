@@ -219,6 +219,79 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
     }
 
+    [Fact]
+
+    public async Task UpdateAsync_rejects_unknown_existing_configuration_without_rewriting_it()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        string configPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.json");
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        const string invalid =
+            "{\"Arcanum\":{\"defaultModel\":\"preserve\",\"unknownRetentionBypass\":true}}";
+
+        await File.WriteAllTextAsync(configPath, invalid);
+
+        Result<ArcanumSettings> result = await writer.UpdateAsync(
+            new ArcanumSettings(),
+            static current => Result<ArcanumSettings>.Success(
+                current with { DefaultModel = "changed" }),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(invalid, await File.ReadAllTextAsync(configPath));
+
+    }
+
+    [Fact]
+
+    public async Task UpdateAsync_rejects_oversized_existing_configuration_without_rewriting_it()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        string configPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.json");
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        await using (FileStream stream = new(
+                         configPath,
+                         FileMode.CreateNew,
+                         FileAccess.Write,
+                         FileShare.None))
+        {
+
+            stream.SetLength(ConfigurationBootstrapper.MaxConfigurationBytes + 1L);
+
+        }
+
+        long originalLength = new FileInfo(configPath).Length;
+
+        Result<ArcanumSettings> result = await writer.UpdateAsync(
+            new ArcanumSettings(),
+            static current => Result<ArcanumSettings>.Success(
+                current with { DefaultModel = "changed" }),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(
+            "configuration exceeds",
+            result.Error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(originalLength, new FileInfo(configPath).Length);
+
+    }
+
     private static ConfigurationWriter CreateWriter()
     {
         return new ConfigurationWriter(NullLogger<ConfigurationWriter>.Instance);

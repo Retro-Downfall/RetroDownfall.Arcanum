@@ -12,6 +12,8 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
     WriteIndented = true)]
 [JsonSerializable(typeof(ArcanumConfigurationFile))]
 [JsonSerializable(typeof(ArcanumSettings))]
+[JsonSerializable(typeof(RetentionSettings))]
+[JsonSerializable(typeof(RetentionRuleSettings))]
 [JsonSerializable(typeof(HostSettings))]
 [JsonSerializable(typeof(HostAuditPolicySettings))]
 [JsonSerializable(typeof(HttpsSettings))]

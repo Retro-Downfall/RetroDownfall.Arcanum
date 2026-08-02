@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Api.ProvingGrounds;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -62,6 +63,10 @@ public sealed class DiWiringSmokeTests
         Assert.NotNull(services.GetRequiredService<IMcpConnectionManager>());
 
         Assert.NotNull(services.GetRequiredService<ISanctumBreachRepository>());
+
+        Assert.NotNull(services.GetRequiredService<IDataRetentionService>());
+
+        Assert.NotNull(services.GetRequiredService<IDataRetentionPolicyStore>());
 
     }
 

@@ -406,7 +406,7 @@ Provides the complete durable session lifecycle. Optional session selectors acce
 | `arcanum session export [<session>]` | Export an active or archived session. | `--format <format>` — Export format: json or markdown. |
 | `arcanum session rest [<session>]` | Queue Campaign Log consolidation for a session. | None beyond global or inherited family options. |
 | `arcanum session attachments [<session>]` | List bound session attachments. | None beyond global or inherited family options. |
-| `arcanum session delete-entry [<entry>]` | Delete an entry after confirmation. | `--session <session>` — Session GUID, exact title, or unique title prefix; omit for an interactive picker. |
+| `arcanum session delete-entry [<entry>]` | Delete an entry and its derived Entry embedding rows after confirmation. | `--session <session>` — Session GUID, exact title, or unique title prefix; omit for an interactive picker. |
 | `arcanum session pin-entry [<entry>]` | Pin an entry when memory management is enabled. | `--session <session>` — Session GUID, exact title, or unique title prefix; omit for an interactive picker. |
 | `arcanum session unpin-entry [<entry>]` | Unpin an entry when memory management is enabled. | `--session <session>` — Session GUID, exact title, or unique title prefix; omit for an interactive picker. |
 | `arcanum session compact [<session>]` | Compact session context when memory management is enabled. | None beyond global or inherited family options. |
@@ -539,7 +539,9 @@ Manages durable Apprentice orchestration, intervention, replanning, child delega
 
 Native model listing across configured providers (requires arcanum serve).
 
-Lists or selects configured models without exposing provider endpoints or credentials.
+Lists or selects models from the latest successfully persisted configuration without exposing
+provider endpoints or credentials. Other inference/runtime consumers still require a host restart
+before they adopt a configuration change.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
@@ -550,7 +552,9 @@ Lists or selects configured models without exposing provider endpoints or creden
 
 Native provider listing and configuration summary (requires arcanum serve).
 
-Lists or selects configured providers while keeping endpoints and credential details redacted.
+Lists or selects providers from the latest successfully persisted configuration while keeping
+endpoints and credential details redacted. Other inference/runtime consumers still require a host
+restart before they adopt a configuration change.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
@@ -673,7 +677,7 @@ Uses the OpenAI-compatible `/v1/files` surface. Uploads and downloads stream byt
 | `arcanum file list` | List uploaded file metadata. | `--purpose <purpose>` — Filter by exact file purpose. |
 | `arcanum file show <id>` | Show one uploaded file's metadata. | None beyond global or inherited family options. |
 | `arcanum file download <id>` | Stream a file to a safe local filename; existing files require confirmation. | `--output <output>` — Explicit local destination path. |
-| `arcanum file delete <id>` | Delete uploaded file metadata and content after confirmation. | None beyond global or inherited family options. |
+| `arcanum file delete <id>` | Delete uploaded file metadata and content after confirmation. The server returns a conflict and preserves both when any batch input/output/error role still references the file, including a terminal batch. Concurrent batch and artifact-reference writes are database-conditional: either their reference commits and blocks deletion, or deletion wins and the reference write is rejected. | None beyond global or inherited family options. |
 
 ### `arcanum batch`
 
@@ -729,10 +733,34 @@ Inspects and repairs durable long-running operations. Safe detail omits checkpoi
 
 Inspect and maintain persisted Arcanum data.
 
-Inspects and maintains encrypted persisted blobs. Migration, verification, and key rotation are resumable server-owned operations with bounded worker settings.
+Read-only lifecycle inspection and every destructive retention command use the authenticated host
+API; the CLI never opens or mutates the Grimoire directly. `data prune` requires exactly one of
+`--dry-run` and `--apply`. Every mutation below prompts in an interactive terminal and requires the
+global `--yes` switch when confirmation cannot be obtained; cancellation sends no mutation request.
+Human mode prints concise status, settings, plan, and apply summaries. Global `--json` preserves the
+exact API payload; `--json --yes data prune --apply` emits one final apply result rather than a
+preview/result sequence.
+The separate encryption migration, verification, and key-rotation workers are resumable local
+operator operations with bounded worker settings.
+Inference and guardrail audit writers never delete historical JSONL files on a write; dated-log
+age removal is available only through the bounded server-owned `data prune` plan/apply path.
+
+Retention-class matching is case-insensitive and ignores hyphens, underscores, and spaces.
+Grouped names such as `attachments`, `workspace-indexes`, `accounting`, and `daemon-history` are
+accepted; a typed attachment, batch-file, workspace, or accounting subclass updates the rule that
+governs its dependency group. Setting a rule to `disabled` preserves its current day value.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
+| `arcanum data status` | Show rows, files, estimated bytes, effective policy, store, and provenance for every typed retention class, plus aggregate totals and categories preserved outside the selected root. | None beyond global or inherited family options. |
+| `arcanum data retention show` | Show the effective unified retention settings and per-class rules. | None beyond global or inherited family options. |
+| `arcanum data retention set <class> <days\|disabled>` | Set one named typed rule to clamped retention days or disable policy selection for that class. Numeric enum spellings are rejected before confirmation; disabling preserves the prior day value and does not hide status or authorize/deauthorize an explicit item-scoped deletion. | Mutation confirmation; use global `--yes` for automation. |
+| `arcanum data prune --dry-run` | Build the current bounded deletion plan without mutating data. The plan reports class rows/files/estimated bytes/derived records, candidates, blockers, active-operation conflicts, and its content-derived `planId`. | `--dry-run` — Required mutually exclusive preview mode. |
+| `arcanum data prune --apply` | Fetch and display the exact current plan, confirm its id and totals, then send that `planId` as `expectedPlanId` to a durable, checkpointed apply. The server rechecks blockers/conflicts and verifies each selected candidate's owned rows, derived records, and files after deletion; repeated runs converge. JSON mode keeps the preview silent and emits exactly one final result. | `--apply` — Required mutually exclusive apply mode.<br>Mutation confirmation; use global `--yes` for automation without another step. |
+| `arcanum data delete-session <id>` | Delete one session and its Entries, session-scoped attachment metadata/bytes, and derived Entry/attachment indexes. Pinned Entries/context, operator holds, active work, and outstanding accounting state block the plan. | Mutation confirmation; use global `--yes` for automation. |
+| `arcanum data delete-attachment <id>` | Delete one attachment version, its encrypted bytes, chunks, embeddings, and index state. A pinned attachment/context blocks deletion; independently retained Saga/Lexicon facts keep typed provenance and report the source unavailable. | Mutation confirmation; use global `--yes` for automation. |
+| `arcanum data reset-memory --scope <scope>` | Reset exactly one named store: `entry`, `attachments`, `workspace`, `saga`, or `lexicon`. There is no ambiguous generic memory delete, and numeric enum spellings are rejected before any API request. | `--scope <scope>` — Required explicit memory scope.<br>Mutation confirmation; use global `--yes` for automation. |
+| `arcanum data factory-reset` | Delete managed data under the configured Arcanum data root after conflict checks. The prompt explicitly names external backups, registered workspace data outside that root, `arcanum.json`, security credentials, and key material as preserved. Prior terminal operation history is cleared, and the reset leaves its own completed durable-operation marker. | Mutation confirmation; use global `--yes` for automation. |
 | `arcanum data encryption [command]` | Migrate, verify, and rotate authenticated encrypted blob storage. | None beyond global or inherited family options. |
 | `arcanum data encryption status` | Show encrypted, legacy, invalid, and remaining blob counts. | None beyond global or inherited family options. |
 | `arcanum data encryption migrate` | Encrypt every verified legacy plaintext blob through a resumable operation. | `--max-concurrency <max-concurrency>` — Bounded worker count (1-8; default 2).<br>`--max-bytes-per-second <max-bytes-per-second>` — Aggregate I/O throttle in bytes/second (default 67108864). |

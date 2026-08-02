@@ -1,7 +1,9 @@
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
@@ -44,12 +46,19 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     private readonly ISessionAttachmentIndexQueue? _indexQueue;
 
+    private readonly ConditionalWeakTable<SessionAttachmentForkCopyPlan, ForkBlobAuthority>
+        _forkBlobAuthorities = new();
+
     /// <summary>
     /// Test seam: runs after bytes are on disk at the destination, before the DB write that
     /// records them. Used to simulate exhausted DB failure without holding FS work inside
     /// <see cref="SqliteBusyRetry"/>.
     /// </summary>
     internal Func<CancellationToken, Task>? AfterBytesCommittedBeforeDbForTesting { get; set; }
+
+    internal Func<CancellationToken, Task>?
+        AfterWriterLockBeforeBlobValidationForTesting
+    { get; set; }
 
     public SessionAttachmentStore(
         ArcanumDbContext db,
@@ -388,6 +397,17 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 cancellationToken)
             .ConfigureAwait(false);
 
+        if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                absolutePath,
+                FileSystemObjectKind.RegularFile,
+                out IdentityOwnedFileSystemArtifact blobAuthority))
+        {
+
+            throw new IOException(
+                "Attachment persistence could not capture the owned blob identity.");
+
+        }
+
         SessionAttachmentState state = sessionId is null
             ? SessionAttachmentState.Pending
             : SessionAttachmentState.Bound;
@@ -421,15 +441,18 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             }
 
-        await SqliteBusyRetry.ExecuteAsync(
-                () => InsertRowAsync(record, cancellationToken),
+            await SqliteBusyRetry.ExecuteAsync(
+                () => InsertRowAsync(
+                    record,
+                    blobAuthority,
+                    cancellationToken),
                 cancellationToken).ConfigureAwait(false);
 
         }
         catch
         {
 
-            TryDeleteFile(absolutePath);
+            _ = IdentityOwnedFileSystemCleanup.TryDelete(blobAuthority);
 
             throw;
 
@@ -449,6 +472,9 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     private sealed record PersistNewCoreResult(
         SessionAttachmentRecord Record,
         bool NewVersionCreated);
+
+    private sealed record ForkBlobAuthority(
+        IdentityOwnedFileSystemArtifact Artifact);
 
     public async Task PromotePendingAsync(
         string pendingTurnId,
@@ -1051,69 +1077,208 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     }
 
-    private async Task InsertRowAsync(SessionAttachmentRecord record, CancellationToken cancellationToken)
+    private async Task InsertRowAsync(
+        SessionAttachmentRecord record,
+        IdentityOwnedFileSystemArtifact expectedBlob,
+        CancellationToken cancellationToken)
     {
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        await using DbCommand cmd = connection.CreateCommand();
+        IDbContextTransaction? ambient = _db.Database.CurrentTransaction;
 
-        EnlistAmbientTransaction(cmd);
+        DbTransaction? ownedTransaction = null;
 
-        cmd.CommandText =
+        DbTransaction transaction = ambient?.GetDbTransaction()
+            ?? (ownedTransaction = await BeginImmediateAttachmentTransactionAsync(
+                connection,
+                cancellationToken).ConfigureAwait(false));
+
+        try
+        {
+
+            if (ambient is not null && connection is SqliteConnection)
+            {
+
+                await AcquireAttachmentWriterLockAsync(
+                    connection,
+                    transaction,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+            if (AfterWriterLockBeforeBlobValidationForTesting is not null)
+            {
+
+                await AfterWriterLockBeforeBlobValidationForTesting(
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+            ValidateOwnedBlob(record, expectedBlob);
+
+            await using DbCommand cmd = connection.CreateCommand();
+
+            cmd.Transaction = transaction;
+
+            cmd.CommandText =
+                """
+                INSERT INTO "SessionAttachments"
+                    ("Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
+                     "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
+                     "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
+                     "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
+                     "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId")
+                VALUES
+                    (@id, @sessionId, @entryId, @pendingTurnId, @state, @logicalKey, @originalFileName,
+                     @version, @relativePath, @contentSha256, @mimeType, @byteLength, @kind, @createdAt,
+                     @sourceKind, @sourceWorkspaceIdentity, @sourceRelativePath, @sourceCanonicalPath,
+                     @sourceContentSha256, @sourceFileIdentity, @sourceLastWriteAt, @sourceByteLength,
+                     @sourceStatus, @sourceDiagnosticReason, @encryptionVersion, @encryptionKeyId)
+                """;
+
+            AddParameter(cmd, "@id", record.Id.ToString());
+
+            AddParameter(cmd, "@sessionId", record.SessionId is null ? DBNull.Value : record.SessionId.Value.ToString());
+
+            AddParameter(cmd, "@entryId", record.EntryId is null ? DBNull.Value : record.EntryId.Value.ToString());
+
+            AddParameter(cmd, "@pendingTurnId", (object?)record.PendingTurnId ?? DBNull.Value);
+
+            AddParameter(cmd, "@state", record.State.ToString());
+
+            AddParameter(cmd, "@logicalKey", record.LogicalKey);
+
+            AddParameter(cmd, "@originalFileName", record.OriginalFileName);
+
+            AddParameter(cmd, "@version", record.Version);
+
+            AddParameter(cmd, "@relativePath", record.RelativePath);
+
+            AddParameter(cmd, "@contentSha256", record.ContentSha256);
+
+            AddParameter(cmd, "@mimeType", record.MimeType);
+
+            AddParameter(cmd, "@byteLength", record.ByteLength);
+
+            AddParameter(cmd, "@kind", record.Kind.ToString());
+
+            AddParameter(cmd, "@createdAt", record.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
+
+            AddSourceParameters(cmd, record.Source ?? AttachmentSourceMetadata.SnapshotOnly);
+
+            AddParameter(cmd, "@encryptionVersion", record.EncryptionVersion);
+
+            AddParameter(
+                cmd,
+                "@encryptionKeyId",
+                (object?)record.EncryptionKeyId ?? DBNull.Value);
+
+            _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            if (ownedTransaction is not null)
+            {
+
+                await ownedTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            }
+
+        }
+        catch
+        {
+
+            if (ownedTransaction is not null)
+            {
+
+                await ownedTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+            }
+
+            throw;
+
+        }
+        finally
+        {
+
+            if (ownedTransaction is not null)
+            {
+
+                await ownedTransaction.DisposeAsync().ConfigureAwait(false);
+
+            }
+
+        }
+
+    }
+
+    private void ValidateOwnedBlob(
+        SessionAttachmentRecord record,
+        IdentityOwnedFileSystemArtifact expectedBlob)
+    {
+
+        string absolutePath = ResolveUnderRoot(record.RelativePath);
+
+        StringComparison comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        if (!string.Equals(
+                Path.GetFullPath(absolutePath),
+                Path.GetFullPath(expectedBlob.Path),
+                comparison)
+            || !IdentityOwnedFileSystemCleanup.TryCapturePath(
+                absolutePath,
+                FileSystemObjectKind.RegularFile,
+                out IdentityOwnedFileSystemArtifact current)
+            || current.Metadata != expectedBlob.Metadata)
+        {
+
+            throw new IOException(
+                "Attachment persistence refused to publish metadata for missing or replaced bytes.");
+
+        }
+
+    }
+
+    private static async Task<DbTransaction> BeginImmediateAttachmentTransactionAsync(
+        DbConnection connection,
+        CancellationToken cancellationToken)
+    {
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (connection is SqliteConnection sqliteConnection)
+        {
+
+            return sqliteConnection.BeginTransaction(deferred: false);
+
+        }
+
+        return await connection.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    private static async Task AcquireAttachmentWriterLockAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText =
             """
-            INSERT INTO "SessionAttachments"
-                ("Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey", "OriginalFileName",
-                 "Version", "RelativePath", "ContentSha256", "MimeType", "ByteLength", "Kind", "CreatedAt",
-                 "SourceKind", "SourceWorkspaceIdentity", "SourceRelativePath", "SourceCanonicalPath",
-                 "SourceContentSha256", "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength",
-                 "SourceStatus", "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId")
-            VALUES
-                (@id, @sessionId, @entryId, @pendingTurnId, @state, @logicalKey, @originalFileName,
-                 @version, @relativePath, @contentSha256, @mimeType, @byteLength, @kind, @createdAt,
-                 @sourceKind, @sourceWorkspaceIdentity, @sourceRelativePath, @sourceCanonicalPath,
-                 @sourceContentSha256, @sourceFileIdentity, @sourceLastWriteAt, @sourceByteLength,
-                 @sourceStatus, @sourceDiagnosticReason, @encryptionVersion, @encryptionKeyId)
+            UPDATE "SessionAttachments"
+            SET "Id" = "Id"
+            WHERE 0
             """;
 
-        AddParameter(cmd, "@id", record.Id.ToString());
-
-        AddParameter(cmd, "@sessionId", record.SessionId is null ? DBNull.Value : record.SessionId.Value.ToString());
-
-        AddParameter(cmd, "@entryId", record.EntryId is null ? DBNull.Value : record.EntryId.Value.ToString());
-
-        AddParameter(cmd, "@pendingTurnId", (object?)record.PendingTurnId ?? DBNull.Value);
-
-        AddParameter(cmd, "@state", record.State.ToString());
-
-        AddParameter(cmd, "@logicalKey", record.LogicalKey);
-
-        AddParameter(cmd, "@originalFileName", record.OriginalFileName);
-
-        AddParameter(cmd, "@version", record.Version);
-
-        AddParameter(cmd, "@relativePath", record.RelativePath);
-
-        AddParameter(cmd, "@contentSha256", record.ContentSha256);
-
-        AddParameter(cmd, "@mimeType", record.MimeType);
-
-        AddParameter(cmd, "@byteLength", record.ByteLength);
-
-        AddParameter(cmd, "@kind", record.Kind.ToString());
-
-        AddParameter(cmd, "@createdAt", record.CreatedAt.ToString("o", CultureInfo.InvariantCulture));
-
-        AddSourceParameters(cmd, record.Source ?? AttachmentSourceMetadata.SnapshotOnly);
-
-        AddParameter(cmd, "@encryptionVersion", record.EncryptionVersion);
-
-        AddParameter(
-            cmd,
-            "@encryptionKeyId",
-            (object?)record.EncryptionKeyId ?? DBNull.Value);
-
-        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

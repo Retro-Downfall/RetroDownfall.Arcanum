@@ -931,6 +931,8 @@ internal sealed class BatchProcessingService(
 
         string path = UploadedFileStorage.ResolvePath(id);
 
+        bool publicationOwnsCleanup = false;
+
         try
         {
             File.Move(tempPath, path, overwrite: true);
@@ -954,11 +956,22 @@ internal sealed class BatchProcessingService(
                 descriptor.Version,
                 descriptor.KeyId,
                 plaintextSha256);
-            await files.CreateAsync(record, cancellationToken).ConfigureAwait(false);
+            publicationOwnsCleanup = true;
+
+            await files
+                .CreateForOwnedFileAsync(record, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch
         {
-            TryDeleteFile(path);
+
+            if (!publicationOwnsCleanup)
+            {
+
+                TryDeleteFile(path);
+
+            }
+
             throw;
         }
         finally
