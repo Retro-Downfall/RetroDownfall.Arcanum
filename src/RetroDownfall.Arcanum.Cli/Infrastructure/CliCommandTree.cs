@@ -84,6 +84,8 @@ internal static partial class CliCommandTree
         Command mana = BuildMana(serviceProvider);
         Command config = BuildConfig(serviceProvider);
 
+        Command preset = BuildPreset(serviceProvider);
+
         Command watch = BuildWatch(serviceProvider);
 
         root.Add(center);
@@ -130,6 +132,8 @@ internal static partial class CliCommandTree
         root.Add(context);
         root.Add(mana);
         root.Add(config);
+
+        root.Add(preset);
 
         root.Add(watch);
 

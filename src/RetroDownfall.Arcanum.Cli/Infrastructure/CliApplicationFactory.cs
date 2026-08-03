@@ -36,9 +36,9 @@ internal static class CliApplicationFactory
     {
 
         ArcanumSettings settingsSnapshot =
-            ConfigurationBootstrapper.LoadArcanumSettings(
-                () => configuration.GetSection("Arcanum").Get<ArcanumSettings>()
-                    ?? new ArcanumSettings());
+            configuration.GetSection("Arcanum").Get<ArcanumSettings>()
+            ?? ConfigurationBootstrapper.LoadArcanumSettings();
+
         services.Configure<ArcanumSettings>(settings =>
             ConfigurationBootstrapper.CopySettings(settingsSnapshot, settings));
 
@@ -108,6 +108,8 @@ internal static class CliApplicationFactory
         // CLI Grimoire), owned by Infrastructure so it cannot drift from the host wiring.
         services.AddArcanumCliClientStack();
 
+        services.AddArcanumConfigurationPresets();
+
         services.AddHttpClient(
             ArcanumApiClient.StreamingHttpClientName,
             (serviceProvider, client) =>
@@ -136,10 +138,6 @@ internal static class CliApplicationFactory
         services.AddSingleton<ArcanumApiClient>();
 
         services.AddSingleton<FileBatchApiClient>();
-
-        services.AddSingleton<ConfigurationValidator>();
-
-        services.AddSingleton<ConfigurationWriter>();
 
         services.AddSingleton<IConfigurationCommandService, ConfigurationCommandService>();
 
@@ -259,6 +257,8 @@ internal static class CliApplicationFactory
         services.AddTransient<WatchCommands>();
 
         services.AddTransient<ConfigCommands>();
+
+        services.AddTransient<PresetCommands>();
 
         services.AddTransient<OpenCommands>();
 

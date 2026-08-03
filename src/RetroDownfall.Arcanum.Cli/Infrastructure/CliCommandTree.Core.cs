@@ -62,7 +62,7 @@ internal static partial class CliCommandTree
     {
         DoctorCommand handler = sp.GetRequiredService<DoctorCommand>();
         Command doctor = new("doctor", "Run environment diagnostics (version, paths, API health).");
-        Option<bool> fixPermissions = new("--fix-permissions") { Description = "Apply owner-only permissions to the Grimoire database, arcanum.json, and secret store." };
+        Option<bool> fixPermissions = new("--fix-permissions") { Description = "Apply owner-only permissions to configuration, preset state, the Grimoire database, and secret stores." };
 
         doctor.Add(fixPermissions);
 

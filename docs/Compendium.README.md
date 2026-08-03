@@ -64,29 +64,90 @@ facts, and user preferences.
 
 The navigation is intentionally limited to:
 
-1. **Edition** — runtime hardening mode.
-2. **Host** — port, CORS, external HTTPS binding, certificate selection,
+1. **Presets** — shared workflow descriptions, canonical current effective state, separately
+   labelled selected-preset projection, exact diff, prerequisites, progressive disclosure,
+   recommendations, completion summaries, and Apply/Reset actions. Failed state inspection is
+   shown as unavailable instead of retaining a stale active/drifted label.
+2. **Edition** — runtime hardening mode.
+3. **Host** — port, CORS, external HTTPS binding, certificate selection,
    inference-audit policy, and buffered-log level.
-3. **Providers & Models** — `DefaultModel`, `FastModel`, provider endpoint and
+4. **Providers & Models** — `DefaultModel`, `FastModel`, provider endpoint and
    credential environment-variable reference, model inventory, vision, context
    capacity, and factual reasoning capabilities/wire dialect.
-4. **Security** — Ward and guardrail policy, unsafe-process acknowledgement,
+5. **Security** — Ward and guardrail policy, unsafe-process acknowledgement,
    metrics authentication, distinct Perception/Spell/Campaign roots, and upload
    and image MIME allowlists.
-5. **Workspaces** — default root and explicit write permission.
-6. **Features** — flat capability opt-ins, including Conclave/A2A, Apprentices,
+6. **Workspaces** — default root and explicit write permission.
+7. **Features** — flat capability opt-ins, including Conclave/A2A, Apprentices,
    embeddings, Saga, Scrying, attachments, browsing, guardrails, workspace
    checks, and memory management.
-7. **Integrations** — A2A identity/allowlist, CommLink webhook environment
+8. **Integrations** — A2A identity/allowlist, CommLink webhook environment
    reference and allowlists, embedding provider/model facts, MCP plaintext-host
    policy, trusted workspace-check executable, and custom profiles.
-8. **Execution** — operator-controlled host concurrency and backpressure for
+9. **Execution** — operator-controlled host concurrency and backpressure for
    Apprentices, SSE streams, and batches.
-9. **Cost** — default/per-model pricing and daily budget policy.
-10. **Retention** — unified sweep bounds, typed per-class policies, accounting
+10. **Cost** — default/per-model pricing and daily budget policy.
+11. **Retention** — unified sweep bounds, typed per-class policies, accounting
     floor, and explicit protected-session holds.
-11. **Daemon** — Unseen Servant schedules and host concurrency.
-12. **CLI** — built-in theme selection and mana-bar preference.
+12. **Daemon** — Unseen Servant schedules and host concurrency.
+13. **CLI** — built-in theme selection and mana-bar preference.
+
+## Preset workflow
+
+Compendium consumes the same `IConfigurationPresetService`, immutable catalog, planner, state, and
+persistence results as `arcanum preset`; it does not maintain UI-only descriptions or duplicate
+overlay/apply logic. A preset is a versioned partial overlay, not a new `arcanum.json` section or a
+hidden runtime mode. Version 1 contains:
+
+| Preset | Explicit ownership and prerequisite intent |
+|--------|--------------------------------------------|
+| **General Assistant** (`general-assistant`, v1) | Owns attachments; conservative Saga/extraction/memory-management values; Ward, unattended auto-deny, and the unsandboxed-child safe default. Requires a provider/model. |
+| **Coding Workspace** (`coding-workspace`, v1) | Owns workspace checks and file-write permission plus the same Ward/child-process safe defaults. Requires a provider/model and configured default workspace root; Weave indexing stays deferred. |
+| **Research** (`research`, v1) | Owns web browsing plus Ward/child-process safe defaults. Requires a provider/model and existing research credential; it does not add citation, retry, hop, timeout, or cost knobs. |
+| **Private/Offline** (`private-offline`, v1) | Owns loopback binding, web browsing off, enterprise telemetry off, and Ward/child-process safe defaults. Requires a loopback provider; authored MCP and other integrations are disclosed rather than erased. |
+| **Automation** (`automation`, v1) | Owns Ward unattended mode, auto-deny, and the unsandboxed-child safe default. Requires a provider/model and a positive operator-authored daily budget; it does not create a schedule or enlarge a budget. |
+| **Advanced/Custom** (`advanced-custom`, v1) | Owns no paths and changes nothing; direct editing remains authoritative. |
+
+Selecting a card is read-only. The page shows shared purpose and enable/disable/security/provider/
+resource disclosures; **Custom**, **Active**, or **Drifted** state; exact owned setting rows;
+prerequisite detail and resolution commands; essential first choice; intentionally deferred
+features; recommendations; the Ward/Sanctum/Weave/Saga/Lexicon plain-language glossary; and the
+provider/model, workspace/campaign, memory-source, tool-policy, privacy, and next-command completion
+summary. Recommendations are directly executable; Coding Workspace shows
+`arcanum run --workspace . "Inspect this workspace and summarize it."`, including the required
+prompt.
+
+Each diff row distinguishes the persisted `arcanum.json` value, the effective value after
+recognized environment overrides, and the proposed persisted value. It also names the current
+source and environment variable (never its value), environment effectiveness, ownership,
+prerequisite IDs, restart requirement, and separate persisted/effective change flags. An
+environment override therefore remains the effective truth even if Apply changes the file. Only an
+override that contradicts an owned safety/privacy boundary blocks Apply; a benign feature mask is
+shown as drift and does not make the plan inapplicable. Only a Research preview/diff or Apply probes
+the secure research-credential store; other preset cards, inspection, reset, and mutations do not.
+
+**Apply preset** and **Reset preset** are explicit actions and add no confirmation dialog. They are
+disabled while the root editor has unsaved changes, is saving, or has an unreviewed external file
+change; the page says to save or cancel/reload instead of silently discarding edits. Apply requires
+a coherent prerequisite-complete plan and canonical full-candidate validation, preserves secrets
+and every unowned value, checks concurrent changes, enters the current-user cross-process
+transaction shared by every canonical configuration writer, writes atomically, and records
+owner-only provenance plus rollback state outside `arcanum.json`. Reapplying the same version and
+owned values is idempotent.
+
+No provenance is Custom; matching applied persisted/effective owned values are Active; a later
+owned-value change is Drifted. Reset restores only paths that still equal the preset-applied value,
+preserves user drift and unrelated edits, reports both counts, and clears preset provenance. A
+prepared transaction journal stores only owned before/after values and hashes plus previous/next
+provenance. Failure recovery conditionally reverses values that still match the interrupted write,
+preserving unrelated and later manual edits. Bounded no-follow sidecar reads and exact catalog
+ownership/value/hash/state validation reject untrusted provenance before reset or recovery.
+
+No preset silently enables `ListenAny`, unsandboxed tool children, untrusted workspace MCP,
+destructive memory operations, Forbidden Arts bypasses, or unlimited research/subagent behavior.
+Presets do not add retry, timeout, loop-count, or other arbitrary tuning knobs. The guided
+`arcanum setup` wizard remains separate work tracked by issue #19; this page exposes the reusable
+preset service and does not implement that wizard.
 
 ## Complete configuration reference
 
@@ -475,7 +536,7 @@ file.
 
 ## Editor architecture
 
-The Host, Providers, Daemon, and CLI pages are polished views. Edition,
+The Presets, Host, Providers, Daemon, and CLI pages are polished views. Edition,
 Security, Workspaces, Features, Integrations, Execution, Cost, and Retention use the
 descriptor-driven generic view.
 
@@ -493,7 +554,10 @@ a `Guid`; the stored contract remains a typed `Guid[]`.
 `ConfigurationViewModel` keeps the last loaded settings as a snapshot. Polished
 pages rebuild only their owned records; generic edits clone and update only the
 selected public property path. Unopened sections and provider facts therefore
-survive load/edit/save unchanged.
+survive load/edit/save unchanged. `PresetsSectionViewModel` stays outside dirty tracking, delegates
+all catalog/diff/apply/reset behavior to the shared service, and reloads the root snapshot only
+after a successful preset mutation. It clears the now-stale plan immediately after that mutation,
+so failed reload cannot leave an old diff enabled against a newer file.
 
 ## Secrets and HTTPS
 
@@ -536,16 +600,30 @@ restore command.
 ## Saving and validation
 
 Save runs `ConfigurationValidator`, rejects configuration files larger than the code-owned 10 MiB
-ceiling before JSON parsing, writes an owner-only temporary file, durable-flushes it, atomically
-replaces `arcanum.json`, and deletes staging in `finally`. Host/API loading performs a
+ceiling before JSON parsing, then takes the same current-user cross-process configuration
+transaction as preset and CLI writers. Inside that transaction, its existing local save lock
+serializes the owner-only temporary write, durable flush, atomic `arcanum.json` replacement,
+fingerprint acknowledgement, and staging cleanup. Host/API loading performs a
 source-generated fail-closed walk before binding, grouping all unknown paths
 while preserving pricing and workspace-check dictionary keys. Validation
 pointers use the same dot paths as descriptors.
 
 Cancel restores the in-memory snapshot. Reload re-reads disk after confirmation
 when local edits exist. A file watcher reports external changes and blocks
-overwriting them until reload. Arcanum loads the source-generated configuration
-snapshot at process start; restart the host after saving changes.
+overwriting them until reload. Each successful read or ordinary Save acknowledges a SHA-256
+fingerprint of the exact configuration bytes it loaded or wrote. A delayed watcher event matching
+that fingerprint is therefore recognized as the same edit—including a preset transaction followed
+by its successful Compendium reload—while any different bytes still surface as an external change.
+Arcanum loads the source-generated configuration snapshot at process start; restart the host after
+saving changes.
+
+Preset apply/reset uses the shared preset transaction rather than this ordinary Save path. It
+serializes mutations, rejects a stale settings hash, validates the complete candidate with canonical
+semantic/outbound policy, maintains owner-only state/rollback/journal sidecars, atomically replaces
+the file, and verifies or conditionally reverses its owned changes. The journal contains only owned
+before/after values and hashes plus previous/next provenance, and recovery preserves unrelated or
+later manual edits. Sidecar reads are bounded/no-follow and provenance must exactly match the
+immutable catalog and paired state. Compendium never creates a second persistence format.
 
 `arcanum config edit` provides the same safety boundary for an operator-configured text editor: it
 writes an owner-only redacted temporary wrapper, waits for `$VISUAL`, `$EDITOR`, or the platform

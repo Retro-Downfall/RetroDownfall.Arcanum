@@ -59,4 +59,33 @@ public sealed class ConfigurationEnvironmentOverridesTests
 
     }
 
+    [Fact]
+
+    public void Inspect_keeps_a_present_recognized_override_visible_when_its_value_is_invalid()
+    {
+
+        const string variable = "ARCANUM_Arcanum__Host__Port";
+
+        string? original = global::System.Environment.GetEnvironmentVariable(variable);
+
+        try
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, "not-a-port");
+
+            IReadOnlyList<string> overrides = ConfigurationEnvironmentOverrides.Inspect(
+                new ArcanumSettings());
+
+            Assert.Contains($"host.port <- {variable}", overrides);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, original);
+
+        }
+
+    }
+
 }

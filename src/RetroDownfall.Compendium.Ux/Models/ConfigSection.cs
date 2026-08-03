@@ -3,6 +3,8 @@ namespace RetroDownfall.Compendium.Ux.Models;
 public enum ConfigSection
 {
 
+    Presets,
+
     Edition,
 
     Host,
@@ -40,6 +42,7 @@ public static class SectionDescriptors
 
     public static IReadOnlyList<SectionDescriptor> All { get; } =
     [
+        new(ConfigSection.Presets, "Presets", "\ue8f1", "Workflow profiles, previews, and effective state"),
         new(ConfigSection.Edition, "Edition", "\ue713", "Runtime hardening mode"),
         new(ConfigSection.Host, "Host", "\ue700", "Binding, HTTPS, CORS, audit, and logs"),
         new(ConfigSection.Providers, "Providers & Models", "\ue7c5", "Endpoints, models, and factual capabilities"),
@@ -61,7 +64,8 @@ public static class SectionDescriptors
         ConfigSection.Host
             or ConfigSection.Providers
             or ConfigSection.Daemon
-            or ConfigSection.Cli => true,
+            or ConfigSection.Cli
+            or ConfigSection.Presets => true,
         _ => false,
     };
 

@@ -1,8 +1,16 @@
+using System.Security.Cryptography;
+
 using System.Text.Json;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Serialization;
+
 using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Infrastructure.Configuration;
 
 namespace RetroDownfall.Compendium.Ux.Services;
 
@@ -12,6 +20,8 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
     public const int MaxConfigurationBytes = ConfigurationBootstrapper.MaxConfigurationBytes;
 
     private const string ConfigurationFileName = "arcanum.json";
+
+    private const string MissingConfigurationFingerprint = "missing";
 
     private static readonly TimeSpan WriteLockTimeout = TimeSpan.FromSeconds(5);
 
@@ -29,22 +39,50 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
     private readonly object _debounceGate = new();
 
+    private readonly object _fingerprintGate = new();
+
+    private readonly Func<
+        Func<Task<ConfigurationWriteResult>>,
+        CancellationToken,
+        Task<ConfigurationWriteResult>> _transactionRunner;
+
     private CancellationTokenSource? _debounceCts;
+
+    private string? _acknowledgedFingerprint;
 
     private bool _disposed;
 
     public ArcanumConfigurationStore()
+        : this(enableWatcher: true)
+    {
+
+    }
+
+    internal ArcanumConfigurationStore(
+        bool enableWatcher,
+        Func<
+            Func<Task<ConfigurationWriteResult>>,
+            CancellationToken,
+            Task<ConfigurationWriteResult>>? transactionRunner = null)
     {
 
         _validator = new ConfigurationValidator();
 
         _directory = ArcanumPaths.GrimoireDirectory;
 
-        ValidatePathIsUnderHomeDirectory(_directory);
-
         _filePath = Path.Combine(_directory, ConfigurationFileName);
 
+        _transactionRunner = transactionRunner
+            ?? RunConfigurationTransactionAsync;
+
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(_directory);
+
+        if (!enableWatcher)
+        {
+
+            return;
+
+        }
 
         _watcher = new FileSystemWatcher(_directory, ConfigurationFileName)
         {
@@ -89,6 +127,8 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         if (!File.Exists(_filePath))
         {
 
+            AcknowledgeFingerprint(MissingConfigurationFingerprint);
+
             return new ArcanumSettings();
 
         }
@@ -129,6 +169,13 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
                 document.RootElement.Deserialize(
                     ConfigurationJsonContext.Default.ArcanumConfigurationFile);
 
+            stream.Position = 0;
+
+            string fingerprint = await ComputeStreamFingerprintAsync(stream, ct)
+                .ConfigureAwait(false);
+
+            AcknowledgeFingerprint(fingerprint);
+
             return wrapper?.Arcanum ?? new ArcanumSettings();
 
         }
@@ -156,6 +203,45 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
             return new ConfigurationWriteResult(false, errors, ResultMessage(validation));
 
         }
+
+        try
+        {
+
+            string expectedFingerprint = AcknowledgedFingerprint()
+                ?? await ReadCurrentFingerprintAsync(ct).ConfigureAwait(false);
+
+            return await _transactionRunner(
+                    () => WriteUnderTransactionAsync(
+                        settings,
+                        expectedFingerprint,
+                        ct),
+                    ct)
+                .ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            return new ConfigurationWriteResult(
+                false,
+                [],
+                "The save was cancelled before it could acquire or complete the configuration transaction.");
+
+        }
+        catch (Exception ex)
+        {
+
+            return new ConfigurationWriteResult(false, [], ex.Message);
+
+        }
+
+    }
+
+    private async Task<ConfigurationWriteResult> WriteUnderTransactionAsync(
+        ArcanumSettings settings,
+        string expectedFingerprint,
+        CancellationToken ct)
+    {
 
         bool acquired;
 
@@ -187,8 +273,22 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         string? tempPath = null;
 
+        string writtenFingerprint;
+
         try
         {
+
+            ConfigurationWriteResult? changed = await RejectChangedConfigurationAsync(
+                    expectedFingerprint,
+                    ct)
+                .ConfigureAwait(false);
+
+            if (changed is not null)
+            {
+
+                return changed;
+
+            }
 
             SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(_directory);
 
@@ -223,6 +323,9 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
                 }
 
+                writtenFingerprint = await ReadFingerprintAsync(tempPath, ct)
+                    .ConfigureAwait(false);
+
             }
             catch (IOException ioEx)
             {
@@ -236,6 +339,18 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
             try
             {
+
+                changed = await RejectChangedConfigurationAsync(
+                        expectedFingerprint,
+                        ct)
+                    .ConfigureAwait(false);
+
+                if (changed is not null)
+                {
+
+                    return changed;
+
+                }
 
                 if (File.Exists(_filePath))
                 {
@@ -260,6 +375,8 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
                     $"Could not replace arcanum.json: the file is locked by another application. Close any other editors and try again. ({ioEx.Message})");
 
             }
+
+            AcknowledgeFingerprint(writtenFingerprint);
 
             return new ConfigurationWriteResult(true, [], null);
 
@@ -309,6 +426,33 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         }
 
         return result.Error.Message;
+
+    }
+
+    private static Task<ConfigurationWriteResult> RunConfigurationTransactionAsync(
+        Func<Task<ConfigurationWriteResult>> operation,
+        CancellationToken cancellationToken) =>
+        ArcanumConfigurationTransaction.RunAsync(
+            operation,
+            cancellationToken);
+
+    private async Task<ConfigurationWriteResult?> RejectChangedConfigurationAsync(
+        string expectedFingerprint,
+        CancellationToken cancellationToken)
+    {
+
+        string currentFingerprint = await ReadCurrentFingerprintAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return string.Equals(
+            currentFingerprint,
+            expectedFingerprint,
+            StringComparison.Ordinal)
+            ? null
+            : new ConfigurationWriteResult(
+                false,
+                [],
+                "arcanum.json changed on disk after it was loaded. Reload the configuration, review the newer values, and save again.");
 
     }
 
@@ -387,7 +531,146 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         }
 
+        await ProcessObservedChangeAsync(ct).ConfigureAwait(false);
+
+    }
+
+    internal async Task ProcessObservedChangeAsync(CancellationToken ct)
+    {
+
+        string observedFingerprint;
+
+        try
+        {
+
+            observedFingerprint = await ReadCurrentFingerprintAsync(ct)
+                .ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+
+            return;
+
+        }
+        catch (Exception ex) when (
+            ex is IOException
+            or UnauthorizedAccessException)
+        {
+
+            RaiseExternalChange();
+
+            return;
+
+        }
+
+        lock (_fingerprintGate)
+        {
+
+            if (string.Equals(
+                observedFingerprint,
+                _acknowledgedFingerprint,
+                StringComparison.Ordinal))
+            {
+
+                return;
+
+            }
+
+        }
+
         RaiseExternalChange();
+
+    }
+
+    private async Task<string> ReadCurrentFingerprintAsync(CancellationToken ct)
+    {
+
+        if (!File.Exists(_filePath))
+        {
+
+            return MissingConfigurationFingerprint;
+
+        }
+
+        try
+        {
+
+            return await ReadFingerprintAsync(_filePath, ct).ConfigureAwait(false);
+
+        }
+        catch (FileNotFoundException)
+        {
+
+            return MissingConfigurationFingerprint;
+
+        }
+        catch (DirectoryNotFoundException)
+        {
+
+            return MissingConfigurationFingerprint;
+
+        }
+
+    }
+
+    private static async Task<string> ReadFingerprintAsync(
+        string path,
+        CancellationToken ct)
+    {
+
+        await using FileStream stream = new(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        if (stream.Length > MaxConfigurationBytes)
+        {
+
+            return $"oversized:{stream.Length}";
+
+        }
+
+        return await ComputeStreamFingerprintAsync(stream, ct)
+            .ConfigureAwait(false);
+
+    }
+
+    private static async Task<string> ComputeStreamFingerprintAsync(
+        Stream stream,
+        CancellationToken ct)
+    {
+
+        byte[] hash = await SHA256.HashDataAsync(stream, ct).ConfigureAwait(false);
+
+        return $"sha256:{Convert.ToHexString(hash)}";
+
+    }
+
+    private void AcknowledgeFingerprint(string fingerprint)
+    {
+
+        lock (_fingerprintGate)
+        {
+
+            _acknowledgedFingerprint = fingerprint;
+
+        }
+
+    }
+
+    private string? AcknowledgedFingerprint()
+    {
+
+        lock (_fingerprintGate)
+        {
+
+            return _acknowledgedFingerprint;
+
+        }
 
     }
 
@@ -396,61 +679,6 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
         return result.Error.Details ?? [];
 
-    }
-
-    private static void ValidatePathIsUnderHomeDirectory(string path)
-    {
-        string? homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-
-        if (string.IsNullOrEmpty(homeDir))
-        {
-            return; // Cannot validate if home directory is unavailable
-        }
-
-        string fullPath = Path.GetFullPath(path);
-        string fullHome = Path.GetFullPath(homeDir);
-
-        if (!fullPath.StartsWith(fullHome, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException(
-                $"Configuration path '{path}' is not under the user's home directory. " +
-                "This is a security restriction to prevent unauthorized file access.");
-        }
-
-        // Check for symbolic links that could escape the home directory
-        if (IsSymbolicLink(path))
-        {
-            string target = ResolveSymbolicLink(path);
-            string fullTarget = Path.GetFullPath(target);
-
-            if (!fullTarget.StartsWith(fullHome, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidOperationException(
-                    $"Configuration path '{path}' is a symbolic link pointing outside the home directory. " +
-                    "This is a security restriction to prevent unauthorized file access.");
-            }
-        }
-    }
-
-    private static bool IsSymbolicLink(string path)
-    {
-        try
-        {
-            FileInfo fileInfo = new(path);
-            return fileInfo.Attributes.HasFlag(FileAttributes.ReparsePoint);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static string ResolveSymbolicLink(string path)
-    {
-        // On Unix systems, readlink resolves symlinks
-        // On Windows, this is more complex and may require P/Invoke
-        // For now, return the path as-is (validation will still catch obvious cases)
-        return path;
     }
 
     public void Dispose()

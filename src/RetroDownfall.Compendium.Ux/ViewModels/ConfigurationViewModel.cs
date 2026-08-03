@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Configuration.Presets;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Compendium.Ux.Models;
 using RetroDownfall.Compendium.Ux.Services;
@@ -52,6 +53,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     public CliSectionViewModel Cli { get; } = new();
 
+    public PresetsSectionViewModel Presets { get; }
+
     public IReadOnlyList<AiProviderKind> ProviderKinds { get; } = Enum.GetValues<AiProviderKind>();
 
     public IReadOnlyList<ArcanumTheme> CliThemes { get; } = Enum.GetValues<ArcanumTheme>();
@@ -73,7 +76,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         IDialogService dialogService,
         IUiDispatcher uiDispatcher,
         ILogger<ConfigurationViewModel> logger,
-        LocalCertificateGenerator? certificateGenerator = null)
+        LocalCertificateGenerator? certificateGenerator = null,
+        IConfigurationPresetService? presetService = null)
     {
 
         _store = store;
@@ -88,6 +92,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         Providers = new ProvidersSectionViewModel(dialogService);
         Daemon = new DaemonSectionViewModel(dialogService);
         Host.AttachServices(certificateGenerator ?? new LocalCertificateGenerator(), dialogService);
+
+        Presets = new PresetsSectionViewModel(this, presetService, uiDispatcher);
 
         SaveCommand = new AsyncRelayCommand(SaveAsync, () => IsDirty && !IsSaving && !HasExternalChange);
 
@@ -110,6 +116,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
     {
 
         await LoadAsync().ConfigureAwait(false);
+
+        await Presets.RefreshAsync().ConfigureAwait(false);
 
     }
 
@@ -400,7 +408,11 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         await LoadAsync().ConfigureAwait(false);
 
+        await Presets.RefreshAsync().ConfigureAwait(false);
+
     }
+
+    internal Task ReloadAfterPresetMutationAsync() => LoadAsync();
 
     private Task CancelAsync()
     {

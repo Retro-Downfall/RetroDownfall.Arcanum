@@ -41,7 +41,7 @@ public sealed class DoctorCommand(
     /// <summary>
     /// Run environment diagnostics (version, paths, API health).
     /// </summary>
-    /// <param name="fixPermissions">Apply owner-only permissions to the Grimoire database, arcanum.json, and secret store.</param>
+    /// <param name="fixPermissions">Apply owner-only permissions to configuration, preset state, the Grimoire database, and secret stores.</param>
     /// <param name="json">Emit the report as JSON to stdout for programmatic consumption.</param>
     public async Task<int> Run(bool fixPermissions, bool json, CancellationToken cancellationToken)
     {

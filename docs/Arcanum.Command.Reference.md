@@ -76,6 +76,10 @@ Command-specific refinements:
   verification fail. Typed backup-plan validation returns `2`. Commands that consume a passphrase
   also return `2` for invalid or conflicting passphrase-source options; `backup create --dry-run`
   does not consume or semantically validate those source options.
+- `preset list` still returns `0` when definitions can be listed but effective-state inspection is
+  unavailable; that diagnostic stays on stderr and state is shown as unavailable. Unknown presets,
+  missing prerequisites, invalid complete candidates, stale configuration, failed apply/reset, or
+  failed rollback return `2`; a `Connection.*` service failure returns `3`.
 
 ## Handler-validated required values
 
@@ -380,7 +384,7 @@ Runs System, Paths, Configuration, MCP, Tokenizer, File Encryption, durable-oper
 
 | Option | Meaning |
 |---|---|
-| `--fix-permissions` | Apply owner-only permissions to the Grimoire database, arcanum.json, and secret store. |
+| `--fix-permissions` | Apply owner-only permissions to configuration, preset state and recovery sidecars, the Grimoire database, and secret stores. |
 
 ### `arcanum key`
 
@@ -851,6 +855,11 @@ Protection stores, external workspace trees, daemon registration, or ephemeral p
 literal values already authored into a selected file remain part of that file. Issue #37 adds no
 `backup restore` command: verify the artifact before relying on it and treat database, blobs,
 configuration/assets, and portable recovery keys as one recovery generation.
+When the configuration component has a committed preset generation, its authenticated entries also
+contain the paired `arcanum.preset.json` and `arcanum.preset.rollback.json`; the transient preset
+journal is never included. Restore the pair only beside its matching `arcanum.json` during a
+coordinated recovery. An incomplete or mismatched pair fails the configuration component. A pending
+journal prevents capture of a possibly mid-transaction configuration until preset recovery runs.
 
 ### `arcanum data`
 
@@ -933,6 +942,61 @@ Shows the same effective context budget used by inference without executing the 
 | `-w, --workspace <workspace>` | Workspace ID or path; defaults to saved/detected context. |
 | `-m, --model <model>` | Model name; defaults to saved/server context. |
 | `-s, --session <session>` | Session GUID, title, or prefix; defaults to saved context. |
+
+### `arcanum preset`
+
+Inspect, preview, apply, and reset transparent onboarding presets.
+
+The six built-in version-1 presets are `general-assistant` (**General Assistant**),
+`coding-workspace` (**Coding Workspace**), `research` (**Research**), `private-offline`
+(**Private/Offline**), `automation` (**Automation**), and `advanced-custom`
+(**Advanced/Custom**). `<name>` accepts an exact ID or exact display name; quote display names that
+contain spaces or shell punctuation. Definitions are partial overlays: only their declared owned
+paths can change, and Advanced/Custom owns none.
+
+| Command | Explanation | Additional command options |
+|---|---|---|
+| `arcanum preset list` | List each ID, version, display name, purpose, and effective state. The active item is `Active` or `Drifted`; other entries are `Available`. | None beyond global or inherited family options. |
+| `arcanum preset show <name>` | Show the shared purpose, exact owned values, restart flags, enables/disables, security and provider requirements, resource/cost behavior, prerequisite setup commands, first essential choice, deferred advanced features, recommendations, and Ward/Sanctum/Weave/Saga/Lexicon glossary. | None beyond global or inherited family options. |
+| `arcanum preset diff <name>` | Read-only plan showing applicability, idempotency, prerequisite status, completion summary, and every owned persisted/effective/proposed value with its source, environment-override name/effectiveness, ownership, and restart/change flags. | None beyond global or inherited family options. |
+| `arcanum preset apply <name>` | Build and canonically validate the complete candidate, then atomically write only the preset-owned overlay with provenance and rollback state. Reapplying the same version and owned values is a successful no-op. | None beyond global or inherited family options. |
+| `arcanum preset reset` | Restore unchanged preset-owned values to their pre-apply baseline, preserve user drift and all unrelated settings, clear active provenance, and report restored/preserved counts plus rollback status. No active preset is a successful no-op. | None beyond global or inherited family options. |
+
+Plain and `--json` modes are projections of the same shared service. Secret-shaped canonical values
+are `***`; environment-variable names may be shown, but their values never are. Persisted value
+means the value in `arcanum.json`; effective value includes recognized environment layering;
+proposed persisted value is what apply would write. When an environment override is effective,
+the persisted value can change without an effective-value change, and `diff` reports both flags
+instead of misrepresenting runtime truth. Only an effective override that contradicts an owned
+safety/privacy boundary blocks Apply. Benign feature masks remain authoritative and are reported as
+drift without making the plan inapplicable. The secure research-credential store is consulted only
+for Research `diff` and `apply`; listing, showing, state inspection, reset, and other presets do not
+probe it.
+
+Preset state is separate owner-only provenance, not a setting: no provenance is `Custom`, an exact
+owned-value match is `Active`, and a later persisted or effective difference is `Drifted`. Apply
+uses an expected-settings hash, the current-user cross-process coordinator shared by all canonical
+configuration writers, an owner-only rollback baseline, a prepared transaction journal, atomic
+replacement, and post-write verification. The journal stores only owned before/after values and
+hashes plus previous/next provenance. Bounded no-follow sidecar reads and exact catalog ownership,
+value, hash, and state/rollback validation reject forged or stale provenance. Reset and recovery
+restore a baseline path only while its persisted value still matches the transaction's applied
+value; manual drift and unrelated edits win. Apply/reset are already explicit mutation commands and
+do not prompt or require `--yes`.
+
+Required provider/model, workspace, research-credential, loopback-provider, or positive-budget
+prerequisites are reported with exact setup commands. A plan applies only when required
+prerequisites and complete canonical validation succeed. Presets never supply provider secrets,
+invent budgets, bypass Ward or Sanctum, silently enable network exposure/unsandboxed children/
+untrusted MCP/destructive memory, or add retry, timeout, loop-count, or other arbitrary tuning
+knobs. Every plan concludes with active preset, provider/model, workspace/campaign, memory sources,
+tool policy, privacy state, and next recommended command. Recommendations are directly executable;
+Coding Workspace uses
+`arcanum run --workspace . "Inspect this workspace and summarize it."`, including the required
+prompt.
+
+The future guided `arcanum setup` wizard is tracked separately by issue #19. These commands expose
+the reusable preset service directly; they do not simulate or add that wizard.
 
 ### `arcanum config`
 

@@ -42,17 +42,19 @@
 
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
 
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
-
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.10" />
-
-    <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.10" />
-
   </ItemGroup>
 
   <ItemGroup>
 
     <ProjectReference Include="..\RetroDownfall.Arcanum.Core\RetroDownfall.Arcanum.Core.csproj" />
+
+    <ProjectReference Include="..\RetroDownfall.Arcanum.Infrastructure\RetroDownfall.Arcanum.Infrastructure.csproj" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
 
   </ItemGroup>
 

@@ -1,0 +1,747 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:RetroDownfall.Compendium.Ux.ViewModels"
+             x:Class="RetroDownfall.Compendium.Ux.Views.PresetsPage"
+             x:DataType="vm:ConfigurationViewModel"
+             x:CompileBindings="False">
+
+  <ScrollViewer>
+
+    <StackPanel Margin="24"
+                Spacing="16">
+
+      <Grid ColumnDefinitions="*,Auto"
+            ColumnSpacing="16">
+
+        <StackPanel Grid.Column="0"
+                    Spacing="4">
+
+          <TextBlock Text="Presets"
+                     FontSize="{DynamicResource ForgePageTitleFontSize}"
+                     FontWeight="SemiBold" />
+
+          <TextBlock Text="Start from a workflow profile while keeping every proposed setting visible and editable afterward."
+                     Foreground="{DynamicResource ForgeMutedTextBrush}"
+                     TextWrapping="Wrap" />
+
+        </StackPanel>
+
+        <Border Grid.Column="1"
+                Background="{DynamicResource ForgeSelectionBrush}"
+                BorderBrush="{DynamicResource ForgeAccentBrush}"
+                BorderThickness="1"
+                CornerRadius="14"
+                Padding="12,6"
+                VerticalAlignment="Top">
+
+          <StackPanel Orientation="Horizontal"
+                      Spacing="6">
+
+            <TextBlock Text="Effective state:"
+                       FontWeight="SemiBold" />
+
+            <TextBlock x:Name="EffectiveStateValue"
+                       Text="{Binding Presets.EffectiveStateDisplay}" />
+
+          </StackPanel>
+
+        </Border>
+
+      </Grid>
+
+      <TextBlock Text="Active means the preset-owned settings still match. Drifted means one or more changed afterward. Custom means no preset is active. Unavailable means state inspection failed and no cached result is being presented as current."
+                 FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                 Foreground="{DynamicResource ForgeMutedTextBrush}"
+                 TextWrapping="Wrap" />
+
+      <Border Background="{DynamicResource ForgeSurfaceBrush}"
+              BorderBrush="{DynamicResource ForgeBorderBrush}"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="16">
+
+        <StackPanel Spacing="12">
+
+          <Grid ColumnDefinitions="*,Auto"
+                ColumnSpacing="12">
+
+            <StackPanel Grid.Column="0"
+                        Spacing="2">
+
+              <TextBlock Text="Choose a workflow"
+                         FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                         FontWeight="SemiBold" />
+
+              <TextBlock Text="Selecting a preset only previews it. Nothing changes until you choose Apply preset."
+                         Foreground="{DynamicResource ForgeMutedTextBrush}"
+                         TextWrapping="Wrap" />
+
+            </StackPanel>
+
+            <Button Grid.Column="1"
+                    Content="Refresh state"
+                    Command="{Binding Presets.RefreshCommand}"
+                    VerticalAlignment="Top" />
+
+          </Grid>
+
+          <ItemsControl x:Name="PresetChoices"
+                        ItemsSource="{Binding Presets.Definitions}">
+
+            <ItemsControl.ItemsPanel>
+
+              <ItemsPanelTemplate>
+
+                <WrapPanel Orientation="Horizontal" />
+
+              </ItemsPanelTemplate>
+
+            </ItemsControl.ItemsPanel>
+
+            <ItemsControl.ItemTemplate>
+
+              <DataTemplate>
+
+                <Button Width="250"
+                        MinHeight="108"
+                        Margin="0,0,12,12"
+                        Padding="14"
+                        HorizontalContentAlignment="Stretch"
+                        VerticalContentAlignment="Stretch"
+                        Command="{Binding $parent[UserControl].DataContext.Presets.SelectPresetCommand}"
+                        CommandParameter="{Binding .}">
+
+                  <StackPanel Spacing="6">
+
+                    <TextBlock Text="{Binding DisplayName}"
+                               FontWeight="SemiBold"
+                               FontSize="{DynamicResource ForgeSectionHeaderFontSize}" />
+
+                    <TextBlock Text="{Binding Purpose}"
+                               Foreground="{DynamicResource ForgeMutedTextBrush}"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Text="{Binding Version, StringFormat='Version {0}'}"
+                               FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                               Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                  </StackPanel>
+
+                </Button>
+
+              </DataTemplate>
+
+            </ItemsControl.ItemTemplate>
+
+          </ItemsControl>
+
+        </StackPanel>
+
+      </Border>
+
+      <Border Background="{DynamicResource ForgeSurfaceBrush}"
+              BorderBrush="{DynamicResource ForgeBorderBrush}"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="16">
+
+        <StackPanel Spacing="14">
+
+          <StackPanel Spacing="3">
+
+            <TextBlock Text="{Binding Presets.SelectedPreset.DisplayName, FallbackValue='Select a preset to preview'}"
+                       FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                       FontWeight="SemiBold" />
+
+            <TextBlock Text="{Binding Presets.SelectedPreset.Purpose}"
+                       Foreground="{DynamicResource ForgeMutedTextBrush}"
+                       TextWrapping="Wrap" />
+
+          </StackPanel>
+
+          <Grid ColumnDefinitions="*,*"
+                ColumnSpacing="16">
+
+            <StackPanel Grid.Column="0"
+                        Spacing="10">
+
+              <TextBlock Text="What this preset does"
+                         FontWeight="SemiBold" />
+
+              <TextBlock Text="Enables"
+                         FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                         Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+              <TextBlock Text="{Binding Presets.Disclosure.Enables}"
+                         TextWrapping="Wrap" />
+
+              <TextBlock Text="Disables"
+                         FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                         Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+              <TextBlock Text="{Binding Presets.Disclosure.Disables}"
+                         TextWrapping="Wrap" />
+
+              <TextBlock Text="Security implications"
+                         FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                         Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+              <TextBlock Text="{Binding Presets.Disclosure.SecurityImplications}"
+                         TextWrapping="Wrap" />
+
+            </StackPanel>
+
+            <StackPanel Grid.Column="1"
+                        Spacing="10">
+
+              <TextBlock Text="Requirements and resource behavior"
+                         FontWeight="SemiBold" />
+
+              <TextBlock Text="Provider requirements"
+                         FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                         Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+              <TextBlock Text="{Binding Presets.Disclosure.ProviderRequirements}"
+                         TextWrapping="Wrap" />
+
+              <TextBlock Text="Resources and cost"
+                         FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                         Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+              <TextBlock Text="{Binding Presets.Disclosure.ResourceAndCostBehavior}"
+                         TextWrapping="Wrap" />
+
+              <TextBlock Text="Essential choice"
+                         FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                         Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+              <TextBlock Text="{Binding Presets.ProgressiveDisclosure.EssentialChoice}"
+                         TextWrapping="Wrap" />
+
+              <TextBlock Text="First-success recommendation"
+                         FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                         Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+              <TextBlock Text="{Binding Presets.ProgressiveDisclosure.FirstSuccessRecommendation}"
+                         TextWrapping="Wrap" />
+
+            </StackPanel>
+
+          </Grid>
+
+          <Expander Header="Advanced features intentionally deferred">
+
+            <ItemsControl ItemsSource="{Binding Presets.ProgressiveDisclosure.DeferredFeatures}"
+                          Margin="0,8,0,0">
+
+              <ItemsControl.ItemTemplate>
+
+                <DataTemplate>
+
+                  <Grid ColumnDefinitions="Auto,*"
+                        Margin="0,2">
+
+                    <TextBlock Grid.Column="0"
+                               Text="•  " />
+
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding .}"
+                               TextWrapping="Wrap" />
+
+                  </Grid>
+
+                </DataTemplate>
+
+              </ItemsControl.ItemTemplate>
+
+            </ItemsControl>
+
+          </Expander>
+
+        </StackPanel>
+
+      </Border>
+
+      <Border Background="{DynamicResource ForgeSurfaceBrush}"
+              BorderBrush="{DynamicResource ForgeBorderBrush}"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="16">
+
+        <StackPanel Spacing="12">
+
+          <TextBlock Text="Prerequisites"
+                     FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                     FontWeight="SemiBold" />
+
+          <ItemsControl x:Name="PresetPrerequisites"
+                        ItemsSource="{Binding Presets.Prerequisites}">
+
+            <ItemsControl.ItemTemplate>
+
+              <DataTemplate>
+
+                <Border Background="{DynamicResource ForgeSurfaceAltBrush}"
+                        BorderBrush="{DynamicResource ForgeBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="5"
+                        Margin="0,3"
+                        Padding="10">
+
+                  <Grid ColumnDefinitions="Auto,*,Auto"
+                        ColumnSpacing="10">
+
+                    <TextBlock Grid.Column="0"
+                               Text="{Binding IsSatisfied}"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource ForgeAccentBrush}" />
+
+                    <StackPanel Grid.Column="1"
+                                Spacing="2">
+
+                      <TextBlock Text="{Binding Prerequisite.Description}"
+                                 TextWrapping="Wrap" />
+
+                      <TextBlock Text="{Binding Detail}"
+                                 Foreground="{DynamicResource ForgeMutedTextBrush}"
+                                 TextWrapping="Wrap" />
+
+                    </StackPanel>
+
+                    <TextBlock Grid.Column="2"
+                               Text="{Binding Prerequisite.ResolutionCommand}"
+                               FontFamily="Menlo, Consolas, monospace"
+                               FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                               VerticalAlignment="Center" />
+
+                  </Grid>
+
+                </Border>
+
+              </DataTemplate>
+
+            </ItemsControl.ItemTemplate>
+
+          </ItemsControl>
+
+        </StackPanel>
+
+      </Border>
+
+      <Border Background="{DynamicResource ForgeSurfaceBrush}"
+              BorderBrush="{DynamicResource ForgeBorderBrush}"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="16">
+
+        <StackPanel Spacing="12">
+
+          <StackPanel Spacing="3">
+
+            <TextBlock Text="Exact configuration diff"
+                       FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                       FontWeight="SemiBold" />
+
+            <TextBlock Text="Persisted is what arcanum.json contains. Effective includes environment overrides. Proposed is what Apply preset will persist."
+                       Foreground="{DynamicResource ForgeMutedTextBrush}"
+                       TextWrapping="Wrap" />
+
+          </StackPanel>
+
+          <ItemsControl x:Name="PresetDiff"
+                        ItemsSource="{Binding Presets.Diff}">
+
+            <ItemsControl.ItemTemplate>
+
+              <DataTemplate>
+
+                <Border Background="{DynamicResource ForgeSurfaceAltBrush}"
+                        BorderBrush="{DynamicResource ForgeBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="5"
+                        Margin="0,4"
+                        Padding="12">
+
+                  <StackPanel Spacing="10">
+
+                    <TextBlock Text="{Binding Path}"
+                               FontWeight="SemiBold"
+                               FontFamily="Menlo, Consolas, monospace" />
+
+                    <Grid ColumnDefinitions="*,*,*"
+                          ColumnSpacing="12">
+
+                      <StackPanel Grid.Column="0"
+                                  Spacing="2">
+
+                        <TextBlock Text="Persisted value"
+                                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                                   Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                        <TextBlock Text="{Binding PersistedValue}"
+                                   FontFamily="Menlo, Consolas, monospace"
+                                   TextWrapping="Wrap" />
+
+                      </StackPanel>
+
+                      <StackPanel Grid.Column="1"
+                                  Spacing="2">
+
+                        <TextBlock Text="Effective value"
+                                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                                   Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                        <TextBlock Text="{Binding EffectiveValue}"
+                                   FontFamily="Menlo, Consolas, monospace"
+                                   TextWrapping="Wrap" />
+
+                      </StackPanel>
+
+                      <StackPanel Grid.Column="2"
+                                  Spacing="2">
+
+                        <TextBlock Text="Proposed persisted value"
+                                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                                   Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                        <TextBlock Text="{Binding ProposedPersistedValue}"
+                                   FontFamily="Menlo, Consolas, monospace"
+                                   TextWrapping="Wrap" />
+
+                      </StackPanel>
+
+                    </Grid>
+
+                    <Grid ColumnDefinitions="Auto,*,Auto,*"
+                          ColumnSpacing="8"
+                          RowDefinitions="Auto,Auto,Auto">
+
+                      <TextBlock Grid.Row="0"
+                                 Grid.Column="0"
+                                 Text="Current source:"
+                                 Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                      <TextBlock Grid.Row="0"
+                                 Grid.Column="1"
+                                 Text="{Binding CurrentSource}" />
+
+                      <TextBlock Grid.Row="0"
+                                 Grid.Column="2"
+                                 Text="Environment variable:"
+                                 Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                      <TextBlock Grid.Row="0"
+                                 Grid.Column="3"
+                                 Text="{Binding EnvironmentVariable}"
+                                 FontFamily="Menlo, Consolas, monospace" />
+
+                      <TextBlock Grid.Row="1"
+                                 Grid.Column="0"
+                                 Text="Environment override effective:"
+                                 Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                      <TextBlock Grid.Row="1"
+                                 Grid.Column="1"
+                                 Text="{Binding EnvironmentOverrideIsEffective}" />
+
+                      <TextBlock Grid.Row="1"
+                                 Grid.Column="2"
+                                 Text="Owned by preset:"
+                                 Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                      <TextBlock Grid.Row="1"
+                                 Grid.Column="3"
+                                 Text="{Binding OwnedByPreset}" />
+
+                      <TextBlock Grid.Row="2"
+                                 Grid.Column="0"
+                                 Text="Requires restart:"
+                                 Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                      <TextBlock Grid.Row="2"
+                                 Grid.Column="1"
+                                 Text="{Binding RequiresRestart}" />
+
+                      <TextBlock Grid.Row="2"
+                                 Grid.Column="2"
+                                 Text="Persisted / effective changes:"
+                                 Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                      <StackPanel Grid.Row="2"
+                                  Grid.Column="3"
+                                  Orientation="Horizontal"
+                                  Spacing="4">
+
+                        <TextBlock Text="{Binding PersistedValueChanges}" />
+
+                        <TextBlock Text="/" />
+
+                        <TextBlock Text="{Binding EffectiveValueChanges}" />
+
+                      </StackPanel>
+
+                    </Grid>
+
+                    <StackPanel Spacing="3">
+
+                      <TextBlock Text="Prerequisite IDs"
+                                 FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                                 Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                      <ItemsControl ItemsSource="{Binding PrerequisiteIds}">
+
+                        <ItemsControl.ItemTemplate>
+
+                          <DataTemplate>
+
+                            <TextBlock Text="{Binding .}"
+                                       FontFamily="Menlo, Consolas, monospace" />
+
+                          </DataTemplate>
+
+                        </ItemsControl.ItemTemplate>
+
+                      </ItemsControl>
+
+                    </StackPanel>
+
+                  </StackPanel>
+
+                </Border>
+
+              </DataTemplate>
+
+            </ItemsControl.ItemTemplate>
+
+          </ItemsControl>
+
+        </StackPanel>
+
+      </Border>
+
+      <Grid ColumnDefinitions="*,*"
+            ColumnSpacing="16">
+
+        <Border Grid.Column="0"
+                Background="{DynamicResource ForgeSurfaceBrush}"
+                BorderBrush="{DynamicResource ForgeBorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16">
+
+          <StackPanel Spacing="10">
+
+            <TextBlock Text="Recommendations"
+                       FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                       FontWeight="SemiBold" />
+
+            <ItemsControl ItemsSource="{Binding Presets.Recommendations}">
+
+              <ItemsControl.ItemTemplate>
+
+                <DataTemplate>
+
+                  <StackPanel Margin="0,3"
+                              Spacing="2">
+
+                    <TextBlock Text="{Binding Description}"
+                               TextWrapping="Wrap" />
+
+                    <TextBlock Text="{Binding Command}"
+                               FontFamily="Menlo, Consolas, monospace"
+                               Foreground="{DynamicResource ForgeMutedTextBrush}"
+                               TextWrapping="Wrap" />
+
+                  </StackPanel>
+
+                </DataTemplate>
+
+              </ItemsControl.ItemTemplate>
+
+            </ItemsControl>
+
+          </StackPanel>
+
+        </Border>
+
+        <Border Grid.Column="1"
+                Background="{DynamicResource ForgeSurfaceBrush}"
+                BorderBrush="{DynamicResource ForgeBorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16">
+
+          <StackPanel Spacing="10">
+
+            <TextBlock Text="Plain-language glossary"
+                       FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                       FontWeight="SemiBold" />
+
+            <ItemsControl ItemsSource="{Binding Presets.Glossary}">
+
+              <ItemsControl.ItemTemplate>
+
+                <DataTemplate>
+
+                  <TextBlock Margin="0,3"
+                             TextWrapping="Wrap">
+
+                    <Run Text="{Binding Term}" FontWeight="SemiBold" />
+
+                    <Run Text=" — " />
+
+                    <Run Text="{Binding PlainLanguageMeaning}" />
+
+                  </TextBlock>
+
+                </DataTemplate>
+
+              </ItemsControl.ItemTemplate>
+
+            </ItemsControl>
+
+          </StackPanel>
+
+        </Border>
+
+      </Grid>
+
+      <ItemsControl ItemsSource="{Binding Presets.CompletionSummaries}">
+
+        <ItemsControl.ItemTemplate>
+
+          <DataTemplate>
+
+            <Border Margin="0,0,0,16"
+                    Background="{DynamicResource ForgeSurfaceBrush}"
+                    BorderBrush="{DynamicResource ForgeBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="16">
+
+              <StackPanel Spacing="12">
+
+                <TextBlock Text="{Binding Heading}"
+                           FontSize="{DynamicResource ForgeSectionHeaderFontSize}"
+                           FontWeight="SemiBold" />
+
+                <Grid ColumnDefinitions="Auto,*"
+                      ColumnSpacing="12"
+                      RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
+
+                  <TextBlock Grid.Row="0" Grid.Column="0" Text="Active preset" Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                  <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Summary.ActivePreset}" />
+
+                  <TextBlock Grid.Row="1" Grid.Column="0" Text="Provider and model" Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                  <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Summary.ProviderAndModel}" TextWrapping="Wrap" />
+
+                  <TextBlock Grid.Row="2" Grid.Column="0" Text="Workspace and campaign" Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                  <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Summary.WorkspaceAndCampaign}" TextWrapping="Wrap" />
+
+                  <TextBlock Grid.Row="3" Grid.Column="0" Text="Tool policy" Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                  <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Summary.ToolPolicy}" TextWrapping="Wrap" />
+
+                  <TextBlock Grid.Row="4" Grid.Column="0" Text="Privacy state" Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                  <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding Summary.PrivacyState}" TextWrapping="Wrap" />
+
+                  <TextBlock Grid.Row="5" Grid.Column="0" Text="Next command" Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                  <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding Summary.NextRecommendedCommand}" FontFamily="Menlo, Consolas, monospace" TextWrapping="Wrap" />
+
+                </Grid>
+
+                <StackPanel Spacing="3">
+
+                  <TextBlock Text="Enabled memory sources"
+                             Foreground="{DynamicResource ForgeMutedTextBrush}" />
+
+                  <ItemsControl ItemsSource="{Binding Summary.EnabledMemorySources}">
+
+                    <ItemsControl.ItemTemplate>
+
+                      <DataTemplate>
+
+                        <Grid ColumnDefinitions="Auto,*">
+
+                          <TextBlock Grid.Column="0"
+                                     Text="•  " />
+
+                          <TextBlock Grid.Column="1"
+                                     Text="{Binding .}"
+                                     TextWrapping="Wrap" />
+
+                        </Grid>
+
+                      </DataTemplate>
+
+                    </ItemsControl.ItemTemplate>
+
+                  </ItemsControl>
+
+                </StackPanel>
+
+              </StackPanel>
+
+            </Border>
+
+          </DataTemplate>
+
+        </ItemsControl.ItemTemplate>
+
+      </ItemsControl>
+
+      <Border Background="{DynamicResource ForgeSurfaceAltBrush}"
+              BorderBrush="{DynamicResource ForgeBorderBrush}"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="16">
+
+        <Grid ColumnDefinitions="*,Auto"
+              ColumnSpacing="16">
+
+          <StackPanel Grid.Column="0"
+                      Spacing="3"
+                      VerticalAlignment="Center">
+
+            <TextBlock Text="{Binding Presets.StatusMessage}"
+                       TextWrapping="Wrap" />
+
+            <TextBlock x:Name="PresetMutationBlockReason"
+                       Text="{Binding Presets.MutationBlockReason}"
+                       Foreground="{DynamicResource ForgeWarningBrush}"
+                       TextWrapping="Wrap" />
+
+          </StackPanel>
+
+          <StackPanel Grid.Column="1"
+                      Orientation="Horizontal"
+                      Spacing="8"
+                      VerticalAlignment="Center">
+
+            <Button x:Name="ResetPresetButton"
+                    Content="Reset preset"
+                    Command="{Binding Presets.ResetCommand}" />
+
+            <Button x:Name="ApplyPresetButton"
+                    Content="Apply preset"
+                    Command="{Binding Presets.ApplyCommand}"
+                    Background="{DynamicResource ForgeAccentBrush}"
+                    Foreground="White" />
+
+          </StackPanel>
+
+        </Grid>
+
+      </Border>
+
+
+    </StackPanel>
+
+  </ScrollViewer>
+
+</UserControl>

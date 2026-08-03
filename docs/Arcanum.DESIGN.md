@@ -209,7 +209,106 @@ path/network/tool policy at invocation time, while process resource limits are e
 or by the operating system as described in §11.15. Sanctum supplements the unconditional
 `WorkspacePathPolicy`; it does not replace or weaken it.
 
-#### 3.4.1 Degraded-mode fallback matrix
+#### 3.4.1 Versioned onboarding presets
+
+Presets are immutable, source-authored **partial configuration overlays**, not runtime modes,
+configuration profiles, reflection-built settings, or a second model. Core owns the shared
+`ConfigurationPresetCatalog`, `ConfigurationPresetPlanner`, and `IConfigurationPresetService`
+contracts. CLI and Compendium consume those same definitions, descriptions, glossary entries,
+plans, effective-state inspection, apply results, reset results, and completion summaries.
+
+Every definition has a stable ID, integer version, display name, plain-language purpose, explicit
+owned dot paths and canonical JSON values, prerequisites with exact resolution commands,
+security/network/provider/resource disclosures, post-apply recommendations, and progressive
+disclosure. Version 1 is deliberately small:
+
+| Preset | Owned paths |
+|--------|-------------|
+| `general-assistant` | `features.attachments=true`; `features.saga=false`; `features.sagaExtraction=false`; `features.memoryManagement=false`; `security.ward.enabled=true`; `security.ward.autoDenyInUnattendedMode=true`; `security.allowUnsandboxedToolChildren=false`. |
+| `coding-workspace` | `features.workspaceChecks=true`; `workspaces.enableFileWrite=true`; `security.ward.enabled=true`; `security.ward.autoDenyInUnattendedMode=true`; `security.allowUnsandboxedToolChildren=false`. |
+| `research` | `features.webBrowsing=true`; `security.ward.enabled=true`; `security.ward.autoDenyInUnattendedMode=true`; `security.allowUnsandboxedToolChildren=false`. |
+| `private-offline` | `host.listenAny=false`; `features.webBrowsing=false`; `features.enterpriseTelemetry=false`; `security.ward.enabled=true`; `security.ward.autoDenyInUnattendedMode=true`; `security.allowUnsandboxedToolChildren=false`. |
+| `automation` | `security.ward.enabled=true`; `security.ward.autoDenyInUnattendedMode=true`; `security.ward.unattendedMode=true`; `security.allowUnsandboxedToolChildren=false`. |
+| `advanced-custom` | No owned paths; all values remain operator-owned. |
+
+The catalog never owns provider records, credential references/values, MCP definitions, schedules,
+arbitrary budgets, or tuning mechanics. General Assistant requires a resolvable provider/model;
+Coding Workspace additionally requires a configured default workspace root; Research requires the
+native research credential; Private/Offline requires the selected provider endpoint to be
+loopback; Automation requires a provider/model plus budget enforcement that the operator already
+enabled with a positive daily limit. A missing required prerequisite makes the plan inapplicable
+and reports the exact setup/configuration command. The complete candidate must also pass canonical
+semantic and outbound validation. Optional systems stay deferred until after the first successful
+inference instead of producing a prompt for every feature. First-success recommendations are
+directly executable; Coding Workspace uses
+`arcanum run --workspace . "Inspect this workspace and summarize it."` rather than omitting the
+required prompt. Credential readiness is lazy: only a
+Research diff or apply probes the secure research-credential store. Listing, showing, inspecting,
+resetting, and planning or applying other presets do not open that store.
+
+`ConfigurationEnvironmentResolver` clones persisted settings, applies supported
+`ARCANUM_Arcanum__...`, `ARCANUM_EDITION`, and `ARCANUM_HOST_ANY` overrides, and records only path,
+variable name, presence/effectiveness, and parse error—never the raw value. The planner therefore
+reports, for every owned path, persisted value, effective value, proposed persisted value, current
+source, environment-variable name/effectiveness, ownership, prerequisite IDs, restart impact, and
+separate persisted/effective change flags. An effective environment override is authoritative for
+live truth: applying a different persisted value does not falsely claim that effective behavior
+changed. Only a contradiction on a preset-owned safety or privacy boundary is an applicability
+blocker. A benign environment mask—such as keeping an optional feature disabled—does not add a
+restriction; the plan remains applicable and reports the effective mismatch as drift.
+
+Preset provenance lives outside `ArcanumSettings` in owner-only
+`arcanum.preset.json`; it records preset ID/version, apply timestamp, owned-values hash, and the
+baseline/applied canonical values. No provenance is `Custom`. Matching applied values in both the
+persisted and effective snapshots are `Active`; a later difference in either is `Drifted`. Manual
+edits remain authoritative and visible as drift. Reapplying the same version with the same owned
+values is idempotent; a future version is an explicit new diff and may not silently absorb newly
+owned paths. Sidecar provenance is accepted only when its ID/version resolves to the immutable
+catalog, its unique owned paths and applied canonical values exactly match that definition, its
+hash recomputes, and its state and rollback records agree in full.
+
+`ArcanumConfigurationTransaction` is a current-user named cross-process coordinator. Every
+canonical `ConfigurationWriter` mutation and Compendium save takes it, and preset apply/reset holds
+it across configuration and sidecar finalization so separate processes cannot interleave those
+writes. `FileConfigurationPresetPersistence` also rejects a stale expected settings hash. Apply
+validates the complete candidate, writes an owner-only prepared journal
+(`arcanum.preset.journal.json`) plus rollback baseline (`arcanum.preset.rollback.json`), atomically
+replaces `arcanum.json`, writes provenance, verifies the preset-owned candidate values, and only
+then removes the journal. The journal stores only owned before/after canonical values, their hashes,
+and previous/next provenance; it never serializes the full configuration.
+
+Failure and next-read recovery perform a conditional inverse merge: an owned path is reversed only
+while its current value still equals the interrupted transaction's after-value. Unowned values and
+later manual changes are preserved. Reset uses the same rule, requires matching provenance and
+rollback state, restores a baseline path only when its current persisted value still equals the
+preset-applied value, validates the complete result, and reports restored versus preserved counts
+before clearing preset state. Every sidecar read is size-bounded and no-follow, and strict catalog
+provenance validation runs before recovery or reset. Sidecars contain only owned canonical values
+and references; provider secret values are never resolved or copied.
+
+The CLI surface is local `arcanum preset list|show|diff|apply|reset`; no preset API endpoint is
+added. Compendium's polished Presets page calls the same service and shows the same descriptions,
+`Active`/`Drifted`/`Custom` state, exact diff, prerequisites, progressive disclosure, glossary,
+recommendations, and completion summaries. The current effective state and summary always come
+from the latest successful inspection; selecting another preset adds a separately labelled
+projection and never relabels the active preset. A failed inspection clears cached state and shows
+`Unavailable` rather than presenting stale provenance as current. Apply/Reset are explicit button
+actions with no extra confirmation; unsaved editor changes block mutation with save-or-cancel
+guidance so they are never silently discarded. A successful preset mutation clears the now-stale
+preview before reloading the canonical file. Compendium acknowledges the SHA-256 fingerprint of
+bytes it reads or writes, so a delayed watcher event for that exact generation is suppressed as
+self-write while different bytes still surface as an external edit.
+
+The five workflow presets explicitly retain Ward, unattended auto-deny, and the unsandboxed-child
+safe default; Advanced/Custom owns no paths and changes nothing. Sanctum continues to enforce the
+operator's configured workspace boundaries. No preset weakens these boundaries or silently enables
+`ListenAny`, unsandboxed child processes, untrusted workspace MCP, destructive memory operations,
+Forbidden Arts bypasses, or unlimited
+research/subagent behavior. Presets never introduce retry, timeout, loop-count, workflow-count, or
+similar arbitrary tuning knobs. The guided `arcanum setup` wizard remains separate follow-up work
+tracked by issue #19; this service is the independently usable foundation, not a hidden wizard.
+
+#### 3.4.2 Degraded-mode fallback matrix
 
 Single-host failure behavior:
 
@@ -231,7 +330,8 @@ Single-host failure behavior:
 **Primary dependency chain:** `Cli` → `Api` → `Infrastructure` → `Core`. `Infrastructure` also
 references `Secrets`; `Cli` references `Core` and `Infrastructure` directly for standalone DI setup
 (Data Protection, `ISecretStore`, `AddArcanumEyeOfTheWorld`). The Forge Core client references both
-`Core` and `Secrets`; Compendium references `Core`.
+`Core` and `Secrets`; Compendium references `Core` for public settings/preset contracts and
+`Infrastructure` for the shared preset composition and atomic file persistence.
 
 ### 4.1 `RetroDownfall.Arcanum.Core` (class library)
 
@@ -263,7 +363,10 @@ credential APIs. It has no project reference back to Core, Infrastructure, Api, 
 
 **In-process MCP tools (canonical list):** `read_file_chunk`, `replace_text_block`, `write_file`, `list_directory`, `search_workspace`, `apply_patch`, `workspace_check` (advertised only while eligible on macOS), `execute_command` (no shell; `ArgumentList` only), `ask_human` (streaming attended only), `scribe_lexicon`/`delete_lexicon` (`Arcanum:Features:Lexicon`; delete is Forbidden Art), `search_archives`, `send_commlink_alert`, `petition_dungeon_master`, `adjust_initiative`, `cast_sending` / `dispatch_sending` (Conclave/A2A feature gates), `read_saga` (`Arcanum:Features:Saga`), and `attach_session_file` / `refresh_session_file` (`Arcanum:Features:Attachments`; post-tool content injection). `search_workspace` is the exact bounded text-search surface and does not query The Weave. `apply_patch` is bound to a persisted assistant turn. All filesystem tools use `WorkspacePathPolicy`; campaign Sanctum is an additional conditional policy, not the primary containment boundary.
 
-**Other DI surfaces:** `AddArcanumInfrastructure`, `AddArcanumDaemonServices`, `AddArcanumEyeOfTheWorld`, `AddArcanumThemeDetection`, Grimoire/`Chronosync`/`CampaignLoggerQueue`/`Loremaster`, `InMemoryEventBus`, Comm Link multiplex/webhook.
+**Other DI surfaces:** `AddArcanumInfrastructure`, `AddArcanumDaemonServices`,
+`AddArcanumEyeOfTheWorld`, `AddArcanumThemeDetection`, `AddArcanumConfigurationPresets`,
+Grimoire/`Chronosync`/`CampaignLoggerQueue`/`Loremaster`, `InMemoryEventBus`, Comm Link
+multiplex/webhook.
 
 **RAG ownership:** Weave/Divination schema + managed/vec0 search in Infrastructure (`DivinationService`, `WeaveSchemaInitializer`, `SqliteVecExtensionLoader`); `EmbeddingBlobCodec` in **Core**; `IWeaveService` implemented in **Api** (§21.1). Background: `EntryWeavingService`, `WorkspaceIndexingService`, `SagaExtractionService`/`SagaMemoryStore`. Semantic spell routing cache: `SpellWeaveCache`.
 
@@ -292,6 +395,13 @@ endpoints in a referenced class library), and `EnableConfigurationBindingGenerat
 ### 4.4 `RetroDownfall.Arcanum.Cli` (console executable)
 
 **Role:** Single entry assembly — process argv, dispatch commands, and when asked, construct the ASP.NET Core pipeline and run Kestrel. Carries `<FrameworkReference Include="Microsoft.AspNetCore.App" />` so the same binary can self-host Kestrel for `serve`.
+
+The local `preset list|show|diff|apply|reset` family resolves
+`IConfigurationPresetService` directly; it does not add an HTTP route or silently fall back to a
+different preset model. Plain and `--json` output come from the same shared definitions and plans,
+redact secret-shaped canonical values, keep diagnostics on stderr, and report prerequisite,
+idempotency, rollback, drift, and setup-completion state. Apply is the explicit mutation request and
+does not add an unrelated confirmation gate.
 
 **Dispatch and selection architecture:**
 
@@ -475,7 +585,17 @@ Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Co
 
 ### 4.6 `RetroDownfall.Compendium.Ux` (.NET 10 Avalonia desktop configuration editor)
 
-Visual editor for §3.4 — reads/writes `arcanum.json` only (no inference/daemon/Grimoire/MCP). References **Core** only and edits credential environment-variable references, never provider/PFX values. Its local certificate generator writes an owner-only PEM pair, avoiding a generated password. `SettingDescriptor` drives controls/clamps; parity + coverage tests guard drift. It launches from `arcanum open compendium`, the compatibility `arcanum config open`, existing Forge configuration actions, and the macOS application-menu **Settings...** item. A valid settings deep link selects the configuration surface; an absent, malformed, wrong-target, or future-schema link safely retains the default Edition section. See [`Compendium.README.md`](Compendium.README.md).
+Visual editor for §3.4 — ordinary pages read/write `arcanum.json` and do not run inference, daemon,
+Grimoire, or MCP operations. The polished Presets page consumes the same Core
+`IConfigurationPresetService` as the CLI for catalog, inspection, diff, apply, and reset; it does
+not duplicate overlay or persistence logic. Compendium edits credential environment-variable
+references, never provider/PFX values. Its local certificate generator writes an owner-only PEM
+pair, avoiding a generated password. `SettingDescriptor` drives controls/clamps; preset, parity,
+and coverage tests guard drift. It launches from `arcanum open compendium`, the compatibility
+`arcanum config open`, existing configuration actions, and the macOS application-menu
+**Settings...** item. A valid settings deep link selects the configuration surface; an absent,
+malformed, wrong-target, or future-schema link safely retains the default Edition section. See
+[`Compendium.README.md`](Compendium.README.md).
 
 Descriptor-driven views cache only completed builds. They observe replacement field collections so
 an asynchronous configuration load rebuilds controls even when the view was created first; view
@@ -1017,7 +1137,15 @@ Session id as manifest provenance without changing its inventory. Each component
 `Configuration` and `CompendiumSettings` share the physical `arcanum.json` state. Selecting only
 `CompendiumSettings` still captures that file under the Compendium component even when
 `Configuration` is explicitly excluded. Selecting both stores one `Configuration` entry and records
-`CompendiumSettings` as a complete zero-entry alias instead of duplicating the bytes.
+`CompendiumSettings` as a complete zero-entry alias instead of duplicating the bytes. A selected
+configuration generation also captures `arcanum.preset.json` and
+`arcanum.preset.rollback.json` as a pair when both committed sidecars exist, their exact fingerprints
+match, and no preset recovery journal is present. Inventory takes the shared configuration
+transaction while fingerprinting that generation. An incomplete or mismatched pair marks the
+component failed and leaves the sidecars out. A pending recovery journal marks the component failed
+without capturing a possibly mid-transaction `arcanum.json`; the transient journal is never a
+portable backup entry. The same rule applies when Compendium is the sole owner of the shared
+configuration entries.
 `TrustedMcpWorkspaceMetadata`, `AuditLogs`, `GuardrailLogs`, and `MasterApiKey` are explicit-only.
 The planner warns that trusted workspace metadata contains nonportable absolute paths, logs contain
 sensitive operational facts, and the master API key is high-impact recovery material. Global
@@ -1063,6 +1191,10 @@ KDF iterations at 10,000,000, and accepted chunk size at 16 MiB. Unknown format 
 enum values fail closed. The final encrypted manifest records format/Arcanum/build/schema/platform
 facts; scope and requested overrides; component status and warnings; encryption/KDF parameters;
 and every included path, size, component, and SHA-256.
+
+Canonical preset state and rollback paths are ordinary authenticated `Configuration` entries for
+archive inspection and verification. A coordinated recovery may install that pair beside its
+matching `arcanum.json`; it must never synthesize or restore the transient transaction journal.
 
 Requested include/exclude arrays, component statuses, and entry paths are stored in canonical sorted
 order with no duplicates. Every published manifest has exactly one status for every typed component,
@@ -2308,12 +2440,18 @@ Sensitive paths are restricted to the current user at creation time via `SecureF
 - **Unix:** `File.SetUnixFileMode` — files `600` (`UserRead | UserWrite`), directories `700` (`UserRead | UserWrite | UserExecute`).
 - **Windows:** `File.SetUnixFileMode` throws; owner-only ACL via `FileSystemAccessRule` (`Modify` for files, `FullControl` with inheritance for directories).
 
-**Applied on create:** Grimoire `.db`, `arcanum.json`, `cli-context.json`, `cli-session.txt`, Serilog rolling logs
-(`SecureSerilogFileHooks`), Data Protection secret files, encrypted attachment/upload/batch
-envelopes and their same-directory ciphertext temps, and owner-only creation of
-`~/.config/arcanum` and `%ApplicationData%/arcanum/logs/`.
+**Applied on create:** Grimoire `.db`, `arcanum.json`, `cli-context.json`, `cli-session.txt`, preset
+provenance/rollback/recovery sidecars, Serilog rolling logs (`SecureSerilogFileHooks`), Data
+Protection secret files, encrypted attachment/upload/batch envelopes and their same-directory
+ciphertext temps, and owner-only creation of `~/.config/arcanum` and
+`%ApplicationData%/arcanum/logs/`. Preset sidecar writes verify owner-only permissions on the
+directory, staged file, and final file and fail closed with a typed write error when verification
+cannot be established.
 
-**Startup self-check:** `ArcanumSecurityStartupChecks` warns (does not fail) when any checked path is group/other-readable on Unix or grants read to `Everyone`/`Users` on Windows. Pre-existing files are not modified automatically — operators must fix permissions manually after the warning.
+**Startup self-check:** `ArcanumSecurityStartupChecks` warns (does not fail) when any checked path,
+including preset provenance/rollback/recovery state, is group/other-readable on Unix or grants read
+to `Everyone`/`Users` on Windows. Pre-existing files are not modified automatically — operators can
+run `arcanum doctor --fix-permissions` to repair the checked paths.
 
 ### 11.14 Wards (Forbidden Arts)
 
@@ -3067,6 +3205,7 @@ reinstall.
 
 | Test area | Contract locked down |
 |-----------|----------------------|
+| `ConfigurationPresetCatalogTests` / `ConfigurationPresetPlannerTests` / `ConfigurationPresetPersistenceTests` / `PresetCommandTests` / Compendium preset tests | Six immutable v1 ownership sets and every prohibited automatic enablement; fresh/custom/environment-overridden planning; prerequisites and canonical validation; idempotency; owner-only secret-free provenance/rollback; stale-write rejection, atomic recovery, reset drift preservation; CLI redaction/output; shared Compendium descriptions, exact diff, navigation, and unsaved-edit protection. |
 | `BudgetMonitorTests` | `IOptionsMonitor` + scope-factory singleton shape; record-before-dispatch ordering; duplicate suppression when `RecordAlertAsync` returns false. |
 | `GuardrailsPipelineTests` / `GuardrailAuditLoggerTests` | Awaited (not fire-and-forget) audit writes, writer-local historical deletion prohibited, multiple violations, balanced-parentheses phone regex, bounded topic-regex cache. |
 | `JsonSchemaHelperTests` / `StructuredOutputValidatorTests` | Nullable type arrays; enum short-circuit only for string/absent type; decimal numeric-enum equality. |

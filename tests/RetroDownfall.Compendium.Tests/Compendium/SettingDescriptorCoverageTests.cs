@@ -87,6 +87,7 @@ public sealed class SettingDescriptorCoverageTests
 
         ConfigSection[] expected =
         [
+            ConfigSection.Presets,
             ConfigSection.Edition,
             ConfigSection.Host,
             ConfigSection.Providers,
@@ -106,6 +107,12 @@ public sealed class SettingDescriptorCoverageTests
         Assert.All(
             SettingDescriptors.All,
             descriptor => Assert.Contains(descriptor.Section, expected));
+
+        Assert.True(SectionDescriptors.IsPolished(ConfigSection.Presets));
+
+        Assert.DoesNotContain(
+            SettingDescriptors.All,
+            static descriptor => descriptor.Section == ConfigSection.Presets);
 
     }
 

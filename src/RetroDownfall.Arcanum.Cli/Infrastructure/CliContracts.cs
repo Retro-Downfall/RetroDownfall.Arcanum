@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Backup;
+using RetroDownfall.Arcanum.Core.Configuration.Presets;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -104,6 +105,24 @@ public sealed record HealthWatchSnapshot(
     DateTimeOffset Timestamp,
     RetroDownfall.Arcanum.Api.Models.HealthStatus Status,
     RetroDownfall.Arcanum.Api.Models.HealthComponentDto[] Components);
+
+public sealed record ConfigurationPresetListItemPayload(
+    string Id,
+    int Version,
+    string DisplayName,
+    string Purpose,
+    string EffectiveState,
+    bool IsActive);
+
+public sealed record ConfigurationPresetListPayload(
+    ConfigurationPresetListItemPayload[] Presets,
+    ConfigurationPresetCompletionSummary? CompletionSummary);
+
+public sealed record ConfigurationPresetShowPayload(
+    ConfigurationPresetDefinition Preset,
+    string EffectiveState,
+    bool IsActive,
+    ConfigurationPresetGlossaryEntry[] Glossary);
 
 internal sealed class CliInvocationContext : ICliInvocationContext
 {
@@ -707,6 +726,16 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(BackupListItem[]))]
 
 [JsonSerializable(typeof(HealthWatchSnapshot))]
+
+[JsonSerializable(typeof(ConfigurationPresetListPayload))]
+
+[JsonSerializable(typeof(ConfigurationPresetShowPayload))]
+
+[JsonSerializable(typeof(ConfigurationPresetPlan))]
+
+[JsonSerializable(typeof(ConfigurationPresetApplyResult))]
+
+[JsonSerializable(typeof(ConfigurationPresetResetResult))]
 
 [JsonSerializable(typeof(JsonElement))]
 internal sealed partial class CliJsonContext : JsonSerializerContext;

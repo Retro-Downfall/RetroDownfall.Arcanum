@@ -19,6 +19,29 @@ public static class ConfigurationPathAccessor
 
     private const string RedactionMask = "***";
 
+    private static readonly JsonSerializerOptions CanonicalJsonOptions =
+        new(ConfigurationJsonContext.Default.Options)
+        {
+
+            WriteIndented = false,
+
+        };
+
+    public static ArcanumSettings Clone(ArcanumSettings settings)
+    {
+
+        ArgumentNullException.ThrowIfNull(settings);
+
+        JsonNode root = JsonSerializer.SerializeToNode(
+                settings,
+                ConfigurationJsonContext.Default.ArcanumSettings)
+            ?? new JsonObject();
+
+        return root.Deserialize(ConfigurationJsonContext.Default.ArcanumSettings)
+            ?? throw new InvalidOperationException("The cloned configuration snapshot was empty.");
+
+    }
+
     public static ConfigurationPathUpdate Set(
         ArcanumSettings settings,
         string key,
@@ -133,6 +156,98 @@ public static class ConfigurationPathAccessor
         }
 
         return value.ToJsonString(ConfigurationJsonContext.Default.Options);
+
+    }
+
+    public static string GetCanonicalValue(ArcanumSettings settings, string key)
+    {
+
+        ArgumentNullException.ThrowIfNull(settings);
+
+        JsonNode root = JsonSerializer.SerializeToNode(
+                settings,
+                ConfigurationJsonContext.Default.ArcanumSettings)
+            ?? new JsonObject();
+
+        PathResolution resolution = Resolve(root, key);
+
+        if (!resolution.IsSuccess)
+        {
+
+            throw new ArgumentException(resolution.Error, nameof(key));
+
+        }
+
+        JsonNode? value = resolution.Read();
+
+        return value?.ToJsonString(CanonicalJsonOptions) ?? "null";
+
+    }
+
+    public static ConfigurationPathUpdate SetCanonicalValue(
+        ArcanumSettings settings,
+        string key,
+        string canonicalJson)
+    {
+
+        ArgumentNullException.ThrowIfNull(settings);
+
+        ArgumentNullException.ThrowIfNull(canonicalJson);
+
+        JsonNode root = JsonSerializer.SerializeToNode(
+                settings,
+                ConfigurationJsonContext.Default.ArcanumSettings)
+            ?? new JsonObject();
+
+        PathResolution resolution = Resolve(root, key);
+
+        if (!resolution.IsSuccess)
+        {
+
+            return ConfigurationPathUpdate.Failure(settings, resolution.Error!);
+
+        }
+
+        JsonNode? parsed;
+
+        try
+        {
+
+            parsed = JsonNode.Parse(canonicalJson);
+
+        }
+        catch (JsonException exception)
+        {
+
+            return ConfigurationPathUpdate.Failure(
+                settings,
+                $"Value for '{key}' is not canonical JSON: {exception.Message}");
+
+        }
+
+        resolution.Assign(parsed);
+
+        try
+        {
+
+            ArcanumSettings? updated = root.Deserialize(
+                ConfigurationJsonContext.Default.ArcanumSettings);
+
+            return updated is null
+                ? ConfigurationPathUpdate.Failure(
+                    settings,
+                    "The updated configuration snapshot was empty.")
+                : ConfigurationPathUpdate.Success(updated);
+
+        }
+        catch (JsonException exception)
+        {
+
+            return ConfigurationPathUpdate.Failure(
+                settings,
+                $"Canonical value for '{key}' is not valid for the generated configuration descriptor: {exception.Message}");
+
+        }
 
     }
 

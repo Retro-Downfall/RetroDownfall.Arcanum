@@ -243,15 +243,6 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
             }
         }
 
-        // Validate file paths
-        if (Descriptor.Kind == SettingKind.Path && Value is string pathValue && !string.IsNullOrWhiteSpace(pathValue))
-        {
-            if (!ConfigurationInputValidator.TryValidatePath(pathValue, out string? pathError))
-            {
-                errors.Add(pathError ?? "Invalid file path");
-            }
-        }
-
         ErrorMessage = errors.Count > 0 ? string.Join("; ", errors) : null;
         OnPropertyChanged(nameof(HasError));
     }

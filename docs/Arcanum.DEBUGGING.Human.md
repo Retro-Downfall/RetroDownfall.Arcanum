@@ -23,7 +23,7 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
   `WebApplication.CreateSlimBuilder()` → `AddArcanumApiServices()` (`ApiBootstrapper`) →
   `MapArcanumEndpoints()` → `StartAsync()` → `WaitUntilReadyAsync()` →
   `WaitForShutdownAsync()`.
-- **CLI verbs** (`run`, `ask`, `chat`, `watch`, `open`, `center`, `session`, `memory`, `workspace`, `mcp`, `tool`, `file`, `batch`, `data`, `look`, `lore`, `daemon`, `key`, `config`, `serve`): native request/response cycles use `ArcanumApiClient.SendRequestAsync()`; unified SSE observation uses `WatchSseAsync()` and health observation uses `GetHealthReportAsync()`. `run` first composes bounded input/staging and then delegates to the existing inference, research, Spell-selection, or preview clients. `open` resolves through `CliResourceCatalog` before `ApplicationLauncher`; `center` and `open center` call the in-process `ICommandCenterHost`. `file`/`batch` are the deliberate exception: `FileBatchApiClient` parses bare OpenAI success objects, streams multipart/content bodies, and never expects `ApiResponse<T>`. Inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `memory` is HTTP-only: start in `MemoryCommands`, continue through the typed client methods, then `MemoryEndpoints`; verify that reads remain available when a prompt-time feature is disabled and that only named Lexicon deletion mutates. `session` lifecycle commands must remain HTTP-only; debug selection in `CliResourceCatalog`, command routing in `SessionCommands`, and feature-gate failures at `SessionEndpoints`. Workspace `tree`/`info`/`read`/`search`/index inspection must also remain HTTP-only; start in `WorkspaceCommands`, then its typed `ArcanumApiClient` method, and finally the `/api/workspaces` endpoint. MCP lifecycle/diagnostic commands are likewise HTTP-only: start in `McpCommands` or `ToolCommands`, inspect `ToolArgumentReader` and `ResourceSelector<T>`, then continue into `McpEndpoints`, `DiagnosticMcpInvocationEndpoints`, or `ToolInvokeEndpoints`. `config` prefers `/api/config` but deliberately enters labelled local bootstrap through `ConfigurationCommandService` on unavailability. Data-lifecycle status, retention policy, pruning, and explicit reset/delete commands are HTTP-only through `DataRetentionCommands`, the typed client, and `DataRetentionEndpoints`; only `data encryption ...` remains local through `BlobEncryptionLifecycleService`.
+- **CLI verbs** (`run`, `ask`, `chat`, `watch`, `open`, `center`, `session`, `memory`, `workspace`, `mcp`, `tool`, `file`, `batch`, `data`, `look`, `lore`, `daemon`, `key`, `config`, `preset`, `serve`): native request/response cycles use `ArcanumApiClient.SendRequestAsync()`; unified SSE observation uses `WatchSseAsync()` and health observation uses `GetHealthReportAsync()`. `run` first composes bounded input/staging and then delegates to the existing inference, research, Spell-selection, or preview clients. `open` resolves through `CliResourceCatalog` before `ApplicationLauncher`; `center` and `open center` call the in-process `ICommandCenterHost`. `file`/`batch` are the deliberate exception: `FileBatchApiClient` parses bare OpenAI success objects, streams multipart/content bodies, and never expects `ApiResponse<T>`. Inspect `ApiBootstrapper.MapArcanumEndpoints()` for endpoint wiring. `memory` is HTTP-only: start in `MemoryCommands`, continue through the typed client methods, then `MemoryEndpoints`; verify that reads remain available when a prompt-time feature is disabled and that only named Lexicon deletion mutates. `session` lifecycle commands must remain HTTP-only; debug selection in `CliResourceCatalog`, command routing in `SessionCommands`, and feature-gate failures at `SessionEndpoints`. Workspace `tree`/`info`/`read`/`search`/index inspection must also remain HTTP-only; start in `WorkspaceCommands`, then its typed `ArcanumApiClient` method, and finally the `/api/workspaces` endpoint. MCP lifecycle/diagnostic commands are likewise HTTP-only: start in `McpCommands` or `ToolCommands`, inspect `ToolArgumentReader` and `ResourceSelector<T>`, then continue into `McpEndpoints`, `DiagnosticMcpInvocationEndpoints`, or `ToolInvokeEndpoints`. `config` prefers `/api/config` but deliberately enters labelled local bootstrap through `ConfigurationCommandService` on unavailability. Data-lifecycle status, retention policy, pruning, and explicit reset/delete commands are HTTP-only through `DataRetentionCommands`, the typed client, and `DataRetentionEndpoints`; only `data encryption ...` remains local through `BlobEncryptionLifecycleService`. The `preset list|show|diff|apply|reset` family is also deliberately local: begin in `PresetCommands` and continue through the shared `IConfigurationPresetService`; no preset HTTP endpoint participates.
 - **CLI process contract**: start at `CliApplicationFactory.RunAsync()` → `CliCommandTree.Build()` →
   `CliInvocationContext.Push()`. Payload/diagnostic routing is `ConsoleDispatcher`; destructive
   approval is `ConfirmationPrompt`; final failure categorization is `CliFailureMapper`.
@@ -72,6 +72,9 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
 | `CliApplicationFactory` / `CliInvocationContext` / `ConsoleDispatcher` | Recursive `--json`/`--plain`/`--yes` binding; JSON stdout capture and typed-output bypass; ANSI suppression; stdout payload vs stderr diagnostic routing; exit-code normalization; fixed-copy exception mapping. |
 | `WatchCommands` / `WatchEventView` / `ArcanumApiClient` | Six-source watch routing; Session/Apprentice selection; authenticated SSE parsing; multi-line `data:` assembly; heartbeat/`[DONE]`/unexpected-EOF classification; UTC/color projection; free-form event/tool filtering; pure NDJSON stdout; stderr diagnostics; health 503 snapshot parsing; reconnect cursor/gap/backoff; Ctrl+C exit 130. |
 | `ConfigCommands` / `ConfigurationCommandService` / `ConfigurationPathAccessor` / `ConfigurationWriter` | Host-API versus local-bootstrap selection; generated-metadata dot-path resolution; typed parse; provider-endpoint secure input/redaction; full-snapshot validation; owner-only editor temp file; atomic write; environment-override diagnostics. Inspect `ConfigurationWriter.UpdateAsync()` for the serialized latest-file read/validate/write boundary and `ConfigurationEndpoints.ResolveCurrentSettings()` for the latest persisted API/model/provider projection. |
+| `ConfigurationPresetCatalog` / `ConfigurationPresetPlanner` / `ConfigurationEnvironmentResolver` / `ConfigurationPresetService` / `FileConfigurationPresetPersistence` | Six immutable v1 partial overlays and their exact owned paths; full candidate planning without I/O; persisted/effective/proposed diff rows; environment-variable source without raw values; safety/privacy-only override blockers with benign masks shown as drift; Research-only credential probing; idempotence and Active/Drifted/Custom inspection; optimistic full-settings hash; semantic/outbound candidate validation; bounded no-follow state/rollback/journal reads; strict catalog provenance; owner-only before/after journal; conditional recovery/reset that preserves later drift and unowned customization. Confirm `AddArcanumConfigurationPresets` supplies this shared flow. |
+| `ArcanumConfigurationTransaction` / `ConfigurationWriter` / `ArcanumConfigurationStore` | Current-user named cross-process serialization for every canonical configuration write; preset transaction coverage across configuration and sidecar finalization; Compendium owner-only staging; exact-byte SHA-256 acknowledgement that suppresses only matching self-write watcher events. |
+| `PresetCommands` / `PresetsSectionViewModel` / `PresetsPage` | Shared `list`/`show`/`diff`/`apply`/`reset` contract; secret redaction in text and JSON; disclosure, glossary, progressive guidance, recommendations, and completion summary parity; exact environment-aware diff rendering; explicit Compendium Apply/Reset without a second confirmation; unsaved-edit save-or-cancel gate; stale-plan clearing before canonical reload. There is no preset API or The Forge route. |
 | `ArcanumConfigurationStore` / `LocalCertificateGenerator` (`Compendium.Ux/Services/`) | 10 MiB read admission before parse; owner-only durable configuration staging and `finally` cleanup; collision-resistant certificate pair names; staged no-overwrite pair publication and rollback. |
 | `ConfirmationPrompt` | `--yes` short circuit; redirected-output fail-closed check before prompt or input read; stderr prompt copy and cancellation-aware input. |
 | `ChildProcessFilesystemJail` / `CappedChildProcessRunner` (`Infrastructure/Process/`) | Nonblocking/no-follow process-group launch (`setsid` / direct target group, no blocking FIFO before check); handle-bound child termination; identity-owned cleanup; timeout vs cancellation event; best-effort descendant cleanup. |
@@ -394,6 +397,12 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
     handler and `BackupInventoryPlanner.BuildAsync()`; confirm dry-run and creation use the same
     typed request, arbitrary paths cannot enter through include/exclude, no installation secret is
     read, and structured output contains warnings/status but no passphrase or portable key bytes.
+    With configuration selected, create matching `arcanum.preset.json` and
+    `arcanum.preset.rollback.json` files and confirm both appear as configuration entries beside
+    `arcanum.json`. Add `arcanum.preset.journal.json` and confirm that the transient journal never
+    appears; a pending journal fails the configuration component and prevents the possibly
+    mid-transaction configuration and sidecar pair from being captured. Give state and rollback
+    different bytes and confirm both are omitted while the configuration component reports failure.
     Create the metadata-only archive through a hidden prompt or controlled inherited descriptor,
     then run outer-only `backup inspect`, passphrase-backed inspect, `backup verify`, and `backup
     list`. The first and last must not request a secret; decrypted inspect must return the manifest
@@ -424,6 +433,47 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
     open, `quick_check`, schema-id comparison, and cleanup. The archive must be owner-only and no
     plaintext state, key, or passphrase may appear in the file header, terminal JSON, diagnostics,
     logs, or leftover temporary paths.
+27. **Trace a preset without hiding effective configuration:** isolate `ARCANUM_TEST_HOME`, write a
+    valid configuration, and run `arcanum preset list`, `arcanum preset show research`, then
+    `arcanum preset diff research --json`. With
+    `ARCANUM_Arcanum__Features__WebBrowsing=false`, follow
+    `ConfigurationEnvironmentResolver.Resolve()` into `ConfigurationPresetPlanner.Plan()` and
+    confirm the row separately reports persisted `false`, effective `false`, proposed persisted
+    `true`, the environment-variable name, `EnvironmentOverrideIsEffective=true`,
+    `PersistedValueChanges=true`, and `EffectiveValueChanges=false`. Raw environment values must not
+    enter provenance. This benign feature mask must remain visible as drift without becoming an
+    applicability blocker; only the missing Research credential should make this plan inapplicable,
+    and only Research diff/apply should probe its secure store. Repeat with
+    `ARCANUM_HOST_ANY=true` and Private/Offline to confirm a contradictory privacy override does
+    block, then repeat with Automation and confirm a missing positive budget blocks apply without
+    creating or enlarging one.
+
+    For a successful apply, break from `PresetCommands.Apply()` through
+    `ConfigurationPresetService.ApplyAsync()`, candidate validation,
+    `FileConfigurationPresetPersistence.ApplyAsync()`, and `ConfigurationWriter.UpdateAsync()`.
+    Confirm `ArcanumConfigurationTransaction` serializes CLI and Compendium writers with the same
+    current-user cross-process mutex; the expected settings hash rejects a stale preview before
+    mutation; and configuration, owner-only provenance, and rollback state finalize under that
+    transaction. Inspect the prepared journal: it must contain only owned before/after values and
+    hashes plus previous/next provenance, never a full `ArcanumSettings`. Attempt oversized and
+    symlinked sidecars plus catalog-forged or state/rollback-mismatched provenance and confirm the
+    bounded no-follow reader and strict validation reject them.
+
+    Interrupt after the configuration write, make a concurrent unrelated/manual edit, and confirm
+    recovery conditionally reverses only owned values still equal to the journal's after-values.
+    Change one preset-owned persisted value and one unrelated value, then run
+    `arcanum preset reset`: only owned values that still equal their preset-applied value return to
+    baseline, while the drifted and unrelated values remain and the restored/preserved counts tell
+    the truth.
+
+    Finally open Compendium's Presets section and compare its definition, prerequisite states,
+    exact diff, progressive disclosure, glossary, recommendations, and completion summary with the
+    CLI output. Selection is preview-only; explicit Apply/Reset use the same service without another
+    confirmation, while an unsaved Compendium edit disables both with save-or-cancel guidance.
+    After success, confirm the old plan is cleared before reload and that only a watcher event whose
+    bytes match the acknowledged SHA-256 fingerprint is suppressed. Different bytes must still
+    surface as an external change. Verify no HTTP request or The Forge navigation occurs. The
+    broader guided setup wizard remains separate issue #19.
 
 ## Related documents
 

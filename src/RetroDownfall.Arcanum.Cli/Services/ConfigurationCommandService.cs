@@ -1,5 +1,7 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Configuration.Presets;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
@@ -90,7 +92,8 @@ internal sealed class ConfigurationCommandService(
         try
         {
 
-            ArcanumSettings local = ConfigurationBootstrapper.LoadArcanumSettings();
+            ArcanumSettings local = ConfigurationBootstrapper
+                .LoadPersistedArcanumSettings();
 
             return Result<ConfigurationCommandSnapshot>.Success(
                 new ConfigurationCommandSnapshot(
@@ -171,7 +174,23 @@ internal sealed class ConfigurationCommandService(
 
         }
 
-        return await writer.WriteAsync(settings, cancellationToken).ConfigureAwait(false);
+        string expectedHash = ConfigurationPresetHash.ComputeSettings(snapshot.Settings);
+
+        Result<ArcanumSettings> local = await writer.UpdateAsync(
+                snapshot.Settings,
+                current => string.Equals(
+                    ConfigurationPresetHash.ComputeSettings(current),
+                    expectedHash,
+                    StringComparison.Ordinal)
+                    ? Result<ArcanumSettings>.Success(settings)
+                    : Result<ArcanumSettings>.Failure(
+                        new Error(
+                            "Configuration.Changed",
+                            "arcanum.json changed after it was loaded. Reload the configuration and retry the edit.")),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return local.IsSuccess ? Result.Success() : Result.Failure(local.Error);
 
     }
 
@@ -185,143 +204,21 @@ internal sealed class ConfigurationCommandService(
 internal static class ConfigurationEnvironmentOverrides
 {
 
-    private const string GeneralPrefix = "ARCANUM_Arcanum__";
-
     public static IReadOnlyList<string> Inspect(ArcanumSettings settings)
     {
 
-        List<string> overrides = [];
+        ConfigurationEnvironmentSnapshot snapshot =
+            ConfigurationEnvironmentResolver.Resolve(settings);
 
-        AddSpecial(overrides, "edition", "ARCANUM_EDITION");
-
-        AddSpecial(overrides, "host.listenAny", "ARCANUM_HOST_ANY");
-
-        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
-        {
-
-            string? name = entry.Key as string;
-
-            if (name is null
-                || !name.StartsWith(GeneralPrefix, StringComparison.OrdinalIgnoreCase))
-            {
-
-                continue;
-
-            }
-
-            string path = NormalizePath(
-                name[GeneralPrefix.Length..].Replace("__", ".", StringComparison.Ordinal));
-
-            if (ConfigurationPathAccessor.Exists(settings, path))
-            {
-
-                overrides.Add($"{path} <- {name}");
-
-            }
-
-        }
-
-        overrides.Sort(StringComparer.OrdinalIgnoreCase);
-
-        return overrides;
+        return snapshot.Overrides
+            .Where(item => ConfigurationPathAccessor.Exists(settings, item.Path))
+            .Select(static item => $"{item.Path} <- {item.VariableName}")
+            .OrderBy(static item => item, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     }
 
-    public static ArcanumSettings Apply(ArcanumSettings settings)
-    {
-
-        ArcanumSettings effective = settings;
-
-        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
-        {
-
-            string? name = entry.Key as string;
-
-            string? value = entry.Value as string;
-
-            if (name is null
-                || value is null
-                || !name.StartsWith(GeneralPrefix, StringComparison.OrdinalIgnoreCase))
-            {
-
-                continue;
-
-            }
-
-            string path = name[GeneralPrefix.Length..].Replace("__", ".", StringComparison.Ordinal);
-
-            ConfigurationPathUpdate update = ConfigurationPathAccessor.Set(
-                effective,
-                path,
-                value);
-
-            if (update.IsSuccess)
-            {
-
-                effective = update.Settings!;
-
-            }
-
-        }
-
-        string? edition = Environment.GetEnvironmentVariable("ARCANUM_EDITION");
-
-        if (!string.IsNullOrWhiteSpace(edition))
-        {
-
-            ConfigurationPathUpdate update = ConfigurationPathAccessor.Set(
-                effective,
-                "edition",
-                edition);
-
-            if (update.IsSuccess)
-            {
-
-                effective = update.Settings!;
-
-            }
-
-        }
-
-        string? hostAny = Environment.GetEnvironmentVariable("ARCANUM_HOST_ANY");
-
-        if (!string.IsNullOrWhiteSpace(hostAny))
-        {
-
-            ConfigurationPathUpdate update = ConfigurationPathAccessor.Set(
-                effective,
-                "host.listenAny",
-                hostAny);
-
-            if (update.IsSuccess)
-            {
-
-                effective = update.Settings!;
-
-            }
-
-        }
-
-        return effective;
-
-    }
-
-    private static void AddSpecial(List<string> overrides, string path, string variable)
-    {
-
-        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(variable)))
-        {
-
-            overrides.Add($"{path} <- {variable}");
-
-        }
-
-    }
-
-    private static string NormalizePath(string path) =>
-        string.Join(
-            '.',
-            path.Split('.', StringSplitOptions.RemoveEmptyEntries).Select(static segment =>
-                char.ToLowerInvariant(segment[0]) + segment[1..]));
+    public static ArcanumSettings Apply(ArcanumSettings settings) =>
+        ConfigurationEnvironmentResolver.Resolve(settings).EffectiveSettings;
 
 }
