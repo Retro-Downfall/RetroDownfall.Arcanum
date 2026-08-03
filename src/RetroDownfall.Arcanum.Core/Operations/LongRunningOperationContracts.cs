@@ -40,6 +40,8 @@ public static class LongRunningOperationKinds
     public const string BlobEncryptionMigration = "blob-encryption-migration";
     public const string BlobEncryptionKeyRotation = "blob-encryption-key-rotation";
 
+    public const string BackupCreate = "backup-create";
+
     public const string DataRetentionPrune = "data-retention-prune";
 
     public const string DataRetentionMutation = "data-retention-mutation";
@@ -74,6 +76,7 @@ public static class LongRunningOperationPolicyCatalog
             [LongRunningOperationKinds.IdempotencyClaim] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
             [LongRunningOperationKinds.BlobEncryptionMigration] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
             [LongRunningOperationKinds.BlobEncryptionKeyRotation] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            [LongRunningOperationKinds.BackupCreate] = LongRunningOperationRecoveryPolicy.AbandonSafely,
             [LongRunningOperationKinds.DataRetentionPrune] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
             [LongRunningOperationKinds.DataRetentionMutation] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
             [LongRunningOperationKinds.DataRetentionFactoryReset] = LongRunningOperationRecoveryPolicy.RestartIdempotently,

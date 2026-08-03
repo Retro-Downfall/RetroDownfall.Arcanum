@@ -222,7 +222,7 @@ Single-host failure behavior:
 | Disk full / partial `security.dat` write | Atomic temp+rename on `security.dat`; corrupt store fails with recovery guidance (§16.3) instead of silent key regen when a Grimoire DB exists. |
 | Data Protection keyring corrupt | See §16.3 rotate-or-restore steps; **`arcanum key show`** reads the local store only (no HTTP). |
 | Configuration host/API unavailable | `arcanum config` reports and uses local bootstrap mode with the canonical loader, validator, outbound guard, and atomic writer; validation failure leaves the prior file unchanged. |
-| File-encryption key missing/corrupt or blob authentication fails | Startup/read fails closed; no replacement key is generated while ciphertext exists. `FileEncryption` health and `arcanum doctor` identify key/legacy/corrupt state; restore the OS credential or DP mirror + key ring (§5.4.6, §16.3). |
+| File-encryption key missing/corrupt or blob authentication fails | Startup/read fails closed; no replacement key is generated while ciphertext exists. `FileEncryption` health and `arcanum doctor` identify key/legacy/corrupt state; use the OS credential or DP mirror + key ring for same-machine recovery, or one coordinated verified `.arcbackup` generation for portable recovery (§5.4.6, §5.4.8, §16.3). |
 
 ---
 
@@ -671,10 +671,12 @@ squash.
 Arcanum has no supported user-data migration program. Schema history may be squashed into a verified
 `InitialCreate` baseline because there is no production installed base: replay the old chain against
 a scratch database and compare columns, indexes, triggers, and foreign keys before replacing it.
-When an already-recorded install script changes incompatibly, developers must stop every host/daemon,
-back up anything needed, delete `arcanum.db` plus `-wal`/`-shm`, and restart to reinstall. There is
-intentionally no incremental or data migration in either case below. Copy-pastable developer commands
-are in [Arcanum.README, “Local Grimoire reinstall”](Arcanum.README.md#local-grimoire-reinstall).
+When an already-recorded install script changes incompatibly, developers use a binary that can read
+the existing schema to create and verify a supported `.arcbackup` for anything that must be
+preserved. They then stop every host/daemon, delete `arcanum.db` plus `-wal`/`-shm`, and restart to
+reinstall. There is intentionally no incremental or data migration in either case below.
+Copy-pastable developer commands are in
+[Arcanum.README, “Local Grimoire reinstall”](Arcanum.README.md#local-grimoire-reinstall).
 
 Unified retention is an orchestration layer over the existing canonical tables, encrypted blob
 trees, and JSONL files. Issue #43 added no schema or SQL install script, so existing local and test
@@ -783,17 +785,19 @@ The file secret is backward-compatible with the original single Base64 key and u
 to one DP-wrapped key-ring document with an active write key plus retained read keys. Rotation
 creates and durably saves the new active key before rewriting files, re-encrypts incrementally,
 verifies every candidate, and retires an old key only when verification succeeds and no metadata row
-references it. The complete key-ring value is mirrored to `file-encryption-key.dat`, so a backup
-taken during migration/rotation carries every active key; restore accepts either the legacy
-single-key value or the multi-key ring.
+references it. The complete key-ring value is mirrored to `file-encryption-key.dat`, so local
+recovery can retain every active key during migration/rotation; the provider accepts either the
+legacy single-key value or the multi-key ring.
 
 First startup creates the master key only when the OS secret is missing and no encrypted blobs
-exist. If ciphertext already exists, missing/corrupt key state never generates a replacement:
-restore the OS credential, or restore `file-encryption-key.dat` together with the matching
-Data Protection `keys/` directory. A complete backup therefore includes the SQLCipher database and
-sidecars, `attachments/`, `files/`, the OS credential (or its DP recovery mirror), and the
-Data Protection key ring. Copy ciphertext and database metadata from the same backup generation;
-restoring only one side can leave key ids or file pointers inconsistent.
+exist. If ciphertext already exists, missing/corrupt key state never generates a replacement.
+Manual local recovery can restore the OS credential, or restore `file-encryption-key.dat` together
+with its matching Data Protection `keys/` directory. Portable recovery uses the supported
+`.arcbackup` workflow in §5.4.8 instead: it exports only the selected Grimoire secret and retained
+file keys inside the archive's independently encrypted payload, not the original OS credential,
+raw protected mirror, or Data Protection key ring. Database metadata, blob ciphertext, and those
+filtered keys must still come from one verified archive generation; restoring only one side can
+leave key ids or file pointers inconsistent.
 
 #### 5.4.7 Unified data lifecycle, retention, and deletion
 
@@ -983,6 +987,153 @@ and WAL copies, OS caches, encrypted-storage replicas, and independent backups c
 Encryption protects retained data but a shared key is not destroyed per deleted record. Operators
 with a physical-erasure requirement must separately manage backup media, snapshots, device policy,
 and platform-specific secure-destruction procedures.
+
+#### 5.4.8 Versioned encrypted portable backups
+
+`IBackupService` is the supported local backup boundary. `BackupInventoryPlanner`,
+`BackupDatabaseSnapshotter`, `BackupSecretSnapshotReader`, and `BackupArchiveCodec` separate typed
+inventory, live-database consistency, portable secret export, and container cryptography. The CLI
+calls that boundary; it never implements backup by copying a live `arcanum.db`/WAL/SHM set. The
+same planner drives `backup create --dry-run` and archive creation, so preview and execution share
+one component taxonomy and one set of required/optional rules.
+
+The closed scopes are:
+
+| Scope | Default selected state |
+|-------|------------------------|
+| `full` | Grimoire snapshot/KDF, portable recovery keys, configuration, attachments, uploaded and batch files, global Codex/Spells, global MCP configuration, CLI state, The Forge state, and Compendium settings/certificates. |
+| `configuration-and-authored-assets` | Configuration, global Codex/Spells, global MCP configuration, CLI and The Forge state, and Compendium settings/certificates. |
+| `sessions-and-memory` | Grimoire snapshot/KDF, portable recovery keys, all session attachments, and uploaded/batch files. |
+| `specific-session` | Grimoire snapshot/KDF, portable recovery keys, and attachments belonging to the requested Session. Uploaded/batch files are omitted by default because they have no Session ownership, but may be explicitly included as global typed components. The version-1 database snapshot remains indivisible, so the manifest warns about collateral global/accounting rows. |
+| `metadata-only` | An encrypted diagnostic manifest with no state entries. It does not read installation secrets. |
+
+Typed `--include` and `--exclude` values select only `BackupComponent` members; arbitrary paths are
+never accepted. Exclusion is applied after inclusion, so an explicit exclusion wins when both sets
+contain the same component. `SpecificSession` requires a Session id; any broader scope may carry a
+Session id as manifest provenance without changing its inventory. Each component is recorded as
+`Complete`, `OmittedByPolicy`, `Unavailable`, or `Failed`. Missing optional local state is
+`Unavailable`; a missing, unreadable, linked, changed, or checksum-mismatched required source is
+`Failed`, and creation returns incomplete without publishing an archive.
+`Configuration` and `CompendiumSettings` share the physical `arcanum.json` state. Selecting only
+`CompendiumSettings` still captures that file under the Compendium component even when
+`Configuration` is explicitly excluded. Selecting both stores one `Configuration` entry and records
+`CompendiumSettings` as a complete zero-entry alias instead of duplicating the bytes.
+`TrustedMcpWorkspaceMetadata`, `AuditLogs`, `GuardrailLogs`, and `MasterApiKey` are explicit-only.
+The planner warns that trusted workspace metadata contains nonportable absolute paths, logs contain
+sensitive operational facts, and the master API key is high-impact recovery material. Global
+`mcp.json` is in the normal full/configuration scopes because it is authored configuration, but
+receives a warning because it can contain literal environment values.
+
+Environment-referenced secret values, OS credential-store internals, raw Data Protection keys,
+external workspace trees, daemon registration, and ephemeral process state are always outside the
+portable component catalog. The portable recovery document contains the dedicated Grimoire
+encryption secret plus only the active/referenced file-encryption keys required to decrypt included
+`ARCABLOB` entries. It is serialized directly into the encrypted backup payload, cleared from
+mutable buffers where practical, and never emitted through CLI JSON, the outer header, or logs. The
+master API key remains absent unless its explicit sensitive component is selected.
+
+`BackupDatabaseSnapshotter` opens SQLCipher with pooling disabled and uses SQLite's online backup
+API to copy the committed database generation to an owner-only temporary database while the host
+may remain live. The copy advances in bounded page steps, observes cancellation between every
+step after copying has begun, and retries transient SQLite busy/locked results without imposing an
+overall timeout. Cancellation finishes the native backup handle and identity-cleans the unpublished
+temporary database. It validates a completed snapshot with `PRAGMA quick_check` and
+`PRAGMA foreign_key_check` before no-clobber publication to backup staging. It does not use
+`File.Copy`, and uncommitted concurrent rows do not become part of the snapshot. The authenticated
+manifest records the latest `__EFMigrationsHistory` id; archive verification reopens the extracted
+snapshot with the portable Grimoire secret and KDF sidecar, runs `quick_check`, and compares that
+schema id.
+
+`.arcbackup` format version 1 starts with a fixed 68-byte `ARCABACK` outer header containing only
+format/KDF/encryption identifiers and parameters, payload length, creation time, salt, and nonce
+prefix. PBKDF2-HMAC-SHA256 derives a 256-bit key from the user recovery passphrase and a random
+16-byte salt; the production default is 600,000 iterations. The payload uses AES-256-GCM with a
+12-byte nonce, 16-byte tag, and independently authenticated bounded chunks (one MiB by default).
+The fixed header is authenticated as associated data, and monotonic chunk nonces plus the exact
+payload-length calculation reject reordering, truncation, and appended ciphertext. Nonnegative
+`Int64` payload declarations that cannot produce a representable envelope length are malformed
+archives; inspection reports invalid data, verification returns `backup.invalid_archive`, and
+listing omits them.
+
+The decrypted payload is a bounded record stream, not a filesystem tarball. Entry paths use `/`,
+must be relative canonical NFC Unicode with no empty, `.` or `..` segments, and are compared with
+ordinal semantics. Duplicate paths and the reserved final `manifest.json` path are rejected. The
+codec caps path metadata at 4 KiB, the encrypted manifest at 64 MiB, entries at 1,000,000, accepted
+KDF iterations at 10,000,000, and accepted chunk size at 16 MiB. Unknown format versions or typed
+enum values fail closed. The final encrypted manifest records format/Arcanum/build/schema/platform
+facts; scope and requested overrides; component status and warnings; encryption/KDF parameters;
+and every included path, size, component, and SHA-256.
+
+Requested include/exclude arrays, component statuses, and entry paths are stored in canonical sorted
+order with no duplicates. Every published manifest has exactly one status for every typed component,
+contains no failed component, uses zero totals for omitted or unavailable components, and reconciles
+each complete component's file/byte totals to its owned entries. Complete zero-entry aliases remain
+valid where two component names intentionally share one physical source. Entry SHA-256 values are
+exactly 64 lowercase hexadecimal characters. Top-level Arcanum version, build, database-schema, and
+platform identities are nonblank, trimmed NFC strings of at most 4 KiB each. A `specific-session`
+manifest requires its Session id; broader scopes may retain a Session id as provenance.
+
+Inventory captures each source's no-follow identity, size, and SHA-256 through a bounded streaming
+buffer. Archive creation reopens the source and requires that identity/size/fingerprint to match, so
+even a same-inode, same-size in-place rewrite between planning and read is rejected. Capture then
+streams the verified source through bounded hashing and encryption and refuses a changed or linked
+object. For database-backed blobs, the planner also validates the bounded `ARCABLOB` version,
+length, owning purpose, and key id from that same handle before and after hashing. The captured
+envelope key—not potentially stale snapshot metadata—is authoritative for portable recovery export,
+so migration or rotation that atomically replaced bytes before its metadata commit cannot publish a
+self-verifying archive without the actual read key. Plaintext paired with encrypted metadata, a
+malformed or purpose-mismatched envelope, descriptor drift, or an unavailable captured key makes
+creation incomplete before publication.
+
+Creation allocates an identity-owned, owner-only staging root as a direct child of the
+destination directory. The encrypted archive temporary file, decrypted self-verification payload,
+database verification extraction, and generated snapshot material all stay beneath that root. The
+codec accepts only an existing, fully qualified direct-child root, durable-flushes the staged
+archive, performs a full staged `VerifyAsync`, and atomically publishes it to the sibling
+destination on the same filesystem.
+Immediately before publication, the codec verifies that the staging pathname still has its
+captured no-follow single-link identity; replacement aborts publication, and identity-owned cleanup
+refuses to delete the replacement. Publication is no-clobber unless the CLI received explicit
+`--overwrite` authorization. A missing destination parent is created, but an existing
+caller-selected parent retains its permissions; owner-only enforcement applies to Arcanum-owned
+staging roots, temporary plaintext, and archive files, not to a shared repository or output
+directory. Identity-owned cleanup removes only the root created for this operation.
+Cancellation or any inventory, read, authentication, checksum, database, or publication failure
+removes owned staging and leaves the destination absent or unchanged; no incomplete archive is
+reported as success.
+
+Database-backed creation records a `backup-create` durable operation with
+`AbandonSafely` recovery. Its versioned checkpoints identify the bounded phase and owned output/
+staging locations but never persist the recovery passphrase or portable key bytes. Normal
+cancellation abandons the operation after cleanup; other failures mark it failed. After process
+loss, reconciliation may clean only the exact identity-bound staging root recorded beneath the
+output parent, then abandons the operation. It never resumes encryption without the operator's
+passphrase and never treats a partial file as published. A fully self-verified archive that reached
+atomic publication remains independently valid.
+
+`backup inspect` without a passphrase parses only the bounded safe outer header. With a passphrase,
+it authenticates and decrypts one bounded chunk at a time in memory, skips entry contents, and
+retains only bounded path metadata plus the capped final manifest. Consumed plaintext buffers are
+cleared, and inspection creates no plaintext staging file. `backup verify` decrypts into an
+owner-only temporary root, validates structure/authentication, exact
+header/manifest timestamp and envelope agreement, closed requested/component values, every
+size/SHA-256, and database readability/schema, then removes its protected temporary files. An
+authentication failure does not distinguish a wrong passphrase from modified authenticated bytes.
+`backup list` enumerates `.arcbackup` files and reads only safe headers.
+
+`BackupPassphraseReader` accepts exactly one of a hidden prompt, the environment-variable *name*
+supplied through `--passphrase-env`, or an inherited descriptor supplied through
+`--passphrase-fd`. It never accepts a literal passphrase option. Interactive creation reads twice
+and compares without early exit; nonempty mutable buffers are cleared on disposal where practical.
+Outer-only inspection and listing require no passphrase.
+
+This version intentionally has no automated `backup restore` command. A verified archive is a
+portable recovery artifact, but restoration must still coordinate the SQLCipher snapshot/KDF,
+encrypted blobs, configuration/assets, and filtered portable keys as one generation. Restoring a
+subset can leave file pointers/key ids inconsistent; configuration may still reference environment
+secrets or external workspaces that do not exist on the target; trusted MCP paths are nonportable;
+and certificates may not be valid or trusted on another host. Keep the source installation until
+verification succeeds and separately protect archive media and the recovery passphrase.
 
 ### 5.5 Unseen Servant
 
@@ -1504,13 +1655,13 @@ content.
 | Attachment **bytes** on disk | Chunk-authenticated AES-256-GCM `ARCABLOB` envelope plus owner-only permissions under `~/.config/arcanum/attachments` |
 | File-encryption master key | OS credential store `arcanum/file-encryption-master-key`; DP-sealed recovery mirror in `file-encryption-key.dat` |
 | OS disk encryption / backup | Operator responsibility |
-| Full conversation continuity | Copy/restore attachments, DB, file-encryption key or recovery mirror, and DP key ring as one generation |
+| Full conversation continuity | Create and verify one encrypted `.arcbackup` containing the database, attachment ciphertext, and filtered portable recovery keys from one generation (§5.4.8) |
 
-Deleting or reinstalling only `arcanum.db` leaves orphan encrypted attachment bytes. A full backup,
-restore, reset, or uninstall must copy/remove `~/.config/arcanum/attachments` with the database and
-must preserve the matching file-encryption key material described in §5.4.6. This tree is distinct
-from `/v1/files`, whose encrypted envelopes use `files/{guid}`. Configuration authority remains the
-Compendium reference linked from §3.4.
+Deleting or reinstalling only `arcanum.db` leaves orphan encrypted attachment bytes. A portable
+backup uses §5.4.8 rather than manually copying a live database and blob tree; a restore, reset, or
+uninstall must still treat `~/.config/arcanum/attachments`, the database, and matching recovery
+keys as one ownership set. This tree is distinct from `/v1/files`, whose encrypted envelopes use
+`files/{guid}`. Configuration authority remains the Compendium reference linked from §3.4.
 
 ### 10.2.6 Structured mentions and durable context pins
 
@@ -2013,6 +2164,7 @@ The code-owned recovery-policy inventory is:
 | `idempotency-claim` | `ReconcileAndComplete` | Complete, fail, or explicitly abandon the linked claim so it cannot stay stranded. |
 | `blob-encryption-migration` | `RestartIdempotently` | Re-scan metadata and reconcile plaintext, envelope, and replace-before-metadata states. |
 | `blob-encryption-key-rotation` | `RestartIdempotently` | Continue toward the active write key while retaining every still-referenced prior key. |
+| `backup-create` | `AbandonSafely` | Preserve phase/output metadata for inspection and never resume with a recovery passphrase that was intentionally not persisted. Normal failure/cancellation removes owned staging; an expired unfinished operation becomes abandoned, while a fully self-verified atomically published archive remains valid. |
 
 `LongRunningOperationReconciler` selects only expired `Running`/`Waiting` leases, acquires a fresh
 two-minute recovery lease, dispatches by bounded kind, rejects unsupported checkpoint versions
@@ -2927,6 +3079,7 @@ reinstall.
 | `OpenAiV1EndpointTests` / `OpenAiV1BatchesEndpointTests` | Structured-output maps to `validation_failed`/`invalid_schema`, not generic inference failure; batch reset removes orphan output/error files. |
 | `EncryptedBlobStoreTests` / `FileEncryptionKeyProviderTests` / attachment-file-batch tests | Empty/boundary/large streaming round trips; random nonces; purpose/key separation; bit flips, truncation, trailing data, cancellation cleanup, and concurrent readers; OS/DP key persistence and missing/corrupt fail-closed behavior; no plaintext attachment/upload/batch artifact at rest. |
 | `EncryptedBlobCompatibilityTests` / `BlobEncryptionFileProcessorTests` / `BlobEncryptionOperationPolicyTests` | Metadata-led legacy reads; no encrypted-to-plaintext downgrade; crash retry after atomic replace but before metadata commit; reconciliation classifications; retained-key rotation; durable migration/rotation policy registration. |
+| `BackupInventoryPlannerTests` / `BackupDatabaseSnapshotterTests` / `BackupFileEncryptionKeyExporterTests` / `BackupArchiveCodecTests` / `BackupManifestValidationTests` / `BackupServiceTests` / `BackupCreateRecoveryHandlerTests` / `BackupCommandTests` / `BackupPassphraseReaderTests` | Typed scope/include/exclude inventory and explicit sensitive defaults; missing required blob failure; live WAL snapshot consistency and deterministic mid-copy cancellation/cleanup; portable filtered keys; deterministic empty/minimal/full/corrupt format vectors and bounded encrypted round trips including large files; wrong-passphrase, single-byte-corruption, and header/manifest disagreement detection; bounded-memory manifest inspection without plaintext staging; direct-child protected self-verification staging; no-clobber/cancellation cleanup; identity-bound crash recovery; owner-only publication; secret-free metadata-only create/inspect/verify/list; exact CLI help/output/exit behavior; hidden/environment/descriptor passphrase handling with mutable-buffer clearing. |
 | `RetentionSettingsTests` / `DataRetentionServiceTests` / `DataRetentionSweepHostedServiceTests` / `DataRetentionEndpointTests` / `DataRetentionCommandTests` | Safe defaults and clamps; opt-in scheduled sweeps; dry-run/apply plan parity; bounded candidates/checkpoints and restart convergence; pins/holds/active-work/accounting/batch blockers; dependency deletion and candidate-local post-delete reconciliation; provenance preservation; authenticated API-only CLI mutations and confirmations; factory-reset boundaries. |
 | `SessionEndpointTests` | Entry-GUID `since` replays only later Entries; missing and foreign cursors return 404 with no leaked SSE headers; stable `Session.EntryNotFound` / `Session.InvalidStatus` constants. |
 | `CostCalculatorTests` | Cached tokens clamp to the prompt subset and use `CachedPer1M` (zero or nonzero); potential/actual savings use the nonnegative input-minus-cached rate delta. |
@@ -3072,17 +3225,16 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   recovery-private; the wire DTO intentionally omits both. This is the durable framework for
   operation lifecycle, not a promise that live streams, Wards, process handles, or in-memory Tasks
   can resume.
-- **External encrypted blobs:** `attachments/` and `files/` are not standalone backups. Preserve
-  them with `arcanum.db` plus WAL/SHM/KDF sidecars and the file-encryption key from the same backup
-  generation. The primary key is an OS credential; the portable recovery set is
-  `file-encryption-key.dat` plus the matching Data Protection `keys/` directory. A restored
-  database without blobs loses attachment/file content; restored ciphertext without the matching
-  key is intentionally unrecoverable; restoring only blobs without matching database metadata
-  leaves unreferenced ciphertext. During migration or rotation the portable
-  `file-encryption-key.dat` value is a wrapped multi-key ring containing the active write key and
-  every retained read key; copying only one extracted key is not a valid backup. Restore installs
-  that mirror plus its matching Data Protection ring before startup, and the provider accepts
-  archives with multiple active key ids.
+- **External encrypted blobs and portable backup:** `attachments/` and `files/` are not standalone
+  backups. `arcanum backup create` uses a SQLite-consistent database snapshot and captures matching
+  blob ciphertext plus only the Grimoire/file keys required by the selected data inside the
+  independently encrypted `.arcbackup` payload (§5.4.8). It does not copy a live WAL set, raw OS
+  credentials, protected mirrors, or the Data Protection ring. A database without blobs loses
+  attachment/file content; ciphertext without the matching key set is intentionally unrecoverable;
+  blobs without matching database metadata become unreferenced ciphertext. During migration or
+  rotation, the filtered portable recovery document retains every active/referenced read key needed
+  by selected envelopes. Manual same-machine disaster recovery through an OS credential or the
+  DP-wrapped mirror plus its matching key ring remains distinct from portable archive creation.
 - **Retention and physical erasure:** Unified retention (§5.4.7) deletes logical rows and unlinks
   owned files; it cannot promise physical erasure from SSD wear-leveling cells, copy-on-write
   extents, snapshots, WAL/free pages, OS caches, encrypted replicas, or external backups. Factory
@@ -3093,7 +3245,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 
 - No user identity, sessions, or OAuth. Loopback + API key only.
 - **Grimoire KDF:** New databases derive the SQLCipher passphrase via `GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret` using **PBKDF2-HMAC-SHA256** with **600,000 iterations** and a unique 16-byte salt stored in `{grimoire.db}.kdf`. The sidecar is accepted only from a no-follow single-link regular-file handle under a 4 KiB ceiling; writes use owner-only staging, a durable flush, and atomic replacement. Legacy databases (created before this change) are opened with the prior HKDF path and transparently re-encrypted to PBKDF2 on unlock. The dedicated encryption secret is stored alongside the master API key; rotating the API key alone does not break the Grimoire.
-- **API key rotation:** For **legacy** databases that were still encrypted with the master API key, rotating the key was destructive. For **new** databases, the Grimoire is independent of the API key, so rotating the key only invalidates API authentication. To rotate the key on a new database, run `arcanum key set` (or replace the OS credential + `security.dat` mirror) and restart; the Grimoire `.db` and `.kdf` files can stay in place. If the Grimoire encryption secret itself is lost, the database is unrecoverable — there is no automatic key recovery or backdoor. When `grimoire-key.dat` exists but Data Protection cannot decrypt it (missing `key-*.xml` under `~/.config/arcanum/keys/`), bootstrap throws a sanitized `GrimoireDatabaseUnavailableException` and does **not** fall back to the API key (that path previously produced a misleading “key verification failed”). The controlled startup failure stops the host/CLI operation while allowing `finally`/disposal paths to run. Recovery is restore the matching DP key from backup, or delete `arcanum.db` + `arcanum.db.kdf` + `grimoire-key.dat` and start fresh.
+- **API key rotation:** For **legacy** databases that were still encrypted with the master API key, rotating the key was destructive. For **new** databases, the Grimoire is independent of the API key, so rotating the key only invalidates API authentication. To rotate the key on a new database, run `arcanum key set` (or replace the OS credential + `security.dat` mirror) and restart; the Grimoire `.db` and `.kdf` files can stay in place. If the Grimoire encryption secret itself is lost, the database is unrecoverable — there is no automatic key recovery or backdoor. When `grimoire-key.dat` exists but Data Protection cannot decrypt it (missing `key-*.xml` under `~/.config/arcanum/keys/`), bootstrap throws a sanitized `GrimoireDatabaseUnavailableException` and does **not** fall back to the API key (that path previously produced a misleading “key verification failed”). The controlled startup failure stops the host/CLI operation while allowing `finally`/disposal paths to run. Same-machine protected-mirror recovery restores its matching Data Protection key; portable recovery instead uses one verified `.arcbackup` generation as described in §5.4.8. Without either, delete `arcanum.db` + `arcanum.db.kdf` + `grimoire-key.dat` and start fresh.
 - **`arcanum key show`** / **`arcanum key set`** read/write the master key via CLI DI (`ISecretStore` → OS keychain with `security.dat` fallback); no HTTP endpoint. Shared identity: `arcanum` / `master-api-key`. Linux requires `libsecret` and a running Secret Service for the primary path.
 - **Attachment/upload/batch key:** a separate random 256-bit master key lives primarily in OS key
   storage at `arcanum` / `file-encryption-master-key`; it is never derived from, displayed by, or
@@ -3106,6 +3258,14 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   Rotation changes this value to a versioned multi-key ring: one active write key plus old read keys
   that remain until no metadata row references them and a complete verification passes. Deleting
   the ciphertext is the only start-fresh option and permanently loses those blob bytes.
+- **Portable backup envelope:** `.arcbackup` version 1 derives a distinct AES-256-GCM key from a
+  user recovery passphrase using PBKDF2-HMAC-SHA256, a random salt, and recorded parameters. Only a
+  bounded non-secret header is plaintext; the manifest, checksums, selected state, Grimoire secret,
+  and filtered blob-key set are authenticated ciphertext. Passphrases are hidden input,
+  environment-variable references, or inherited descriptors—never argv or structured output. The
+  master API key, trust metadata, and audit/guardrail logs are explicit-only components, while raw
+  OS credential/DP stores and environment secrets are never portable components. Archive integrity
+  does not provide physical media erasure or compensate for a lost recovery passphrase.
 - **Diagnostics:** `/api/health` component `FileEncryption` and `arcanum doctor` report key
   availability and bounded counts of valid encrypted, legacy plaintext, and corrupt blobs. They
   never expose key material, authenticated metadata, plaintext hashes, filenames, or content.

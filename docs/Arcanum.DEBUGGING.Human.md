@@ -56,6 +56,7 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
 | `McpConnectionManager` / `TrustedMcpWorkspaceStore` (`Infrastructure/Mcp/`) | Digest-bound admission (`IsApprovedDigestAsync()` / `TrustAsync()`); bounded config load (`SecureFileReader` cap `MaxMcpConfigBytes`); lifecycle (`StartAsync()` / `RestartAsync()`); retirement/replacement ordering; identity-owned cleanup. |
 | `AtomicFile` / `SecureFileReader` / `PhysicalFileSystemBrowser` (`Infrastructure/Storage/`, `Security/`, and `Workspaces/`) | Handle-bound open (`O_NOFOLLOW` / `NONBLOCK` / `O_CLOEXEC`); identity revalidation (`FileHandleIdentity`); bounded read (`ArrayPool<byte>`); rollback (backup fingerprint verification); identity-owned temp/backup deletion. |
 | `BlobEncryptionLifecycleService` / `BlobEncryptionFileProcessor` / `BlobEncryptionMetadataStore` | Candidate inventory; metadata-versus-envelope classification; pre/post plaintext length and SHA-256 verification; atomic replacement; replace-before-metadata retry; bounded worker/throttle; durable checkpoints; retained-key retirement gate. Use `arcanum operation show <id>` for safe progress and `arcanum data encryption verify` for aggregate reconciliation categories. |
+| `BackupService` / `BackupInventoryPlanner` / `BackupDatabaseSnapshotter` / `BackupSecretSnapshotReader` / `BackupArchiveCodec` / `BackupCreateRecoveryHandler` / `BackupPassphraseReader` | Dry-run/create planner parity; typed scope/component status and explicit-only sensitive state; stepped, cancellable online SQLCipher snapshot and schema capture; no-heal filtered portable-key reads; bounded `ARCABACK` encryption and authenticated manifest; staged self-verification/no-clobber publication; exact identity-bound crash cleanup; outer-only inspect/list; full verify temporary-root cleanup; hidden/environment/descriptor passphrase routing with no argv secret. |
 | `DataRetentionCommands` / `DataRetentionEndpoints` / `DataRetentionService` / `DataRetentionLeaseMaintainer` | API-only CLI routing and confirmation; typed status/config contracts; dry-run/apply plan identity; bounded candidate ordering; pin/hold/batch/accounting/active-work diagnostics; shared `ManagedLogMutationGate`; elapsed-time lease heartbeats; `ARCADATA2` prune checkpoints; candidate-local post-delete ownership checks; `DataRetentionRecoveryHandler`, `DataRetentionMutationRecoveryHandler`, and `DataRetentionFactoryResetRecoveryHandler`; factory-reset root and backup boundary. |
 | `BudgetReservationService` / `TurnAccountingHandle` | Reservation scope (`EstimateWorstCaseTurnUsd()` — per-call max-not-sum through `CostCalculator.CalculateCost()`); reserve/raise/reconcile (`ReserveAsync()` / `AdjustAsync()` / `ReconcileAsync()`); turn lifecycle (`BeginAsync()` / `EnsureReservationForContextAsync()` / usage recording / `CompleteAsync()`). |
 | `IdempotencyEndpointFilters` / `IdempotencyClaimStore` (`Api/Security/` / `Infrastructure/Data/`) | Durable acquisition (`TryAcquireAsync()` before execution); Running-claim lease renewal (`HeartbeatAsync()`); terminalization (`CompleteAsync()` / `MarkAbandonedAsync()`); replay gate (`TryBuildReplay()` → `IdempotencyReplayResult` only for a completed terminal in-cap body); process-local single-flight (`LocalFlight`); fail-open only after safe claim handling. |
@@ -388,6 +389,41 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
     architecture is not. Cancel a picker and verify the starter is untouched. Finally pass a
     wrong-target or future-schema payload directly to either desktop app: The Forge must decline it
     without revealing raw payload, while Compendium retains Edition.
+26. **Trace portable backup without touching real state:** isolate `ARCANUM_TEST_HOME` and begin
+    with `arcanum backup create --scope metadata-only --dry-run --json`. Break in the backup command
+    handler and `BackupInventoryPlanner.BuildAsync()`; confirm dry-run and creation use the same
+    typed request, arbitrary paths cannot enter through include/exclude, no installation secret is
+    read, and structured output contains warnings/status but no passphrase or portable key bytes.
+    Create the metadata-only archive through a hidden prompt or controlled inherited descriptor,
+    then run outer-only `backup inspect`, passphrase-backed inspect, `backup verify`, and `backup
+    list`. The first and last must not request a secret; decrypted inspect must return the manifest
+    without extracting entries; verify must remove its protected payload/extraction staging.
+    For a full probe, keep a SQLCipher connection in WAL mode, commit one generation while leaving a
+    later write uncommitted, and break in `BackupDatabaseSnapshotter.CreateAsync()`. Confirm the
+    copied database contains the committed generation only, passes `quick_check` and
+    `foreign_key_check`, and was not created by copying `.db`/`-wal`/`-shm`. Repeat with a large
+    database, cancel after a successful online-backup page step while pages remain, and confirm the
+    next boundary throws cancellation, finishes the native backup handle, publishes no destination,
+    and identity-cleans its temporary database. There is no elapsed-time or page-count cutoff; a
+    transient busy/locked source continues retrying until it progresses, fails, or the caller
+    cancels. Break in
+    `BackupSecretSnapshotReader` and confirm it performs non-healing reads and serializes only the
+    Grimoire secret plus file keys active/referenced by selected encrypted blobs—not the raw OS/DP
+    stores or unrelated master API key.
+    Delete one manifest-required attachment after planning and verify creation returns incomplete,
+    publishes no archive, and names the typed failed component without leaking content. Repeat with
+    a selected symlink/reparse path, an intermediate linked directory, and a source replaced during
+    streaming; each must fail closed. In `BackupArchiveCodec.WriteAsync()`, inspect owner-only
+    same-directory staging, bounded hashing/encryption, durable flush, staged self-verification, and
+    atomic no-clobber move. Cancel during a large file and confirm owned staging disappears while an
+    existing destination remains byte-for-byte unchanged.
+    Finally flip one header byte and one authenticated payload byte in separate archive copies and
+    try a wrong passphrase. Every mutation must be detected; an authenticated-byte failure must not
+    distinguish corruption from the wrong passphrase. Verify a clean full archive and follow the
+    owner-only temporary extraction through manifest size/hash comparison, portable-secret database
+    open, `quick_check`, schema-id comparison, and cleanup. The archive must be owner-only and no
+    plaintext state, key, or passphrase may appear in the file header, terminal JSON, diagnostics,
+    logs, or leftover temporary paths.
 
 ## Related documents
 

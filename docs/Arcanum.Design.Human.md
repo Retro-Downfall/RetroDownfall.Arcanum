@@ -254,7 +254,8 @@ reservations, and audit data.
 
 The persistence inventory in `Arcanum.DESIGN.md` is authoritative; there is no separate persistence
 document. Attachment metadata belongs to the Grimoire while its authenticated encrypted snapshots
-belong to the external attachment blob tree, and neither half is a complete backup by itself.
+belong to the external attachment blob tree, and neither half is a complete backup by itself. Use
+the supported encrypted `.arcbackup` workflow rather than copying a live database and WAL files.
 
 Several rules make persistence reliable:
 
@@ -274,6 +275,44 @@ needed.
 Persisted attachment and operation payloads use authenticated encrypted blobs. The file-encryption
 lifecycle supports migration, verification, key rotation, resumable checkpoints, and safe retained
 key retirement.
+
+### Portable backup is one verified recovery generation
+
+`arcanum backup create` composes the distributed state through a typed inventory and a live SQLite
+backup, so the host can remain active without an unsafe `File.Copy` of SQLCipher/WAL files. The
+available scopes cover the full installation, configuration/authored assets, sessions/memory, one
+specific Session, or a metadata-only diagnostic. Include/exclude overrides name only known Arcanum
+components; they never grant access to arbitrary host paths, and exclusion wins if both overrides
+name the same component. A specific-Session scope requires its Session id; broader scopes may carry
+one as provenance without narrowing what they contain. Dry-run uses the same inventory as creation
+and shows size, missing files, nonportable paths, exclusions, and security warnings.
+
+The default full scope includes the database/KDF, configuration, encrypted attachments and
+file/batch artifacts, Codex/Spells, global MCP configuration, CLI/The Forge state, Compendium
+settings/certificates, and a filtered portable recovery-key document. It does not export the raw OS
+credential store, Data Protection key ring, environment secret values, or external workspaces.
+Trusted MCP paths, audit/guardrail logs, and the master API key are explicit-only; global MCP
+configuration is normal authored state but is flagged because literal environment values may be
+present. A specific-Session archive is not a logical privacy export: it includes only matching
+attachments and omits global uploaded/batch files by default, but the version-1 physical database
+is still indivisible and therefore discloses collateral global/accounting rows in the encrypted
+manifest. The global file components remain available only through explicit typed inclusion.
+
+`ARCABACK` version 1 keeps only bounded format/KDF/encryption metadata in its outer header. The
+manifest, SHA-256 inventory, portable keys, and selected content are streamed inside an
+authenticated PBKDF2/AES-256-GCM envelope. Passphrases come from hidden input, a named environment
+variable, or an inherited file descriptor—never a literal process argument. Creation uses
+owner-only same-directory staging, durable flush, full self-verification, and atomic no-clobber
+publication. Required-file, identity, checksum, cancellation, and verification failures publish
+nothing.
+
+Outer inspection and listing need no passphrase. Passphrase-backed inspection authenticates the
+manifest without exposing file content; verification authenticates every chunk, compares every
+size/hash, and opens the extracted SQLCipher snapshot in an owner-only temporary root. Issue #37
+does not add an automated restore command, so a verified archive is deliberate recovery input, not
+a one-click migration promise. The target still needs any referenced environment secrets and
+external workspace content, and the database, blobs, configuration, and portable keys must be
+restored as one generation.
 
 ### Retention is plan-first
 

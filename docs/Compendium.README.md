@@ -510,6 +510,29 @@ overwrite, and removed as a pair if publication cannot finish. The editor preser
 operator-selected HTTPS port and does not install OS trust. External binding still requires HTTPS
 and a certificate valid for the remote hostname/IP; TLS validation must not be disabled.
 
+## Portable backup ownership
+
+Portable backup is owned by the `arcanum backup` CLI and shared backup services; Compendium does
+not implement a second archive format or a restore UI. The `full` and
+`configuration-and-authored-assets` scopes include the shared `arcanum.json` configuration and the
+`~/.config/arcanum/certs/` tree when present. Explicitly selecting `compendium-settings` while
+excluding `configuration` still captures `arcanum.json` under the Compendium component. When both
+components are selected, the archive stores one `Configuration` entry and records
+`CompendiumSettings` as a complete zero-entry alias rather than duplicating the settings bytes.
+Compendium certificates remain their own typed component.
+
+The `.arcbackup` manifest and certificate/private-key bytes remain inside the authenticated
+encrypted payload. Environment-referenced secret values are not resolved or exported, raw Data
+Protection/OS credential stores are excluded, and the master API key is absent unless explicitly
+selected as a sensitive component. Global MCP configuration is authored state and may contain
+literal environment values, so the backup planner surfaces a warning when it is selected.
+
+After a coordinated restore, restart Arcanum so the restored configuration snapshot is loaded.
+Referenced environment secrets and external workspace paths must be supplied separately on the
+target, and restored certificates may not match or be trusted for a different hostname. Verify an
+archive before depending on it; issue #37 provides create/inspect/verify/list, not an automated
+restore command.
+
 ## Saving and validation
 
 Save runs `ConfigurationValidator`, rejects configuration files larger than the code-owned 10 MiB

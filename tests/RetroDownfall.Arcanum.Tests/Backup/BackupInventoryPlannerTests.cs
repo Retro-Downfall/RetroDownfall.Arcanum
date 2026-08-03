@@ -1,0 +1,871 @@
+using Microsoft.Data.Sqlite;
+
+using RetroDownfall.Arcanum.Core.Backup;
+
+using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Infrastructure.Backup;
+
+using RetroDownfall.Arcanum.Infrastructure.Storage;
+
+using RetroDownfall.Arcanum.Tests.Support;
+
+namespace RetroDownfall.Arcanum.Tests.Backup;
+
+public sealed class BackupInventoryPlannerTests : IDisposable
+{
+
+    private readonly string _root = Path.Combine(
+        Path.GetTempPath(),
+        "arcanum-backup-inventory-" + Guid.NewGuid().ToString("N"));
+
+    private readonly string _databasePath;
+
+    public BackupInventoryPlannerTests()
+    {
+
+        Directory.CreateDirectory(_root);
+
+        _databasePath = Path.Combine(_root, "arcanum.db");
+
+    }
+
+    public void Dispose()
+    {
+
+        SqliteConnection.ClearAllPools();
+
+        if (Directory.Exists(_root))
+        {
+
+            Directory.Delete(_root, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Full_inventory_deduplicates_batch_files_and_fails_a_missing_attachment_reference()
+    {
+
+        await CreateInventoryDatabaseAsync();
+
+        string files = Path.Combine(_root, "files");
+
+        Directory.CreateDirectory(files);
+
+        Guid ordinaryUpload = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        Guid batchInput = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+        await File.WriteAllTextAsync(Path.Combine(files, ordinaryUpload.ToString("N")), "upload");
+
+        await File.WriteAllTextAsync(Path.Combine(files, batchInput.ToString("N")), "batch");
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(BackupScope.Full, null, [], []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            item => item.Component == BackupComponent.SessionAttachments
+                && item.Status == BackupComponentStatus.Failed);
+
+        Assert.Single(
+            inventory.Files,
+            file => file.Component == BackupComponent.UploadedFiles);
+
+        Assert.Single(
+            inventory.Files,
+            file => file.Component == BackupComponent.BatchArtifacts);
+
+        Assert.Equal(
+            inventory.Files.Select(static file => file.ArchivePath).Distinct(StringComparer.Ordinal).Count(),
+            inventory.Files.Count);
+
+        Assert.Empty(inventory.RequiredFileEncryptionKeyIds);
+
+    }
+
+    [Fact]
+    public async Task Explicit_typed_exclusions_are_reported_without_hiding_other_components()
+    {
+
+        await CreateInventoryDatabaseAsync();
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.Full,
+                null,
+                Include: [BackupComponent.AuditLogs],
+                Exclude: [BackupComponent.GlobalSpells]),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            item => item.Component == BackupComponent.GlobalSpells
+                && item.Status == BackupComponentStatus.OmittedByPolicy);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            item => item.Component == BackupComponent.AuditLogs
+                && item.Status != BackupComponentStatus.OmittedByPolicy);
+
+        Assert.Contains(
+            inventory.Plan.SecurityWarnings,
+            warning => warning.Contains("audit", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public async Task Specific_session_selects_only_its_attachments_and_discloses_database_collateral()
+    {
+
+        Guid targetSession = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+
+        Guid otherSession = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+
+        Guid ordinaryUpload = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        Guid batchInput = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+        await CreateInventoryDatabaseAsync(
+            $$"""
+            INSERT INTO SessionAttachments
+                (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
+            VALUES
+                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                 '{{targetSession:D}}',
+                 'target/attachment.bin',
+                 'Bound',
+                 0,
+                 NULL),
+                ('dddddddd-dddd-dddd-dddd-dddddddddddd',
+                 '{{otherSession:D}}',
+                 'other/attachment.bin',
+                 'Bound',
+                 0,
+                 NULL);
+
+            INSERT INTO UploadedFiles (Id, EncryptionVersion, EncryptionKeyId)
+            VALUES
+                ('{{ordinaryUpload:D}}', 0, NULL),
+                ('{{batchInput:D}}', 0, NULL);
+
+            INSERT INTO Batches (Id, InputFileId, OutputFileId, ErrorFileId)
+            VALUES
+                ('33333333-3333-3333-3333-333333333333',
+                 '{{batchInput:D}}',
+                 NULL,
+                 NULL);
+            """);
+
+        await WriteFileAsync("attachments/target/attachment.bin", "target");
+
+        await WriteFileAsync("attachments/other/attachment.bin", "other");
+
+        await WriteFileAsync("files/" + ordinaryUpload.ToString("N"), "upload");
+
+        await WriteFileAsync("files/" + batchInput.ToString("N"), "batch");
+
+        await File.WriteAllTextAsync(_databasePath + ".kdf", "{}");
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.SpecificSession,
+                targetSession,
+                Include: [],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        BackupInventoryFile attachment = Assert.Single(
+            inventory.Files,
+            file => file.Component == BackupComponent.SessionAttachments);
+
+        Assert.Equal("attachments/target/attachment.bin", attachment.ArchivePath);
+
+        Assert.DoesNotContain(
+            inventory.Files,
+            file => file.Component is BackupComponent.UploadedFiles
+                or BackupComponent.BatchArtifacts);
+
+        Assert.Empty(inventory.RequiredFileEncryptionKeyIds);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.UploadedFiles
+                && component.Status == BackupComponentStatus.OmittedByPolicy);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.BatchArtifacts
+                && component.Status == BackupComponentStatus.OmittedByPolicy);
+
+        Assert.Contains(
+            inventory.Plan.SecurityWarnings,
+            warning => warning.Contains("collateral", StringComparison.OrdinalIgnoreCase)
+                && warning.Contains("indivisible", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public async Task Specific_session_uses_the_key_id_from_ciphertext_replaced_before_snapshot_metadata()
+    {
+
+        Guid targetSession = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+
+        await CreateInventoryDatabaseAsync(
+            $$"""
+            INSERT INTO SessionAttachments
+                (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
+            VALUES
+                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                 '{{targetSession:D}}',
+                 'target/attachment.bin',
+                 'Bound',
+                 1,
+                 'snapshot-key');
+            """);
+
+        string attachmentPath = Path.Combine(
+            _root,
+            "attachments",
+            "target",
+            "attachment.bin");
+
+        EncryptedBlobStore blobStore = TestEncryptedBlobStore.Create();
+
+        await using MemoryStream plaintext = new("replacement ciphertext"u8.ToArray());
+
+        EncryptedBlobDescriptor descriptor = await blobStore.WriteAsync(
+            attachmentPath,
+            plaintext,
+            EncryptedBlobPurpose.SessionAttachment,
+            plaintextLength: plaintext.Length);
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.SpecificSession,
+                targetSession,
+                Include: [],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Equal(
+            [descriptor.KeyId],
+            inventory.RequiredFileEncryptionKeyIds.Order(StringComparer.Ordinal));
+
+        Assert.DoesNotContain(
+            "snapshot-key",
+            inventory.RequiredFileEncryptionKeyIds);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.SessionAttachments
+                && component.Status == BackupComponentStatus.Complete);
+
+    }
+
+    [Fact]
+    public async Task Batch_input_uses_its_uploaded_file_envelope_purpose_and_actual_key()
+    {
+
+        Guid batchInput = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+        await CreateInventoryDatabaseAsync(
+            $$"""
+            INSERT INTO UploadedFiles
+                (Id, Purpose, EncryptionVersion, EncryptionKeyId)
+            VALUES
+                ('{{batchInput:D}}', 'batch', 1, 'snapshot-key');
+
+            INSERT INTO Batches (Id, InputFileId, OutputFileId, ErrorFileId)
+            VALUES
+                ('33333333-3333-3333-3333-333333333333',
+                 '{{batchInput:D}}',
+                 NULL,
+                 NULL);
+            """);
+
+        string inputPath = Path.Combine(
+            _root,
+            "files",
+            batchInput.ToString("N"));
+
+        EncryptedBlobStore blobStore = TestEncryptedBlobStore.Create();
+
+        await using MemoryStream plaintext = new("batch input"u8.ToArray());
+
+        EncryptedBlobDescriptor descriptor = await blobStore.WriteAsync(
+            inputPath,
+            plaintext,
+            EncryptedBlobPurpose.UploadedFile,
+            plaintextLength: plaintext.Length);
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.BatchArtifacts],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Equal(
+            [descriptor.KeyId],
+            inventory.RequiredFileEncryptionKeyIds.Order(StringComparer.Ordinal));
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.BatchArtifacts
+                && component.Status == BackupComponentStatus.Complete);
+
+    }
+
+    [Fact]
+    public async Task Malformed_encrypted_blob_header_fails_its_component_without_requiring_snapshot_key()
+    {
+
+        await CreateInventoryDatabaseAsync(
+            """
+            INSERT INTO SessionAttachments
+                (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
+            VALUES
+                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                 'malformed/attachment.bin',
+                 'Bound',
+                 1,
+                 'snapshot-key');
+            """);
+
+        await WriteFileAsync(
+            "attachments/malformed/attachment.bin",
+            "ARCABLOB");
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.SessionAttachments],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Empty(inventory.RequiredFileEncryptionKeyIds);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.SessionAttachments
+                && component.Status == BackupComponentStatus.Failed
+                && component.Detail.Contains(
+                    "header",
+                    StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public async Task Envelope_purpose_mismatch_fails_its_owning_component()
+    {
+
+        await CreateInventoryDatabaseAsync(
+            """
+            INSERT INTO SessionAttachments
+                (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
+            VALUES
+                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                 'wrong-purpose/attachment.bin',
+                 'Bound',
+                 1,
+                 'snapshot-key');
+            """);
+
+        string attachmentPath = Path.Combine(
+            _root,
+            "attachments",
+            "wrong-purpose",
+            "attachment.bin");
+
+        EncryptedBlobStore blobStore = TestEncryptedBlobStore.Create();
+
+        await using MemoryStream plaintext = new("wrong purpose"u8.ToArray());
+
+        _ = await blobStore.WriteAsync(
+            attachmentPath,
+            plaintext,
+            EncryptedBlobPurpose.UploadedFile,
+            plaintextLength: plaintext.Length);
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.SessionAttachments],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Empty(inventory.RequiredFileEncryptionKeyIds);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.SessionAttachments
+                && component.Status == BackupComponentStatus.Failed
+                && component.Detail.Contains(
+                    "purpose",
+                    StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public async Task Database_backed_file_under_symlinked_parent_is_rejected()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        await CreateInventoryDatabaseAsync(
+            """
+            INSERT INTO SessionAttachments
+                (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
+            VALUES
+                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                 'linked/attachment.bin',
+                 'Bound',
+                 1,
+                 'attachment-key');
+            """);
+
+        string outside = Path.Combine(_root, "outside");
+
+        Directory.CreateDirectory(outside);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(outside, "attachment.bin"),
+            "outside bytes");
+
+        Directory.CreateDirectory(Path.Combine(_root, "attachments"));
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(_root, "attachments", "linked"),
+            outside);
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.SessionAttachments],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.DoesNotContain(
+            inventory.Files,
+            file => file.Component == BackupComponent.SessionAttachments);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.SessionAttachments
+                && component.Status == BackupComponentStatus.Failed
+                && component.NonportablePaths.Length == 1);
+
+    }
+
+    [Fact]
+    public async Task Exact_typed_selection_produces_deterministically_ordered_inventory()
+    {
+
+        await CreateInventoryDatabaseAsync(seedSql: null);
+
+        await WriteFileAsync("spells/zeta/SPELL.md", "zeta");
+
+        await WriteFileAsync("spells/alpha/SPELL.md", "alpha");
+
+        await WriteFileAsync("arcanum.json", "{}");
+
+        await WriteFileAsync("audit-20260802.jsonl", "{}\n");
+
+        BackupPlanRequest request = new(
+            BackupScope.MetadataOnly,
+            SessionId: null,
+            Include:
+            [
+                BackupComponent.GlobalSpells,
+                BackupComponent.Configuration,
+                BackupComponent.AuditLogs,
+            ],
+            Exclude: [BackupComponent.GlobalCodex]);
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory first = await planner.BuildAsync(
+            request,
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        BackupInventory second = await planner.BuildAsync(
+            request,
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        string[] firstPaths = [.. first.Files.Select(static file => file.ArchivePath)];
+
+        string[] secondPaths = [.. second.Files.Select(static file => file.ArchivePath)];
+
+        Assert.Equal(firstPaths.Order(StringComparer.Ordinal), firstPaths);
+
+        Assert.Equal(firstPaths, secondPaths);
+
+        Assert.Equal(
+            request.Include.Order(),
+            first.Plan.Components
+                .Where(static component => component.Status != BackupComponentStatus.OmittedByPolicy)
+                .Select(static component => component.Component)
+                .Order());
+
+    }
+
+    [Fact]
+    public async Task Dynamic_archive_paths_are_normalized_to_unicode_form_c()
+    {
+
+        await CreateInventoryDatabaseAsync(seedSql: null);
+
+        const string decomposedName = "cafe\u0301";
+
+        await WriteFileAsync($"spells/{decomposedName}/SPELL.md", "spell");
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.GlobalSpells],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        BackupInventoryFile file = Assert.Single(inventory.Files);
+
+        Assert.Equal("authored/spells/caf\u00e9/SPELL.md", file.ArchivePath);
+
+        Assert.True(file.ArchivePath.IsNormalized());
+
+    }
+
+    [Fact]
+    public async Task Explicit_compendium_settings_include_shared_configuration_when_configuration_is_excluded()
+    {
+
+        await WriteFileAsync("arcanum.json", "{}");
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.CompendiumSettings],
+                Exclude: [BackupComponent.Configuration]),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        BackupInventoryFile settings = Assert.Single(inventory.Files);
+
+        Assert.Equal(BackupComponent.CompendiumSettings, settings.Component);
+
+        Assert.Equal("configuration/arcanum.json", settings.ArchivePath);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.CompendiumSettings
+                && component.Status == BackupComponentStatus.Complete
+                && component.Files == 1);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.Configuration
+                && component.Status == BackupComponentStatus.OmittedByPolicy);
+
+    }
+
+    [Fact]
+    public async Task Batch_reference_without_uploaded_file_metadata_is_failed_not_complete()
+    {
+
+        Guid missingBatchInput = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+        await CreateInventoryDatabaseAsync(
+            $$"""
+            INSERT INTO Batches (Id, InputFileId, OutputFileId, ErrorFileId)
+            VALUES
+                ('33333333-3333-3333-3333-333333333333',
+                 '{{missingBatchInput:D}}',
+                 NULL,
+                 NULL);
+            """);
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.BatchArtifacts],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.BatchArtifacts
+                && component.Status == BackupComponentStatus.Failed);
+
+        Assert.Contains(
+            Path.Combine(_root, "files", missingBatchInput.ToString("N")),
+            inventory.Plan.MissingFiles);
+
+    }
+
+    [Fact]
+    public async Task Encrypted_blob_metadata_without_a_key_id_is_failed()
+    {
+
+        Guid uploadId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        await CreateInventoryDatabaseAsync(
+            $$"""
+            INSERT INTO SessionAttachments
+                (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
+            VALUES
+                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                 'encrypted/attachment.bin',
+                 'Bound',
+                 1,
+                 NULL);
+
+            INSERT INTO UploadedFiles (Id, EncryptionVersion, EncryptionKeyId)
+            VALUES ('{{uploadId:D}}', 1, NULL);
+            """);
+
+        await WriteFileAsync("attachments/encrypted/attachment.bin", "attachment");
+
+        await WriteFileAsync("files/" + uploadId.ToString("N"), "upload");
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include:
+                [
+                    BackupComponent.SessionAttachments,
+                    BackupComponent.UploadedFiles,
+                ],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.All(
+            new[]
+            {
+                BackupComponent.SessionAttachments,
+                BackupComponent.UploadedFiles,
+            },
+            component => Assert.Contains(
+                inventory.Plan.Components,
+                item => item.Component == component
+                    && item.Status == BackupComponentStatus.Failed
+                    && item.Detail.Contains("key id", StringComparison.OrdinalIgnoreCase)));
+
+        Assert.Empty(inventory.RequiredFileEncryptionKeyIds);
+
+    }
+
+    [Fact]
+    public async Task Undefined_components_are_rejected_and_explicit_excludes_win_conflicts()
+    {
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => planner.BuildAsync(
+                new BackupPlanRequest(
+                    BackupScope.MetadataOnly,
+                    SessionId: null,
+                    Include: [(BackupComponent)int.MaxValue],
+                    Exclude: []),
+                Path.Combine(_root, "operator-supplied.db"),
+                databasePassphrase: string.Empty,
+                CancellationToken.None));
+
+        BackupInventory excluded = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.Configuration],
+                Exclude: [BackupComponent.Configuration]),
+            Path.Combine(_root, "operator-supplied.db"),
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Contains(
+            excluded.Plan.Components,
+            component => component.Component == BackupComponent.Configuration
+                && component.Status == BackupComponentStatus.OmittedByPolicy);
+
+        Assert.False(File.Exists(Path.Combine(_root, "operator-supplied.db")));
+
+    }
+
+    private BackupStatePaths Paths() => new(
+        _root,
+        _root,
+        Path.Combine(_root, "audit.jsonl"),
+        Path.Combine(_root, "guardrails.jsonl"));
+
+    private Task CreateInventoryDatabaseAsync() =>
+        CreateInventoryDatabaseAsync(
+            """
+            INSERT INTO SessionAttachments
+                (Id, SessionId, RelativePath, State, EncryptionVersion, EncryptionKeyId)
+            VALUES
+                ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                 'missing/attachment.bin',
+                 'Bound',
+                 0,
+                 NULL);
+
+            INSERT INTO UploadedFiles (Id, EncryptionVersion, EncryptionKeyId)
+            VALUES
+                ('11111111-1111-1111-1111-111111111111', 0, NULL),
+                ('22222222-2222-2222-2222-222222222222', 0, NULL);
+
+            INSERT INTO Batches (Id, InputFileId, OutputFileId, ErrorFileId)
+            VALUES
+                ('33333333-3333-3333-3333-333333333333',
+                 '22222222-2222-2222-2222-222222222222',
+                 NULL,
+                 NULL);
+            """);
+
+    private async Task CreateInventoryDatabaseAsync(string? seedSql)
+    {
+
+        await using SqliteConnection connection = new(
+            new SqliteConnectionStringBuilder
+            {
+
+                DataSource = _databasePath,
+
+                Pooling = false,
+
+            }.ToString());
+
+        await connection.OpenAsync();
+
+        await ExecuteAsync(
+            connection,
+            """
+            CREATE TABLE SessionAttachments (
+                Id TEXT PRIMARY KEY,
+                SessionId TEXT NULL,
+                RelativePath TEXT NOT NULL,
+                State TEXT NOT NULL,
+                EncryptionVersion INTEGER NOT NULL,
+                EncryptionKeyId TEXT NULL
+            );
+
+            CREATE TABLE UploadedFiles (
+                Id TEXT PRIMARY KEY,
+                Purpose TEXT NOT NULL DEFAULT 'assistants',
+                EncryptionVersion INTEGER NOT NULL,
+                EncryptionKeyId TEXT NULL
+            );
+
+            CREATE TABLE Batches (
+                Id TEXT PRIMARY KEY,
+                InputFileId TEXT NOT NULL,
+                OutputFileId TEXT NULL,
+                ErrorFileId TEXT NULL
+            );
+            """);
+
+        if (!string.IsNullOrWhiteSpace(seedSql))
+        {
+
+            await ExecuteAsync(connection, seedSql);
+
+        }
+
+    }
+
+    private async Task WriteFileAsync(string relativePath, string content)
+    {
+
+        string path = Path.Combine(
+            _root,
+            relativePath.Replace('/', Path.DirectorySeparatorChar));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        await File.WriteAllTextAsync(path, content);
+
+    }
+
+    private static async Task ExecuteAsync(SqliteConnection connection, string sql)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync();
+
+    }
+
+}

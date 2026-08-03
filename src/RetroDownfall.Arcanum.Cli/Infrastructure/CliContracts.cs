@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Core.Backup;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -671,6 +672,9 @@ internal static class CliFailureMapper
             NonInteractiveConfirmationException => new CliFailure(
                 CliExitCode.ConfigurationError,
                 "Confirmation is required. Re-run interactively or pass --yes."),
+            BackupPassphraseInputException passphrase => new CliFailure(
+                CliExitCode.ConfigurationError,
+                passphrase.Message),
             OperationCanceledException => new CliFailure(
                 CliExitCode.Cancelled,
                 "The operation was cancelled."),
@@ -691,6 +695,16 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(SessionShowPayload))]
 [JsonSerializable(typeof(FileDownloadPayload))]
 [JsonSerializable(typeof(BatchArtifactPayload))]
+
+[JsonSerializable(typeof(BackupPlan))]
+
+[JsonSerializable(typeof(BackupCreateResult))]
+
+[JsonSerializable(typeof(BackupInspectResult))]
+
+[JsonSerializable(typeof(BackupVerifyResult))]
+
+[JsonSerializable(typeof(BackupListItem[]))]
 
 [JsonSerializable(typeof(HealthWatchSnapshot))]
 

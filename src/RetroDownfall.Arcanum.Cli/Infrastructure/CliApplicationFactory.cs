@@ -92,6 +92,8 @@ internal static class CliApplicationFactory
 
         services.AddSingleton<IConfirmationPrompt, ConfirmationPrompt>();
 
+        services.AddSingleton<IBackupPassphraseReader, BackupPassphraseReader>();
+
         services.AddSingleton<IResourcePicker, SpectreResourcePicker>();
 
         services.AddSingleton<IRecentResourceStore, RecentResourceStore>();
@@ -245,6 +247,8 @@ internal static class CliApplicationFactory
         services.AddTransient<AttachmentCommands>();
 
         services.AddTransient<OperationCommands>();
+
+        services.AddTransient<BackupCommands>();
 
         services.AddTransient<DataEncryptionCommands>();
 

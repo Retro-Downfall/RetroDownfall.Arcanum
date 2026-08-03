@@ -71,6 +71,11 @@ Command-specific refinements:
   or validation failure.
 - `operation reconcile` returns `2` when reconciliation succeeds but one or more operations still
   require operator repair; otherwise it returns `0` for a successful pass.
+- `backup create` returns `1` for an incomplete result and never labels it complete or publishes an
+  archive; `backup verify` returns `1` when authentication, structure, checksums, or database
+  verification fail. Typed backup-plan validation returns `2`. Commands that consume a passphrase
+  also return `2` for invalid or conflicting passphrase-source options; `backup create --dry-run`
+  does not consume or semantically validate those source options.
 
 ## Handler-validated required values
 
@@ -786,6 +791,66 @@ Inspects and repairs durable long-running operations. Safe detail omits checkpoi
 | `arcanum operation cancel <id>` | Request cancellation through a compare-and-swap transition. | None beyond global or inherited family options. |
 | `arcanum operation retry <id>` | Reset a failed, abandoned, or repair-required operation to Pending. | None beyond global or inherited family options. |
 | `arcanum operation reconcile` | Run one bounded recovery pass; exit 2 means the pass completed but operator repair is still required. | None beyond global or inherited family options. |
+
+### `arcanum backup`
+
+Plan, create, inspect, verify, and list versioned encrypted portable backups. This is a safe local
+operation over canonical Arcanum state: it takes a live snapshot through SQLite's online backup API and
+does not copy `arcanum.db`/WAL/SHM files directly. It accepts only the typed scopes and components
+below; no option admits an arbitrary source path.
+
+The scope catalog is `full` (default), `configuration-and-authored-assets`,
+`sessions-and-memory`, `specific-session`, and `metadata-only`. `specific-session` requires the
+exact GUID passed to `--session-id`; broader scopes may also record a Session GUID as provenance
+without narrowing their inventory. Version 1 includes only matching Session attachments by default
+for `specific-session` and omits global uploaded/batch files unless those typed components are
+explicitly included. Its physical Grimoire snapshot remains indivisible, so the encrypted manifest
+warns about collateral global/accounting rows. Metadata-only creates an encrypted manifest with no
+state entries and does not need installation secrets.
+
+The repeatable/multi-value component catalog is `grimoire-database`, `grimoire-kdf-metadata`,
+`portable-recovery-keys`, `configuration`, `session-attachments`, `uploaded-files`,
+`batch-artifacts`, `global-codex`, `global-spells`, `mcp-configuration`,
+`trusted-mcp-workspace-metadata`, `cli-state`, `the-forge-state`, `compendium-settings`,
+`compendium-certificates`, `audit-logs`, `guardrail-logs`, and `master-api-key`. Matching is
+case-insensitive but otherwise exact; numeric enum spellings and unknown values are rejected.
+Duplicates are harmlessly collapsed. If the same component appears in both `--include` and
+`--exclude`, exclusion wins. Trusted MCP metadata, both log families, and the master API key are
+omitted by default and must be explicitly included.
+
+`compendium-settings` and `configuration` name the same physical `arcanum.json` state. Selecting
+only `compendium-settings` captures the file under that component even when `configuration` is
+excluded. Selecting both stores one configuration entry and reports `compendium-settings` as a
+complete zero-entry alias. The shared planner also records a bounded-stream SHA-256 fingerprint for
+every source; creation rejects identity, size, or fingerprint drift before capture, including an
+in-place change that preserves the inode and byte count.
+
+Passphrases are never accepted as literal command arguments. With no explicit source, creation and
+verification read hidden terminal input; creation also confirms it. `--passphrase-env <name>` reads
+the value of that named environment variable. `--passphrase-fd <fd>` reads one UTF-8 line
+from an inherited descriptor, including descriptor `0`. When a command consumes a passphrase,
+negative descriptors are rejected and the two source options are mutually exclusive. `backup
+create --dry-run` consumes neither source, so a parsed negative descriptor or both source flags do
+not block its structurally valid inventory plan; parser syntax and type errors still fail before
+the handler. Prefer a descriptor for automation when practical, and do not put a secret value
+itself in shell-history guidance. The CLI rejects an empty passphrase but does not impose an
+arbitrary composition rule. `--json` can return plans/manifests and verification facts, but never
+includes the passphrase or portable key bytes.
+
+| Command | Explanation | Additional command options |
+|---|---|---|
+| `arcanum backup create` | Create an owner-only `.arcbackup`. The default destination is `~/.config/arcanum/backups/arcanum-<UTC timestamp>.arcbackup`. Required-component, source-identity, staging-identity, checksum, self-verification, cancellation, or publication failure leaves no new archive and returns a non-success result. Existing output is no-clobber by default. | `--scope <scope>` — Typed scope; default `full`.<br>`--session-id <guid>` — Required for `specific-session`; optional provenance for broader scopes.<br>`--include <component>...` — Repeat or supply several typed additions.<br>`--exclude <component>...` — Repeat or supply several typed omissions; exclusion wins over inclusion.<br>`-o, --output <path>` — Explicit `.arcbackup` destination.<br>`--dry-run` — Show the shared inventory plan, estimates, missing/nonportable paths, and warnings without prompting for the recovery passphrase or writing an archive.<br>`--overwrite` — Explicitly permit atomic replacement of an existing destination.<br>`--passphrase-env <name>` / `--passphrase-fd <fd>` — Noninteractive passphrase source. |
+| `arcanum backup inspect <archive>` | Read only the bounded safe outer header by default. Decrypted inspection authenticates bounded chunks in memory, skips selected content, and shows the capped final manifest without creating plaintext staging. | `--decrypt` — Decrypt the manifest; prompts securely when neither explicit source is present.<br>`--passphrase-env <name>` / `--passphrase-fd <fd>` — Supply a passphrase source; supplying one also makes the manifest available. |
+| `arcanum backup verify <archive>` | Authenticate the complete archive, validate its bounded structure/manifest and every entry size/SHA-256, and validate any Grimoire snapshot in protected temporary storage. Invalid archives return exit `1`; temporary plaintext is removed. | `--passphrase-env <name>` / `--passphrase-fd <fd>` — Optional noninteractive source; otherwise prompt securely once. |
+| `arcanum backup list` | List safe outer headers for valid top-level `.arcbackup` files, newest first, without decrypting manifests. Missing directories yield an empty result; malformed/unreadable candidates are omitted. | `--directory <path>` — Directory to scan; defaults to `~/.config/arcanum/backups`. |
+
+The encrypted manifest reports each component as `complete`, `omitted-by-policy`, `unavailable`, or
+`failed`, with requested includes/excludes, warnings, files, sizes, and SHA-256 values. The backup
+does not resolve environment references or separately export their values, raw OS credential/Data
+Protection stores, external workspace trees, daemon registration, or ephemeral process state;
+literal values already authored into a selected file remain part of that file. Issue #37 adds no
+`backup restore` command: verify the artifact before relying on it and treat database, blobs,
+configuration/assets, and portable recovery keys as one recovery generation.
 
 ### `arcanum data`
 

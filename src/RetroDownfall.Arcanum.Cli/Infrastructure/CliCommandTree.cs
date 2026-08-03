@@ -75,6 +75,9 @@ internal static partial class CliCommandTree
         Command attachment = BuildAttachment(serviceProvider);
 
         Command operation = BuildOperation(serviceProvider);
+
+        Command backup = BuildBackup(serviceProvider);
+
         Command data = BuildData(serviceProvider);
         Command use = BuildUse(serviceProvider);
         Command context = BuildContext(serviceProvider);
@@ -119,6 +122,9 @@ internal static partial class CliCommandTree
         root.Add(attachment);
 
         root.Add(operation);
+
+        root.Add(backup);
+
         root.Add(data);
         root.Add(use);
         root.Add(context);

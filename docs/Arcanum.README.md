@@ -534,9 +534,10 @@ endpoints, or models use conservative estimated accounting and no prompt-cache d
 ### Local Grimoire reinstall
 
 Arcanum has no supported user-data migration path between incompatible local schemas. A developer
-database created before the current schema must be recreated: stop every Arcanum host and daemon,
-back up anything needed, delete the database and its WAL/SHM sidecars, and restart. A database
-created by the current schema needs no reinstall.
+database created before the current schema must be recreated. Before replacing the binary that can
+still read it, create and verify a supported `.arcbackup` for anything that must be preserved. Then
+stop every Arcanum host and daemon, delete the database and its WAL/SHM sidecars, and restart. A
+database created by the current schema needs no reinstall.
 
 If the dedicated Grimoire secret is corrupt or cannot decrypt the current database, startup fails
 closed with a sanitized database-unavailable error and never falls back to the API key. The failure
@@ -615,26 +616,104 @@ between replacement and metadata commit is reconciled on retry. `verify` reports
 missing/corrupt/unknown-key/metadata-mismatch/hash-mismatch categories and never prints filenames.
 New writes remain encrypted throughout the mixed-mode window.
 
-Stop every Arcanum host/daemon before copying the persistence tree. A recoverable backup must
-capture one consistent generation of:
+Do not copy a live database or assemble a backup from its WAL sidecars. Use the supported portable
+backup workflow instead:
 
-- `arcanum.db`, its `-wal`/`-shm` files when present, and `arcanum.db.kdf`;
-- `attachments/` and `files/`;
-- the OS credential `arcanum/file-encryption-master-key`, or
-  `file-encryption-key.dat` as its portable recovery copy (during rotation this wrapped value is a
-  multi-key ring; do not export only the newest key); and
-- the matching `~/.config/arcanum/keys/` Data Protection key ring when relying on that mirror.
+```text
+arcanum backup create --dry-run
+arcanum backup create
+arcanum backup inspect <archive.arcbackup>
+arcanum backup inspect <archive.arcbackup> --decrypt
+arcanum backup verify <archive.arcbackup>
+arcanum backup list
+```
 
-Restore the key or mirror+key-ring before starting against restored ciphertext. If encrypted blobs
-exist but the key is missing, corrupt, or has the wrong key id, Arcanum fails closed and never
-generates a replacement. `/api/health` and `arcanum doctor` expose a `FileEncryption` check with
-key availability plus bounded encrypted/legacy-plaintext/corrupt counts, but never key or content
-data. Legacy plaintext blobs are detected and never silently served; before upgrading an old
-installation, use `arcanum data encryption migrate` and then `verify`. Version-zero metadata permits
-legacy reads only during this supported window; encrypted metadata never falls back to plaintext.
-Restore accepts archives containing all retained key ids from an in-progress rotation. Full format,
-rotation, and atomicity details:
-[DESIGN §5.4.6](Arcanum.DESIGN.md#546-versioned-authenticated-blob-storage).
+Creation uses the same typed inventory planner for dry-run and execution. Dry-run reports selected
+components, estimated files and bytes, missing required files, nonportable paths, and security
+warnings without asking for the recovery passphrase or publishing an archive. The scopes are `full`,
+`configuration-and-authored-assets`, `sessions-and-memory`, `specific-session`, and
+`metadata-only`. `--include` and `--exclude` accept only the documented component catalog; they are
+not an escape hatch for arbitrary host paths, and exclusion wins if a component is named in both.
+`compendium-settings` and `configuration` share `arcanum.json`: selecting only
+`compendium-settings` still captures it as Compendium-owned state even when `configuration` is
+excluded, while selecting both stores one configuration entry and records Compendium as a complete
+zero-entry alias.
+`specific-session` requires `--session-id`; other scopes may record it as provenance without
+narrowing their inventory. `trusted-mcp-workspace-metadata`, `audit-logs`,
+`guardrail-logs`, and `master-api-key` are excluded by default and require explicit inclusion. A
+full backup includes global MCP configuration and warns that it may contain literal environment
+values.
+
+The default full scope captures a live, consistent SQLCipher snapshot through SQLite's online
+backup facility, the KDF metadata, configuration, attachment/upload/batch ciphertext, global
+Codex and Spells, CLI and The Forge local state, Compendium settings and certificates, and only the
+portable Grimoire secret plus active/referenced file keys needed by the selected data. The recovery
+material is re-exported inside the encrypted payload; the archive does not depend on the original
+OS credential store or raw Data Protection key ring. Environment-referenced secret values,
+OS credential-store internals,
+raw Data Protection keys, external workspace trees, daemon registration, and ephemeral process
+state are not portable components. A `specific-session` archive includes only matching Session
+attachments by default; uploaded and batch files are omitted because they have no Session
+ownership unless their global typed components are explicitly included. The version-1 physical
+Grimoire snapshot remains indivisible, so its manifest discloses collateral global/accounting rows
+rather than pretending to be a privacy-scoped logical export.
+
+Every `.arcbackup` uses a versioned `ARCABACK` envelope. The small outer header contains only safe
+format, KDF, encryption, size, and creation-time facts. The canonical manifest, checksums, files,
+and portable recovery keys are inside a PBKDF2-HMAC-SHA256/AES-256-GCM authenticated encrypted
+payload streamed in bounded chunks. The current version records its salt and 600,000-iteration KDF
+parameters and uses one-MiB authenticated chunks. The passphrase comes from a hidden interactive
+prompt, the environment variable named by `--passphrase-env`, or the inherited descriptor named by
+`--passphrase-fd`; it is never accepted as a literal argv value. Interactive creation confirms the
+entry. Empty input is rejected without adding an arbitrary character-composition rule. Automation
+should prefer an inherited descriptor when practical and must protect any chosen environment
+variable from unrelated child processes.
+
+Creation uses an identity-owned, owner-only staging root directly beneath the destination parent.
+The encrypted archive temporary file, decrypted self-verification payload, database verification
+extraction, and generated snapshot material all remain inside that root. Arcanum durable-flushes
+the staged archive, performs a complete authentication/checksum self-verification plus database
+validation when included, and revalidates that the staged pathname still names the captured file
+before atomically publishing it to the sibling destination on the same filesystem.
+A replacement staging path is neither published nor deleted as though Arcanum owned it. Existing
+destinations are not replaced without the explicit overwrite flow. Missing or unreadable required
+files, a changed or linked source identity, cancellation, corruption, or failed verification leaves
+no published archive and never reports success. Inventory fingerprints every source with bounded
+streaming SHA-256; creation rejects a changed fingerprint even when an in-place rewrite preserves
+the file identity and byte count. Optional state that does not exist is recorded as `unavailable`;
+policy exclusions remain explicit in the encrypted manifest.
+
+For each database-backed blob, inventory validates the version, bounds, owning purpose, and key id
+from the `ARCABLOB` envelope on the same no-follow file handle used for its SHA-256 fingerprint,
+and confirms that descriptor again after hashing. The captured ciphertext's key id is authoritative
+for portable recovery export when a live key rotation has replaced bytes before committing their
+database metadata. Encrypted metadata paired with plaintext, a malformed or purpose-mismatched
+envelope, a descriptor changed during hashing, or an unavailable captured key makes creation
+incomplete before publication; it does not add an irrelevant snapshot key or block normal live
+rotation.
+
+`backup inspect` without `--decrypt` or an explicit passphrase source shows only the safe outer
+header. `--decrypt` prompts when needed; it and the explicit sources authenticate one bounded
+encrypted chunk at a time, skip entry content, and retain only bounded path metadata plus the
+capped final manifest in memory. Inspection creates no plaintext staging file. `backup verify`
+authenticates the complete structure and
+every chunk, compares each SHA-256 and size, and checks the decrypted
+database and schema in an owner-only temporary root before removing it. Wrong passphrases and
+modified authenticated bytes share a sanitized authentication failure. `backup list` reads outer
+headers in the selected backup directory and does not decrypt archives.
+
+Issue #37 defines creation, inspection, listing, and verification; it does not add an automated
+`backup restore` command. Treat a verified archive as recovery input, keep the original state until
+the archive has been verified and copied to its intended media, and use a deliberately coordinated
+restore procedure that installs the database, encrypted blobs, configuration/assets, and the
+archive's portable recovery material together. Restoring only one half remains unsupported. If
+encrypted blobs exist but the restored key set is missing, corrupt, or lacks a referenced key id,
+Arcanum fails closed and never generates a replacement. `/api/health` and `arcanum doctor` expose a
+`FileEncryption` check with key availability plus bounded encrypted/legacy-plaintext/corrupt counts,
+but never key or content data. Legacy plaintext blobs are never silently served; migrate and verify
+them before relying on a portable backup. Full format, rotation, and atomicity details are in
+[DESIGN §5.4.6](Arcanum.DESIGN.md#546-versioned-authenticated-blob-storage) and
+[§5.4.8](Arcanum.DESIGN.md#548-versioned-encrypted-portable-backups).
 
 ### Unified data retention and deletion
 
@@ -856,6 +935,32 @@ arcanum session get                   # title/campaign/updated picker
 arcanum workspace show
 arcanum mcp show
 ```
+
+### Portable backup
+
+Use the typed encrypted workflow for a consistent recovery generation; do not copy a live
+database or its WAL files:
+
+```bash
+arcanum backup create --dry-run
+arcanum backup create --scope full
+arcanum backup inspect ~/.config/arcanum/backups/example.arcbackup
+arcanum backup inspect ~/.config/arcanum/backups/example.arcbackup --decrypt
+arcanum backup verify ~/.config/arcanum/backups/example.arcbackup
+arcanum backup list
+```
+
+Create and verify prompt securely when no automation source is supplied; interactive create asks
+twice. Automation supplies either the *name* of an environment variable through `--passphrase-env`
+or an inherited descriptor through `--passphrase-fd`, never a literal passphrase argument. Outer
+inspect and list do not decrypt manifests or prompt. Creation is no-clobber unless `--overwrite` is
+explicit, and `--dry-run` uses the creation inventory without asking for a recovery passphrase or
+publishing an archive. Because dry-run never consumes a passphrase source, a parsed negative
+descriptor or simultaneous `--passphrase-env` and `--passphrase-fd` flags do not restrict the
+inventory preview; live creation still validates the source it will read. Scope/component and
+recovery limitations are in
+[the operator backup section](#encrypted-blob-key-backup-and-recovery); exact flags are in the
+[command reference](Arcanum.Command.Reference.md#arcanum-backup).
 
 ### Unified prompt execution
 
@@ -1220,6 +1325,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `look` | Print the Eye of the World workspace snapshot (no HTTP). |
 | `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer / File Encryption panels) + API health probe, including key availability, encrypted/legacy/corrupt blob counts, and the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0 unless another check fails). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
 | `watch session\|apprentice\|logs\|mcp\|daemons\|health` | Follow the six authenticated live sources with shared UTC/color/heartbeat/`[DONE]`/Ctrl+C/NDJSON behavior. Repeat free-form `--event-type` and `--tool` filters; `watch logs` adds `--level`/`--category`/`--search`; `watch session` adds `--since`; `watch health` adds `--interval` (default 5). `--reconnect` is opt-in, indefinitely retries unexpected SSE disconnects with capped backoff, and always warns of possible gaps/no replay guarantee. |
+| `backup create\|inspect\|verify\|list` | Plan/create an owner-only encrypted `.arcbackup`, read its safe outer header or authenticated manifest, verify every entry and included Grimoire snapshot, or list archive headers without decryption. Create uses typed scopes/components, online SQLite backup, hidden/environment-reference/inherited-descriptor passphrase input, dry-run, and explicit no-clobber/overwrite behavior. No restore command is added. |
 | `data status\|retention show\|retention set\|prune\|delete-session\|delete-attachment\|reset-memory\|factory-reset` | Inspect typed retained stores, configure per-class policy, preview the exact bounded dependency plan, or perform a confirmed server-owned deletion. `prune` requires exactly one of `--dry-run`/`--apply`; every mutation requires confirmation or `--yes`. Factory reset preserves external backups, configuration, security/key material, and data outside the selected root. |
 | `data encryption status\|migrate\|verify\|rotate-key` | Inspect mixed-mode state; resumably encrypt legacy blobs; authenticate/decrypt/hash-check every blob; or create a new key and incrementally rotate before retiring unreferenced old keys. Worker commands accept `--max-concurrency` and `--max-bytes-per-second`; output contains aggregate files/bytes and issue categories, never names or paths. |
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |

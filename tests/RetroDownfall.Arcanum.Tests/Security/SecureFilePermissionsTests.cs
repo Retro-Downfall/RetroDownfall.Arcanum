@@ -4,6 +4,7 @@ using Serilog;
 using Serilog.Core;
 using Serilog.Events;
 using System.Reflection;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -142,6 +143,23 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Default_secret_file_paths_include_file_encryption_key_store()
+    {
+
+        MethodInfo? method = typeof(SecureFilePermissions).GetMethod(
+            "DefaultSecretFilePaths",
+            BindingFlags.Static | BindingFlags.NonPublic);
+
+        Assert.NotNull(method);
+
+        IReadOnlyList<string> paths = Assert.IsAssignableFrom<IReadOnlyList<string>>(
+            method.Invoke(null, null));
+
+        Assert.Contains(ArcanumPaths.FileEncryptionKeyStoreFile, paths);
+
+    }
+
+    [Fact]
     public void RunStartupPermissionSelfCheck_warns_for_world_readable_file()
     {
 
@@ -213,7 +231,6 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
             Assert.Contains(logger.Warnings, w => w.Message.Contains(keyFile, StringComparison.Ordinal));
 
         }
-
         finally
         {
 
@@ -251,7 +268,6 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
                 && e.MessageTemplate.Text.Contains("Failed to apply owner-only permissions", StringComparison.OrdinalIgnoreCase));
 
         }
-
         finally
         {
 

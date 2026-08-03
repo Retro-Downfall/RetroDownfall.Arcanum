@@ -9,6 +9,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.CommLink;
+using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -29,6 +30,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.CommLink;
 using RetroDownfall.Arcanum.Infrastructure.Chronosync;
@@ -196,7 +198,50 @@ public static class ServiceCollectionExtensions
 
         services.AddArcanumGrimoireForCli();
 
+        services.AddArcanumBackup();
+
         return services;
+    }
+
+    /// <summary>
+    /// Registers the host-coordinated encrypted backup planner, snapshotter, archive codec, and service.
+    /// </summary>
+    public static IServiceCollection AddArcanumBackup(this IServiceCollection services)
+    {
+
+        services.TryAddSingleton(BackupStatePaths.Default);
+
+        services.TryAddSingleton<BackupInventoryPlanner>();
+
+        services.TryAddSingleton<BackupDatabaseSnapshotter>();
+
+        services.TryAddSingleton<BackupArchiveCodec>(
+            static _ => new BackupArchiveCodec());
+
+        services.TryAddSingleton<IBackupSecretSnapshotReader>(serviceProvider =>
+            new BackupSecretSnapshotReader(
+                serviceProvider.GetRequiredService<IOsCredentialStore>(),
+                serviceProvider.GetRequiredService<DataProtectionSecretStore>()));
+
+        services.TryAddScoped<IBackupService>(serviceProvider =>
+            new BackupService(
+                serviceProvider.GetRequiredService<BackupStatePaths>(),
+                serviceProvider.GetRequiredService<BackupInventoryPlanner>(),
+                serviceProvider.GetRequiredService<BackupDatabaseSnapshotter>(),
+                serviceProvider.GetRequiredService<BackupArchiveCodec>(),
+                serviceProvider.GetRequiredService<IBackupSecretSnapshotReader>(),
+                serviceProvider.GetRequiredService<TimeProvider>(),
+                serviceProvider.GetRequiredService<IGrimoireDbPassphraseSource>(),
+                new DeferredBackupOperationCoordinator(serviceProvider),
+                new DeferredBackupOperationStore(serviceProvider)));
+
+        services.TryAddEnumerable(
+            ServiceDescriptor.Scoped<
+                ILongRunningOperationRecoveryHandler,
+                BackupCreateRecoveryHandler>());
+
+        return services;
+
     }
 
     /// <summary>
@@ -310,6 +355,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
         services.AddArcanumSecretStore();
+
+        services.AddArcanumBackup();
 
         services.AddSingleton<IWebResearchApiKeyResolver, WebResearchApiKeyResolver>();
 

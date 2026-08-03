@@ -356,30 +356,15 @@ public static class SecureFilePermissions
 
         }
 
-        string securityFile = ArcanumPaths.ApiKeyStoreFile;
-
-        if (File.Exists(securityFile))
+        foreach (string secretFile in DefaultSecretFilePaths())
         {
 
-            ApplyOwnerOnlyFile(securityFile);
+            if (File.Exists(secretFile))
+            {
 
-        }
+                ApplyOwnerOnlyFile(secretFile);
 
-        string grimoireKeyFile = ArcanumPaths.GrimoireKeyStoreFile;
-
-        if (File.Exists(grimoireKeyFile))
-        {
-
-            ApplyOwnerOnlyFile(grimoireKeyFile);
-
-        }
-
-        string perplexityKeyFile = ArcanumPaths.PerplexityApiKeyStoreFile;
-
-        if (File.Exists(perplexityKeyFile))
-        {
-
-            ApplyOwnerOnlyFile(perplexityKeyFile);
+            }
 
         }
 
@@ -486,6 +471,7 @@ public static class SecureFilePermissions
         [
             ArcanumPaths.ApiKeyStoreFile,
             ArcanumPaths.GrimoireKeyStoreFile,
+            ArcanumPaths.FileEncryptionKeyStoreFile,
             ArcanumPaths.PerplexityApiKeyStoreFile,
         ];
 

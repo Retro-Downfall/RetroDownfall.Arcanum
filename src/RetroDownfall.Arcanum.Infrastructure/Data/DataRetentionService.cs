@@ -73,7 +73,7 @@ internal sealed partial class DataRetentionService(
         filesRootOverride ?? ArcanumPaths.FilesDirectory);
 
     private readonly string _logsRoot = Path.GetFullPath(
-        logsRootOverride ?? ArcanumPaths.LogDirectory);
+        logsRootOverride ?? ArcanumPaths.GrimoireDirectory);
 
     private RetentionSettings CurrentRetention =>
         policyStore?.Current
