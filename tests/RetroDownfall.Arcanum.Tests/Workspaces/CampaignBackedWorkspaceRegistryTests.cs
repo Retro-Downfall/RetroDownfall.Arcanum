@@ -164,7 +164,7 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RegisterAsync_repository_failure_maps_error_code()
+    public async Task RegisterAsync_preserves_repository_failure()
     {
 
         ArcanumSettings settings = new()
@@ -194,10 +194,54 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Campaign.MaxReached, result.Error.Code);
 
         Assert.Equal(
-            "The maximum number of campaigns has been reached.",
+            "Repository failure selected by code, not legacy exception text.",
             result.Error.Message);
 
     }
+
+    [Fact]
+    public async Task GetAllAsync_reads_every_campaign_page()
+    {
+
+        ArcanumSettings settings = new();
+
+        GrimoireDbReadiness readiness = new();
+
+        readiness.MarkReady();
+
+        PagedCampaignRepository repository = new(
+        [
+            CreateCampaign("Alpha"),
+            CreateCampaign("Beta"),
+            CreateCampaign("Gamma"),
+            CreateCampaign("Delta"),
+            CreateCampaign("Epsilon"),
+        ],
+        pageSize: 2);
+
+        CampaignBackedWorkspaceRegistry registry = new(
+            new FixedCampaignRepositoryScopeFactory(repository),
+            readiness,
+            new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        WorkspaceInfo[] all = await registry.GetAllAsync(CancellationToken.None);
+
+        Assert.Equal(
+            ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"],
+            all.Select(workspace => workspace.Name).ToArray());
+
+        Assert.Equal([0, 2, 4], repository.RequestedOffsets);
+
+    }
+
+    private static Campaign CreateCampaign(string name) =>
+        new()
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            Path = Path.Combine(Path.GetTempPath(), name),
+            Type = WorkspaceType.Campaign,
+        };
 
     private sealed class MaxReachedCampaignRepository : ICampaignRepository
     {
@@ -245,6 +289,71 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
+
+    }
+
+    private sealed class PagedCampaignRepository(
+        Campaign[] campaigns,
+        int pageSize) : ICampaignRepository
+    {
+
+        public List<int> RequestedOffsets { get; } = [];
+
+        public Task<ListPageResult<Campaign>> ListAsync(
+            WorkspaceType? typeFilter,
+            int? limit = null,
+            int offset = 0,
+            CancellationToken cancellationToken = default)
+        {
+
+            RequestedOffsets.Add(offset);
+
+            Campaign[] page = campaigns.Skip(offset).Take(pageSize).ToArray();
+
+            int nextOffset = offset + page.Length;
+
+            bool hasMore = nextOffset < campaigns.Length;
+
+            return Task.FromResult(
+                new ListPageResult<Campaign>(
+                    page,
+                    hasMore,
+                    hasMore ? nextOffset : null));
+
+        }
+
+        public Task<Campaign?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Campaign?> GetByPathAsync(
+            string path,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Campaign?> GetByNameAsync(
+            string name,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<Campaign>> AddAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Campaign> UpdateAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteAsync(
+            Guid id,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
 
     }
 

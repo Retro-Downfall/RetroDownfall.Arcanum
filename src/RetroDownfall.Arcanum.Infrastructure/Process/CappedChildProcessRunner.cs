@@ -33,6 +33,12 @@ internal enum CappedChildProcessOutcome
 
     CanceledWhileReadingOutput,
 
+    /// <summary>
+    /// Complete output crossed the in-memory preview boundary but could not be durably spilled;
+    /// the process tree was killed instead of silently discarding diagnostics.
+    /// </summary>
+    OutputPreservationFailed,
+
     /// <summary>OS-level resource limits could not be applied before start, or the child could not be assigned to a Windows Job Object after start; when assignment fails the process tree is killed so the child is never left running unbounded.</summary>
     ResourceLimitApplyFailed,
 
@@ -58,7 +64,28 @@ internal enum CappedChildProcessOutcome
 
 }
 
-internal readonly record struct CappedStreamOutput(string Text, bool Truncated);
+internal readonly record struct CappedStreamOutput(
+    string Text,
+    bool Truncated,
+    string? CompleteOutputPath = null,
+    long TotalBytes = 0L);
+
+internal sealed class ChildProcessOutputPreservationException(
+    Exception innerException) : IOException(
+        "Complete child-process output could not be preserved.",
+        innerException);
+
+internal sealed class CommandOutputSpillLimitException(
+    long attemptedBytes,
+    long limitBytes) : IOException(
+        $"Physical resource protection: the command-output artifact reached {attemptedBytes} bytes, exceeding the explicit Sanctum MaxFileWriteMb policy of {limitBytes} bytes. The partial artifact was deleted; rerun with quieter output or explicitly raise Sanctum MaxFileWriteMb.")
+{
+
+    internal long AttemptedBytes { get; } = attemptedBytes;
+
+    internal long LimitBytes { get; } = limitBytes;
+
+}
 
 internal readonly record struct CappedChildProcessPreStartValidationResult(
     bool Success,
@@ -123,7 +150,8 @@ internal static class CappedChildProcessRunner
         ChildProcessSandboxRequest? filesystemSandbox = null,
         ILogger? logger = null,
         Func<CappedChildProcessPreStartValidationResult>? preStartValidation = null,
-        Func<TimeSpan>? getCleanupTimeRemaining = null)
+        Func<TimeSpan>? getCleanupTimeRemaining = null,
+        string? outputSpillDirectory = null)
     {
 
         ChildProcessEnvironmentScrubber.ApplyProfile(startInfo, environmentProfile);
@@ -136,6 +164,13 @@ internal static class CappedChildProcessRunner
             perStreamCapBytes = 1024L;
 
         }
+
+        OutputSpillBudget? outputSpillBudget =
+            !string.IsNullOrWhiteSpace(outputSpillDirectory)
+            && resourceLimits?.MaxFileWriteMb > 0
+                ? new OutputSpillBudget(
+                    resourceLimits.MaxFileWriteMb * 1024L * 1024L)
+                : null;
 
         // Call sites without Sanctum context (e.g. run_spell_script constructed directly in unit
         // tests, with no campaign/DI backing) legitimately have nothing to resolve limits from;
@@ -256,9 +291,12 @@ internal static class CappedChildProcessRunner
 
         using CancellationTokenSource timeoutCts = new(timeout);
 
+        using CancellationTokenSource outputFailureCts = new();
+
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
-            timeoutCts.Token);
+            timeoutCts.Token,
+            outputFailureCts.Token);
 
         CancellationToken waitToken = linked.Token;
 
@@ -502,15 +540,35 @@ internal static class CappedChildProcessRunner
             try
             {
 
+                string? stdoutSpillPath = BuildOutputSpillPath(
+                    outputSpillDirectory,
+                    "stdout");
+
+                string? stderrSpillPath = BuildOutputSpillPath(
+                    outputSpillDirectory,
+                    "stderr");
+
                 Task<CappedStreamOutput> stdoutTask = ReadStreamCappedAsync(
                     process.StandardOutput,
                     perStreamCapBytes,
-                    cancellationToken);
+                    cancellationToken,
+                    stdoutSpillPath,
+                    outputSpillBudget);
 
                 Task<CappedStreamOutput> stderrTask = ReadStreamCappedAsync(
                     process.StandardError,
                     perStreamCapBytes,
-                    cancellationToken);
+                    cancellationToken,
+                    stderrSpillPath,
+                    outputSpillBudget);
+
+                CancelWaitWhenOutputReadFails(
+                    stdoutTask,
+                    outputFailureCts);
+
+                CancelWaitWhenOutputReadFails(
+                    stderrTask,
+                    outputFailureCts);
 
                 try
                 {
@@ -538,6 +596,10 @@ internal static class CappedChildProcessRunner
                             stdoutTask,
                             stderrTask).ConfigureAwait(false);
 
+                    TryDeleteOutputSpills(
+                        stdoutSpillPath,
+                        stderrSpillPath);
+
                     if (!descendantContainmentVerified)
                     {
                         logger?.LogWarning(
@@ -557,6 +619,39 @@ internal static class CappedChildProcessRunner
                             Stderr = canceledStderr,
 
                             PerStreamCapBytes = perStreamCapBytes,
+
+                        };
+
+                    }
+
+                    if (outputFailureCts.IsCancellationRequested)
+                    {
+
+                        Exception? outputFault = GetOutputReadFault(
+                            stdoutTask,
+                            stderrTask);
+
+                        return new CappedChildProcessRunResult
+                        {
+
+                            Outcome = outputFault switch
+                            {
+                                ChildProcessOutputPreservationException =>
+                                    CappedChildProcessOutcome.OutputPreservationFailed,
+                                CommandOutputSpillLimitException =>
+                                    CappedChildProcessOutcome.OutputPreservationFailed,
+                                UnauthorizedAccessException =>
+                                    CappedChildProcessOutcome.AccessDeniedReadingOutput,
+                                _ => CappedChildProcessOutcome.IoErrorReadingOutput,
+                            },
+
+                            Stdout = canceledStdout,
+
+                            Stderr = canceledStderr,
+
+                            PerStreamCapBytes = perStreamCapBytes,
+
+                            FaultException = outputFault,
 
                         };
 
@@ -601,8 +696,31 @@ internal static class CappedChildProcessRunner
                     stderr = await stderrTask.ConfigureAwait(false);
 
                 }
+                catch (ChildProcessOutputPreservationException ex)
+                {
+
+                    TryDeleteOutputSpills(
+                        stdoutSpillPath,
+                        stderrSpillPath);
+
+                    return new CappedChildProcessRunResult
+                    {
+
+                        Outcome = CappedChildProcessOutcome.OutputPreservationFailed,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        FaultException = ex,
+
+                    };
+
+                }
                 catch (IOException ex)
                 {
+
+                    TryDeleteOutputSpills(
+                        stdoutSpillPath,
+                        stderrSpillPath);
 
                     return new CappedChildProcessRunResult
                     {
@@ -619,6 +737,10 @@ internal static class CappedChildProcessRunner
                 catch (UnauthorizedAccessException ex)
                 {
 
+                    TryDeleteOutputSpills(
+                        stdoutSpillPath,
+                        stderrSpillPath);
+
                     return new CappedChildProcessRunResult
                     {
 
@@ -633,6 +755,10 @@ internal static class CappedChildProcessRunner
                 }
                 catch (OperationCanceledException)
                 {
+
+                    TryDeleteOutputSpills(
+                        stdoutSpillPath,
+                        stderrSpillPath);
 
                     return new CappedChildProcessRunResult
                     {
@@ -956,6 +1082,10 @@ internal static class CappedChildProcessRunner
         {
 
         }
+        catch (Exception)
+        {
+
+        }
 
         try
         {
@@ -981,6 +1111,10 @@ internal static class CappedChildProcessRunner
         {
 
         }
+        catch (Exception)
+        {
+
+        }
 
         return (stdout, stderr);
     }
@@ -988,7 +1122,9 @@ internal static class CappedChildProcessRunner
     private static async Task<CappedStreamOutput> ReadStreamCappedAsync(
         StreamReader reader,
         long maxBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? completeOutputPath,
+        OutputSpillBudget? outputSpillBudget)
     {
 
         StringBuilder builder = new();
@@ -997,31 +1133,98 @@ internal static class CappedChildProcessRunner
 
         long approximateBytes = 0L;
 
+        long totalBytes = 0L;
+
         bool truncated = false;
 
-        while (true)
+        StreamWriter? completeWriter = null;
+
+        try
         {
 
-            int read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
-
-            if (read <= 0)
+            while (true)
             {
 
-                break;
+                int read = await reader.ReadAsync(
+                        buffer.AsMemory(),
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
-            }
+                if (read <= 0)
+                {
 
-            long encodedSize = Encoding.UTF8.GetByteCount(buffer, 0, read);
+                    break;
 
-            if (approximateBytes + encodedSize > maxBytes)
-            {
+                }
+
+                long encodedSize = Encoding.UTF8.GetByteCount(
+                    buffer,
+                    0,
+                    read);
+
+                totalBytes += encodedSize;
+
+                if (truncated)
+                {
+
+                    if (completeWriter is not null)
+                    {
+
+                        outputSpillBudget?.Reserve(encodedSize);
+
+                        await completeWriter.WriteAsync(
+                                buffer.AsMemory(0, read),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+
+                    }
+
+                    continue;
+
+                }
+
+                if (approximateBytes + encodedSize <= maxBytes)
+                {
+
+                    builder.Append(buffer, 0, read);
+
+                    approximateBytes += encodedSize;
+
+                    continue;
+
+                }
+
+                if (completeOutputPath is not null)
+                {
+
+                    outputSpillBudget?.Reserve(
+                        checked(approximateBytes + encodedSize));
+
+                    truncated = true;
+
+                    completeWriter = CreateCompleteOutputWriter(
+                        completeOutputPath);
+
+                    await completeWriter.WriteAsync(
+                            builder.ToString().AsMemory(),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    await completeWriter.WriteAsync(
+                            buffer.AsMemory(0, read),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                }
 
                 long remaining = maxBytes - approximateBytes;
 
                 if (remaining > 0)
                 {
 
-                    int safeChars = Utf8Truncation.ChooseSafeCharCount(buffer.AsSpan(0, read), remaining);
+                    int safeChars = Utf8Truncation.ChooseSafeCharCount(
+                        buffer.AsSpan(0, read),
+                        remaining);
 
                     builder.Append(buffer, 0, safeChars);
 
@@ -1029,54 +1232,249 @@ internal static class CappedChildProcessRunner
 
                 truncated = true;
 
-                // The cap has been reached, but the child process may still be writing to this
-                // pipe. If nobody keeps reading, the OS pipe buffer (a few tens of KB) fills and
-                // the child blocks on its next write — a de facto hang until the invocation
-                // timeout kills the whole tree, even though the output we care about has already
-                // been captured. Keep draining (and discarding) the rest of the stream in the
-                // background so the child can finish/exit naturally; this method still returns
-                // immediately with the truncated output captured so far.
-                _ = DrainAndDiscardAsync(reader, cancellationToken);
+            }
 
-                break;
+            if (completeWriter is not null)
+            {
+
+                await completeWriter.FlushAsync(cancellationToken)
+                    .ConfigureAwait(false);
 
             }
 
-            builder.Append(buffer, 0, read);
+            return new CappedStreamOutput(
+                builder.ToString(),
+                truncated,
+                completeWriter is null ? null : completeOutputPath,
+                totalBytes);
 
-            approximateBytes += encodedSize;
+        }
+        catch (Exception ex)
+        {
+
+            if (completeOutputPath is not null)
+            {
+
+                TryDeleteOutputSpill(completeOutputPath);
+
+            }
+
+            if (truncated
+                && ex is IOException or UnauthorizedAccessException
+                && ex is not ChildProcessOutputPreservationException)
+            {
+
+                throw new ChildProcessOutputPreservationException(ex);
+
+            }
+
+            throw;
+
+        }
+        finally
+        {
+
+            if (completeWriter is not null)
+            {
+
+                try
+                {
+
+                    await completeWriter.DisposeAsync()
+                        .ConfigureAwait(false);
+
+                }
+                catch (Exception ex)
+                    when (ex is IOException
+                          or UnauthorizedAccessException)
+                {
+
+                    TryDeleteOutputSpill(completeOutputPath);
+
+                    throw new ChildProcessOutputPreservationException(ex);
+
+                }
+
+            }
 
         }
 
-        return new CappedStreamOutput(builder.ToString(), truncated);
-
     }
 
-    /// <summary>
-    /// Keeps reading (and discarding) a stream after its output cap has been reached, so the
-    /// underlying OS pipe never backs up and blocks the child process's writes — see
-    /// <see cref="ReadStreamCappedAsync"/>. Best-effort and fire-and-forget: the cap's output has
-    /// already been captured and returned to the caller by the time this runs, so any failure here
-    /// (including cancellation, or the stream/process already being gone) simply stops draining.
-    /// </summary>
-    private static async Task DrainAndDiscardAsync(StreamReader reader, CancellationToken cancellationToken)
+    private static StreamWriter CreateCompleteOutputWriter(string path)
     {
+
+        FileStream stream = new(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.Read,
+            bufferSize: 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
 
         try
         {
 
-            char[] buffer = new char[8192];
-
-            while (await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false) > 0)
+            if (!OperatingSystem.IsWindows())
             {
+
+                File.SetUnixFileMode(
+                    path,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            }
+
+            return new StreamWriter(
+                stream,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                bufferSize: 4096,
+                leaveOpen: false);
+
+        }
+        catch
+        {
+
+            stream.Dispose();
+
+            TryDeleteOutputSpill(path);
+
+            throw;
+
+        }
+
+    }
+
+    private sealed class OutputSpillBudget(long limitBytes)
+    {
+
+        private long _reservedBytes;
+
+        internal void Reserve(long byteCount)
+        {
+
+            while (true)
+            {
+
+                long current = Volatile.Read(ref _reservedBytes);
+
+                long attempted = checked(current + byteCount);
+
+                if (attempted > limitBytes)
+                {
+
+                    throw new CommandOutputSpillLimitException(
+                        attempted,
+                        limitBytes);
+
+                }
+
+                if (Interlocked.CompareExchange(
+                        ref _reservedBytes,
+                        attempted,
+                        current) == current)
+                {
+
+                    return;
+
+                }
 
             }
 
         }
-        catch (Exception)
+
+    }
+
+    private static string? BuildOutputSpillPath(
+        string? outputSpillDirectory,
+        string streamName)
+    {
+
+        if (string.IsNullOrWhiteSpace(outputSpillDirectory))
         {
 
-            // Best-effort drain — see remarks above.
+            return null;
+
+        }
+
+        return Path.Combine(
+            Path.GetFullPath(outputSpillDirectory),
+            streamName + "-" + Guid.NewGuid().ToString("N") + ".utf8");
+
+    }
+
+    private static void CancelWaitWhenOutputReadFails(
+        Task<CappedStreamOutput> outputTask,
+        CancellationTokenSource outputFailureCts)
+    {
+
+        _ = outputTask.ContinueWith(
+            static (completed, state) =>
+            {
+
+                _ = completed.Exception;
+
+                CancellationTokenSource failure =
+                    (CancellationTokenSource)state!;
+
+                try
+                {
+
+                    failure.Cancel();
+
+                }
+                catch (ObjectDisposedException)
+                {
+
+                }
+
+            },
+            outputFailureCts,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted
+                | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+    }
+
+    private static Exception? GetOutputReadFault(
+        Task<CappedStreamOutput> stdoutTask,
+        Task<CappedStreamOutput> stderrTask) =>
+        stdoutTask.Exception?.GetBaseException()
+        ?? stderrTask.Exception?.GetBaseException();
+
+    private static void TryDeleteOutputSpills(
+        string? stdoutSpillPath,
+        string? stderrSpillPath)
+    {
+
+        TryDeleteOutputSpill(stdoutSpillPath);
+
+        TryDeleteOutputSpill(stderrSpillPath);
+
+    }
+
+    private static void TryDeleteOutputSpill(string? path)
+    {
+
+        if (path is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            File.Delete(path);
+
+        }
+        catch (IOException)
+        {
+
+        }
+        catch (UnauthorizedAccessException)
+        {
 
         }
 

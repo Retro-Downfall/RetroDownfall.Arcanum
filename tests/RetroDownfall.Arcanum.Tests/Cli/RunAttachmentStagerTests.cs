@@ -368,12 +368,14 @@ public sealed class RunAttachmentStagerTests : IDisposable
 
     [Fact]
 
-    public async Task StageAsync_enforces_existing_server_attached_file_count_authority()
+    public async Task StageAsync_accepts_files_beyond_the_former_count_ceiling()
     {
+
+        const int formerFileCountCeiling = 32;
 
         List<string> values = [];
 
-        for (int index = 0; index <= RunAttachmentStager.MaxAttachedFiles; index++)
+        for (int index = 0; index <= formerFileCountCeiling; index++)
         {
 
             string name = $"file-{index:D2}.txt";
@@ -390,14 +392,9 @@ public sealed class RunAttachmentStagerTests : IDisposable
             pipedContent: null,
             CancellationToken.None);
 
-        Assert.False(result.IsSuccess);
+        Assert.True(result.IsSuccess, result.Error);
 
-        Assert.Empty(result.AttachedFiles);
-
-        Assert.Contains(
-            RunAttachmentStager.MaxAttachedFiles.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            result.Error,
-            StringComparison.Ordinal);
+        Assert.Equal(formerFileCountCeiling + 1, result.AttachedFiles.Count);
 
     }
 

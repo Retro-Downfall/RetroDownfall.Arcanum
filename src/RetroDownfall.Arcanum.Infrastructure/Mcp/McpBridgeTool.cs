@@ -116,7 +116,7 @@ internal sealed class McpBridgeTool : AIFunction
         bool trustStructuredResult,
         CancellationToken cancellationToken)
     {
-        TimeSpan? callTimeout = string.Equals(_name, "ask_human", StringComparison.Ordinal)
+        TimeSpan? callTimeout = RunsUntilCallerCancellation(_name)
             ? Timeout.InfiniteTimeSpan
             : _requestTimeout;
 
@@ -194,6 +194,11 @@ internal sealed class McpBridgeTool : AIFunction
             _fallbackLogger,
             _trustedStructuredResultKind,
             requestTimeout);
+
+    private static bool RunsUntilCallerCancellation(string toolName) =>
+        string.Equals(toolName, "ask_human", StringComparison.Ordinal)
+        || string.Equals(toolName, "execute_command", StringComparison.Ordinal)
+        || string.Equals(toolName, ArcanumBuiltInToolNames.RunSpellScript, StringComparison.Ordinal);
 
 }
 

@@ -25,6 +25,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 {
 
+    private const int AttachmentIoPageSize = 64 * 1024;
+
+    private const int DefaultBoundRecordPageSize = 128;
+
+    private const int MaximumBoundRecordPageSize = 512;
+
+    private const int IndexVersionPageSize = 256;
+
+    private const int LatestLogicalKeyQueryPageSize = 128;
+
     /// <summary>
     /// Named gates shared by PersistNew, PromotePending, fork, purge, and GC.
     /// Session: <c>session|{sessionId:N}</c>; bound: <c>bound|{sessionId:N}|{logicalKey}</c>;
@@ -49,6 +59,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     private readonly ConditionalWeakTable<SessionAttachmentForkCopyPlan, ForkBlobAuthority>
         _forkBlobAuthorities = new();
 
+    private int _boundRecordPageReadCountForTesting;
+
+    private int _latestLogicalKeyQueryPageCountForTesting;
+
     /// <summary>
     /// Test seam: runs after bytes are on disk at the destination, before the DB write that
     /// records them. Used to simulate exhausted DB failure without holding FS work inside
@@ -59,6 +73,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     internal Func<CancellationToken, Task>?
         AfterWriterLockBeforeBlobValidationForTesting
     { get; set; }
+
+    internal int BoundRecordPageReadCountForTesting =>
+        Volatile.Read(ref _boundRecordPageReadCountForTesting);
+
+    internal int LatestLogicalKeyQueryPageCountForTesting =>
+        Volatile.Read(ref _latestLogicalKeyQueryPageCountForTesting);
 
     public SessionAttachmentStore(
         ArcanumDbContext db,
@@ -305,7 +325,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         ArgumentException.ThrowIfNullOrWhiteSpace(mimeType);
 
-        string contentSha256 = Convert.ToHexString(SHA256.HashData(bytes.Span));
+        string contentSha256 = ComputeContentSha256(bytes);
 
         IDisposable? sessionGate = null;
 
@@ -327,8 +347,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         using IDisposable gate = await AttachmentGates.AcquireAsync(gateKey, cancellationToken).ConfigureAwait(false);
 
         AttachmentsSettings attachments = _options.Value.ResolveAttachments();
-
-        int maxVersions = ArcanumSettingClamps.AttachmentsMaxVersionsPerLogicalKey(attachments.MaxVersionsPerLogicalKey);
 
         long maxBytes = ArcanumSettingClamps.AttachmentsMaxBytesPerSession(attachments.MaxBytesPerSession);
 
@@ -359,15 +377,17 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         }
 
-        int nextVersion = latest is null ? 1 : latest.Version + 1;
-
-        if (nextVersion > maxVersions)
+        if (latest?.Version == int.MaxValue)
         {
 
             throw new InvalidOperationException(
-                $"Attachment version cap exceeded for logical key '{logicalKey}' (max {maxVersions}).");
+                $"Attachment version protocol boundary reached for logical key '{logicalKey}': "
+                + $"measured version {latest.Version}; limit {int.MaxValue}. Existing versions remain saved. "
+                + "Use a new logical attachment name to continue.");
 
         }
+
+        int nextVersion = latest is null ? 1 : latest.Version + 1;
 
         long existingBytes = await SumByteLengthAsync(sessionId, validatedPendingTurnId, cancellationToken).ConfigureAwait(false);
 
@@ -375,7 +395,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         {
 
             throw new InvalidOperationException(
-                $"Attachment byte budget exceeded (max {maxBytes} bytes for this session/pending turn).");
+                "Physical session-attachment storage boundary reached: "
+                + $"measured {existingBytes + bytes.Length} bytes; limit {maxBytes} bytes. "
+                + "Existing attachment versions remain saved; delete unneeded versions, use a new session, "
+                + "or retry with a smaller attachment.");
 
         }
 
@@ -387,15 +410,43 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         DateTimeOffset createdAt = DateTimeOffset.UtcNow;
 
-        await using MemoryStream plaintext = new(bytes.ToArray(), writable: false);
-        EncryptedBlobDescriptor descriptor = await _blobStore.WriteAsync(
+        EncryptedBlobDescriptor descriptor;
+
+        await using (EncryptedBlobWriter writer = await _blobStore
+            .CreateWriterAsync(
                 absolutePath,
-                plaintext,
                 EncryptedBlobPurpose.SessionAttachment,
                 id.ToByteArray(),
-                bytes.Length,
                 cancellationToken)
-            .ConfigureAwait(false);
+            .ConfigureAwait(false))
+        {
+
+            for (int offset = 0; offset < bytes.Length; offset += AttachmentIoPageSize)
+            {
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                int count = Math.Min(AttachmentIoPageSize, bytes.Length - offset);
+
+                await writer
+                    .WriteAsync(bytes.Slice(offset, count), cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+
+            descriptor = await writer
+                .CompleteAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+
+        if (descriptor.PlaintextLength != bytes.Length)
+        {
+
+            throw new InvalidDataException(
+                "Encrypted attachment length did not match the supplied plaintext length.");
+
+        }
 
         if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
                 absolutePath,
@@ -771,6 +822,77 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         CancellationToken cancellationToken = default)
     {
 
+        List<SessionAttachmentRecord> rows = [];
+
+        await foreach (IReadOnlyList<SessionAttachmentRecord> page in ReadBoundPagesAsync(
+            sessionId,
+            DefaultBoundRecordPageSize,
+            cancellationToken))
+        {
+
+            rows.AddRange(page);
+
+        }
+
+        return rows;
+
+    }
+
+    public async IAsyncEnumerable<IReadOnlyList<SessionAttachmentRecord>> ReadBoundPagesAsync(
+        Guid sessionId,
+        int pageSize = DefaultBoundRecordPageSize,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+
+        int effectivePageSize = Math.Clamp(
+            pageSize,
+            1,
+            MaximumBoundRecordPageSize);
+
+        string? afterLogicalKey = null;
+
+        int afterVersion = 0;
+
+        while (true)
+        {
+
+            IReadOnlyList<SessionAttachmentRecord> page = await ReadBoundPageAsync(
+                    sessionId,
+                    afterLogicalKey,
+                    afterVersion,
+                    effectivePageSize,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (page.Count == 0)
+            {
+
+                yield break;
+
+            }
+
+            yield return page;
+
+            SessionAttachmentRecord last = page[^1];
+
+            afterLogicalKey = last.LogicalKey;
+
+            afterVersion = last.Version;
+
+        }
+
+    }
+
+    private async Task<IReadOnlyList<SessionAttachmentRecord>> ReadBoundPageAsync(
+        Guid sessionId,
+        string? afterLogicalKey,
+        int afterVersion,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+
+        _ = Interlocked.Increment(ref _boundRecordPageReadCountForTesting);
+
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -789,16 +911,29 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     FROM "SessionAttachments"
                     WHERE "SessionId" = @sessionId
                       AND "State" = @state
+                      AND (
+                          @afterLogicalKey IS NULL
+                          OR "LogicalKey" > @afterLogicalKey
+                          OR ("LogicalKey" = @afterLogicalKey AND "Version" > @afterVersion))
                     ORDER BY "LogicalKey" ASC, "Version" ASC
+                    LIMIT @pageSize
                     """;
 
                 AddParameter(cmd, "@sessionId", sessionId.ToString());
 
                 AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
 
-                List<SessionAttachmentRecord> rows = [];
+                AddParameter(cmd, "@afterLogicalKey", (object?)afterLogicalKey ?? DBNull.Value);
 
-                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                AddParameter(cmd, "@afterVersion", afterVersion);
+
+                AddParameter(cmd, "@pageSize", pageSize);
+
+                List<SessionAttachmentRecord> rows = new(pageSize);
+
+                await using DbDataReader reader = await cmd
+                    .ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
@@ -814,6 +949,223 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     }
 
+    public async Task<IReadOnlyList<SessionAttachmentRecord>> ListLatestBoundAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+    {
+
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                cmd.CommandText =
+                    """
+                    SELECT current."Id", current."SessionId", current."EntryId", current."PendingTurnId",
+                           current."State", current."LogicalKey", current."OriginalFileName", current."Version",
+                           current."RelativePath", current."ContentSha256", current."MimeType", current."ByteLength",
+                           current."Kind", current."CreatedAt", current."SourceKind",
+                           current."SourceWorkspaceIdentity", current."SourceRelativePath", current."SourceCanonicalPath",
+                           current."SourceContentSha256", current."SourceFileIdentity", current."SourceLastWriteAt",
+                           current."SourceByteLength", current."SourceStatus", current."SourceDiagnosticReason",
+                           current."EncryptionVersion", current."EncryptionKeyId"
+                    FROM "SessionAttachments" AS current
+                    WHERE current."SessionId" = @sessionId
+                      AND current."State" = @state
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM "SessionAttachments" AS newer
+                          WHERE newer."SessionId" = current."SessionId"
+                            AND newer."State" = current."State"
+                            AND newer."LogicalKey" = current."LogicalKey"
+                            AND newer."Version" > current."Version")
+                    ORDER BY current."LogicalKey" ASC
+                    """;
+
+                AddParameter(cmd, "@sessionId", sessionId.ToString());
+
+                AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
+
+                List<SessionAttachmentRecord> rows = [];
+
+                await using DbDataReader reader = await cmd
+                    .ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    rows.Add(ReadRecord(reader));
+
+                }
+
+                return (IReadOnlyList<SessionAttachmentRecord>)rows;
+
+            },
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    public async Task<IReadOnlyList<SessionAttachmentRecord>>
+        ListLatestBoundByLogicalKeysAsync(
+            Guid sessionId,
+            IReadOnlyList<string> logicalKeys,
+            CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(logicalKeys);
+
+        if (logicalKeys.Count == 0)
+        {
+
+            return [];
+        }
+
+        List<string> orderedKeys = new(logicalKeys.Count);
+        HashSet<string> seenKeys = new(StringComparer.Ordinal);
+
+        foreach (string logicalKey in logicalKeys)
+        {
+
+            if (!string.IsNullOrWhiteSpace(logicalKey)
+                && seenKeys.Add(logicalKey))
+            {
+
+                orderedKeys.Add(logicalKey);
+            }
+        }
+
+        Dictionary<string, SessionAttachmentRecord> rowsByLogicalKey =
+            new(StringComparer.Ordinal);
+
+        for (int offset = 0;
+             offset < orderedKeys.Count;
+             offset += LatestLogicalKeyQueryPageSize)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            IReadOnlyList<string> pageKeys = orderedKeys
+                .Skip(offset)
+                .Take(LatestLogicalKeyQueryPageSize)
+                .ToArray();
+            IReadOnlyList<SessionAttachmentRecord> page =
+                await ReadLatestBoundByLogicalKeyPageAsync(
+                        sessionId,
+                        pageKeys,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            foreach (SessionAttachmentRecord row in page)
+            {
+
+                rowsByLogicalKey[row.LogicalKey] = row;
+            }
+        }
+
+        List<SessionAttachmentRecord> orderedRows =
+            new(rowsByLogicalKey.Count);
+
+        foreach (string logicalKey in orderedKeys)
+        {
+
+            if (rowsByLogicalKey.TryGetValue(
+                    logicalKey,
+                    out SessionAttachmentRecord? row))
+            {
+
+                orderedRows.Add(row);
+            }
+        }
+
+        return orderedRows;
+    }
+
+    private async Task<IReadOnlyList<SessionAttachmentRecord>>
+        ReadLatestBoundByLogicalKeyPageAsync(
+            Guid sessionId,
+        IReadOnlyList<string> logicalKeys,
+        CancellationToken cancellationToken)
+    {
+
+        _ = Interlocked.Increment(
+            ref _latestLogicalKeyQueryPageCountForTesting);
+
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection =
+                    await OpenConnectionAsync(cancellationToken)
+                        .ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+                string[] keyParameters = new string[logicalKeys.Count];
+
+                for (int index = 0; index < logicalKeys.Count; index++)
+                {
+
+                    string parameterName = $"@logicalKey{index}";
+                    keyParameters[index] = parameterName;
+                    AddParameter(
+                        cmd,
+                        parameterName,
+                        logicalKeys[index]);
+                }
+
+                cmd.CommandText =
+                    $"""
+                     SELECT current."Id", current."SessionId", current."EntryId", current."PendingTurnId",
+                            current."State", current."LogicalKey", current."OriginalFileName", current."Version",
+                            current."RelativePath", current."ContentSha256", current."MimeType", current."ByteLength",
+                            current."Kind", current."CreatedAt", current."SourceKind",
+                            current."SourceWorkspaceIdentity", current."SourceRelativePath", current."SourceCanonicalPath",
+                            current."SourceContentSha256", current."SourceFileIdentity", current."SourceLastWriteAt",
+                            current."SourceByteLength", current."SourceStatus", current."SourceDiagnosticReason",
+                            current."EncryptionVersion", current."EncryptionKeyId"
+                     FROM "SessionAttachments" AS current
+                     WHERE current."SessionId" = @sessionId
+                       AND current."State" = @state
+                       AND current."LogicalKey" IN ({string.Join(", ", keyParameters)})
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM "SessionAttachments" AS newer
+                           WHERE newer."SessionId" = current."SessionId"
+                             AND newer."State" = current."State"
+                             AND newer."LogicalKey" = current."LogicalKey"
+                             AND newer."Version" > current."Version")
+                     """;
+
+                AddParameter(cmd, "@sessionId", sessionId.ToString());
+
+                AddParameter(
+                    cmd,
+                    "@state",
+                    nameof(SessionAttachmentState.Bound));
+
+                List<SessionAttachmentRecord> rows =
+                    new(logicalKeys.Count);
+
+                await using DbDataReader reader = await cmd
+                    .ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                while (await reader
+                           .ReadAsync(cancellationToken)
+                           .ConfigureAwait(false))
+                {
+
+                    rows.Add(ReadRecord(reader));
+                }
+
+                return (IReadOnlyList<SessionAttachmentRecord>)rows;
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<IReadOnlyList<SessionAttachmentIndexItem>> BuildIndexAsync(
         Guid sessionId,
         int maxItems,
@@ -822,36 +1174,179 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         int cap = Math.Max(1, maxItems);
 
-        IReadOnlyList<SessionAttachmentRecord> bound = await ListBoundAsync(sessionId, cancellationToken).ConfigureAwait(false);
-
         List<SessionAttachmentIndexItem> items = [];
 
-        foreach (IGrouping<string, SessionAttachmentRecord> group in bound.GroupBy(r => r.LogicalKey, StringComparer.Ordinal))
+        IReadOnlyList<AttachmentIndexLatestProjection> latestItems = await ReadIndexLatestAsync(
+            sessionId,
+            cap,
+            cancellationToken).ConfigureAwait(false);
+
+        foreach (AttachmentIndexLatestProjection latest in latestItems)
         {
 
-            if (items.Count >= cap)
-            {
-
-                break;
-
-            }
-
-            List<SessionAttachmentRecord> versions = group.OrderBy(r => r.Version).ToList();
-
-            SessionAttachmentRecord latest = versions[^1];
+            IReadOnlyList<int> versionPage =
+                await ReadIndexVersionPageAsync(
+                    sessionId,
+                    latest.LogicalKey,
+                    latest.Version,
+                    afterVersion: 0,
+                    pageSize: IndexVersionPageSize + 1,
+                    cancellationToken).ConfigureAwait(false);
+            bool hasMoreVersions =
+                versionPage.Count > IndexVersionPageSize;
+            int? nextVersion = hasMoreVersions
+                ? versionPage[IndexVersionPageSize]
+                : null;
+            IReadOnlyList<int> versions = hasMoreVersions
+                ? versionPage.Take(IndexVersionPageSize).ToArray()
+                : versionPage;
 
             items.Add(new SessionAttachmentIndexItem(
                 latest.LogicalKey,
                 latest.OriginalFileName,
-                versions.Select(v => v.Version).ToList(),
+                versions,
                 latest.Kind,
-                latest.ByteLength));
+                latest.ByteLength,
+                hasMoreVersions,
+                nextVersion));
 
         }
 
         return items;
 
     }
+
+    private async Task<IReadOnlyList<AttachmentIndexLatestProjection>> ReadIndexLatestAsync(
+        Guid sessionId,
+        int maxItems,
+        CancellationToken cancellationToken)
+    {
+
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                cmd.CommandText =
+                    """
+                    SELECT current."LogicalKey", current."OriginalFileName", current."Version",
+                           current."Kind", current."ByteLength"
+                    FROM "SessionAttachments" AS current
+                    WHERE current."SessionId" = @sessionId
+                      AND current."State" = @state
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM "SessionAttachments" AS newer
+                          WHERE newer."SessionId" = current."SessionId"
+                            AND newer."State" = current."State"
+                            AND newer."LogicalKey" = current."LogicalKey"
+                            AND newer."Version" > current."Version")
+                    ORDER BY current."LogicalKey" ASC
+                    LIMIT @maxItems
+                    """;
+
+                AddParameter(cmd, "@sessionId", sessionId.ToString());
+
+                AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
+
+                AddParameter(cmd, "@maxItems", maxItems);
+
+                List<AttachmentIndexLatestProjection> rows = new(maxItems);
+
+                await using DbDataReader reader = await cmd
+                    .ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    rows.Add(new AttachmentIndexLatestProjection(
+                        reader.GetString(0),
+                        reader.GetString(1),
+                        reader.GetInt32(2),
+                        Enum.Parse<SessionAttachmentKind>(reader.GetString(3), ignoreCase: false),
+                        reader.GetInt64(4)));
+
+                }
+
+                return (IReadOnlyList<AttachmentIndexLatestProjection>)rows;
+
+            },
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private async Task<IReadOnlyList<int>> ReadIndexVersionPageAsync(
+        Guid sessionId,
+        string logicalKey,
+        int maximumVersion,
+        int afterVersion,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                cmd.CommandText =
+                    """
+                    SELECT "Version"
+                    FROM "SessionAttachments"
+                    WHERE "SessionId" = @sessionId
+                      AND "State" = @state
+                      AND "LogicalKey" = @logicalKey
+                      AND "Version" > @afterVersion
+                      AND "Version" <= @maximumVersion
+                    ORDER BY "Version" ASC
+                    LIMIT @pageSize
+                    """;
+
+                AddParameter(cmd, "@sessionId", sessionId.ToString());
+
+                AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
+
+                AddParameter(cmd, "@logicalKey", logicalKey);
+
+                AddParameter(cmd, "@afterVersion", afterVersion);
+
+                AddParameter(cmd, "@maximumVersion", maximumVersion);
+
+                AddParameter(cmd, "@pageSize", pageSize);
+
+                List<int> rows = new(pageSize);
+
+                await using DbDataReader reader = await cmd
+                    .ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    rows.Add(reader.GetInt32(0));
+
+                }
+
+                return (IReadOnlyList<int>)rows;
+
+            },
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private sealed record AttachmentIndexLatestProjection(
+        string LogicalKey,
+        string OriginalFileName,
+        int Version,
+        SessionAttachmentKind Kind,
+        long ByteLength);
 
     public async Task<Stream> OpenReadAsync(
         SessionAttachmentRecord record,
@@ -903,12 +1398,96 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         await using Stream decrypted = await OpenReadAsync(record, cancellationToken).ConfigureAwait(false);
 
-        using MemoryStream output = new(
-            record.ByteLength <= int.MaxValue ? checked((int)record.ByteLength) : 0);
+        if (record.ByteLength < 0 || record.ByteLength > int.MaxValue)
+        {
 
-        await decrypted.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+            throw new InvalidDataException(
+                "Attachment exceeds the single-memory read protocol boundary; use OpenReadAsync.");
 
-        return output.ToArray();
+        }
+
+        byte[] output = GC.AllocateUninitializedArray<byte>((int)record.ByteLength);
+
+        try
+        {
+
+            int offset = 0;
+
+            while (offset < output.Length)
+            {
+
+                int count = Math.Min(AttachmentIoPageSize, output.Length - offset);
+
+                int read = await decrypted
+                    .ReadAsync(output.AsMemory(offset, count), cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (read == 0)
+                {
+
+                    throw new InvalidDataException(
+                        $"Attachment plaintext ended before its declared length for '{record.Id}'.");
+
+                }
+
+                offset += read;
+
+            }
+
+            byte[] sentinel = new byte[1];
+
+            if (await decrypted
+                .ReadAsync(sentinel, cancellationToken)
+                .ConfigureAwait(false) != 0)
+            {
+
+                throw new InvalidDataException(
+                    $"Attachment plaintext exceeded its declared length for '{record.Id}'.");
+
+            }
+
+            return output;
+
+        }
+        catch
+        {
+
+            CryptographicOperations.ZeroMemory(output);
+
+            throw;
+
+        }
+
+    }
+
+    private static string ComputeContentSha256(ReadOnlyMemory<byte> bytes)
+    {
+
+        using IncrementalHash hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        for (int offset = 0; offset < bytes.Length; offset += AttachmentIoPageSize)
+        {
+
+            int count = Math.Min(AttachmentIoPageSize, bytes.Length - offset);
+
+            hasher.AppendData(bytes.Span.Slice(offset, count));
+
+        }
+
+        byte[] digest = hasher.GetHashAndReset();
+
+        try
+        {
+
+            return Convert.ToHexString(digest);
+
+        }
+        finally
+        {
+
+            CryptographicOperations.ZeroMemory(digest);
+
+        }
 
     }
 
@@ -1007,21 +1586,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     public async Task ValidateReferencesAsync(
         Guid sessionId,
         IReadOnlyList<Guid> attachmentIds,
-        int maxReferences,
         CancellationToken cancellationToken = default)
     {
 
         ArgumentNullException.ThrowIfNull(attachmentIds);
-
-        int clampedMax = ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn(maxReferences);
-
-        if (attachmentIds.Count > clampedMax)
-        {
-
-            throw new InvalidOperationException(
-                $"Too many attachment references ({attachmentIds.Count}); max is {clampedMax}.");
-
-        }
 
         foreach (Guid attachmentId in attachmentIds)
         {

@@ -7,28 +7,19 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 public sealed record McpSettings
 {
 
-    public int RequestTimeoutSeconds { get; set; } = 60;
-
-    public int MaxPaginationPages { get; set; } = 32;
+    public int InitializationTimeoutSeconds { get; set; } = 60;
 
     public bool BootstrapBlocksStartup { get; set; } = true;
-
-    public int MaxServers { get; set; } = 50;
-
-    public int MaxToolsPerServer { get; set; } = 256;
-
-    public int MaxToolsPerListPage { get; set; } = 64;
 
     public int MaxToolsTotalBytes { get; set; } = 1_048_576;
 
     public int MaxJsonRpcLineBytes { get; set; } = 2_228_224;
 
     /// <summary>
-    /// Timeout (seconds) for the named <c>HttpClient("McpHttp")</c> used by the Streamable HTTP
-    /// transport (headers phase; the per-request JSON-RPC timeout governs streamed bodies).
-    /// Default 120; clamp 10&#8211;600.
+    /// Connection timeout (seconds) for the named <c>HttpClient("McpHttp")</c>. Established MCP
+    /// requests have no Arcanum-owned total invocation deadline.
     /// </summary>
-    public int HttpRequestTimeoutSeconds { get; set; } = 120;
+    public int HttpConnectTimeoutSeconds { get; set; } = 30;
 
     /// <summary>
     /// Hosts permitted over plaintext <c>http</c> for Streamable HTTP MCP servers (e.g.

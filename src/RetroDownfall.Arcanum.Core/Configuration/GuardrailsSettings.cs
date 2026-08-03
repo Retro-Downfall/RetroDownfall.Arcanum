@@ -95,13 +95,6 @@ public sealed record GuardrailsAuditLogSettings
     /// </summary>
     public int MaxSizeMb { get; set; } = 100;
 
-    /// <summary>
-    /// Dated log files older than this many days are deleted automatically the first time a new UTC
-    /// day's file is created. Default <c>7</c>; clamped 1–365 (reuses
-    /// <see cref="ArcanumSettingClamps.HostAuditLogRetentionDays"/> bounds).
-    /// </summary>
-    public int RetentionDays { get; set; } = 7;
-
     private static string DefaultFilePath =>
         Path.Combine(ArcanumPaths.GrimoireDirectory, "guardrails.jsonl");
 

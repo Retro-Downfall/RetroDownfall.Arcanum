@@ -19,8 +19,30 @@ public interface IBatchRepository
 
     Task<IReadOnlyList<BatchRecord>> ListAsync(string? status, CancellationToken cancellationToken = default);
 
-    /// <summary>Every batch not yet in a terminal state (<see cref="BatchStatuses.Validating"/> or <see cref="BatchStatuses.InProgress"/>) — used by the background processor's pickup and expiry sweeps.</summary>
-    Task<IReadOnlyList<BatchRecord>> ListActiveAsync(CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Reads one stable newest-first keyset page. <paramref name="pageSize"/> bounds only the
+    /// response allocation; callers continue from the last returned position while work remains.
+    /// </summary>
+    Task<BatchListPage> ListPageAsync(
+
+        string? status,
+
+        BatchListPosition? after,
+
+        int pageSize,
+
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads at most <paramref name="pageSize"/> oldest validating batches for the worker's
+    /// currently available concurrency slots. Repeated calls after status claims eventually visit
+    /// every queued batch without allocating the complete catalog.
+    /// </summary>
+    Task<IReadOnlyList<BatchRecord>> ListPendingPageAsync(
+
+        int pageSize,
+
+        CancellationToken cancellationToken = default);
 
     /// <summary>Batches whose <see cref="BatchRecord.Status"/> exactly matches <paramref name="status"/> (e.g. stranded <see cref="BatchStatuses.InProgress"/> recovery).</summary>
     Task<IReadOnlyList<BatchRecord>> ListByStatusAsync(string status, CancellationToken cancellationToken = default);
@@ -52,6 +74,75 @@ public interface IBatchRepository
         Guid? errorFileId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Reads the durable per-line checkpoints in an inclusive input-line range. The processor uses
+    /// bounded ranges while walking the input, so this is a page boundary rather than a total-work cap.
+    /// </summary>
+    Task<IReadOnlyList<BatchLineCheckpoint>> ListLineCheckpointsAsync(
+
+        Guid batchId,
+
+        long firstLine,
+
+        long lastLine,
+
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads one ordered continuation page of checkpoints in <paramref name="state"/> after
+    /// <paramref name="afterLine"/>. Callers continue until an empty page is returned.
+    /// </summary>
+    Task<IReadOnlyList<BatchLineCheckpoint>> ListLineCheckpointsAsync(
+
+        Guid batchId,
+
+        BatchLineCheckpointState state,
+
+        long afterLine,
+
+        int pageSize,
+
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Atomically records that a provider request is about to be dispatched. Returns false when the
+    /// line already has any durable checkpoint or the batch is no longer in progress.
+    /// </summary>
+    Task<bool> TryBeginLineAsync(
+
+        Guid batchId,
+
+        long lineNumber,
+
+        string customId,
+
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Atomically replaces a dispatched checkpoint with its terminal JSONL output. Repeating the
+    /// exact completion is idempotent; conflicting terminal content is rejected.
+    /// </summary>
+    Task CompleteLineAsync(
+
+        Guid batchId,
+
+        long lineNumber,
+
+        BatchLineOutputKind outputKind,
+
+        BatchRequestOutcome outcome,
+
+        string jsonLine,
+
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes checkpoints only after their terminal batch artifacts are durably linked.</summary>
+    Task DeleteLineCheckpointsAsync(
+
+        Guid batchId,
+
+        CancellationToken cancellationToken = default);
+
 }
 
 public sealed class BatchFileReferenceException(Guid batchId)
@@ -71,7 +162,72 @@ public sealed record BatchRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset? CompletedAt,
     Guid? OutputFileId,
-    Guid? ErrorFileId);
+    Guid? ErrorFileId,
+    long TotalRequestCount = 0,
+    long CompletedRequestCount = 0,
+    long FailedRequestCount = 0);
+
+public sealed record BatchListPosition(
+
+    DateTimeOffset CreatedAt,
+
+    Guid Id);
+
+public sealed record BatchListPage(
+
+    IReadOnlyList<BatchRecord> Records,
+
+    bool HasMore);
+
+public enum BatchLineCheckpointState
+
+{
+
+    Dispatched = 0,
+
+    Completed = 1,
+
+}
+
+public enum BatchLineOutputKind
+
+{
+
+    Output = 0,
+
+    Error = 1,
+
+}
+
+public enum BatchRequestOutcome
+
+{
+
+    Completed = 0,
+
+    Failed = 1,
+
+}
+
+public sealed record BatchLineCheckpoint(
+
+    Guid BatchId,
+
+    long LineNumber,
+
+    string CustomId,
+
+    BatchLineCheckpointState State,
+
+    BatchLineOutputKind? OutputKind,
+
+    BatchRequestOutcome? Outcome,
+
+    string? JsonLine,
+
+    DateTimeOffset DispatchedAt,
+
+    DateTimeOffset? CompletedAt);
 
 /// <summary>Lifecycle values for <see cref="BatchRecord.Status"/>: <c>validating → in_progress → completed/failed/cancelled/expired</c>.</summary>
 public static class BatchStatuses

@@ -70,8 +70,11 @@ public sealed class SpellCommandTests
         RecordingHandler handler = new(request =>
             request.RequestUri!.AbsolutePath == "/api/spells"
                 ? CreateResponse(
-                    new ApiResponse<SpellSummary[]>([summary], true, null),
-                    ArcanumJsonContext.Default.ApiResponseSpellSummaryArray)
+                    new ApiResponse<SpellCatalogPage>(
+                        new SpellCatalogPage([summary], false, null, null),
+                        true,
+                        null),
+                    ArcanumJsonContext.Default.ApiResponseSpellCatalogPage)
                 : CreateResponse(
                     new ApiResponse<SpellDetail>(detail, true, null),
                     ArcanumJsonContext.Default.ApiResponseSpellDetail));
@@ -81,6 +84,12 @@ public sealed class SpellCommandTests
         Assert.Equal(0, result.ExitCode);
 
         Assert.Equal(2, handler.Requests.Count);
+
+        Assert.Contains(
+            "paged=true",
+            handler.Requests[0].RequestUri!.Query,
+            StringComparison.Ordinal);
+
         HttpRequestMessage request = handler.Requests[1];
 
         Assert.Equal("/api/spells/greet", request.RequestUri!.AbsolutePath);

@@ -5,7 +5,7 @@ public sealed record WebSearchOptions
 {
     public string Model { get; init; } = WebResearchModels.Sonar;
 
-    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(15);
+    public TimeSpan IdleTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
     /// <summary>Maximum decompressed response bytes accepted from the upstream provider.</summary>
     public int MaxResponseBytes { get; init; } = 1_000_000;
@@ -29,7 +29,7 @@ public sealed record WebSearchOptions
 /// <summary>Code-owned limits for a single direct URL read.</summary>
 public sealed record WebReadOptions
 {
-    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(15);
+    public TimeSpan IdleTimeout { get; init; } = TimeSpan.FromSeconds(15);
 
     /// <summary>Maximum decompressed response bytes accepted from the remote server.</summary>
     public int MaxResponseBytes { get; init; } = 1_000_000;

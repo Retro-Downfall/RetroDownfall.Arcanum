@@ -72,6 +72,8 @@ internal sealed partial class DataRetentionService
 
     private const string DaemonCandidatePrefix = "daemon:";
 
+    private const int PruneCheckpointInterval = 50;
+
     private async Task AddBatchFileStatusAsync(
         List<DataRetentionStatusItem> items,
         RetentionDataClass dataClass,
@@ -327,8 +329,7 @@ internal sealed partial class DataRetentionService
 
         RetentionSettings retention = SnapshotRetention(CurrentRetention);
 
-        int limit = ArcanumSettingClamps.RetentionMaxItemsPerSweep(
-            retention.MaxItemsPerSweep);
+        const int limit = int.MaxValue;
 
         List<DataRetentionPlanItem> items = [];
 
@@ -505,10 +506,6 @@ internal sealed partial class DataRetentionService
 
             SweepIntervalHours = retention.SweepIntervalHours,
 
-            MaxItemsPerSweep = retention.MaxItemsPerSweep,
-
-            CheckpointInterval = retention.CheckpointInterval,
-
             AccountingMinimumDays = retention.AccountingMinimumDays,
 
             ActiveSessions = retention.ActiveSessions with { },
@@ -554,10 +551,7 @@ internal sealed partial class DataRetentionService
 
         StringBuilder authority = new();
 
-        authority.Append("max:")
-            .Append(ArcanumSettingClamps.RetentionMaxItemsPerSweep(
-                retention.MaxItemsPerSweep))
-            .Append("|floor:")
+        authority.Append("floor:")
             .Append(ArcanumSettingClamps.RetentionAccountingMinimumDays(
                 retention.AccountingMinimumDays));
 
@@ -3516,11 +3510,7 @@ internal sealed partial class DataRetentionService
         CancellationToken cancellationToken)
     {
 
-        RetentionSettings retention = CurrentRetention;
-
-        int checkpointInterval = ArcanumSettingClamps.RetentionCheckpointInterval(
-            retention.CheckpointInterval,
-            retention.MaxItemsPerSweep);
+        const int checkpointInterval = PruneCheckpointInterval;
 
         int currentCheckpointVersion = checkpointVersion;
 

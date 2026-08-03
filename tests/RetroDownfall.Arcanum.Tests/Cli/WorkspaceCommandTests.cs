@@ -228,6 +228,78 @@ public sealed class WorkspaceCommandTests
 
     [Fact]
 
+    public void Workspace_tree_follows_opaque_file_pages()
+    {
+
+        int filePage = 0;
+
+        RecordingHandler handler = new(request =>
+        {
+
+            if (request.RequestUri!.AbsolutePath == "/api/workspaces")
+            {
+
+                return CreateResponse(
+                    new ApiResponse<WorkspaceInfo[]>([Workspace()], true, null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray);
+
+            }
+
+            filePage++;
+
+            FileEntry entry = new(
+                $"page-{filePage}.txt",
+                $"page-{filePage}.txt",
+                $"/srv/projects/demo/page-{filePage}.txt",
+                FileEntryType.File,
+                filePage,
+                DateTimeOffset.Parse("2026-07-31T12:00:00Z"));
+
+            FileListResult page = new(
+                [entry],
+                null,
+                filePage == 1 ? "opaque-checkpoint" : null);
+
+            return CreateResponse(
+                new ApiResponse<FileListResult>(page, true, null),
+                ArcanumJsonContext.Default.ApiResponseFileListResult);
+
+        });
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["workspace", "tree", "ws-demo"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        HttpRequestMessage[] fileRequests = handler.Requests
+            .Where(
+                static request => request.RequestUri!.AbsolutePath.EndsWith(
+                    "/files",
+                    StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.Equal(2, fileRequests.Length);
+
+        Assert.DoesNotContain(
+            "cursor=",
+            fileRequests[0].RequestUri!.Query,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            "cursor=opaque-checkpoint",
+            fileRequests[1].RequestUri!.Query,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("page-1.txt", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("page-2.txt", result.Output, StringComparison.Ordinal);
+
+    }
+
+
+    [Fact]
+
     public void Workspace_current_reports_independent_campaign_and_workspace_mapping()
     {
 

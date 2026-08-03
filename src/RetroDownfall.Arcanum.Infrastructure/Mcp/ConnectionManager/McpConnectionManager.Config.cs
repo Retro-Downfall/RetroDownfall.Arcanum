@@ -64,20 +64,8 @@ public sealed partial class McpConnectionManager
         string? scopeWorkingDirectory,
         string? sourceDigest)
     {
-        int maxServers = GetClampedMcpMaxServers();
-
         foreach (KeyValuePair<string, McpServerConfig> pair in config.McpServers!)
         {
-            if (_registry.Count >= maxServers)
-            {
-                logger.LogWarning(
-                    "MCP server registry at MaxServers cap ({MaxServers}); skipping remaining entries in {Scope}.",
-                    maxServers,
-                    scopeWorkingDirectory ?? "global");
-
-                break;
-            }
-
             string serverName = pair.Key;
 
             McpServerConfig cfg = pair.Value;
@@ -117,7 +105,7 @@ public sealed partial class McpConnectionManager
     // registrations. The global path already holds _registryLock (see
     // EnsureGlobalRegistryLoadedAsync); the workspace-build path did not, so
     // parallel workspace loads could both pass the count check and overshoot
-    // MaxServers. This wrapper acquires _registryLock for the entire register+
+    // Registry updates are serialized. This wrapper acquires _registryLock for the entire register+
     // count-check so the cap is enforced atomically. Registration is synchronous
     // (no awaits inside RegisterFromConfigCore), so the lock is never held across
     // async work. Callers already holding _registryLock call RegisterFromConfigCore

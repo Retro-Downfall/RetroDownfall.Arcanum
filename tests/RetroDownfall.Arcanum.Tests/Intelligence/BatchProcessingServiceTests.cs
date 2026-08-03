@@ -177,6 +177,12 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         Assert.Null(finished.ErrorFileId);
 
+        Assert.Equal(1, finished.TotalRequestCount);
+
+        Assert.Equal(1, finished.CompletedRequestCount);
+
+        Assert.Equal(0, finished.FailedRequestCount);
+
         Assert.Equal(1, intelligence.ExecutePromptCallCount);
 
         string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId!.Value);
@@ -226,6 +232,12 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         Assert.NotNull(finished.ErrorFileId);
 
+        Assert.Equal(2, finished.TotalRequestCount);
+
+        Assert.Equal(1, finished.CompletedRequestCount);
+
+        Assert.Equal(1, finished.FailedRequestCount);
+
         string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId!.Value);
 
         string errorPath = UploadedFileStorage.ResolvePath(finished.ErrorFileId!.Value);
@@ -241,6 +253,623 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
         string errorContent = await ReadArtifactTextAsync(errorPath);
 
         Assert.Contains("\"line\":1", errorContent, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+    public async Task ProcessBatchAsync_MoreThanOneInternalPage_ProcessesEveryLine()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const int requestCount = 129;
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = "ok",
+
+            NextFinishReason = "stop",
+        };
+
+        BatchProcessingService service = CreateService(intelligence);
+
+        string jsonl = string.Concat(
+            Enumerable.Range(1, requestCount).Select(
+                static index =>
+                    $"{{\"custom_id\":\"req-{index}\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{{\"model\":\"m\",\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}]}}}}\n"));
+
+        Guid inputFileId = await SeedInputFileAsync(jsonl);
+
+        BatchRecord batch = new(
+            Guid.NewGuid(),
+            inputFileId,
+            "/v1/chat/completions",
+            BatchStatuses.Validating,
+            DateTimeOffset.UtcNow,
+            null,
+            null,
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        BatchRecord? finished = await _batches.GetByIdAsync(batch.Id, CancellationToken.None);
+
+        Assert.NotNull(finished);
+
+        Assert.Equal(BatchStatuses.Completed, finished!.Status);
+
+        Assert.Equal(requestCount, intelligence.ExecutePromptCallCount);
+
+        Assert.Equal(requestCount, finished.TotalRequestCount);
+
+        Assert.Equal(requestCount, finished.CompletedRequestCount);
+
+        Assert.Equal(0, finished.FailedRequestCount);
+
+        Assert.NotNull(finished.OutputFileId);
+
+        string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId!.Value);
+
+        _createdFilePaths.Add(outputPath);
+
+        string[] outputLines = (await ReadArtifactTextAsync(outputPath))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(requestCount, outputLines.Length);
+
+        Assert.Contains("req-129", outputLines[^1], StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ProcessBatchAsync_HostRestart_ResumesAfterDurableLineWithoutReplayingProvider()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using CancellationTokenSource stopping = new();
+
+        CancelAfterResponseIntelligenceProvider firstProvider = new(stopping);
+
+        ServiceProvider firstRoot = BuildServiceProvider(firstProvider);
+
+        BatchProcessingService firstService = CreateService(
+
+            firstRoot,
+
+            maxConcurrentRequestsPerBatch: 1);
+
+        Guid inputFileId = await SeedInputFileAsync(
+
+            """{"custom_id":"first","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
+
+            + "\n"
+
+            + """{"custom_id":"second","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"two"}]}}"""
+
+            + "\n");
+
+        BatchRecord batch = new(
+
+            Guid.NewGuid(),
+
+            inputFileId,
+
+            "/v1/chat/completions",
+
+            BatchStatuses.Validating,
+
+            DateTimeOffset.UtcNow,
+
+            null,
+
+            null,
+
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+
+            () => firstService.ProcessBatchAsync(batch, stopping.Token));
+
+        Assert.Equal(1, firstProvider.ExecutePromptCallCount);
+
+        BatchRecoveryService recovery = new(
+
+            firstRoot.GetRequiredService<IServiceScopeFactory>(),
+
+            firstService,
+
+            _blobStore,
+
+            NullLogger<BatchRecoveryService>.Instance);
+
+        await recovery.ReconcileStrandedAsync(CancellationToken.None);
+
+        BatchRecord resumable = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Validating, resumable.Status);
+
+        FakeIntelligenceProvider resumedProvider = new()
+
+        {
+
+            NextText = "second-pass",
+
+            NextFinishReason = "stop",
+
+        };
+
+        BatchProcessingService resumedService = CreateService(
+
+            resumedProvider,
+
+            maxConcurrentRequestsPerBatch: 1);
+
+        await resumedService.ProcessBatchAsync(resumable, CancellationToken.None);
+
+        Assert.Equal(1, resumedProvider.ExecutePromptCallCount);
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Completed, finished.Status);
+
+        Assert.NotNull(finished.OutputFileId);
+
+        string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId.Value);
+
+        _createdFilePaths.Add(outputPath);
+
+        string output = await ReadArtifactTextAsync(outputPath);
+
+        Assert.Contains("first-pass", output, StringComparison.Ordinal);
+
+        Assert.Contains("second-pass", output, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ProcessBatchAsync_HostRestart_DoesNotReplayIndeterminateDispatchedLine()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = await SeedInputFileAsync(
+
+            """{"custom_id":"uncertain","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
+
+            + "\n");
+
+        BatchRecord batch = new(
+
+            Guid.NewGuid(),
+
+            inputFileId,
+
+            "/v1/chat/completions",
+
+            BatchStatuses.InProgress,
+
+            DateTimeOffset.UtcNow,
+
+            null,
+
+            null,
+
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        Assert.True(await _batches.TryBeginLineAsync(
+
+            batch.Id,
+
+            lineNumber: 1,
+
+            customId: "uncertain",
+
+            CancellationToken.None));
+
+        FakeIntelligenceProvider provider = new()
+
+        {
+
+            NextText = "must-not-run",
+
+            NextFinishReason = "stop",
+
+        };
+
+        ServiceProvider root = BuildServiceProvider(provider);
+
+        BatchProcessingService service = CreateService(root);
+
+        BatchRecoveryService recovery = new(
+
+            root.GetRequiredService<IServiceScopeFactory>(),
+
+            service,
+
+            _blobStore,
+
+            NullLogger<BatchRecoveryService>.Instance);
+
+        await recovery.ReconcileStrandedAsync(CancellationToken.None);
+
+        BatchRecord resumable = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        await service.ProcessBatchAsync(resumable, CancellationToken.None);
+
+        Assert.Equal(0, provider.ExecutePromptCallCount);
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.NotNull(finished.OutputFileId);
+
+        string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId.Value);
+
+        _createdFilePaths.Add(outputPath);
+
+        string output = await ReadArtifactTextAsync(outputPath);
+
+        Assert.Contains("uncertain", output, StringComparison.Ordinal);
+
+        Assert.Contains("batch_interrupted_after_dispatch", output, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ProcessBatchAsync_CancelRace_PreservesCancelledStatusAndCompletedLineOutput()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TaskCompletionSource providerGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeIntelligenceProvider provider = new()
+
+        {
+
+            NextText = "completed-before-cancel-observed",
+
+            NextFinishReason = "stop",
+
+            ExecuteGate = providerGate,
+
+        };
+
+        BatchProcessingService service = CreateService(
+
+            provider,
+
+            maxConcurrentRequestsPerBatch: 1);
+
+        Guid inputFileId = await SeedInputFileAsync(
+
+            """{"custom_id":"cancel-race","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
+
+            + "\n");
+
+        BatchRecord batch = new(
+
+            Guid.NewGuid(),
+
+            inputFileId,
+
+            "/v1/chat/completions",
+
+            BatchStatuses.Validating,
+
+            DateTimeOffset.UtcNow,
+
+            null,
+
+            null,
+
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        Task processing = service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        Assert.True(await WaitForAsync(
+
+            () => provider.ExecutePromptCallCount == 1,
+
+            TimeSpan.FromSeconds(5)));
+
+        await _batches.UpdateStatusAsync(
+
+            batch.Id,
+
+            BatchStatuses.Cancelled,
+
+            DateTimeOffset.UtcNow,
+
+            outputFileId: null,
+
+            errorFileId: null,
+
+            CancellationToken.None);
+
+        providerGate.TrySetResult();
+
+        await processing;
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Cancelled, finished.Status);
+
+        Assert.NotNull(finished.OutputFileId);
+
+        string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId.Value);
+
+        _createdFilePaths.Add(outputPath);
+
+        string output = await ReadArtifactTextAsync(outputPath);
+
+        Assert.Contains("completed-before-cancel-observed", output, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ProcessBatchAsync_CancelDuringProviderCall_SealsClaimedLineBeforeCheckpointCleanup()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TaskCompletionSource providerGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeIntelligenceProvider provider = new()
+
+        {
+
+            ExecuteGate = providerGate,
+
+        };
+
+        BatchProcessingService service = CreateService(
+
+            provider,
+
+            maxConcurrentRequestsPerBatch: 1);
+
+        Guid inputFileId = await SeedInputFileAsync(
+
+            """{"custom_id":"cancelled-in-flight","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
+
+            + "\n");
+
+        BatchRecord batch = new(
+
+            Guid.NewGuid(),
+
+            inputFileId,
+
+            "/v1/chat/completions",
+
+            BatchStatuses.Validating,
+
+            DateTimeOffset.UtcNow,
+
+            null,
+
+            null,
+
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        Task processing = service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        Assert.True(await WaitForAsync(
+
+            () => provider.ExecutePromptCallCount == 1,
+
+            TimeSpan.FromSeconds(5)));
+
+        await _batches.UpdateStatusAsync(
+
+            batch.Id,
+
+            BatchStatuses.Cancelled,
+
+            DateTimeOffset.UtcNow,
+
+            outputFileId: null,
+
+            errorFileId: null,
+
+            CancellationToken.None);
+
+        await processing.WaitAsync(TimeSpan.FromSeconds(10));
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Cancelled, finished.Status);
+
+        Assert.Equal(1, finished.TotalRequestCount);
+
+        Assert.Equal(0, finished.CompletedRequestCount);
+
+        Assert.Equal(1, finished.FailedRequestCount);
+
+        Assert.NotNull(finished.OutputFileId);
+
+        string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId.Value);
+
+        _createdFilePaths.Add(outputPath);
+
+        string output = await ReadArtifactTextAsync(outputPath);
+
+        Assert.Contains("cancelled-in-flight", output, StringComparison.Ordinal);
+
+        Assert.Contains("batch_interrupted_after_dispatch", output, StringComparison.Ordinal);
+
+        Assert.Empty(await _batches.ListLineCheckpointsAsync(
+
+            batch.Id,
+
+            1,
+
+            1,
+
+            CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+
+    public async Task TickAsync_UnexpectedProviderException_LeavesClaimedLineRecoverable()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ThrowingIntelligenceProvider firstProvider = new();
+
+        ServiceProvider firstRoot = BuildServiceProvider(firstProvider);
+
+        BatchProcessingService firstService = CreateService(
+
+            firstRoot,
+
+            maxConcurrentRequestsPerBatch: 1);
+
+        Guid inputFileId = await SeedInputFileAsync(
+
+            """{"custom_id":"unexpected-failure","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
+
+            + "\n");
+
+        BatchRecord batch = new(
+
+            Guid.NewGuid(),
+
+            inputFileId,
+
+            "/v1/chat/completions",
+
+            BatchStatuses.Validating,
+
+            DateTimeOffset.UtcNow,
+
+            null,
+
+            null,
+
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await firstService.TickAsync(CancellationToken.None);
+
+        Assert.True(await WaitForAsync(
+
+            () => firstService.IsBatchInFlight(batch.Id),
+
+            TimeSpan.FromSeconds(5)));
+
+        Assert.True(await WaitForAsync(
+
+            () => !firstService.IsBatchInFlight(batch.Id),
+
+            TimeSpan.FromSeconds(10)));
+
+        BatchRecord stranded = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.InProgress, stranded.Status);
+
+        BatchLineCheckpoint checkpoint = Assert.Single(await _batches.ListLineCheckpointsAsync(
+
+            batch.Id,
+
+            1,
+
+            1,
+
+            CancellationToken.None));
+
+        Assert.Equal(BatchLineCheckpointState.Dispatched, checkpoint.State);
+
+        BatchRecoveryService recovery = new(
+
+            firstRoot.GetRequiredService<IServiceScopeFactory>(),
+
+            firstService,
+
+            _blobStore,
+
+            NullLogger<BatchRecoveryService>.Instance);
+
+        await recovery.ReconcileStrandedAsync(CancellationToken.None);
+
+        BatchRecord resumable = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Validating, resumable.Status);
+
+        FakeIntelligenceProvider resumedProvider = new();
+
+        BatchProcessingService resumedService = CreateService(
+
+            resumedProvider,
+
+            maxConcurrentRequestsPerBatch: 1);
+
+        await resumedService.ProcessBatchAsync(resumable, CancellationToken.None);
+
+        Assert.Equal(0, resumedProvider.ExecutePromptCallCount);
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Completed, finished.Status);
+
+        Assert.Equal(1, finished.TotalRequestCount);
+
+        Assert.Equal(0, finished.CompletedRequestCount);
+
+        Assert.Equal(1, finished.FailedRequestCount);
+
+        Assert.NotNull(finished.OutputFileId);
+
+        string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId.Value);
+
+        _createdFilePaths.Add(outputPath);
+
+        string output = await ReadArtifactTextAsync(outputPath);
+
+        Assert.Contains("unexpected-failure", output, StringComparison.Ordinal);
+
+        Assert.Contains("batch_interrupted_after_dispatch", output, StringComparison.Ordinal);
 
     }
 
@@ -380,45 +1009,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task TickAsync_ExpiresOldBatch_AndDeletesItsFiles()
-    {
-
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        BatchProcessingService service = CreateService(new FakeIntelligenceProvider());
-        int expiryHours = ArcanumSettingClamps.BatchesBatchExpiryHours(
-            ArcanumRuntimeDefaults.Batches.BatchExpiryHours);
-
-        Guid inputFileId = await SeedInputFileAsync("{}\n");
-
-        string inputPath = UploadedFileStorage.ResolvePath(inputFileId);
-
-        BatchRecord batch = new(
-            Guid.NewGuid(),
-            inputFileId,
-            "/v1/chat/completions",
-            BatchStatuses.Validating,
-            DateTimeOffset.UtcNow.AddHours(-(expiryHours + 1)),
-            null,
-            null,
-            null);
-
-        await _batches!.CreateAsync(batch, CancellationToken.None);
-
-        await service.TickAsync(CancellationToken.None);
-
-        BatchRecord? afterTick = await _batches.GetByIdAsync(batch.Id, CancellationToken.None);
-
-        Assert.NotNull(afterTick);
-
-        Assert.Equal(BatchStatuses.Expired, afterTick!.Status);
-
-        Assert.False(File.Exists(inputPath));
-
-    }
-
-    [SkippableFact]
-    public async Task TickAsync_InFlightExpiredBatch_CancelsViaProcessor_DoesNotDeleteFromSweep()
+    public async Task TickAsync_OldProgressingBatch_IsNotCancelledByWallClockAge()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -427,15 +1018,17 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         FakeIntelligenceProvider intelligence = new()
         {
-            NextText = "slow",
+            NextText = "completed after waiting",
+
             NextFinishReason = "stop",
+
             ExecuteGate = gate,
         };
 
         BatchProcessingService service = CreateService(intelligence);
 
         Guid inputFileId = await SeedInputFileAsync(
-            """{"custom_id":"req-1","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}""" + "\n");
+            """{"custom_id":"old","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}""" + "\n");
 
         string inputPath = UploadedFileStorage.ResolvePath(inputFileId);
 
@@ -444,7 +1037,7 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             inputFileId,
             "/v1/chat/completions",
             BatchStatuses.Validating,
-            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow.AddDays(-30),
             null,
             null,
             null);
@@ -455,12 +1048,12 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         Assert.True(await WaitForAsync(() => service.IsBatchInFlight(batch.Id), TimeSpan.FromSeconds(5)));
 
-        Assert.True(File.Exists(inputPath), "Sweep must not delete in-flight input before cancel completes.");
+        await service.TickAsync(CancellationToken.None);
 
-        Assert.True(service.TryRequestExpiryCancel(batch.Id));
+        Assert.True(service.IsBatchInFlight(batch.Id));
 
-        // Processor should observe cancel, mark Expired, and delete files — release the gate so
-        // any race where cancel arrives after ExecutePrompt starts still unwinds.
+        Assert.True(File.Exists(inputPath));
+
         gate.TrySetResult();
 
         Assert.True(await WaitForAsync(() => !service.IsBatchInFlight(batch.Id), TimeSpan.FromSeconds(10)));
@@ -469,9 +1062,9 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         Assert.NotNull(finished);
 
-        Assert.Equal(BatchStatuses.Expired, finished!.Status);
+        Assert.Equal(BatchStatuses.Completed, finished!.Status);
 
-        Assert.False(File.Exists(inputPath));
+        Assert.True(File.Exists(inputPath));
 
     }
 
@@ -502,14 +1095,15 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
         IArcanumIntelligenceProvider intelligence,
         ITurnRunWriter? turnRunWriter = null,
         IBudgetReservationService? budgetReservations = null,
-        PricingSettings? pricing = null)
+        PricingSettings? pricing = null,
+        int maxConcurrentRequestsPerBatch = 2)
     {
         ArcanumSettings settings = new()
         {
             Execution = new ExecutionSettings
             {
                 MaxConcurrentBatches = 3,
-                MaxConcurrentRequestsPerBatch = 2,
+                MaxConcurrentRequestsPerBatch = maxConcurrentRequestsPerBatch,
             },
             Providers =
             [
@@ -532,9 +1126,59 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
         ServiceProvider root = BuildServiceProvider(intelligence, turnRunWriter, budgetReservations);
 
+        return CreateService(root, settings);
+
+    }
+
+    private static BatchProcessingService CreateService(
+
+        ServiceProvider root,
+
+        ArcanumSettings? settings = null,
+
+        int maxConcurrentRequestsPerBatch = 1)
+
+    {
+
+        ArcanumSettings resolvedSettings = settings ?? new ArcanumSettings
+
+        {
+
+            Execution = new ExecutionSettings
+
+            {
+
+                MaxConcurrentBatches = 3,
+
+                MaxConcurrentRequestsPerBatch = maxConcurrentRequestsPerBatch,
+
+            },
+
+            Providers =
+
+            [
+
+                new ProviderSettings
+
+                {
+
+                    Name = "test",
+
+                    Type = AiProviderKind.OpenAICompatible,
+
+                    Endpoint = "http://localhost",
+
+                    Models = [new ModelEntry("m")],
+
+                },
+
+            ],
+
+        };
+
         return new BatchProcessingService(
             root.GetRequiredService<IServiceScopeFactory>(),
-            new TestOptionsMonitor<ArcanumSettings>(settings),
+            new TestOptionsMonitor<ArcanumSettings>(resolvedSettings),
             root,
             NullLogger<BatchProcessingService>.Instance);
 
@@ -594,6 +1238,86 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             BillableOperationRecord operation,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(Guid.NewGuid());
+    }
+
+    private sealed class CancelAfterResponseIntelligenceProvider(
+
+        CancellationTokenSource stopping) : IArcanumIntelligenceProvider
+
+    {
+
+        private int _executePromptCallCount;
+
+        public int ExecutePromptCallCount => Volatile.Read(ref _executePromptCallCount);
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+
+            PingRequest request,
+
+            CancellationToken cancellationToken = default,
+
+            InferenceAuditContext? auditContext = null)
+
+        {
+
+            _ = Interlocked.Increment(ref _executePromptCallCount);
+
+            stopping.Cancel();
+
+            return Task.FromResult(Result<PromptTurnResult>.Success(
+
+                new PromptTurnResult("first-pass", null, null, "stop")));
+
+        }
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+
+            PingRequest request,
+
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+
+            InferenceAuditContext? auditContext = null)
+
+        {
+
+            await Task.CompletedTask.ConfigureAwait(false);
+
+            yield break;
+
+        }
+
+    }
+
+    private sealed class ThrowingIntelligenceProvider : IArcanumIntelligenceProvider
+
+    {
+
+        public Task<Result<PromptTurnResult>> ExecutePromptAsync(
+
+            PingRequest request,
+
+            CancellationToken cancellationToken = default,
+
+            InferenceAuditContext? auditContext = null) =>
+
+            throw new InvalidOperationException("Injected unexpected provider failure.");
+
+        public async IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(
+
+            PingRequest request,
+
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default,
+
+            InferenceAuditContext? auditContext = null)
+
+        {
+
+            await Task.CompletedTask.ConfigureAwait(false);
+
+            yield break;
+
+        }
+
     }
 
     private sealed class ConcurrentCallDetectingTurnRunWriter(ITurnRunWriter inner) : ITurnRunWriter

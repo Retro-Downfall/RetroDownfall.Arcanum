@@ -12,7 +12,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
-public sealed class McpConnectionManagerMaxServersCapTests : IAsyncLifetime
+public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
 {
 
     private McpConnectionManager _manager = null!;
@@ -64,24 +64,15 @@ public sealed class McpConnectionManagerMaxServersCapTests : IAsyncLifetime
 
     }
 
-    // W3.3 Fix 2: the MaxServers count-check + registry add must be serialized.
-    // The workspace-build path registered without holding _registryLock, so N
-    // parallel registrations could all pass the count check and overshoot the cap.
-    // The fix wraps the register+count-check in _registryLock. A Barrier releases
-    // all registrations onto the seam at the same instant so the check-then-add
-    // window is actually contested; with the code-owned MaxServers=K < N, at most
-    // K servers may be registered.
     [Fact]
-    public async Task RegisterFromConfigAsync_ConcurrentRegistrations_NeverOvershootsMaxServers()
+    public async Task RegisterFromConfigAsync_ConcurrentRegistrations_RetainsEveryServer()
     {
 
-        int maxServers = ArcanumSettingClamps.McpMaxServers(
-            ArcanumRuntimeDefaults.Mcp.MaxServers);
-        int registrationCount = maxServers + 16;
+        const int RegistrationCount = 66;
 
-        using Barrier barrier = new(registrationCount);
+        using Barrier barrier = new(RegistrationCount);
 
-        McpConfig[] configs = Enumerable.Range(0, registrationCount)
+        McpConfig[] configs = Enumerable.Range(0, RegistrationCount)
             .Select(i => new McpConfig
             {
 
@@ -95,7 +86,7 @@ public sealed class McpConnectionManagerMaxServersCapTests : IAsyncLifetime
             })
             .ToArray();
 
-        Task[] tasks = Enumerable.Range(0, registrationCount)
+        Task[] tasks = Enumerable.Range(0, RegistrationCount)
             .Select(i => Task.Run(async () =>
             {
 
@@ -110,7 +101,7 @@ public sealed class McpConnectionManagerMaxServersCapTests : IAsyncLifetime
 
         McpServerInfo[] statuses = await _manager.GetAllStatusesAsync(CancellationToken.None);
 
-        Assert.True(statuses.Length <= maxServers, $"Overshot MaxServers: {statuses.Length} registered > {maxServers}.");
+        Assert.Equal(RegistrationCount, statuses.Length);
 
     }
 

@@ -3,12 +3,14 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
+using RetroDownfall.Arcanum.Core.Operations;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
 /// <summary>
-/// Runs after Grimoire bootstrap and before subsequently registered hosted workloads. Startup work
-/// is deliberately bounded; a timeout enters documented degraded mode and leaves repair to the
-/// authenticated reconcile command.
+/// Runs after Grimoire bootstrap and before subsequently registered hosted workloads. A short
+/// readiness pass never abandons unfinished recovery: the same checkpointed reconciliation keeps
+/// running periodically in the background until host shutdown.
 /// </summary>
 [ExcludeFromCodeCoverage]
 internal sealed class LongRunningOperationStartupHostedService(
@@ -17,9 +19,17 @@ internal sealed class LongRunningOperationStartupHostedService(
     LongRunningOperationReconciliationStatus status,
     ILogger<LongRunningOperationStartupHostedService> logger) : IHostedService
 {
-    internal const int MaxStartupOperations = 100;
+    internal const int ReconciliationPageSize = 100;
+
     internal const int MaxStartupConcurrency = 4;
+
     internal static readonly TimeSpan StartupBudget = TimeSpan.FromSeconds(10);
+
+    internal static readonly TimeSpan BackgroundInterval = TimeSpan.FromMinutes(1);
+
+    private readonly CancellationTokenSource _shutdown = new();
+
+    private Task? _backgroundTask;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -36,7 +46,7 @@ internal sealed class LongRunningOperationStartupHostedService(
             var summary = await reconciler.ReconcileAsync(
                 startedAt,
                 ownerId,
-                MaxStartupOperations,
+                ReconciliationPageSize,
                 MaxStartupConcurrency,
                 budget.Token).ConfigureAwait(false);
             status.Record(startedAt, summary);
@@ -46,12 +56,102 @@ internal sealed class LongRunningOperationStartupHostedService(
             && budget.IsCancellationRequested)
         {
             const string detail =
-                "Startup reconciliation exceeded its 10 second budget; optional recovery was deferred. "
-                + "Run 'arcanum operation reconcile'.";
+                "Startup reconciliation exceeded its 10 second readiness budget; checkpointed recovery is continuing in the background. "
+                + "Run 'arcanum operation reconcile' for an immediate foreground pass.";
+
             status.RecordDeferred(startedAt, detail);
+
             logger.LogWarning("{Detail}", detail);
         }
+
+        _backgroundTask = Task.Run(
+            () => ContinueInBackgroundAsync(_shutdown.Token),
+            CancellationToken.None);
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+
+        await _shutdown.CancelAsync().ConfigureAwait(false);
+
+        if (_backgroundTask is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            await _backgroundTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException) when (
+            cancellationToken.IsCancellationRequested
+            || _shutdown.IsCancellationRequested)
+        {
+
+        }
+
+    }
+
+    private async Task ContinueInBackgroundAsync(CancellationToken cancellationToken)
+    {
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+
+            try
+            {
+                DateTimeOffset now = timeProvider.GetUtcNow();
+
+                await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+                LongRunningOperationReconciler reconciler =
+                    scope.ServiceProvider.GetRequiredService<LongRunningOperationReconciler>();
+
+                LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
+                    now,
+                    $"background-{Environment.ProcessId}-{Guid.NewGuid():N}",
+                    ReconciliationPageSize,
+                    MaxStartupConcurrency,
+                    cancellationToken).ConfigureAwait(false);
+
+                status.Record(now, summary);
+
+                await Task.Delay(BackgroundInterval, timeProvider, cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+
+                return;
+
+            }
+            catch (Exception ex)
+            {
+
+                logger.LogError(ex, "Background durable-operation reconciliation failed; it will retry.");
+
+                try
+                {
+
+                    await Task.Delay(BackgroundInterval, timeProvider, cancellationToken)
+                        .ConfigureAwait(false);
+
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+
+                    return;
+
+                }
+
+            }
+
+        }
+
+    }
 }

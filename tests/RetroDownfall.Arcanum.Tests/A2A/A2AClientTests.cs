@@ -192,7 +192,7 @@ public sealed class A2AClientTests : IDisposable
     }
 
     [Fact]
-    public async Task DispatchSendingAsync_MaxExternalTasksReached_RejectsAndReleasesOnCompletion()
+    public async Task DispatchSendingAsync_MaxExternalTasksReached_QueuesAndEventuallyRuns()
     {
         ArcanumSettings settings = EnabledSettings();
         settings.Execution.MaxConcurrentA2ATasks = 2;
@@ -212,23 +212,16 @@ public sealed class A2AClientTests : IDisposable
 
         await gateHandler.WaitUntilEnteredAsync();
 
-        Result<A2ADispatchResult> rejected =
-            await client.DispatchSendingAsync("rejected", null, DiscoveryUrl);
+        Task<Result<A2ADispatchResult>> queued =
+            client.DispatchSendingAsync("queued", null, DiscoveryUrl);
 
-        Assert.True(rejected.IsFailure);
-
-        Assert.Equal("Sending.MaxTasksReached", rejected.Error.Code);
+        Assert.False(queued.IsCompleted);
 
         gateHandler.Release("admitted answer");
 
-        Result<A2ADispatchResult>[] admittedResults = await Task.WhenAll(admittedCalls);
+        Result<A2ADispatchResult>[] results = await Task.WhenAll([.. admittedCalls, queued]);
 
-        Assert.All(admittedResults, static result => Assert.True(result.IsSuccess));
-
-        // The slot must be released once the in-flight call completes, not leaked.
-        Result<A2ADispatchResult> thirdResult = await client.DispatchSendingAsync("third", null, DiscoveryUrl);
-
-        Assert.True(thirdResult.IsSuccess);
+        Assert.All(results, static result => Assert.True(result.IsSuccess));
 
     }
 

@@ -383,6 +383,55 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ReconcileAsync_PageSize_DoesNotLimitTotalRecoveryWork()
+    {
+
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = new(_db!);
+
+        DateTimeOffset now = new(2026, 8, 3, 12, 0, 0, TimeSpan.Zero);
+
+        const int operationCount = 7;
+
+        for (int index = 0; index < operationCount; index++)
+        {
+
+            LongRunningOperation operation = await CreateAsync(
+                store,
+                now.AddMinutes(-10).AddSeconds(index));
+
+            _ = await store.TryAcquireLeaseAsync(
+                operation.Id,
+                $"dead-host-{index}",
+                now.AddMinutes(-5),
+                now.AddMinutes(-4));
+
+        }
+
+        CompletingRecoveryHandler handler = new(LongRunningOperationKinds.WorkspaceIndex);
+
+        LongRunningOperationReconciler reconciler = new(
+            store,
+            [handler],
+            TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance);
+
+        LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
+            now,
+            ownerId: "manual-worker",
+            maxOperations: 2,
+            maxConcurrency: 2);
+
+        Assert.Equal(operationCount, summary.Examined);
+
+        Assert.Equal(operationCount, summary.Completed);
+
+        Assert.Equal(operationCount, handler.CallCount);
+
+    }
+
+    [SkippableFact]
     public async Task ReconcileAsync_UnsupportedOrCorruptCheckpoint_RequiresOperatorRepair()
     {
         RequireSqlCipher();

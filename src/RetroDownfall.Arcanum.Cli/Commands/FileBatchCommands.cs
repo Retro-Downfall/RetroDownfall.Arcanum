@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Desktop;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
@@ -327,11 +329,12 @@ public sealed class FileBatchCommands(
 
     public async Task<int> ListBatches(
         string? status,
+        string? cursor,
         CancellationToken cancellationToken)
     {
 
         Result<OpenAiBatchListResponse> result = await apiClient
-            .ListBatchesAsync(status, cancellationToken)
+            .ListBatchesAsync(status, cursor, cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -365,6 +368,28 @@ public sealed class FileBatchCommands(
         {
 
             dispatcher.WritePayload(FormatBatch(batch));
+
+        }
+
+        if (result.Value.HasMore
+
+            && !string.IsNullOrWhiteSpace(result.Value.NextCursor))
+
+        {
+
+            string statusArgument = string.IsNullOrWhiteSpace(status)
+
+                ? string.Empty
+
+                : " --status " + CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(status.Trim());
+
+            string cursorArgument = CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(
+
+                result.Value.NextCursor);
+
+            dispatcher.WritePayload(
+
+                $"More batches remain. Continue: arcanum batch list{statusArgument} --cursor {cursorArgument}");
 
         }
 

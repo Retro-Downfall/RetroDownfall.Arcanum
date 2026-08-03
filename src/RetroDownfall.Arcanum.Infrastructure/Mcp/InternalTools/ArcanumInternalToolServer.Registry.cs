@@ -41,6 +41,8 @@ internal sealed partial class ArcanumInternalToolServer
 
             ["execute_command"] = ExecuteCommandAsync,
 
+            ["read_command_output"] = ExecuteReadCommandOutputAsync,
+
             ["adjust_initiative"] = ExecuteAdjustInitiativeAsync,
 
             ["send_commlink_alert"] = ExecuteSendCommlinkAlertAsync,

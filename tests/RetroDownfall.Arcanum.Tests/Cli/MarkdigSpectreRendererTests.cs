@@ -114,13 +114,13 @@ public sealed class MarkdigSpectreRendererTests
     }
 
     [Fact]
-    public void Render_oversized_markdown_is_truncated_with_notice()
+    public void Render_oversized_markdown_preserves_late_content_through_chunked_rendering()
     {
 
         MarkdigSpectreRenderer renderer = CreateRenderer();
 
-        // > the 256 KiB render cap: the renderer must truncate before parsing/rendering.
-        string markdown = new('a', (256 * 1024) + 5000);
+        string markdown = new string('a', (256 * 1024) + 5000)
+            + "\n\nLATE-CONTENT-MUST-RENDER";
 
         IRenderable renderable = renderer.Render(markdown);
 
@@ -128,7 +128,9 @@ public sealed class MarkdigSpectreRendererTests
 
         console.Write(renderable);
 
-        Assert.Contains("output truncated for display", console.Output, StringComparison.Ordinal);
+        Assert.Contains("LATE-CONTENT-MUST-RENDER", console.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("output truncated for display", console.Output, StringComparison.Ordinal);
 
     }
 

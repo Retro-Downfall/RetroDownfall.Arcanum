@@ -156,15 +156,6 @@ internal static class SessionAttachmentAmbientSend
             return;
         }
 
-        if (WorkspaceCheckInferenceDeadlineAmbient.CurrentDeadlineTimestamp
-            is long deadline)
-        {
-            WorkspaceCheckDeadlineBinding.BindRequest(
-                connectionKey,
-                requestId,
-                deadline);
-        }
-
         if (ApplyPatchInvocationAmbient.Current
             is ApplyPatchInvocationContext patchContext)
         {
@@ -189,9 +180,6 @@ internal static class SessionAttachmentAmbientSend
         string requestId)
     {
         SessionAttachmentToolAmbient.UnbindRequest(
-            connectionKey,
-            requestId);
-        WorkspaceCheckDeadlineBinding.UnbindRequest(
             connectionKey,
             requestId);
         ApplyPatchInvocationBinding.UnbindRequest(

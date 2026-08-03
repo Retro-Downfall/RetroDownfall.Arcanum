@@ -25,6 +25,8 @@ internal sealed class ShellCommandDispatcher(
     CommandCenterWardCoordinator wardCoordinator,
     ILogger<ShellCommandDispatcher> logger)
 {
+    private const int TerminalListPageSize = 50;
+
     public async Task<ShellDispatchResult> DispatchAsync(
         string input,
         CommandCenterState state,
@@ -137,7 +139,7 @@ internal sealed class ShellCommandDispatcher(
             case ShellCommandKind.CampaignList:
                 state.Log.Append(
                     SessionLogEntryKind.Command,
-                    await FormatCampaignsAsync(cancellationToken).ConfigureAwait(false));
+                    await FormatCampaignsAsync(parsed.Argument, cancellationToken).ConfigureAwait(false));
                 return ShellDispatchResult.Continue;
 
             case ShellCommandKind.SessionList:
@@ -268,7 +270,7 @@ internal sealed class ShellCommandDispatcher(
             case ShellCommandKind.SpellList:
                 state.Log.Append(
                     SessionLogEntryKind.Command,
-                    await FormatSpellsAsync(state, cancellationToken).ConfigureAwait(false));
+                    await FormatSpellsAsync(state, parsed.Argument, cancellationToken).ConfigureAwait(false));
                 return ShellDispatchResult.Continue;
 
             case ShellCommandKind.Tools:
@@ -284,7 +286,7 @@ internal sealed class ShellCommandDispatcher(
             case ShellCommandKind.WardList:
                 state.Log.Append(
                     SessionLogEntryKind.Command,
-                    await FormatWardsAsync(cancellationToken).ConfigureAwait(false));
+                    await FormatWardsAsync(parsed.Argument, cancellationToken).ConfigureAwait(false));
                 return ShellDispatchResult.Continue;
 
             case ShellCommandKind.WardAllow:
@@ -950,7 +952,7 @@ internal sealed class ShellCommandDispatcher(
                 "  /provider list        List providers",
                 "  /mcp                  MCP server status",
                 "  /arsenal              Workspace arsenal",
-                "  /campaign list        List campaigns",
+                "  /campaign list [offset]  List a bounded display page of campaigns",
                 "  /session list         Refresh + list sessions",
                 "  /session new          Start a New Session",
                 "  /session resume <id>  Load transcript + continue that session",
@@ -969,8 +971,8 @@ internal sealed class ShellCommandDispatcher(
                 "  /context              Inspect persistent session context pins",
                 "  /context pin <kind> <target>  Pin file/directorySnapshot/symbolRange/sessionEntry/attachment/url/diagnostic",
                 "  /context unpin <id>   Remove a context pin",
-                "  /spell list           List spells",
-                "  /ward list            List open wards",
+                "  /spell list [opaque-cursor]  List a bounded metadata page of spells",
+                "  /ward list [offset]   List a bounded display page of open wards",
                 "  /ward allow [id]      Allow pending ward (id optional when prompted)",
                 "  /ward deny [id]       Deny pending ward (id optional when prompted)",
                 "  /exit | /quit         Leave Command Center",
@@ -994,6 +996,7 @@ internal sealed class ShellCommandDispatcher(
                 "  Ctrl+Enter    Send (composer)",
                 "  ↑↓ / j k      Move session selection",
                 "  PgUp/PgDn     Scroll transcript",
+                "  Ctrl+PgUp/Dn Load newer/older transcript or session catalog page",
                 "  Home/End      Jump transcript top / bottom",
                 "  Esc           Close overlay / focus composer",
                 "  Ctrl+C        Cancel turn / clear composer / quit hint",
@@ -1047,27 +1050,52 @@ internal sealed class ShellCommandDispatcher(
         return "Native tools:\n" + string.Join(Environment.NewLine, dto.NativeTools.Select(static t => $"- {t}"));
     }
 
-    private async Task<string> FormatWardsAsync(CancellationToken cancellationToken)
+    private async Task<string> FormatWardsAsync(
+        string? offsetArgument,
+        CancellationToken cancellationToken)
     {
         Result<WardDto[]> result = await apiClient.GetWardsAsync(cancellationToken).ConfigureAwait(false);
+
         if (result.IsFailure)
         {
             return result.Error.Message;
         }
 
         WardDto[] wards = result.Value ?? [];
+
         if (wards.Length == 0)
         {
             return "No wards.";
         }
 
-        return string.Join(
+        int offset = ParseListOffset(offsetArgument);
+
+        WardDto[] page = wards
+            .Skip(offset)
+            .Take(TerminalListPageSize)
+            .ToArray();
+
+        if (page.Length == 0)
+        {
+            return $"No wards at offset {offset}. Restart with `/ward list 0`.";
+        }
+
+        string body = string.Join(
             Environment.NewLine,
-            wards.Take(50).Select(static w =>
+            page.Select(static w =>
             {
                 string id = w.WardId.Length > 8 ? w.WardId[..8] : w.WardId;
+
                 return $"- {id}  {w.ToolName}  expires={w.ExpiresAt:u}";
             }));
+
+        return AppendDisplayContinuation(
+            body,
+            "ward",
+            offset,
+            page.Length,
+            wards.Length,
+            offset + page.Length < wards.Length);
     }
 
     private async Task<ShellDispatchResult> ResolveWardSlashAsync(
@@ -1219,10 +1247,17 @@ internal sealed class ShellCommandDispatcher(
             ]);
     }
 
-    private async Task<string> FormatCampaignsAsync(CancellationToken cancellationToken)
+    private async Task<string> FormatCampaignsAsync(
+        string? offsetArgument,
+        CancellationToken cancellationToken)
     {
+        int offset = ParseListOffset(offsetArgument);
+
         Result<ListPageResult<CampaignDto>> result = await apiClient
-            .GetCampaignsAsync(cancellationToken: cancellationToken)
+            .GetCampaignsPageAsync(
+                limit: TerminalListPageSize,
+                offset: offset,
+                cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -1231,20 +1266,37 @@ internal sealed class ShellCommandDispatcher(
         }
 
         CampaignDto[] items = result.Value?.Items ?? [];
+
         if (items.Length == 0)
         {
-            return "No campaigns.";
+            return offset == 0
+                ? "No campaigns."
+                : $"No campaigns at offset {offset}. Restart with `/campaign list 0`.";
         }
 
-        return string.Join(
+        string body = string.Join(
             Environment.NewLine,
-            items.Take(50).Select(static c => $"- {c.Id.ToString("D")[..8]}  {c.Name}"));
+            items.Select(static c => $"- {c.Id.ToString("D")[..8]}  {c.Name}"));
+
+        return AppendDisplayContinuation(
+            body,
+            "campaign",
+            offset,
+            items.Length,
+            total: null,
+            result.Value?.HasMore == true);
     }
 
-    private async Task<string> FormatSpellsAsync(CommandCenterState state, CancellationToken cancellationToken)
+    private async Task<string> FormatSpellsAsync(
+        CommandCenterState state,
+        string? cursor,
+        CancellationToken cancellationToken)
     {
-        Result<SpellSummary[]> result = await apiClient
-            .GetSpellsAsync(workspace: state.WorkingDirectory, cancellationToken: cancellationToken)
+        Result<SpellCatalogPage> result = await apiClient
+            .GetSpellCatalogPageAsync(
+                workspace: state.WorkingDirectory,
+                cursor: cursor,
+                cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -1252,15 +1304,78 @@ internal sealed class ShellCommandDispatcher(
             return result.Error.Message;
         }
 
-        SpellSummary[] spells = result.Value ?? [];
-        if (spells.Length == 0)
+        SpellCatalogPage page = result.Value;
+
+        if (page.Items.Length == 0)
         {
             return "No spells found.";
         }
 
+        string body = string.Join(
+            Environment.NewLine,
+            page.Items.Select(static spell => $"- {spell.Name}"));
+
+        return AppendOpaqueDisplayContinuation(
+            body,
+            page.Items.Length,
+            page.HasMore,
+            page.NextCursor);
+    }
+
+    internal static string AppendOpaqueDisplayContinuation(
+        string body,
+        int shown,
+        bool hasMore,
+        string? nextCursor)
+    {
+
+        if (!hasMore
+            || string.IsNullOrWhiteSpace(nextCursor))
+        {
+
+            return body;
+
+        }
+
         return string.Join(
             Environment.NewLine,
-            spells.Take(50).Select(static s => $"- {s.Name}"));
+            [
+                body,
+                string.Empty,
+                $"Physical terminal-rendering boundary: showing {shown} items. Server state was not changed.",
+                $"Continue with `/spell list {nextCursor}`.",
+            ]);
+
+    }
+
+    private static int ParseListOffset(string? value) =>
+        int.TryParse(value, out int offset) && offset >= 0
+            ? offset
+            : 0;
+
+    internal static string AppendDisplayContinuation(
+        string body,
+        string command,
+        int offset,
+        int shown,
+        int? total,
+        bool hasMore)
+    {
+        if (!hasMore)
+        {
+            return body;
+        }
+
+        int nextOffset = offset + shown;
+
+        string measured = total is { } totalCount
+            ? $"{nextOffset} of {totalCount} items"
+            : $"{shown} items from offset {offset}";
+
+        return body
+            + Environment.NewLine
+            + $"Physical terminal-rendering boundary: showed {measured} in a {TerminalListPageSize}-line page. "
+            + $"Server state was not changed; continue with `/{command} list {nextOffset}`.";
     }
 }
 

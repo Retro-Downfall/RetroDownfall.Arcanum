@@ -28,38 +28,17 @@ internal static class InternalCodingToolSettingsFingerprint
             ArcanumSettingClamps.WorkspaceSearchRegexTimeoutMilliseconds(
                 search.RegexTimeoutMilliseconds));
         fingerprint.Append(
-            ArcanumSettingClamps.WorkspaceSearchMaxElapsedMilliseconds(
-                search.MaxElapsedMilliseconds));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspaceSearchMaxFiles(
-                search.MaxFiles));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspaceSearchMaxBytes(
-                search.MaxBytes));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspaceSearchMaxTraversalSteps(
-                search.MaxTraversalSteps));
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspaceSearchMaxMatches(
-                search.MaxMatches));
-        fingerprint.Append(
             ArcanumSettingClamps.WorkspaceSearchMaxPreviewChars(
                 search.MaxPreviewChars));
 
         fingerprint.Append(patch.MaxPatchBytes);
         fingerprint.Append(patch.MaxInputBytesPerFile);
-        fingerprint.Append(patch.MaxTotalInputBytes);
         fingerprint.Append(patch.MaxOutputBytesPerFile);
         fingerprint.Append(patch.MaxTotalOutputBytes);
         fingerprint.Append(patch.MaxStagingBytesPerFile);
         fingerprint.Append(patch.MaxTotalStagingBytes);
-        fingerprint.Append(patch.MaxElapsedMilliseconds);
-        fingerprint.Append(patch.RollbackReserveMilliseconds);
-        fingerprint.Append(patch.MaxFiles);
-        fingerprint.Append(patch.MaxHunks);
-        fingerprint.Append(patch.MaxLinesPerHunk);
+        fingerprint.Append(patch.RecoveryTimeoutMilliseconds);
         fingerprint.Append(patch.FuzzyMatchWindowLines);
-        fingerprint.Append(patch.MaxResultItems);
 
         AppendWorkspaceCheck(fingerprint, check);
         return fingerprint.ToString();
@@ -79,9 +58,6 @@ internal static class InternalCodingToolSettingsFingerprint
         WorkspaceCheckSettings value)
     {
         fingerprint.Append(value.Enabled);
-        fingerprint.Append(
-            ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(
-                value.TimeoutSeconds));
         fingerprint.Append(
             ArcanumSettingClamps.WorkspaceCheckMaxCustomProfiles(
                 value.MaxCustomProfiles));

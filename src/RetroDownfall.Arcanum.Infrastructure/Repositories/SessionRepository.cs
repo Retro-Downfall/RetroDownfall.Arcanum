@@ -1,9 +1,7 @@
-using System.Data;
-using System.Data.Common;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -26,7 +24,7 @@ public sealed class SessionRepository(
 
     private const int ExportEntryBatchSize = 500;
 
-    private const int FtsSessionIdLimit = 2048;
+    private const int ForkEntryBatchSize = 256;
 
     private readonly SessionEntryPersistence _entryPersistence = new(db);
 
@@ -69,7 +67,7 @@ public sealed class SessionRepository(
 
         string? searchTitlePattern = null;
 
-        HashSet<Guid>? ftsSessionIds = null;
+        string? ftsMatchQuery = null;
 
         if (!string.IsNullOrWhiteSpace(request.Search))
         {
@@ -89,7 +87,7 @@ public sealed class SessionRepository(
 
             if (!string.IsNullOrEmpty(matchQuery))
             {
-                ftsSessionIds = await ResolveFtsSessionIdsAsync(matchQuery, ct).ConfigureAwait(false);
+                ftsMatchQuery = matchQuery;
             }
         }
 
@@ -143,10 +141,14 @@ public sealed class SessionRepository(
             string titleClause =
                 $"\"Title\" IS NOT NULL AND \"Title\" LIKE {Bind(searchTitlePattern)} ESCAPE {Bind(SqlLikePatterns.EscapeString)}";
 
-            if (ftsSessionIds is { Count: > 0 })
+            if (ftsMatchQuery is not null)
             {
                 conditions.Add(
-                    $"(({titleClause}) OR \"Id\" COLLATE NOCASE IN (SELECT value FROM json_each({Bind(SerializeGuidJsonArray(ftsSessionIds))})))");
+                    $"(({titleClause}) OR EXISTS ("
+                    + "SELECT 1 FROM \"Entries_fts\" "
+                    + "INNER JOIN \"Entries\" AS fts_entry ON fts_entry.\"Id\" = \"Entries_fts\".\"Id\" "
+                    + "WHERE fts_entry.\"SessionId\" = \"Sessions\".\"Id\" "
+                    + $"AND \"Entries_fts\" MATCH {Bind(ftsMatchQuery)}))");
             }
             else
             {
@@ -395,6 +397,19 @@ public sealed class SessionRepository(
     public async Task<Result<Session>> ForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct)
     {
 
+        Guid forkSessionId = Guid.NewGuid();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        // Acquire source then fork session gates (stable Guid order to avoid deadlocks with concurrent purge).
+        Guid firstGate = sourceId.CompareTo(forkSessionId) <= 0 ? sourceId : forkSessionId;
+
+        Guid secondGate = firstGate == sourceId ? forkSessionId : sourceId;
+
+        using IDisposable gate1 = await attachments.AcquireSessionGateAsync(firstGate, ct).ConfigureAwait(false);
+
+        using IDisposable gate2 = await attachments.AcquireSessionGateAsync(secondGate, ct).ConfigureAwait(false);
+
         Session? source = await db.Sessions
             .AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == sourceId, ct)
@@ -403,7 +418,9 @@ public sealed class SessionRepository(
         if (source is null)
         {
 
-            return Result<Session>.Failure(new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
+            return Result<Session>.Failure(new Error(
+                ErrorCodes.Session.NotFound,
+                "No session exists with that id."));
 
         }
 
@@ -428,121 +445,14 @@ public sealed class SessionRepository(
 
         }
 
-        SessionSettings sessionSettings = optionsMonitor.CurrentValue.ResolveSessions();
-
-        int maxForkDepth = ArcanumSettingClamps.MaxForkDepth(sessionSettings.MaxForkDepth);
-
-        int sourceDepth = await ComputeForkDepthAsync(source.ForkedFromSessionId, ct).ConfigureAwait(false);
-
-        if (sourceDepth + 1 > maxForkDepth)
-        {
-
-            return Result<Session>.Failure(new Error(
-                ErrorCodes.Session.ForkDepthExceeded,
-                $"Forking this session would exceed the maximum fork depth of {maxForkDepth}."));
-
-        }
-
-        int maxEntries = ArcanumSettingClamps.MaxEntriesPerSession(sessionSettings.MaxEntriesPerSession);
-
-        int entriesToCopy = cutoffEntry is null
-            ? await db.Entries.AsNoTracking().CountAsync(e => e.SessionId == sourceId, ct).ConfigureAwait(false)
-            : await EntryTemporalQueries
-                .CountAtOrBeforeSequence(db, sourceId, cutoffEntry.Sequence)
-                .FirstAsync(ct)
-                .ConfigureAwait(false);
-
-        if (entriesToCopy > maxEntries)
-        {
-
-            return Result<Session>.Failure(new Error(
-                ErrorCodes.Session.TooManyEntries,
-                $"Session cannot exceed {maxEntries} entries; the source has {entriesToCopy} up to the requested cutoff."));
-
-        }
-
-        // Allocate all ids in memory before any durable write.
-        Guid forkSessionId = Guid.NewGuid();
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        Dictionary<Guid, Guid> entryIdMap = new();
-
-        List<Entry> entryCopies = [];
-
-        await foreach (List<Entry> batch in ReadEntryBatchesAsync(sourceId, ct).ConfigureAwait(false))
-        {
-
-            bool reachedCutoff = false;
-
-            foreach (Entry sourceEntry in batch)
-            {
-
-                Guid newEntryId = Guid.NewGuid();
-
-                entryIdMap[sourceEntry.Id] = newEntryId;
-
-                entryCopies.Add(new Entry
-                {
-                    Id = newEntryId,
-                    SessionId = forkSessionId,
-                    Role = sourceEntry.Role,
-                    Content = sourceEntry.Content,
-                    ModelUsed = sourceEntry.ModelUsed,
-                    CreatedAt = sourceEntry.CreatedAt,
-                    Sequence = sourceEntry.Sequence,
-                    ToolCallId = sourceEntry.ToolCallId,
-                    ToolName = sourceEntry.ToolName,
-                    ToolArguments = sourceEntry.ToolArguments,
-                });
-
-                if (cutoffEntry is not null && sourceEntry.Id == cutoffEntry.Id)
-                {
-
-                    reachedCutoff = true;
-
-                    break;
-
-                }
-
-            }
-
-            if (reachedCutoff)
-            {
-
-                break;
-
-            }
-
-        }
-
-        IReadOnlySet<Guid>? copiedSourceEntryIds = cutoffEntry is null
-            ? null
-            : entryIdMap.Keys.ToHashSet();
-
-        IReadOnlyList<SessionAttachmentRecord> sourceAttachments = await attachments
-            .ListBoundForForkAsync(sourceId, copiedSourceEntryIds, ct)
-            .ConfigureAwait(false);
-
-        List<SessionAttachmentForkCopyPlan> attachmentPlans = [];
-
-        foreach (SessionAttachmentRecord sourceAttachment in sourceAttachments)
-        {
-
-            Guid? newEntryId = sourceAttachment.EntryId is Guid sourceEntryId
-                && entryIdMap.TryGetValue(sourceEntryId, out Guid mapped)
-                    ? mapped
-                    : null;
-
-            attachmentPlans.Add(new SessionAttachmentForkCopyPlan(
-                sourceAttachment,
-                Guid.NewGuid(),
-                newEntryId));
-
-        }
-
-        // Filesystem first: copy + hash-verify before opening the DB write transaction.
-        await attachments.CopyBytesForForkAsync(forkSessionId, attachmentPlans, ct).ConfigureAwait(false);
+        long maximumSourceEntrySequence = cutoffEntry?.Sequence
+            ?? await db.Entries
+                .AsNoTracking()
+                .Where(entry => entry.SessionId == sourceId)
+                .Select(entry => (long?)entry.Sequence)
+                .MaxAsync(ct)
+                .ConfigureAwait(false)
+            ?? 0L;
 
         Session fork = new()
         {
@@ -555,48 +465,124 @@ public sealed class SessionRepository(
             Summary = null,
             LastSummarizedMessageAt = null,
             TotalTokensUsed = 0,
-            UnsummarizedEntryCount = entryCopies.Count,
+            UnsummarizedEntryCount = 0,
             ForkedFromSessionId = sourceId,
         };
-
-        // Acquire source then fork session gates (stable Guid order to avoid deadlocks with concurrent purge).
-        Guid firstGate = sourceId.CompareTo(forkSessionId) <= 0 ? sourceId : forkSessionId;
-
-        Guid secondGate = firstGate == sourceId ? forkSessionId : sourceId;
-
-        using IDisposable gate1 = await attachments.AcquireSessionGateAsync(firstGate, ct).ConfigureAwait(false);
-
-        using IDisposable gate2 = await attachments.AcquireSessionGateAsync(secondGate, ct).ConfigureAwait(false);
-
-        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
-            await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
 
         try
         {
 
-            db.Sessions.Add(fork);
-
-            foreach (Entry copy in entryCopies)
+            await foreach (IReadOnlyList<SessionAttachmentRecord> sourcePage in attachments
+                               .ReadBoundForForkPagesAsync(
+                                   sourceId,
+                                   maximumSourceEntrySequence,
+                                   includeEntrylessAttachments: cutoffEntry is null,
+                                   ct)
+                               .ConfigureAwait(false))
             {
 
-                db.Entries.Add(copy);
+                List<SessionAttachmentForkCopyPlan> copyPlans = BuildForkAttachmentPlans(
+                    forkSessionId,
+                    sourcePage);
+
+                await attachments
+                    .CopyBytesForForkAsync(forkSessionId, copyPlans, ct)
+                    .ConfigureAwait(false);
 
             }
 
-            await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+            await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+                await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
 
-            await attachments
-                .InsertForkRowsInAmbientTransactionAsync(forkSessionId, attachmentPlans, ct)
-                .ConfigureAwait(false);
-
-            await tx.CommitAsync(ct).ConfigureAwait(false);
-
-            foreach (SessionAttachmentForkCopyPlan plan in attachmentPlans)
+            try
             {
 
-                _ = attachmentIndexQueue?.TryEnqueue(new SessionAttachmentIndexRequest(
-                    plan.NewAttachmentId,
-                    forkSessionId));
+                db.Sessions.Add(fork);
+
+                await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+
+                int copiedEntryCount = 0;
+
+                await foreach (List<Entry> sourcePage in ReadEntryBatchesAsync(
+                                   sourceId,
+                                   ct,
+                                   ForkEntryBatchSize,
+                                   maximumSourceEntrySequence).ConfigureAwait(false))
+                {
+
+                    List<Entry> entryCopies = new(sourcePage.Count);
+
+                    foreach (Entry sourceEntry in sourcePage)
+                    {
+
+                        entryCopies.Add(new Entry
+                        {
+                            Id = CreateForkEntryId(forkSessionId, sourceEntry.Id),
+                            SessionId = forkSessionId,
+                            Role = sourceEntry.Role,
+                            Content = sourceEntry.Content,
+                            ModelUsed = sourceEntry.ModelUsed,
+                            CreatedAt = sourceEntry.CreatedAt,
+                            Sequence = sourceEntry.Sequence,
+                            ToolCallId = sourceEntry.ToolCallId,
+                            ToolName = sourceEntry.ToolName,
+                            ToolArguments = sourceEntry.ToolArguments,
+                        });
+
+                    }
+
+                    db.Entries.AddRange(entryCopies);
+
+                    await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+
+                    copiedEntryCount = checked(copiedEntryCount + entryCopies.Count);
+
+                    foreach (Entry entryCopy in entryCopies)
+                    {
+
+                        db.Entry(entryCopy).State = EntityState.Detached;
+
+                    }
+
+                }
+
+                fork.UnsummarizedEntryCount = copiedEntryCount;
+
+                await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+
+                await foreach (IReadOnlyList<SessionAttachmentRecord> sourcePage in attachments
+                                   .ReadBoundForForkPagesAsync(
+                                       sourceId,
+                                       maximumSourceEntrySequence,
+                                       includeEntrylessAttachments: cutoffEntry is null,
+                                       ct)
+                                   .ConfigureAwait(false))
+                {
+
+                    List<SessionAttachmentForkCopyPlan> insertPlans = BuildForkAttachmentPlans(
+                        forkSessionId,
+                        sourcePage);
+
+                    await attachments
+                        .InsertForkRowsInAmbientTransactionAsync(
+                            forkSessionId,
+                            insertPlans,
+                            ct)
+                        .ConfigureAwait(false);
+
+                }
+
+                await tx.CommitAsync(ct).ConfigureAwait(false);
+
+            }
+            catch
+            {
+
+                await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+                DetachFailedForkEntities(forkSessionId, fork);
+
+                throw;
 
             }
 
@@ -604,11 +590,34 @@ public sealed class SessionRepository(
         catch
         {
 
-            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
             _ = attachments.TryDeleteSessionDirectory(forkSessionId);
 
             throw;
+
+        }
+
+        if (attachmentIndexQueue is not null)
+        {
+
+            await foreach (IReadOnlyList<SessionAttachmentRecord> sourcePage in attachments
+                               .ReadBoundForForkPagesAsync(
+                                   sourceId,
+                                   maximumSourceEntrySequence,
+                                   includeEntrylessAttachments: cutoffEntry is null,
+                                   CancellationToken.None)
+                               .ConfigureAwait(false))
+            {
+
+                foreach (SessionAttachmentRecord sourceAttachment in sourcePage)
+                {
+
+                    _ = attachmentIndexQueue.TryEnqueue(new SessionAttachmentIndexRequest(
+                        CreateForkAttachmentId(forkSessionId, sourceAttachment.Id),
+                        forkSessionId));
+
+                }
+
+            }
 
         }
 
@@ -616,36 +625,81 @@ public sealed class SessionRepository(
 
     }
 
-    /// <summary>
-    /// Walks the fork lineage chain starting from <paramref name="forkedFromSessionId"/>, counting
-    /// hops to the root — mirrors <c>ConclaveLineage</c>'s role for Apprentice delegation trees. A
-    /// session that was never forked has depth <c>0</c>. Capped defensively at 64 hops (well above
-    /// any realistic <c>MaxForkDepth</c>) so a corrupted/cyclic chain cannot loop forever.
-    /// </summary>
-    private async Task<int> ComputeForkDepthAsync(Guid? forkedFromSessionId, CancellationToken ct)
+    private static List<SessionAttachmentForkCopyPlan> BuildForkAttachmentPlans(
+        Guid forkSessionId,
+        IReadOnlyList<SessionAttachmentRecord> sourcePage)
     {
 
-        const int safetyCap = 64;
+        List<SessionAttachmentForkCopyPlan> plans = new(sourcePage.Count);
 
-        int depth = 0;
-
-        Guid? currentId = forkedFromSessionId;
-
-        while (currentId is Guid id && depth < safetyCap)
+        foreach (SessionAttachmentRecord sourceAttachment in sourcePage)
         {
 
-            depth++;
+            Guid? newEntryId = sourceAttachment.EntryId is Guid sourceEntryId
+                ? CreateForkEntryId(forkSessionId, sourceEntryId)
+                : null;
 
-            currentId = await db.Sessions
-                .AsNoTracking()
-                .Where(s => s.Id == id)
-                .Select(s => s.ForkedFromSessionId)
-                .FirstOrDefaultAsync(ct)
-                .ConfigureAwait(false);
+            plans.Add(new SessionAttachmentForkCopyPlan(
+                sourceAttachment,
+                CreateForkAttachmentId(forkSessionId, sourceAttachment.Id),
+                newEntryId));
 
         }
 
-        return depth;
+        return plans;
+
+    }
+
+    private static Guid CreateForkEntryId(Guid forkSessionId, Guid sourceEntryId) =>
+        CreateForkScopedId(forkSessionId, sourceEntryId, discriminator: 1);
+
+    private static Guid CreateForkAttachmentId(Guid forkSessionId, Guid sourceAttachmentId) =>
+        CreateForkScopedId(forkSessionId, sourceAttachmentId, discriminator: 2);
+
+    private static Guid CreateForkScopedId(
+        Guid forkSessionId,
+        Guid sourceId,
+        byte discriminator)
+    {
+
+        Span<byte> material = stackalloc byte[33];
+
+        _ = forkSessionId.TryWriteBytes(material[..16]);
+
+        _ = sourceId.TryWriteBytes(material[16..32]);
+
+        material[32] = discriminator;
+
+        Span<byte> digest = stackalloc byte[32];
+
+        _ = SHA256.HashData(material, digest);
+
+        return new Guid(digest[..16]);
+
+    }
+
+    private void DetachFailedForkEntities(Guid forkSessionId, Session fork)
+    {
+
+        foreach (Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<Entry> trackedEntry in db
+                     .ChangeTracker
+                     .Entries<Entry>()
+                     .Where(entry => entry.Entity.SessionId == forkSessionId)
+                     .ToArray())
+        {
+
+            trackedEntry.State = EntityState.Detached;
+
+        }
+
+        Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<Session> forkEntry = db.Entry(fork);
+
+        if (forkEntry.State != EntityState.Detached)
+        {
+
+            forkEntry.State = EntityState.Detached;
+
+        }
 
     }
 
@@ -832,14 +886,17 @@ public sealed class SessionRepository(
 
     private async IAsyncEnumerable<List<Entry>> ReadEntryBatchesAsync(
         Guid sessionId,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct,
+        int batchSize = ExportEntryBatchSize,
+        long maximumSequence = long.MaxValue)
     {
         long cursorSequence = 0L;
 
         while (true)
         {
             List<Entry> batch = await EntryTemporalQueries
-                .LoadAfterSequence(db, sessionId, cursorSequence, ExportEntryBatchSize)
+                .LoadAfterSequence(db, sessionId, cursorSequence, batchSize)
+                .Where(entry => entry.Sequence <= maximumSequence)
                 .AsNoTracking()
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
@@ -855,7 +912,7 @@ public sealed class SessionRepository(
 
             cursorSequence = last.Sequence;
 
-            if (batch.Count < ExportEntryBatchSize)
+            if (batch.Count < batchSize)
             {
                 yield break;
             }
@@ -880,91 +937,6 @@ public sealed class SessionRepository(
 
             builder.AppendLine();
         }
-    }
-
-    private async Task<HashSet<Guid>> ResolveFtsSessionIdsAsync(string matchQuery, CancellationToken ct)
-    {
-        DbConnection connection = db.Database.GetDbConnection();
-
-        if (connection.State != ConnectionState.Open)
-        {
-            await connection.OpenAsync(ct).ConfigureAwait(false);
-        }
-
-        await using DbCommand cmd = connection.CreateCommand();
-
-        cmd.CommandText =
-            """
-            SELECT DISTINCT c."SessionId"
-            FROM "Entries_fts"
-            INNER JOIN "Entries" AS c ON c."Id" = "Entries_fts"."Id"
-            WHERE "Entries_fts" MATCH @query
-            LIMIT @limit
-            """;
-
-        DbParameter pQuery = cmd.CreateParameter();
-
-        pQuery.ParameterName = "@query";
-
-        pQuery.Value = matchQuery;
-
-        cmd.Parameters.Add(pQuery);
-
-        DbParameter pLimit = cmd.CreateParameter();
-
-        pLimit.ParameterName = "@limit";
-
-        pLimit.Value = FtsSessionIdLimit;
-
-        cmd.Parameters.Add(pLimit);
-
-        HashSet<Guid> sessionIds = [];
-
-        try
-        {
-            await using DbDataReader reader = await cmd
-                .ExecuteReaderAsync(ct)
-                .ConfigureAwait(false);
-
-            while (await reader.ReadAsync(ct).ConfigureAwait(false))
-            {
-                _ = sessionIds.Add(reader.GetGuid(0));
-            }
-        }
-        catch (SqliteException)
-        {
-            return [];
-        }
-
-        return sessionIds;
-    }
-
-    private static string SerializeGuidJsonArray(IEnumerable<Guid> ids)
-    {
-        // GUID text only ever contains [0-9a-f-], so the JSON array can be assembled without
-        // escaping. The result is bound as a single SQL parameter and parsed by json_each,
-        // and the IN-clause uses COLLATE NOCASE so EF's stored GUID casing is irrelevant.
-        StringBuilder builder = new();
-
-        _ = builder.Append('[');
-
-        bool first = true;
-
-        foreach (Guid id in ids)
-        {
-            if (!first)
-            {
-                _ = builder.Append(',');
-            }
-
-            _ = builder.Append('"').Append(id.ToString()).Append('"');
-
-            first = false;
-        }
-
-        _ = builder.Append(']');
-
-        return builder.ToString();
     }
 
     private static string TruncateTitle(string content)

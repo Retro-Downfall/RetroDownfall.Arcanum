@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
@@ -95,6 +96,388 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         new(
             new FixedFileEncryptionKeyProvider(),
             new EncryptedBlobStoreOptions { ChunkSize = 64 });
+
+    [SkippableFact]
+
+    public async Task PersistNewAsync_uses_streaming_encrypted_writer()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InstrumentedEncryptedBlobStore blobs = new(CreateEncryptedBlobStore())
+        {
+
+            RejectWholeStreamWrite = true,
+
+        };
+
+        SessionAttachmentStore store = new(
+            _db!,
+            Options.Create(_settings),
+            _attachmentsRoot,
+            blobs);
+
+        byte[] bytes = Enumerable.Range(0, 513)
+            .Select(static value => (byte)(value % 251))
+            .ToArray();
+
+        SessionAttachmentRecord record = await store.PersistNewAsync(
+            Guid.NewGuid(),
+            pendingTurnId: null,
+            entryId: null,
+            logicalNameHint: "streamed.bin",
+            originalFileName: "streamed.bin",
+            bytes,
+            mimeType: "application/octet-stream",
+            SessionAttachmentKind.Binary);
+
+        Assert.Equal(0, blobs.WholeStreamWriteCallCount);
+
+        Assert.Equal(1, blobs.CreateWriterCallCount);
+
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)), record.ContentSha256);
+
+        Assert.Equal(bytes, (await store.ReadBytesAsync(record)).ToArray());
+
+    }
+
+    [SkippableFact]
+
+    public async Task PersistNewAsync_streaming_cancellation_leaves_no_row_or_blob()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using CancellationTokenSource cancellation = new();
+
+        InstrumentedEncryptedBlobStore blobs = new(CreateEncryptedBlobStore())
+        {
+
+            CancelWriterAfterWriteCall = 1,
+
+            WriterCancellation = cancellation,
+
+        };
+
+        SessionAttachmentStore store = new(
+            _db!,
+            Options.Create(_settings),
+            _attachmentsRoot,
+            blobs);
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] bytes = new byte[(64 * 1024) + 1];
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            store.PersistNewAsync(
+                sessionId,
+                pendingTurnId: null,
+                entryId: null,
+                logicalNameHint: "cancelled.bin",
+                originalFileName: "cancelled.bin",
+                bytes,
+                mimeType: "application/octet-stream",
+                SessionAttachmentKind.Binary,
+                cancellation.Token));
+
+        Assert.Null(await store.GetByLogicalAsync(sessionId, "cancelled.bin", version: null));
+
+        Assert.Empty(Directory.EnumerateFiles(
+            _attachmentsRoot,
+            "*",
+            SearchOption.AllDirectories));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ReadBytesAsync_uses_incremental_reads_without_CopyTo_buffer_duplication()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InstrumentedEncryptedBlobStore blobs = new(CreateEncryptedBlobStore());
+
+        SessionAttachmentStore store = new(
+            _db!,
+            Options.Create(_settings),
+            _attachmentsRoot,
+            blobs);
+
+        byte[] bytes = Encoding.UTF8.GetBytes(
+            "read directly into the one returned attachment buffer");
+
+        SessionAttachmentRecord record = await store.PersistNewAsync(
+            Guid.NewGuid(),
+            pendingTurnId: null,
+            entryId: null,
+            logicalNameHint: "direct-read.txt",
+            originalFileName: "direct-read.txt",
+            bytes,
+            mimeType: "text/plain",
+            SessionAttachmentKind.Text);
+
+        blobs.RejectCopyToRead = true;
+
+        Assert.Equal(bytes, (await store.ReadBytesAsync(record)).ToArray());
+
+    }
+
+    [SkippableFact]
+
+    public async Task ReadBoundPagesAsync_keyset_pages_every_version_in_stable_order()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        foreach (string logicalKey in new[] { "charlie.txt", "alpha.txt", "bravo.txt", "echo.txt", "delta.txt" })
+        {
+
+            _ = await _store!.PersistNewAsync(
+                sessionId,
+                pendingTurnId: null,
+                entryId: null,
+                logicalKey,
+                logicalKey,
+                Encoding.UTF8.GetBytes(logicalKey),
+                mimeType: "text/plain",
+                SessionAttachmentKind.Text);
+
+        }
+
+        List<IReadOnlyList<SessionAttachmentRecord>> pages = [];
+
+        await foreach (IReadOnlyList<SessionAttachmentRecord> page in _store!.ReadBoundPagesAsync(
+            sessionId,
+            pageSize: 2))
+        {
+
+            pages.Add(page);
+
+        }
+
+        Assert.Equal([2, 2, 1], pages.Select(static page => page.Count));
+
+        Assert.Equal(
+            ["alpha.txt", "bravo.txt", "charlie.txt", "delta.txt", "echo.txt"],
+            pages.SelectMany(static page => page).Select(static row => row.LogicalKey));
+
+        Assert.Equal(5, (await _store!.ListBoundAsync(sessionId)).Count);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ListLatestBoundAsync_returns_only_latest_version_per_logical_key()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        _ = await _store!.PersistNewAsync(
+            sessionId,
+            null,
+            null,
+            "alpha.txt",
+            "alpha.txt",
+            "alpha-v1"u8.ToArray(),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        SessionAttachmentRecord alphaLatest = await _store.PersistNewAsync(
+            sessionId,
+            null,
+            null,
+            "alpha.txt",
+            "alpha.txt",
+            "alpha-v2"u8.ToArray(),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        SessionAttachmentRecord bravo = await _store.PersistNewAsync(
+            sessionId,
+            null,
+            null,
+            "bravo.txt",
+            "bravo.txt",
+            "bravo-v1"u8.ToArray(),
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        IReadOnlyList<SessionAttachmentRecord> latest = await _store
+            .ListLatestBoundAsync(sessionId);
+
+        Assert.Equal([alphaLatest.Id, bravo.Id], latest.Select(static row => row.Id));
+
+        Assert.Equal([2, 1], latest.Select(static row => row.Version));
+
+        IReadOnlyList<SessionAttachmentRecord> selected = await _store
+            .ListLatestBoundByLogicalKeysAsync(
+                sessionId,
+                ["bravo.txt", "alpha.txt", "bravo.txt", "missing.txt"]);
+
+        Assert.Equal(
+            [bravo.Id, alphaLatest.Id],
+            selected.Select(static row => row.Id));
+
+    }
+
+    [SkippableFact]
+    public async Task ListLatestBoundByLogicalKeysAsync_pages_queries_and_preserves_selected_order()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentStore store = _store!;
+
+        Guid sessionId = Guid.NewGuid();
+        List<string> logicalKeys = [];
+
+        for (int index = 0; index < 130; index++)
+        {
+
+            string logicalKey = $"attachment-{index:D3}.txt";
+            logicalKeys.Add(logicalKey);
+
+            _ = await store.PersistNewAsync(
+                sessionId,
+                null,
+                null,
+                logicalKey,
+                logicalKey,
+                Encoding.UTF8.GetBytes(logicalKey),
+                "text/plain",
+                SessionAttachmentKind.Text);
+
+        }
+
+        string[] requested = logicalKeys
+            .AsEnumerable()
+            .Reverse()
+            .Append(logicalKeys[^1])
+            .ToArray();
+        IReadOnlyList<SessionAttachmentRecord> selected = await store
+            .ListLatestBoundByLogicalKeysAsync(
+                sessionId,
+                requested);
+
+        Assert.Equal(logicalKeys.Count, selected.Count);
+        Assert.Equal(
+            logicalKeys.AsEnumerable().Reverse(),
+            selected.Select(static row => row.LogicalKey));
+        Assert.Equal(
+            2,
+            store.LatestLogicalKeyQueryPageCountForTesting);
+
+    }
+
+    [SkippableFact]
+
+    public async Task BuildIndexAsync_pushes_logical_limit_before_full_record_paging()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentStore store = _store!;
+
+        Guid sessionId = Guid.NewGuid();
+
+        foreach (string content in new[] { "alpha-v1", "alpha-v2" })
+        {
+
+            _ = await store.PersistNewAsync(
+                sessionId,
+                null,
+                null,
+                "alpha.txt",
+                "alpha.txt",
+                Encoding.UTF8.GetBytes(content),
+                "text/plain",
+                SessionAttachmentKind.Text);
+
+        }
+
+        foreach (string logicalKey in new[] { "bravo.txt", "charlie.txt" })
+        {
+
+            _ = await store.PersistNewAsync(
+                sessionId,
+                null,
+                null,
+                logicalKey,
+                logicalKey,
+                Encoding.UTF8.GetBytes(logicalKey),
+                "text/plain",
+                SessionAttachmentKind.Text);
+
+        }
+
+        IReadOnlyList<SessionAttachmentIndexItem> index = await store
+            .BuildIndexAsync(sessionId, maxItems: 1);
+
+        SessionAttachmentIndexItem alpha = Assert.Single(index);
+
+        Assert.Equal("alpha.txt", alpha.LogicalKey);
+
+        Assert.Equal([1, 2], alpha.Versions);
+
+        Assert.Equal(0, store.BoundRecordPageReadCountForTesting);
+
+    }
+
+    [SkippableFact]
+    public async Task BuildIndexAsync_bounds_one_version_page_without_losing_history()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentStore store = _store!;
+
+        Guid sessionId = Guid.NewGuid();
+
+        for (int version = 1; version <= 260; version++)
+        {
+
+            _ = await store.PersistNewAsync(
+                sessionId,
+                null,
+                null,
+                "history.txt",
+                "history.txt",
+                Encoding.UTF8.GetBytes($"version-{version}"),
+                "text/plain",
+                SessionAttachmentKind.Text);
+
+        }
+
+        IReadOnlyList<SessionAttachmentIndexItem> index = await store
+            .BuildIndexAsync(sessionId, maxItems: 1);
+
+        SessionAttachmentIndexItem history = Assert.Single(index);
+
+        Assert.True(
+            history.Versions.Count <= 256,
+            $"One prompt-index item accumulated {history.Versions.Count} versions.");
+        Assert.Equal(
+            Enumerable.Range(1, 256),
+            history.Versions);
+        Assert.True(history.HasMoreVersions);
+        Assert.Equal(257, history.NextVersion);
+
+        SessionAttachmentRecord last =
+            Assert.IsType<SessionAttachmentRecord>(
+                await store.GetByLogicalAsync(
+                    sessionId,
+                    "history.txt",
+                    version: 260));
+
+        Assert.Equal(260, last.Version);
+
+    }
 
     [SkippableFact]
     public async Task PersistNewFromSourceAsync_round_trips_verified_provenance()
@@ -838,6 +1221,272 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         }
     }
 
+    private sealed class InstrumentedEncryptedBlobStore(IEncryptedBlobStore inner)
+        : IEncryptedBlobStore
+    {
+
+        public bool RejectWholeStreamWrite { get; init; }
+
+        public bool RejectCopyToRead { get; set; }
+
+        public int? CancelWriterAfterWriteCall { get; init; }
+
+        public CancellationTokenSource? WriterCancellation { get; init; }
+
+        public int WholeStreamWriteCallCount { get; private set; }
+
+        public int CreateWriterCallCount { get; private set; }
+
+        public Task<EncryptedBlobDescriptor> WriteAsync(
+            string destinationPath,
+            Stream plaintext,
+            EncryptedBlobPurpose purpose,
+            ReadOnlyMemory<byte> authenticatedMetadata = default,
+            long? plaintextLength = null,
+            CancellationToken cancellationToken = default)
+        {
+
+            WholeStreamWriteCallCount++;
+
+            if (RejectWholeStreamWrite)
+            {
+
+                throw new InvalidOperationException(
+                    "The whole-stream encrypted write path must not be used.");
+
+            }
+
+            return inner.WriteAsync(
+                destinationPath,
+                plaintext,
+                purpose,
+                authenticatedMetadata,
+                plaintextLength,
+                cancellationToken);
+
+        }
+
+        public async Task<Stream> OpenReadAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            CancellationToken cancellationToken = default)
+        {
+
+            Stream stream = await inner
+                .OpenReadAsync(path, purpose, cancellationToken)
+                .ConfigureAwait(false);
+
+            return RejectCopyToRead
+                ? new CopyRejectingReadStream(stream)
+                : stream;
+
+        }
+
+        public async Task<EncryptedBlobWriter> CreateWriterAsync(
+            string destinationPath,
+            EncryptedBlobPurpose purpose,
+            ReadOnlyMemory<byte> authenticatedMetadata = default,
+            CancellationToken cancellationToken = default)
+        {
+
+            CreateWriterCallCount++;
+
+            EncryptedBlobWriter writer = await inner
+                .CreateWriterAsync(
+                    destinationPath,
+                    purpose,
+                    authenticatedMetadata,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return CancelWriterAfterWriteCall is { } cancelAfter
+                && WriterCancellation is { } writerCancellation
+                    ? new CancelingEncryptedBlobWriter(
+                        writer,
+                        cancelAfter,
+                        writerCancellation)
+                    : writer;
+
+        }
+
+        public Task<EncryptedBlobDescriptor> InspectAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            bool verifyAllChunks,
+            CancellationToken cancellationToken = default) =>
+            inner.InspectAsync(
+                path,
+                purpose,
+                verifyAllChunks,
+                cancellationToken);
+
+        public bool HasEnvelope(string path) => inner.HasEnvelope(path);
+
+    }
+
+    private sealed class CancelingEncryptedBlobWriter(
+        EncryptedBlobWriter inner,
+        int cancelAfterWriteCall,
+        CancellationTokenSource cancellation) : EncryptedBlobWriter
+    {
+
+        private int _writeCallCount;
+
+        public override bool CanRead => false;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => inner.CanWrite;
+
+        public override long Length => inner.Length;
+
+        public override long Position
+        {
+
+            get => inner.Position;
+
+            set => throw new NotSupportedException();
+
+        }
+
+        public override async ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+
+            await inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+            _writeCallCount++;
+
+            if (_writeCallCount == cancelAfterWriteCall)
+            {
+
+                cancellation.Cancel();
+
+            }
+
+        }
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            WriteAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+
+        public override Task<EncryptedBlobDescriptor> CompleteAsync(
+            CancellationToken cancellationToken = default) =>
+            inner.CompleteAsync(cancellationToken);
+
+        public override void Flush() => inner.Flush();
+
+        public override Task FlushAsync(CancellationToken cancellationToken) =>
+            inner.FlushAsync(cancellationToken);
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) =>
+            throw new NotSupportedException();
+
+        public override void SetLength(long value) =>
+            throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+
+            if (disposing)
+            {
+
+                inner.Dispose();
+
+            }
+
+            base.Dispose(disposing);
+
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+
+            await inner.DisposeAsync().ConfigureAwait(false);
+
+            GC.SuppressFinalize(this);
+
+        }
+
+    }
+
+    private sealed class CopyRejectingReadStream(Stream inner) : Stream
+    {
+
+        public override bool CanRead => inner.CanRead;
+
+        public override bool CanSeek => inner.CanSeek;
+
+        public override bool CanWrite => false;
+
+        public override long Length => inner.Length;
+
+        public override long Position
+        {
+
+            get => inner.Position;
+
+            set => inner.Position = value;
+
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            inner.Read(buffer, offset, count);
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            inner.ReadAsync(buffer, cancellationToken);
+
+        public override Task CopyToAsync(
+            Stream destination,
+            int bufferSize,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException(
+                "ReadBytesAsync must not create a second whole-payload CopyTo buffer.");
+
+        public override long Seek(long offset, SeekOrigin origin) =>
+            inner.Seek(offset, origin);
+
+        public override void SetLength(long value) =>
+            throw new NotSupportedException();
+
+        public override void Flush()
+        {
+
+        }
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+
+            if (disposing)
+            {
+
+                inner.Dispose();
+
+            }
+
+            base.Dispose(disposing);
+
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+
+            await inner.DisposeAsync().ConfigureAwait(false);
+
+            GC.SuppressFinalize(this);
+
+        }
+
+    }
+
     [SkippableFact]
     public async Task PersistNewAsync_identical_bytes_same_logical_key_returns_same_id_no_v2()
     {
@@ -1088,17 +1737,16 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             SessionAttachmentKind.Text);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            _store.ValidateReferencesAsync(sessionA, [b.Id], maxReferences: 8));
+            _store.ValidateReferencesAsync(sessionA, [b.Id]));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            _store.ValidateReferencesAsync(sessionA, [a.Id, a.Id], maxReferences: 1));
+        await _store.ValidateReferencesAsync(sessionA, [a.Id, a.Id]);
 
-        await _store.ValidateReferencesAsync(sessionA, [a.Id], maxReferences: 8);
+        await _store.ValidateReferencesAsync(sessionA, [a.Id]);
 
     }
 
     [SkippableFact]
-    public async Task PersistNewAsync_rejects_when_version_cap_exceeded()
+    public async Task PersistNewAsync_accepts_versions_beyond_the_former_count_ceiling()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -1107,9 +1755,9 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         Guid sessionId = Guid.NewGuid();
 
-        int maxVersions = ArcanumSettingClamps.AttachmentsMaxVersionsPerLogicalKey(
-            ArcanumRuntimeDefaults.Attachments.MaxVersionsPerLogicalKey);
-        for (int version = 0; version < maxVersions; version++)
+        const int formerDefaultMaxVersions = 20;
+
+        for (int version = 0; version < formerDefaultMaxVersions; version++)
         {
             _ = await store.PersistNewAsync(
                 sessionId,
@@ -1122,18 +1770,17 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 SessionAttachmentKind.Text);
         }
 
-        InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            store.PersistNewAsync(
+        SessionAttachmentRecord next = await store.PersistNewAsync(
                 sessionId,
                 null,
                 null,
                 "cap.txt",
                 "cap.txt",
-                Encoding.UTF8.GetBytes("two"),
+                Encoding.UTF8.GetBytes("version-beyond-former-ceiling"),
                 "text/plain",
-                SessionAttachmentKind.Text));
+                SessionAttachmentKind.Text);
 
-        Assert.Contains("version", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(formerDefaultMaxVersions + 1, next.Version);
 
     }
 
@@ -1469,6 +2116,34 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         Guid otherEntryId = Guid.NewGuid();
 
+        await EnsureSessionAsync(sessionId, "fork-list-source");
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        _db!.Entries.AddRange(
+            new Entry
+            {
+                Id = mappedEntryId,
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = "mapped",
+                ModelUsed = "test",
+                CreatedAt = now,
+                Sequence = 1,
+            },
+            new Entry
+            {
+                Id = otherEntryId,
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = "other",
+                ModelUsed = "test",
+                CreatedAt = now.AddSeconds(1),
+                Sequence = 2,
+            });
+
+        await _db.SaveChangesAsync();
+
         SessionAttachmentRecord unbound = await _store!.PersistNewAsync(
             sessionId,
             null,
@@ -1524,6 +2199,38 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.DoesNotContain(cutoffFork, r => r.EntryId is null);
 
         Assert.DoesNotContain(cutoffFork, r => r.Id == other.Id);
+
+        List<SessionAttachmentRecord> pagedFullFork = [];
+
+        await foreach (IReadOnlyList<SessionAttachmentRecord> page in _store
+                           .ReadBoundForForkPagesAsync(
+                               sessionId,
+                               maximumSourceEntrySequence: 2,
+                               includeEntrylessAttachments: true))
+        {
+
+            pagedFullFork.AddRange(page);
+
+        }
+
+        Assert.Equal(3, pagedFullFork.Count);
+
+        List<SessionAttachmentRecord> pagedCutoffFork = [];
+
+        await foreach (IReadOnlyList<SessionAttachmentRecord> page in _store
+                           .ReadBoundForForkPagesAsync(
+                               sessionId,
+                               maximumSourceEntrySequence: 1,
+                               includeEntrylessAttachments: false))
+        {
+
+            pagedCutoffFork.AddRange(page);
+
+        }
+
+        SessionAttachmentRecord cutoffRecord = Assert.Single(pagedCutoffFork);
+
+        Assert.Equal(mapped.Id, cutoffRecord.Id);
 
     }
 

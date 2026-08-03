@@ -320,17 +320,46 @@ public sealed class CliResourceCatalog(
         string? identifier,
         string? workspace,
         CancellationToken cancellationToken) =>
-        SelectSinglePageAsync(
-            "spell",
-            identifier,
-            new ResourceDescriptor<SpellSummary>(
+        SelectAsync(
+            new ResourceSelectionRequest<SpellSummary>(
                 "spell",
-                ["Name", "Source"],
-                static value => value.Name,
-                static value => value.Name,
-                static value => $"source {value.Source}, version {value.Version ?? "-"}",
-                static value => [value.Name, value.Source.ToString()]),
-            ct => apiClient.GetSpellsAsync(workspace, ct),
+                identifier,
+                environment.IsInteractive,
+                new ResourceDescriptor<SpellSummary>(
+                    "spell",
+                    ["Name", "Source"],
+                    static value => value.Name,
+                    static value => value.Name,
+                    static value => $"source {value.Source}, version {value.Version ?? "-"}",
+                    static value => [value.Name, value.Source.ToString()]),
+                async (token, ct) =>
+                {
+
+                    Result<SpellCatalogPage> result = await apiClient
+                        .GetSpellCatalogPageAsync(
+                            workspace: workspace,
+                            cursor: token,
+                            cancellationToken: ct)
+                        .ConfigureAwait(false);
+
+                    if (result.IsFailure)
+                    {
+
+                        return Result<ResourcePage<SpellSummary>>.Failure(
+                            result.Error);
+
+                    }
+
+                    SpellCatalogPage page = result.Value;
+
+                    return Result<ResourcePage<SpellSummary>>.Success(
+                        new ResourcePage<SpellSummary>(
+                            page.Items,
+                            page.HasMore
+                                ? page.NextCursor
+                                : null));
+
+                }),
             cancellationToken);
 
     public Task<ResourceSelectionResult<ApprenticeSummaryDto>> SelectApprenticeAsync(

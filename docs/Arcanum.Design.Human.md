@@ -40,7 +40,7 @@ Its main jobs are:
 - send prompts to configured OpenAI-compatible providers;
 - preserve sessions and related data in an encrypted local Grimoire;
 - expose native and OpenAI-compatible HTTP contracts;
-- run a bounded model/tool loop with explicit security gates;
+- run a progress-driven model/tool loop with explicit security gates;
 - search registered workspaces and session attachments;
 - manage Campaigns, Spells, Prompts, Wards, Trials, Apprentices, and long-running operations;
 - support CLI, Command Center, Compendium, and The Forge clients through server-owned contracts.
@@ -90,10 +90,10 @@ They ask the API to do the work.
 Most commands are short-lived. They validate input, resolve saved context, call the local HTTP API,
 render a result, and exit.
 
-`arcanum run` is the main flexible short-lived inference entry. It accepts an instruction, bounded
+`arcanum run` is the main flexible short-lived inference entry. It accepts an instruction,
 piped context, or a one-line interactive prompt; stages repeated current-turn `--with @path` text or
 images; resolves active Campaign, Workspace, Session, and Model; and selects the ordinary Agent
-Loop, bounded research, a named Spell, or a read-only dry run. It does not create another host or
+Loop, progress-driven research, a named Spell, or a read-only dry run. It does not create another host or
 model loop.
 
 `arcanum serve` takes the other path. It builds the host, loads configuration and protected
@@ -153,12 +153,39 @@ all converge on the same inference core. The `run --research` route uses the sol
 orchestrator and brings its final synthesis back through the shared provider path. Projection
 differs by surface, but there is not a separate “easy” path that bypasses accounting or security.
 
-The loop stops on a final answer, deterministic lack of progress, cancellation, context failure,
-elapsed-time or cost admission, or a hard `TurnLimits` boundary. The limits are code-owned so an
-operator cannot accidentally configure away safety.
+The loop stops on a final answer, deterministic repeated no-progress, caller/host cancellation,
+an explicit token/cost policy, the provider/model's real request or context boundary, or a required
+safety/integrity denial. Arcanum does not assign a fixed number of calls, tool rounds,
+correction/retry attempts, or total seconds to an otherwise progressing turn. Buffered and
+streaming surfaces share these terminal rules.
 
 Reasoning budget is per inference turn (`PingRequest`), not a lifetime cap for a session. An agentic
 turn can make several provider calls, and each call is accounted within the same reserved turn.
+
+Durable Session state follows the same distinction. Entry count and branch ancestry depth are not
+provider limits, so Arcanum does not reject them by total count. The pre-existing durable-pin
+admission setting remains unchanged outside issue #55. Reads and Campaign Logger consolidation
+page/checkpoint long history; one turn considers every already-accepted pin and applies disclosed
+per-pin/per-turn byte allocation only while materializing its content.
+
+### Safety boundaries versus arbitrary restrictions
+
+The useful distinction is the owner and failure model, not whether a number appears in code.
+
+| Kind | Example | Product behavior |
+|---|---|---|
+| Security or integrity boundary | Authentication, workspace containment, SSRF/DNS checks, Wards, Sanctum, cryptographic framing | Fail closed and name the safe action; these are never silently bypassed. |
+| Provider/model fact | Context window, supported request shape, provider response frame | Adapt the request where possible, then name the provider/model fact and next model/compaction action. |
+| Explicit operator policy | Token/cost budget, retention choice, allowlist | Stop exactly at the chosen policy and report measured/reserved state plus how to change or resume it. |
+| Physical resource protection | One allocation/frame, concurrency admission, post-cancellation cleanup | Stream, page, queue, or checkpoint the rest; a local slice must not become a hidden total-work ceiling. |
+| Arbitrary product restriction | Turn/hop/retry counter or total wall-clock deadline while progress continues | Remove it or replace it with cancellation and a deterministic progress/no-progress rule. |
+
+[`Arcanum.ConstraintInventory.json`](Arcanum.ConstraintInventory.json) is the machine-reviewable
+classification, and
+[`Arcanum.ConstraintReduction.20260803.md`](Arcanum.ConstraintReduction.20260803.md) explains the
+issue #55 removals. A retained-boundary error should say who owns the boundary, the safe measured
+value and limit, whether state was saved/checkpointed, and the exact continuation or recovery
+action.
 
 ## 6. Context is admitted, not merely collected
 
@@ -173,7 +200,20 @@ turn ends.
 
 Explicit user material has priority. When space is tight, Arcanum drops lower-priority semantic
 context before complete tool exchanges. It does not silently truncate an accepted explicit file.
-If the request still cannot fit, the turn fails with a bounded public error.
+If the request still cannot fit within the provider/model's real context window, the turn fails
+with a classified public error that names the owner, measured value/limit when safe, whether work
+was saved, and the exact compaction, continuation, or model-selection action.
+
+Verbose `execute_command` output follows that continuation rule. One tool response keeps a bounded
+preview, while complete decoded UTF-8 stdout/stderr streams into owner-only artifacts scoped to the
+current internal MCP connection. The model receives only an opaque handle and uses automatically
+attuned `read_command_output` with returned byte offsets to page the rest. There is no product total
+artifact quota. Random-access reads keep the live owner-only files behind opaque handles. Reading a
+stream's final page immediately releases
+and deletes it; failure, cancellation, connection disposal, and abrupt process exit remain cleanup
+backstops. Complete stdout and stderr share the existing explicit Sanctum `MaxFileWriteMb` operator
+policy, so crossing its measured byte limit stops the process tree, deletes partial output, and
+reports the exact quiet-rerun or policy-change action. There is no separate product-owned total.
 
 Content read from a repository, attachment, webpage, tool, or memory is untrusted data. Arcanum
 labels and fences it so instructions inside that data do not become system authority.
@@ -184,8 +224,8 @@ stdin is a separate untrusted text source; neither replaces the other. The CLI r
 `--with @path` accepts strict-UTF-8 text regardless of extension and configured Scrying images,
 including an explicitly supplied
 absolute client path. Text diagnostics record byte/part counts and SHA-256; image diagnostics record
-decoded bytes and SHA-256. Files and stdin share the existing 32-part, 1-MiB-per-part, 32-MiB
-aggregate text authority; `--with` files do not inherit stdin's 10 MiB reader ceiling. The CLI then
+decoded bytes and SHA-256. Files and stdin share 1-MiB-per-part and 32-MiB aggregate text
+authority without a file/part-count ceiling; `--with` files do not inherit stdin's 10 MiB reader ceiling. The CLI then
 sends typed content for server-side materialization. The
 client path grants no durable permission or server filesystem authority. On a live route, an
 Attachments-enabled host persists and Session-binds the supplied content before inference; an
@@ -225,7 +265,8 @@ The Command Center displays backend-authoritative state:
 
 File watcher events are only refresh hints. The UI does not hash files or infer `Live` on its own.
 
-Text attachment pins can be admitted implicitly within the existing pin and turn budgets. Image
+Text attachment pins can be admitted implicitly within the existing per-pin and per-turn byte
+budgets. Image
 pins remain durable but report `Unsupported` for implicit materialization, because silently adding
 an image would bypass explicit vision intent; pass the bound attachment GUID to `ask` or `chat`
 instead. Those direct IDs use the same explicit-first ledger and reference budget.
@@ -241,6 +282,12 @@ Attachment-derived facts may enter durable Lexicon or Saga memory only when thei
 materialized in the current turn. Index rows, failed reads, suppressed excerpts, and instructions
 inside attachment text do not grant that authority. Delegated subagents receive only explicitly
 allowed attachment values and remain otherwise sterile.
+
+Saga extraction itself is progress-driven. A deduplicated queue walks Session history oldest-first
+through timestamp-group-safe checkpoint pages, advances its watermark only after persistence, and
+retries a failed page. It has no user-tuned interval/window/output cap or total memory-count ceiling;
+provider capability, paged retrieval, explicit deletion, retention, and cancellation own those
+boundaries.
 
 The exact continuation order is illustrated in
 [`Arcanum.CHAT-LOOP.md`](Arcanum.CHAT-LOOP.md).
@@ -261,7 +308,7 @@ the supported encrypted `.arcbackup` workflow rather than copying a live databas
 Several rules make persistence reliable:
 
 - per-session writes are serialized;
-- transient SQLite busy/locked failures use bounded retry with a fresh transaction;
+- transient SQLite busy/locked failures use capped per-delay backoff with a fresh transaction until success, non-transient failure, or cancellation;
 - transcript order uses explicit `Sequence`, not timestamp guesswork;
 - idempotency claims are durable before eligible work begins;
 - long-running operations checkpoint and reconcile after interruption;
@@ -413,6 +460,17 @@ the documented Chat Completions subset, embeddings, files, and asynchronous chat
 batches. Moderations, images, and audio are explicit `501 not_supported` stubs rather than partial
 implementations.
 
+Batch JSONL length is also total work rather than one allocation. The background processor streams
+internal 64-line processing pages with page-scoped token/cost reservation and a durable checkpoint
+before and after each provider dispatch. Completed output publishes in input order and is skipped on
+resume; a dispatched line with no recorded result after host failure becomes
+`batch_interrupted_after_dispatch` instead of being replayed. Processing continues to EOF or
+cancellation. An explicit budget rejection leaves prior output available and identifies the first
+remaining line so work can be continued under a changed operator policy.
+Queued/progressing batches also have no age deadline: `completion_window` remains wire-compatible
+metadata, host shutdown leaves durable state for startup reconciliation, and only explicit
+cancellation or a real terminal failure stops the work.
+
 Streaming contracts are typed:
 
 - native inference uses NDJSON `IntelligenceEvent` frames;
@@ -457,15 +515,34 @@ Built-in tools are advertised only when the current request is eligible. Tool ar
 bounded and parsed as structured data. File selectors resolve within registered boundaries.
 Ambiguous resource names fail instead of silently choosing one.
 
+Repository size and catalog cardinality are not themselves failures. Directory/search results,
+resource selectors, TRX summaries, Eye/workspace/Spell discovery, Spell dependency graphs, and
+Spell search continue through cursor pages, iterative traversal, or cycle-safe graph exhaustion.
+`list_directory` tracks canonical visited-directory identities so it can show a contained symlink
+once without following a cycle. Campaign-backed workspace discovery follows every advancing
+repository page. When sqlite-vec is unavailable, managed Divination streams and scores every
+matching BLOB row with caller cancellation and bounded top-K memory instead of stopping at 50,000.
+`apply_patch` bounds one request, each file, the reversible output/staging plan, and failure cleanup,
+but does not add elapsed/file/hunk/line/result totals. Campaign rows and attachment references,
+versions, inline files, and delegated files likewise have no incidental count ceiling; concrete
+bytes, provider context, provenance, integrity, cancellation, and explicit retention remain.
+
 MCP supports operator configuration over stdio and SSRF-guarded Streamable HTTP. Workspace-local
 MCP configuration is merged only after digest-bound trust. Lifecycle, reload, discovery, and
-diagnostic invocation remain server-owned and authenticated.
+diagnostic invocation remain server-owned and authenticated. Initialization and HTTP connection
+establishment retain local deadlines because no usable server exists yet; after connection, a tool
+invocation has no Arcanum-owned total request duration and stops on completion, terminal
+protocol/provider failure, or caller cancellation.
 
-Web search, browse, and research are also server workflows. Research validates its limits and
-prospective synthesis payload, resolves Campaign/Session context, and only then begins provider
-search. Live synthesis uses the normal attachment pipeline. The CLI renders progress to stderr and
-the final cited result to stdout, with optional atomic export or encrypted session attachment of the
-final Markdown as a separate operation.
+Web search, browse, and research are also server workflows. Research validates an optional positive
+source target plus explicit synthesis-token and optional cost policy, validates its prospective
+synthesis payload, resolves Campaign/Session context, and only then begins provider search. It
+continues while a pass discovers new unique URLs and stops at the target, deterministic source
+exhaustion/no-progress, cancellation, explicit policy, or provider/safety failure—not a hop count.
+Connection/idle I/O deadlines protect stalled transport work without imposing a whole-research
+wall-clock limit. Live synthesis uses the normal attachment pipeline. The CLI renders progress and
+terminal reason to stderr and the final cited result to stdout, with optional atomic export or
+encrypted session attachment of the final Markdown as a separate operation.
 
 ## 12. The user-facing applications
 
@@ -476,7 +553,11 @@ non-interactive and JSON invocations never guess. Saved context can hold active 
 Workspace, model, and session selections, with explicit command values taking precedence. See
 [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) for every command and option.
 
-The unified `run` verb defaults to ordinary inference. `--research` chooses bounded server-owned
+The chat renderer keeps one Markdig/Spectre allocation bounded by parsing at most 256 Ki characters
+at a time, but lazily renders every chunk in order. Large valid answers take longer to display; they
+are not replaced by a truncation marker.
+
+The unified `run` verb defaults to ordinary inference. `--research` chooses progress-driven server-owned
 research, while `--spell <exact-name-or-unique-prefix>` forces one named Spell without bypassing
 normal loading, resonances, tools, Wards, or Sanctum. Those two route flags are the only conflict;
 stdin, repeated `--with`, context, common sampling controls, and recursive `--plain` / `--json`
@@ -523,7 +604,7 @@ shared `ConfigurationPresetCatalog` currently publishes six immutable version-1 
 
 Each definition is a versioned **partial overlay**. It owns an explicit list of public dot-paths;
 everything else remains operator-owned and unchanged. Presets do not own credentials, provider
-endpoints, arbitrary retry/timeout/loop/concurrency tuning, budget amounts, forbidden-art bypasses,
+endpoints, implementation retry/timeout/loop/queue tuning, budget amounts, forbidden-art bypasses,
 network allowlists, or unsandboxed child-process enablement. They also never silently enable a
 non-loopback host. This keeps the workflow useful without turning onboarding into a collection of
 new capability restrictions or high-risk defaults.
@@ -641,6 +722,11 @@ while the readiness endpoint remains HTTP 200. An unhealthy Grimoire is the prim
 That 503 still carries a valid success-envelope `HealthReportDto` with the Unhealthy components;
 watchers should display it instead of collapsing it into a transport error. Deferred durable-operation
 recovery is Degraded until repaired or reconciled.
+
+Durable-operation reconciliation treats its operation count as an internal query page, not a total
+recovery ceiling. Manual reconciliation drains every recoverable page with bounded concurrency.
+Startup keeps a 10-second readiness wait so serving is not held indefinitely, then immediately
+continues periodic checkpointed recovery in the background until completion or host shutdown.
 
 Metrics use bounded labels. High-cardinality identities, prompt fragments, paths, cache keys,
 session ids, and reasoning bodies do not become labels.

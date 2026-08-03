@@ -156,6 +156,58 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ListAsync_recursive_search_pattern_traverses_nonmatching_directories()
+    {
+
+        _workspace.WriteFile("container/deeper/match.txt", "match");
+
+        Result<FileListResult> result = await CreateBrowser().ListAsync(
+            MakeWorkspace(),
+            null,
+            recursive: true,
+            searchPattern: "*.txt",
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Contains(
+            result.Value!.Entries,
+            static entry => entry.RelativePath.EndsWith(
+                "container/deeper/match.txt",
+                StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public async Task ListAsync_recursive_reaches_beyond_the_former_depth_cap()
+    {
+
+        string relativeDirectory = string.Join(
+            '/',
+            Enumerable.Range(0, 70).Select(static index => $"d{index:D2}"));
+
+        _workspace.WriteFile($"{relativeDirectory}/deep.txt", "deep");
+
+        PhysicalFileSystemBrowser browser = CreateBrowser();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileListResult> result = await browser.ListAsync(
+            workspace,
+            null,
+            recursive: true,
+            searchPattern: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Contains(
+            result.Value!.Entries,
+            static entry => entry.Name == "deep.txt");
+
+    }
+
+    [Fact]
     public async Task ListAsync_path_traversal_is_rejected()
     {
 
@@ -363,24 +415,104 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ListAsync_respects_internal_max_paths_boundary()
+    public async Task ListAsync_pages_without_skipping_when_an_earlier_entry_is_added()
     {
-        int maxPaths = ArcanumSettingClamps.ListDirectoryMaxPaths(
-            ArcanumRuntimeDefaults.Intelligence.ListDirectoryMaxPaths);
-        for (int i = 0; i <= maxPaths; i++)
+
+        const int pageSize = 500;
+
+        for (int i = 0; i < pageSize + 10; i++)
         {
-            _workspace.WriteFile($"bounded-{i}.txt", "x");
+
+            _workspace.WriteFile($"paged/item-{i:D4}.txt", "x");
+
         }
 
         PhysicalFileSystemBrowser browser = CreateBrowser();
 
         WorkspaceInfo workspace = MakeWorkspace();
 
-        Result<FileListResult> result = await browser.ListAsync(workspace, null, recursive: false, searchPattern: "*.txt", CancellationToken.None);
+        Result<FileListResult> first = await browser.ListAsync(
+            workspace,
+            "paged",
+            recursive: true,
+            searchPattern: "*.txt",
+            cursor: null,
+            CancellationToken.None);
 
-        Assert.True(result.IsSuccess);
+        Assert.True(first.IsSuccess);
 
-        Assert.Equal(maxPaths, result.Value!.Entries.Length);
+        Assert.Equal(pageSize, first.Value!.Entries.Length);
+
+        string cursor = Assert.IsType<string>(first.Value.NextCursor);
+
+        Assert.DoesNotContain("item-", cursor, StringComparison.Ordinal);
+
+        _workspace.WriteFile("paged/0000-inserted.txt", "x");
+
+        Result<FileListResult> second = await browser.ListAsync(
+            workspace,
+            "paged",
+            recursive: true,
+            searchPattern: "*.txt",
+            cursor,
+            CancellationToken.None);
+
+        Assert.True(second.IsSuccess);
+
+        Assert.Equal(
+            Enumerable.Range(pageSize, 10).Select(static index => $"item-{index:D4}.txt"),
+            second.Value!.Entries.Select(static entry => entry.Name));
+
+        Assert.Null(second.Value.NextCursor);
+
+    }
+
+    [Fact]
+    public async Task ListAsync_requests_restart_when_the_continuation_checkpoint_vanished()
+    {
+
+        const int pageSize = 500;
+
+        for (int i = 0; i < pageSize + 1; i++)
+        {
+
+            _workspace.WriteFile($"checkpoint/item-{i:D4}.txt", "x");
+
+        }
+
+        PhysicalFileSystemBrowser browser = CreateBrowser();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileListResult> first = await browser.ListAsync(
+            workspace,
+            "checkpoint",
+            recursive: true,
+            searchPattern: null,
+            cursor: null,
+            CancellationToken.None);
+
+        string cursor = Assert.IsType<string>(first.Value!.NextCursor);
+
+        File.Delete(Path.Combine(_workspace.Root, "checkpoint", "item-0499.txt"));
+
+        Result<FileListResult> second = await browser.ListAsync(
+            workspace,
+            "checkpoint",
+            recursive: true,
+            searchPattern: null,
+            cursor,
+            CancellationToken.None);
+
+        Assert.True(second.IsFailure);
+
+        Assert.Equal(
+            "Workspace.ContinuationCheckpointMissing",
+            second.Error.Code);
+
+        Assert.Equal(
+            "The workspace changed and the continuation checkpoint no longer exists. Restart with cursor omitted.",
+            second.Error.Message);
 
     }
 

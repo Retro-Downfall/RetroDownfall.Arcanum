@@ -1499,14 +1499,9 @@ public sealed partial class WizardIntelligenceProvider(
             yield break;
         }
 
+        SessionAttachmentTurnBudget.BeginTurn();
+
         AttachmentsSettings streamAttachmentSettings = settings.Value.ResolveAttachments();
-
-        int streamMaxRefs = ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn(
-            streamAttachmentSettings.MaxReferencesPerTurn);
-
-        SessionAttachmentTurnBudget.BeginTurn(
-            streamMaxRefs,
-            request.AttachmentReferences?.Count ?? 0);
 
         EmbeddingSettings streamEmbeddingSettings = settings.Value.ResolveEmbeddings();
 
@@ -1531,6 +1526,9 @@ public sealed partial class WizardIntelligenceProvider(
         HashSet<int> acceptedAttachedFileIndices = [];
 
         HashSet<int> acceptedScryingFocusIndices = [];
+
+        List<(SessionAttachmentExplicitMaterialization Materialization,
+            ContextMaterializationIdentity Identity)> deferredAttachmentMaterializations = [];
 
         if (!attachmentsEnabled && request.AttachedFiles is { Count: > 0 } directAttachedFiles)
         {
@@ -1648,8 +1646,6 @@ public sealed partial class WizardIntelligenceProvider(
 
             }
 
-            _ = streamMaterializationLedger.TryMarkInjected(accepted.Identity, providerRound: 0);
-
             if (record.Source is
                 {
 
@@ -1663,6 +1659,17 @@ public sealed partial class WizardIntelligenceProvider(
                     workspaceRelativePath);
 
             }
+
+            if (materialization.RequiresMaterialization)
+            {
+
+                deferredAttachmentMaterializations.Add((materialization, accepted.Identity));
+
+                continue;
+
+            }
+
+            _ = streamMaterializationLedger.TryMarkInjected(accepted.Identity, providerRound: 0);
 
             acceptedAppendedContext.AddRange(materialization.Contents);
 
@@ -1681,6 +1688,8 @@ public sealed partial class WizardIntelligenceProvider(
             }
 
         }
+
+        int deferredAttachmentInsertionIndex = acceptedAppendedContext.Count;
 
         foreach (ContextPinMaterializedItem pin in streamPinMaterialization.Items ?? [])
         {
@@ -2140,6 +2149,244 @@ public sealed partial class WizardIntelligenceProvider(
 
         bool streamUsesTools = !request.DisableAllTools && streamTurnContext.InferenceTools.Count > 0;
 
+        if (deferredAttachmentMaterializations.Count > 0)
+        {
+
+            ChatOptions attachmentAdmissionOptions = CreateInferenceChatOptions(
+                streamUsesTools,
+                streamTurnContext.InferenceTools,
+                request,
+                lease);
+
+            foreach ((SessionAttachmentExplicitMaterialization materialization,
+                     ContextMaterializationIdentity identity)
+                     in deferredAttachmentMaterializations)
+            {
+
+                SessionAttachmentReferenceMaterialization reference =
+                    await SessionAttachmentTurnService.MaterializeReferenceAsync(
+                        materialization.Record,
+                        sessionAttachmentStore,
+                        settings.Value,
+                        lease.ResolvedModel,
+                        inferenceToken).ConfigureAwait(false);
+
+                if (reference.ErrorMessage is not null)
+                {
+
+                    Error referenceError = new(
+                        ErrorCodes.Validation.AttachedFiles,
+                        reference.ErrorMessage);
+
+                    if (!streaming)
+                    {
+
+                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(referenceError);
+
+                    }
+
+                    if (streaming)
+                    {
+
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.Error,
+                            referenceError.Message,
+                            referenceError.Code);
+
+                    }
+
+                    await grimoireTurnWriter
+                        .ResolveInterruptedAndMarkFinalizedAsync(
+                            grimoireTurn,
+                            null,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+
+                    yield break;
+
+                }
+
+                List<AIContent> candidateAppendedContext = [.. acceptedAppendedContext];
+
+                candidateAppendedContext.InsertRange(
+                    deferredAttachmentInsertionIndex,
+                    reference.Contents);
+
+                List<MeAiChatMessage> admissionMessages = chatMessages
+                    .Select(static message => new MeAiChatMessage(
+                        message.Role,
+                        [.. message.Contents])
+                    {
+
+                        AuthorName = message.AuthorName,
+
+                    })
+                    .ToList();
+
+                InferenceContextBuilder.AppendContentsToLastMessage(
+                    admissionMessages,
+                    candidateAppendedContext);
+
+                ModelCallContext attachmentAdmissionContext = BuildModelCallContext(lease, request);
+
+                (bool admissionCompressed, List<MeAiChatMessage> preparedAdmissionMessages) =
+                    inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
+                        new ContextCompressionRequest
+                        {
+
+                            Request = request,
+
+                            Messages = admissionMessages,
+
+                            Thread = thread,
+
+                            NewUserPrompt = prompt,
+
+                            Lease = lease,
+
+                            ChatOptions = attachmentAdmissionOptions,
+
+                            CodexContent = streamCodexContent,
+
+                            ActiveSpell = streamActiveSpell,
+
+                            DependencySpells = streamResonants,
+
+                            ReservedAnswerTokens = attachmentAdmissionContext.ReservedAnswerTokens,
+
+                            ReservedReasoningTokens = attachmentAdmissionContext.ReservedReasoningTokens,
+
+                            AppendedContents = candidateAppendedContext,
+
+                            SemanticContext = streamSemanticContext,
+
+                            SagaMemories = streamSagaMemories,
+
+                            SessionAttachmentContext = streamAttachmentContext,
+
+                            LexiconEntries = streamLexiconEntries,
+
+                            SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
+
+                            MaxIndexItems = streamMaxIndexItems,
+
+                            MaxIndexBytes = streamMaxIndexBytes,
+
+                        });
+
+                bool RemoveSemanticForAttachmentAdmission(ContextMaterializationEntry removed)
+                {
+
+                    bool changed = RemoveSemanticMaterialization(removed);
+
+                    if (!changed)
+                    {
+
+                        return false;
+
+                    }
+
+                    SystemPromptDocument admissionSystemPrompt = SystemPromptBuilder.BuildDocument(
+                        request,
+                        streamCodexContent,
+                        streamActiveSpell,
+                        streamAcceptedAttachedFiles,
+                        campaignSummary: admissionCompressed ? thread?.Summary : null,
+                        dependencySpells: streamResonants,
+                        maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
+                            ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
+                        semanticContext: streamSemanticContext,
+                        sagaMemories: streamSagaMemories,
+                        lexiconEntries: streamLexiconEntries,
+                        maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
+                            settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
+                        sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
+                        maxIndexItems: streamMaxIndexItems,
+                        maxIndexBytes: streamMaxIndexBytes,
+                        sessionAttachmentContext: streamAttachmentContext);
+
+                    if (preparedAdmissionMessages.Count > 0
+                        && preparedAdmissionMessages[0].Role == ChatRole.System)
+                    {
+
+                        preparedAdmissionMessages[0] = new MeAiChatMessage(
+                            ChatRole.System,
+                            admissionSystemPrompt.Render());
+
+                    }
+
+                    return true;
+
+                }
+
+                Result attachmentAdmission = EnsureContextBudgetWithMaterializations(
+                    preparedAdmissionMessages,
+                    attachmentAdmissionOptions,
+                    lease,
+                    request,
+                    streamMaterializationLedger,
+                    RemoveSemanticForAttachmentAdmission,
+                    out _);
+
+                if (attachmentAdmission.IsFailure)
+                {
+
+                    string attachmentLabel = SystemPromptBuilder.HardenAttachmentIndexName(
+                        materialization.Record.OriginalFileName);
+
+                    if (attachmentLabel.Length == 0)
+                    {
+
+                        attachmentLabel = materialization.Record.Id.ToString();
+
+                    }
+
+                    Error boundaryError = new(
+                        attachmentAdmission.Error.Code,
+                        $"Attachment '{attachmentLabel}' cannot fit in the resolved provider context. "
+                        + attachmentAdmission.Error.Message
+                        + " Use a larger-context model or reference fewer attachments in this turn.");
+
+                    if (!streaming)
+                    {
+
+                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(boundaryError);
+
+                    }
+
+                    if (streaming)
+                    {
+
+                        yield return new IntelligenceEvent(
+                            IntelligenceEventType.Error,
+                            boundaryError.Message,
+                            boundaryError.Code);
+
+                    }
+
+                    await grimoireTurnWriter
+                        .ResolveInterruptedAndMarkFinalizedAsync(
+                            grimoireTurn,
+                            null,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+
+                    yield break;
+
+                }
+
+                acceptedAppendedContext.InsertRange(
+                    deferredAttachmentInsertionIndex,
+                    reference.Contents);
+
+                deferredAttachmentInsertionIndex += reference.Contents.Count;
+
+                _ = streamMaterializationLedger.TryMarkInjected(identity, providerRound: 0);
+
+            }
+
+        }
+
         string? inferenceError;
 
         Error? inferenceTypedError = null;
@@ -2180,6 +2427,8 @@ public sealed partial class WizardIntelligenceProvider(
         bool streamingContextPrepared = false;
 
         bool streamToolCompatibilityRetry = false;
+
+        ToolLoopProgressDetector toolLoopProgressDetector = new();
 
         while (true)
         {
@@ -2724,6 +2973,9 @@ public sealed partial class WizardIntelligenceProvider(
                     break;
                 }
 
+                List<ToolLoopProgressEntry> toolLoopProgressEntries = new(
+                    toolCalls.Count);
+
                 streamToolRoundCount++;
 
                 ContextMaterializationLedgerAmbient.SetProviderRound(streamToolRoundCount);
@@ -2750,12 +3002,18 @@ public sealed partial class WizardIntelligenceProvider(
                             {
                                 if (!humanInteractionAvailable)
                                 {
+                                    ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(
+                                        fcc,
+                                        AskHumanUnavailableMessage);
+
+                                    toolLoopProgressEntries.Add(
+                                        new ToolLoopProgressEntry(
+                                            denied.ToolName,
+                                            denied.ArgsSnapshot,
+                                            denied.ResultText));
+
                                     if (!streaming)
                                     {
-                                        ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(
-                                            fcc,
-                                            AskHumanUnavailableMessage);
-
                                         (observedToolCalls ??= []).Add(new PromptToolCall(denied.CallId, denied.ToolName, denied.ArgsSnapshot));
 
                                         auditContext?.ToolNames.Add(denied.ToolName);
@@ -2801,32 +3059,9 @@ public sealed partial class WizardIntelligenceProvider(
                                     continue;
                                 }
 
-                                askHumanReservation = humanPromptRegistry.TryCreateReservation();
-
-                                if (askHumanReservation is null)
-                                {
-                                    await foreach (IntelligenceEvent denialEvent in EmitSyntheticAskHumanDenialAsync(
-                                                       fcc,
-                                                       HumanPromptCapExceededException.DefaultMessage,
-                                                       toolCallIndex,
-                                                       chatMessages,
-                                                       grimoireTurn,
-                                                       targetModel,
-                                                       auditContext,
-                                                       toolCallIndex == 0 ? rawRoundReasoning : null,
-                                                       inferenceToken)
-                                                       .ConfigureAwait(false))
-                                    {
-                                        if (streaming)
-                                        {
-                                            yield return denialEvent;
-                                        }
-                                    }
-
-                                    toolCallIndex++;
-
-                                    continue;
-                                }
+                                askHumanReservation = await humanPromptRegistry
+                                    .CreateReservationAsync(inferenceToken)
+                                    .ConfigureAwait(false);
 
                                 invokeFcc = PrepareAskHumanFunctionCall(fcc, askHumanReservation.PromptId);
                             }
@@ -2915,6 +3150,12 @@ public sealed partial class WizardIntelligenceProvider(
                             }
 
                             ToolExecutionPipeline.ProcessedToolCall processed = await processTask.ConfigureAwait(false);
+
+                            toolLoopProgressEntries.Add(
+                                new ToolLoopProgressEntry(
+                                    processed.ToolName,
+                                    processed.ArgsSnapshot,
+                                    processed.ResultText));
 
                             (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
 
@@ -3008,6 +3249,24 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     SessionAttachmentToolAmbient.CurrentSessionId = null;
                 }
+
+                if (toolLoopProgressDetector.ObserveCompletedRound(
+                        toolLoopProgressEntries))
+                {
+
+                    Error noProgressError = new(
+                        ErrorCodes.Hub.NoProgressDetected,
+                        "Tool execution stopped because the latest call/result round was identical to the previous round and produced no new evidence.");
+
+                    inferenceTypedError = noProgressError;
+
+                    inferenceError = noProgressError.Message;
+
+                    streamAccountingStatus = InferenceRunStatus.Failed;
+
+                    break;
+
+                }
             }
 
             if (streamOuterRestart)
@@ -3025,7 +3284,8 @@ public sealed partial class WizardIntelligenceProvider(
                     if (classification.BufferedTerminal is null)
                     {
                         classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
-                            new Error(ErrorCodes.Hub.Error, inferenceError));
+                            inferenceTypedError
+                            ?? new Error(ErrorCodes.Hub.Error, inferenceError));
                     }
                 }
 
@@ -3842,9 +4102,7 @@ public sealed partial class WizardIntelligenceProvider(
                     spellWorkspaceRoot,
                     maxSpellFileSizeBytes,
                     cancellationToken,
-                    logger,
-                    maxResonantDependencies: ArcanumSettingClamps.MaxResonantDependencies(
-                        ArcanumRuntimeDefaults.Spells.MaxResonantDependencies))
+                    logger)
                 .ConfigureAwait(false);
 
             return Result<ResolvedSpell?>.Success(resolvedOverride);
@@ -4001,9 +4259,7 @@ public sealed partial class WizardIntelligenceProvider(
                 maxSpellFileSizeBytes,
                 cancellationToken,
                 logger,
-                spellMetadata,
-                maxResonantDependencies: ArcanumSettingClamps.MaxResonantDependencies(
-                    ArcanumRuntimeDefaults.Spells.MaxResonantDependencies))
+                spellMetadata)
             .ConfigureAwait(false);
 
         return Result<ResolvedSpell?>.Success(resolved with { Entities = routerEntities });
@@ -5121,8 +5377,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         List<AITool> tools = [_localTimeTool, _systemInfoTool];
 
-        if (subagentRunner is not null
-            && SubagentExecutionAmbient.CanDelegate)
+        if (subagentRunner is not null)
         {
             tools.Add(new ArcanumDelegateTaskTool(
                 subagentRunner,
@@ -5136,16 +5391,11 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (scriptRoots.Count > 0 && hostProcessToolsAllowed)
         {
-            int sec = ArcanumSettingClamps.ExecuteCommandTimeoutSeconds(
-                settings.Value.ResolveIntelligence().ExecuteCommandTimeoutSeconds);
-
             long outputCap = ArcanumSettingClamps.ToolOutputCapBytes(
                 settings.Value.ResolveIntelligence().ToolOutputCapBytes);
 
             tools.Add(new ArcanumSpellScriptTool(
                 scriptRoots,
-                TimeSpan.FromSeconds(sec),
-                sec,
                 outputCap,
                 logger,
                 sanctumGuard,
@@ -5408,6 +5658,7 @@ public sealed partial class WizardIntelligenceProvider(
         "attach_session_file",
         "refresh_session_file",
         ToolRiskClassifier.SearchWorkspaceToolName,
+        ToolRiskClassifier.ReadCommandOutputToolName,
         "ask_human",
         "send_commlink_alert",
         "petition_dungeon_master",

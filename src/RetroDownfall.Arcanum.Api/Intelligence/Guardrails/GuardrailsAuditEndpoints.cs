@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -21,9 +22,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 internal static class GuardrailsAuditEndpoints
 {
 
-    private const int DefaultLimit = 100;
+    private const int DefaultPageSize = 100;
 
-    private const int MaxLimit = 1_000;
+    private const int MaxPageSize = 1_000;
 
     internal static void MapGuardrailsAuditEndpoints(this RouteGroupBuilder apiGroup)
     {
@@ -39,6 +40,7 @@ internal static class GuardrailsAuditEndpoints
         string? violationType,
         string? sessionId,
         int? limit,
+        string? cursor,
         IGuardrailAuditLogger auditLogger,
         HttpContext httpContext,
         CancellationToken cancellationToken)
@@ -85,11 +87,35 @@ internal static class GuardrailsAuditEndpoints
 
         }
 
-        int effectiveLimit = Math.Clamp(limit ?? DefaultLimit, 1, MaxLimit);
+        int effectiveLimit = Math.Clamp(limit ?? DefaultPageSize, 1, MaxPageSize);
 
-        IReadOnlyList<GuardrailAuditRecord> records = await auditLogger
-            .QueryAsync(parsedFrom, parsedTo, stage, violationType, sessionId, effectiveLimit, cancellationToken)
+        Result<AuditQueryPage<GuardrailAuditRecord>> page = await auditLogger
+            .QueryPageAsync(
+                parsedFrom,
+                parsedTo,
+                stage,
+                violationType,
+                sessionId,
+                effectiveLimit,
+                cursor,
+                cancellationToken)
             .ConfigureAwait(false);
+
+        if (page.IsFailure)
+        {
+
+            return ValidationError(traceId, page.Error.Message);
+
+        }
+
+        if (page.Value.NextCursor is not null)
+        {
+
+            httpContext.Response.Headers[ArcanumApiHeaders.AuditNextCursor] = page.Value.NextCursor;
+
+        }
+
+        IReadOnlyList<GuardrailAuditRecord> records = page.Value.Records;
 
         Result<GuardrailAuditRecord[]> result = Result<GuardrailAuditRecord[]>.Success([.. records]);
 

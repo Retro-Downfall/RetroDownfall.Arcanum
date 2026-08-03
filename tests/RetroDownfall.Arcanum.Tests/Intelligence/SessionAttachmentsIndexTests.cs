@@ -64,7 +64,14 @@ public sealed class SessionAttachmentsIndexTests
 
         IReadOnlyList<SessionAttachmentIndexItem> index =
         [
-            new("notes", "notes.txt", [1, 2], SessionAttachmentKind.Text, 123),
+            new(
+                "notes",
+                "notes.txt",
+                [1, 2],
+                SessionAttachmentKind.Text,
+                123,
+                HasMoreVersions: true,
+                NextVersion: 3),
             new("shot", "shot.png", [1], SessionAttachmentKind.Image, 456),
         ];
 
@@ -74,7 +81,10 @@ public sealed class SessionAttachmentsIndexTests
             sessionAttachmentsIndex: index);
 
         Assert.Contains("### Session Attachments Index", prompt, StringComparison.Ordinal);
-        Assert.Contains("- notes.txt  versions=1,2  kind=Text  bytes=123", prompt, StringComparison.Ordinal);
+        Assert.Contains(
+            "- notes.txt  versions=1,2  has-more-versions=true  next-version=3  kind=Text  bytes=123",
+            prompt,
+            StringComparison.Ordinal);
         Assert.Contains("- shot.png  versions=1  kind=Image  bytes=456", prompt, StringComparison.Ordinal);
         Assert.DoesNotContain("hello world file bytes", prompt, StringComparison.Ordinal);
 

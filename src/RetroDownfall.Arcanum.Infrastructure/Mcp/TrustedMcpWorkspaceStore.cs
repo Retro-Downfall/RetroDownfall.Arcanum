@@ -12,8 +12,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
     internal const int MaxTrustDocumentBytes = 8 * 1024 * 1024;
 
-    internal const int MaxTrustDocumentEntries = 256;
-
     internal const int MaxNormalizedWorkspacePathChars = 4096;
 
     internal const int Sha256HexLength = 64;
@@ -22,6 +20,9 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
     private static string StorePath =>
         Path.Combine(ArcanumPaths.GrimoireDirectory, "trusted-mcp-workspaces.json");
+
+    internal int TrustDocumentPageBytesForTesting { get; set; } =
+        MaxTrustDocumentBytes;
 
     public void Dispose()
     {
@@ -173,26 +174,11 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
         try
         {
-            TrustedStoreLoadResult loadResult =
-                await LoadUnlockedAsync(cancellationToken).ConfigureAwait(false);
-
-            if (!loadResult.IsValid)
-            {
-                throw InvalidStoreException();
-            }
-
-            TrustedMcpWorkspaceDocument document = loadResult.Document!;
-
-            if (!document.Entries.ContainsKey(normalized)
-                && document.Entries.Count >= MaxTrustDocumentEntries)
-            {
-                throw new TrustedMcpWorkspaceStoreException(
-                    "The MCP approval store reached its workspace limit. Remove stale approvals and retry.");
-            }
-
-            document.Entries[normalized] = digestResult.Digest!;
-
-            await SaveUnlockedAsync(document, cancellationToken).ConfigureAwait(false);
+            await SaveApprovalUnlockedAsync(
+                    normalized,
+                    digestResult.Digest!,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -228,7 +214,7 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
     }
 
-    private static async Task<bool> IsApprovedDigestNormalizedAsync(
+    private async Task<bool> IsApprovedDigestNormalizedAsync(
         string normalizedWorkspaceRoot,
         string sourceDigest,
         CancellationToken cancellationToken)
@@ -238,21 +224,49 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
         try
         {
-            TrustedStoreLoadResult loadResult =
-                await LoadUnlockedAsync(cancellationToken).ConfigureAwait(false);
+            string? approvedDigest = null;
 
-            if (!loadResult.IsValid
-                || !loadResult.Document!.Entries.TryGetValue(
-                    normalizedWorkspaceRoot,
-                    out string? storedDigest))
+            for (long pageIndex = 0; ; pageIndex++)
             {
-                return false;
+                TrustedStoreLoadResult loadResult = await LoadPageUnlockedAsync(
+                        GetPagePath(pageIndex),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!loadResult.IsValid)
+                {
+                    return false;
+                }
+
+                if (!loadResult.Exists)
+                {
+                    break;
+                }
+
+                if (!loadResult.Document!.Entries.TryGetValue(
+                        normalizedWorkspaceRoot,
+                        out string? storedDigest))
+                {
+                    continue;
+                }
+
+                if (approvedDigest is not null
+                    && !string.Equals(
+                        approvedDigest,
+                        storedDigest,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                approvedDigest = storedDigest;
             }
 
-            return string.Equals(
-                storedDigest,
-                sourceDigest,
-                StringComparison.OrdinalIgnoreCase);
+            return approvedDigest is not null
+                && string.Equals(
+                    approvedDigest,
+                    sourceDigest,
+                    StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -261,7 +275,117 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
     }
 
-    private static async Task<TrustedStoreLoadResult> LoadUnlockedAsync(
+    private async Task SaveApprovalUnlockedAsync(
+        string normalizedWorkspaceRoot,
+        string sourceDigest,
+        CancellationToken cancellationToken)
+    {
+
+        TrustedMcpWorkspaceDocument? lastDocument = null;
+
+        long lastPageIndex = 0;
+
+        TrustedMcpWorkspaceDocument? matchingDocument = null;
+
+        long matchingPageIndex = 0;
+
+        for (long pageIndex = 0; ; pageIndex++)
+        {
+            TrustedStoreLoadResult loadResult = await LoadPageUnlockedAsync(
+                    GetPagePath(pageIndex),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!loadResult.IsValid)
+            {
+                throw InvalidStoreException();
+            }
+
+            if (!loadResult.Exists)
+            {
+                break;
+            }
+
+            TrustedMcpWorkspaceDocument document = loadResult.Document!;
+
+            if (document.Entries.ContainsKey(normalizedWorkspaceRoot))
+            {
+                if (matchingDocument is not null)
+                {
+                    throw InvalidStoreException();
+                }
+
+                matchingDocument = document;
+
+                matchingPageIndex = pageIndex;
+            }
+
+            lastDocument = document;
+
+            lastPageIndex = pageIndex;
+        }
+
+        if (matchingDocument is not null)
+        {
+            matchingDocument.Entries[normalizedWorkspaceRoot] = sourceDigest;
+
+            await SavePageUnlockedAsync(
+                    GetPagePath(matchingPageIndex),
+                    matchingDocument,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return;
+        }
+
+        TrustedMcpWorkspaceDocument destination = lastDocument
+            ?? new TrustedMcpWorkspaceDocument();
+
+        destination.Entries[normalizedWorkspaceRoot] = sourceDigest;
+
+        try
+        {
+            await SavePageUnlockedAsync(
+                    GetPagePath(lastPageIndex),
+                    destination,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return;
+        }
+        catch (TrustDocumentTooLargeException) when (lastDocument is not null)
+        {
+        }
+        catch (TrustDocumentTooLargeException ex)
+        {
+            throw new TrustedMcpWorkspaceStoreException(
+                "One MCP workspace approval exceeds the per-document storage boundary. Shorten the workspace path and retry.",
+                ex);
+        }
+
+        TrustedMcpWorkspaceDocument nextPage = new();
+
+        nextPage.Entries[normalizedWorkspaceRoot] = sourceDigest;
+
+        try
+        {
+            await SavePageUnlockedAsync(
+                    GetPagePath(lastPageIndex + 1),
+                    nextPage,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (TrustDocumentTooLargeException ex)
+        {
+            throw new TrustedMcpWorkspaceStoreException(
+                "One MCP workspace approval exceeds the per-document storage boundary. Shorten the workspace path and retry.",
+                ex);
+        }
+
+    }
+
+    private async Task<TrustedStoreLoadResult> LoadPageUnlockedAsync(
+        string pagePath,
         CancellationToken cancellationToken)
     {
 
@@ -271,8 +395,8 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         {
             readResult = await SecureFileReader
                 .ReadBytesAsync(
-                    StorePath,
-                    MaxTrustDocumentBytes,
+                    pagePath,
+                    TrustDocumentPageBytesForTesting,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -285,7 +409,7 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         {
             if (readResult.Status is SecureFileReadStatus.NotFound)
             {
-                return TrustedStoreLoadResult.Valid(new TrustedMcpWorkspaceDocument());
+                return TrustedStoreLoadResult.Missing;
             }
 
             if (readResult.Status is not SecureFileReadStatus.Success)
@@ -311,7 +435,8 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
     }
 
-    private static async Task SaveUnlockedAsync(
+    private async Task SavePageUnlockedAsync(
+        string pagePath,
         TrustedMcpWorkspaceDocument document,
         CancellationToken cancellationToken)
     {
@@ -319,27 +444,6 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
         if (!IsValidDocument(document))
         {
             throw InvalidStoreException();
-        }
-
-        byte[] serialized;
-
-        try
-        {
-            serialized = JsonSerializer.SerializeToUtf8Bytes(
-                document,
-                McpConfigJsonSerializerContext.Default.TrustedMcpWorkspaceDocument);
-        }
-        catch (Exception ex) when (ex is JsonException or NotSupportedException)
-        {
-            throw new TrustedMcpWorkspaceStoreException(
-                "The MCP approval store could not be serialized safely.",
-                ex);
-        }
-
-        if (serialized.Length > MaxTrustDocumentBytes)
-        {
-            throw new TrustedMcpWorkspaceStoreException(
-                "The MCP approval store exceeds its serialized size limit. Remove stale approvals and retry.");
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -358,7 +462,7 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
                 $".trusted-mcp-workspaces.{Guid.NewGuid():N}.tmp");
 
             AtomicReplaceStatus replaceStatus = await AtomicFile.ReplaceAsync(
-                    StorePath,
+                    pagePath,
                     tempPath,
                     async (stream, ct) =>
                     {
@@ -368,11 +472,30 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
                                 "Could not secure temporary MCP approval-store permissions.");
                         }
 
-                        await stream.WriteAsync(serialized, ct).ConfigureAwait(false);
+                        try
+                        {
+                            await JsonSerializer.SerializeAsync(
+                                    stream,
+                                    document,
+                                    McpConfigJsonSerializerContext.Default.TrustedMcpWorkspaceDocument,
+                                    ct)
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception ex) when (ex is JsonException or NotSupportedException)
+                        {
+                            throw new TrustedMcpWorkspaceStoreException(
+                                "The MCP approval store could not be serialized safely.",
+                                ex);
+                        }
+
+                        if (stream.Length > TrustDocumentPageBytesForTesting)
+                        {
+                            throw new TrustDocumentTooLargeException();
+                        }
                     },
                     cancellationToken,
                     afterReplace: () =>
-                        SecureFilePermissions.TryApplyOwnerOnlyFileStrict(StorePath))
+                        SecureFilePermissions.TryApplyOwnerOnlyFileStrict(pagePath))
                 .ConfigureAwait(false);
 
             if (replaceStatus is not AtomicReplaceStatus.Succeeded)
@@ -398,6 +521,20 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
                 "Could not safely update the MCP approval store. Verify storage permissions and retry.",
                 ex);
         }
+
+    }
+
+    private static string GetPagePath(long pageIndex)
+    {
+
+        if (pageIndex == 0)
+        {
+            return StorePath;
+        }
+
+        return Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            $"trusted-mcp-workspaces.page-{pageIndex:D8}.json");
 
     }
 
@@ -479,8 +616,7 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
     private static bool IsValidDocument(TrustedMcpWorkspaceDocument document)
     {
 
-        if (document.Entries is null
-            || document.Entries.Count > MaxTrustDocumentEntries)
+        if (document.Entries is null)
         {
             return false;
         }
@@ -551,16 +687,24 @@ public sealed class TrustedMcpWorkspaceStore : ITrustedMcpWorkspaceStore, IDispo
 
     private readonly record struct TrustedStoreLoadResult(
         bool IsValid,
+        bool Exists,
         TrustedMcpWorkspaceDocument? Document)
     {
 
         public static TrustedStoreLoadResult Invalid { get; } =
-            new(false, null);
+            new(false, false, null);
+
+        public static TrustedStoreLoadResult Missing { get; } =
+            new(true, false, null);
 
         public static TrustedStoreLoadResult Valid(
             TrustedMcpWorkspaceDocument document) =>
-            new(true, document);
+            new(true, true, document);
 
+    }
+
+    private sealed class TrustDocumentTooLargeException : Exception
+    {
     }
 
     private readonly record struct McpFileDigestResult(

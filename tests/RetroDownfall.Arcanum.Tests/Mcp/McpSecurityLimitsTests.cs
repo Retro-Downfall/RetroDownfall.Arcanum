@@ -96,16 +96,15 @@ public sealed class McpSecurityLimitsTests
     }
 
     [Fact]
-    public void BoundToolDescription_truncates_long_descriptions()
+    public void BoundToolDescription_rejects_oversized_metadata_instead_of_silently_truncating()
     {
 
         string longDescription = new('x', McpSecurityLimits.MaxMcpToolDescriptionUtf8Bytes + 64);
 
-        string bounded = McpSecurityLimits.BoundToolDescription(longDescription);
+        InvalidDataException error = Assert.Throws<InvalidDataException>(
+            () => McpSecurityLimits.BoundToolDescription(longDescription));
 
-        Assert.True(Encoding.UTF8.GetByteCount(bounded) <= McpSecurityLimits.MaxMcpToolDescriptionUtf8Bytes + 64);
-
-        Assert.Contains("truncated", bounded, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("physical", error.Message, StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -120,7 +119,7 @@ public sealed class McpSecurityLimitsTests
     }
 
     [Fact]
-    public void BoundToolInputSchema_replaces_oversized_schema_with_empty_object()
+    public void BoundToolInputSchema_rejects_oversized_metadata_instead_of_erasing_the_contract()
     {
 
         string padding = new('y', McpSecurityLimits.MaxMcpToolInputSchemaUtf8Bytes);
@@ -129,11 +128,12 @@ public sealed class McpSecurityLimitsTests
 
         JsonElement schema = JsonDocument.Parse(hugeSchema).RootElement;
 
-        JsonElement bounded = McpSecurityLimits.BoundToolInputSchema(schema, McpJsonSerializerContext.Default);
+        InvalidDataException error = Assert.Throws<InvalidDataException>(
+            () => McpSecurityLimits.BoundToolInputSchema(
+                schema,
+                McpJsonSerializerContext.Default));
 
-        Assert.Equal(JsonValueKind.Object, bounded.ValueKind);
-
-        Assert.Equal("{}", bounded.GetRawText());
+        Assert.Contains("physical", error.Message, StringComparison.OrdinalIgnoreCase);
 
     }
 

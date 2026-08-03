@@ -192,7 +192,7 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task PerceivePatternAsync_truncates_when_enumeration_limit_reached()
+    public async Task PerceivePatternAsync_continues_beyond_the_former_enumeration_ceiling()
     {
 
         TempWorkspace truncWorkspace = new();
@@ -207,11 +207,17 @@ public sealed class EyeOfTheWorldServiceTests : IAsyncLifetime
                 truncWorkspace.WriteFile($"file{i}.dat", "x");
             }
 
-            EyeOfTheWorldService service = new(maxEnumerationSteps: 3);
+            EyeOfTheWorldService service = new();
 
             PatternSnapshot snapshot = await service.PerceivePatternAsync(truncWorkspace.Root, CancellationToken.None);
 
-            Assert.Contains(snapshot.Threads, t => t.Contains("truncated after 3 files", StringComparison.Ordinal));
+            Assert.DoesNotContain(
+                snapshot.Threads,
+                static thread => thread.Contains("truncated", StringComparison.OrdinalIgnoreCase));
+
+            Assert.Equal(
+                6,
+                snapshot.Threads.Count(static thread => thread.StartsWith("File:", StringComparison.Ordinal)));
 
         }
         finally

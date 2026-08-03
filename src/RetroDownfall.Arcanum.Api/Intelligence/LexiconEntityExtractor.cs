@@ -70,11 +70,7 @@ internal static class LexiconEntityExtractor
         {
             IModelCallExecutor executor = modelCallExecutor ?? new ModelCallExecutor();
 
-            TurnBudget auxBudget = new(new TurnLimits(
-                MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64,
-                MaxToolResultTokens: 512_000, MaxToolResultBytes: 4_194_304,
-                MaxElapsedTime: TimeSpan.FromSeconds(300),
-                MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m));
+            ITurnBudget auxBudget = UnrestrictedTurnBudget.Instance;
 
             var callResult = await executor
                 .ExecuteBufferedAsync(

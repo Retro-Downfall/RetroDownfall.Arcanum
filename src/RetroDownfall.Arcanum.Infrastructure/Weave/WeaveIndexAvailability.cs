@@ -29,16 +29,10 @@ public sealed class WeaveIndexAvailability
     /// <summary>Stable wire / meta string when vector status cannot be determined.</summary>
     public const string ModeUnavailable = "unavailable";
 
-    /// <summary>
-    /// Hard row budget for managed cosine scans — single source of truth for
-    /// <c>DivinationService</c> and operator-facing diagnostics.
-    /// </summary>
-    public const int ManagedSearchRowBudget = 50_000;
-
     private volatile bool _isVecAvailable;
 
     private volatile string _diagnostic =
-        "sqlite-vec not shipped; using managed SIMD fallback (preview/performance-limited).";
+        "sqlite-vec not shipped; using complete streamed managed SIMD fallback.";
 
     public bool IsVecAvailable => _isVecAvailable;
 
@@ -66,7 +60,7 @@ public sealed class WeaveIndexAvailability
 
         _diagnostic = available
             ? "sqlite-vec vec0 acceleration index is loaded."
-            : "sqlite-vec not shipped; using managed SIMD fallback (preview/performance-limited).";
+            : "sqlite-vec not shipped; using complete streamed managed SIMD fallback.";
 
     }
 

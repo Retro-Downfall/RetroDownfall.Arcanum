@@ -224,6 +224,46 @@ public sealed class SpellSearchServiceTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task SearchAsync_returns_matches_beyond_the_former_total_result_ceiling()
+    {
+
+        const int addedSpellCount = 1001;
+
+        for (int index = 0; index < addedSpellCount; index++)
+        {
+
+            _workspace.WriteFile(
+                $"spells/bulk-{index:D4}/SPELL.md",
+                $"""
+                ---
+                name: bulk-{index:D4}
+                description: bulk spell {index}
+                ---
+                body
+                """);
+
+        }
+
+        SpellSearchService service = new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+
+        SpellSearchQuery query = new(
+            Query: null,
+            Tag: null,
+            Tool: null,
+            Source: SpellSource.Workspace,
+            CampaignId: null,
+            Workspace: _workspace.Root,
+            Campaigns: Array.Empty<Campaign>());
+
+        SpellSummary[] results = await service.SearchAsync(query, CancellationToken.None);
+
+        Assert.Equal(addedSpellCount + 2, results.Length);
+
+        Assert.Contains(results, static result => result.Name == "bulk-1000");
+
+    }
+
     private void SetEnvironment(string name, string value)
     {
 

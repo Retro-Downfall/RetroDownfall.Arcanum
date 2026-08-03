@@ -294,9 +294,6 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
     private static RetentionSettings Normalize(RetentionSettings source)
     {
 
-        int maxItems = ArcanumSettingClamps.RetentionMaxItemsPerSweep(
-            source.MaxItemsPerSweep);
-
         int accountingMinimum =
             ArcanumSettingClamps.RetentionAccountingMinimumDays(
                 source.AccountingMinimumDays);
@@ -311,13 +308,6 @@ internal sealed class DataRetentionPolicyStore : IDataRetentionPolicyStore
             SweepIntervalHours =
                 ArcanumSettingClamps.RetentionSweepIntervalHours(
                     source.SweepIntervalHours),
-
-            MaxItemsPerSweep = maxItems,
-
-            CheckpointInterval =
-                ArcanumSettingClamps.RetentionCheckpointInterval(
-                    source.CheckpointInterval,
-                    maxItems),
 
             AccountingMinimumDays = accountingMinimum,
 

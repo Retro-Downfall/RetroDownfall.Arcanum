@@ -127,12 +127,9 @@ internal static class CliApplicationFactory
             {
                 ArcanumSettings settings = serviceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
 
-                int timeoutSeconds = ArcanumSettingClamps.ApiRequestTimeoutSeconds(
-                    ArcanumRuntimeDefaults.CliApiRequestTimeoutSeconds);
-
                 client.BaseAddress = new Uri(ArcanumLocalApiAddress.ResolveBaseUrl(settings.Host));
 
-                client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+                client.Timeout = Timeout.InfiniteTimeSpan;
             });
 
         services.AddSingleton<ArcanumApiClient>();

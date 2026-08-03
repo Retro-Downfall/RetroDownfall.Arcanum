@@ -95,13 +95,13 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetToolsAsync_enforces_max_tools_per_server_cap_via_real_sdk_session()
+    public async Task GetToolsAsync_does_not_truncate_a_server_tool_catalog()
     {
-        await using (SdkMcpClientWrapper client = await CreateInitializedClientAsync(maxToolsPerServer: 2))
+        await using (SdkMcpClientWrapper client = await CreateInitializedClientAsync())
         {
             IReadOnlyList<McpBridgeTool> tools = await client.GetToolsAsync();
 
-            Assert.True(tools.Count <= 2, $"Expected at most 2 tools, got {tools.Count}.");
+            Assert.True(tools.Count > 2, $"Expected the complete tool catalog, got {tools.Count} tools.");
         }
     }
 
@@ -116,7 +116,7 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
             () => client.CallToolAsync("read_file_chunk", new Dictionary<string, object?>()));
     }
 
-    private async Task<SdkMcpClientWrapper> CreateInitializedClientAsync(int maxToolsPerServer = 256)
+    private async Task<SdkMcpClientWrapper> CreateInitializedClientAsync()
     {
         string normalizedRoot = Path.GetFullPath(_workspace.Root);
 
@@ -162,11 +162,8 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
             {
                 ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
             },
-            defaultRequestTimeout: TimeSpan.FromSeconds(10),
-            maxToolsListPages: 8,
+            initializationTimeout: TimeSpan.FromSeconds(10),
             toolOutputCapBytes: 65536,
-            maxToolsPerServer: maxToolsPerServer,
-            maxToolsPerListPage: 64,
             maxToolsTotalBytes: 1_048_576);
 
         await client.InitializeAsync();
@@ -187,8 +184,6 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
                 scopeFactory,
                 pacer,
                 workspaceRoot,
-                executeCommandTimeout: TimeSpan.FromSeconds(30),
-                executeCommandTimeoutSecondsForDisplay: 30,
                 listDirectoryMaxPaths: 64,
                 intelligenceSettings: intelligenceSettings,
                 maxFileReadSizeBytes: 1024 * 1024,

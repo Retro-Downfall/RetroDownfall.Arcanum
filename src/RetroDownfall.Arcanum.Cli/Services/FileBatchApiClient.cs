@@ -117,10 +117,11 @@ public sealed class FileBatchApiClient(
 
     public Task<Result<OpenAiBatchListResponse>> ListBatchesAsync(
         string? status,
+        string? cursor,
         CancellationToken cancellationToken) =>
         SendJsonAsync(
             HttpMethod.Get,
-            BuildQuery("/v1/batches", "status", status),
+            BuildBatchListQuery(status, cursor),
             content: null,
             ArcanumJsonContext.Default.OpenAiBatchListResponse,
             cancellationToken);
@@ -509,6 +510,40 @@ public sealed class FileBatchApiClient(
         string.IsNullOrWhiteSpace(value)
             ? path
             : $"{path}?{key}={Uri.EscapeDataString(value.Trim())}";
+
+    private static string BuildBatchListQuery(
+
+        string? status,
+
+        string? cursor)
+
+    {
+
+        List<string> fields = [];
+
+        if (!string.IsNullOrWhiteSpace(status))
+
+        {
+
+            fields.Add("status=" + Uri.EscapeDataString(status.Trim()));
+
+        }
+
+        if (!string.IsNullOrWhiteSpace(cursor))
+
+        {
+
+            fields.Add("after=" + Uri.EscapeDataString(cursor.Trim()));
+
+        }
+
+        return fields.Count == 0
+
+            ? "/v1/batches"
+
+            : "/v1/batches?" + string.Join('&', fields);
+
+    }
 
     private static string InferContentType(string path) =>
         Path.GetExtension(path).ToLowerInvariant() switch

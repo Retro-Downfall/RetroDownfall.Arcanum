@@ -600,18 +600,6 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void RuntimeDefaults_McpRequestTimeoutCoversExecuteCommandTimeout()
-    {
-        int executeTimeout = ArcanumSettingClamps.ExecuteCommandTimeoutSeconds(
-            ArcanumRuntimeDefaults.Intelligence.ExecuteCommandTimeoutSeconds);
-        int requestTimeout = ArcanumSettingClamps.McpRequestTimeoutSeconds(
-            ArcanumRuntimeDefaults.Mcp.RequestTimeoutSeconds);
-
-        Assert.True(requestTimeout >= executeTimeout);
-
-    }
-
-    [Fact]
     public void Validate_NullProviders_uses_empty_provider_list()
     {
 
@@ -2087,18 +2075,20 @@ public sealed class ConfigurationValidatorTests
     }
 
     [Fact]
-    public void CodingTools_defaults_are_bounded_and_workspace_check_timeout_is_five_minutes()
+    public void CodingTools_defaults_retain_only_physical_result_shape_bounds()
     {
         CodingToolsSettings settings = ArcanumRuntimeDefaults.CodingTools;
 
-        Assert.Equal(300, settings.WorkspaceCheck.TimeoutSeconds);
-        Assert.Equal(300, ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(300));
-        Assert.Equal(30, ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(int.MinValue));
-        Assert.Equal(1800, ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(int.MaxValue));
+        Assert.Null(
+            typeof(WorkspaceCheckSettings).GetProperty("TimeoutSeconds"));
+
+        Assert.Null(
+            typeof(WorkspaceSearchSettings).GetProperty("MaxMatches"));
 
         Assert.Equal(
-            settings.Search.MaxMatches,
-            ArcanumSettingClamps.WorkspaceSearchMaxMatches(settings.Search.MaxMatches));
+            settings.Search.MaxPreviewChars,
+            ArcanumSettingClamps.WorkspaceSearchMaxPreviewChars(
+                settings.Search.MaxPreviewChars));
         Assert.Equal(
             settings.Patch.MaxPatchBytes,
             ArcanumSettingClamps.WorkspacePatchMaxPatchBytes(settings.Patch.MaxPatchBytes));
@@ -2121,11 +2111,9 @@ public sealed class ConfigurationValidatorTests
             defaults.Patch.MaxPatchBytes,
             ArcanumSettingClamps.WorkspacePatchMaxPatchBytes(defaults.Patch.MaxPatchBytes));
         Assert.Equal(
-            defaults.Patch.MaxFiles,
-            ArcanumSettingClamps.WorkspacePatchMaxFiles(defaults.Patch.MaxFiles));
-        Assert.Equal(
-            check.TimeoutSeconds,
-            ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(check.TimeoutSeconds));
+            defaults.Patch.RecoveryTimeoutMilliseconds,
+            ArcanumSettingClamps.WorkspacePatchRecoveryTimeoutMilliseconds(
+                defaults.Patch.RecoveryTimeoutMilliseconds));
         Assert.Equal(
             check.MaxDiagnostics,
             ArcanumSettingClamps.WorkspaceCheckMaxDiagnostics(check.MaxDiagnostics));

@@ -6,20 +6,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 internal static class SkillJsonBoundsValidator
 {
 
-    public static string? Validate(SkillMetadata? metadata, int maxDependencies, int maxDeclaredTools)
+    public static string? Validate(SkillMetadata? metadata, int maxDeclaredTools)
     {
 
         if (metadata is null)
         {
 
             return null;
-
-        }
-
-        if ((metadata.Dependencies?.Count ?? 0) > maxDependencies)
-        {
-
-            return $"dependencies exceeds the maximum of {maxDependencies}.";
 
         }
 
@@ -34,17 +27,8 @@ internal static class SkillJsonBoundsValidator
 
     }
 
-    public static string? ValidateCreate(CreateSpellRequest request, int maxDependencies, int maxDeclaredTools)
+    public static string? ValidateCreate(CreateSpellRequest request, int maxDeclaredTools)
     {
-
-        int depCount = request.Dependencies?.Length ?? 0;
-
-        if (depCount > maxDependencies)
-        {
-
-            return $"dependencies exceeds the maximum of {maxDependencies}.";
-
-        }
 
         int toolsCount = request.DeclaredTools?.Length ?? 0;
 
@@ -59,15 +43,8 @@ internal static class SkillJsonBoundsValidator
 
     }
 
-    public static string? ValidateUpdate(UpdateSpellRequest request, int maxDependencies, int maxDeclaredTools)
+    public static string? ValidateUpdate(UpdateSpellRequest request, int maxDeclaredTools)
     {
-
-        if (request.Dependencies is { } deps && deps.Length > maxDependencies)
-        {
-
-            return $"dependencies exceeds the maximum of {maxDependencies}.";
-
-        }
 
         if (request.DeclaredTools is { } tools && tools.Length > maxDeclaredTools)
         {
@@ -81,4 +58,3 @@ internal static class SkillJsonBoundsValidator
     }
 
 }
-

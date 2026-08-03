@@ -26,29 +26,17 @@ public sealed record WorkspaceSearchSettings
 
     public int RegexTimeoutMilliseconds { get; set; } = 250;
 
-    public int MaxElapsedMilliseconds { get; set; } = 10_000;
-
-    public int MaxFiles { get; set; } = 2_000;
-
-    public long MaxBytes { get; set; } = 32L * 1024L * 1024L;
-
-    public int MaxTraversalSteps { get; set; } = 100_000;
-
-    public int MaxMatches { get; set; } = 1_000;
-
     public int MaxPreviewChars { get; set; } = 512;
 }
 
 /// <summary>
-/// Resource and recovery limits for one unified-diff invocation.
+/// Per-allocation resource and recovery protections for one unified-diff invocation.
 /// </summary>
 public sealed record WorkspacePatchSettings
 {
     public long MaxPatchBytes { get; set; } = 4L * 1024L * 1024L;
 
     public long MaxInputBytesPerFile { get; set; } = 16L * 1024L * 1024L;
-
-    public long MaxTotalInputBytes { get; set; } = 64L * 1024L * 1024L;
 
     public long MaxOutputBytesPerFile { get; set; } = 16L * 1024L * 1024L;
 
@@ -58,19 +46,10 @@ public sealed record WorkspacePatchSettings
 
     public long MaxTotalStagingBytes { get; set; } = 128L * 1024L * 1024L;
 
-    public int MaxElapsedMilliseconds { get; set; } = 30_000;
-
-    public int RollbackReserveMilliseconds { get; set; } = 5_000;
-
-    public int MaxFiles { get; set; } = 128;
-
-    public int MaxHunks { get; set; } = 1_024;
-
-    public int MaxLinesPerHunk { get; set; } = 10_000;
+    public int RecoveryTimeoutMilliseconds { get; set; } = 5_000;
 
     public int FuzzyMatchWindowLines { get; set; } = 100;
 
-    public int MaxResultItems { get; set; } = 256;
 }
 
 /// <summary>
@@ -81,8 +60,6 @@ public sealed record WorkspacePatchSettings
 public sealed record WorkspaceCheckSettings
 {
     public bool Enabled { get; set; } = true;
-
-    public int TimeoutSeconds { get; set; } = 300;
 
     public int MaxCustomProfiles { get; set; } = 32;
 

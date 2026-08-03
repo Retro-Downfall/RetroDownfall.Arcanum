@@ -771,8 +771,6 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
             ArcanumSpellScriptTool tool = new(
                 [globalScripts],
-                TimeSpan.FromSeconds(15),
-                15,
                 campaignWorkspaceRoot: _workspace,
                 allowUnsandboxedToolChildren: false);
 
@@ -878,8 +876,6 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
 
         ArcanumSpellScriptTool tool = new(
             [_scriptsRoot],
-            TimeSpan.FromSeconds(15),
-            15,
             campaignWorkspaceRoot: _workspace,
             allowUnsandboxedToolChildren: false);
 

@@ -152,8 +152,6 @@ public sealed partial class DataRetentionServiceTests
 
         }
 
-        settings.Retention.MaxItemsPerSweep = 1;
-
         IDataRetentionService service = CreateService(settings);
 
         DataRetentionPlan plan = await service.PlanAsync(
@@ -173,10 +171,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.DoesNotContain(
             plan.CandidateIds,
             candidate => candidate.EndsWith(blockedResourceId, StringComparison.Ordinal));
-
-        Assert.True(
-            plan.Blockers.Count(candidate => candidate.DataClass == expectedBlockerClass)
-            <= settings.Retention.MaxItemsPerSweep);
 
     }
 
@@ -229,8 +223,6 @@ public sealed partial class DataRetentionServiceTests
         ArcanumSettings settings = CreatePruneSettings();
 
         settings.Retention.UploadedFiles = EnabledRule();
-
-        settings.Retention.MaxItemsPerSweep = 1;
 
         IDataRetentionService service = CreateService(settings);
 
@@ -286,8 +278,6 @@ public sealed partial class DataRetentionServiceTests
         ArcanumSettings settings = CreatePruneSettings();
 
         settings.Retention.Entries = EnabledRule();
-
-        settings.Retention.MaxItemsPerSweep = 2;
 
         IDataRetentionService service = CreateService(settings);
 

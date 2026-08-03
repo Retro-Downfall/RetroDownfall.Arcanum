@@ -173,6 +173,53 @@ public sealed class AuditEndpointTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task GetAudit_Returns_and_accepts_opaque_cursor_without_changing_array_body()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _auditLogger.Records.Add(MakeRecord("ping", sessionId: "oldest"));
+
+        _auditLogger.Records.Add(MakeRecord("ping", sessionId: "middle"));
+
+        _auditLogger.Records.Add(MakeRecord("ping", sessionId: "newest"));
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage firstResponse = await client.GetAsync("/api/audit?limit=2");
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        string cursor = Assert.Single(firstResponse.Headers.GetValues("X-Arcanum-Next-Cursor"));
+
+        string firstJson = await firstResponse.Content.ReadAsStringAsync();
+
+        ApiResponse<InferenceAuditRecord[]>? first = JsonSerializer.Deserialize(
+            firstJson,
+            ArcanumJsonContext.Default.ApiResponseInferenceAuditRecordArray);
+
+        Assert.Equal(["newest", "middle"], first!.Data!.Select(static record => record.SessionId));
+
+        HttpResponseMessage secondResponse = await client.GetAsync(
+            $"/api/audit?limit=2&cursor={Uri.EscapeDataString(cursor)}");
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+
+        string secondJson = await secondResponse.Content.ReadAsStringAsync();
+
+        ApiResponse<InferenceAuditRecord[]>? second = JsonSerializer.Deserialize(
+            secondJson,
+            ArcanumJsonContext.Default.ApiResponseInferenceAuditRecordArray);
+
+        InferenceAuditRecord record = Assert.Single(second!.Data!);
+
+        Assert.Equal("oldest", record.SessionId);
+
+        Assert.False(secondResponse.Headers.Contains("X-Arcanum-Next-Cursor"));
+
+    }
+
+    [SkippableFact]
     public async Task GetAudit_InvalidFromDate_Returns400()
     {
 

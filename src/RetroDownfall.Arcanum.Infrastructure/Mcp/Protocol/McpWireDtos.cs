@@ -187,6 +187,9 @@ public sealed record ListDirectoryParams
 
     [JsonPropertyName("recursive")]
     public bool Recursive { get; init; }
+
+    [JsonPropertyName("continuation")]
+    public string? Continuation { get; init; }
 }
 
 /// <summary>
@@ -212,6 +215,9 @@ public sealed record SearchWorkspaceParams
 
     [JsonPropertyName("extensions")]
     public string[] Extensions { get; init; } = [];
+
+    [JsonPropertyName("cursor")]
+    public string? Cursor { get; init; }
 }
 
 /// <summary>
@@ -259,6 +265,52 @@ public sealed record ExecuteCommandParams
 
     [JsonPropertyName("workingDirectory")]
     public string? WorkingDirectory { get; init; }
+}
+
+/// <summary>
+/// Arguments accepted by the in-process <c>read_command_output</c> continuation tool.
+/// </summary>
+public sealed record ReadCommandOutputParams
+{
+
+    [JsonPropertyName("handle")]
+    public required string Handle { get; init; }
+
+    [JsonPropertyName("stream")]
+    public required string Stream { get; init; }
+
+    [JsonPropertyName("offset")]
+    public long Offset { get; init; }
+
+    [JsonPropertyName("maxBytes")]
+    public int? MaxBytes { get; init; }
+
+}
+
+public sealed record CommandOutputPageResultWire
+{
+
+    [JsonPropertyName("handle")]
+    public required string Handle { get; init; }
+
+    [JsonPropertyName("stream")]
+    public required string Stream { get; init; }
+
+    [JsonPropertyName("text")]
+    public required string Text { get; init; }
+
+    [JsonPropertyName("offset")]
+    public long Offset { get; init; }
+
+    [JsonPropertyName("nextOffset")]
+    public long? NextOffset { get; init; }
+
+    [JsonPropertyName("totalBytes")]
+    public long TotalBytes { get; init; }
+
+    [JsonPropertyName("complete")]
+    public bool Complete { get; init; }
+
 }
 
 /// <summary>

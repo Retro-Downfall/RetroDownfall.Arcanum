@@ -42,7 +42,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 internal static class WeaveSchemaInitializer
 {
 
-    internal const string CanonicalSchemaFingerprint = "attachment-memory-provenance-v3";
+    internal const string CanonicalSchemaFingerprint = "attachment-index-generations-v5";
 
     public static async Task EnsureSchemaAsync(
         SqliteConnection connection,
@@ -114,6 +114,7 @@ internal static class WeaveSchemaInitializer
             """
             CREATE TABLE IF NOT EXISTS session_attachment_chunks (
                 ChunkId TEXT PRIMARY KEY,
+                GenerationId TEXT NOT NULL DEFAULT 'legacy',
                 SessionId TEXT NOT NULL,
                 AttachmentId TEXT NOT NULL,
                 LogicalKey TEXT NOT NULL,
@@ -131,7 +132,7 @@ internal static class WeaveSchemaInitializer
                 ExtractedAt TEXT NOT NULL,
                 IndexedAt TEXT NOT NULL,
                 RetrievalScope TEXT,
-                UNIQUE(AttachmentId, ChunkIndex),
+                UNIQUE(AttachmentId, GenerationId, ChunkIndex),
                 FOREIGN KEY(AttachmentId) REFERENCES SessionAttachments(Id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_session_attachment_chunks_session
@@ -168,6 +169,12 @@ internal static class WeaveSchemaInitializer
                 FailureReason TEXT,
                 ExtractedAt TEXT,
                 IndexedAt TEXT,
+                PublishedGenerationId TEXT,
+                PendingGenerationId TEXT,
+                NextChunkIndex INTEGER NOT NULL DEFAULT 0,
+                PendingEmbeddingDimension INTEGER,
+                PendingPipelineFingerprint TEXT,
+                PendingExtractedAt TEXT,
                 UpdatedAt TEXT NOT NULL,
                 FOREIGN KEY(AttachmentId) REFERENCES SessionAttachments(Id) ON DELETE CASCADE
             );

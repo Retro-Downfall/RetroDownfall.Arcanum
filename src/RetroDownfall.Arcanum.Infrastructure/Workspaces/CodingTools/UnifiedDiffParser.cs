@@ -87,7 +87,7 @@ internal static class UnifiedDiffParser
         {
             return Failure(
                 "patch_too_large",
-                "The unified diff exceeds the configured byte limit.");
+                $"Physical resource boundary: the unified diff is {patchBytes} UTF-8 bytes; the per-request allocation limit is {settings.MaxPatchBytes} bytes. No workspace changes were made. Split the diff into smaller apply_patch calls.");
         }
 
         try
@@ -123,8 +123,6 @@ internal static class UnifiedDiffParser
         private readonly CancellationToken _cancellationToken;
 
         private readonly List<UnifiedDiffFile> _files = [];
-
-        private int _totalHunks;
 
         internal Parser(
             string patch,
@@ -309,13 +307,6 @@ internal static class UnifiedDiffParser
         private UnifiedDiffHunk ParseHunk(ref int index)
         {
 
-            if (_totalHunks >= _settings.MaxHunks)
-            {
-                throw Invalid(
-                    "max_hunks",
-                    "The unified diff exceeds the configured hunk limit.");
-            }
-
             string header = _lines[index];
 
             ParseHunkHeader(
@@ -411,13 +402,6 @@ internal static class UnifiedDiffParser
                         "A hunk body exceeds the counts declared by its header.");
                 }
 
-                if (lines.Count >= _settings.MaxLinesPerHunk)
-                {
-                    throw Invalid(
-                        "max_lines_per_hunk",
-                        "A hunk exceeds the configured logical-line limit.");
-                }
-
                 lines.Add(new UnifiedDiffLine(kind, text));
 
                 index++;
@@ -429,8 +413,6 @@ internal static class UnifiedDiffParser
                     "invalid_patch",
                     "A hunk body does not match the counts declared by its header.");
             }
-
-            _totalHunks++;
 
             return new UnifiedDiffHunk(
                 oldStart,
@@ -583,13 +565,6 @@ internal static class UnifiedDiffParser
             }
 
             UnifiedDiffFile file = BuildFile(current);
-
-            if (_files.Count >= _settings.MaxFiles)
-            {
-                throw Invalid(
-                    "max_files",
-                    "The unified diff exceeds the configured file limit.");
-            }
 
             _files.Add(file);
 

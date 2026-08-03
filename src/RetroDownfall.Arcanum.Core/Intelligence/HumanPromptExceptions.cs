@@ -1,9 +1,8 @@
 namespace RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
-/// Raised when no human response arrives before the hard ask_human / elicitation ceiling.
-/// Callers should surface this as an expected tool or elicitation result, not as an unexpected
-/// infrastructure fault.
+/// Maps a legacy/external MCP human-prompt timeout result. Arcanum's own human-prompt registry has
+/// no total wait deadline; it waits for an operator response or caller cancellation.
 /// </summary>
 public sealed class HumanPromptTimeoutException : Exception
 {
@@ -17,27 +16,6 @@ public sealed class HumanPromptTimeoutException : Exception
     }
 
     public HumanPromptTimeoutException(string message)
-        : base(message)
-    {
-    }
-
-}
-
-/// <summary>
-/// Raised when too many concurrent human-prompt waiters are registered.
-/// </summary>
-public sealed class HumanPromptCapExceededException : Exception
-{
-
-    public const string DefaultMessage =
-        "Too many ask_human prompts are already waiting for a response. Answer or cancel outstanding prompts, then try again.";
-
-    public HumanPromptCapExceededException()
-        : base(DefaultMessage)
-    {
-    }
-
-    public HumanPromptCapExceededException(string message)
         : base(message)
     {
     }

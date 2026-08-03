@@ -217,7 +217,7 @@ public sealed class NativeWebResearchProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task Perplexity_distinguishes_internal_timeout_from_caller_cancellation()
+    public async Task Perplexity_distinguishes_idle_timeout_from_caller_cancellation()
     {
         RecordingHandler handler = new(
             static async (_, cancellationToken) =>
@@ -233,7 +233,7 @@ public sealed class NativeWebResearchProviderTests : IDisposable
             "query",
             new WebSearchOptions
             {
-                Timeout = TimeSpan.FromMilliseconds(20),
+                IdleTimeout = TimeSpan.FromMilliseconds(20),
             });
 
         Assert.True(timedOut.IsFailure);
@@ -468,7 +468,7 @@ public sealed class NativeWebResearchProviderTests : IDisposable
                 "https://example.test/",
                 new WebReadOptions
                 {
-                    Timeout = TimeSpan.FromMilliseconds(20),
+                    IdleTimeout = TimeSpan.FromMilliseconds(20),
                 });
 
         Assert.True(timedOut.IsFailure);

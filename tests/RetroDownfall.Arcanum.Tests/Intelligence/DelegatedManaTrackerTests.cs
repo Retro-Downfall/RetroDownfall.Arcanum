@@ -10,8 +10,7 @@ public sealed class DelegatedManaTrackerTests
     {
         DelegatedManaTracker tracker = new(
             maxTokens: 1_000,
-            maxCostUsd: 1.00m,
-            maxTurns: 3);
+            maxCostUsd: 1.00m);
 
         tracker.BeginModelCall();
         tracker.RecordUsage(
@@ -36,8 +35,7 @@ public sealed class DelegatedManaTrackerTests
     {
         DelegatedManaTracker tracker = new(
             maxTokens: 1_000,
-            maxCostUsd: null,
-            maxTurns: 3);
+            maxCostUsd: null);
 
         tracker.BeginModelCall();
 
@@ -57,20 +55,22 @@ public sealed class DelegatedManaTrackerTests
     }
 
     [Fact]
-    public void BeginModelCall_WhenTurnCeilingExceeded_ThrowsBeforeProviderCall()
+    public void BeginModelCall_HasNoArbitraryCallCeiling()
     {
         DelegatedManaTracker tracker = new(
             maxTokens: null,
-            maxCostUsd: 1.00m,
-            maxTurns: 1);
+            maxCostUsd: 1.00m);
 
-        tracker.BeginModelCall();
+        for (int i = 0; i < 100; i++)
+        {
 
-        BudgetExhaustedException exception = Assert.Throws<BudgetExhaustedException>(
-            tracker.BeginModelCall);
+            tracker.BeginModelCall();
 
-        Assert.Equal(DelegatedBudgetExhaustionReason.Turns, exception.Reason);
-        Assert.Equal(1, exception.Usage.ModelCalls);
+        }
+
+        Assert.Equal(100, tracker.GetUsage().ModelCalls);
+
+        Assert.False(tracker.GetUsage().Exhausted);
     }
 
     [Fact]
@@ -78,8 +78,7 @@ public sealed class DelegatedManaTrackerTests
     {
         DelegatedManaTracker tracker = new(
             maxTokens: 100_000,
-            maxCostUsd: 100m,
-            maxTurns: 1_000);
+            maxCostUsd: 100m);
 
         Task[] writes = Enumerable.Range(0, 100)
             .Select(_ => Task.Run(() =>

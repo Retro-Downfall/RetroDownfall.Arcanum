@@ -656,77 +656,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     }
 
     [Fact]
-    public void Deadline_admission_uses_monotonic_remaining_time_and_cleanup_grace()
-    {
-
-        ManualTimeProvider time = new();
-        long deadline = time.GetTimestamp() + (360L * time.TimestampFrequency);
-
-        WorkspaceCheckDeadlineAdmission admitted = WorkspaceCheckDeadlinePolicy.Evaluate(
-            time,
-            deadline,
-            TimeSpan.FromSeconds(300));
-
-        time.Advance(TimeSpan.FromSeconds(31));
-
-        WorkspaceCheckDeadlineAdmission rejected = WorkspaceCheckDeadlinePolicy.Evaluate(
-            time,
-            deadline,
-            TimeSpan.FromSeconds(300));
-
-        Assert.True(admitted.CanSpawn);
-        Assert.False(rejected.CanSpawn);
-        Assert.Equal("insufficient_deadline", rejected.Code);
-    }
-
-    [Fact]
-    public void Deadline_budget_is_absolute_and_preflight_reduces_process_time()
-    {
-
-        ManualTimeProvider time = new();
-        long outerDeadline = time.GetTimestamp()
-            + (120L * time.TimestampFrequency);
-        WorkspaceCheckDeadlineBudget budget =
-            WorkspaceCheckDeadlinePolicy.CreateBudget(
-                time,
-                outerDeadline,
-                TimeSpan.FromSeconds(60));
-
-        long absoluteDeadline = budget.AbsoluteDeadlineTimestamp;
-        Assert.Equal(
-            TimeSpan.FromSeconds(10),
-            budget.GetPreflightTimeout(TimeSpan.FromSeconds(10)));
-        Assert.Equal(
-            TimeSpan.FromSeconds(60),
-            budget.GetRemainingProcessTime());
-
-        time.Advance(TimeSpan.FromSeconds(7));
-
-        Assert.Equal(absoluteDeadline, budget.AbsoluteDeadlineTimestamp);
-        Assert.Equal(
-            TimeSpan.FromSeconds(53),
-            budget.GetRemainingProcessTime());
-        Assert.Equal(
-            TimeSpan.FromSeconds(83),
-            budget.GetRemainingTotalTime());
-    }
-
-    [Fact]
-    public void Workspace_check_completes_before_its_mcp_request_timeout()
-    {
-
-        TimeSpan checkTimeout = TimeSpan.FromSeconds(60);
-        TimeSpan totalBudget =
-            checkTimeout
-            + TimeSpan.FromSeconds(
-                ArcanumSettingClamps.WorkspaceCheckCleanupGraceSeconds);
-        TimeSpan mcpTimeout =
-            WorkspaceCheckDeadlinePolicy.GetMcpRequestTimeout(checkTimeout);
-
-        Assert.True(mcpTimeout > totalBudget);
-    }
-
-    [Fact]
     public void Structured_result_reports_selected_sdk_and_retains_valid_capped_shape()
     {
 
@@ -843,7 +772,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         WorkspaceCheckSettings original = new();
         WorkspaceCheckSettings current = new()
         {
-            TimeoutSeconds = original.TimeoutSeconds + 1,
+            MaxDiagnostics = original.MaxDiagnostics + 1,
         };
         using ServiceProvider services =
             new ServiceCollection().BuildServiceProvider();
@@ -1286,7 +1215,176 @@ public sealed class WorkspaceCheckToolTests : IDisposable
     }
 
     [Fact]
-    public async Task Missing_stale_escaping_and_over_cap_restore_artifacts_fail_closed()
+    public async Task Restore_seed_default_continues_beyond_former_project_and_artifact_caps()
+    {
+
+        using TestTree tree = new();
+        string workspace = tree.CreateDirectory("workspace");
+
+        for (int index = 0; index < 129; index++)
+        {
+
+            string projectName = $"Project{index:D3}";
+            string projectDirectory =
+                tree.CreateDirectory($"workspace/{projectName}");
+            File.WriteAllText(
+                Path.Combine(projectDirectory, $"{projectName}.csproj"),
+                "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            WriteRestoreArtifacts(
+                tree.CreateDirectory($"workspace/{projectName}/obj"),
+                $"{projectName}.csproj");
+
+        }
+
+        WorkspaceCheckRestoreSeedResult result =
+            await WorkspaceCheckRestoreArtifactSeeder.SeedAsync(
+                workspace,
+                tree.CreateDirectory("run/many-projects"),
+                WorkspaceCheckRestoreSeedOptions.Default,
+                CancellationToken.None);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(129, result.ProjectCount);
+        Assert.Equal(645, result.FileCount);
+        Assert.Equal(129, result.InputManifest!.ProjectCount);
+
+    }
+
+    [Fact]
+    public async Task Restore_seed_rejects_artifacts_project_name_collisions_without_global_tracking()
+    {
+
+        using TestTree tree = new();
+        string workspace = tree.CreateDirectory("workspace");
+
+        foreach (string directory in new[] { "First", "Second" })
+        {
+
+            string projectDirectory =
+                tree.CreateDirectory($"workspace/{directory}");
+            File.WriteAllText(
+                Path.Combine(projectDirectory, "Shared.csproj"),
+                "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+            WriteRestoreArtifacts(
+                tree.CreateDirectory($"workspace/{directory}/obj"),
+                "Shared.csproj");
+
+        }
+
+        WorkspaceCheckRestoreSeedResult result =
+            await WorkspaceCheckRestoreArtifactSeeder.SeedAsync(
+                workspace,
+                tree.CreateDirectory("run/name-collision"),
+                WorkspaceCheckRestoreSeedOptions.Default,
+                CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal("restore_required", result.Code);
+        Assert.Contains(
+            "map to the same .NET artifacts project name 'Shared'",
+            result.Message,
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Restore_seed_default_continues_beyond_former_per_project_and_global_input_caps()
+    {
+
+        using TestTree tree = new();
+        string workspace = tree.CreateDirectory("workspace");
+        string projectDirectory = tree.CreateDirectory("workspace/App");
+        string inputDirectory = tree.CreateDirectory("workspace/App/inputs");
+
+        foreach (int index in Enumerable.Range(0, 300))
+        {
+
+            File.WriteAllText(
+                Path.Combine(inputDirectory, $"input-{index:D3}.props"),
+                "<Project />");
+
+        }
+
+        string imports = string.Join(
+            System.Environment.NewLine,
+            Enumerable.Range(0, 300).Select(
+                index =>
+                    $"  <Import Project=\"inputs/input-{index:D3}.props\" />"));
+        File.WriteAllText(
+            Path.Combine(projectDirectory, "App.csproj"),
+            $"<Project Sdk=\"Microsoft.NET.Sdk\">{System.Environment.NewLine}{imports}{System.Environment.NewLine}</Project>");
+        WriteRestoreArtifacts(
+            tree.CreateDirectory("workspace/App/obj"),
+            "App.csproj");
+
+        WorkspaceCheckRestoreSeedResult result =
+            await WorkspaceCheckRestoreArtifactSeeder.SeedAsync(
+                workspace,
+                tree.CreateDirectory("run/many-inputs"),
+                WorkspaceCheckRestoreSeedOptions.Default,
+                CancellationToken.None);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, result.ProjectCount);
+        Assert.Equal(5, result.FileCount);
+        Assert.True(result.InputManifest!.RecordCount > 256);
+
+    }
+
+    [Fact]
+    public async Task Restore_seed_streams_restore_input_xml_beyond_former_eight_megabyte_parser_cap()
+    {
+
+        using TestTree tree = new();
+        string workspace = tree.CreateDirectory("workspace");
+        string projectDirectory = tree.CreateDirectory("workspace/App");
+        File.WriteAllText(
+            Path.Combine(projectDirectory, "App.csproj"),
+            "<Project>"
+            + new string(' ', (8 * 1024 * 1024) + 1)
+            + "</Project>");
+        WriteRestoreArtifacts(
+            tree.CreateDirectory("workspace/App/obj"),
+            "App.csproj");
+
+        WorkspaceCheckRestoreSeedResult result =
+            await WorkspaceCheckRestoreArtifactSeeder.SeedAsync(
+                workspace,
+                tree.CreateDirectory("run/large-input"),
+                WorkspaceCheckRestoreSeedOptions.Default,
+                CancellationToken.None);
+
+        Assert.True(result.Success, result.Message);
+
+    }
+
+    [Fact]
+    public async Task Restore_seed_honors_cancellation_without_count_caps()
+    {
+
+        using TestTree tree = new();
+        string workspace = tree.CreateDirectory("workspace");
+        string projectDirectory = tree.CreateDirectory("workspace/App");
+        File.WriteAllText(
+            Path.Combine(projectDirectory, "App.csproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+        WriteRestoreArtifacts(
+            tree.CreateDirectory("workspace/App/obj"),
+            "App.csproj");
+        using CancellationTokenSource cancellation = new();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => WorkspaceCheckRestoreArtifactSeeder.SeedAsync(
+                workspace,
+                tree.CreateDirectory("run/cancelled"),
+                WorkspaceCheckRestoreSeedOptions.Default,
+                cancellation.Token));
+
+    }
+
+    [Fact]
+    public async Task Missing_and_stale_restore_artifacts_fail_closed()
     {
 
         using TestTree tree = new();
@@ -1310,17 +1408,9 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                 tree.CreateDirectory("run/stale"),
                 WorkspaceCheckRestoreSeedOptions.Default,
                 CancellationToken.None);
-        WorkspaceCheckRestoreSeedResult capped =
-            await WorkspaceCheckRestoreArtifactSeeder.SeedAsync(
-                workspace,
-                tree.CreateDirectory("run/capped"),
-                WorkspaceCheckRestoreSeedOptions.Default with { MaxProjects = 1 },
-                CancellationToken.None);
 
         Assert.False(stale.Success);
         Assert.Equal("restore_required", stale.Code);
-        Assert.False(capped.Success);
-        Assert.Equal("seed_cap_exceeded", capped.Code);
     }
 
     [SkippableFact]
@@ -1362,6 +1452,14 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         Assert.False(byteCapped.Success);
         Assert.Equal("seed_cap_exceeded", byteCapped.Code);
+        Assert.Contains(
+            "MaxFileWriteMb",
+            byteCapped.Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "explicitly raising",
+            byteCapped.Message,
+            StringComparison.Ordinal);
         Assert.False(escaping.Success);
         Assert.Equal("restore_required", escaping.Code);
     }
@@ -1660,15 +1758,37 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                 CancellationToken.None);
 
         Assert.True(seeded.Success, seeded.Message);
-        Assert.NotEmpty(seeded.InputFingerprints);
+        WorkspaceCheckRestoreInputManifest manifest =
+            Assert.IsType<WorkspaceCheckRestoreInputManifest>(
+                seeded.InputManifest);
+        Assert.True(File.Exists(manifest.Path));
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            Assert.Equal(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                File.GetUnixFileMode(manifest.Path));
+        }
+
+        Assert.True(
+            WorkspaceCheckRestoreArtifactSeeder
+                .RevalidateManifest(
+                    workspace,
+                    manifest,
+                    WorkspaceCheckRestoreSeedOptions.Default,
+                    CancellationToken.None));
         File.AppendAllText(
             project,
             System.Environment.NewLine);
 
         Assert.False(
             WorkspaceCheckRestoreArtifactSeeder
-                .RevalidateInputs(
-                    seeded.InputFingerprints));
+                .RevalidateManifest(
+                    workspace,
+                    manifest,
+                    WorkspaceCheckRestoreSeedOptions.Default,
+                    CancellationToken.None));
     }
 
     [Theory]
@@ -1715,7 +1835,7 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             WorkspaceCheckRestoreArtifactSeeder
                 .RevalidateManifest(
                     workspace,
-                    seeded.InputFingerprints,
+                    seeded.InputManifest!,
                     WorkspaceCheckRestoreSeedOptions.Default,
                     CancellationToken.None));
     }
@@ -2313,7 +2433,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         new()
         {
             Enabled = true,
-            TimeoutSeconds = 30,
             MaxDiagnostics = 100,
             MaxOutputBytes = 1024 * 1024,
             ExecutableCatalog = new WorkspaceCheckExecutableCatalogSettings
@@ -2330,25 +2449,24 @@ public sealed class WorkspaceCheckToolTests : IDisposable
         string profileId = WorkspaceCheckCatalogDefaults.DotNetBuildProfileId)
     {
 
-        TimeProvider time = TimeProvider.System;
-        long deadline = time.GetTimestamp()
-            + (120L * time.TimestampFrequency);
-
         return new WorkspaceCheckRuntimeRequest(
             workspace,
             profileId,
-            new Dictionary<string, string>(),
-            deadline);
+            new Dictionary<string, string>());
     }
 
     private static ServiceProvider CreateRuntimeServices(
-        Action? beforeLimits = null)
+        Action? beforeLimitApply = null)
     {
 
         ServiceCollection services = new();
         services.AddSingleton<ISanctumGuard>(
-            new PermissiveSanctumGuard(beforeLimits));
-        services.AddSingleton<IProcessResourceLimiter, ProcessResourceLimiter>();
+            new PermissiveSanctumGuard());
+        services.AddSingleton<IProcessResourceLimiter>(
+            beforeLimitApply is null
+                ? new ProcessResourceLimiter()
+                : new CallbackProcessResourceLimiter(
+                    beforeLimitApply));
         return services.BuildServiceProvider();
     }
 
@@ -2552,14 +2670,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
     private sealed class PermissiveSanctumGuard : ISanctumGuard
     {
-        private readonly Action? _beforeLimits;
-
-        internal PermissiveSanctumGuard(
-            Action? beforeLimits = null)
-        {
-            _beforeLimits = beforeLimits;
-        }
-
         public Task<SanctumResult> ValidatePathAsync(
             string campaignId,
             string requestedPath,
@@ -2583,11 +2693,8 @@ public sealed class WorkspaceCheckToolTests : IDisposable
 
         public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(
             string? workspaceRoot,
-            CancellationToken ct = default)
-        {
-            _beforeLimits?.Invoke();
-            return Task.FromResult(new ResourceLimits());
-        }
+            CancellationToken ct = default) =>
+            Task.FromResult(new ResourceLimits());
 
         public Task<SanctumChildProcessBoundary?>
             GetChildProcessBoundaryForWorkspaceAsync(
@@ -2603,6 +2710,22 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
+    }
+
+    private sealed class CallbackProcessResourceLimiter(
+        Action beforeApply) : IProcessResourceLimiter
+    {
+
+        private readonly ProcessResourceLimiter _inner = new();
+
+        public ProcessResourceLimiterResult Apply(
+            System.Diagnostics.ProcessStartInfo startInfo,
+            ResourceLimits limits)
+        {
+
+            beforeApply();
+            return _inner.Apply(startInfo, limits);
+        }
     }
 
     private static bool PathsEqual(string left, string right) =>

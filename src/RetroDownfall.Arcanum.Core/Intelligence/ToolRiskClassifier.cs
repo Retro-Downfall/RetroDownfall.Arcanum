@@ -19,6 +19,9 @@ public static class ToolRiskClassifier
 
     public const string SearchWorkspaceToolName = "search_workspace";
 
+    public const string ReadCommandOutputToolName =
+        "read_command_output";
+
     public static IReadOnlySet<string> IntrinsicWardToolNames { get; } =
         new[]
         {
@@ -31,7 +34,14 @@ public static class ToolRiskClassifier
         !string.IsNullOrWhiteSpace(toolName) && IntrinsicWardToolNames.Contains(toolName);
 
     public static bool IsReadOnlyCodingTool(string? toolName) =>
-        string.Equals(toolName, SearchWorkspaceToolName, StringComparison.OrdinalIgnoreCase);
+        string.Equals(
+            toolName,
+            SearchWorkspaceToolName,
+            StringComparison.OrdinalIgnoreCase)
+        || string.Equals(
+            toolName,
+            ReadCommandOutputToolName,
+            StringComparison.OrdinalIgnoreCase);
 
     public static string GetWardDisclosure(string? toolName) =>
         string.Equals(

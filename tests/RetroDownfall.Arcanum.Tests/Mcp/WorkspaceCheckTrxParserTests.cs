@@ -387,6 +387,48 @@ public sealed class WorkspaceCheckTrxParserTests
         }
     }
 
+    [Fact]
+    public void Parse_aggregates_files_beyond_the_former_total_file_ceiling()
+    {
+        string root = CreateRoot();
+
+        try
+        {
+            const int fileCount = 40;
+
+            for (int index = 0; index < fileCount; index++)
+            {
+                File.WriteAllText(
+                    Path.Combine(root, $"results-{index:D2}.trx"),
+                    $"""
+                     <TestRun>
+                       <Results>
+                         <UnitTestResult testName="Sample.Passes.{index}" outcome="Passed" />
+                       </Results>
+                       <ResultSummary>
+                         <Counters total="1" passed="1" failed="0" notExecuted="0" />
+                       </ResultSummary>
+                     </TestRun>
+                     """);
+            }
+
+            WorkspaceCheckTrxParseResult parsed =
+                WorkspaceCheckTrxParser.Parse(
+                    root,
+                    maxDiagnostics: 10,
+                    maxBytes: 1024 * 1024);
+
+            Assert.True(parsed.ParsedAny);
+            Assert.False(parsed.Truncated);
+            Assert.Equal(fileCount, parsed.TotalTestCount);
+            Assert.Equal(fileCount, parsed.PassedTestCount);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static string CreateRoot()
     {
         string root = Path.Combine(

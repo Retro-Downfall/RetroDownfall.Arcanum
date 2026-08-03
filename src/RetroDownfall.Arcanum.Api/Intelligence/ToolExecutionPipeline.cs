@@ -405,14 +405,6 @@ public sealed class ToolExecutionPipeline(
                 RecordToolInvocationMetric(toolName, "error");
 
             }
-            catch (HumanPromptCapExceededException ex)
-            {
-
-                wardedExecution = new WardedToolExecutionResult(ex.Message, [], Failed: true);
-
-                RecordToolInvocationMetric(toolName, "error");
-
-            }
             catch (Exception ex)
             {
 

@@ -29,8 +29,7 @@ internal sealed class SubagentRunner(
         Guid childRunId = Guid.NewGuid();
         DelegatedManaTracker tracker = new(
             request.MaxTokens,
-            request.MaxCostUsd,
-            request.MaxTurns);
+            request.MaxCostUsd);
         Stopwatch stopwatch = Stopwatch.StartNew();
         SubagentRunOutcome outcome = SubagentRunOutcome.Failed;
         LongRunningOperationLeaseResult? operationLease = null;
@@ -38,14 +37,6 @@ internal sealed class SubagentRunner(
 
         try
         {
-            if (!SubagentExecutionAmbient.CanDelegate)
-            {
-                return Failure(
-                    childRunId,
-                    tracker,
-                    SubagentFailureCodes.MaximumDepth);
-            }
-
             operationLease = await operations
                 .StartAsync(
                     new LongRunningOperationCreateRequest(

@@ -7,42 +7,21 @@ public sealed class PhysicalWorkspaceScanner : IWorkspaceScanner
 {
     private static readonly HashSet<string> IgnoredDirectoryNames = new(StringComparer.OrdinalIgnoreCase) { "bin", "obj", ".git" };
 
-    // Bound the recursive enumeration so a deep tree or directory-symlink cycle cannot scan unbounded,
-    // consistent with the EyeOfTheWorldService step-budget approach.
-    private const int MaxEnumerationSteps = 50_000;
-
-    private const int MaxRecursionDepth = 64;
-
     public Task<string> BuildProjectSummaryAsync(string? rootPath = null, CancellationToken cancellationToken = default)
     {
         string root = string.IsNullOrWhiteSpace(rootPath) ? Environment.CurrentDirectory : Path.GetFullPath(rootPath);
+
         if (!Directory.Exists(root))
         {
             return Task.FromResult($"Root path not found: {root}");
         }
 
         List<string> solutionFiles = [];
-        EnumerationOptions enumerationOptions = new()
-        {
-            RecurseSubdirectories = true,
-            IgnoreInaccessible = true,
-            MaxRecursionDepth = MaxRecursionDepth,
-        };
-        int steps = 0;
+
         try
         {
-            foreach (string file in Directory.EnumerateFiles(root, "*.sln", enumerationOptions))
+            foreach (string file in EnumerateSolutionFiles(root, cancellationToken))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (steps >= MaxEnumerationSteps)
-                {
-                    break;
-                }
-                steps++;
-                if (IsUnderIgnoredPath(file, root))
-                {
-                    continue;
-                }
                 solutionFiles.Add(Path.GetRelativePath(root, file));
             }
         }
@@ -54,9 +33,13 @@ public sealed class PhysicalWorkspaceScanner : IWorkspaceScanner
         {
             return Task.FromResult($"Workspace scan failed: {ex.Message}");
         }
+
         StringBuilder sb = new(512);
+
         sb.Append("Working directory: ").AppendLine(root);
+
         sb.Append("Solution files (excluding bin/obj/.git): ");
+
         if (solutionFiles.Count == 0)
         {
             sb.AppendLine("(none found)");
@@ -73,17 +56,124 @@ public sealed class PhysicalWorkspaceScanner : IWorkspaceScanner
         return Task.FromResult(sb.ToString());
     }
 
-    private static bool IsUnderIgnoredPath(string fullPath, string root)
+    private static IEnumerable<string> EnumerateSolutionFiles(
+        string root,
+        CancellationToken cancellationToken)
     {
-        string rel = Path.GetRelativePath(root, fullPath);
-        foreach (string part in rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        StringComparer pathComparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
+        string canonicalRoot = ResolveCanonicalPath(new DirectoryInfo(root));
+
+        string rootPrefix = canonicalRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? canonicalRoot
+            : canonicalRoot + Path.DirectorySeparatorChar;
+
+        Stack<DirectoryInfo> pending = new();
+
+        HashSet<string> visited = new(pathComparer);
+
+        pending.Push(new DirectoryInfo(root));
+
+        while (pending.Count > 0)
         {
-            if (IgnoredDirectoryNames.Contains(part))
+            cancellationToken.ThrowIfCancellationRequested();
+
+            DirectoryInfo directory = pending.Pop();
+
+            string canonicalDirectory;
+
+            try
             {
-                return true;
+                canonicalDirectory = ResolveCanonicalPath(directory);
+            }
+            catch (Exception exception) when (IsSkippableFileSystemException(exception))
+            {
+                continue;
+            }
+
+            if (!IsWithinRoot(canonicalDirectory, canonicalRoot, rootPrefix, pathComparer) ||
+                !visited.Add(canonicalDirectory))
+            {
+                continue;
+            }
+
+            FileSystemInfo[] entries;
+
+            try
+            {
+                entries = directory.GetFileSystemInfos();
+            }
+            catch (Exception exception) when (IsSkippableFileSystemException(exception))
+            {
+                continue;
+            }
+
+            Array.Sort(entries, static (left, right) => StringComparer.Ordinal.Compare(left.Name, right.Name));
+
+            for (int index = entries.Length - 1; index >= 0; index--)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                FileSystemInfo entry = entries[index];
+
+                if (entry is DirectoryInfo childDirectory)
+                {
+                    if (!IgnoredDirectoryNames.Contains(childDirectory.Name))
+                    {
+                        pending.Push(childDirectory);
+                    }
+
+                    continue;
+                }
+
+                if (entry is not FileInfo file ||
+                    !file.Extension.Equals(".sln", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string canonicalFile;
+
+                try
+                {
+                    canonicalFile = ResolveCanonicalPath(file);
+                }
+                catch (Exception exception) when (IsSkippableFileSystemException(exception))
+                {
+                    continue;
+                }
+
+                if (IsWithinRoot(canonicalFile, canonicalRoot, rootPrefix, pathComparer))
+                {
+                    yield return file.FullName;
+                }
             }
         }
-
-        return false;
     }
+
+    private static string ResolveCanonicalPath(FileSystemInfo entry)
+    {
+        FileSystemInfo? target = entry.LinkTarget is null
+            ? null
+            : entry.ResolveLinkTarget(returnFinalTarget: true);
+
+        return Path.GetFullPath(target?.FullName ?? entry.FullName);
+    }
+
+    private static bool IsWithinRoot(
+        string candidate,
+        string root,
+        string rootPrefix,
+        StringComparer comparer) =>
+        comparer.Equals(candidate, root) ||
+        candidate.StartsWith(
+            rootPrefix,
+            comparer == StringComparer.OrdinalIgnoreCase
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
+
+    private static bool IsSkippableFileSystemException(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException;
 }

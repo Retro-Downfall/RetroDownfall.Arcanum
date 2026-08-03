@@ -205,6 +205,132 @@ public sealed class SessionWorkspaceServiceTests
     }
 
     [Fact]
+    public async Task Transcript_pages_load_older_and_newer_without_growing_the_view_cache()
+    {
+
+        Guid id = Guid.Parse("dededede-dede-dede-dede-dededededede");
+
+        DateTimeOffset now = DateTimeOffset.Parse("2026-08-03T12:00:00Z");
+
+        FakeSessionHttp handler = new(
+            detail: new SessionDetailDto(
+                id,
+                null,
+                "Long",
+                "Active",
+                EntryCount: 401,
+                now,
+                now,
+                null,
+                0),
+            entriesPage: offset => offset switch
+            {
+                0 => Enumerable.Range(0, CommandCenterState.TranscriptPageSize)
+                    .Select(index => new EntryDto(
+                        Guid.NewGuid(),
+                        id,
+                        "assistant",
+                        index == 0 ? "newest" : $"recent-{index}",
+                        null,
+                        null,
+                        now.AddMinutes(-index)))
+                    .ToArray(),
+                200 => [new EntryDto(Guid.NewGuid(), id, "user", "older", null, null, now.AddDays(-1))],
+                _ => [],
+            });
+
+        SessionWorkspaceService workspace = CreateWorkspace(handler, out _);
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        Assert.Equal(
+            SessionResumeOutcome.Success,
+            (await workspace.ResumeSessionAsync(state, id, CancellationToken.None)).Outcome);
+
+        Assert.Equal(0, state.TranscriptEntryOffset);
+
+        Assert.True(state.HasOlderTranscriptEntries);
+
+        Assert.False(state.HasNewerTranscriptEntries);
+
+        Assert.True(await workspace.LoadOlderTranscriptPageAsync(state, CancellationToken.None));
+
+        Assert.Equal(200, state.TranscriptEntryOffset);
+
+        Assert.Single(state.LoadedTranscriptEntries);
+
+        Assert.Contains("older", state.Log.RenderPlainText(), StringComparison.Ordinal);
+
+        Assert.DoesNotContain("newest", state.Log.RenderPlainText(), StringComparison.Ordinal);
+
+        Assert.Contains(SessionLogBuffer.NewerMessagesMarker, state.Log.RenderPlainText(), StringComparison.Ordinal);
+
+        Assert.True(await workspace.LoadNewerTranscriptPageAsync(state, CancellationToken.None));
+
+        Assert.Equal(0, state.TranscriptEntryOffset);
+
+        Assert.Contains("newest", state.Log.RenderPlainText(), StringComparison.Ordinal);
+
+        Assert.Equal([0, 200, 0], handler.EntryOffsets);
+
+    }
+
+    [Fact]
+    public async Task Session_catalog_pages_load_older_and_newer_without_a_total_catalog_ceiling()
+    {
+
+        DateTimeOffset firstCursor = DateTimeOffset.Parse("2026-08-03T10:00:00Z");
+
+        SessionSummaryDto newest = Summary("11111111-1111-1111-1111-111111111111", "newest", firstCursor);
+
+        SessionSummaryDto older = Summary("22222222-2222-2222-2222-222222222222", "older", firstCursor.AddDays(-1));
+
+        FakeSessionHttp handler = new(
+            sessionPage: before => before is null
+                ? new SessionQueryResult([newest], firstCursor, true)
+                : new SessionQueryResult([older], null, false));
+
+        SessionWorkspaceService workspace = CreateWorkspace(handler, out _);
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        await workspace.RefreshSessionsAsync(state, CancellationToken.None);
+
+        Assert.Equal([newest.Id], state.Sessions.Select(static session => session.Id));
+
+        Assert.True(state.HasOlderSessionPage);
+
+        Assert.False(state.HasNewerSessionPage);
+
+        Assert.True(await workspace.LoadOlderSessionsPageAsync(state, CancellationToken.None));
+
+        Assert.Equal([older.Id], state.Sessions.Select(static session => session.Id));
+
+        Assert.True(state.HasNewerSessionPage);
+
+        Assert.True(await workspace.LoadNewerSessionsPageAsync(state, CancellationToken.None));
+
+        Assert.Equal([newest.Id], state.Sessions.Select(static session => session.Id));
+
+        Assert.Equal([null, firstCursor, null], handler.SessionCursors);
+
+    }
+
+    private static SessionSummaryDto Summary(
+        string id,
+        string title,
+        DateTimeOffset updatedAt) =>
+        new(
+            Guid.Parse(id),
+            CampaignId: null,
+            title,
+            "Active",
+            EntryCount: 1,
+            CreatedAt: updatedAt,
+            UpdatedAt: updatedAt,
+            ForkedFromSessionId: null);
+
+    [Fact]
     public async Task Startup_stale_falls_back_to_new_session_without_clearing_store()
     {
         RecordingLastSessionStore store = new() { LastId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee") };
@@ -319,11 +445,17 @@ public sealed class SessionWorkspaceServiceTests
     private sealed class FakeSessionHttp(
         SessionDetailDto? detail = null,
         EntryDto[]? entries = null,
+        Func<int, EntryDto[]>? entriesPage = null,
+        Func<DateTimeOffset?, SessionQueryResult>? sessionPage = null,
         bool failDetail = false,
         SessionDetailDto? fork = null,
         Error? forkError = null) : HttpMessageHandler
     {
         public bool AttachmentsRequested { get; private set; }
+
+        public List<int> EntryOffsets { get; } = [];
+
+        public List<DateTimeOffset?> SessionCursors { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -356,7 +488,16 @@ public sealed class SessionWorkspaceServiceTests
 
             if (path.Contains("/entries", StringComparison.Ordinal))
             {
-                EntryDto[] payload = entries ?? [];
+                int offset = 0;
+
+                string? offsetText = System.Web.HttpUtility.ParseQueryString(
+                    request.RequestUri?.Query ?? string.Empty)["offset"];
+
+                _ = int.TryParse(offsetText, out offset);
+
+                EntryOffsets.Add(offset);
+
+                EntryDto[] payload = entriesPage?.Invoke(offset) ?? entries ?? [];
                 ApiResponse<EntryDto[]> envelope = ApiResponse<EntryDto[]>.FromResult(
                     Result<EntryDto[]>.Success(payload));
                 string json = JsonSerializer.Serialize(envelope, ArcanumJsonContext.Default.ApiResponseEntryDtoArray);
@@ -374,8 +515,21 @@ public sealed class SessionWorkspaceServiceTests
             if (path.EndsWith("/sessions", StringComparison.Ordinal)
                 || path.EndsWith("/sessions/", StringComparison.Ordinal))
             {
+                string? beforeText = System.Web.HttpUtility.ParseQueryString(
+                    request.RequestUri?.Query ?? string.Empty)["beforeUpdatedAt"];
+
+                DateTimeOffset? before = DateTimeOffset.TryParse(
+                    beforeText,
+                    out DateTimeOffset parsedBefore)
+                    ? parsedBefore
+                    : null;
+
+                SessionCursors.Add(before);
+
                 ApiResponse<SessionQueryResult> envelope = ApiResponse<SessionQueryResult>.FromResult(
-                    Result<SessionQueryResult>.Success(new SessionQueryResult([], null, false)));
+                    Result<SessionQueryResult>.Success(
+                        sessionPage?.Invoke(before)
+                        ?? new SessionQueryResult([], null, false)));
                 string json = JsonSerializer.Serialize(envelope, ArcanumJsonContext.Default.ApiResponseSessionQueryResult);
                 return Task.FromResult(OkJson(json));
             }

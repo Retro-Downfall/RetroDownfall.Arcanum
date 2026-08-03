@@ -14,16 +14,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal static class SqliteBusyRetry
 {
 
-    private const int MaxAttempts = 5;
-
     private const int BaseDelayMilliseconds = 50;
-
-    private static readonly TimeSpan MaxTotalDelay = TimeSpan.FromSeconds(10);
 
     public static async Task ExecuteAsync(
         Func<Task> action,
         CancellationToken cancellationToken = default,
-        Func<int, Exception, CancellationToken, ValueTask>? retrying = null)
+        Func<int, Exception, CancellationToken, ValueTask>? retrying = null,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
     {
         _ = await ExecuteAsync(
             async () =>
@@ -33,43 +30,55 @@ internal static class SqliteBusyRetry
                 return true;
             },
             cancellationToken,
-            retrying).ConfigureAwait(false);
+            retrying,
+            delayAsync).ConfigureAwait(false);
     }
 
     public static async Task<T> ExecuteAsync<T>(
         Func<Task<T>> action,
         CancellationToken cancellationToken = default,
-        Func<int, Exception, CancellationToken, ValueTask>? retrying = null)
+        Func<int, Exception, CancellationToken, ValueTask>? retrying = null,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
     {
-        SqliteRetryBudget retryBudget = new(MaxTotalDelay);
+        int attempt = 1;
 
-        for (int attempt = 1; attempt <= MaxAttempts; attempt++)
+        while (true)
         {
             try
             {
                 return await action().ConfigureAwait(false);
             }
             catch (Exception ex) when (
-                IsBusyOrLocked(ex)
-                && attempt < MaxAttempts)
+                IsBusyOrLocked(ex))
             {
                 TimeSpan delay = ComputeDelay(attempt);
-
-                if (!retryBudget.TryReserve(delay))
-                {
-                    throw;
-                }
 
                 if (retrying is not null)
                 {
                     await retrying(attempt, ex, cancellationToken).ConfigureAwait(false);
                 }
 
-                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                if (delayAsync is null)
+                {
+
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+
+                }
+                else
+                {
+
+                    await delayAsync(delay, cancellationToken).ConfigureAwait(false);
+
+                }
+
+                if (attempt < int.MaxValue)
+                {
+
+                    attempt++;
+
+                }
             }
         }
-
-        throw new InvalidOperationException("SqliteBusyRetry loop exited without returning a value.");
     }
 
 
@@ -115,33 +124,4 @@ internal static class SqliteBusyRetry
         return TimeSpan.FromMilliseconds(Math.Min(delayMs, 2_000));
     }
 
-}
-
-/// <summary>
-/// Tracks only code-scheduled SQLite backoff. Action execution, profiler suspension, scheduler
-/// starvation, and retry-observer work do not consume the delay budget.
-/// </summary>
-internal struct SqliteRetryBudget(TimeSpan limit)
-{
-    private readonly TimeSpan _limit = limit >= TimeSpan.Zero
-        ? limit
-        : throw new ArgumentOutOfRangeException(nameof(limit));
-
-    public TimeSpan ReservedDelay { get; private set; }
-
-    public bool TryReserve(TimeSpan delay)
-    {
-        if (delay < TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(delay));
-        }
-
-        if (delay > _limit - ReservedDelay)
-        {
-            return false;
-        }
-
-        ReservedDelay += delay;
-        return true;
-    }
 }

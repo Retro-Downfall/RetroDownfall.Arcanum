@@ -518,7 +518,7 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     [InlineData("accounting")]
 
-    public async Task PlanAsync_Prune_WithMaxOne_DoesNotLetOldestBlockedRowStarveEligibleRow(
+    public async Task PlanAsync_Prune_DoesNotLetOldestBlockedRowStarveEligibleRow(
         string scenario)
     {
 
@@ -526,8 +526,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         (ArcanumSettings settings, string expectedCandidate) =
             await SeedStarvationScenarioAsync(scenario);
-
-        settings.Retention.MaxItemsPerSweep = 1;
 
         IDataRetentionService service = CreateService(settings);
 
@@ -575,8 +573,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         settings.Retention.SessionEntryEmbeddings = EnabledRule();
 
-        settings.Retention.MaxItemsPerSweep = 1;
-
         IDataRetentionService service = CreateService(settings);
 
         DataRetentionRequest request = new(DataRetentionOperation.Prune);
@@ -623,13 +619,9 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         settings.Retention.SessionEntryEmbeddings = EnabledRule();
 
-        settings.Retention.MaxItemsPerSweep = 1;
-
         ArcanumSettings heldSettings = CreatePruneSettings();
 
         heldSettings.Retention.SessionEntryEmbeddings = EnabledRule();
-
-        heldSettings.Retention.MaxItemsPerSweep = 1;
 
         RetentionSettings held = heldSettings.Retention;
 
@@ -706,8 +698,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         ArcanumSettings settings = CreatePruneSettings();
 
         settings.Retention.SessionEntryEmbeddings = EnabledRule();
-
-        settings.Retention.MaxItemsPerSweep = 1;
 
         IDataRetentionService service = CreateService(settings);
 
@@ -788,8 +778,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         ArcanumSettings settings = CreatePruneSettings();
 
         settings.Retention.WorkspaceIndexes = EnabledRule();
-
-        settings.Retention.MaxItemsPerSweep = 1;
 
         IDataRetentionService service = CreateService(settings);
 
@@ -1208,10 +1196,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         settings.Retention.AuditLogs = EnabledRule();
 
-        settings.Retention.MaxItemsPerSweep = 10;
-
-        settings.Retention.CheckpointInterval = 1;
-
         IDataRetentionService service = CreateService(settings);
 
         DataRetentionRequest request = new(DataRetentionOperation.Prune);
@@ -1306,8 +1290,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
         settings.Retention.UploadedFiles = EnabledRule();
 
-        settings.Retention.CheckpointInterval = 1;
-
         IDataRetentionService service = CreateService(settings);
 
         DataRetentionRequest request = new(DataRetentionOperation.Prune);
@@ -1394,10 +1376,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         ArcanumSettings settings = CreatePruneSettings();
 
         settings.Retention.CompletedBatches = EnabledRule();
-
-        settings.Retention.MaxItemsPerSweep = 1;
-
-        settings.Retention.CheckpointInterval = 1;
 
         IDataRetentionService service = CreateService(settings);
 
@@ -2142,8 +2120,6 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
         settings.Retention.Accounting = EnabledRule(days: 1);
 
         settings.Retention.AccountingMinimumDays = 30;
-
-        settings.Retention.CheckpointInterval = 1;
 
         IDataRetentionService service = CreateService(settings);
 

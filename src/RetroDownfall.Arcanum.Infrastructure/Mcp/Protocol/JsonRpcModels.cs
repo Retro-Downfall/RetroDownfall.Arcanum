@@ -104,6 +104,8 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(WorkspaceCheckParams))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(ExecuteCommandParams))]
+[JsonSerializable(typeof(ReadCommandOutputParams))]
+[JsonSerializable(typeof(CommandOutputPageResultWire))]
 [JsonSerializable(typeof(AskHumanParams))]
 [JsonSerializable(typeof(ScribeLexiconParams))]
 [JsonSerializable(typeof(DeleteLexiconParams))]

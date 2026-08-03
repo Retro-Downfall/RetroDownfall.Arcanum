@@ -90,6 +90,7 @@ internal sealed partial class ArcanumInternalToolServer
                 Root = args.Root,
                 Globs = args.Globs ?? [],
                 Extensions = args.Extensions ?? [],
+                Cursor = args.Cursor,
             },
             cancellationToken).ConfigureAwait(false);
 

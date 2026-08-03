@@ -43,18 +43,10 @@ public static class SessionAttachmentRequestValidator
             return "AttachmentReferences require a SessionId.";
         }
 
-        int maxRefs = ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn(
-            ArcanumRuntimeDefaults.Attachments.MaxReferencesPerTurn);
-
-        if (refs.Count > maxRefs)
-        {
-            return $"At most {maxRefs} attachment references are allowed per request.";
-        }
-
         try
         {
             await store
-                .ValidateReferencesAsync(request.SessionId.Value, refs, maxRefs, cancellationToken)
+                .ValidateReferencesAsync(request.SessionId.Value, refs, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (InvalidOperationException ex)

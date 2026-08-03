@@ -703,13 +703,27 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         string workspaceId,
         string? relativePath,
         bool recursive,
+        CancellationToken cancellationToken = default) =>
+        await ListWorkspaceFilesAsync(
+            workspaceId,
+            relativePath,
+            recursive,
+            cursor: null,
+            cancellationToken).ConfigureAwait(false);
+
+    public async Task<Result<FileListResult>> ListWorkspaceFilesAsync(
+        string workspaceId,
+        string? relativePath,
+        bool recursive,
+        string? cursor,
         CancellationToken cancellationToken = default)
     {
 
         string path = BuildQueryString(
             $"api/workspaces/{Uri.EscapeDataString(workspaceId)}/files",
             ("relativePath", relativePath),
-            ("recursive", recursive ? "true" : "false"));
+            ("recursive", recursive ? "true" : "false"),
+            ("cursor", cursor));
 
         return await SendRequestAsync(
             HttpMethod.Get,
@@ -2335,23 +2349,8 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
         bool hasMore;
 
-        int pageIterations = 0;
-
-        const int maxPageIterations = 10_000;
-
         do
         {
-            pageIterations++;
-
-            if (pageIterations > maxPageIterations)
-            {
-
-                return Result<List<LoreDto>>.Failure(new Error(
-                    "Api.PaginationLoop",
-                    "Lore list pagination exceeded the safety limit. The server may be returning a malformed page."));
-
-            }
-
             Result<ListPageResult<LoreDto>> pageResult = await SendRequestAsync(
                 HttpMethod.Get,
                 $"api/lore?limit=1000&offset={offset}",
@@ -2373,7 +2372,39 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
             hasMore = page.HasMore;
 
-            offset = page.NextOffset ?? offset + page.Items.Length;
+            if (hasMore)
+            {
+
+                int nextOffset;
+
+                try
+                {
+
+                    nextOffset = page.NextOffset
+                        ?? checked(offset + page.Items.Length);
+
+                }
+                catch (OverflowException)
+                {
+
+                    return Result<List<LoreDto>>.Failure(new Error(
+                        "Api.PaginationInvalidCursor",
+                        "The lore service returned a continuation offset outside the protocol range. No results were discarded; retry after repairing or upgrading the service."));
+
+                }
+
+                if (nextOffset <= offset)
+                {
+
+                    return Result<List<LoreDto>>.Failure(new Error(
+                        "Api.PaginationNoProgress",
+                        $"The lore service returned non-advancing offset {nextOffset} after {offset}. {all.Count} results remain available in this response state; retry after repairing or upgrading the service."));
+
+                }
+
+                offset = nextOffset;
+
+            }
         }
 
         while (hasMore);
@@ -2952,6 +2983,36 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             ArcanumJsonContext.Default.ApiResponseSpellSummaryArray,
             static envelope => Result<SpellSummary[]>.Success(envelope.Data ?? []),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<SpellCatalogPage>> GetSpellCatalogPageAsync(
+        string? workspace = null,
+        string? cursor = null,
+        string? query = null,
+        string? tag = null,
+        string? tool = null,
+        SpellSource? source = null,
+        CancellationToken cancellationToken = default)
+    {
+
+        string path = BuildQueryString(
+            "api/spells",
+            ("paged", "true"),
+            ("workspace", workspace),
+            ("cursor", cursor),
+            ("q", query),
+            ("tag", tag),
+            ("tool", tool),
+            ("source", source?.ToString()));
+
+        return await SendRequestAsync(
+            HttpMethod.Get,
+            path,
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseSpellCatalogPage,
+            cancellationToken).ConfigureAwait(false);
+
     }
 
     public async Task<Result<SpellDetail>> GetSpellAsync(

@@ -37,10 +37,10 @@ public sealed record WebBrowsingSettings
     public int MaxContentBytes { get; set; } = 50_000;
 
     /// <summary>
-    /// Wall-clock deadline (seconds) for the complete operation, including redirects and body
-    /// reading. Default 15; clamped 1 - 60.
+    /// Maximum idle interval (seconds) while connecting, waiting for headers, or reading the next
+    /// body segment. Progress resets the interval. Default 15; clamped 1 - 300.
     /// </summary>
-    public int RequestTimeoutSeconds { get; set; } = 15;
+    public int IdleTimeoutSeconds { get; set; } = 15;
 
     /// <summary>
     /// Maximum number of links returned by the tool. Default 10; clamped 0 - 100.

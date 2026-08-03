@@ -12,8 +12,8 @@ namespace RetroDownfall.Arcanum.Cli.UX;
 public sealed class MarkdigSpectreRenderer(IThemePalette palette)
 {
 
-    // W4.1: cap the markdown size before parsing/rendering so a pathologically large assistant
-    // response cannot drive an unbounded Markdig parse + Spectre render allocation.
+    // Physical per-parse allocation boundary. Larger responses are rendered through lazy chunks;
+    // the complete answer remains visible without giving Markdig one unbounded input allocation.
     private const int MaxRenderChars = 256 * 1024;
 
     public IRenderable Render(string markdown)
@@ -23,10 +23,14 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
             return new Text(string.Empty);
         }
 
-        if (markdown.Length > MaxRenderChars)
-        {
-            markdown = markdown[..MaxRenderChars] + "\n\n_[output truncated for display]_";
-        }
+        return markdown.Length <= MaxRenderChars
+            ? RenderChunk(markdown)
+            : new ChunkedMarkdownRenderable(markdown, MaxRenderChars, RenderChunk);
+
+    }
+
+    private IRenderable RenderChunk(string markdown)
+    {
 
         MarkdownDocument doc;
 
@@ -52,6 +56,93 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
             1 => rows[0],
             _ => new Rows(rows),
         };
+    }
+
+    private sealed class ChunkedMarkdownRenderable(
+        string markdown,
+        int maxChunkChars,
+        Func<string, IRenderable> renderChunk) : IRenderable
+    {
+
+        public Measurement Measure(RenderOptions options, int maxWidth)
+        {
+
+            int min = 0;
+
+            int max = 0;
+
+            foreach (IRenderable chunk in EnumerateRenderableChunks())
+            {
+
+                Measurement measurement = chunk.Measure(options, maxWidth);
+
+                min = Math.Max(min, measurement.Min);
+
+                max = Math.Max(max, measurement.Max);
+
+            }
+
+            return new Measurement(min, max);
+
+        }
+
+        public IEnumerable<Segment> Render(RenderOptions options, int maxWidth)
+        {
+
+            foreach (IRenderable chunk in EnumerateRenderableChunks())
+            {
+
+                foreach (Segment segment in chunk.Render(options, maxWidth))
+                {
+
+                    yield return segment;
+
+                }
+
+            }
+
+        }
+
+        private IEnumerable<IRenderable> EnumerateRenderableChunks()
+        {
+
+            int offset = 0;
+
+            while (offset < markdown.Length)
+            {
+
+                int end = markdown.Length - offset <= maxChunkChars
+                    ? markdown.Length
+                    : offset + maxChunkChars;
+
+                if (end < markdown.Length)
+                {
+
+                    int newline = markdown.LastIndexOf('\n', end - 1, end - offset);
+
+                    if (newline >= offset)
+                    {
+
+                        end = newline + 1;
+
+                    }
+                    else if (end > offset && char.IsHighSurrogate(markdown[end - 1]))
+                    {
+
+                        end--;
+
+                    }
+
+                }
+
+                yield return renderChunk(markdown[offset..end]);
+
+                offset = end;
+
+            }
+
+        }
+
     }
 
     private IRenderable RenderBlock(Block block)

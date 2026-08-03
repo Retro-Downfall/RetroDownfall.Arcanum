@@ -2,7 +2,7 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
 /// Campaign runtime projection. Path authority comes from
-/// <c>Arcanum:Security:CampaignRoots</c>; registry capacity is a code-owned invariant.
+/// <c>Arcanum:Security:CampaignRoots</c>.
 /// </summary>
 public sealed record CampaignsSettings
 {
@@ -15,10 +15,5 @@ public sealed record CampaignsSettings
     /// one of these roots.
     /// </summary>
     public string[] AllowedRoots { get; set; } = [];
-
-    /// <summary>
-    /// Maximum number of registered campaigns in the Grimoire database.
-    /// </summary>
-    public int MaxCampaigns { get; set; } = 500;
 
 }

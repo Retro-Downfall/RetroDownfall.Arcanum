@@ -1,11 +1,19 @@
 using RetroDownfall.Arcanum.Core.Storage;
 
+using System.Runtime.CompilerServices;
+
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 /// <summary>No-op <see cref="ISessionAttachmentStore"/> for WizardIntelligenceProvider test factories.</summary>
 internal sealed class NoOpSessionAttachmentStore(
     SessionAttachmentRecord? record = null,
-    Func<Guid, CancellationToken, Task>? acquireSessionGate = null) : ISessionAttachmentStore
+    Func<Guid, CancellationToken, Task>? acquireSessionGate = null,
+    IReadOnlyList<SessionAttachmentRecord>? forkRecords = null,
+    Func<Guid, IReadOnlyList<SessionAttachmentForkCopyPlan>, CancellationToken, Task>? copyForkPage = null,
+    Func<Guid, IReadOnlyList<SessionAttachmentForkCopyPlan>, CancellationToken, Task>? insertForkPage = null,
+    IReadOnlyDictionary<Guid, SessionAttachmentRecord>? records = null,
+    Func<SessionAttachmentRecord, CancellationToken, Task<ReadOnlyMemory<byte>>>? readBytes = null,
+    Func<SessionAttachmentRecord, CancellationToken, Task<Stream>>? openRead = null) : ISessionAttachmentStore
 {
 
     public int PersistNewCallCount { get; private set; }
@@ -65,9 +73,8 @@ internal sealed class NoOpSessionAttachmentStore(
 
     public Task<SessionAttachmentRecord?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
         Task.FromResult(
-            record?.Id == id
-                ? record
-                : null);
+            records?.GetValueOrDefault(id)
+            ?? (record?.Id == id ? record : null));
 
     public Task<SessionAttachmentRecord?> GetByLogicalAsync(
         Guid sessionId,
@@ -85,7 +92,11 @@ internal sealed class NoOpSessionAttachmentStore(
     public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
         Guid sessionId,
         CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>([]);
+        Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(
+            (records?.Values ?? (record is null ? [] : [record]))
+                .Where(item => item.SessionId == sessionId
+                    && item.State == SessionAttachmentState.Bound)
+                .ToArray());
 
     public Task<IReadOnlyList<SessionAttachmentIndexItem>> BuildIndexAsync(
         Guid sessionId,
@@ -96,7 +107,17 @@ internal sealed class NoOpSessionAttachmentStore(
     public Task<ReadOnlyMemory<byte>> ReadBytesAsync(
         SessionAttachmentRecord record,
         CancellationToken cancellationToken = default) =>
-        Task.FromResult(ReadOnlyMemory<byte>.Empty);
+        readBytes?.Invoke(record, cancellationToken)
+        ?? Task.FromResult(ReadOnlyMemory<byte>.Empty);
+
+    public Task<Stream> OpenReadAsync(
+        SessionAttachmentRecord record,
+        CancellationToken cancellationToken = default) =>
+        openRead?.Invoke(record, cancellationToken)
+        ?? ISessionAttachmentStoreOpenReadFallback.ReadAsync(
+            this,
+            record,
+            cancellationToken);
 
     public Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
@@ -107,7 +128,6 @@ internal sealed class NoOpSessionAttachmentStore(
     public Task ValidateReferencesAsync(
         Guid sessionId,
         IReadOnlyList<Guid> attachmentIds,
-        int maxReferences,
         CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 
@@ -143,20 +163,66 @@ internal sealed class NoOpSessionAttachmentStore(
     public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundForForkAsync(
         Guid sourceSessionId,
         IReadOnlySet<Guid>? copiedSourceEntryIds,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>([]);
+        CancellationToken cancellationToken = default)
+    {
+
+        IReadOnlyList<SessionAttachmentRecord> selected = forkRecords ?? [];
+
+        if (copiedSourceEntryIds is not null)
+        {
+
+            selected = selected
+                .Where(item => item.EntryId is Guid entryId && copiedSourceEntryIds.Contains(entryId))
+                .ToArray();
+
+        }
+
+        return Task.FromResult(selected);
+
+    }
+
+    public async IAsyncEnumerable<IReadOnlyList<SessionAttachmentRecord>> ReadBoundForForkPagesAsync(
+        Guid sourceSessionId,
+        long maximumSourceEntrySequence,
+        bool includeEntrylessAttachments,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+
+        const int pageSize = 128;
+
+        SessionAttachmentRecord[] selected = (forkRecords ?? [])
+            .Where(item => includeEntrylessAttachments || item.EntryId is not null)
+            .ToArray();
+
+        for (int offset = 0; offset < selected.Length; offset += pageSize)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            yield return selected
+                .Skip(offset)
+                .Take(pageSize)
+                .ToArray();
+
+            await Task.Yield();
+
+        }
+
+    }
 
     public Task CopyBytesForForkAsync(
         Guid forkSessionId,
         IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
         CancellationToken cancellationToken = default) =>
-        Task.CompletedTask;
+        copyForkPage?.Invoke(forkSessionId, plans, cancellationToken)
+        ?? Task.CompletedTask;
 
     public Task InsertForkRowsInAmbientTransactionAsync(
         Guid forkSessionId,
         IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
         CancellationToken cancellationToken = default) =>
-        Task.CompletedTask;
+        insertForkPage?.Invoke(forkSessionId, plans, cancellationToken)
+        ?? Task.CompletedTask;
 
     private sealed class EmptyDisposable : IDisposable
     {
@@ -165,6 +231,25 @@ internal sealed class NoOpSessionAttachmentStore(
 
         public void Dispose()
         {
+        }
+
+    }
+
+    private static class ISessionAttachmentStoreOpenReadFallback
+    {
+
+        public static async Task<Stream> ReadAsync(
+            ISessionAttachmentStore store,
+            SessionAttachmentRecord record,
+            CancellationToken cancellationToken)
+        {
+
+            ReadOnlyMemory<byte> bytes = await store
+                .ReadBytesAsync(record, cancellationToken)
+                .ConfigureAwait(false);
+
+            return new MemoryStream(bytes.ToArray(), writable: false);
+
         }
 
     }

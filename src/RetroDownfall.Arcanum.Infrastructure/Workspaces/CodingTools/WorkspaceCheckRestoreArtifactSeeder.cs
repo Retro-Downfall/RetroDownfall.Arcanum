@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Xml;
 using System.Xml.Linq;
@@ -7,16 +9,12 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 
 internal sealed record WorkspaceCheckRestoreSeedOptions(
-    int MaxProjects,
-    int MaxFiles,
     long MaxBytes)
 {
 
     internal static WorkspaceCheckRestoreSeedOptions Default { get; } =
         new(
-            MaxProjects: 128,
-            MaxFiles: 640,
-            MaxBytes: 64L * 1024L * 1024L);
+            MaxBytes: 100L * 1024L * 1024L);
 }
 
 internal sealed record WorkspaceCheckRestoreSeedResult(
@@ -26,8 +24,17 @@ internal sealed record WorkspaceCheckRestoreSeedResult(
     int ProjectCount,
     int FileCount,
     long ByteCount,
-    IReadOnlyList<WorkspaceCheckRestoreInputFingerprint>
-        InputFingerprints);
+    WorkspaceCheckRestoreInputManifest? InputManifest);
+
+internal sealed record WorkspaceCheckRestoreInputManifest(
+    string Path,
+    FileHandleIdentity Identity,
+    long Length,
+    long LastWriteUtcTicks,
+    string Sha256,
+    int RecordCount,
+    int ProjectCount,
+    string InputSetDigest);
 
 internal sealed record WorkspaceCheckRestoreInputFingerprint(
     string Path,
@@ -76,6 +83,17 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
         "global.json",
     ];
 
+    private static readonly EnumerationOptions ProjectEnumerationOptions =
+        new()
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = false,
+            AttributesToSkip =
+                FileAttributes.ReparsePoint
+                | FileAttributes.Device,
+            ReturnSpecialDirectories = false,
+        };
+
     internal static async Task<WorkspaceCheckRestoreSeedResult> SeedAsync(
         string workspaceRoot,
         string artifactsRoot,
@@ -87,14 +105,12 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactsRoot);
         ArgumentNullException.ThrowIfNull(options);
 
-        if (options.MaxProjects < 1
-            || options.MaxFiles < 1
-            || options.MaxBytes < 1)
+        if (options.MaxBytes < 1)
         {
 
             return Failure(
                 "invalid_seed_limits",
-                "Restore-artifact seed limits must be positive.");
+                "The restore-artifact Sanctum MaxFileWriteMb policy must be positive.");
         }
 
         string? workspace = CanonicalizeExistingDirectory(workspaceRoot);
@@ -112,96 +128,57 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
                 "Restore artifacts require an existing output root outside the source workspace.");
         }
 
-        List<string> projects;
+        RestoreSeedWriteBudget writeBudget = new(options.MaxBytes);
+
+        if (!RestoreInputManifestWriter.TryCreate(
+                destinationRoot,
+                writeBudget,
+                out RestoreInputManifestWriter? manifestWriter))
+        {
+
+            return Failure(
+                "restore_required",
+                "The owner-only restore-input manifest could not be created.");
+        }
+
+        RestoreInputManifestWriter activeManifestWriter = manifestWriter!;
+
+        using (activeManifestWriter)
+        {
+
+        int projects = 0;
+        int files = 0;
+        long bytes = 0;
 
         try
         {
 
-            projects = [];
-            foreach (string path in Directory.EnumerateFiles(
+            foreach (string project in Directory.EnumerateFiles(
                          workspace,
                          "*",
-                         new EnumerationOptions
-                         {
-                             RecurseSubdirectories = true,
-                             IgnoreInaccessible = false,
-                             AttributesToSkip =
-                                 FileAttributes.ReparsePoint
-                                 | FileAttributes.Device,
-                             ReturnSpecialDirectories = false,
-                         }))
+                         ProjectEnumerationOptions))
             {
 
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (!ProjectExtensions.Contains(
-                        Path.GetExtension(path),
+                        Path.GetExtension(project),
                         StringComparer.OrdinalIgnoreCase)
-                    || HasIgnoredDirectory(workspace, path))
+                    || HasIgnoredDirectory(workspace, project))
                 {
 
                     continue;
 
                 }
 
-                projects.Add(path);
-
-                if (projects.Count > options.MaxProjects)
-                {
-
-                    return Failure(
-                        "seed_cap_exceeded",
-                        $"Restore-artifact seeding found more than {options.MaxProjects} projects.");
-
-                }
-
-            }
-
-            projects.Sort(
-                OperatingSystem.IsWindows()
-                    ? StringComparer.OrdinalIgnoreCase
-                    : StringComparer.Ordinal);
-        }
-        catch (Exception ex) when (
-            ex is IOException
-                or UnauthorizedAccessException
-                or ArgumentException)
-        {
-
-            return Failure(
-                "restore_required",
-                "Project discovery could not safely inspect the workspace restore artifacts.");
-        }
-
-        HashSet<string> artifactProjectNames =
-            new(OperatingSystem.IsWindows()
-                ? StringComparer.OrdinalIgnoreCase
-                : StringComparer.Ordinal);
-        int files = 0;
-        long bytes = 0;
-        Dictionary<string, WorkspaceCheckRestoreInputFingerprint>
-            allRestoreInputs = new(PathComparer);
-        long restoreInputBytes = 0;
-
-        foreach (string project in projects)
-        {
-
-            cancellationToken.ThrowIfCancellationRequested();
+                projects = checked(projects + 1);
 
             string projectName = Path.GetFileNameWithoutExtension(project);
-
-            if (!artifactProjectNames.Add(projectName))
-            {
-
-                return Failure(
-                    "restore_required",
-                    $"Multiple projects map to the .NET artifacts project name '{projectName}'.");
-            }
 
             if (!TryValidateContainedRegularFile(
                     project,
                     workspace,
-                    out FileHandleMetadata projectMetadata))
+                    out _))
             {
 
                 return Failure(
@@ -212,6 +189,28 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
             string projectDirectory = Path.GetDirectoryName(project)!;
             string sourceObj = Path.Combine(projectDirectory, "obj");
             string projectFileName = Path.GetFileName(project);
+            string destination = WorkspaceCheckArtifactsLayout.ProjectIntermediateRoot(
+                destinationRoot,
+                project);
+            ArtifactsProjectClaimResult claim =
+                TryClaimArtifactsProjectName(destination);
+
+            if (claim == ArtifactsProjectClaimResult.Collision)
+            {
+
+                return Failure(
+                    "restore_required",
+                    $"Multiple projects map to the same .NET artifacts project name '{projectName}'.");
+            }
+
+            if (claim != ArtifactsProjectClaimResult.Success)
+            {
+
+                return Failure(
+                    "restore_required",
+                    $"Project '{projectName}' could not claim its owner-only artifacts destination.");
+            }
+
             string[] artifactNames =
             [
                 "project.assets.json",
@@ -224,47 +223,20 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
                     workspace,
                     project,
                     projectDirectory,
+                    activeManifestWriter.TryAppend,
                     cancellationToken,
-                    out IReadOnlyList<WorkspaceCheckRestoreInputFingerprint>
-                        restoreInputs,
                     out DateTime newestInput))
             {
+
+                if (writeBudget.Exceeded)
+                {
+
+                    return FailureForWritePolicy(writeBudget);
+                }
 
                 return Failure(
                     "restore_required",
                     $"Project '{projectName}' restore inputs could not be safely fingerprinted.");
-            }
-
-            foreach (WorkspaceCheckRestoreInputFingerprint input
-                     in restoreInputs)
-            {
-                if (allRestoreInputs.TryGetValue(
-                        input.Path,
-                        out WorkspaceCheckRestoreInputFingerprint?
-                            existing)
-                    && existing != input)
-                {
-                    return Failure(
-                        "restore_required",
-                        $"Project '{projectName}' restore inputs produced inconsistent fingerprints.");
-                }
-
-                if (!allRestoreInputs.ContainsKey(input.Path))
-                {
-                    restoreInputBytes = checked(
-                        restoreInputBytes + input.Length);
-
-                    if (allRestoreInputs.Count >= 256
-                        || restoreInputBytes
-                        > 16L * 1024L * 1024L)
-                    {
-                        return Failure(
-                            "seed_cap_exceeded",
-                            "Restore-input fingerprinting exceeded its global file or byte cap.");
-                    }
-                }
-
-                allRestoreInputs[input.Path] = input;
             }
 
             List<SeedFile> seedFiles = [];
@@ -289,16 +261,14 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
 
                 FileInfo info = new(source);
 
-                files++;
-                bytes = checked(bytes + info.Length);
-
-                if (files > options.MaxFiles || bytes > options.MaxBytes)
+                if (!writeBudget.TryReserve(info.Length))
                 {
 
-                    return Failure(
-                        "seed_cap_exceeded",
-                        "Restore-artifact seeding exceeded its file or byte cap.");
+                    return FailureForWritePolicy(writeBudget);
                 }
+
+                files = checked(files + 1);
+                bytes = checked(bytes + info.Length);
 
                 if (info.LastWriteTimeUtc < newestInput
                     || !ValidateArtifactContents(
@@ -335,11 +305,6 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
                         contentHash));
             }
 
-            string destination = WorkspaceCheckArtifactsLayout.ProjectIntermediateRoot(
-                destinationRoot,
-                project);
-            Directory.CreateDirectory(destination);
-
             foreach (SeedFile seed in seedFiles)
             {
 
@@ -360,24 +325,56 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
 
             }
 
-            if (!RevalidateInputs(restoreInputs))
-            {
-
-                return Failure(
-                    "restore_required",
-                    $"Project '{projectName}' changed during restore-artifact seeding.");
             }
-
         }
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException
+                or ArgumentException
+                or OverflowException)
+        {
+
+            return Failure(
+                "restore_required",
+                "Project discovery could not safely inspect the workspace restore artifacts.");
+        }
+
+        if (!activeManifestWriter.TryFinalize(
+                projects,
+                out WorkspaceCheckRestoreInputManifest? manifest))
+        {
+
+            return writeBudget.Exceeded
+                ? FailureForWritePolicy(writeBudget)
+                : Failure(
+                    "restore_required",
+                    "The owner-only restore-input manifest could not be identity-validated.");
+        }
+
+        if (!RevalidateManifest(
+                workspace,
+                manifest!,
+                options,
+                cancellationToken))
+        {
+
+            return Failure(
+                "restore_required",
+                "A restore-affecting workspace input changed during artifact seeding.");
+        }
+
+        activeManifestWriter.Keep();
 
         return new WorkspaceCheckRestoreSeedResult(
             true,
             null,
             null,
-            projects.Count,
+            projects,
             files,
             bytes,
-            allRestoreInputs.Values.ToArray());
+            manifest!);
+
+        }
     }
 
     private static async Task<bool> CopyIdentityCheckedAsync(
@@ -479,6 +476,76 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
         }
     }
 
+    private static ArtifactsProjectClaimResult TryClaimArtifactsProjectName(
+        string destination)
+    {
+
+        const string ClaimFileName = ".arcanum-project-claim";
+        string claimPath = Path.Combine(destination, ClaimFileName);
+
+        try
+        {
+
+            if (!SecureFilePermissions
+                    .TryEnsureOwnerOnlyDirectoryExistsStrict(destination))
+            {
+
+                return ArtifactsProjectClaimResult.Failure;
+            }
+
+            FileStreamOptions options = new()
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.ReadWrite,
+                Share = FileShare.Read,
+                BufferSize = 1,
+                Options = FileOptions.WriteThrough,
+            };
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                options.UnixCreateMode =
+                    UnixFileMode.UserRead
+                    | UnixFileMode.UserWrite;
+            }
+
+            using FileStream claim = new(claimPath, options);
+
+            if (!SecureFilePermissions.TryApplyOwnerOnlyFileStrict(claimPath)
+                || !FileHandleIdentityInterop.TryGetHandleMetadata(
+                    claim.SafeFileHandle,
+                    out FileHandleMetadata opened)
+                || opened.Kind != FileSystemObjectKind.RegularFile
+                || opened.HardLinkCount != 1
+                || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                    claimPath,
+                    out FileHandleMetadata pathMetadata)
+                || pathMetadata != opened)
+            {
+
+                return ArtifactsProjectClaimResult.Failure;
+            }
+
+            return ArtifactsProjectClaimResult.Success;
+        }
+        catch (IOException)
+        {
+
+            return File.Exists(claimPath)
+                ? ArtifactsProjectClaimResult.Collision
+                : ArtifactsProjectClaimResult.Failure;
+        }
+        catch (Exception ex) when (
+            ex is UnauthorizedAccessException
+                or ArgumentException
+                or NotSupportedException)
+        {
+
+            return ArtifactsProjectClaimResult.Failure;
+        }
+    }
+
     private static string? ComputeSha256(
         string path,
         FileHandleIdentity identity,
@@ -520,6 +587,9 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
         }
     }
 
+    private static string ComputeSha256(Stream stream) =>
+        Convert.ToHexString(SHA256.HashData(stream));
+
     private static bool TryValidateContainedRegularFile(
         string path,
         string workspace,
@@ -558,30 +628,56 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
         string workspace,
         string project,
         string projectDirectory,
+        Func<WorkspaceCheckRestoreInputFingerprint, bool> capture,
         CancellationToken cancellationToken,
-        out IReadOnlyList<WorkspaceCheckRestoreInputFingerprint>
-            snapshots,
         out DateTime newest)
     {
-        const int MaxRestoreInputs = 64;
-        const long maxInputBytes = 8L * 1024L * 1024L;
-        List<string> paths = [project];
+        ArgumentNullException.ThrowIfNull(capture);
 
-        if (!TryEnumerateProjectRestoreInputs(
-                workspace,
+        DateTime newestSeen = DateTime.MinValue;
+
+        bool CapturePath(string path)
+        {
+
+            if (!TryCaptureFingerprint(
+                    path,
+                    workspace,
+                    out WorkspaceCheckRestoreInputFingerprint? fingerprint)
+                || fingerprint is null
+                || !capture(fingerprint))
+            {
+
+                return false;
+            }
+
+            DateTime modified = new(fingerprint.LastWriteUtcTicks, DateTimeKind.Utc);
+            newestSeen = modified > newestSeen
+                ? modified
+                : newestSeen;
+            return true;
+        }
+
+        HashSet<string> active = new(PathComparer);
+        Dictionary<string, string> projectProperties =
+            CreateBuiltInProperties(
                 project,
                 projectDirectory,
-                maxInputBytes,
-                cancellationToken,
-                out IReadOnlyList<string> projectInputs))
+                project);
+
+        if (!TryVisitRestoreInput(
+                workspace,
+                project,
+                project,
+                projectProperties,
+                CapturePath,
+                active,
+                cancellationToken))
         {
-            snapshots = [];
+
             newest = default;
             return false;
         }
 
-        paths.AddRange(projectInputs);
-        List<string> ancestorXmlInputs = [];
         string current = projectDirectory;
 
         while (WorkspaceRootPath.IsWithinOrEqual(current, workspace))
@@ -594,8 +690,6 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
 
                 if (File.Exists(input))
                 {
-                    paths.Add(input);
-
                     if (input.EndsWith(
                             ".props",
                             StringComparison.OrdinalIgnoreCase)
@@ -603,12 +697,29 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
                             ".targets",
                             StringComparison.OrdinalIgnoreCase))
                     {
-                        ancestorXmlInputs.Add(input);
-                    }
+                        Dictionary<string, string> properties =
+                            CreateBuiltInProperties(
+                                project,
+                                projectDirectory,
+                                input);
 
-                    if (paths.Count > MaxRestoreInputs)
+                        if (!TryVisitRestoreInput(
+                                workspace,
+                                project,
+                                input,
+                                properties,
+                                CapturePath,
+                                active,
+                                cancellationToken))
+                        {
+
+                            newest = default;
+                            return false;
+                        }
+                    }
+                    else if (!CapturePath(input))
                     {
-                        snapshots = [];
+
                         newest = default;
                         return false;
                     }
@@ -630,39 +741,6 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
             current = parent;
         }
 
-        List<string> ancestorNestedInputs = [];
-        HashSet<string> ancestorActive =
-            new(PathComparer);
-        long ancestorParsedBytes = 0;
-
-        foreach (string ancestor in ancestorXmlInputs)
-        {
-            Dictionary<string, string> properties =
-                CreateBuiltInProperties(
-                    project,
-                    projectDirectory,
-                    ancestor);
-
-            if (!TryVisitRestoreInput(
-                    workspace,
-                    ancestor,
-                    project,
-                    ancestor,
-                    properties,
-                    ancestorNestedInputs,
-                    ancestorActive,
-                    ref ancestorParsedBytes,
-                    maxInputBytes,
-                    cancellationToken))
-            {
-                snapshots = [];
-                newest = default;
-                return false;
-            }
-        }
-
-        paths.AddRange(ancestorNestedInputs);
-
         string projectName = Path.GetFileNameWithoutExtension(project);
         foreach (string lockName in new[]
                  {
@@ -676,108 +754,26 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
 
             if (File.Exists(lockPath))
             {
-                paths.Add(lockPath);
+                if (!CapturePath(lockPath))
+                {
+
+                    newest = default;
+                    return false;
+                }
             }
         }
 
-        List<WorkspaceCheckRestoreInputFingerprint> captured = [];
-        long bytes = 0;
-        newest = DateTime.MinValue;
-
-        foreach (string path in paths.Distinct(PathComparer))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (!TryValidateContainedRegularFile(
-                    path,
-                    workspace,
-                    out FileHandleMetadata metadata))
-            {
-                snapshots = [];
-                return false;
-            }
-
-            FileInfo info = new(path);
-            bytes = checked(bytes + info.Length);
-
-            if (captured.Count >= MaxRestoreInputs
-                || bytes > maxInputBytes)
-            {
-                snapshots = [];
-                return false;
-            }
-
-            string? hash = ComputeSha256(
-                path,
-                metadata.Identity,
-                info.Length);
-
-            if (hash is null)
-            {
-                snapshots = [];
-                return false;
-            }
-
-            newest = info.LastWriteTimeUtc > newest
-                ? info.LastWriteTimeUtc
-                : newest;
-            captured.Add(
-                new WorkspaceCheckRestoreInputFingerprint(
-                    path,
-                    metadata.Identity,
-                    info.Length,
-                    info.LastWriteTimeUtc.Ticks,
-                    hash));
-        }
-
-        snapshots = captured;
-        return true;
-    }
-
-    private static bool TryEnumerateProjectRestoreInputs(
-        string workspace,
-        string project,
-        string projectDirectory,
-        long maxBytes,
-        CancellationToken cancellationToken,
-        out IReadOnlyList<string> inputs)
-    {
-        List<string> found = [];
-        HashSet<string> active = new(PathComparer);
-        long parsedBytes = 0;
-        Dictionary<string, string> properties =
-            CreateBuiltInProperties(
-                project,
-                projectDirectory,
-                project);
-
-        bool success = TryVisitRestoreInput(
-            workspace,
-            project,
-            project,
-            project,
-            properties,
-            found,
-            active,
-            ref parsedBytes,
-            maxBytes,
-            cancellationToken);
-        inputs = success
-            ? found
-            : [];
-        return success;
+        newest = newestSeen;
+        return newest != DateTime.MinValue;
     }
 
     private static bool TryVisitRestoreInput(
         string workspace,
-        string topLevelProject,
         string rootProject,
         string path,
         Dictionary<string, string> properties,
-        List<string> found,
+        Func<string, bool> capture,
         HashSet<string> active,
-        ref long parsedBytes,
-        long maxBytes,
         CancellationToken cancellationToken)
     {
         try
@@ -789,34 +785,20 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
                 || !WorkspaceRootPath.IsWithinOrEqual(
                     canonical,
                     workspace)
-                || !active.Add(canonical)
-                || found.Count >= 64)
+                || !active.Add(canonical))
             {
                 return false;
             }
 
-            FileInfo info = new(canonical);
-            parsedBytes = checked(parsedBytes + info.Length);
-
-            if (parsedBytes > maxBytes)
+            if (!capture(canonical))
             {
                 return false;
-            }
-
-            if (!PathComparer.Equals(
-                    canonical,
-                    topLevelProject))
-            {
-                found.Add(canonical);
             }
 
             XmlReaderSettings settings = new()
             {
                 DtdProcessing = DtdProcessing.Prohibit,
                 XmlResolver = null,
-                MaxCharactersInDocument = Math.Min(
-                    maxBytes,
-                    info.Length + 1),
             };
             using FileStream stream = new(
                 canonical,
@@ -828,9 +810,6 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
             using XmlReader reader = XmlReader.Create(
                 stream,
                 settings);
-            XDocument document = XDocument.Load(
-                reader,
-                LoadOptions.None);
             string currentDirectory =
                 Path.GetDirectoryName(canonical)!;
             SetBuiltInProperties(
@@ -838,38 +817,122 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
                 rootProject,
                 currentDirectory,
                 canonical);
+            int propertyGroupDepth = -1;
+            int propertyDepth = -1;
+            string? propertyName = null;
+            StringBuilder? propertyValue = null;
+            bool propertyHasElements = false;
 
-            foreach (XElement element in document.Descendants())
+            while (reader.Read())
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (element.Parent?.Name.LocalName
-                        == "PropertyGroup"
-                    && !element.HasElements
-                    && element.Attribute("Condition") is null)
+                if (reader.NodeType is
+                    XmlNodeType.Text
+                    or XmlNodeType.CDATA
+                    or XmlNodeType.Whitespace
+                    or XmlNodeType.SignificantWhitespace)
                 {
-                    if (TryExpandStaticValue(
-                            element.Value,
-                            properties,
-                            out string propertyValue))
+
+                    if (propertyDepth >= 0
+                        && !propertyHasElements
+                        && reader.Depth == propertyDepth + 1)
                     {
-                        properties[element.Name.LocalName] =
-                            propertyValue;
+
+                        propertyValue!.Append(reader.Value);
+                    }
+
+                    continue;
+                }
+
+                if (reader.NodeType == XmlNodeType.EndElement)
+                {
+
+                    if (reader.Depth == propertyDepth)
+                    {
+
+                        if (!propertyHasElements
+                            && propertyName is not null
+                            && TryExpandStaticValue(
+                                propertyValue?.ToString()
+                                    ?? string.Empty,
+                                properties,
+                                out string expandedProperty))
+                        {
+
+                            properties[propertyName] =
+                                expandedProperty;
+                        }
+
+                        propertyDepth = -1;
+                        propertyName = null;
+                        propertyValue = null;
+                        propertyHasElements = false;
+                    }
+
+                    if (reader.Depth == propertyGroupDepth
+                        && reader.LocalName == "PropertyGroup")
+                    {
+
+                        propertyGroupDepth = -1;
+                    }
+
+                    continue;
+                }
+
+                if (reader.NodeType != XmlNodeType.Element)
+                {
+
+                    continue;
+                }
+
+                if (propertyDepth >= 0
+                    && reader.Depth > propertyDepth)
+                {
+
+                    propertyHasElements = true;
+                }
+
+                if (reader.LocalName == "PropertyGroup")
+                {
+
+                    propertyGroupDepth = reader.Depth;
+                    continue;
+                }
+
+                if (propertyGroupDepth >= 0
+                    && propertyDepth < 0
+                    && reader.Depth == propertyGroupDepth + 1
+                    && reader.GetAttribute("Condition") is null)
+                {
+
+                    propertyDepth = reader.Depth;
+                    propertyName = reader.LocalName;
+                    propertyValue = new StringBuilder();
+                    propertyHasElements = false;
+
+                    if (reader.IsEmptyElement)
+                    {
+
+                        properties[propertyName] = string.Empty;
+                        propertyDepth = -1;
+                        propertyName = null;
+                        propertyValue = null;
                     }
 
                     continue;
                 }
 
                 bool projectReference =
-                    element.Name.LocalName
+                    reader.LocalName
                     == "ProjectReference";
                 string? expression =
-                    element.Name.LocalName switch
+                    reader.LocalName switch
                     {
                         "Import" =>
-                            element.Attribute("Project")?.Value,
+                            reader.GetAttribute("Project"),
                         "ProjectReference" =>
-                            element.Attribute("Include")?.Value,
+                            reader.GetAttribute("Include"),
                         _ => null,
                     };
 
@@ -901,20 +964,23 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
 
                 if (!TryVisitRestoreInput(
                         workspace,
-                        topLevelProject,
                         projectReference
                             ? child
                             : rootProject,
                         child,
                         childProperties,
-                        found,
+                        capture,
                         active,
-                        ref parsedBytes,
-                        maxBytes,
                         cancellationToken))
                 {
                     return false;
                 }
+
+                SetBuiltInProperties(
+                    properties,
+                    rootProject,
+                    currentDirectory,
+                    canonical);
             }
 
             active.Remove(canonical);
@@ -929,6 +995,63 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
         {
             return false;
         }
+    }
+
+    private static bool TryCaptureFingerprint(
+        string path,
+        string workspace,
+        out WorkspaceCheckRestoreInputFingerprint? fingerprint)
+    {
+
+        fingerprint = null;
+        string? canonical = CanonicalizeExistingFile(path);
+
+        if (canonical is null
+            || !TryValidateContainedRegularFile(
+                canonical,
+                workspace,
+                out FileHandleMetadata metadata))
+        {
+
+            return false;
+        }
+
+        FileInfo info = new(canonical);
+        long length = info.Length;
+        long lastWriteUtcTicks = info.LastWriteTimeUtc.Ticks;
+        string? hash = ComputeSha256(
+            canonical,
+            metadata.Identity,
+            length);
+
+        if (hash is null
+            || !FileHandleIdentityInterop.TryGetPathMetadata(
+                canonical,
+                out FileHandleMetadata after)
+            || !FileHandleIdentity.IdentitiesMatch(
+                metadata.Identity,
+                after.Identity))
+        {
+
+            return false;
+        }
+
+        info.Refresh();
+
+        if (info.Length != length
+            || info.LastWriteTimeUtc.Ticks != lastWriteUtcTicks)
+        {
+
+            return false;
+        }
+
+        fingerprint = new WorkspaceCheckRestoreInputFingerprint(
+            canonical,
+            metadata.Identity,
+            length,
+            lastWriteUtcTicks,
+            hash);
+        return true;
     }
 
     private static Dictionary<string, string>
@@ -1027,8 +1150,7 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
 
     internal static bool RevalidateManifest(
         string workspaceRoot,
-        IReadOnlyList<WorkspaceCheckRestoreInputFingerprint>
-            seededManifest,
+        WorkspaceCheckRestoreInputManifest seededManifest,
         WorkspaceCheckRestoreSeedOptions options,
         CancellationToken cancellationToken)
     {
@@ -1040,177 +1162,312 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
             CanonicalizeExistingDirectory(workspaceRoot);
 
         if (workspace is null
-            || options.MaxProjects < 1
-            || options.MaxFiles < 1
             || options.MaxBytes < 1
+            || !TryRevalidateStoredManifest(
+                workspace,
+                seededManifest,
+                options,
+                cancellationToken)
             || !TryCaptureCurrentManifest(
                 workspace,
-                options,
                 cancellationToken,
-                out IReadOnlyList<WorkspaceCheckRestoreInputFingerprint>
-                    currentManifest)
-            || currentManifest.Count != seededManifest.Count)
+                out int projectCount,
+                out int recordCount,
+                out string? inputSetDigest))
         {
             return false;
         }
 
-        Dictionary<string, WorkspaceCheckRestoreInputFingerprint>
-            currentByPath = currentManifest.ToDictionary(
-                input => input.Path,
-                PathComparer);
-
-        return seededManifest.All(
-            seeded =>
-                currentByPath.TryGetValue(
-                    seeded.Path,
-                    out WorkspaceCheckRestoreInputFingerprint?
-                        current)
-                && current == seeded);
+        return projectCount == seededManifest.ProjectCount
+            && recordCount == seededManifest.RecordCount
+            && string.Equals(
+                inputSetDigest,
+                seededManifest.InputSetDigest,
+                StringComparison.Ordinal);
     }
 
     private static bool TryCaptureCurrentManifest(
         string workspace,
-        WorkspaceCheckRestoreSeedOptions options,
         CancellationToken cancellationToken,
-        out IReadOnlyList<WorkspaceCheckRestoreInputFingerprint>
-            manifest)
+        out int projectCount,
+        out int recordCount,
+        out string? inputSetDigest)
     {
-        List<string> projects = [];
+        projectCount = 0;
+        recordCount = 0;
+        inputSetDigest = null;
+        ManifestDigestAccumulator accumulator = new();
+        int capturedRecords = 0;
 
         try
         {
-            foreach (string path in Directory.EnumerateFiles(
+            foreach (string project in Directory.EnumerateFiles(
                          workspace,
                          "*",
-                         new EnumerationOptions
-                         {
-                             RecurseSubdirectories = true,
-                             IgnoreInaccessible = false,
-                             AttributesToSkip =
-                                 FileAttributes.ReparsePoint
-                                 | FileAttributes.Device,
-                             ReturnSpecialDirectories = false,
-                         }))
+                         ProjectEnumerationOptions))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (!ProjectExtensions.Contains(
-                        Path.GetExtension(path),
+                        Path.GetExtension(project),
                         StringComparer.OrdinalIgnoreCase)
-                    || HasIgnoredDirectory(workspace, path))
+                    || HasIgnoredDirectory(workspace, project))
                 {
                     continue;
                 }
 
-                projects.Add(path);
+                projectCount = checked(projectCount + 1);
 
-                if (projects.Count > options.MaxProjects)
+                if (!TryCaptureRestoreInputs(
+                        workspace,
+                        project,
+                        Path.GetDirectoryName(project)!,
+                        fingerprint =>
+                        {
+
+                            accumulator.Add(fingerprint);
+                            capturedRecords = checked(capturedRecords + 1);
+                            return true;
+                        },
+                        cancellationToken,
+                        out _))
                 {
-                    manifest = [];
+
                     return false;
                 }
             }
-
-            projects.Sort(PathComparer);
         }
         catch (Exception ex) when (
             ex is IOException
                 or UnauthorizedAccessException
-                or ArgumentException)
+                or ArgumentException
+                or OverflowException)
         {
-            manifest = [];
+
             return false;
         }
 
-        Dictionary<string, WorkspaceCheckRestoreInputFingerprint>
-            captured = new(PathComparer);
-        long bytes = 0;
-
-        foreach (string project in projects)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (!TryCaptureRestoreInputs(
-                    workspace,
-                    project,
-                    Path.GetDirectoryName(project)!,
-                    cancellationToken,
-                    out IReadOnlyList<WorkspaceCheckRestoreInputFingerprint>
-                        projectInputs,
-                    out _))
-            {
-                manifest = [];
-                return false;
-            }
-
-            foreach (WorkspaceCheckRestoreInputFingerprint input
-                     in projectInputs)
-            {
-                if (captured.TryGetValue(
-                        input.Path,
-                        out WorkspaceCheckRestoreInputFingerprint?
-                            existing))
-                {
-                    if (existing != input)
-                    {
-                        manifest = [];
-                        return false;
-                    }
-
-                    continue;
-                }
-
-                bytes = checked(bytes + input.Length);
-
-                if (captured.Count >= 256
-                    || bytes > 16L * 1024L * 1024L)
-                {
-                    manifest = [];
-                    return false;
-                }
-
-                captured.Add(input.Path, input);
-            }
-        }
-
-        manifest = captured.Values.ToArray();
+        recordCount = capturedRecords;
+        inputSetDigest = accumulator.GetDigest();
         return true;
     }
 
-    internal static bool RevalidateInputs(
-        IReadOnlyList<WorkspaceCheckRestoreInputFingerprint>
-            snapshots)
+    private static bool TryRevalidateStoredManifest(
+        string workspace,
+        WorkspaceCheckRestoreInputManifest manifest,
+        WorkspaceCheckRestoreSeedOptions options,
+        CancellationToken cancellationToken)
     {
-        foreach (WorkspaceCheckRestoreInputFingerprint input
-                 in snapshots)
+
+        try
         {
-            if (!FileHandleIdentityInterop.TryGetPathMetadata(
-                    input.Path,
-                    out FileHandleMetadata current)
+
+            if (manifest.Length < 0
+                || manifest.Length > options.MaxBytes
+                || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                    manifest.Path,
+                    out FileHandleMetadata before)
+                || before.Kind != FileSystemObjectKind.RegularFile
+                || before.HardLinkCount != 1
                 || !FileHandleIdentity.IdentitiesMatch(
-                    input.Identity,
-                    current.Identity))
+                    manifest.Identity,
+                    before.Identity))
             {
+
                 return false;
             }
 
-            FileInfo info = new(input.Path);
+            using FileStream stream = new(
+                manifest.Path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 16 * 1024,
+                FileOptions.SequentialScan);
 
-            if (info.Length != input.Length
-                || info.LastWriteTimeUtc.Ticks
-                    != input.LastWriteUtcTicks
+            if (stream.Length != manifest.Length
+                || !FileHandleIdentityInterop.TryGetHandleMetadata(
+                    stream.SafeFileHandle,
+                    out FileHandleMetadata opened)
+                || opened.HardLinkCount != 1
+                || !FileHandleIdentity.IdentitiesMatch(
+                    manifest.Identity,
+                    opened.Identity)
                 || !string.Equals(
-                    ComputeSha256(
-                        input.Path,
-                        input.Identity,
-                        input.Length),
-                    input.Sha256,
+                    ComputeSha256(stream),
+                    manifest.Sha256,
                     StringComparison.Ordinal))
             {
+
                 return false;
             }
+
+            stream.Position = 0;
+            ManifestDigestAccumulator accumulator = new();
+            int records = 0;
+
+            using (StreamReader reader = new(
+                       stream,
+                       new UTF8Encoding(
+                           encoderShouldEmitUTF8Identifier: false,
+                           throwOnInvalidBytes: true),
+                       detectEncodingFromByteOrderMarks: false,
+                       bufferSize: 16 * 1024,
+                       leaveOpen: true))
+            {
+
+                while (reader.ReadLine() is { } line)
+                {
+
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (!TryParseManifestRecord(
+                            line,
+                            out WorkspaceCheckRestoreInputFingerprint? input)
+                        || input is null
+                        || !TryRevalidateInput(
+                            workspace,
+                            input))
+                    {
+
+                        return false;
+                    }
+
+                    accumulator.Add(input);
+                    records = checked(records + 1);
+                }
+
+            }
+
+            stream.Position = 0;
+
+            if (records != manifest.RecordCount
+                || !string.Equals(
+                    accumulator.GetDigest(),
+                    manifest.InputSetDigest,
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    ComputeSha256(stream),
+                    manifest.Sha256,
+                    StringComparison.Ordinal)
+                || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                    manifest.Path,
+                    out FileHandleMetadata after)
+                || after.HardLinkCount != 1
+                || !FileHandleIdentity.IdentitiesMatch(
+                    manifest.Identity,
+                    after.Identity))
+            {
+
+                return false;
+            }
+
+            FileInfo info = new(manifest.Path);
+
+            return info.Length == manifest.Length
+                && info.LastWriteTimeUtc.Ticks
+                    == manifest.LastWriteUtcTicks;
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException
+                or ArgumentException
+                or JsonException
+                or DecoderFallbackException
+                or InvalidOperationException
+                or OverflowException)
+        {
+
+            return false;
+        }
+    }
+
+    private static bool TryRevalidateInput(
+        string workspace,
+        WorkspaceCheckRestoreInputFingerprint input)
+    {
+
+        string? canonical = CanonicalizeExistingFile(input.Path);
+
+        if (canonical is null
+            || !PathComparer.Equals(canonical, input.Path)
+            || !TryValidateContainedRegularFile(
+                canonical,
+                workspace,
+                out FileHandleMetadata current)
+            || !FileHandleIdentity.IdentitiesMatch(
+                input.Identity,
+                current.Identity))
+        {
+
+            return false;
         }
 
+        FileInfo info = new(canonical);
+
+        if (info.Length != input.Length
+            || info.LastWriteTimeUtc.Ticks
+                != input.LastWriteUtcTicks
+            || !string.Equals(
+                ComputeSha256(
+                    canonical,
+                    input.Identity,
+                    input.Length),
+                input.Sha256,
+                StringComparison.Ordinal)
+            || !FileHandleIdentityInterop.TryGetPathMetadata(
+                canonical,
+                out FileHandleMetadata after)
+            || !FileHandleIdentity.IdentitiesMatch(
+                input.Identity,
+                after.Identity))
+        {
+
+            return false;
+        }
+
+        info.Refresh();
+        return info.Length == input.Length
+            && info.LastWriteTimeUtc.Ticks
+                == input.LastWriteUtcTicks;
+    }
+
+    private static bool TryParseManifestRecord(
+        string line,
+        out WorkspaceCheckRestoreInputFingerprint? fingerprint)
+    {
+
+        fingerprint = null;
+        using JsonDocument document = JsonDocument.Parse(
+            line,
+            new JsonDocumentOptions { MaxDepth = 8 });
+        JsonElement root = document.RootElement;
+
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("path", out JsonElement pathElement)
+            || pathElement.GetString() is not { Length: > 0 } path
+            || !root.TryGetProperty("volumeId", out JsonElement volumeElement)
+            || !volumeElement.TryGetUInt64(out ulong volumeId)
+            || !root.TryGetProperty("fileId", out JsonElement fileElement)
+            || !fileElement.TryGetUInt64(out ulong fileId)
+            || !root.TryGetProperty("length", out JsonElement lengthElement)
+            || !lengthElement.TryGetInt64(out long length)
+            || length < 0
+            || !root.TryGetProperty("lastWriteUtcTicks", out JsonElement timeElement)
+            || !timeElement.TryGetInt64(out long lastWriteUtcTicks)
+            || !root.TryGetProperty("sha256", out JsonElement hashElement)
+            || hashElement.GetString() is not { Length: 64 } sha256)
+        {
+
+            return false;
+        }
+
+        fingerprint = new WorkspaceCheckRestoreInputFingerprint(
+            path,
+            new FileHandleIdentity(volumeId, fileId),
+            length,
+            lastWriteUtcTicks,
+            sha256);
         return true;
     }
 
@@ -1378,7 +1635,47 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
     private static WorkspaceCheckRestoreSeedResult Failure(
         string code,
         string message) =>
-        new(false, code, message, 0, 0, 0, []);
+        new(false, code, message, 0, 0, 0, null);
+
+    private static WorkspaceCheckRestoreSeedResult FailureForWritePolicy(
+        RestoreSeedWriteBudget budget) =>
+        Failure(
+            "seed_cap_exceeded",
+            $"Physical resource protection: restore-artifact seeding would write {budget.AttemptedBytes} bytes, exceeding the explicit Sanctum MaxFileWriteMb policy of {budget.LimitBytes} bytes. The check was not started; rerun after reducing pre-existing restore artifacts or explicitly raising Sanctum MaxFileWriteMb.");
+
+    private static byte[] SerializeManifestRecord(
+        WorkspaceCheckRestoreInputFingerprint fingerprint)
+    {
+
+        ArrayBufferWriter<byte> buffer = new(512);
+
+        using (Utf8JsonWriter writer = new(
+                   buffer,
+                   new JsonWriterOptions
+                   {
+                       Indented = false,
+                       SkipValidation = false,
+                   }))
+        {
+
+            writer.WriteStartObject();
+            writer.WriteString("path", fingerprint.Path);
+            writer.WriteNumber(
+                "volumeId",
+                fingerprint.Identity.VolumeId);
+            writer.WriteNumber(
+                "fileId",
+                fingerprint.Identity.FileId);
+            writer.WriteNumber("length", fingerprint.Length);
+            writer.WriteNumber(
+                "lastWriteUtcTicks",
+                fingerprint.LastWriteUtcTicks);
+            writer.WriteString("sha256", fingerprint.Sha256);
+            writer.WriteEndObject();
+        }
+
+        return buffer.WrittenSpan.ToArray();
+    }
 
     private static StringComparer PathComparer =>
         OperatingSystem.IsWindows()
@@ -1392,5 +1689,364 @@ internal static class WorkspaceCheckRestoreArtifactSeeder
         long Length,
         long LastWriteUtcTicks,
         string Sha256);
+
+    private enum ArtifactsProjectClaimResult
+    {
+        Success,
+        Collision,
+        Failure,
+    }
+
+    private sealed class RestoreSeedWriteBudget(long limitBytes)
+    {
+
+        private long _reservedBytes;
+
+        internal long LimitBytes { get; } = limitBytes;
+
+        internal long AttemptedBytes { get; private set; }
+
+        internal bool Exceeded { get; private set; }
+
+        internal bool TryReserve(long byteCount)
+        {
+
+            if (byteCount < 0)
+            {
+
+                Exceeded = true;
+                AttemptedBytes = long.MaxValue;
+                return false;
+            }
+
+            AttemptedBytes = _reservedBytes > long.MaxValue - byteCount
+                ? long.MaxValue
+                : _reservedBytes + byteCount;
+
+            if (AttemptedBytes > LimitBytes)
+            {
+
+                Exceeded = true;
+                return false;
+            }
+
+            _reservedBytes = AttemptedBytes;
+            return true;
+        }
+    }
+
+    private sealed class ManifestDigestAccumulator
+    {
+
+        private readonly byte[] _xor = new byte[32];
+
+        private readonly byte[] _sum = new byte[32];
+
+        internal void Add(
+            WorkspaceCheckRestoreInputFingerprint fingerprint) =>
+            AddSerialized(SerializeManifestRecord(fingerprint));
+
+        internal void AddSerialized(ReadOnlySpan<byte> serialized)
+        {
+
+            Span<byte> hash = stackalloc byte[32];
+            SHA256.HashData(serialized, hash);
+            int carry = 0;
+
+            for (int index = hash.Length - 1; index >= 0; index--)
+            {
+
+                _xor[index] ^= hash[index];
+                int value = _sum[index] + hash[index] + carry;
+                _sum[index] = unchecked((byte)value);
+                carry = value >> 8;
+            }
+        }
+
+        internal string GetDigest() =>
+            Convert.ToHexString(_xor)
+            + Convert.ToHexString(_sum);
+    }
+
+    private sealed class RestoreInputManifestWriter : IDisposable
+    {
+
+        private const string ManifestFileName =
+            ".arcanum-restore-inputs.jsonl";
+
+        private readonly string _path;
+
+        private readonly FileHandleIdentity _identity;
+
+        private readonly RestoreSeedWriteBudget _budget;
+
+        private readonly ManifestDigestAccumulator _accumulator = new();
+
+        private FileStream? _stream;
+
+        private int _recordCount;
+
+        private bool _keep;
+
+        private RestoreInputManifestWriter(
+            string path,
+            FileHandleIdentity identity,
+            RestoreSeedWriteBudget budget,
+            FileStream stream)
+        {
+
+            _path = path;
+            _identity = identity;
+            _budget = budget;
+            _stream = stream;
+        }
+
+        internal static bool TryCreate(
+            string destinationRoot,
+            RestoreSeedWriteBudget budget,
+            out RestoreInputManifestWriter? writer)
+        {
+
+            writer = null;
+            string path = Path.Combine(
+                destinationRoot,
+                ManifestFileName);
+            FileStream? stream = null;
+            FileHandleIdentity? createdIdentity = null;
+
+            try
+            {
+
+                FileStreamOptions options = new()
+                {
+                    Mode = FileMode.CreateNew,
+                    Access = FileAccess.ReadWrite,
+                    Share = FileShare.Read,
+                    BufferSize = 16 * 1024,
+                    Options = FileOptions.SequentialScan,
+                };
+
+                if (!OperatingSystem.IsWindows())
+                {
+
+                    options.UnixCreateMode =
+                        UnixFileMode.UserRead
+                        | UnixFileMode.UserWrite;
+                }
+
+                stream = new FileStream(path, options);
+
+                if (!FileHandleIdentityInterop.TryGetHandleMetadata(
+                        stream.SafeFileHandle,
+                        out FileHandleMetadata opened))
+                {
+
+                    return false;
+                }
+
+                createdIdentity = opened.Identity;
+
+                if (opened.Kind != FileSystemObjectKind.RegularFile
+                    || opened.HardLinkCount != 1
+                    || !SecureFilePermissions.TryApplyOwnerOnlyFileStrict(path)
+                    || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                        path,
+                        out FileHandleMetadata pathMetadata)
+                    || pathMetadata != opened)
+                {
+
+                    return false;
+                }
+
+                writer = new RestoreInputManifestWriter(
+                    path,
+                    opened.Identity,
+                    budget,
+                    stream);
+                stream = null;
+                return true;
+            }
+            catch (Exception ex) when (
+                ex is IOException
+                    or UnauthorizedAccessException
+                    or ArgumentException
+                    or NotSupportedException)
+            {
+
+                return false;
+            }
+            finally
+            {
+
+                stream?.Dispose();
+
+                if (writer is null
+                    && createdIdentity is FileHandleIdentity identity
+                    && FileHandleIdentityInterop
+                        .TryGetPathMetadataNoFollow(
+                            path,
+                            out FileHandleMetadata metadata)
+                    && metadata.Kind == FileSystemObjectKind.RegularFile
+                    && metadata.HardLinkCount == 1
+                    && FileHandleIdentity.IdentitiesMatch(
+                        identity,
+                        metadata.Identity))
+                {
+
+                    try
+                    {
+
+                        File.Delete(path);
+                    }
+                    catch (Exception ex) when (
+                        ex is IOException
+                            or UnauthorizedAccessException)
+                    {
+                    }
+                }
+            }
+        }
+
+        internal bool TryAppend(
+            WorkspaceCheckRestoreInputFingerprint fingerprint)
+        {
+
+            if (_stream is null)
+            {
+
+                return false;
+            }
+
+            try
+            {
+
+                byte[] serialized = SerializeManifestRecord(fingerprint);
+                long recordBytes = checked(serialized.LongLength + 1L);
+
+                if (!_budget.TryReserve(recordBytes))
+                {
+
+                    return false;
+                }
+
+                _stream.Write(serialized);
+                _stream.WriteByte((byte)'\n');
+                _accumulator.AddSerialized(serialized);
+                _recordCount = checked(_recordCount + 1);
+                return true;
+            }
+            catch (Exception ex) when (
+                ex is IOException
+                    or UnauthorizedAccessException
+                    or OverflowException)
+            {
+
+                return false;
+            }
+        }
+
+        internal bool TryFinalize(
+            int projectCount,
+            out WorkspaceCheckRestoreInputManifest? manifest)
+        {
+
+            manifest = null;
+            FileStream? stream = _stream;
+
+            if (stream is null)
+            {
+
+                return false;
+            }
+
+            try
+            {
+
+                stream.Flush(flushToDisk: true);
+                stream.Dispose();
+                _stream = null;
+
+                if (!SecureFilePermissions.TryApplyOwnerOnlyFileStrict(_path)
+                    || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                        _path,
+                        out FileHandleMetadata metadata)
+                    || metadata.Kind != FileSystemObjectKind.RegularFile
+                    || metadata.HardLinkCount != 1
+                    || !FileHandleIdentity.IdentitiesMatch(
+                        _identity,
+                        metadata.Identity))
+                {
+
+                    return false;
+                }
+
+                FileInfo info = new(_path);
+                string? sha256 = ComputeSha256(
+                    _path,
+                    _identity,
+                    info.Length);
+
+                if (sha256 is null)
+                {
+
+                    return false;
+                }
+
+                info.Refresh();
+                manifest = new WorkspaceCheckRestoreInputManifest(
+                    _path,
+                    _identity,
+                    info.Length,
+                    info.LastWriteTimeUtc.Ticks,
+                    sha256,
+                    _recordCount,
+                    projectCount,
+                    _accumulator.GetDigest());
+                return true;
+            }
+            catch (Exception ex) when (
+                ex is IOException
+                    or UnauthorizedAccessException
+                    or ArgumentException)
+            {
+
+                return false;
+            }
+        }
+
+        internal void Keep() => _keep = true;
+
+        public void Dispose()
+        {
+
+            _stream?.Dispose();
+            _stream = null;
+
+            if (_keep
+                || !FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
+                    _path,
+                    out FileHandleMetadata metadata)
+                || metadata.Kind != FileSystemObjectKind.RegularFile
+                || metadata.HardLinkCount != 1
+                || !FileHandleIdentity.IdentitiesMatch(
+                    _identity,
+                    metadata.Identity))
+            {
+
+                return;
+            }
+
+            try
+            {
+
+                File.Delete(_path);
+            }
+            catch (Exception ex) when (
+                ex is IOException
+                    or UnauthorizedAccessException)
+            {
+            }
+        }
+    }
 
 }

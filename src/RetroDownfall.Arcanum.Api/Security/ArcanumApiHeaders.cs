@@ -6,4 +6,7 @@ public static class ArcanumApiHeaders
 
     /// <summary>Client-supplied replay-protection key — see <see cref="IdempotencyEndpointFilters"/>.</summary>
     public const string IdempotencyKey = "Idempotency-Key";
+
+    /// <summary>Opaque continuation for stable audit-log paging.</summary>
+    public const string AuditNextCursor = "X-Arcanum-Next-Cursor";
 }

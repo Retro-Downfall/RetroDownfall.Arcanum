@@ -32,6 +32,8 @@ internal enum CommandCenterAction
     CloseOverlayOrFocusComposer,
     SessionSelectUp,
     SessionSelectDown,
+    LoadOlderSessionPage,
+    LoadNewerSessionPage,
     ResumeSelectedSession,
     ExecutePaletteItem,
     ConfirmPending,
@@ -39,6 +41,8 @@ internal enum CommandCenterAction
     ScrollTranscriptDown,
     PageTranscriptUp,
     PageTranscriptDown,
+    LoadOlderTranscriptPage,
+    LoadNewerTranscriptPage,
     JumpTranscriptHome,
     JumpTranscriptEnd,
     ScrollIncantationsUp,
@@ -163,6 +167,16 @@ internal static class CommandCenterKeymap
 
         if (focus == CommandCenterFocusRegion.Sessions)
         {
+            if (chord.IsCtrl && chord.IsPageDown)
+            {
+                return CommandCenterAction.LoadOlderSessionPage;
+            }
+
+            if (chord.IsCtrl && chord.IsPageUp)
+            {
+                return CommandCenterAction.LoadNewerSessionPage;
+            }
+
             if (chord.IsEnter)
             {
                 return CommandCenterAction.ResumeSelectedSession;
@@ -200,6 +214,16 @@ internal static class CommandCenterKeymap
 
         if (focus == CommandCenterFocusRegion.Transcript)
         {
+            if (chord.IsCtrl && chord.IsPageUp)
+            {
+                return CommandCenterAction.LoadOlderTranscriptPage;
+            }
+
+            if (chord.IsCtrl && chord.IsPageDown)
+            {
+                return CommandCenterAction.LoadNewerTranscriptPage;
+            }
+
             if (chord.IsUp)
             {
                 return CommandCenterAction.ScrollTranscriptUp;

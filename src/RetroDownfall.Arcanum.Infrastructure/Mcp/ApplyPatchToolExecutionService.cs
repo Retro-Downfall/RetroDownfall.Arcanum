@@ -15,9 +15,6 @@ internal sealed record ApplyPatchToolExecutionResponse(
 internal sealed class ApplyPatchToolExecutionService
 {
 
-    private const string RecoveryReceiptResultDataKey =
-        "ApplyPatchRecoveryReceiptResult";
-
     private readonly string _workspaceRoot;
 
     private readonly WorkspacePatchSettings _settings;
@@ -72,7 +69,7 @@ internal sealed class ApplyPatchToolExecutionService
                     MaxTotalStagingBytes =
                         _settings.MaxTotalStagingBytes,
                     CleanupTimeout = TimeSpan.FromMilliseconds(
-                        _settings.RollbackReserveMilliseconds),
+                        _settings.RecoveryTimeoutMilliseconds),
                 }));
 
     }
@@ -83,75 +80,17 @@ internal sealed class ApplyPatchToolExecutionService
         CancellationToken cancellationToken)
     {
 
-        long startedAt = _timeProvider.GetTimestamp();
-
-        TimeSpan workDuration = TimeSpan.FromMilliseconds(
-            Math.Max(
-                1,
-                _settings.MaxElapsedMilliseconds
-                - _settings.RollbackReserveMilliseconds));
-
-        TimeSpan totalDuration = TimeSpan.FromMilliseconds(
-            Math.Max(1, _settings.MaxElapsedMilliseconds));
-
-        using CancellationTokenSource workDeadline = new(
-            workDuration,
-            _timeProvider);
-
-        using CancellationTokenSource totalDeadline = new(
-            totalDuration,
-            _timeProvider);
-
-        using CancellationTokenSource workCancellation =
-            CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                workDeadline.Token);
-
-        using CancellationTokenSource handoffCancellation =
-            CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                totalDeadline.Token);
-
-        try
-        {
-
-            return await ExecuteCoreAsync(
-                request,
-                context,
-                startedAt,
-                workDuration,
-                workCancellation.Token,
-                handoffCancellation.Token).ConfigureAwait(false);
-
-        }
-        catch (OperationCanceledException cancellation)
-            when (!cancellationToken.IsCancellationRequested
-                && (workDeadline.IsCancellationRequested
-                    || totalDeadline.IsCancellationRequested)
-                && (cancellation.Data[RecoveryReceiptResultDataKey] is string
-                    || (!context.CancellationClassified
-                        && !context.RequiresTurnFailure)))
-        {
-
-            if (cancellation.Data[RecoveryReceiptResultDataKey]
-                is string recoveryResult)
-            {
-                return Normal(recoveryResult);
-            }
-
-            return Normal(
-                SerializeBounded(
-                    BuildDeadlineFailure(cancellation)));
-
-        }
+        return await ExecuteCoreAsync(
+            request,
+            context,
+            cancellationToken,
+            cancellationToken).ConfigureAwait(false);
 
     }
 
     private async Task<ApplyPatchToolExecutionResponse> ExecuteCoreAsync(
         ApplyPatchParams request,
         ApplyPatchInvocationContext context,
-        long startedAt,
-        TimeSpan workDuration,
         CancellationToken cancellationToken,
         CancellationToken handoffCancellationToken)
     {
@@ -235,13 +174,7 @@ internal sealed class ApplyPatchToolExecutionService
 
         WorkspacePatchPlanResult planning =
             await new WorkspacePatchPlanner(
-                _settings,
-                new WorkspacePatchPlannerOptions
-                {
-                    TimeProvider = _timeProvider,
-                    StartedAtTimestamp = startedAt,
-                    WorkDuration = workDuration,
-                }).PlanAsync(
+                _settings).PlanAsync(
                 _workspaceRoot,
                 parsed.Manifest!,
                 cancellationToken).ConfigureAwait(false);
@@ -530,8 +463,6 @@ internal sealed class ApplyPatchToolExecutionService
             context.RecordCancellationOutcome(outcome);
             cancellation.Data[
                 nameof(MandatoryToolInteractionAppendOutcome)] = outcome;
-            cancellation.Data[RecoveryReceiptResultDataKey] =
-                serializedResult;
         }
         catch (ApplyPatchReceiptHandoffException handoff)
         {
@@ -553,7 +484,7 @@ internal sealed class ApplyPatchToolExecutionService
 
         using CancellationTokenSource persistenceDeadline = new(
             TimeSpan.FromMilliseconds(
-                Math.Max(1, _settings.RollbackReserveMilliseconds)),
+                Math.Max(1, _settings.RecoveryTimeoutMilliseconds)),
             _timeProvider);
 
         MandatoryToolInteractionAppendOutcome outcome;
@@ -616,37 +547,6 @@ internal sealed class ApplyPatchToolExecutionService
             Message = message,
         };
 
-    private static WorkspacePatchToolResultEnvelope BuildDeadlineFailure(
-        OperationCanceledException cancellation)
-    {
-
-        WorkspaceCommitRecovery? recovery =
-            cancellation.Data[nameof(WorkspaceCommitRecovery)]
-                as WorkspaceCommitRecovery;
-
-        string[] affectedPaths =
-            WorkspaceRelativePath.NormalizeDistinctOrdered(
-                recovery?.AffectedPaths);
-
-        string[] artifactPaths =
-            WorkspaceRelativePath.NormalizeDistinctOrdered(
-                recovery?.ArtifactPaths);
-
-        return new WorkspacePatchToolResultEnvelope
-        {
-            Status = recovery is null ? "timed_out" : "rollback_incomplete",
-            Code = "max_elapsed",
-            Message = recovery is null
-                ? "Patch execution exceeded its absolute deadline; bounded rollback completed."
-                : "Patch execution exceeded its absolute deadline and bounded rollback retained recovery state.",
-            AffectedPaths = affectedPaths,
-            TotalAffectedPathCount = affectedPaths.Length,
-            RecoveryArtifactPaths = artifactPaths,
-            TotalRecoveryArtifactPathCount = artifactPaths.Length,
-        };
-
-    }
-
     private WorkspacePatchToolResultEnvelope BuildResult(
         WorkspacePatchPlan plan,
         string status,
@@ -654,7 +554,6 @@ internal sealed class ApplyPatchToolExecutionService
     {
 
         WorkspacePatchToolResultItem[] files = plan.Files
-            .Take(Math.Max(0, _settings.MaxResultItems))
             .Select(file =>
                 new WorkspacePatchToolResultItem(
                     file.Path,
@@ -663,7 +562,6 @@ internal sealed class ApplyPatchToolExecutionService
                     file.AppliedHunks)
                 {
                     Hunks = file.Hunks
-                        .Take(Math.Max(0, _settings.MaxResultItems))
                         .ToArray(),
                 })
             .ToArray();

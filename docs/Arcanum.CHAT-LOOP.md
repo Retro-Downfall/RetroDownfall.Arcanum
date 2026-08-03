@@ -45,8 +45,8 @@ dispatching a partial source.
 
 Repeated `--with @path` values are staged before dispatch. Relative paths use the effective working
 directory, explicitly supplied absolute paths are accepted, and strict-UTF-8 text has no extension
-allowlist. Text and stdin are SHA-256 hashed, split on UTF-8 boundaries into the server's existing
-`AttachedFileDto` limits (32 parts, 1 MiB per part, and 32 MiB aggregate), and labeled as untrusted
+allowlist. Text and stdin are SHA-256 hashed, split on UTF-8 boundaries into 1 MiB
+`AttachedFileDto` chunks under a 32 MiB aggregate allocation with no file/part-count ceiling, and labeled as untrusted
 data. The 10 MiB reader ceiling applies to stdin, not to each `--with` file. Recognized images are
 SHA-256 hashed and staged as `ScryingFocusDto` through the existing Scrying policy. The client
 staging grants no
@@ -64,6 +64,39 @@ Session, Model, current-turn files/images, unattended mode, and supported infere
 synthesis is the existing untrusted-web boundary, not a new restriction on the Agent or Spell routes.
 `--research` and `--spell` are the only route conflict. `--dry-run` follows the preview path above
 and never enters either live loop.
+
+## Termination, progress, and cancellation
+
+Arcanum is a coding harness, so the shared loop has no fixed model-call, tool-round,
+correction-attempt, retry, step, or total turn-duration ceiling. It continues while evidence
+changes and stops only for one of these semantic outcomes:
+
+| Outcome | Evidence and user action |
+|---|---|
+| Completion | The model produced terminal output, or client-tool forwarding returned actionable tool calls to the caller. |
+| Cancellation | The caller or host token cancelled. The producer finishes child/process cleanup and durable-state classification before propagating cancellation; CLI Ctrl+C remains responsive. |
+| Explicit policy | An operator-owned token or cost budget was reached. The response reports measured/reserved usage and how to change or resume the policy. |
+| Provider/model boundary | The provider rejected the request or its real context/request shape cannot accept another call after compaction. The response identifies the provider/model fact and smaller-request, continuation, or model-selection action. |
+| Safety/integrity boundary | Authentication, Ward, Sanctum, containment, protocol, or integrity policy prevents safe continuation. The response names the owner and safe recovery action; no boundary is silently bypassed. |
+| Deterministic no-progress | The normalized loop state recurred without new evidence. The trace records the progress signature so a test can reproduce termination without sleeps or an attempt counter. |
+
+Progress is state, not elapsed time. The main loop's signature includes the normalized assistant
+proposal, actionable tool-call identities/arguments, classified tool results, admitted context, and
+structured-output error state. A new tool result, changed correction error, newly materialized
+attachment, changed plan, or new research URL is progress. Exact recurrence is no progress. Research
+uses its deduplicated source set: it continues while a pass adds a URL and emits
+`source_target_reached` or `source_exhausted` when synthesis begins. A delegated child uses its
+explicit token/cost ledger; model-call count is telemetry only.
+
+Buffered and streaming paths use the same semantic loop, so they terminate for the same reason.
+Streaming may emit intermediate status/tool/context frames; buffered mode records the same state
+internally. Neither projection invents a shorter deadline. Retained per-frame, allocation, provider
+request, concurrency, and post-cancellation cleanup bounds are local protections. A page or buffer
+must expose/follow continuation rather than silently becoming total work.
+
+The direct chat projection applies that rule to rendering: it lazily parses complete assistant
+Markdown in at-most-256-Ki-character Markdig chunks, retaining one-allocation protection without a
+total display cutoff.
 
 ## 1. One logical turn, multiple provider requests
 
@@ -103,9 +136,9 @@ Text/Image/Binary kind; that kind's size, strict UTF-8, and Scrying policy are r
 vision capability is required before a refreshed image can enter the next model round.
 
 An unchanged hash reuses the latest row and encrypted blob. Changed bytes create the next version
-under the existing per-session/per-logical-key locks and `MaxBytesPerSession` /
-`MaxVersionsPerLogicalKey` limits. The original user Entry is never changed; a new version may bind
-to the current assistant Entry.
+under the existing per-session/per-logical-key locks and measured `MaxBytesPerSession` protection;
+there is no incidental version-count ceiling. The original user Entry is never changed; a new
+version may bind to the current assistant Entry.
 
 When semantic attachment retrieval is enabled, a newly created Bound refresh version is also
 offered to the bounded background indexing queue. This happens after durable persistence and does
@@ -123,12 +156,23 @@ estimated tokens, bytes, trust, injected state, and provider round for current a
 attachment references, context pins, `attach_session_file`, `refresh_session_file`, attachment RAG,
 workspace RAG, and Saga.
 
+Post-turn Saga extraction is a separate durable flow: a deduplicated queue reviews Session history
+oldest-first in timestamp-group-safe checkpoint pages, advances its watermark only after successful
+persistence, and retries failures. The checkpoint size is not a tail-window or total-memory ceiling.
+
 Admission order is explicit-first: current attachment → attachment reference → context pin → model
 attach → model refresh → attachment RAG → workspace RAG → Saga. Attachment semantic limits are
 chunks, represented attachments, UTF-8 bytes, estimated tokens, and similarity. Identical
 content/ranges are injected once. A whole explicit version removes same-version semantic chunks; a
 refresh also removes older versions before the next provider call. Failed materialization does not
 enter the ledger, and turn finalization clears it.
+
+Direct reference preparation is metadata-only and has no incidental item-count ceiling. After the
+provider and canonical model are resolved, the loop opens references sequentially in request order,
+adds one candidate to the assembled payload, applies normal compression and semantic shedding, and
+runs the real context gate. Only an admitted candidate is injected; failure stops before later
+references or provider I/O. Cancellation during a read propagates and leaves subsequent references
+unopened.
 
 Initial DATA ordering is `Attached Files for this Turn` → `Retrieved Session Attachment Context` →
 `Session Attachments Index` → workspace semantic context. Every retrieved chunk includes sanitized
@@ -175,8 +219,19 @@ flowchart TD
     I --> J["Next IModelCallExecutor request"]
 ```
 
-The shared `MaxReferencesPerTurn` budget includes explicit references and both model tools. A logical
-key/version is injected once per turn. Refreshed text is framed as untrusted DATA with an adaptive
+A verbose `execute_command` result appends its bounded preview and an opaque connection-scoped
+complete-output handle. Artifact Attunement automatically carries read-only `read_command_output`
+whenever it admits `execute_command`; later calls page strict UTF-8 text from offset `0` through each
+`nextOffset`. The per-page byte boundary protects one model/JSON-RPC allocation and never silently
+discards total diagnostics. A stream's final page immediately releases and deletes its
+delete-on-close artifact; the handle expires after every available stream finishes. Failure,
+cancellation, connection disposal, and abrupt process exit are cleanup backstops. Complete stdout
+and stderr share the explicit Sanctum `MaxFileWriteMb` operator policy; crossing it stops the process
+tree, deletes partial state, and returns measured-limit continuation guidance rather than truncating.
+
+Explicit references and both model tools pass the same iterative identity/ownership checks without
+a count ceiling. A logical key/version is injected once per turn, and provider-context plus physical
+byte admission remains authoritative. Refreshed text is framed as untrusted DATA with an adaptive
 fence and a hardened label containing filename, logical key, version, and source freshness. Images
 pair an untrusted notice with `DataContent` and are never truncated.
 

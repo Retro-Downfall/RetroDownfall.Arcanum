@@ -8,20 +8,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Pattern;
 public sealed class EyeOfTheWorldService : IEyeOfTheWorld
 {
 
-    private readonly int _maxEnumerationSteps =
-        ArcanumSettingClamps.MaxEnumerationSteps(
-            ArcanumRuntimeDefaults.Perception.MaxEnumerationSteps);
-
     public EyeOfTheWorldService()
     {
     }
-
-    internal EyeOfTheWorldService(int maxEnumerationSteps)
-    {
-        _maxEnumerationSteps = ArcanumSettingClamps.MaxEnumerationSteps(maxEnumerationSteps);
-    }
-
-    private int MaxEnumerationSteps => _maxEnumerationSteps;
 
     private int MaxTocLines =>
         ArcanumSettingClamps.MaxTableOfContentsLines(
@@ -84,8 +73,8 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
     /// Breadth-first walk that prunes <see cref="IgnoredDirectorySegments"/> and symlink-escaping
     /// subdirectories <b>before</b> descending (same shape as
     /// <c>WorkspaceIndexingService.EnumerateCandidateFiles</c>), terminates symlink cycles via a
-    /// canonical visited set, ignores inaccessible directories, and stops once
-    /// <see cref="MaxEnumerationSteps"/> filesystem entries have been visited.
+    /// canonical visited set, ignores inaccessible directories, and continues until the contained
+    /// workspace has been visited or the caller cancels. Result projections remain bounded.
     /// </summary>
     private ScanResult ScanWorkspace(string root, CancellationToken cancellationToken)
     {
@@ -122,15 +111,6 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
                 foreach (string fullPath in entries)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-
-                    if (result.EnumerationSteps >= MaxEnumerationSteps)
-                    {
-                        result.EnumerationTruncated = true;
-
-                        return result;
-                    }
-
-                    result.EnumerationSteps++;
 
                     FileAttributes attributes;
 
@@ -230,13 +210,37 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
         }
     }
 
-    private static void AccumulateFileTimes(ScanResult result, string rel, string fullPath)
+    private void AccumulateFileTimes(ScanResult result, string rel, string fullPath)
     {
         try
         {
             DateTime lw = File.GetLastWriteTimeUtc(fullPath);
+
             DateTime created = File.GetCreationTimeUtc(fullPath);
-            result.AllFiles.Add(new FileRec(rel, lw, created));
+
+            FileRec candidate = new(rel, lw, created);
+
+            if (result.AllFiles.Count < MaxTocLines)
+            {
+                result.AllFiles.Add(candidate);
+
+                return;
+            }
+
+            int oldestIndex = 0;
+
+            for (int index = 1; index < result.AllFiles.Count; index++)
+            {
+                if (CompareRecency(result.AllFiles[index], result.AllFiles[oldestIndex]) < 0)
+                {
+                    oldestIndex = index;
+                }
+            }
+
+            if (CompareRecency(candidate, result.AllFiles[oldestIndex]) > 0)
+            {
+                result.AllFiles[oldestIndex] = candidate;
+            }
         }
         catch
         {
@@ -244,17 +248,19 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
         }
     }
 
-    private static void AccumulateSignature(ScanResult scan, string rel, string ext, string fileName, int depth)
+    private void AccumulateSignature(ScanResult scan, string rel, string ext, string fileName, int depth)
     {
         if (ext.Equals(".sln", StringComparison.OrdinalIgnoreCase))
         {
-            scan.Solutions.Add(rel);
+            AddBoundedPath(scan.Solutions, rel);
+
             return;
         }
 
         if (ext.Equals(".slnx", StringComparison.OrdinalIgnoreCase))
         {
-            scan.Solutions.Add(rel);
+            AddBoundedPath(scan.Solutions, rel);
+
             return;
         }
 
@@ -262,57 +268,106 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
             || ext.Equals(".fsproj", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".vbproj", StringComparison.OrdinalIgnoreCase))
         {
-            scan.Projects.Add(rel);
+            AddBoundedPath(scan.Projects, rel);
+
             return;
         }
 
         if (fileName.Equals("package.json", StringComparison.OrdinalIgnoreCase))
         {
-            scan.Packages.Add(rel);
+            AddBoundedPath(scan.Packages, rel);
+
             return;
         }
 
         if (fileName.Equals("Dockerfile", StringComparison.OrdinalIgnoreCase))
         {
-            scan.Dockerfiles.Add(rel);
+            AddBoundedPath(scan.Dockerfiles, rel);
+
             return;
         }
 
         if (fileName.Equals("go.mod", StringComparison.OrdinalIgnoreCase))
         {
-            scan.OtherMarkers.Add(rel);
+            AddBoundedPath(scan.OtherMarkers, rel);
+
             return;
         }
 
         if (fileName.Equals("Cargo.toml", StringComparison.OrdinalIgnoreCase))
         {
-            scan.OtherMarkers.Add(rel);
+            AddBoundedPath(scan.OtherMarkers, rel);
+
             return;
         }
 
         if (fileName.Equals("pom.xml", StringComparison.OrdinalIgnoreCase))
         {
-            scan.OtherMarkers.Add(rel);
+            AddBoundedPath(scan.OtherMarkers, rel);
+
             return;
         }
 
         if (fileName.Equals("build.gradle", StringComparison.OrdinalIgnoreCase)
             || fileName.Equals("build.gradle.kts", StringComparison.OrdinalIgnoreCase))
         {
-            scan.OtherMarkers.Add(rel);
+            AddBoundedPath(scan.OtherMarkers, rel);
+
             return;
         }
 
         if (depth <= 2 && IsOfficeExtension(ext))
         {
-            scan.AdminNear.Add(rel);
+            AddBoundedPath(scan.AdminNear, rel);
+
             return;
         }
 
         if (depth <= 2 && (ext.Equals(".md", StringComparison.OrdinalIgnoreCase) || ext.Equals(".txt", StringComparison.OrdinalIgnoreCase)))
         {
-            scan.NotesNear.Add(rel);
+            AddBoundedPath(scan.NotesNear, rel);
         }
+    }
+
+    private void AddBoundedPath(List<string> paths, string candidate)
+    {
+        if (paths.Count < MaxTocLines)
+        {
+            paths.Add(candidate);
+
+            return;
+        }
+
+        int greatestIndex = 0;
+
+        for (int index = 1; index < paths.Count; index++)
+        {
+            if (StringComparer.OrdinalIgnoreCase.Compare(paths[index], paths[greatestIndex]) > 0)
+            {
+                greatestIndex = index;
+            }
+        }
+
+        if (StringComparer.OrdinalIgnoreCase.Compare(candidate, paths[greatestIndex]) < 0)
+        {
+            paths[greatestIndex] = candidate;
+        }
+    }
+
+    private static int CompareRecency(FileRec left, FileRec right)
+    {
+        int modified = left.LastWriteUtc.CompareTo(right.LastWriteUtc);
+
+        if (modified != 0)
+        {
+            return modified;
+        }
+
+        int created = left.CreationUtc.CompareTo(right.CreationUtc);
+
+        return created != 0
+            ? created
+            : StringComparer.OrdinalIgnoreCase.Compare(right.RelativePath, left.RelativePath);
     }
 
     private static void AccumulateDomainCounts(ScanResult scan, string ext)
@@ -428,8 +483,6 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
 
         List<string> deduped = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        int lineBudget = scan.EnumerationTruncated ? MaxTocLines - 1 : MaxTocLines;
-
         foreach (string line in lines)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -443,15 +496,10 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
 
             deduped.Add(line);
 
-            if (deduped.Count >= lineBudget)
+            if (deduped.Count >= MaxTocLines)
             {
                 break;
             }
-        }
-
-        if (scan.EnumerationTruncated)
-        {
-            deduped.Add($"Scan: truncated after {MaxEnumerationSteps} files");
         }
 
         return [.. deduped];
@@ -461,9 +509,7 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
     {
         if (scan.AllFiles.Count == 0)
         {
-            return scan.EnumerationTruncated
-                ? [$"Scan: truncated after {MaxEnumerationSteps} files"]
-                : ["File: (no files enumerated)"];
+            return ["File: (no files enumerated)"];
         }
 
         List<FileRec> sorted = [.. scan.AllFiles];
@@ -471,13 +517,21 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
         sorted.Sort(static (a, b) =>
         {
             int c = b.LastWriteUtc.CompareTo(a.LastWriteUtc);
-            return c != 0 ? c : b.CreationUtc.CompareTo(a.CreationUtc);
+
+            if (c != 0)
+            {
+                return c;
+            }
+
+            c = b.CreationUtc.CompareTo(a.CreationUtc);
+
+            return c != 0
+                ? c
+                : StringComparer.OrdinalIgnoreCase.Compare(a.RelativePath, b.RelativePath);
         });
 
         List<string> lines = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        int fileBudget = scan.EnumerationTruncated ? MaxTocLines - 1 : MaxTocLines;
-
         foreach (FileRec rec in sorted)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -489,15 +543,10 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
 
             lines.Add($"File: {rec.RelativePath}");
 
-            if (lines.Count >= fileBudget)
+            if (lines.Count >= MaxTocLines)
             {
                 break;
             }
-        }
-
-        if (scan.EnumerationTruncated)
-        {
-            lines.Add($"Scan: truncated after {MaxEnumerationSteps} files");
         }
 
         return [.. lines];
@@ -536,8 +585,6 @@ public sealed class EyeOfTheWorldService : IEyeOfTheWorld
         public int OfficeFileCount { get; set; }
         public int ProseFileCount { get; set; }
         public int DevSourceFileCount { get; set; }
-        public int EnumerationSteps { get; set; }
-        public bool EnumerationTruncated { get; set; }
     }
 
     private readonly record struct FileRec(string RelativePath, DateTime LastWriteUtc, DateTime CreationUtc);

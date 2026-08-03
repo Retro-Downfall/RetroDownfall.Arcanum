@@ -38,15 +38,6 @@
                               Description="Persist an append-only audit trail for completed inference turns."
                               IsOn="{Binding Host.AuditLogEnabled, Mode=TwoWay}" />
 
-      <controls:LabeledStepper Label="Default audit lookback (days)"
-                               Description="Default query lookback when no start time is supplied. Configure deletion under Retention."
-                               Key="host.auditLog.retentionDays"
-                               ValidationErrors="{Binding ValidationErrorsByPointer}"
-                               Value="{Binding Host.AuditLogRetentionDays, Mode=TwoWay}"
-                               Minimum="1"
-                               Maximum="365"
-                               Increment="1" />
-
       <controls:LabeledToggle Label="Redact tool arguments"
                               Description="Store tool names without potentially sensitive argument JSON."
                               IsOn="{Binding Host.AuditLogRedactToolArguments, Mode=TwoWay}" />

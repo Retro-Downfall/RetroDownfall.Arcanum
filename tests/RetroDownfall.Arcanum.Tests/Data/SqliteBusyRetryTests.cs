@@ -8,22 +8,6 @@ public sealed class SqliteBusyRetryTests
 {
 
     [Fact]
-    public void RetryBudget_CountsOnlyScheduledBackoff_AndRejectsOverflow()
-    {
-
-        SqliteRetryBudget budget = new(TimeSpan.FromSeconds(10));
-
-        Assert.True(budget.TryReserve(TimeSpan.FromSeconds(6)));
-
-        Assert.True(budget.TryReserve(TimeSpan.FromSeconds(4)));
-
-        Assert.False(budget.TryReserve(TimeSpan.FromTicks(1)));
-
-        Assert.Equal(TimeSpan.FromSeconds(10), budget.ReservedDelay);
-
-    }
-
-    [Fact]
     public async Task ExecuteAsync_SucceedsFirstTime_ReturnsValue()
     {
 
@@ -94,44 +78,58 @@ public sealed class SqliteBusyRetryTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_ExhaustsRetriesOnBusy_ThrowsSqliteException()
+    public async Task ExecuteAsync_RetriesBeyondFormerAttemptCeiling_ThenSucceeds()
     {
 
         int attempts = 0;
 
-        SqliteException thrown = await Assert.ThrowsAsync<SqliteException>(() => SqliteBusyRetry.ExecuteAsync(() =>
+        int result = await SqliteBusyRetry.ExecuteAsync(() =>
         {
 
             attempts++;
 
-            throw new SqliteException("busy", 5);
+            if (attempts <= 7)
+            {
 
-        }));
+                throw new SqliteException("busy", 5);
 
-        Assert.True(attempts > 1);
+            }
 
-        Assert.Equal(5, thrown.SqliteErrorCode);
+            return Task.FromResult(42);
+
+        }, delayAsync: static (_, _) => Task.CompletedTask);
+
+        Assert.Equal(42, result);
+
+        Assert.Equal(8, attempts);
 
     }
 
     [Fact]
-    public async Task ExecuteAsync_ExhaustsRetriesOnWrappedBusy_ThrowsDbUpdateException()
+    public async Task ExecuteAsync_RetriesWrappedBusyBeyondFormerAttemptCeiling_ThenSucceeds()
     {
 
         int attempts = 0;
 
-        DbUpdateException thrown = await Assert.ThrowsAsync<DbUpdateException>(() => SqliteBusyRetry.ExecuteAsync(() =>
+        int result = await SqliteBusyRetry.ExecuteAsync(() =>
         {
 
             attempts++;
 
-            throw new DbUpdateException("save failed", new SqliteException("busy", 5));
+            if (attempts <= 7)
+            {
 
-        }));
+                throw new DbUpdateException("save failed", new SqliteException("busy", 5));
 
-        Assert.True(attempts > 1);
+            }
 
-        Assert.Equal(5, Assert.IsType<SqliteException>(thrown.InnerException).SqliteErrorCode);
+            return Task.FromResult(42);
+
+        }, delayAsync: static (_, _) => Task.CompletedTask);
+
+        Assert.Equal(42, result);
+
+        Assert.Equal(8, attempts);
 
     }
 

@@ -38,8 +38,7 @@ public sealed class SessionAttachmentTextExtractorTests
         SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
             bytes,
             mimeType,
-            fileName,
-            maxCharacters: 100);
+            fileName);
 
         Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
 
@@ -61,8 +60,7 @@ public sealed class SessionAttachmentTextExtractorTests
         SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
             bytes,
             "text/html",
-            "page.html",
-            maxCharacters: 100);
+            "page.html");
 
         Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
 
@@ -96,8 +94,7 @@ public sealed class SessionAttachmentTextExtractorTests
         SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
             [0x00, 0x01, 0x02, 0xFF],
             mimeType,
-            fileName,
-            maxCharacters: 100);
+            fileName);
 
         Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, result.Status);
 
@@ -113,8 +110,7 @@ public sealed class SessionAttachmentTextExtractorTests
         SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
             [0xC3, 0x28],
             "text/plain",
-            "invalid.txt",
-            maxCharacters: 100);
+            "invalid.txt");
 
         Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
 
@@ -124,28 +120,29 @@ public sealed class SessionAttachmentTextExtractorTests
 
     [Fact]
 
-    public void Extract_CharacterCap_DoesNotSplitSurrogatePair()
+    public void Extract_ReturnsCompleteTextBeyondFormerCharacterCeiling()
     {
 
-        byte[] bytes = Encoding.UTF8.GetBytes("ab😀cd");
+        string text = new('a', 200_001);
+
+        byte[] bytes = Encoding.UTF8.GetBytes(text);
 
         SessionAttachmentExtractionResult result = SessionAttachmentTextExtractor.Extract(
             bytes,
             "text/plain",
-            "emoji.txt",
-            maxCharacters: 3);
+            "large.txt");
 
         Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
 
-        Assert.Equal("ab", result.Text);
+        Assert.Equal(text, result.Text);
 
-        Assert.True(result.WasTruncated);
+        Assert.False(result.WasTruncated);
 
     }
 
     [Fact]
 
-    public void Chunk_BoundsCountOverlapLinesAndSurrogates()
+    public void Chunk_ContinuesUntilAllTextIsCovered()
     {
 
         string text = "one\ntwo😀\nthree\nfour";
@@ -153,10 +150,11 @@ public sealed class SessionAttachmentTextExtractorTests
         SessionAttachmentTextChunk[] chunks = SessionAttachmentChunker.Chunk(
             text,
             chunkSizeCharacters: 8,
-            overlapCharacters: 2,
-            maxChunks: 2);
+            overlapCharacters: 2);
 
-        Assert.Equal(2, chunks.Length);
+        Assert.True(chunks.Length > 2);
+
+        Assert.Equal(text.Length, chunks[^1].CharacterEnd);
 
         Assert.Equal(0, chunks[0].ChunkIndex);
 
@@ -176,6 +174,93 @@ public sealed class SessionAttachmentTextExtractorTests
             Assert.False(chunk.Text.Length > 0 && char.IsLowSurrogate(chunk.Text[0]));
 
         });
+
+    }
+
+    [Fact]
+
+    public void Chunk_ContinuesBeyondFormerPerAttachmentChunkCeiling()
+    {
+
+        string text = new('x', 2_000);
+
+        SessionAttachmentTextChunk[] chunks = SessionAttachmentChunker.Chunk(
+            text,
+            chunkSizeCharacters: 8,
+            overlapCharacters: 2);
+
+        Assert.True(chunks.Length > 256);
+
+        Assert.Equal(text.Length, chunks[^1].CharacterEnd);
+
+    }
+
+    [Theory]
+
+    [InlineData("text/plain", "alpha\r\nbeta😀\rcharlie\n&amp;")]
+
+    [InlineData(
+        "text/html",
+        "<style>hidden</style><h1>Alpha &amp; Beta</h1><script>hidden()</script><p>Gamma<br>Delta</p>")]
+
+    public async Task ReadChunksAsync_MatchesDeterministicExtractionAcrossReadBoundaries(
+        string mimeType,
+        string source)
+    {
+
+        byte[] bytes = Encoding.UTF8.GetBytes(source);
+
+        SessionAttachmentExtractionResult extraction = SessionAttachmentTextExtractor.Extract(
+            bytes,
+            mimeType,
+            "streamed.txt");
+
+        SessionAttachmentTextChunk[] expected = SessionAttachmentChunker.Chunk(
+            extraction.Text,
+            chunkSizeCharacters: 8,
+            overlapCharacters: 2);
+
+        await using ChunkedReadStream stream = new(bytes, maxReadBytes: 3);
+
+        List<SessionAttachmentTextChunk> actual = [];
+
+        await foreach (SessionAttachmentTextChunk chunk in SessionAttachmentTextExtractor.ReadChunksAsync(
+                           stream,
+                           mimeType,
+                           "streamed.txt",
+                           chunkSizeCharacters: 8,
+                           overlapCharacters: 2))
+        {
+
+            actual.Add(chunk);
+
+        }
+
+        Assert.Equal(expected, actual);
+
+        Assert.True(stream.ReadCallCount > 1);
+
+    }
+
+    private sealed class ChunkedReadStream(
+        byte[] bytes,
+        int maxReadBytes) : MemoryStream(bytes, writable: false)
+    {
+
+        public int ReadCallCount { get; private set; }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+
+            ReadCallCount++;
+
+            return base.ReadAsync(
+                buffer[..Math.Min(buffer.Length, maxReadBytes)],
+                cancellationToken);
+
+        }
 
     }
 

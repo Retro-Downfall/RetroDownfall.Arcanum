@@ -50,9 +50,7 @@ public sealed record RunCommandRequest(
 
     string? FrequencyPenalty,
 
-    int MaxSources,
-
-    int MaxHops,
+    int? SourceTarget,
 
     int TokenBudget,
 

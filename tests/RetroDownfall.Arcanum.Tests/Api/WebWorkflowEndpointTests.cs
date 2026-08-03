@@ -205,7 +205,7 @@ public sealed class WebWorkflowEndpointTests
 
     [SkippableFact]
 
-    public async Task Research_is_server_owned_bounded_and_session_continuable()
+    public async Task Research_is_progress_driven_and_session_continuable()
     {
 
         Skip.IfNot(
@@ -265,9 +265,7 @@ public sealed class WebWorkflowEndpointTests
 
                     Question = "What changed?",
 
-                    MaxSources = 2,
-
-                    MaxHops = 2,
+                    SourceTarget = 2,
 
                     TokenBudget = 1_200,
 
@@ -308,9 +306,11 @@ public sealed class WebWorkflowEndpointTests
 
         string ndjson = await response.Content.ReadAsStringAsync();
 
-        Assert.Contains("Searching hop 1 of 2", ndjson, StringComparison.Ordinal);
+        Assert.Contains("Searching research pass 1", ndjson, StringComparison.Ordinal);
 
-        Assert.Contains("Searching hop 2 of 2", ndjson, StringComparison.Ordinal);
+        Assert.Contains("Searching research pass 2", ndjson, StringComparison.Ordinal);
+
+        Assert.Contains("No new sources were discovered", ndjson, StringComparison.Ordinal);
 
         Assert.Contains("Fetching source", ndjson, StringComparison.Ordinal);
 
@@ -365,6 +365,68 @@ public sealed class WebWorkflowEndpointTests
 
     [SkippableFact]
 
+    public async Task Research_continues_beyond_former_hop_limit_until_sources_are_exhausted()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new()
+        {
+
+            ChangingCitationRounds = 8,
+
+        };
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            new StubIntelligence());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "Keep gathering changing evidence",
+
+                    TokenBudget = 1_200,
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string ndjson = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(9, provider.SearchCalls);
+
+        Assert.Equal(8, provider.ReadCalls);
+
+        Assert.Contains(
+            "No new sources were discovered",
+            ndjson,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "maximum hops",
+            ndjson,
+            StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [SkippableFact]
+
     public async Task Research_rejects_invalid_synthesis_payload_before_provider_work()
 
     {
@@ -398,9 +460,7 @@ public sealed class WebWorkflowEndpointTests
 
                     Question = "Reject before search",
 
-                    MaxSources = 2,
-
-                    MaxHops = 2,
+                    SourceTarget = 2,
 
                     TokenBudget = 1_200,
 
@@ -467,9 +527,7 @@ public sealed class WebWorkflowEndpointTests
 
                     Question = "Reject before search",
 
-                    MaxSources = 2,
-
-                    MaxHops = 2,
+                    SourceTarget = 2,
 
                     TokenBudget = 1_200,
 
@@ -544,9 +602,7 @@ public sealed class WebWorkflowEndpointTests
 
                     Question = "Reject disabled result attachment before search",
 
-                    MaxSources = 2,
-
-                    MaxHops = 2,
+                    SourceTarget = 2,
 
                     TokenBudget = 1_200,
 
@@ -636,9 +692,7 @@ public sealed class WebWorkflowEndpointTests
 
                     Question = "Use Campaign context",
 
-                    MaxSources = 1,
-
-                    MaxHops = 1,
+                    SourceTarget = 1,
 
                     TokenBudget = 1_200,
 
@@ -750,6 +804,8 @@ public sealed class WebWorkflowEndpointTests
     private sealed class StubWebProvider : IWebResearchProvider
     {
 
+        public int ChangingCitationRounds { get; init; }
+
         public int SearchCalls { get; private set; }
 
         public int ReadCalls { get; private set; }
@@ -772,6 +828,10 @@ public sealed class WebWorkflowEndpointTests
 
             LastSearchOptions = options;
 
+            int citationNumber = ChangingCitationRounds > 0
+                ? Math.Min(SearchCalls, ChangingCitationRounds)
+                : 1;
+
             return Task.FromResult(
                 Result<WebSearchResult>.Success(
                     new WebSearchResult(
@@ -779,7 +839,7 @@ public sealed class WebWorkflowEndpointTests
                         [
                             new WebCitation(
                                 1,
-                                "https://example.test/source",
+                                $"https://example.test/source-{citationNumber}",
                                 "Source"),
                         ],
                         new WebResearchUsage(

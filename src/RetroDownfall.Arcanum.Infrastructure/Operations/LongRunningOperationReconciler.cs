@@ -35,11 +35,11 @@ public sealed class LongRunningOperationReconciler(
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
-        int boundedOperations = Math.Clamp(maxOperations, 1, 1_000);
+        int pageSize = Math.Clamp(maxOperations, 1, 1_000);
+
         int boundedConcurrency = Math.Clamp(maxConcurrency, 1, 16);
-        IReadOnlyList<LongRunningOperation> expired = await store
-            .FindExpiredAsync(utcNow, boundedOperations, cancellationToken)
-            .ConfigureAwait(false);
+
+        int examined = 0;
 
         int claimed = 0;
         int completed = 0;
@@ -48,75 +48,112 @@ public sealed class LongRunningOperationReconciler(
         int attention = 0;
         int skipped = 0;
 
-        await Parallel.ForEachAsync(
-            expired,
-            new ParallelOptions
+        HashSet<Guid> attempted = [];
+
+        while (true)
+        {
+
+            IReadOnlyList<LongRunningOperation> expired = await store
+                .FindExpiredAsync(utcNow, pageSize, cancellationToken)
+                .ConfigureAwait(false);
+
+            LongRunningOperation[] page = expired
+                .Where(operation => attempted.Add(operation.Id))
+                .ToArray();
+
+            if (page.Length == 0)
             {
-                CancellationToken = cancellationToken,
-                MaxDegreeOfParallelism = boundedConcurrency,
-            },
-            async (operation, ct) =>
-            {
-                LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(
-                    operation.Id,
-                    ownerId,
-                    utcNow,
-                    utcNow.Add(RecoveryLease),
-                    ct).ConfigureAwait(false);
-                if (!lease.Acquired)
+
+                break;
+
+            }
+
+            examined += page.Length;
+
+            await Parallel.ForEachAsync(
+                page,
+                new ParallelOptions
                 {
-                    Interlocked.Increment(ref skipped);
-                    RecordOutcome(operation.Kind, "lease_lost");
-                    return;
-                }
-
-                Interlocked.Increment(ref claimed);
-                LongRunningOperationRecoveryResult result = await RecoverOneAsync(lease.Operation, ct)
-                    .ConfigureAwait(false);
-
-                LongRunningOperation latest = await store.GetAsync(
-                    lease.Operation.Id,
-                    ct).ConfigureAwait(false)
-                    ?? lease.Operation;
-
-                bool transitioned = await store.TryTransitionAsync(
-                    lease.Operation.Id,
-                    latest.Revision,
-                    ownerId,
-                    result.State,
-                    timeProvider.GetUtcNow(),
-                    result.ErrorCode,
-                    ct).ConfigureAwait(false);
-                if (!transitioned)
+                    CancellationToken = cancellationToken,
+                    MaxDegreeOfParallelism = boundedConcurrency,
+                },
+                async (operation, ct) =>
                 {
-                    Interlocked.Increment(ref skipped);
-                    RecordOutcome(operation.Kind, "cas_lost");
-                    return;
-                }
 
-                switch (result.State)
-                {
-                    case LongRunningOperationState.Completed:
-                        Interlocked.Increment(ref completed);
-                        RecordOutcome(operation.Kind, "completed");
-                        break;
-                    case LongRunningOperationState.Failed:
-                        Interlocked.Increment(ref failed);
-                        RecordOutcome(operation.Kind, "failed");
-                        break;
-                    case LongRunningOperationState.Abandoned:
-                        Interlocked.Increment(ref abandoned);
-                        RecordOutcome(operation.Kind, "abandoned");
-                        break;
-                    default:
-                        Interlocked.Increment(ref attention);
-                        RecordOutcome(operation.Kind, "attention");
-                        break;
-                }
-            }).ConfigureAwait(false);
+                    LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(
+                        operation.Id,
+                        ownerId,
+                        utcNow,
+                        utcNow.Add(RecoveryLease),
+                        ct).ConfigureAwait(false);
+
+                    if (!lease.Acquired)
+                    {
+
+                        Interlocked.Increment(ref skipped);
+
+                        RecordOutcome(operation.Kind, "lease_lost");
+
+                        return;
+
+                    }
+
+                    Interlocked.Increment(ref claimed);
+
+                    LongRunningOperationRecoveryResult result = await RecoverOneAsync(lease.Operation, ct)
+                        .ConfigureAwait(false);
+
+                    LongRunningOperation latest = await store.GetAsync(
+                        lease.Operation.Id,
+                        ct).ConfigureAwait(false)
+                        ?? lease.Operation;
+
+                    bool transitioned = await store.TryTransitionAsync(
+                        lease.Operation.Id,
+                        latest.Revision,
+                        ownerId,
+                        result.State,
+                        timeProvider.GetUtcNow(),
+                        result.ErrorCode,
+                        ct).ConfigureAwait(false);
+
+                    if (!transitioned)
+                    {
+
+                        Interlocked.Increment(ref skipped);
+
+                        RecordOutcome(operation.Kind, "cas_lost");
+
+                        return;
+
+                    }
+
+                    switch (result.State)
+                    {
+                        case LongRunningOperationState.Completed:
+                            Interlocked.Increment(ref completed);
+                            RecordOutcome(operation.Kind, "completed");
+                            break;
+                        case LongRunningOperationState.Failed:
+                            Interlocked.Increment(ref failed);
+                            RecordOutcome(operation.Kind, "failed");
+                            break;
+                        case LongRunningOperationState.Abandoned:
+                            Interlocked.Increment(ref abandoned);
+                            RecordOutcome(operation.Kind, "abandoned");
+                            break;
+                        default:
+                            Interlocked.Increment(ref attention);
+                            RecordOutcome(operation.Kind, "attention");
+                            break;
+                    }
+
+                }).ConfigureAwait(false);
+
+        }
 
         return new LongRunningOperationReconciliationSummary(
-            expired.Count,
+            examined,
             claimed,
             completed,
             failed,

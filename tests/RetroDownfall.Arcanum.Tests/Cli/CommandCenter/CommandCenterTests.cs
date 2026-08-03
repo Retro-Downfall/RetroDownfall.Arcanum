@@ -1,9 +1,23 @@
 using System.Collections.ObjectModel;
+
+using System.Text.Json;
+
 using Microsoft.Extensions.Logging.Abstractions;
+
 using Microsoft.Extensions.Options;
+
+using RetroDownfall.Arcanum.Api.Serialization;
+
 using RetroDownfall.Arcanum.Cli.CommandCenter;
+
 using RetroDownfall.Arcanum.Cli.Services;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Intelligence.Spells;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
@@ -55,6 +69,63 @@ public sealed class ShellCommandParserTests
     {
         ParsedShellCommand parsed = _parser.Parse(input);
         Assert.Equal(Enum.Parse<ShellCommandKind>(expectedKind), parsed.Kind);
+    }
+
+    [Theory]
+    [InlineData("/campaign list 50", "50")]
+    [InlineData("/ward list 150", "150")]
+    public void Paged_list_commands_capture_the_requested_offset(
+        string input,
+        string expectedOffset)
+    {
+
+        ParsedShellCommand parsed = _parser.Parse(input);
+
+        Assert.Equal(expectedOffset, parsed.Argument);
+
+    }
+
+    [Fact]
+    public void Spell_list_captures_an_opaque_cursor_without_interpreting_it()
+    {
+
+        ParsedShellCommand parsed = _parser.Parse(
+            "/spell list AQID-_opaque-cursor");
+
+        Assert.Equal(ShellCommandKind.SpellList, parsed.Kind);
+
+        Assert.Equal("AQID-_opaque-cursor", parsed.Argument);
+
+    }
+
+    [Theory]
+    [InlineData("/campaign list -1")]
+    [InlineData("/ward list 1 2")]
+    public void Paged_list_commands_reject_invalid_offsets(string input)
+    {
+
+        ParsedShellCommand parsed = _parser.Parse(input);
+
+        Assert.Equal(ShellCommandKind.Denied, parsed.Kind);
+
+        Assert.Contains("offset", parsed.DenialMessage, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public void Spell_list_rejects_multiple_cursor_tokens_with_cursor_usage()
+    {
+
+        ParsedShellCommand parsed = _parser.Parse(
+            "/spell list one two");
+
+        Assert.Equal(ShellCommandKind.Denied, parsed.Kind);
+
+        Assert.Contains(
+            "opaque-cursor",
+            parsed.DenialMessage,
+            StringComparison.OrdinalIgnoreCase);
+
     }
 
     [Fact]
@@ -320,6 +391,70 @@ public sealed class CommandCenterAppSizeGateTests
 public sealed class ShellCommandDispatcherTests
 {
     [Fact]
+    public async Task Spell_list_requests_one_server_page_and_prints_exact_opaque_continuation()
+    {
+
+        RecordingSpellCatalogHandler handler = new();
+
+        ShellCommandDispatcher dispatcher = CreateDispatcher(handler);
+
+        CommandCenterState state = new(new SessionLogBuffer())
+        {
+
+            WorkingDirectory = "/workspace root",
+
+        };
+
+        _ = await dispatcher.DispatchAsync(
+            "/spell list opaque-prior",
+            state,
+            CancellationToken.None);
+
+        Uri requestUri = Assert.Single(handler.Requests).RequestUri!;
+
+        Assert.Equal("/api/spells", requestUri.AbsolutePath);
+
+        Assert.Contains("paged=true", requestUri.Query, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "cursor=opaque-prior",
+            requestUri.Query,
+            StringComparison.Ordinal);
+
+        string rendered = state.Log.RenderPlainText();
+
+        Assert.Contains("- catalog-spell", rendered, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "/spell list opaque-next",
+            rendered,
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Display_page_reports_physical_owner_saved_state_and_exact_continuation()
+    {
+
+        string rendered = ShellCommandDispatcher.AppendDisplayContinuation(
+            "- item",
+            "spell",
+            offset: 50,
+            shown: 50,
+            total: 125,
+            hasMore: true);
+
+        Assert.Contains("Physical terminal-rendering boundary", rendered, StringComparison.Ordinal);
+
+        Assert.Contains("100 of 125", rendered, StringComparison.Ordinal);
+
+        Assert.Contains("Server state was not changed", rendered, StringComparison.Ordinal);
+
+        Assert.Contains("/spell list 100", rendered, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public async Task Session_resume_invalid_guid_errors_without_binding()
     {
         ShellCommandDispatcher dispatcher = CreateDispatcher();
@@ -450,9 +585,13 @@ public sealed class ShellCommandDispatcherTests
         Assert.Contains("arcanum doctor", text, StringComparison.Ordinal);
     }
 
-    private static ShellCommandDispatcher CreateDispatcher()
+    private static ShellCommandDispatcher CreateDispatcher() =>
+        CreateDispatcher(new FakeHandler());
+
+    private static ShellCommandDispatcher CreateDispatcher(
+        HttpMessageHandler handler)
     {
-        FakeHttpClientFactory factory = new(new FakeHandler());
+        FakeHttpClientFactory factory = new(handler);
         ArcanumApiClient client = new(factory, new FakeSecretStore());
         SessionWorkspaceService workspace = new(
             client,
@@ -507,6 +646,46 @@ public sealed class ShellCommandDispatcherTests
                     Content = new StringContent(
                         """{"success":false,"error":{"code":"Test.Down","message":"down"}}"""),
                 });
+    }
+
+    private sealed class RecordingSpellCatalogHandler : HttpMessageHandler
+    {
+
+        public Collection<HttpRequestMessage> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Requests.Add(request);
+
+            SpellCatalogPage page = new(
+                [new SpellSummary(
+                    "catalog-spell",
+                    "description",
+                    SpellSource.Workspace,
+                    [])],
+                true,
+                "opaque-next",
+                "continue");
+
+            byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<SpellCatalogPage>(page, true, null),
+                ArcanumJsonContext.Default.ApiResponseSpellCatalogPage);
+
+            return Task.FromResult(
+                new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+
+                    Content = new ByteArrayContent(payload),
+
+                });
+
+        }
+
     }
 
     private sealed class TestOptionsMonitor(ArcanumSettings current) : IOptionsMonitor<ArcanumSettings>

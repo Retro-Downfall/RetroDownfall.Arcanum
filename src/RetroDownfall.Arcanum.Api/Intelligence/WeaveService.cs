@@ -15,11 +15,10 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
 /// Imprints text into The Weave via <see cref="IEmbeddingGeneratorFactory"/>. Never throws for expected
-/// failure modes (feature disabled, provider unreachable, timeout, or genuine per-call provider error):
-/// callers receive a <see cref="Result{T}"/> and are expected to degrade gracefully. A caller-initiated
-/// cancellation (the supplied <see cref="CancellationToken"/> itself firing) still propagates as
-/// <see cref="OperationCanceledException"/>, per standard .NET convention — only internal
-/// provider/timeout failures are translated into a failed <see cref="Result{T}"/>.
+/// failure modes (feature disabled, provider unreachable, or genuine per-call provider error): callers
+/// receive a <see cref="Result{T}"/> and are expected to degrade gracefully. Cancellation from the supplied
+/// <see cref="CancellationToken"/> propagates as <see cref="OperationCanceledException"/>, per standard
+/// .NET convention. Arcanum adds no whole-operation embedding deadline.
 /// </summary>
 public sealed class WeaveService(
     IEmbeddingGeneratorFactory generatorFactory,
@@ -88,8 +87,6 @@ public sealed class WeaveService(
         EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
 
         int batchSize = ArcanumSettingClamps.EmbeddingsBatchSize(embeddings.BatchSize);
-
-        int requestTimeoutSeconds = ArcanumSettingClamps.EmbeddingsRequestTimeoutSeconds(embeddings.RequestTimeoutSeconds);
 
         int chunkSizeChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(embeddings.ChunkSizeChars);
 
@@ -163,7 +160,6 @@ public sealed class WeaveService(
             {
                 Embedding<float>[] batchEmbeddings = await EmbedOneBatchAsync(
                     batch,
-                    requestTimeoutSeconds,
                     cancellationToken).ConfigureAwait(false);
 
                 results.AddRange(batchEmbeddings);
@@ -186,20 +182,6 @@ public sealed class WeaveService(
 
             accountingStatus = InferenceRunStatus.Completed;
             return Result<Embedding<float>[]>.Success([.. results]);
-
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-
-            // The linked timeout CTS fired, not the caller's own token — this is an internal provider
-            // timeout, translated into a sanitized failure rather than propagated as a cancellation.
-            logger.LogWarning(
-                "Embedding request timed out after the code-owned {TimeoutSeconds}s limit.",
-                requestTimeoutSeconds);
-
-            return Result<Embedding<float>[]>.Failure(new Error(
-                ErrorCodes.Embeddings.ProviderUnavailable,
-                "The embedding provider timed out."));
 
         }
         catch (ClientResultException ex) when (IsPayloadOrRequestSizeError(ex.Status))
@@ -288,25 +270,15 @@ public sealed class WeaveService(
 
     private async Task<Embedding<float>[]> EmbedOneBatchAsync(
         List<string> batch,
-        int requestTimeoutSeconds,
         CancellationToken cancellationToken)
     {
 
-        // The linked CTS is the guaranteed timeout enforcement mechanism regardless of provider —
-        // provider-native timeout configuration (where the SDK exposes one) is applied as
-        // defense-in-depth inside EmbeddingGeneratorFactory's HttpClient wiring, not relied upon alone.
-        using CancellationTokenSource timeoutCts = new(TimeSpan.FromSeconds(requestTimeoutSeconds));
-
-        using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            timeoutCts.Token);
-
         using EmbeddingGeneratorLease lease = await generatorFactory
-            .ResolveGeneratorAsync(linkedCts.Token)
+            .ResolveGeneratorAsync(cancellationToken)
             .ConfigureAwait(false);
 
         GeneratedEmbeddings<Embedding<float>> generated = await lease.Generator
-            .GenerateAsync(batch, options: null, linkedCts.Token)
+            .GenerateAsync(batch, options: null, cancellationToken)
             .ConfigureAwait(false);
 
         Embedding<float>[] embeddings = new Embedding<float>[generated.Count];

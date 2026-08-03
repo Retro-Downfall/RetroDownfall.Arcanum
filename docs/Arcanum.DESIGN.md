@@ -71,11 +71,13 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
   mapper but force all tools off.
 - Streaming guardrails use the code-owned buffered policy: answer and projectable reasoning are
   withheld until accepted.
-- Agentic workflows run under code-owned `TurnLimits` hard caps (model calls, tool rounds, tool
-  calls, tool-result tokens/bytes, elapsed time, and estimated/reserved cost per turn; see
-  `TurnAccountingHandle` for the current defaults). Progress continues while evidence changes and
-  stops on terminal output, deterministic no-progress, cancellation, context admission, a
-  `TurnBudget` cap, or cost admission. There is no operator-configurable count ceiling.
+- Agentic workflows are progress-driven. Arcanum imposes no fixed model-call, tool-round,
+  correction-attempt, step, or total turn-duration ceiling. Work continues while evidence changes
+  and stops on completion, client-tool forwarding, caller/host cancellation, an explicit
+  operator-owned token or cost policy, a provider/model request or context boundary, a required
+  safety/integrity denial, or deterministic repeated no-progress. Per-allocation, frame, page,
+  concurrency, and post-cancellation cleanup bounds remain local protections; they are not total
+  workflow ceilings.
 
 ### 2.2 Current policy constraints
 
@@ -95,6 +97,7 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
 | Native CLI diagnostics | Authenticated clients receive bounded tool-result diagnostics. |
 | Provider probes | Loopback/LAN provider endpoints are allowed; link-local/metadata targets remain blocked. |
 | Readiness | Provider failures yield overall Degraded/HTTP 200; Grimoire Unhealthy is the primary HTTP 503 gate. Durable-operation reconciliation that is deferred or requires operator repair yields Degraded/HTTP 200. |
+| Constraint ownership | [`Arcanum.ConstraintInventory.json`](Arcanum.ConstraintInventory.json) is the canonical machine-reviewable classification of Arcanum and Compendium limits; [`Arcanum.ConstraintReduction.20260803.md`](Arcanum.ConstraintReduction.20260803.md) records the issue #55 reductions. Every new public numeric/time setting and public clamp must be classified there. Forge is outside this audit. |
 
 ### 2.3 Naming conventions
 
@@ -359,9 +362,9 @@ credential APIs. It has no project reference back to Core, Infrastructure, Api, 
 
 **Project boundary:** Implementations of Core contracts live here. Interfaces stay in Core unless noted (`IUnseenServantPacer`, `IThemeDetector`).
 
-**MCP (SDK on the wire):** Client/transport uses **`ModelContextProtocol.Core`**; Arcanum owns `IMcpClient` → `SdkMcpClientWrapper`, in-process `ArcanumInternalToolServer` (unchanged handlers/framing), and `IMcpConnectionManager` → `McpConnectionManager` (global + workspace `mcp.json`, caps, trust gate, transport factory). Caps (`MaxPaginationPages` / tools / bytes) and `McpBridgeTool` output/fallback semantics are unchanged. Streamable HTTP via SDK `HttpClientTransport` + SSRF-guarded `HttpClient("McpHttp")`; legacy SSE → `Mcp.SseNotSupported`. Stdio env: strip by default; `inheritEnv` allowlist cannot override absolute denials (`ARCANUM_*`, loader hijacks). Per-request cancel: SDK `notifications/cancelled`; internal server tracks in-flight calls concurrently.
+**MCP (SDK on the wire):** Client/transport uses **`ModelContextProtocol.Core`**; Arcanum owns `IMcpClient` → `SdkMcpClientWrapper`, in-process `ArcanumInternalToolServer` (unchanged handlers/framing), and `IMcpConnectionManager` → `McpConnectionManager` (global + workspace `mcp.json`, trust gate, transport factory). Former total server/tool/page-count and total invocation deadlines are removed: cursor pagination continues until protocol completion/cancellation, established calls have no request clock, and large tool schemas/results use protocol frames plus allocation-safe bytes and explicit continuation. `MaxJsonRpcLineBytes`, aggregate tool-schema bytes, trust/provenance, and `McpBridgeTool` output handling remain physical/protocol boundaries. Streamable HTTP via SDK `HttpClientTransport` + SSRF-guarded `HttpClient("McpHttp")` keeps only connection establishment bounded; legacy SSE → `Mcp.SseNotSupported`. Stdio initialization retains its handshake interval. Stdio env strips by default; `inheritEnv` cannot override absolute denials (`ARCANUM_*`, loader hijacks). Per-request cancel uses SDK `notifications/cancelled`; the internal server tracks in-flight calls concurrently.
 
-**In-process MCP tools (canonical list):** `read_file_chunk`, `replace_text_block`, `write_file`, `list_directory`, `search_workspace`, `apply_patch`, `workspace_check` (advertised only while eligible on macOS), `execute_command` (no shell; `ArgumentList` only), `ask_human` (streaming attended only), `scribe_lexicon`/`delete_lexicon` (`Arcanum:Features:Lexicon`; delete is Forbidden Art), `search_archives`, `send_commlink_alert`, `petition_dungeon_master`, `adjust_initiative`, `cast_sending` / `dispatch_sending` (Conclave/A2A feature gates), `read_saga` (`Arcanum:Features:Saga`), and `attach_session_file` / `refresh_session_file` (`Arcanum:Features:Attachments`; post-tool content injection). `search_workspace` is the exact bounded text-search surface and does not query The Weave. `apply_patch` is bound to a persisted assistant turn. All filesystem tools use `WorkspacePathPolicy`; campaign Sanctum is an additional conditional policy, not the primary containment boundary.
+**In-process MCP tools (canonical list):** `read_file_chunk`, `replace_text_block`, `write_file`, `list_directory`, `search_workspace`, `apply_patch`, `workspace_check` (advertised only while eligible on macOS), `execute_command` (no shell; `ArgumentList` only), `read_command_output` (automatically paired with attuned `execute_command`; pages opaque connection-scoped complete-output artifacts), `ask_human` (streaming attended only), `scribe_lexicon`/`delete_lexicon` (`Arcanum:Features:Lexicon`; delete is Forbidden Art), `search_archives`, `send_commlink_alert`, `petition_dungeon_master`, `adjust_initiative`, `cast_sending` / `dispatch_sending` (Conclave/A2A feature gates), `read_saga` (`Arcanum:Features:Saga`), and `attach_session_file` / `refresh_session_file` (`Arcanum:Features:Attachments`; post-tool content injection). `search_workspace` is the exact bounded text-search surface and does not query The Weave. `apply_patch` is bound to a persisted assistant turn. All filesystem tools use `WorkspacePathPolicy`; campaign Sanctum is an additional conditional policy, not the primary containment boundary.
 
 **Other DI surfaces:** `AddArcanumInfrastructure`, `AddArcanumDaemonServices`,
 `AddArcanumEyeOfTheWorld`, `AddArcanumThemeDetection`, `AddArcanumConfigurationPresets`,
@@ -487,7 +490,8 @@ authority or a request to create a context pin.
 Relative paths resolve against the effective working directory and an explicitly supplied absolute
 path is accepted. Non-image files are decoded as strict UTF-8 without an extension allowlist and
 split on UTF-8 boundaries into the existing server-sized `AttachedFileDto` chunks. Staged text and
-stdin share the server's 32-part, 1-MiB-per-part, 32-MiB aggregate authority; the stdin reader's
+stdin share 1-MiB-per-part and 32-MiB aggregate allocation authority without a file/part-count
+ceiling; the stdin reader's
 10 MiB ceiling is not imposed on each `--with` file. Existing path and byte checks remain
 authoritative. Recognized images pass through `ScryingFocusStager` and its configured
 MIME/size policy. Text diagnostics report UTF-8 bytes, part count, and lowercase SHA-256; image
@@ -570,10 +574,13 @@ on Windows and POSIX-shell quoting on macOS/Linux; this has no effect on the she
 Interactive `run` / `chat` / `ask` / **Command Center** call `IArcanumServeLauncher.EnsureRunningAsync` after Grimoire init (Command Center: after host entry, before TG Run):
 
 1. Gate: `ICliEnvironment.IsInteractive` and `ARCANUM_NO_AUTO_SERVE` unset. `NO_COLOR` does **not** disable auto-serve (it only gates color + live layout / Command Center theme).
-2. Authenticated `GET /api/health` (re-reads `ISecretStore` on each poll). Map: 200 → already running; 401/403 → auth failed (do not spawn); 503 → brief retry then failed (do not spawn); TLS failure / timeout → failed (do not spawn — something answered); connection refused / network unreachable / DNS → definite no-listener → proceed.
+2. Authenticated `GET /api/health` (re-reads `ISecretStore` on each poll) gives each connection/readiness probe two seconds. Map: 200 → already running; 401/403 → auth failed (do not spawn); 503 → retry for three seconds then fail (do not spawn); TLS failure / timeout → failed (do not spawn — something answered); connection refused / network unreachable / DNS → definite no-listener → proceed.
 3. If effective ListenAny needs interactive acknowledgement → failed with guidance (do not auto-ack).
-4. Spawn via `IServeProcessLauncher` with `ARCANUM_AUTO_LAUNCHED=1` (direct `ProcessStartInfo`, no shell). Poll until authenticated 200 or deadline. Post-spawn 401 with null key keeps polling (first-run key race); post-spawn 401 with a non-null key across attempts → auth failed.
+4. Spawn via `IServeProcessLauncher` with `ARCANUM_AUTO_LAUNCHED=1` (direct `ProcessStartInfo`, no shell). Poll for authenticated readiness for up to 20 seconds. Post-spawn 401 with null key keeps polling (first-run key race); eight consecutive post-spawn 401 responses with a non-null key classify authentication failure. These are foreground readiness/connection budgets only: they never terminate the spawned host or redefine its initialization lifetime.
 5. Canonical PID file remains owned by `PidFileService` under `{ArcanumPaths.GrimoireDirectory}/arcanum.pid`. The launcher never deletes it on health failure.
+
+On a readiness failure, retry the invoking command, run `arcanum doctor`, confirm the local key with
+`arcanum key show`, and inspect the owner-only `logs/auto-serve-bootstrap.log` for host startup detail.
 
 Auto-launched processes do not expose `arcanum serve stop` or `daemon stop`.
 
@@ -622,7 +629,9 @@ One binary; the CLI verb selects the process role (per-command detail in
 - **`ask`** — streams single-prompt inference via NDJSON, then exits (0/1/130).
 - **`run`** — composes positional/piped/interactive input and bounded current-turn files, resolves active
   context, then dispatches one Agent, research, named-Spell, or read-only preview run.
-- **`chat`** — multi-turn REPL with per-turn cancellation and swap-at-end rendering.
+- **`chat`** — multi-turn REPL with per-turn cancellation and swap-at-end rendering. Complete
+  assistant Markdown is parsed lazily through at-most-256-Ki-character Markdig chunks so one render
+  allocation stays bounded without a total-answer cutoff.
 - Short-lived verbs — `look` / `doctor` run local checks (no HTTP for path checks); `lore`, `daemon jobs|initiative|alert` call the running host's `/api` (Unseen Servant interval control via `/api/unseen-servant/*`, §5.5.2; Comm Link smoke tests via `POST /api/commlink/send`); `daemon install|uninstall|status` drives OS service lifecycle. Bare interactive `arcanum` opens the Command Center (long-lived TUI) until `/exit`; direct `chat` remains the frameless Spectre REPL.
 
 ### 5.2 Why System.CommandLine 2.0.10
@@ -680,9 +689,9 @@ messages, paths, PII, API keys, or stack traces. JSON invocations receive a sour
 - **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and applies embedded SQL schema migrations via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSqlSchemaMigrator`** (raw SQLite + `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`. A key mismatch or unreadable dedicated secret throws the sanitized `GrimoireDatabaseUnavailableException`, so startup fails closed while host/test cleanup can unwind normally; it never terminates the embedding process with `Environment.FailFast`. Legacy databases are transparently re-encrypted to the new KDF on unlock. The same bootstrapper runs from the CLI (`run` / `ask` / `chat`) so host and CLI share one migration path (§10.5).
 - **`CampaignLoggerQueue` / `Loremaster`** — bounded `Channel<Guid>` (capacity 100 **session IDs**, not Entry rows) with **non-blocking `TryQueue`**: duplicate session ids coalesce via a pending-marker map; a full channel rejects with a warning log and clears the marker so the session remains eligible for a later sweep (internal sweeps fail-open). Explicit `POST /api/sessions/{id}/rest` returns **202** when accepted/coalesced and **503** + `Session.RestQueueFull` when rejected. Background service `Loremaster` (formerly `CampaignLoggerBackgroundService`) runs hybrid sweeps using **`Session.UnsummarizedEntryCount`** (incremented on every entry append — both the inference path and The Forge `POST /api/sessions/{id}/entries` path, each serialized per-session via **`SessionEntryPersistence`** / **`SessionWriteLock`** + **`SqliteBusyRetry`** so concurrent appends never lose an increment; reset on summarize) instead of full-table `Entries` aggregation. The consume path loads session headers via **`GetSessionHeaderAsync`** (no entry hydration). Headless summarization uses a stateless `PingRequest` with `SkipSpellRouting`, `DisableMcpTools`, `UnattendedMode`, optional `Arcanum:FastModel` (else `DefaultModel`); on success, `UpdateSessionCampaignRollupAsync` atomically sets `Session.Summary`, `LastSummarizedMessageAt`, and the remaining unsummarized count. On inference failure, the watermark is **not** advanced.
 - **`ArcanumDbContext`** — compiled model; SQLCipher passphrase from hosted service.
-- **`SessionRepository`** — implements **`ISessionRepository`** for Forge session CRUD, entry append, export, and analytics. Entry writes delegate shared invariants (lock, retry, limits, counter, UpdatedAt) to internal **`SessionEntryPersistence`**. **`AddEntryAsync`** returns **`Result<Entry>`** for expected domain outcomes (not found, archived, entry limits). **`UpdateSessionAsync`** patches Title/Status only — Grimoire-owned counters and rollups are never clobbered from caller-supplied `Session` rows.
-- **`GrimoireRepository`** — implements `IGrimoireRepository` (the interface is the authoritative reference). Entry append/finalize/discard paths delegate the same **`SessionEntryPersistence`** invariants. `GetSessionAsync` loads the session header (no eager `Include`) and a code-owned bounded, chronologically ordered window of the most recent 1,000 `Entry` rows so very long threads do not exhaust host RAM. The window is pushed down server-side as parameterized SQL (`ORDER BY "CreatedAt" DESC LIMIT n` — the SQLite provider cannot `ORDER BY`/compare a `DateTimeOffset` in LINQ, and `CreatedAt` is stored as sortable UTC text) and is widened to at least the number of entries after `LastSummarizedMessageAt`, guaranteeing read-time compression sees every unsummarized message. Campaign Logger reads every row strictly after `LastSummarizedMessageAt` and widens through the complete `CreatedAt` group containing the boundary row, so a timestamp-only watermark can never split a tool call/result pair; if that complete window exceeds the clamped session entry ceiling it fails without advancing the watermark. That overflow is corrupt or pre-limit local data needing repair or reinstall, not normal-upgrade guidance. Older entries still exist in SQL — Campaign Logger summaries (API §8.7) and FTS5 `search_archives` cover the long tail.
-- **`CampaignRepository`** — `ICampaignRepository.AddAsync` returns `Result<Campaign>`. It attaches EF to a SQLite **immediate** transaction, counts and inserts under that same writer lock, and wraps the complete attempt in `SqliteBusyRetry`, so concurrent inserts at capacity minus one cannot both succeed. `Campaign.MaxReached` is reserved for the actual atomic capacity outcome; unrelated write/lock failures remain infrastructure exceptions.
+- **`SessionRepository`** — implements **`ISessionRepository`** for Forge session CRUD, entry append, export, and analytics. Entry writes delegate shared invariants (lock, retry, per-entry validation, counter, UpdatedAt) to internal **`SessionEntryPersistence`**. **`AddEntryAsync`** returns **`Result<Entry>`** for expected domain outcomes (not found, archived, invalid or oversized entry); there is no total persisted-entry ceiling. **`UpdateSessionAsync`** patches Title/Status only — Grimoire-owned counters and rollups are never clobbered from caller-supplied `Session` rows.
+- **`GrimoireRepository`** — implements `IGrimoireRepository` (the interface is the authoritative reference). Entry append/finalize/discard paths delegate the same **`SessionEntryPersistence`** invariants. `GetSessionAsync` loads the session header (no eager `Include`) and a code-owned bounded, chronologically ordered window of the most recent 1,000 `Entry` rows so very long threads do not exhaust host RAM. The window is pushed down server-side as parameterized SQL (`ORDER BY "CreatedAt" DESC LIMIT n` — the SQLite provider cannot `ORDER BY`/compare a `DateTimeOffset` in LINQ, and `CreatedAt` is stored as sortable UTC text) and is widened to at least the number of entries after `LastSummarizedMessageAt`, guaranteeing read-time compression sees every unsummarized message. Campaign Logger reads one cancellable checkpoint page strictly after `LastSummarizedMessageAt` and widens it through the complete `CreatedAt` group containing the boundary row, so a timestamp-only watermark can never split a tool call/result pair. A successful summary commits that boundary as the next watermark; later passes continue until the durable unsummarized history is exhausted. Older entries remain in SQL — Campaign Logger summaries (API §8.7), pageable session reads/exports, and FTS5 `search_archives` cover the long tail.
+- **`CampaignRepository`** — `ICampaignRepository.AddAsync` returns `Result<Campaign>`. It attaches EF to a SQLite **immediate** transaction and wraps the insert in `SqliteBusyRetry`, preserving unique and relational integrity across concurrent writers without an incidental total-campaign count query or `Campaign.MaxReached` rejection. Large registries use paged reads; `CampaignBackedWorkspaceRegistry.GetAllAsync` follows every advancing page until exhaustion and treats a non-advancing offset as deterministic repository no-progress. Unrelated write/lock failures remain infrastructure exceptions.
 - **`ChronosyncEngine`** — implements `IChronosyncEngine`: compares the current `PatternSnapshot` to the latest `WorkspaceContext` row for that path, persists a new baseline row, and returns a `ChronosyncReport` (headless; no HTTP or Spectre).
 
 **Outcome-model policy:** Repository and service boundaries return **`Result` / `Result<T>`** with wire-stable **`Error.Code`** values from **`ErrorCodes`** for expected, recoverable domain outcomes (not found, validation, limits, state conflicts). Reserve thrown exceptions for unrecoverable infrastructure faults, programmer errors, and transport layers where a catch-and-fallback is intentional (for example cooperative cancel on SSE). HTTP endpoints map **`Result.Error.Code`** to status codes exclusively via **`ArcanumErrorMapper`** — never by parsing exception messages.
@@ -869,9 +878,14 @@ The key id is the first 64 bits of SHA-256 over the master key and is safe to pe
 Writes create an owner-only temporary ciphertext file in the destination directory, stream and
 authenticate the content in bounded memory, flush it to durable storage, reopen and verify the
 complete envelope, then atomically rename it over the destination and reapply owner-only
-permissions. Cancellation or failure removes the ciphertext temp. Batch writers use the streaming
-writer directly, so no plaintext JSONL staging file exists. Reads are sequential/non-seekable:
-each complete chunk is authenticated before any byte from that chunk reaches the caller.
+permissions. Cancellation or failure removes the ciphertext temp. Batch and Session-attachment
+writers use the streaming writer directly. Session attachments incrementally hash and write fixed
+plaintext pages from the caller-owned memory without cloning the whole payload into a second
+`MemoryStream`; no plaintext staging file exists. Reads are sequential/non-seekable: each complete
+chunk is authenticated before any byte from that chunk reaches the caller. `OpenReadAsync` is the
+normal large-content boundary. The compatibility `ReadBytesAsync` path allocates exactly the one
+declared-size array it returns, fills it with cancellable page reads, and clears that array if a read
+fails; it does not copy through a second whole-payload `MemoryStream`.
 `/v1/files/{id}/content` streams decrypted bytes while preserving stored MIME type and forced
 attachment disposition; attachment materialization, refresh/index validation, forks, batch
 processing/counting, and reconciliation all pass through the same authenticated boundary.
@@ -971,10 +985,11 @@ related physical classes:
 | `SanctumBreaches` | durable breach rows | enabled / 90 days |
 | `DaemonHistory` | daemon execution-history policy | enabled / 30 days |
 
-All rule days clamp to 1–3,650. `AutomaticSweepsEnabled` defaults false,
-`SweepIntervalHours` defaults 24 and clamps 1–168, `MaxItemsPerSweep` defaults 500 and clamps
-1–10,000, and `CheckpointInterval` defaults 50 and clamps to both 1–10,000 and the effective
-per-sweep maximum. `AccountingMinimumDays` defaults 365 and clamps 30–3,650. The effective
+All rule days clamp to 1–3,650. `AutomaticSweepsEnabled` defaults false and
+`SweepIntervalHours` defaults 24 and clamps 1–168. Retention applies the complete selected plan;
+an internal 50-item checkpoint interval bounds one durable commit/manifest slice and continues
+automatically until completion or cancellation. It is not a public total-item restriction.
+`AccountingMinimumDays` defaults 365 and clamps 30–3,650. The effective
 accounting cutoff is `max(Accounting.Days, AccountingMinimumDays)` and uses `InferenceRuns`,
 `BillableOperations`, `BudgetReservations`, `CostAdjustments`, and `BudgetAlerts`; standalone
 adjustments and budget-alert history age out under the same floor as run-owned accounting chains.
@@ -990,9 +1005,21 @@ otherwise invokes the same `Prune` apply path as the API before waiting the clam
 The inference and guardrail log writers create and secure the current UTC-day file, enforce its
 soft size cap, and append records. They never enumerate or delete historical files, even when
 automatic sweeps and the corresponding typed rule are enabled. Audit-log age removal is therefore
-exclusive to the bounded, durable `DataRetentionService` plan/apply path and its scheduler;
-`host.auditLog.retentionDays` and `security.guardrails.auditLog.retentionDays` remain compatibility
-defaults for omitted query lookbacks, not deletion authorities.
+exclusive to the durable `DataRetentionService` plan/apply path and its scheduler. The former
+`host.auditLog.retentionDays` and `security.guardrails.auditLog.retentionDays` fields are removed;
+queries without `from` search every dated file, while `Retention.AuditLogs` and
+`Retention.GuardrailLogs` remain the only age-deletion authorities.
+Both audit query families retain their existing array response bodies and default first-page behavior;
+the 1,000 `limit` is one response page, not a history total. `AuditLogPageReader` freezes a
+newest-first snapshot on the first request, then `ReverseJsonlFileReader` scans dated files backward
+in fixed 64 KiB blocks and deserializes one JSON record segment at a time. It never allocates a
+whole-file `ReadAllLines` array. `AuditLogCursorCodec` produces an opaque continuation bound to the
+audit family, configured file-family identity, `from`/`to`, every endpoint filter, the first-page
+snapshot time, dated-file prefix identity, and the exact reverse byte boundary. The endpoint returns
+`X-Arcanum-Next-Cursor` only when more retained matches may remain. Callers repeat the unchanged query
+with `cursor`; malformed, query-mismatched, replaced, or retained-away state fails with
+`Validation.InvalidQuery` and an explicit restart-without-cursor action rather than drifting or
+silently skipping records.
 Both writers retain their private same-family append lock and also enter one singleton managed-log
 publication gate for the short append. Factory reset enters that same gate before taking its
 database writer transaction and holds it through filesystem inventory, quarantine, commit,
@@ -1050,14 +1077,14 @@ eligible candidates, so one pin cannot freeze the whole maintenance pass. Explic
 and global/scoped reset remain all-or-nothing when their selected target has a blocker or conflict.
 No destructive path silently removes active accounting or work.
 
-**Bounded durable execution and reconciliation.** A sweep selects at most the clamped
-`MaxItemsPerSweep` in stable age/id order. Apply creates a `data-retention-prune`
-`LongRunningOperation` with `RestartIdempotently`, acquires its lease, and stores the bounded
-candidate snapshot plus next-candidate cursor at the effective checkpoint interval. Recovery with a
-checkpoint resumes that snapshot at its cursor; recovery before the first checkpoint builds a fresh
-bounded plan. Stable blocker filtering does not spend the candidate quota, so an oldest pinned or
-active item cannot indefinitely hide the next eligible item; reads remain bounded and deterministically
-ordered. Prune and explicit retention mutations use one atomic cross-kind single-flight start, so
+**Durable execution and reconciliation.** A sweep processes the complete selected plan in stable
+age/id order through internal 50-item checkpoint pages. Apply creates a `data-retention-prune`
+`LongRunningOperation` with `RestartIdempotently`, acquires its lease, and stores the candidate
+snapshot plus next-candidate cursor at each checkpoint. Recovery with a checkpoint resumes that
+snapshot at its cursor; recovery before the first checkpoint builds a fresh complete plan. Stable
+blocker filtering cannot let an oldest pinned or active item hide the next eligible item; reads
+remain page-bounded and deterministically ordered. Prune and explicit retention mutations use one
+atomic cross-kind single-flight start, so
 there is no lease-less pending marker and destructive retention operations cannot overlap. The lease
 is renewed on elapsed time while each candidate runs, in addition to checkpoint boundaries, and
 loss of ownership cancels the candidate and fails closed. If a selected prune candidate gains a pin,
@@ -1319,13 +1346,13 @@ Grimoire-backed separately (§11.15).
 
 **`mcp.json` extensions:** Each server entry supports **`alwaysOn`** (default `true`), optional **`cwd`** (subprocess working directory for stdio servers), an optional **`type`** transport selector (`"stdio"` | `"http"` | `"sse"`), optional **`url`** (a URL infers the **Streamable HTTP** transport when `type` is omitted; an explicit `type: "sse"` selects the legacy SSE transport, still unsupported → **`Mcp.SseNotSupported`**), and an optional **`inheritEnv`** string array naming host environment variables an stdio server may inherit despite the default env-strip (e.g. `["PATH","HOME"]` for `npx`). HTTP endpoints must be `https` unless their host is listed in `Arcanum:Integrations:Mcp:AllowedHttpHosts`, and are SSRF-validated via `OutboundUrlGuard` before connect.
 
-**Workspace-local trust gate:** Workspace `mcp.json` servers are **not admitted** until the operator approves the workspace via **`POST /api/mcp/trust-workspace`** (`{ "workingDirectory": "<root>" }`). Approvals persist at `~/.config/arcanum/trusted-mcp-workspaces.json` as normalized workspace path → SHA-256 digest.
+**Workspace-local trust gate:** Workspace `mcp.json` servers are **not admitted** until the operator approves the workspace via **`POST /api/mcp/trust-workspace`** (`{ "workingDirectory": "<root>" }`). Approvals persist as normalized workspace path → SHA-256 digest in the primary `~/.config/arcanum/trusted-mcp-workspaces.json` page and contiguous `trusted-mcp-workspaces.page-NNNNNNNN.json` pages.
 
 Admission is bound to the exact bytes parsed: `BuildMergedToolsForWorkspaceAsync` performs one `SecureFileReader` read capped by the code constant **`McpSecurityLimits.MaxMcpConfigBytes = 256 KiB`**, deserializes that buffer, hashes that same buffer, and asks `IsApprovedDigestAsync` whether the **just-parsed digest** is approved. It does not re-read `mcp.json` between parse and approval. The digest is carried on every `ManagedMcpServerEntry`; config B retires config-A entries with an old digest or removed name before registering replacements, and missing/invalid/oversized/unapproved files retire the whole workspace-local surface. Retired entries reject new lifecycle work, leave the registry/cache immediately, and drain/stop under a bounded cleanup path.
 
 Freshness remains current-file based after admission. Cached surfaces call `TrustedMcpWorkspaceStore.GetSnapshotAsync`, which securely re-reads and hashes the current file; lifecycle visibility/start/restart checks require that current digest, the persisted approval, and the entry's source digest all match. A path, length, timestamp, cached digest, or stale entry alone never authorizes execution. **`alwaysOn` is ignored** until these checks pass. Global MCP servers (`ScopeWorkingDirectory == null`) have no workspace source digest and are unaffected.
 
-The trust document has hard code limits, not operator settings: **8 MiB serialized bytes**, **256 entries**, **4,096 normalized path characters**, and exactly **64 hexadecimal characters** per SHA-256 digest. Reads use the same no-follow bounded `SecureFileReader`; writes use same-directory `AtomicFile.ReplaceAsync` and strict owner-only directory/temp/final permissions. Corrupt, oversized, or malformed documents fail closed; trust updates also fail closed when owner-only permissions cannot be verified. `MaxMcpConfigBytes` is deliberately separate from configurable `Arcanum:Mcp:MaxJsonRpcLineBytes` (transport frame/body cap) and `MaxToolsTotalBytes` (cumulative tool-schema memory cap).
+Each trust page has hard code limits, not operator settings: **8 MiB serialized bytes**, **4,096 normalized path characters**, and exactly **64 hexadecimal characters** per SHA-256 digest. There is no approval-count total: reads validate/iterate every contiguous page, writes stream one page to a same-directory `AtomicFile.ReplaceAsync` temporary file, and a full page rotates atomically to the next page. Strict owner-only directory/temp/final permissions, cancellation, duplicate-entry rejection, and fail-closed corrupt/oversized/malformed-page handling remain. Encrypted backup inventory includes the complete page family. `MaxMcpConfigBytes` is deliberately separate from configurable `Arcanum:Mcp:MaxJsonRpcLineBytes` (transport frame/body cap) and `MaxToolsTotalBytes` (cumulative tool-schema memory cap).
 
 **Auto-start:** **`McpServerBootstrapHostedService`** calls **`IMcpConnectionManager.InitializeAsync`** on host start to load the global registry and start all **`alwaysOn`** global servers. **`StopAsync`** calls **`StopAllAsync`** for graceful shutdown. Unaffected by the ModelContextProtocol SDK migration — its calls into `IMcpConnectionManager` are unchanged in signature and behavior.
 
@@ -1359,7 +1386,7 @@ Persisted Apprentice/Session/Entry/checkpoint rows remain the recovery authority
 are ignored by `ApprenticeStreamFramePolicy` (unknown frame kinds also default to ignore) and
 never enter step results, plans, prompts, checkpoints, or Chronicle replay.
 
-**Runtime:** **`ApprenticeService`** (`BackgroundService`, singleton **`IApprenticeRuntime`**) runs alongside **`UnseenServantService`** without modifying it. On host start, **`GetResumableAsync()`** re-spawns tasks for **`Running`** Apprentices (crash recovery). `Arcanum:Execution:MaxConcurrentApprentices` is enforced by an atomic **`ApprenticeConcurrencyGate`** (increment-then-compare, matching **`SseConnectionGate`**); excess **`/start`** requests queue up to `Arcanum:Execution:MaxPendingApprenticeStarts`, while **`/resume`** and **`/intervene`** fail fast with **`Apprentice.MaxReached`** when no slot is available.
+**Runtime:** **`ApprenticeService`** (`BackgroundService`, singleton **`IApprenticeRuntime`**) runs alongside **`UnseenServantService`** without modifying it. On host start, **`GetResumableAsync()`** re-spawns tasks whose durable lifecycle state requires recovery. `Arcanum:Execution:MaxConcurrentApprentices` is enforced by an atomic **`ApprenticeConcurrencyGate`** (increment-then-compare, matching **`SseConnectionGate`**); excess **`/start`** requests persist their startable state and enter the FIFO pending queue without an arbitrary total-queued-work ceiling. Capacity limits simultaneous execution only. Cancellation removes queued work; released slots eventually start the next request. **`/resume`** and **`/intervene`** remain immediate state transitions and fail with **`Apprentice.MaxReached`** when they require a slot that is not available.
 
 **Execution loop:** Planning → optional plan generation via **`ExecutePromptAsync`** (`SkipSpellRouting: true`) → step loop via **`StreamPromptAsync`** using the caller/host cancellation token → progress-based **Second Wind** recovery → optional **Shifting Fate** re-weave after each completed step → **Divine Intervention** escalation. The Grimoire session spans all steps via **`SessionId`**. There is no hidden step, run, or turn duration cap. Physical process/transport cleanup limits remain local to those operations.
 
@@ -1392,7 +1419,7 @@ External door into The Conclave: A2A **server** (inbound → Apprentices) and **
 
 **Server:** mapped under `Arcanum:Integrations:A2A:ServerPath` on `/api` (API key required) — **no** unauthenticated `/.well-known/agent-card.json`. Handler mints an Apprentice via `ConclaveArchmage` and relays Chronicle to A2A task states. Workspace fallback is `Arcanum:Integrations:A2A:DefaultWorkspace` → `Arcanum:Workspaces:DefaultRoot` → CWD; an empty `Arcanum:Security:CampaignRoots` still denies registration.
 
-**Client:** `dispatch_sending` validates URL via allowlist (if non-empty) **and** `OutboundUrlGuard`; `MaxExternalTasks` semaphore (non-blocking reject); depth not enforced at MCP layer (same limitation as `cast_sending`). Chronicle: `sendingDispatched`/`Completed`/`Failed` on caller stream. Agent Card ("Heraldry") built per-request from settings.
+**Client:** `dispatch_sending` validates URL via allowlist (if non-empty) **and** `OutboundUrlGuard`; the `MaxConcurrentA2ATasks` semaphore bounds simultaneous outbound calls while excess work waits cancellably for a slot instead of returning `Sending.MaxTasksReached`. Depth is not enforced at the MCP layer (same limitation as `cast_sending`). Chronicle: `sendingDispatched`/`Completed`/`Failed` on caller stream. Agent Card ("Heraldry") is built per request from settings.
 
 
 ## 6. `WebApplication.CreateSlimBuilder` vs `CreateBuilder`
@@ -1523,29 +1550,29 @@ Tool registration is built in `WizardIntelligenceProvider` per inference attempt
 
 1. `ArcanumLocalTimeTool` (`get_local_system_time`) — always registered. Returns the current local system time in ISO 8601.
 2. `ArcanumSystemInfoTool` (`get_arcanum_system_info`) — always registered. Returns host OS description, CPU architecture, and .NET runtime version.
-3. `ArcanumDelegateTaskTool` (`delegate_task`) — registered only on the primary loop. It accepts a self-contained `prompt`, optional explicit `{path,content}` file values, and a required token or USD ceiling plus bounded `max_turns`. It starts one buffered child TurnEngine, waits, and returns only the child summary. The ordinary parent stream exposes the `delegate_task` `toolCall` / terminal `toolResult` as its running indicator; child answer/reasoning/tool frames are never projected into the parent chat.
+3. `ArcanumDelegateTaskTool` (`delegate_task`) — registered only on the primary loop. It accepts a self-contained `prompt`, optional explicit `{path,content}` file values, and a required token or USD ceiling. It starts one buffered child TurnEngine, waits, and returns only the child summary. The ordinary parent stream exposes the `delegate_task` `toolCall` / terminal `toolResult` as its running indicator; child answer/reasoning/tool frames are never projected into the parent chat. The delegated token/cost ceiling, completion, provider/context rejection, failure, or cancellation owns termination; there is no child-turn or explicit-file-count counter. Per-file path/content allocation, provenance, sterile isolation, and the already-bounded parent/provider request remain authoritative.
 4. `ArcanumSpellScriptTool` (`run_spell_script`) — registered only when the active spell (or any **Arcane Resonance** dependency) has `scripts/` files **and** host-process tools are enabled by `Arcanum:Edition=Development` plus `ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1` (even when `DisableMcpTools` is true). Local edition does not advertise it. Scripts are resolved across the primary spell and all resonant dependencies; duplicate filenames across spells return a tool-result error (not a host exception).
 5. MCP tools — merged from `McpConnectionManager.GetAvailableToolsAsync` unless `DisableMcpTools` is true.
 
-**Artifact Attunement:** When the active spell's **`SPELL.json`** `declaredTools` array is non-empty, **`WizardIntelligenceProvider`** restricts the attunable set to that allowlist. That set covers in-process **`arcanum-internal`** and external **`mcp.json`** tools plus **`web_search` / `read_url`**. Exactly four hub-native tools are exempt: `get_local_system_time`, `get_arcanum_system_info`, `delegate_task`, and `run_spell_script`; native web tools are built in but are not additional exemptions. Empty or absent `declaredTools` leaves every otherwise-enabled tool available. Excluded MCP names are logged at **Debug**. A dependency spell's `declaredTools` describe the tools it needs when invoked directly; when pulled in as a dependency it does **not** widen the allowlist — the **primary** spell retains control over which tools the Master may wield.
+**Artifact Attunement:** When the active spell's **`SPELL.json`** `declaredTools` array is non-empty, **`WizardIntelligenceProvider`** restricts the attunable set to that allowlist plus host-defined continuation dependencies. That set covers in-process **`arcanum-internal`** and external **`mcp.json`** tools plus **`web_search` / `read_url`**. Declaring `execute_command` also carries host-exposed `read_command_output`, which can only page the opaque read-only artifact produced by that command and adds no execution authority. Exactly four hub-native tools are exempt: `get_local_system_time`, `get_arcanum_system_info`, `delegate_task`, and `run_spell_script`; native web tools are built in but are not additional exemptions. Empty or absent `declaredTools` leaves every otherwise-enabled tool available. Excluded MCP names are logged at **Debug**. A dependency spell's `declaredTools` describe the tools it needs when invoked directly; when pulled in as a dependency it does **not** widen the allowlist — the **primary** spell retains control over which tools the Master may wield.
 
 Spell validation recognizes all canonical built-in names plus the legacy `browse_web` alias, so web-tool declarations do not produce false "not found in configured MCP servers" warnings. Dry-run cast preview canonicalizes the alias to `read_url` and applies the same web enablement and attunement decision as live inference, plus the existing MCP `ArtifactAttunement` intersection.
 
-**Attunement × Forbidden Arts invariant:** Artifact Attunement only **intersects** the host MCP toolset with `declaredTools` — it never widens it or introduces tools the host does not already expose. **`ToolPolicy.NoForbiddenArts`** (request-driven) may strip Forbidden Arts from the *advertised* set, but a spell that lists a Forbidden Art in `declaredTools` still receives that tool in the advertisement when the request does not use `NoForbiddenArts`. The **Ward** gate runs at **execution** time (after advertisement) and is orthogonal: a tool may be advertised yet blocked until an operator resolves the ward (or unattended mode auto-denies). While Wards are enabled, `execute_command`, `apply_patch`, and `workspace_check` are intrinsic Ward candidates regardless of attunement or operator additions under `Arcanum:Security:Ward:ForbiddenArts`.
+**Attunement × Forbidden Arts invariant:** Artifact Attunement **intersects** the host MCP toolset with `declaredTools`, then closes only over host-exposed continuation dependencies. It never introduces a tool absent from the host, and the `execute_command` → `read_command_output` dependency adds only read-only paging of that connection's opaque result, not new execution capability. **`ToolPolicy.NoForbiddenArts`** (request-driven) may strip Forbidden Arts from the *advertised* set, but a spell that lists a Forbidden Art in `declaredTools` still receives that tool in the advertisement when the request does not use `NoForbiddenArts`. The **Ward** gate runs at **execution** time (after advertisement) and is orthogonal: a tool may be advertised yet blocked until an operator resolves the ward (or unattended mode auto-denies). While Wards are enabled, `execute_command`, `apply_patch`, and `workspace_check` are intrinsic Ward candidates regardless of attunement or operator additions under `Arcanum:Security:Ward:ForbiddenArts`.
 
 All hub built-in tool ids use snake_case, consistent with in-process MCP tools.
 
-The canonical tool list is in §4.2. When its Development + startup-environment gate is open, `run_spell_script` runs with `UseShellExecute = false`, cwd fixed to the resolved spell's `scripts/` directory, bare filename only (prefix containment across primary + resonant roots), extension-based runner map, and the same timeout, cooperative-cancel, and kill-tree behavior as `execute_command` (including `CancellationToken.Register` for immediate process kill).
+The canonical tool list is in §4.2. When its Development + startup-environment gate is open, `run_spell_script` runs with `UseShellExecute = false`, cwd fixed to the resolved spell's `scripts/` directory, bare filename only (prefix containment across primary + resonant roots), extension-based runner map, and the same no-total-duration, cooperative-cancel, and kill-tree behavior as `execute_command` (including `CancellationToken.Register` for immediate process kill).
 
 **Reliable workspace tools (`arcanum-internal`):**
 
-- **`search_workspace`** accepts required `pattern`, `mode:"literal"|"regex"`, and `caseSensitive`, plus optional workspace-relative `root`, at most 64 slash-normalized `globs`, and at most 64 allowlisted extensions. It decodes strict UTF-8 text, matches each logical line independently (patterns never span newlines), and returns 1-based line/column matches in deterministic path/line/column order. Literal matching is ordinal; regex is culture-invariant `NonBacktracking` first with a bounded interpreted fallback for unsupported features, never dynamic compilation. It is a direct filesystem search, not Weave/Divination. Normal statuses are `ok`, `no_match`, `invalid_pattern`, `invalid_request`, `timed_out`, or `capped`; cap/skip counters and `regexEngine:"non_backtracking"|"interpreted"` make partial results explicit. Its tool-owned elapsed limit becomes a structured `timed_out` result; caller cancellation is checked throughout traversal, decoding, and matching and propagates as cancellation rather than being relabeled as timeout.
-- **`apply_patch`** accepts a canonical unified diff plus optional `dryRun`. `UnifiedDiffParser` is pure and workspace-independent; `WorkspacePatchPlanner` then validates every normalized path, regular-file identity, fingerprint, strict-UTF-8 document, and hunk (including bounded unique relocation) before any destination mutation. `dryRun` performs the same parse/plan without creating directories, staging, or writing. A real call stages every output and backup in the destination directory, then changes destinations sequentially. That per-call transaction is reversible but **observable and non-isolated**; it provides rollback semantics, not process-wide isolation or crash atomicity. Multiple `apply_patch` calls in one turn are independent transactions.
-- `apply_patch` requires a bound persisted session, assistant Entry, exact argument snapshot, model, and deterministic invocation identity; there is no stateless fallback. After filesystem commit, the exact bounded result remains reversible while the Grimoire appends deterministic assistant `ToolCall` then system `ToolResult` rows. `NewlyCommitted` / `RecoveredCommitted` retain the patch and trigger bounded artifact cleanup; `Failed` rolls it back; `Ambiguous` retains the applied patch plus normalized relative recovery artifacts and fails the turn. Caller cancellation propagates. Cancellation before or during commit first attempts reverse rollback under an independent cleanup deadline; cancellation during receipt handoff records any attached persistence classification carried by the exception rather than converting it to a normal tool result. Rollback also removes transaction-created parent directories deepest-first, but only after identity revalidation and only while empty; a no-follow directory handle is held from creation until completed rollback, irreversible classification, or terminal abandon so delete/recreate races cannot pass through Unix inode reuse. Terminal ambiguous and incomplete-rollback handoffs release the handle without deleting retained recovery artifacts. Replaced or newly populated directories are retained and reported for recovery. An incomplete rollback returns `status/code:"rollback_incomplete"` with deterministic affected/recovery paths. Results preserve manifest order in `files`; recovery arrays are normalized, distinct, and deterministically sorted. Output capping drops trailing file items first, then recovery-array tails, without losing status or total/omitted counts.
+- **`search_workspace`** accepts required `pattern`, `mode:"literal"|"regex"`, and `caseSensitive`, plus optional workspace-relative `root` and any number of slash-normalized/deduplicated `globs` and extension selectors that fit the retained request frame and per-pattern length. It decodes strict UTF-8 text, matches each logical line independently (patterns never span newlines), and returns 1-based line/column matches in deterministic path/line/column order. Literal matching is ordinal; regex is culture-invariant `NonBacktracking` first with a bounded interpreted fallback for unsupported features, never dynamic compilation. It is a direct filesystem search, not Weave/Divination. Strict-UTF-8 files stream through the complete contained traversal until caller cancellation; there is no elapsed/file/byte/traversal/match total. Each decoded logical line uses a pooled 256-Ki-character buffer; a longer valid line spills only that line as owner-only UTF-16, is searched through a read-only memory map with exact literal/full-.NET-regex semantics, hashes cursor identity incrementally, and is identity-cleaned after the line/search/cancellation. Spill failure returns `line_spill_unavailable` with temp-disk remediation rather than truncating the line. Each response carries at most 256 matches. Its opaque cursor binds the complete search arguments to the exact prior match identity (path, cumulative line context, column, and match length), not a mutable offset; earlier filesystem insertions cannot shift the next page, and a vanished checkpoint returns an actionable restart-without-cursor result. If structured result materialization trims a page, `nextCursor` advances only after the last match actually retained. Pattern/preview and each individual regex operation remain bounded. `list_directory` uses the same complete deterministic traversal with its existing protocol-owned response page/output boundary, iterative depth, and canonical directory-identity deduplication; a contained directory symlink is yielded once but never followed after its target identity has already been visited, so a cycle cannot manufacture infinite work. Its opaque continuation is bound to the original list scope and resumes after the exact last entry rather than a mutable numeric offset, so earlier insertions or deletions cannot shift the next page into skips or duplicates. If that checkpoint entry itself vanished, the tool returns an actionable restart-from-first-page error. The separate `GET /api/workspaces/{id}/files` contract returns at most 500 ordered entries and computes its page with a bounded 501-candidate heap; `nextCursor` uses the same scope-bound exact-last-entry model, and the CLI `workspace tree` follows pages to exhaustion.
+- **`apply_patch`** accepts a canonical unified diff plus optional `dryRun`. `UnifiedDiffParser` is pure and workspace-independent; patch bytes bound the one parser allocation, but file, hunk, and line counts do not add duplicate totals. `WorkspacePatchPlanner` processes originals per file and validates every normalized path, regular-file identity, fingerprint, strict-UTF-8 document, and hunk (including bounded unique relocation) before any destination mutation. It has no total elapsed or aggregate-original-input ceiling. `dryRun` performs the same parse/plan without creating directories, staging, or writing. A real call stages every output and backup in the destination directory, then changes destinations sequentially. Per-file input/output plus cumulative reversible-output/staging boundaries protect memory, disk, and rollback integrity. That per-call transaction is reversible but **observable and non-isolated**; it provides rollback semantics, not process-wide isolation or crash atomicity. Multiple `apply_patch` calls in one turn are independent transactions.
+- `apply_patch` requires a bound persisted session, assistant Entry, exact argument snapshot, model, and deterministic invocation identity; there is no stateless fallback. After filesystem commit, the exact bounded result remains reversible while the Grimoire appends deterministic assistant `ToolCall` then system `ToolResult` rows. `NewlyCommitted` / `RecoveredCommitted` retain the patch and trigger bounded artifact cleanup; `Failed` rolls it back; `Ambiguous` retains the applied patch plus normalized relative recovery artifacts and fails the turn. Caller cancellation propagates. Cancellation before or during commit first attempts reverse rollback under the independent `RecoveryTimeoutMilliseconds` cleanup deadline, which never shortens normal work; cancellation during receipt handoff records any attached persistence classification carried by the exception rather than converting it to a normal tool result. Rollback also removes transaction-created parent directories deepest-first, but only after identity revalidation and only while empty; a no-follow directory handle is held from creation until completed rollback, irreversible classification, or terminal abandon so delete/recreate races cannot pass through Unix inode reuse. Terminal ambiguous and incomplete-rollback handoffs release the handle without deleting retained recovery artifacts. Replaced or newly populated directories are retained and reported for recovery. An incomplete rollback returns `status/code:"rollback_incomplete"` with deterministic affected/recovery paths. Every file result remains materialized; the MCP output-byte serializer drops trailing response details first, then recovery-array tails, without losing status or total/omitted counts.
 - Supported patch records are strict-text create, modify, delete, and explicit rename, including new regular-file Unix mode and exact newline/BOM preservation. Binary, submodule, symlink, hard-linked, mode-only, copy, unsafe alias/topology/cycle, and unsupported metadata records fail before mutation. There is no durable transaction journal or startup crash recovery; same-directory artifacts are the bounded operator recovery surface if the process dies between sequential changes or before receipt classification.
-- **`workspace_check`** exposes closed `dotnet-build`, `dotnet-test`, and `dotnet-lint` profiles plus validated operator-owned profiles. The model chooses only a profile ID and allowlisted option values; the server renders every argv token and enforces `--no-restore`. This is still arbitrary-code execution: MSBuild tasks, source generators, analyzers, and tests come from the workspace. It therefore remains an intrinsic Ward tool while Wards are enabled.
-- `workspace_check` is advertised only when enabled on **macOS** with a working `/usr/bin/sandbox-exec` Seatbelt jail, trusted native `dotnet`, trusted selected SDK/runtime, and root-owned launch chain. Linux and Windows return unavailable and are not advertised in this release; `AllowUnsandboxedToolChildren` does not enable this tool. SDK selection safely snapshots the first `global.json` found while walking from the workspace root toward the filesystem root (64 KiB maximum), accepts `sdk.version`, the supported `rollForward` values, `allowPrerelease`, and at most 16 `sdk.paths`, then materializes a sanitized copy in an owner-only resolver root. Every search path must resolve beneath the pinned trusted `dotnet` root (`$host$` means that root); the trusted muxer's selected installed SDK must remain beneath an allowed SDK root. Without `global.json`, selection uses the pinned installation's `sdk` directory. The SDK entry point is captured and revalidated by both stable file identity and SHA-256 from the same open handle, so Unix inode reuse cannot disguise replacement. Source, the pre-existing global NuGet package cache, `dotnet`, SDK, and runtime are read-only. Restore-affecting project artifacts are validated and seeded into owner-only per-run output/intermediate/test/home/cache/temp roots outside the source; profiles never restore. Seeding has fixed fail-closed caps of 128 projects, 640 copied files, and 64 MiB copied bytes per run; restore-input discovery/fingerprinting additionally allows at most 64 inputs and 8 MiB aggregate input bytes per project. Executable, SDK, package-cache, launch-chain, selected SDK/runtime, and restore-input identities are revalidated immediately before spawn.
-- Seatbelt is a filesystem boundary only: network egress remains open. macOS process-group and descendant cleanup is best effort; an intentionally malicious detached descendant may survive and continue using allowed network egress to exfiltrate readable source/package data. Ward approval is the operator's acceptance of that residual risk, not a claim that fixed argv makes a repository trusted. A host-bound inference deadline must fit the clamped check timeout plus 30 seconds of cleanup grace; preflight is separately capped at 10 seconds. Tool-owned timeout kills the observed tree and returns `timed_out`; caller cancellation kills/cleans and propagates. Structured `msBuild`, `vsTest`, or `dotNetFormat` diagnostics are capped with typed counts and bounded stdout/stderr fallback. Statuses are `ok`, `failed`, `timed_out`, `invalid_request`, `unavailable`, `restore_required`, or `insufficient_deadline`; `GET /api/health` component `WorkspaceCheck` reports current eligibility.
+- **`workspace_check`** exposes closed `dotnet-build`, `dotnet-test`, and `dotnet-lint` profiles plus validated operator-owned profiles. The model chooses only a profile ID and allowlisted option values; the server renders every argv token and enforces `--no-restore`. Test-result parsing streams every validated top-level TRX document rather than stopping at 32; containment/no-follow identity and hardlink checks, per-document XML protections, aggregate output bytes, and diagnostic/result materialization bounds remain. This is still arbitrary-code execution: MSBuild tasks, source generators, analyzers, and tests come from the workspace. It therefore remains an intrinsic Ward tool while Wards are enabled.
+- `workspace_check` is advertised only when enabled on **macOS** with a working `/usr/bin/sandbox-exec` Seatbelt jail, trusted native `dotnet`, trusted selected SDK/runtime, and root-owned launch chain. Linux and Windows return unavailable and are not advertised in this release; `AllowUnsandboxedToolChildren` does not enable this tool. SDK selection safely snapshots the first `global.json` found while walking from the workspace root toward the filesystem root (64 KiB maximum), accepts `sdk.version`, the supported `rollForward` values, `allowPrerelease`, and at most 16 `sdk.paths`, then materializes a sanitized copy in an owner-only resolver root. Every search path must resolve beneath the pinned trusted `dotnet` root (`$host$` means that root); the trusted muxer's selected installed SDK must remain beneath an allowed SDK root. Without `global.json`, selection uses the pinned installation's `sdk` directory. The SDK entry point is captured and revalidated by both stable file identity and SHA-256 from the same open handle, so Unix inode reuse cannot disguise replacement. Source, the pre-existing global NuGet package cache, `dotnet`, SDK, and runtime are read-only. Restore-affecting project artifacts are validated and seeded into owner-only per-run output/intermediate/test/home/cache/temp roots outside the source; profiles never restore. Project, copied-artifact, restore-input, per-project input, and former 8 MiB XML totals are removed: discovery is lazy, XML is DTD-disabled and streamed, every validated input is fingerprinted into an owner-only append-only manifest, and copied bytes plus manifest records share the concrete Sanctum `MaxFileWriteMb` write policy. A measured write-policy failure occurs before unsafe parsing/copying and reports the exact rerun action. Executable, SDK, package-cache, launch-chain, selected SDK/runtime, manifest, and restore-input identities are revalidated immediately before spawn.
+- Seatbelt is a filesystem boundary only: network egress remains open. macOS process-group and descendant cleanup is best effort; an intentionally malicious detached descendant may survive and continue using allowed network egress to exfiltrate readable source/package data. Ward approval is the operator's acceptance of that residual risk, not a claim that fixed argv makes a repository trusted. Production `workspace_check` passes `Timeout.InfiniteTimeSpan`: builds, tests, and analyzers have no Arcanum-owned total duration. Caller/host cancellation kills the observed tree, performs the local 30-second identity-safe cleanup phase, and propagates. The bounded eligibility preflight remains separate from child execution. Structured `msBuild`, `vsTest`, or `dotNetFormat` diagnostics use allocation-safe typed pages/summary and explicit retrieval rather than shortening the child run. The runtime retains `timed_out` only for an injected test/host override; normal statuses are `ok`, `failed`, `invalid_request`, `unavailable`, or `restore_required`. `GET /api/health` component `WorkspaceCheck` reports current eligibility.
 
 When `WorkingDirectory` is empty, filesystem tools return a workspace-not-configured error; `ask_human`, Lore, and `search_archives` still work.
 
@@ -1561,7 +1588,7 @@ When `WorkingDirectory` is empty, filesystem tools return a workspace-not-config
 
 **Solution — two passes:**
 
-1. **Discovery (`SpellScanner`):** Scans `~/.config/arcanum/spells/` then the workspace for `SPELL.md` files. **Routing** uses **`ScanMetadataAsync`** (YAML frontmatter only — `name`, `description`) without reading spell bodies or `scripts/`; after **`SemanticRouter`** (or **`OverrideSpellName`**) picks a match, **`LoadFullAsync`** hydrates that spell’s full markdown, scripts list, and optional sidecar metadata. **Canonical sidecar filename is `SPELL.json`**; if absent, the scanner falls back to legacy **`SKILL.json`**; when both exist, **`SPELL.json` wins**. Creates, updates, version activation, clone, and import **write `SPELL.json` only** (they never create a new `SKILL.json`). **`ScanAsync`** (full parse) remains for spell CRUD and search APIs. Workspace spells override global spells on name collision (case-insensitive). Traversal is bounded — a canonical-path (symlink-resolved) visited set makes directory-symlink cycles terminate, plus code-owned step, depth, dependency, and declared-tool caps — and every `SPELL.md` / sidecar read is revalidated with handle-based identity (`WorkspacePathPolicy.RevalidatePathBeforeIo`), so a file whose symlink target escapes the workspace is rejected. Spell writes (`SPELL.md`, `SPELL.json`) are atomic (temp + flush + rename via `SpellAtomicFile`).
+1. **Discovery (`SpellScanner`):** Scans `~/.config/arcanum/spells/` then the workspace for `SPELL.md` files. **Routing** uses **`ScanMetadataAsync`** (YAML frontmatter only — `name`, `description`) without reading spell bodies or `scripts/`; after **`SemanticRouter`** (or **`OverrideSpellName`**) picks a match, **`LoadFullAsync`** hydrates that spell’s full markdown, scripts list, and optional sidecar metadata. **Canonical sidecar filename is `SPELL.json`**; if absent, the scanner falls back to legacy **`SKILL.json`**; when both exist, **`SPELL.json` wins**. Creates, updates, version activation, clone, and import **write `SPELL.json` only** (they never create a new `SKILL.json`). **`ScanAsync`** (full parse) remains for spell CRUD and search APIs, and search returns the complete deterministic match set rather than silently taking 1,000. Workspace spells override global spells on name collision (case-insensitive). Traversal is cancellation-aware and lazy with no total step or depth ceiling: a canonical-path (symlink-resolved) visited set makes directory-symlink cycles terminate, canonical containment is revalidated, and hidden/heavy directories plus per-file size, metadata, and declared-tool bounds remain. Every `SPELL.md` / sidecar read is revalidated with handle-based identity (`WorkspacePathPolicy.RevalidatePathBeforeIo`), so a file whose symlink target escapes the workspace is rejected. Spell writes (`SPELL.md`, `SPELL.json`) are atomic (temp + flush + rename via `SpellAtomicFile`).
 
 2. **Pre-flight routing — `SemanticSpellRouter` (§21.10):** `WizardIntelligenceProvider.ResolveRoutedSpellAsync` calls `SemanticSpellRouter.ResolveAsync` (scoped, Api) instead of `SemanticRouter.DetermineActiveSpellAsync` directly. `SemanticSpellRouter` decides, per turn, which of three modes applies:
    - **Disabled** (`Arcanum:Features:SemanticSpellRouting = false`, the default): returns `SpellRoutingDecisionMode.FullGrimoire` — the hub builds the router `IChatClient` (including the optional `Arcanum:FastModel` lease) and calls the static `SemanticRouter.DetermineActiveSpellAsync` with the full catalog.
@@ -1572,7 +1599,7 @@ When `WorkingDirectory` is empty, filesystem tools return a workspace-not-config
 
 3. **Main inference:** `SystemPromptBuilder` appends `### Active Operational Spell` with the spell's full markdown, plus per-spell `#### Available Spell Scripts` when scripts exist.
 
-**Arcane Resonance (spell dependencies):** After **`LoadFullAsync`** hydrates the primary spell, **`SpellDependencyResolver`** walks `SPELL.json` `dependencies` recursively (hard depth limit **3**, cycle- and duplicate-safe; missing names are logged and skipped). Resolved dependency markdown bodies are concatenated under `### Resonant Spells (Dependencies)` in the system prompt. Dependency edges are retained on the internal `ResolvedSpell` carrier for validation and debugging. The resolver performs its own **`ScanMetadataAsync`** pass (intentional double-scan — see `SpellDependencyResolver` source comment) so it remains self-contained when **`OverrideSpellPath`** bypasses routing's catalog scan.
+**Arcane Resonance (spell dependencies):** After **`LoadFullAsync`** hydrates the primary spell, **`SpellDependencyResolver`** walks every unique reachable `SPELL.json` dependency until exhaustion or caller cancellation. There is no declared-count, resolved-count, or graph-depth ceiling; the visited set remains cycle- and duplicate-safe, and missing names are logged and skipped. Resolved dependency markdown bodies are concatenated under `### Resonant Spells (Dependencies)` in the system prompt under the retained `MaxResonantBytes` provider-context boundary; `MaxDeclaredTools` still shapes one tool advertisement. Dependency edges are retained on the internal `ResolvedSpell` carrier for validation and debugging. The resolver performs its own **`ScanMetadataAsync`** pass (intentional double-scan — see `SpellDependencyResolver` source comment) so it remains self-contained when **`OverrideSpellPath`** bypasses routing's catalog scan.
 
 **`CodexReader`:** Global and workspace **`CODEX.md`** reads are cached in a process-lifetime concurrent dictionary keyed by path; entries invalidate when **`LastWriteTimeUtc`** changes.
 
@@ -1606,10 +1633,10 @@ After the dynamic system prompt, rehydrated attachments, and final tool set have
   Standalone context inspection can opt into auxiliary routing/retrieval. Unified `run --dry-run`
   always sets `noRetrieval` and is therefore a spend-free static plan, not an exact live payload;
   `PatternSnapshot` and `ChronosyncDelta` may still be added by the live CLI handoff.
-- **Delegated Mana:** `DelegatedManaTracker` is scoped through `SubagentExecutionAmbient` and charges provider-authoritative total tokens plus dynamically priced USD cost after every child model call. `BeginModelCall` enforces the delegated turn ceiling before provider I/O. Token/cost overrun is detected immediately after usage is available and terminates the child after its billable operation is recorded; `SubagentParentContextInjector` appends the exact system message `Subagent task failed: Delegated budget exhausted.` to the parent context. The tracker uses interlocked counters plus a cost lock so future parallel children cannot race the ceiling.
+- **Delegated Mana:** `DelegatedManaTracker` is scoped through `SubagentExecutionAmbient` and charges provider-authoritative total tokens plus dynamically priced USD cost after every child model call. Model-call count is telemetry, not a termination policy. Token/cost overrun is detected immediately after usage is available and terminates the child after its billable operation is recorded; `SubagentParentContextInjector` appends the exact system message `Subagent task failed: Delegated budget exhausted.` to the parent context. The tracker uses interlocked counters plus a cost lock so future parallel children cannot race the explicit ceiling.
 - **Native AOT:** tokenizer creation uses the **`Microsoft.ML.Tokenizers.Data.O200kBase`** data assembly; all new wire/audit/config contracts are source-generated and linker-safe.
 
-**Child context isolation:** `SubagentRunner` creates a new stateless request containing exactly one code-owned isolated system instruction, the delegated user prompt, and explicit file values. It carries no parent `SessionId`, transcript, `ContextSnapshot`, Chronosync delta, campaign, data streams, workspace root, Codex, session pins, Lexicon, Saga, attachment index, or semantic retrieval. When parent attachment content was materialized, every delegated file must name an attachment id in the parent turn's materialized allowlist; the effective child permission is therefore the intersection of parent authority and the child request. Child tools are disabled. `SubagentExecutionAmbient.MaxSubagentDepth = 1` prevents child-to-grandchild delegation even if a tool surface is accidentally widened later.
+**Child context isolation:** `SubagentRunner` creates a new stateless request containing exactly one code-owned isolated system instruction, the delegated user prompt, and explicit file values. It carries no parent `SessionId`, transcript, `ContextSnapshot`, Chronosync delta, campaign, data streams, workspace root, Codex, session pins, Lexicon, Saga, attachment index, or semantic retrieval. When parent attachment content was materialized, every delegated file must name an attachment id in the parent turn's materialized allowlist; the effective child permission is therefore the intersection of parent authority and the child request. Child tools are disabled, so recursive delegation is unavailable by construction; there is no separate arbitrary depth counter.
 
 ### 10.2.3.1 Performance findings
 
@@ -1678,13 +1705,13 @@ permissions remain defense in depth. Dedupe uses the plaintext SHA-256 retained 
 
 **Retrieval bounds:** attachment semantic admission clamps `MaxRetrievedChunks` (1–50), `MaxRetrievedAttachments` (1–100), `MaxRetrievedBytes` (1 KiB–16 MiB), and `MaxRetrievedTokens` (128–1,048,576), in addition to the shared 0–1 similarity threshold. Explicit sources are admitted first and do not consume these semantic limits.
 
-**Turn budget / injection:** the code-owned per-turn reference cap is shared by user `AttachmentReferences` and model `attach_session_file` / `refresh_session_file` injections. The unified ledger performs inject-once by stable identity and content/range across every explicit and semantic path; subsequent tool rounds cannot re-inject the same materialization. Image re-attach or model-tool refresh requires `Arcanum:Features:Scrying`, an allowed image MIME, and a model with `SupportsVision`; oversize images are **rejected, never truncated**. Operator refresh still applies Scrying/MIME/size policy, but it does not require a model capability because it queues no inference content.
+**Turn admission / injection:** user `AttachmentReferences` and model `attach_session_file` / `refresh_session_file` injections are identity/ownership validated iteratively without an incidental reference-count ceiling. Reference preparation retains ordered metadata rather than eagerly loading the aggregate payload. Once the provider and canonical model are resolved, references are opened one at a time, strict cancellation is preserved, and each candidate must pass the real provider-context gate before the next snapshot is opened. An over-context candidate fails before provider I/O and later references remain unread. The unified ledger performs inject-once by stable identity and content/range across every explicit and semantic path; subsequent tool rounds cannot re-inject the same materialization. Provider-context and physical byte protections remain authoritative. Image re-attach or model-tool refresh requires `Arcanum:Features:Scrying`, an allowed image MIME, and a model with `SupportsVision`; oversize images are **rejected, never truncated**. Operator refresh still applies Scrying/MIME/size policy, but it does not require a model capability because it queues no inference content.
 
 **Model tool:** `attach_session_file` is an **internal MCP** tool (attunement-aware). After a **successful** call (`!Failed && !Denied` — Ward/Sanctum denials and tool failures do not inject), a dedicated post-tool path materializes `TextContent` / `DataContent`, then atomically consumes the turn budget / inject-once mark, and queues content for the **next** inference round. User extras from a multi-tool model response are appended **only after** every tool call and tool result from that round are on the transcript (never interleaved between tool exchanges). Injected/rehydrated text is framed as untrusted DATA (adaptive fences); attachment headings harden hostile path characters. Unexpected post-processing failures follow the code-owned tolerant mode policy and never partially inject.
 
 `refresh_session_file` is the corresponding host-authorized live-source tool. Its hand-authored schema accepts exactly one `attachmentId` or `logicalKey`; session, source path, model, campaign, assistant Entry, and turn-visible attachment set are host-owned. It resolves only a Bound current-session attachment visible when the logical turn began. A case-insensitive logical-key match that names more than one case-distinct key fails as ambiguous. Snapshot-only, missing, inaccessible, unsafe, changed-workspace, or corrupt provenance fails closed with a structured result.
 
-The source resolver reconstructs only the stored workspace-relative provenance, verifies workspace identity and lexical/canonical containment, rejects a changed symlink target, compares path and open-handle identities, applies Sanctum to the actual canonical source, and reads from that handle under the maximum supported attachment read bound because the source kind may have changed. It reads the handle twice and requires identical hashes so a file changing during the read is rejected. Detected MIME reclassifies the current bytes as Text, Image, or Binary; the resulting kind's size, strict UTF-8, MIME, and Scrying policy are applied before persistence, with model vision checked only when a model-tool refresh will inject the image. A hash matching the latest Bound version reuses its row and encrypted blob; changed bytes use the existing session/logical-key gates to enforce `MaxBytesPerSession` and `MaxVersionsPerLogicalKey` while atomically inserting the next version with current hash, kind, MIME, length, source observations, timestamp, and assistant Entry binding.
+The source resolver reconstructs only the stored workspace-relative provenance, verifies workspace identity and lexical/canonical containment, rejects a changed symlink target, compares path and open-handle identities, applies Sanctum to the actual canonical source, and reads from that handle under the maximum supported attachment read bound because the source kind may have changed. It reads the handle twice and requires identical hashes so a file changing during the read is rejected. Detected MIME reclassifies the current bytes as Text, Image, or Binary; the resulting kind's size, strict UTF-8, MIME, and Scrying policy are applied before persistence, with model vision checked only when a model-tool refresh will inject the image. A hash matching the latest Bound version reuses its row and encrypted blob; changed bytes use the existing session/logical-key locks and measured `MaxBytesPerSession` protection while atomically inserting the next version with current hash, kind, MIME, length, source observations, timestamp, and assistant Entry binding. Version history has no incidental count ceiling.
 
 The structured result reports attachment id, logical key, version, creation/queue booleans, sanitized relative source path, hash, byte length, freshness time, and bounded error information. Refreshed text is untrusted DATA labeled with sanitized filename, logical key, version, and freshness. The original user Entry is never rewritten. `refresh_session_file` participates in Artifact Attunement and `ToolPolicy.ReadOnlyTools`; it is not intrinsically Warded or a default Forbidden Art, but operator-configured Forbidden Arts still apply. Sanctum always evaluates the hidden resolved source when a campaign exists. Successful refreshes emit native `attachmentRefreshed`; OpenAI projections intentionally ignore it.
 
@@ -1697,8 +1724,11 @@ invocation, selector, privacy, overwrite, and output behavior belongs to
 [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md).
 
 Direct inference attachment references remain opaque Bound attachment IDs owned by the effective
-Session. They enter the explicit-first materialization ledger and shared per-turn reference
-budget. Failed or cancelled chat attempts retain staged IDs; only a completed turn consumes them.
+Session. They enter the explicit-first materialization ledger without an incidental count ceiling.
+Metadata validation does not load their aggregate bytes: after provider/model resolution, each
+snapshot is streamed, admitted against the current candidate context, and appended in request order
+before the next reference is opened. Failed or cancelled chat attempts retain staged IDs; only a
+completed turn consumes them.
 
 **Metadata invariants:** `SessionAttachments` is installed by the embedded
 `20260719180000_AddSessionAttachments` script and accessed through scoped
@@ -1758,6 +1788,11 @@ Grimoire schema must recreate the database when installing the latest version.
   `SessionBound` / the first persisted user Entry promotes by copying bytes into the Session tree,
   then updates the rows to Bound in a DB transaction. This is not an atomic filesystem move.
 - Persistence completes before model inference; failure closes the turn before the model sees bytes.
+- Bound attachment metadata is read through stable `(LogicalKey, Version)` SQL keyset pages. The
+  all-version list API still iterates every page to preserve its established response contract, while
+  turn/tool hot paths request only SQL-selected latest rows. Prompt index construction applies its
+  logical-key `LIMIT` in SQL and pages only version integers for the selected keys; it never loads
+  every full attachment record merely to group and discard most of them in managed memory.
 - Fork pre-copies ciphertext, authenticates every chunk, and verifies the decrypted plaintext hash,
   then inserts the new Session, Entries, and attachment rows in one EF ambient transaction with raw
   SQL enlisted. A failed DB transaction deletes the partial fork tree.
@@ -1771,8 +1806,9 @@ Grimoire schema must recreate the database when installing the latest version.
 and matching pending directories after a code-owned retention window; removes Bound rows whose
 Session no longer exists before best-effort directory cleanup; deletes rows for missing/escaping
 files; and deletes unreferenced files under the attachment tree. Invalid `_pending` child names are
-warned and left untouched rather than passed to an identity-unsafe delete. Code-owned per-Session
-byte and per-logical-key version caps reject new writes; Bound files are not background-pruned.
+warned and left untouched rather than passed to an identity-unsafe delete. The code-owned per-Session
+byte boundary rejects only measured storage overflow; there is no per-logical-key version-count cap.
+Bound files are not background-pruned.
 Reconciliation also fails closed when source metadata is malformed or no longer resolves, updating
 only its availability/status fields and preserving an otherwise valid attachment snapshot.
 Encrypted-file validation authenticates every referenced snapshot; legacy plaintext and corrupt
@@ -1815,9 +1851,9 @@ Materialization happens afresh before every bound inference turn:
 - File, directory, and symbol/range paths are resolved relative to `PingRequest.WorkingDirectory`.
   Lexical workspace containment fails closed. File and symbol/range content is opened once through
   `SecureFileReader` with link following disabled and is accepted only when the opened handle is a
-  single-link regular file. Missing sources produce a labeled `Missing` block. Files over the
-  code-owned 64 MiB source-scan ceiling are rejected before reading. An accepted file is hashed
-  incrementally across the complete handle while retaining at most the pin output ceiling; a hash
+  single-link regular file. Missing sources produce a labeled `Missing` block. Total file length is
+  not an admission gate: an accepted file is hashed incrementally across the complete handle while
+  retaining at most the pin output ceiling; a hash
   differing from the optional pinned version produces `Modified` and injects only the current bytes
   with the new hash disclosed. Old bytes are never cached in the pin row.
 - Directory snapshots are deterministic ordinal path/size listings, never full recursive content,
@@ -1829,9 +1865,12 @@ Materialization happens afresh before every bound inference turn:
   Diagnostic text is stored as the stable target itself. URL metadata may be pinned and listed, but
   implicit materialization reports `Unsupported`; URL retrieval must enter through guarded web
   browsing and never an unrestricted `HttpClient`.
-- Each pin is limited to 64 KiB, each turn to 32 pins and 256 KiB. Truncation and omitted-pin counts
-  are explicit. These appended `TextContent` parts flow through the normal model-aware context/mana
-  estimator, so their tokens are visible without a parallel estimate.
+- Each pin is limited to 64 KiB and each turn to 256 KiB of materialized pin data. The existing
+  `sessions.maxPinnedEntries` durable-pin admission setting is outside issue #55 and remains
+  unchanged; materialization adds no separate pins-per-turn count ceiling and considers every
+  already-accepted pin. Truncation and byte-budget-deferred pin counts are explicit. These appended
+  `TextContent` parts flow through the normal model-aware context/mana estimator, so their tokens are
+  visible without a parallel estimate.
 
 Every materialized item is surrounded by an adaptive backtick fence and explicit source kind,
 label, stable id, freshness status, and diagnostic fields inside an
@@ -1886,9 +1925,9 @@ when the schema is unavailable. The FTS triggers copy `Name`, `Type`, and the ne
 `FactsJson`, which remains the source-generated durable fact array. Existing operator
 `MageSettings` Lore rows are not migrated into the net-new Lexicon.
 
-**Write path (`scribe_lexicon` / `delete_lexicon` MCP tools):** upsert by `NameNormalized` (trim + invariant) under `BEGIN IMMEDIATE` so concurrent appends cannot lose facts; append non-duplicate facts, cap counts/lengths (`LexiconLimits`); `FactsJson` is serialized via the source-generated `LexiconJsonContext` (AOT), `FactsText` is newline-joined for FTS. Type semantics: new + blank → `General`; existing + blank → keep; non-empty → refresh. `delete_lexicon` is a Forbidden Art; `scribe_lexicon` is ungated. Both follow `Arcanum:Features:Lexicon`.
+**Write path (`scribe_lexicon` / `delete_lexicon` MCP tools):** upsert by `NameNormalized` (trim + invariant) under `BEGIN IMMEDIATE` so concurrent appends cannot lose facts; append every non-empty non-duplicate fact at its complete length. The former silent 32-fact input total, 1,024-character truncation, and latest-256 eviction are removed. `FactsJson` is serialized via the source-generated `LexiconJsonContext` (AOT), `FactsText` is newline-joined for FTS. Name/type identity fields retain their explicit control-column bounds; request/body, SQLite, and provider-visible context boundaries own concrete resources instead of deleting durable facts. Type semantics: new + blank → `General`; existing + blank → keep; non-empty → refresh. `delete_lexicon` is a Forbidden Art; `scribe_lexicon` is ungated. Both follow `Arcanum:Features:Lexicon`.
 
-**Read path (preflight + retrieval):** `SemanticRouter` now returns `SemanticSpellRoutingResult(Spell, Entities)` — the JSON contract is `{ "spellName": "...", "entities": [...] }`. When the router ran but supplied no entities (or routing was bypassed: `OverrideSpellName`, pure embedding `DirectResonance`, no-spell user-facing turns), `WizardIntelligenceProvider` runs `LexiconEntityExtractor` — a low-token JSON preflight on the fast model (`{ "entities": [...] }`) — so memory retrieval stays available even when spell selection avoided an LLM call. The `ShouldUseLexiconForTurn` gate skips only true internal headless tasks (`SkipSpellRouting && DisableMcpTools && UnattendedMode` — Campaign Logger, Saga extraction). `MatchEntitiesAsync` is tiered: exact `NameNormalized IN (...)` hits first, then column-weighted FTS5 `MATCH 'Term' ORDER BY bm25(lexicon_fts, 3.0, 2.0, 1.0) ASC` (3.0 Name, 2.0 Type, 1.0 FactsText — no Lucene caret boosting inside MATCH), deduplicated by Id, exact hits before FTS hits. FTS failure degrades to a bounded `LIKE` fallback or empty matches.
+**Read path (preflight + retrieval):** `SemanticRouter` now returns `SemanticSpellRoutingResult(Spell, Entities)` — the JSON contract is `{ "spellName": "...", "entities": [...] }`. When the router ran but supplied no entities (or routing was bypassed: `OverrideSpellName`, pure embedding `DirectResonance`, no-spell user-facing turns), `WizardIntelligenceProvider` runs `LexiconEntityExtractor` — a 128-output-token JSON preflight on the fast model (`{ "entities": [...] }`) — so memory retrieval stays available even when spell selection avoided an LLM call. Every distinct non-empty entity returned within that provider response is preserved; the former post-response eight-entity truncation is removed. The `ShouldUseLexiconForTurn` gate skips only true internal headless tasks (`SkipSpellRouting && DisableMcpTools && UnattendedMode` — Campaign Logger, Saga extraction). `MatchEntitiesAsync` is tiered: exact `NameNormalized IN (...)` hits first, then column-weighted FTS5 `MATCH 'Term' ORDER BY bm25(lexicon_fts, 3.0, 2.0, 1.0) ASC` (3.0 Name, 2.0 Type, 1.0 FactsText — no Lucene caret boosting inside MATCH), deduplicated by Id, exact hits before FTS hits. FTS failure degrades to a bounded `LIKE` fallback or empty matches.
 
 **Injection (DATA, hardened):** `SystemPromptBuilder.Build` accepts `IReadOnlyList<LexiconEntryDto>? lexiconEntries` (default null) and renders `### Lexicon (Known Context)` at the top of the DATA block. Lexicon is model-writable and potentially stale/adversarial, so it is treated strictly as DATA — never instructions; the preamble already states DATA may be stale and never overrides INSTRUCTIONS. Facts are hardened: whitespace collapsed, newlines/control chars stripped, exactly one plain markdown bullet per entity (`- **Name** (Type): "Fact 1"; "Fact 2"`), so facts cannot create headings or break DCI structure. Total rendered bytes are capped by `LexiconMaxInjectedBytes`; entry count by `LexiconMaxMatchedEntries`. Retrieval/injection failures are logged and swallowed — Lexicon never fails an inference turn. Lexicon contents are not persisted into audit logs or exposed on `/v1` tool surfaces.
 
@@ -2096,9 +2135,11 @@ projections. An outer compatibility loop normally executes once and may restart 
 only when the provider rejects tool support before commitment. Its inner loop is the evidence-driven
 chat loop:
 
-1. Materialize history/current input, dynamic system prompt, rehydrated attachments, final tools,
-   and structured-output schema. Read-time compression may replace old transcript rows with the
-   Session summary in memory; it never deletes Entries and keeps tool-call/result halves paired.
+1. Materialize history/current input, dynamic system prompt, final tools, and structured-output
+   schema. Ordered explicit attachment references are streamed and admitted one at a time only
+   after the provider/model context is known; a rejected candidate prevents later reads and provider
+   I/O. Read-time compression may replace old transcript rows with the Session summary in memory;
+   it never deletes Entries and keeps tool-call/result halves paired.
 2. Before **every** provider call, including continuations/corrections, build a fresh complete
    `ContextTokenBreakdown`, trim only oldest complete in-memory tool exchanges if necessary, and
    reject overflow with `Hub.ContextBudgetExceeded`. Raise the current-call USD reservation through
@@ -2136,6 +2177,22 @@ Changing evidence may continue until terminal output, client-tool forwarding, ca
 cancellation, context admission, or cost admission. Progress-sensitive loops stop on repeated state,
 not a public attempt counter. Physical transport/process cleanup deadlines remain local bounds, not
 workflow ceilings.
+
+The terminal reason is explicit and projection-independent:
+
+| Terminal reason | Evidence and continuation |
+|---|---|
+| `completed` / `client_tool_forwarded` | The model produced terminal output or handed actionable tools to the client. |
+| `cancelled` | The owning caller or host token cancelled; cleanup and durable state classification finish before cancellation is rethrown. |
+| `explicit_budget` | The response reports the operator-owned token/cost policy and measured or reserved usage needed to change or resume it. |
+| `provider_or_context_boundary` | The response names the provider/model request fact or context admission boundary and the smaller-request, compaction, or model-selection action. |
+| `safety_or_integrity_boundary` | The response names the Ward, Sanctum, containment, protocol, or integrity owner and the safe operator action; it never silently bypasses the boundary. |
+| `no_progress` | The same normalized state recurred without new evidence. The trace records the progress signature so tests can reproduce the stop without sleeps. |
+
+Buffered and streaming projections share this semantic loop and therefore stop for the same reason.
+A retained boundary error identifies the owner, the safe measured value and limit when applicable,
+whether state was saved/checkpointed, and the exact retrieval, continuation, configuration, or
+recovery action.
 
 #### 10.7.4 Ward/Sanctum order and tool persistence
 
@@ -2306,10 +2363,13 @@ become `ReconciliationRequired`, never guessed success. `BudgetReservationRecove
 first concrete shared handler and calls the reservation service's idempotent release transition.
 
 Host startup runs reconciliation after Grimoire migration and before subsequently registered
-durable workloads. It examines at most 100 operations with concurrency 4 and a 10-second total
-budget. If optional recovery exceeds that budget, startup continues in explicit degraded mode and
-operators run `arcanum operation reconcile`; the host never claims that deferred work completed.
-Manual reconciliation examines at most 500 operations with concurrency 4.
+durable workloads. Recovery uses 100-operation query pages and concurrency 4; the page size is not
+a total scan ceiling. Startup waits up to 10 seconds for readiness. If work remains, startup
+continues in explicit degraded mode and immediately keeps checkpointed reconciliation running on a
+periodic background loop until recovery completes or the host shuts down; it never claims deferred
+work completed. Manual `arcanum operation reconcile` processes every recoverable page with the same
+bounded concurrency before returning. Unsupported/corrupt checkpoints still require operator repair
+rather than endless automatic retries.
 
 All `/api/operations*` routes inherit `/api` API-key authentication and rate limiting. Operator
 commands are `arcanum operation list [--kind …] [--state …]`, `show <id>`, `cancel <id>`,
@@ -2386,7 +2446,28 @@ The tool accepts arguments in **either** of two forms:
 
 **Child environment:** before spawn, `execute_command` and `run_spell_script` strip `ARCANUM_*` secret/config vars and loader/runtime hijack variables from the inherited environment while preserving `PATH`/`HOME`. MCP stdio servers use the same absolute-deny rules plus optional per-server `inheritEnv` (§5.6 / MCP host).
 
-`execute_command` and `run_spell_script` both read stdout/stderr through a `ReadStreamCappedAsync` helper that enforces the code-owned combined output cap, split evenly per stream. Beyond the cap, the stream is silently closed and a `[truncated: exceeded N bytes]` marker is appended. UTF-8 boundary safety is preserved by `ChooseSafeCharCount`. This prevents a verbose tool from exhausting host memory.
+`execute_command` reads stdout/stderr through `CappedChildProcessRunner` with a bounded in-memory
+preview split across the streams. Crossing that preview never discards the rest: decoded UTF-8
+output text is re-encoded while the process runs into per-MCP-connection private artifacts under a
+`0700` directory with `0600`
+files on Unix. The result returns an opaque handle, the artifact-backed stream names, and exact
+instructions to call attuned `read_command_output` from offset `0` and then each `nextOffset`.
+Pages use strict UTF-8 boundaries and `RandomAccess`; `maxBytes` is bounded by
+`ToolOutputCapBytes` and the existing JSON-RPC line-frame budget, so it limits one allocation/frame
+rather than total diagnostics. Handles are not paths. Registered files stay open with
+`FileOptions.DeleteOnClose`; consuming a stream's final page immediately closes and deletes that
+stream, and the opaque handle expires after all available streams finish. Connection disposal and
+abrupt process exit remain cleanup backstops (at most the empty temporary root may remain), while
+caller cancellation/failure removes partial spills. Complete stdout and stderr share the existing
+explicit Sanctum `ResourceLimits.MaxFileWriteMb` operator budget. Crossing it kills the observed
+process tree, deletes partial artifacts, and reports the owner, measured bytes, limit, saved state,
+and exact action to rerun quietly or raise the policy. Allocation/disk/write failure likewise fails
+closed instead of truncating. There is no separate product-owned total artifact quota.
+Attunement that admits `execute_command` automatically admits its continuation tool.
+
+`run_spell_script` uses the same bounded UTF-8-safe in-memory projection but does not publish an MCP
+connection artifact handle. Its truncation marker therefore remains an explicit provider-context
+projection boundary rather than an assertion that a complete command artifact exists.
 
 **External MCP:** `McpBridgeTool` / `McpToolResultFormatter` apply the same **`ToolOutputCapBytes`** limit to bridged `tools/call` text results. `McpClient` bounds `tools/list` tool descriptions (8 KiB UTF-8) and input schemas (64 KiB UTF-8; oversized schemas fall back to an empty object schema).
 
@@ -2567,10 +2648,10 @@ Creates a brand-new session that is an editable, independent branch of an existi
 - The new session's **`ForkedFromSessionId`** is set to the source session's id, recording lineage; **`TotalTokensUsed`** starts at the sum of the copied entries' token usage (not the source's running total) and **`UnsummarizedEntryCount`** starts fresh.
 - `SessionSummaryDto.ForkedFromSessionId` exposes the same lineage in session-query results so clients can render branches while retaining the primary `UpdatedAt DESC` order.
 - **Attachments:** copies **Bound** attachments into a new byte tree under the fork session id (new attachment ids; remapped `EntryId`s). Full fork includes Bound rows with `EntryId` null; a cutoff fork (`upToEntryId`) copies only rows whose non-null `EntryId` is among the copied entries. Bytes are pre-copied and hash-verified before the DB write; `Session` / `Entries` / `SessionAttachments` insert in one EF ambient transaction (raw SQL enlisted).
-- **Fork depth guard:** the lineage chain (`ForkedFromSessionId` walked back to a root) uses a code-owned depth cap. Exceeding it returns **409** `Session.ForkDepthExceeded` — protecting against unbounded fork chains inflating storage and lineage-walk cost.
-- Forking a session that is already at the code-owned entry cap fails the same way a normal append would (`Session.TooManyEntries`).
+- Fork lineage has no product-owned depth ceiling. Every successful branch still copies only the selected source snapshot, validates attachment/source identity, commits transactionally, and honors caller cancellation; ancestry depth alone is not a resource or integrity failure.
+- Forking a long session uses the same paged source read and transactional copy contract; it is not rejected because the source crossed a total entry count.
 
-Fork-specific error codes: `Session.NotFound` (source missing), `Session.EntryNotFound` (`upToEntryId` invalid or from another session), `Session.ForkDepthExceeded`.
+Fork-specific error codes: `Session.NotFound` (source missing), `Session.EntryNotFound` (`upToEntryId` invalid or from another session).
 
 **Command Center workflow:** `/fork` creates a complete branch; `/fork at` uses the selected
 entry as the inclusive cutoff (the explicit-id form is retained for scripts); `/fork alternative`
@@ -2579,10 +2660,10 @@ after the branch opens. `/branch parent` and `/branch child` navigate visible li
 session list use compact `⑂` markers. Before copying at least ten attachments or 10 MiB, the
 operator must explicitly continue with `/fork confirm`. Fork requests run asynchronously, and the
 active binding is changed only after the fork's detail, entries, and attachment metadata reload
-successfully. Depth, missing-cutoff, and attachment-copy failures provide recovery guidance and
+successfully. Missing-cutoff and attachment-copy failures provide recovery guidance and
 leave the source transcript selected.
 
-**Error codes (§11.16 overall):** `Session.NotFound`, `Session.EmptyContent`, `Session.Archived`, `Session.InvalidStatus`, `Session.EntryNotFound`, `Session.ForkDepthExceeded`.
+**Error codes (§11.16 overall):** `Session.NotFound`, `Session.EmptyContent`, `Session.Archived`, `Session.InvalidStatus`, `Session.EntryNotFound`.
 
 **Key types:** `Session`, `Entry`, `ISessionRepository`, `SessionRepository`, `SessionEventHub`, `SessionSettings`, `ForkSessionRequest`, The Forge DTOs under **`Core.TheForge`**.
 
@@ -2729,35 +2810,42 @@ command syntax and options belong to
 **Layering note (why the processor lives in the Api project, not Infrastructure):** every other background poller (`EntryWeavingService`, `SagaExtractionService`, `UnseenServantService`, ...) lives in `RetroDownfall.Arcanum.Infrastructure`. `BatchProcessingService` is the one exception — it must call `IArcanumIntelligenceProvider.ExecutePromptAsync` and construct/parse the `/v1` OpenAI DTOs (`OpenAiChatRequest`/`OpenAiChatResponse`/the JSONL wrapper types), all of which live in the **Api** project, and the dependency direction only ever goes Api → Infrastructure. Rather than move those DTOs down into Core (a large, unrelated refactor) or duplicate them, `BatchProcessingService` is registered and hosted from the Api project (`ApiBootstrapper.AddArcanumApiServices`, `services.AddHostedService(sp => sp.GetRequiredService<BatchProcessingService>())`), exactly mirroring how `IArcanumIntelligenceProvider`'s own concrete implementation (`WizardIntelligenceProvider`) is Api-hosted despite the interface living in Core.
 
 **Endpoints** (metadata CRUD only — see below for the actual JSONL processing):
-- **`POST /v1/batches`** — body `{input_file_id, endpoint, completion_window}` (`completion_window` is accepted but not enforced; expiry is code-owned). Validates `input_file_id` resolves to an existing uploaded file (§11.20) and `endpoint` equals `/v1/chat/completions`. The final conditional insert rechecks that metadata atomically with creating the `Batches` row; if a concurrent file deletion committed after preliminary validation, creation returns the same **404** `not_found` input-file response and leaves no batch row. Otherwise it creates `status: "validating"` and returns immediately — **200** + `OpenAiBatchObject`. The actual processing happens out-of-band.
-- **`GET /v1/batches/{id}`** — current status + `request_counts`; **404** for unknown/malformed id.
-- **`GET /v1/batches?status=`** — list, optional status filter; `{object: "list", data: [...], has_more: false}` (`has_more` is always `false` — no pagination cursor yet).
+- **`POST /v1/batches`** — body `{input_file_id, endpoint, completion_window}` (`completion_window` is accepted for OpenAI wire compatibility but is metadata only; it is not a destructive total deadline). Validates `input_file_id` resolves to an existing uploaded file (§11.20) and `endpoint` equals `/v1/chat/completions`. The final conditional insert rechecks that metadata atomically with creating the `Batches` row; if a concurrent file deletion committed after preliminary validation, creation returns the same **404** `not_found` input-file response and leaves no batch row. Otherwise it creates `status: "validating"` and returns immediately — **200** + `OpenAiBatchObject`. The actual processing happens out-of-band.
+- **`GET /v1/batches/{id}`** — current status + durable `request_counts`; **404** for unknown/malformed id. Metadata reads never reopen input/output/error artifacts.
+- **`GET /v1/batches?status=&limit=&after=`** — newest-first metadata list. `status` is optional, `limit` defaults to 20 and may be 1–100, and `after` is the opaque status-bound `(CreatedAt, Id)` keyset cursor returned as `next_cursor`. The response is `{object: "list", data: [...], has_more, next_cursor}`. A malformed or status-mismatched cursor returns an actionable **400** restart error; identical timestamps remain stable through the identity tie-breaker.
 - **`POST /v1/batches/{id}/cancel`** — sets `status: "cancelled"` if not already terminal; idempotent (cancelling an already-terminal batch just returns its current state, matching OpenAI rather than erroring on a double-cancel). `BatchProcessingService`'s cancellation watcher (below) observes this and stops in-flight processing promptly.
 - **`POST /v1/batches/{id}/reset`** — operator recovery via shared `IBatchRecoveryService`: resets a batch stuck in `in_progress` back to `validating` (CAS) so the background processor will pick it up again. Rejects with **409** if `BatchProcessingService` currently has the batch in flight (best-effort race window; the real guard is the service's `_inFlight.TryAdd` when it actually starts processing). Rejects with **400** if the input file metadata or on-disk file is missing, because the batch cannot be safely reprocessed. This is an Arcanum extension, not an OpenAI standard route.
 
 **Wire id scheme:** `"batch_{guid:N}"` (underscore, matching OpenAI's real batch ids — distinct from `/v1/files`' hyphenated `"file-{guid:N}"`).
 
-**`request_counts` computation:** there are no dedicated count columns on `Batches` (`Id,
-InputFileId, Endpoint, Status, CreatedAt, CompletedAt, OutputFileId, ErrorFileId`).
-`BatchRequestCounter` computes `{total, completed, failed}` on every `GET` by opening authenticated
-plaintext streams for the encrypted input/output/error artifacts: `total` = non-empty input line
-count; `completed`/`failed` = outcome counts parsed from the output file's
-`BatchJsonlResponseLine.Error` (`null` → completed, populated → failed) plus parse-failure lines in
-the error file. Best-effort — a missing, unreadable, unauthenticated, or undecryptable file
-contributes `0` rather than erroring the metadata `GET`.
+**`request_counts` computation:** `Batches` stores nonnegative 64-bit
+`TotalRequestCount`, `CompletedRequestCount`, and `FailedRequestCount` columns with
+`completed + failed <= total`. Canonical SQLite checkpoint triggers increment `total` exactly once
+when a line is first claimed and increment its completed/failed outcome exactly once when that
+checkpoint becomes terminal. Retried idempotent transitions cannot double-count. `GET`, list,
+cancel, and reset project these durable counters without decrypting or recounting artifacts, so
+metadata remains available after result publication, artifact cleanup, or a large catalog history.
 
 **Startup recovery:** `BatchProcessingService.StartAsync` calls
 `IBatchRecoveryService.ReconcileStrandedAsync` before Kestrel accepts work. Every DB-stranded
 `in_progress` batch is CAS-transitioned: → `validating` only when input metadata exists and the
 complete encrypted input authenticates; else → `failed` (reason logged only — no failure-reason
-column). Same recovery path powers `/reset`.
+column). Before resumption, `SealInterruptedLinesAsync` converts any per-line `Dispatched` state
+without a terminal result into an explicit `batch_interrupted_after_dispatch` output. It never
+replays an ambiguously completed provider call. The same recovery path powers `/reset`.
 
 **`BatchProcessingService` (background processor):**
 - Polls every 5 seconds via `PeriodicTimer` (same shape as `UnseenServantService`/`EntryWeavingService`).
-- **Expiry sweep (every tick):** any non-terminal batch (`validating`/`in_progress`) older than the code-owned expiry is expired. If the batch is **not** currently in-flight in the processor, it is force-marked `status: "expired"` and its input/output/error files are deleted from disk (best-effort — a delete failure is logged and does not block the status update). If the batch **is** in-flight, the expiry sweep signals that batch's processing cancellation token and does **not** delete files; the processor/finalizer marks `expired` and performs file cleanup after cancel completes.
-- **Dispatch:** picks up `validating` batches, bounded by `Arcanum:Execution:MaxConcurrentBatches` across the whole server (tracked in an in-process `ConcurrentDictionary`). Crash mid-batch leaves `in_progress` until startup reconcile or `/reset`.
+- **No age expiry:** queued and progressing batches have no Arcanum-owned wall-clock lifetime. Age alone never cancels work or deletes input/output. Explicit `POST .../cancel` remains authoritative; terminal artifacts follow the configured retention policy. Host shutdown leaves the durable `in_progress` row intact, and startup reconciliation returns it to safe processing state when its input still exists rather than misclassifying shutdown as user cancellation.
+- **Dispatch:** computes free `Arcanum:Execution:MaxConcurrentBatches` slots, selects only that many oldest `validating` rows with `(CreatedAt, Id)` ordering, and repeats on later ticks. Running concurrency stays bounded without loading the complete queue; continuous arrivals cannot starve older work. Crash mid-batch leaves `in_progress` until startup reconcile or `/reset`.
 - **Per-batch processing:** sets `status: "in_progress"`, authenticates and **streams** the decrypted
-  input line-by-line (does not load the entire JSONL into memory), and parses each as a
+  input byte stream into internal 64-line checkpoint pages (does not load the entire JSONL into
+  memory and has no total request-count ceiling). One active physical record keeps at most a pooled
+  256 KiB prefix before spilling to an owner-only temporary file and parsing through the same open
+  handle; spill failures become precise per-line physical errors and later records continue. The
+  provider request DTO necessarily materializes one record, so a retained 64 MiB UTF-8 record
+  boundary reports measured bytes, saved checkpoint state, the next line, and the split/retry action
+  without stopping unrelated lines. Each accepted record parses as a
   `BatchJsonlRequestLine` (OpenAI's real wrapper shape:
   `{custom_id, method, url, body: OpenAiChatRequest}` — not a bare chat request). A line that fails
   to parse is recorded to the **error file** as `{"line": N, "error": "..."}`
@@ -2771,19 +2859,32 @@ column). Same recovery path powers `/reset`.
   `error: null`) or the inference call itself failed (`response: null`, `error` populated) — only
   JSON-parse failures go to the error file, matching OpenAI's own input-file-vs-per-request-error
   distinction.
+- **Checkpoint accounting:** before each page, the processor resolves every valid line's model and
+  completion/reasoning request and reserves that page against the explicit token/cost policy. It
+  durably marks each line in canonical `BatchLineCheckpoints` before provider dispatch, atomically
+  stores its terminal output-or-error JSON, records actual provider usage, and reconciles the
+  reservation. `PreparePendingPageAsync` skips completed lines, and
+  `PublishCheckpointArtifactsAsync` streams completed checkpoints in input-line order into fresh
+  encrypted artifacts. The same idempotent checkpoint transitions advance durable 64-bit request
+  counters. Checkpoints delete only after terminal batch/file linkage. A budget rejection
+  stops before the rejected page, preserves and publishes all prior output, writes an actionable
+  error naming the policy and first remaining line, and marks the batch failed; the operator can
+  raise the policy and submit the remaining lines. The 64-line page is an allocation/accounting
+  slice, never a total batch limit.
 - **Bounded per-batch concurrency:** valid lines within one batch run through `Parallel.ForEachAsync` bounded by `Arcanum:Execution:MaxConcurrentRequestsPerBatch`, so one large batch can never monopolize the shared inference hub.
-- **Mid-batch cancellation:** a side task polls the Grimoire every 2 seconds for this batch's `status` flipping to `"cancelled"` (set by `POST .../cancel`) and, if seen, cancels a linked `CancellationTokenSource` so `Parallel.ForEachAsync` stops promptly instead of draining every remaining line first; whatever output/error accumulated up to that point is still written and attached.
-- **Finalization:** writes output/error JSONL **incrementally into owner-only encrypted stage
-  envelopes** as lines complete (bounded per-line/chunk memory; no plaintext temp), verifies and
+- **Mid-batch cancellation:** a side task polls the Grimoire every 2 seconds for this batch's `status` flipping to `"cancelled"` (set by `POST .../cancel`) and, if seen, cancels a linked `CancellationTokenSource` so `Parallel.ForEachAsync` stops promptly instead of draining every remaining line first. Every already-claimed unresolved line is first sealed as `batch_interrupted_after_dispatch`, then all terminal checkpoint output/error is published and attached before checkpoint cleanup; Arcanum never silently drops or replays an ambiguous provider call.
+- **Finalization:** streams ordered durable checkpoint payloads into fresh owner-only encrypted
+  output/error stage envelopes (bounded per-line/chunk memory; no plaintext temp), verifies and
   moves non-empty ciphertext into the uploaded-files directory via the same repository as
   `/v1/files` (`purpose: "batch_output"` / `"error"` and the distinct `BatchArtifact` derived key),
-  then sets the terminal status (`completed` or `cancelled`) plus
-  `CompletedAt`/`OutputFileId`/`ErrorFileId`. An unhandled exception anywhere in this pipeline is
-  caught at the top level and marks the batch `failed`.
+  then atomically sets the terminal status (`completed`, explicit policy `failed`, or `cancelled`) plus
+  `CompletedAt`/`OutputFileId`/`ErrorFileId` before deleting line checkpoints. An unhandled exception
+  before safe publication leaves the batch/checkpoints durable in `in_progress` for startup
+  reconciliation instead of terminalizing unrecoverable state.
 
 **Error codes:** `Batches.NotFound` (404), `Batches.InvalidEndpoint` (400), `Batches.InputFileNotFound` (404) — registered in the shared catalog (API §8.23) for consistency, even though the `/v1/batches` handlers construct their OpenAI-shaped error envelopes directly like every other `/v1` endpoint.
 
-**Key types:** `BatchesSettings`, `IBatchRepository`, `BatchRecord`, `BatchStatuses`, `BatchRepository` (Infrastructure), `BatchProcessingService`, `IBatchRecoveryService` / `BatchRecoveryService`, `BatchRequestCounter`, `OpenAiBatchRequest`, `OpenAiBatchObject`, `OpenAiBatchRequestCounts`, `OpenAiBatchListResponse`, `BatchJsonlRequestLine`, `BatchJsonlResponseLine`, `BatchJsonlResponseBody`, `BatchJsonlError`, `BatchJsonlParseError`.
+**Key types:** `BatchesSettings`, `IBatchRepository`, `BatchRecord`, `BatchListPage`, `BatchListPosition`, `BatchLineCheckpoint`, `BatchRequestOutcome`, `BatchStatuses`, `BatchRepository` (Infrastructure), `BatchProcessingService`, `IBatchRecoveryService` / `BatchRecoveryService`, `BatchJsonlRecordReader`, `BatchListCursorCodec`, `OpenAiBatchRequest`, `OpenAiBatchObject`, `OpenAiBatchRequestCounts`, `OpenAiBatchListResponse`, `BatchJsonlRequestLine`, `BatchJsonlResponseLine`, `BatchJsonlResponseBody`, `BatchJsonlError`, `BatchJsonlParseError`.
 
 **Native CLI projection:** The batch CLI remains a thin client over `/v1/batches` and the
 file-artifact routes. Local JSONL preflight is deliberately shallow, server validation remains
@@ -2796,8 +2897,10 @@ path. Complete command syntax, polling options, and JSON behavior belong to
 **Purpose and gate:** the provider-neutral `IWebResearchProvider` contract supports synthesized
 search and direct URL reading without an MCP server or embedded browser. The family is disabled by
 default and gated by `Arcanum:Features:WebBrowsing`. `Arcanum:Integrations:WebResearch` selects the
-search provider and `sonar` / `sonar-pro` model; timeouts, redirect counts, body caps, result caps,
-and citation/link limits remain code-owned.
+search provider and `sonar` / `sonar-pro` model. Redirect, per-read body/frame, and per-provider-call
+result limits remain code-owned local protections; they neither cap total research passes nor hide a
+continuation. Connection/idle I/O deadlines protect transport resources without imposing a total
+research duration.
 
 **Tool surface:** new inference catalogs advertise `web_search({query})` and
 `read_url({url})`. Both are hand-authored `AIFunction` schemas and return source-generated,
@@ -2819,12 +2922,15 @@ use the provider's `-domain` notation); the configured citation ceiling remains 
 server renderer is configured. No client-side renderer or egress bypass exists.
 
 `POST /api/web/research` is the only research orchestrator. `WebResearchWorkflowService` validates
-1–20 sources, 1–5 hops, 64–32,768 synthesis tokens, and a nonnegative optional reported-cost
-ceiling. Before any provider search it also resolves Campaign-only context to the server-host
+an optional positive source target, a positive explicit synthesis-token budget, and a nonnegative
+optional reported-cost ceiling. Before any provider search it also resolves Campaign-only context to the server-host
 working directory, validates continuing/attachment target Sessions, and runs the prospective
 synthesis `PingRequest` through the shared native preflight pipeline. It emits NDJSON `limits`,
-`progress`, `result`, or `error` frames. Search hops execute on the server, citation URLs are
-deduplicated before at most `maxSources` static reads, and the final
+`progress`, `result`, or `error` frames. Research passes execute on the server and citation URLs are
+deduplicated. Each provider search keeps its own result-page bound, but another pass begins while it
+discovers at least one new URL. Research stops when the optional `sourceTarget` is reached, a pass
+discovers no new URLs, the caller/host cancels, reported cost exceeds an explicit ceiling, or a
+provider/safety failure occurs. The selected citations are then read and the final
 model call receives a bounded untrusted-data prompt with all tools disabled. The synthesis model,
 token accounting, inference audit (`requestType:research`), and optional existing `SessionId` stay
 inside the host. The request also accepts effective `WorkingDirectory` / `CampaignId`, current-turn
@@ -2832,9 +2938,11 @@ inside the host. The request also accepts effective `WorkingDirectory` / `Campai
 and penalty controls. The CLI normalizes `json` to `json_object` before dispatch. Those values are carried into the
 preflighted final synthesis `PingRequest`; live text/image values use the normal attachment pipeline
 and are persisted and Session-bound when Attachments are enabled, or remain in-memory when disabled.
-The research `tokenBudget` remains its output-token authority. Reported search-provider cost is checked
-between hops; no additional hop begins after the ceiling is exceeded. Progress stages are
-`searching`, `fetching`, `rendering`, and `synthesizing`.
+The research `tokenBudget` remains its explicit output-token authority. Reported search-provider
+cost is checked between passes; no additional pass begins after the ceiling is exceeded. Progress
+stages include `searching`, `source_target_reached`, `source_exhausted`, `fetching`, `rendering`,
+and `synthesizing`. Pass number, unique-source count, target/no-progress reason, and final synthesis
+state make long work and termination observable.
 
 The CLI reserves stdout for the final payload and stderr for visible limits, progress, save/attach
 receipts, and errors, so piping remains deterministic. Terminal and Markdown outputs contain
@@ -2869,9 +2977,9 @@ CGNAT targets are rejected at connection time. `read_url` also validates the ini
 redirect before sending. `ToolExecutionPipeline` applies the campaign Sanctum network policy to
 model-supplied `read_url` targets and the legacy alias before egress.
 
-**Deadlines and errors:** each complete provider operation has a strict 15-second linked deadline,
-including credential resolution, redirects, headers, and bounded body reading; caller cancellation
-is propagated rather than relabeled. Stable `WebResearch.*` errors distinguish missing credential,
+**Deadlines and errors:** connection and idle I/O deadlines bound stalled transport work without
+putting a wall-clock ceiling around credential resolution, redirects, or bounded body streaming;
+caller cancellation is propagated rather than relabeled. Stable `WebResearch.*` errors distinguish missing credential,
 authentication-or-credits failure, provider-declared quota exhaustion, rate limiting, invalid
 response, timeout, invalid/blocked URL, redirect overflow, unsupported content, bot protection,
 JavaScript-only shells, and empty content. HTTP 403 and effectively empty application shells return
@@ -2883,7 +2991,8 @@ query text, URLs, response bodies, and credentials never become tags. Endpoint m
 starts `TelemetryService` before traffic is accepted. `WebResearchProviderCatalog` rejects
 duplicate names and is injected into the tools. Separate Perplexity and local HTTP named clients
 use the untrusted-egress handler with system proxies disabled (so DNS validation/pinning cannot be
-bypassed) and infinite client timeout because the linked operation-level deadline is authoritative.
+bypassed) and no factory-level total request timeout; their connection/idle I/O policies and caller
+cancellation remain authoritative.
 
 **Key types:** `IWebResearchProvider`, `IWebResearchProviderCatalog`, `WebResearchProviderCatalog`,
 `PerplexityWebProvider`, `LocalHttpWebProvider`, `WebResearchCredentialStore`,
@@ -2912,10 +3021,10 @@ bypassed) and infinite client timeout because the linked operation-level deadlin
 
 Collision behavior is fail-closed and provenance-preserving: blocked names remain blocked even on an external server; for an allowed name, `arcanum-internal` is removed before external candidate counting, multiple external providers require `serverName`, and the selected server-bound `AIFunction` is invoked directly rather than re-resolving the bare name on the merged inference surface.
 
-**Inherited caps (no new knobs):**
+**Inherited boundaries (no new knobs):**
 
 - **Output cap:** the code-owned MCP bridge output cap is enforced inside `McpBridgeTool` via `McpSecurityLimits.TruncateUtf8` (UTF-8-boundary-safe truncation with a `[truncated: exceeded N bytes]` marker). The diagnostic service detects that marker in the result text and sets `truncated: true` on the response.
-- **Timeout:** the code-owned MCP request timeout is enforced as a linked `CancellationTokenSource` around `AIFunction.InvokeAsync`; on expiry the service returns **504** `Mcp.DiagnosticTimeout` (the MCP SDK's own per-request timeout still applies underneath).
+- **Lifecycle and cancellation:** MCP initialization retains its 60-second default handshake interval and Streamable HTTP retains a 30-second default connection-establishment interval. Once connected, diagnostic and inference tool invocations have no Arcanum-owned total request deadline; they run until completion, terminal protocol/provider failure, or caller cancellation. Protocol framing, trust, output allocation, and server retirement remain independent boundaries.
 - **Auth:** inherits `X-Arcanum-Key` from the `/api` group filter — no unauthenticated access.
 - **Secrets:** exception messages are length-capped (512 chars) before being returned to the caller, as a defensive last step on the rare exception path. The MCP bridge already formats tool output, so this is not a substitute for the bridge's own handling.
 
@@ -3183,7 +3292,7 @@ dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj
   classification, bounded cancellation, and no generic duplicate append.
 - `WorkspaceCheckToolTests`: closed/custom profiles, `--no-restore`, reserved tokens, sanitized env,
   trusted executable/SDK/global.json/package identities, read-only roots, owner-only outputs,
-  seeding caps (128 projects / 640 files / 64 MiB per run; 64 inputs / 8 MiB per project), deadline
+  count-unbounded streamed restore seeding, owner-only input manifest, Sanctum byte policy, deadline
   admission/cleanup, diagnostic caps, timeout/cancel cleanup, macOS advertisement, Linux/Windows
   unavailability, open-network disclosure, and the unproved malicious detached-descendant boundary.
   Real process cases are macOS-capability-gated.
@@ -3223,9 +3332,9 @@ reinstall.
 | `SessionEndpointTests` | Entry-GUID `since` replays only later Entries; missing and foreign cursors return 404 with no leaked SSE headers; stable `Session.EntryNotFound` / `Session.InvalidStatus` constants. |
 | `CostCalculatorTests` | Cached tokens clamp to the prompt subset and use `CachedPer1M` (zero or nonzero); potential/actual savings use the nonnegative input-minus-cached rate delta. |
 | `PromptCachingChatOptionsAdapterTests` / `PromptCachePlannerTests` | Golden buffered/streaming root fields (`prompt_cache_key`, exact `in_memory`/`24h` retention), reasoning composition, unchanged ineligible bodies, contiguous-prefix planning, deterministic tool digests, stable keys, and plaintext exclusion. |
-| `LexiconServiceTests` | Case-insensitive create/upsert, nonduplicate fact append, `General`/keep/refresh type rules, per-upsert cap, delete/FTS removal, exact-before-FTS ranking with `bm25(...,3.0,2.0,1.0)`, fact-text hits, special-char sanitization, index refresh, and missing-name null. |
+| `LexiconServiceTests` | Case-insensitive create/upsert, complete fact preservation beyond the former input/length/retained totals, nonduplicate append, `General`/keep/refresh type rules, delete/FTS removal, exact-before-FTS ranking with `bm25(...,3.0,2.0,1.0)`, fact-text hits, special-char sanitization, index refresh, and missing-name null. |
 | Lexicon internal-tool tests | Enabled tools-list advertisement, disabled omission of Lexicon and legacy Lore tools, service-backed create/delete, and disabled tool error. |
-| `SemanticRouterTests` / `LexiconEntityExtractor` cases | Spell+entities result, entities surviving `NONE`, missing→empty, fenced/malformed JSON, no-call empty prompt, and cap/deduplication. |
+| `SemanticRouterTests` / `LexiconEntityExtractor` cases | Spell+entities result, every distinct parsed entity preserved beyond the former eight total, entities surviving `NONE`, missing→empty, fenced/malformed JSON, no-call empty prompt, and case-insensitive deduplication. |
 | `CliContractTests` / `DoctorCommandJsonTests` | Recursive global flag placement; stdout/stderr separation; ANSI stripping; one-document JSON wrapping; fail-closed redirected confirmation and `--yes`; closed exit codes; redacted network/unhandled failures; typed doctor JSON. |
 | `SystemPromptBuilderTests` / untrusted-fence tests | Lexicon DATA inclusion/omission, control/newline hardening, byte truncation, adaptive fences for Codex/Spell/instructions/Chronosync/summary/attachments, and sanitized Data Stream ids. |
 | `UnseenServantDaemonJobTests` | Deterministic bounded daemon-state name, enabled Lexicon state/instruction, disabled omission, and missing-state fail-open kickoff. |
@@ -3285,8 +3394,10 @@ breadth-first walk (same prune-before-descend shape as `WorkspaceIndexingService
 ignored directory segments (`bin`, `obj`, `.git`, `node_modules`, `.vs`, `.nuget`, `packages`, `dist`,
 `build`) and symlink-escaping subdirectories are skipped **before** descending; inaccessible directories
 are ignored; Hidden/System entries are skipped; symlink cycles terminate via a canonical visited-directory
-set; and `MaxEnumerationSteps` bounds total filesystem entries visited. Cooperative cancellation at three
-levels (enumeration loop, TOC building, Unknown sorting).
+set. There is no total entry-count ceiling: the contained walk continues until exhaustion or caller
+cancellation. Memory stays bounded by fixed signature buckets, top-recent Unknown projections, and the
+provider-context-sized table of contents rather than by silently dropping later evidence. Cooperative
+cancellation is checked at the enumeration loop, TOC building, and Unknown sorting.
 
 ### 15.4 Domain classification
 
@@ -3336,8 +3447,9 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   components before approving execution.
 - **The Weave's vector search has a managed fallback.** No sqlite-vec native asset ships by default.
   When `vec0` is unavailable, `DivinationService` uses SIMD-accelerated managed cosine search over
-  BLOB rows with a 50,000-row scan budget. Results can be incomplete after that budget; health,
-  `/api/meta`, and `arcanum doctor` report the active vector mode and budget.
+  every matching BLOB row with caller cancellation and a bounded streaming top-K heap. Health,
+  `/api/meta`, and `arcanum doctor` report the active vector mode; the compatibility row-budget
+  field is `0`, meaning no total row budget.
 
 ### 16.2 Persistence
 
@@ -3349,7 +3461,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   history-row insert in one `SqliteTransaction`. Scripts contain no `BEGIN`, `COMMIT`, or history
   insert. FTS backfills are idempotent, baseline `CREATE TABLE` / `CREATE INDEX` statements are
   guarded, and a failure rolls back both schema work and the history row so startup can retry.
-- **SQLite pragmas** (applied on every connection via **`SqliteConnectionPragmas`**): `journal_mode=WAL`, `busy_timeout=5000`, `foreign_keys=ON`, `synchronous=NORMAL`. WAL provides automatic crash recovery; write contention is retried via **`SqliteBusyRetry`** (bounded backoff on SQLITE_BUSY/locked). Its total-delay guard accumulates scheduled backoff durations instead of wall-clock elapsed time, so coverage profilers and runtime suspension cannot suppress a valid retry.
+- **SQLite pragmas** (applied on every connection via **`SqliteConnectionPragmas`**): `journal_mode=WAL`, `busy_timeout=5000`, `foreign_keys=ON`, `synchronous=NORMAL`. WAL provides automatic crash recovery; write contention is retried via **`SqliteBusyRetry`** with capped per-delay backoff on SQLITE_BUSY/locked until the transaction succeeds, a non-transient error occurs, or the caller cancels. Attempt count and total waiting time are observability, not arbitrary terminal ceilings.
 - **`Arcanum:Features:Conclave`** gates **The Conclave** cross-Apprentice delegation (the **`cast_sending`** tool and **`POST /api/apprentices/{id}/cast`**). Apprentice lineage (**`ParentApprenticeId`**) is persisted inside the existing **`CheckpointData`** JSON column — deliberately **no** EF migration or compiled-model regeneration, and no top-level SQL index.
 - **`cli-context.json`** is the owner-only, versioned local CLI preference document for active
   Campaign, Workspace, Model, and Session. It stores no secrets and has no server authority.
@@ -3431,7 +3543,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 
 ### 16.6 CLI UX surface (Spectre.Console + Command Center)
 
-- **Command Center** (bare interactive `arcanum`): Terminal.Gui fixed viewport; hard-modal arbitration (Wards > HumanPrompt); attachment `[Snapshot]`/`[Live]`/`[Stale]` badges, loaded/disk version metadata, watcher-driven backend revalidation, and `/attachments refresh <name>` when enabled (§10.2.5); `ARCANUM_NO_COMMAND_CENTER=1` escapes to usage.
+- **Command Center** (bare interactive `arcanum`): Terminal.Gui fixed viewport; hard-modal arbitration (Wards > HumanPrompt); attachment `[Snapshot]`/`[Live]`/`[Stale]` badges, loaded/disk version metadata, watcher-driven backend revalidation, and `/attachments refresh <name>` when enabled (§10.2.5); one 40-session or 200-entry view page with exact older/newer Ctrl+Page cursor/offset navigation and no durable-history total; `ARCANUM_NO_COMMAND_CENTER=1` escapes to usage.
 - **Explicit application entry:** `center` and `open center` reuse Command Center in-process.
   `open theforge|compendium|session|campaign|spell|prompt|apprentice` shares the normal resource
   selector, passes only server-owned identifiers in a versioned one-argument envelope, and keeps
@@ -3850,11 +3962,11 @@ All six capabilities are implemented (§21.1–§21.2 foundation; §21.6–§21.
 
 **Layering:** `IWeaveService` / `WeaveService` (**Api** — depends on `IEmbeddingGeneratorFactory` / OpenAI SDK packages, mirroring `ChatClientFactory`). `IDivinationService` / `DivinationService` + `WeaveSchemaInitializer` + `SqliteVecExtensionLoader` + `WeaveIndexAvailability` (**Infrastructure**). `EmbeddingBlobCodec` (**Core**).
 
-**`IWeaveService`:** `IsAvailable` from live `IOptionsMonitor` (`Enabled` + Provider + Model). Disabled → `Embeddings.FeatureDisabled` (no HTTP). Provider/timeout → sanitized `Embeddings.ProviderUnavailable`. `EmbedBatchAsync` sequential by `BatchSize`. General embedding inputs retain `ChunkAsync` sliding windows; workspace files use the deterministic line-preserving `WorkspaceCodeChunker` described in §21.7.
+**`IWeaveService`:** `IsAvailable` from live `IOptionsMonitor` (`Enabled` + Provider + Model). Disabled → `Embeddings.FeatureDisabled` (no HTTP). Provider failure → sanitized `Embeddings.ProviderUnavailable`. Embedding batches have no Arcanum whole-operation deadline: the caller cancellation token propagates directly through generator resolution and `GenerateAsync`. `EmbedBatchAsync` remains sequential by `BatchSize`, with provider request/chunk bounds and explicit reservation/usage reconciliation. General embedding inputs retain `ChunkAsync` sliding windows; workspace files use the deterministic line-preserving `WorkspaceCodeChunker` described in §21.7.
 
 **Factory:** resolves `Arcanum:Integrations:Embeddings:Provider`/`Model` as `OpenAICompatible` (including Ollama `/v1`); leases are cached for the process lifetime.
 
-**`IDivinationService.SearchAsync`:** callers pass vec0 table name + PK/embedding columns. If `WeaveIndexAvailability.IsVecAvailable`, vec0 KNN; else strip `_vec` and managed cosine over BLOB companion (`EmbeddingBlobCodec`, top-K heap, row budget). Never throws — sanitized `Result` failure.
+**`IDivinationService.SearchAsync`:** callers pass vec0 table name + PK/embedding columns. If `WeaveIndexAvailability.IsVecAvailable`, vec0 KNN; else strip `_vec` and stream managed cosine over every matching BLOB-companion row (`EmbeddingBlobCodec`, bounded top-K heap, caller cancellation, no total row budget). Never throws — sanitized `Result` failure.
 
 ### 21.2 Vector storage — vec0 acceleration with a managed fallback (always safe)
 
@@ -3869,45 +3981,44 @@ Per feature: durable **BLOB** table (always) + optional **`vec0`** virtual table
 Public opt-ins are `Arcanum:Features:Embeddings`, `Arcanum:Features:SessionSearch`,
 `Arcanum:Features:CodebaseRetrieval`, `Arcanum:Features:AttachmentRetrieval`, `Arcanum:Features:Saga`,
 `Arcanum:Features:SagaExtraction`, and `Arcanum:Features:SemanticSpellRouting`; provider/model/dimensions are under
-`Arcanum:Integrations:Embeddings` (§3.4). The same section exposes
-`CodebaseIndexing:WatcherDebounceMilliseconds` (default 300, clamp 50–5,000),
-`CodebaseIndexing:MaxWatchers` (default 32, clamp 0–128; zero disables watchers), and
-`CodebaseIndexing:ReconciliationIntervalMinutes` (default 60, clamp 1–1,440). File eligibility,
-traversal limits, and extraction/routing mechanics remain code-owned. `AttachmentIndexing` exposes
-hard limits for eligible bytes (1 KiB–20 MiB), extracted characters (1,000–1,000,000), chunk size
-(128–8,192), overlap (0–8,191 and always below effective chunk size), chunks per version (1–2,048),
-attachments per batch (1–100), queue capacity (1–10,000), retries (0–10), retry delay (1–300s),
-processing timeout (5–600s), and retrieved chunks (1–50). Validation requires provider/model facts
-whenever an embedding-backed feature is enabled.
+`Arcanum:Integrations:Embeddings` (§3.4). Watcher debounce/count/reconciliation, attachment
+extraction/chunking/queue/retry timing, indexing page/checkpoint sizes, and retrieval slice sizes are
+implementation mechanics, not public user restrictions. Internal bounds protect one allocation,
+queue, provider request, or checkpoint and continue through reconciliation or a later slice. Public
+validation requires provider/model facts whenever an embedding-backed feature is enabled.
 
 ### 21.4 Graceful degradation matrix
 
 | Condition | Behavior |
 |-----------|----------|
 | `Arcanum:Features:Embeddings` and all embedding-backed feature flags are `false` | Pre-RAG behavior; embed APIs return `Embeddings.FeatureDisabled` immediately |
-| Provider unreachable / timeout | Sanitized `Embeddings.ProviderUnavailable`; callers skip retrieval and continue |
-| sqlite-vec unavailable (default) | `Mode=managed`; Divination uses BLOB cosine (`ManagedSearchRowBudget` = 50,000). Surfaced via health/`/api/meta`/`doctor` |
+| Provider unreachable or failed | Sanitized `Embeddings.ProviderUnavailable`; callers skip retrieval and continue. There is no Arcanum whole-operation deadline; caller cancellation remains authoritative |
+| sqlite-vec unavailable (default) | `Mode=managed`; Divination streams complete BLOB cosine with bounded top-K memory and caller cancellation. Health/`/api/meta`/`doctor` report compatibility row budget `0` (no total row budget) |
 | vec0 claimed but unusable | `SearchAsync` returns sanitized failure (no throw) |
 | `Dimensions` changed after data | Warning only; no auto-truncate |
 | `Arcanum:Features:SessionSearch` = `false` | `EntryWeavingService` idles; `POST /api/sessions/divine` → **503** `Embeddings.FeatureDisabled` |
 | `Arcanum:Features:CodebaseRetrieval` = `false` | `WorkspaceIndexingService` idles; no prompt injection; divine/index → **503** |
 | `Arcanum:Features:AttachmentRetrieval` = `false` | Attachment creation/listing/tools remain unchanged; no extraction, embedding, or semantic prompt injection; DTO status is `NotEligible` |
-| Attachment queue full / transient embedding failure | Creation and inference still succeed; bounded reconciliation recovers dropped work and retries up to the configured cap |
+| Attachment queue full / transient embedding failure | Creation and inference still succeed; reconciliation recovers dropped work and progress-driven retries continue until success, deterministic non-transient failure, or cancellation |
 | Unsupported/binary/PDF/Office/image attachment | Attachment remains valid and is marked `NotEligible`; PDF/Office extraction, OCR, and image captions are not attempted |
-| Watcher unavailable or watcher cap reached | Workspace status is `Watching=false`, `Degraded=true`; bounded periodic reconciliation remains active |
-| Watcher overflow/error or pending-event cap reached | Mark potentially stale, expose `Overflowed` for real/cap overflow, discard the lossy event set, and schedule a bounded full reconciliation; polling never stops |
+| Watcher unavailable or internal watcher capacity reached | Workspace status is `Watching=false`, `Degraded=true`; periodic reconciliation remains active |
+| Watcher overflow/error or pending-event capacity reached | Mark potentially stale, expose `Overflowed` for real/cap overflow, discard the lossy event set, and schedule a complete cancellable reconciliation; polling never stops |
 | No indexed chunks / empty WorkingDirectory | Empty results / skip retrieval — inference continues with `[None]` |
 | `Arcanum:Features:Saga` = `false` | Saga retrieval/divine/read_saga are gated; **browse/delete/stats are not gated** |
 | `Arcanum:Features:SagaExtraction` = `false` | Extraction drops; retrieval/API reads are unaffected |
-| Extraction LLM failure | Watermark **not** advanced (retry later) |
-| Malformed/empty extraction JSON | Watermark **is** advanced (“nothing this tick”) |
-| Saga caps reached | Skip tick; watermark **not** advanced |
+| Extraction LLM/embedding failure or malformed JSON | Watermark **not** advanced; the deduplicated queue retries the same checkpoint after a short code-owned delay |
+| Valid empty extraction JSON | Watermark advances through the reviewed timestamp-group checkpoint (“nothing durable in this page”) |
 | `Arcanum:Features:SemanticSpellRouting` = `false` | `FullGrimoire` → existing LLM `SemanticRouter` unchanged |
 | Spell Weave cache / prompt embed failure | Fall back to `FullGrimoire` (Debug log; no regression) |
 
 ### 21.5 Known limitations
 
-No auto re-index on model/dimension change (use `/api/embeddings/reset`); managed scan budgeted at 50k rows; watcher and attachment-queue delivery are advisory and periodic reconciliation remains required; Session Divination has no cursor pagination; workspace and attachment index work are sequential per service instance; HTML extraction is a bounded visible-text projection rather than a browser DOM; PDF/Office/OCR remain disabled; Saga extraction is naive (no dedupe); pure spell-routing ties break by stable sort only.
+No auto re-index on model/dimension change (use `/api/embeddings/reset`); managed vector search is
+complete but brute-force time grows linearly with matching corpus size when sqlite-vec is absent;
+watcher and attachment-queue delivery are advisory and periodic reconciliation
+remains required; workspace and attachment index work are sequential per service instance; HTML
+extraction is a bounded visible-text projection rather than a browser DOM; PDF/Office/OCR remain
+disabled; Saga extraction is naive (no dedupe); pure spell-routing ties break by stable sort only.
 
 **Reset scopes:** `POST /api/embeddings/reset?confirm=true` with optional `scope=all|entry|workspaceFile|saga|sessionAttachment` (snake-case aliases accepted; default `all`); unknown scope → **400** `Validation.InvalidBody`.
 
@@ -3919,9 +4030,9 @@ No auto re-index on model/dimension change (use `/api/embeddings/reset`); manage
 
 ### 21.7 Semantic Codebase Retrieval
 
-**Service:** `WorkspaceIndexingService` — idle unless `Arcanum:Features:CodebaseRetrieval` is enabled. Workspace API registration and inference `WorkingDirectory` registration each request one recursive `FileSystemWatcher`; the registry is clamped by `MaxWatchers` and never creates one watcher per directory. Workspace update/unregister and host shutdown dispose obsolete watchers. Create/change/delete/rename callbacks enter a per-workspace, 4,096-path bounded coalescer. After the clamped debounce window, final filesystem state wins: editor temporary-file rename replacement and out-of-order delete notifications become one target upsert, storms on one path become one action, deleted/renamed-away paths remove chunks and embeddings, and directory events request reconciliation.
+**Service:** `WorkspaceIndexingService` — idle unless `Arcanum:Features:CodebaseRetrieval` is enabled. Workspace API registration and inference `WorkingDirectory` registration each request one recursive `FileSystemWatcher`; a code-owned `MaxWatchers` capacity bounds simultaneous native watchers and never creates one watcher per directory. Workspace update/unregister and host shutdown dispose obsolete watchers. Create/change/delete/rename callbacks enter a per-workspace, 4,096-path bounded coalescer. After the code-owned debounce window, final filesystem state wins: editor temporary-file rename replacement and out-of-order delete notifications become one target upsert, storms on one path become one action, deleted/renamed-away paths remove chunks and embeddings, and directory events request reconciliation.
 
-Watchers are latency hints, never a security or correctness boundary. Every incremental upsert repeats lexical containment, symlink-component resolution, stable path identity capture, opened-handle identity comparison, extension/ignored-folder checks, and byte/character size caps before reading. A symlink replacement removes previously indexed content without embedding the outside target. Watcher error, native buffer overflow, or pending-path overflow marks the volatile status degraded/potentially stale, discards the lossy action set, and schedules a bounded full scan. `ReconciliationIntervalMinutes` keeps full polling active even with healthy watchers; when watchers cannot be created or the cap is reached, reconciliation is the complete fallback. `IndexNowAsync` and `POST .../files/index` also run the same bounded reconciliation. Full walks retain `MaxFilesToIndex`, `MaxFileSizeChars`, extension, 200,000-step traversal, ignored-directory, cancellation, and symlink limits; orphan cleanup runs only after a non-truncated walk.
+Watchers are latency hints, never a security or correctness boundary. Every incremental upsert repeats lexical containment, symlink-component resolution, stable path identity capture, opened-handle identity comparison, extension/ignored-folder checks, and stable-handle reading. A symlink replacement removes previously indexed content without embedding the outside target. Watcher error, native buffer overflow, or pending-path overflow marks the volatile status degraded/potentially stale, discards the lossy action set, and schedules a complete cancellable scan. Periodic polling remains active even with healthy watchers; when watchers cannot be created or internal watcher capacity is reached, reconciliation is the complete fallback. `IndexNowAsync` and `POST .../files/index` run the same reconciliation. Candidate discovery is lazy and a full walk visits every reachable eligible entry unless the caller cancels; it has no total-entry ceiling or aggregate candidate list. Each opened file streams through a pooled character page sized to eight embedding chunks, embeds/persists page chunks, then returns the buffer; there is no aggregate eligible-file-size ceiling or `ReadToEnd` allocation. The internal `MaxFilesToIndex` value bounds one embedding checkpoint only. Unchanged files do not consume it, later ticks continue changed work, and orphan cleanup runs only from a complete inventory. Extension, ignored-directory, cancellation, and symlink/handle-identity defenses remain mandatory.
 
 **Stable chunks:** `WorkspaceCodeChunker` preserves exact source slices, character offsets, and one-based line ranges; it prefers Markdown headings and common code declaration shapes without a reflection-heavy parser, falls back to bounded line-aware splits, and never separates a UTF-16 surrogate pair. `ChunkId` is deterministic from normalized workspace/path, chunk content, and repeated-content occurrence. A small edit embeds only newly identified chunks; unchanged IDs retain their BLOB/vec0 embeddings while positional/file-time metadata is refreshed. Rename to a different path rebuilds under the new identity and deletes the old path. Tables: canonical `workspace_file_chunks` includes `StartLine`/`EndLine`, with embedding BLOB/vec0 companions (§5.4.4).
 
@@ -3933,7 +4044,7 @@ Watchers are latency hints, never a security or correctness boundary. Every incr
 
 **Extraction:** `SessionAttachmentTextExtractor` accepts strict UTF-8 plain text, Markdown, source code, JSON, YAML, XML, CSV, and logs; HTML uses bounded visible-text extraction that removes script/style content and decodes entities. Newlines are normalized deterministically. Invalid UTF-8 fails, NUL-bearing/binary content is ineligible, and character/chunk boundaries never split UTF-16 surrogate pairs. PDF, Office, images, and unknown formats remain unindexed.
 
-**Queue and lifecycle:** `SessionAttachmentIndexingService` is a bounded single-reader channel. `SessionAttachmentStore` enqueues newly created Bound versions, refreshed versions through the same persistence path, and promoted pending rows; `SessionRepository` enqueues fork copies only after commit. Attempts have configured timeout/retry bounds. Queue overflow is logged and recovered by periodic `ReconcileAndFindPendingAsync`. Purge deletes attachment index rows in the same ambient transaction; foreign keys and reconciliation remove orphan state/chunks/embeddings, including optional vec0 rows. Prior versions remain indexed while their attachment rows remain valid. The authenticated attachment-list projection exposes only `NotEligible`, `Pending`, `Indexed`, `Failed`, or `Stale`; Command Center aggregates those states in its footer and polls only while Pending work remains, so background completion/failure becomes visible without exposing queue items or content.
+**Queue and lifecycle:** `SessionAttachmentIndexingService` is a bounded single-reader channel. `SessionAttachmentStore` enqueues newly created Bound versions, refreshed versions through the same persistence path, and promoted pending rows; `SessionRepository` enqueues fork copies only after commit. The channel bound owns one in-memory allocation, not total work: queue overflow is logged and recovered by periodic `ReconcileAndFindPendingAsync`. Transient processing continues with cancellation-aware backoff until progress, deterministic non-transient failure, or host cancellation; there is no public retry-count or total-processing-time knob. Purge deletes attachment index rows in the same ambient transaction; foreign keys and reconciliation remove orphan state/chunks/embeddings, including optional vec0 rows. Prior versions remain indexed while their attachment rows remain valid. The authenticated attachment-list projection exposes only `NotEligible`, `Pending`, `Indexed`, `Failed`, or `Stale`; Command Center aggregates those states in its footer and polls only while Pending work remains, so background completion/failure becomes visible without exposing queue items or content.
 
 **Storage and retrieval:** `session_attachment_chunks` contains Session/Attachment IDs, logical key, version, original filename, MIME, content hash, chunk index, character/line ranges, extracted content, dimensions, timestamps, and latest-version `RetrievalScope`. BLOB embeddings are authoritative; optional vec0 mirrors them. `SearchScopedAsync` ranks only the owning session's latest scopes by default, retaining managed cosine fallback when vec0 is unavailable. `WizardIntelligenceProvider` shares one query embedding across codebase, Saga, and attachment retrieval, then passes results through the per-turn ledger's session, dedupe, version, attachment-count, chunk-count, byte, and estimated-token gates. Indexing/retrieval failure remains empty context; an explicit-materialization failure remains fail-closed before provider I/O.
 
@@ -3943,7 +4054,19 @@ Watchers are latency hints, never a security or correctness boundary. Every incr
 
 **Store:** `ISagaMemoryStore` / `SagaMemoryStore` — `saga_memories` plus embedding companions, `saga_extraction_watermarks`, and typed `saga_memory_attachment_provenance` (§5.4.4). Provenance remains after source deletion and is surfaced as unavailable.
 
-**Service:** `SagaExtractionService` — event-driven bounded channel (`EnqueueExtraction`, DropOldest); performs headless LLM extraction after successful turns when `Arcanum:Features:SagaExtraction` is enabled. Each request snapshots the source turn's materialized attachment allowlist. The extractor returns concise typed candidates; invalid/unmaterialized attachment claims are discarded before embedding, and ephemeral attachment content without durable provenance fails closed. Caps, watermark rules, and degradation are code-owned (§21.4).
+**Service:** `SagaExtractionService` — event-driven unbounded session-id channel with a deduplicating
+pending map (`EnqueueExtraction`); accepted work is never dropped by a queue-capacity total. When
+`Arcanum:Features:SagaExtraction` is enabled, it performs headless extraction after successful turns.
+Each request snapshots and merges the source turns' materialized attachment allowlists. Extraction
+reads oldest-first checkpoint targets of 10 entries, widens through the complete boundary timestamp
+group, advances the watermark only after the page's eligible conclusions are persisted, and
+continues until caught up. The page target is one provider-context slice, not a tail window or total
+history cap. LLM/embedding/malformed-response failure leaves the watermark unchanged and requeues
+after a short code-owned delay; host cancellation stops cleanly. There is no public extraction
+interval/output-token control or per-session/installation memory-count ceiling. The selected
+provider/model remains authoritative for output; storage and retrieval are paged, and explicit
+deletion/retention own the durable lifecycle. Invalid/unmaterialized attachment claims are discarded
+before embedding, and ephemeral attachment content without durable provenance fails closed.
 
 **Retrieval:** `RetrieveSagaMemoriesAsync` → `### Saga (Associative Memory)` DATA. The query embedding is shared with semantic codebase retrieval per turn.
 

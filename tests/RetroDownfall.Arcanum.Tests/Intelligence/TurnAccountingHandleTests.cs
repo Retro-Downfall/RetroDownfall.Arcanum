@@ -454,7 +454,7 @@ public sealed class TurnAccountingHandleTests
     }
 
     [Fact]
-    public async Task CreateNestedOperationHandle_GivesEachLineIndependentAdmissionAndSharedCost()
+    public async Task CreateNestedOperationHandle_SharesUnrestrictedBudgetAndCost()
     {
         RecordingTurnRunWriter writer = new();
         PricingSettings pricing = new();
@@ -471,7 +471,9 @@ public sealed class TurnAccountingHandleTests
         TurnAccountingHandle first = parent.CreateNestedOperationHandle();
         TurnAccountingHandle second = parent.CreateNestedOperationHandle();
 
-        Assert.NotSame(first.Budget, second.Budget);
+        Assert.Same(UnrestrictedTurnBudget.Instance, first.Budget);
+
+        Assert.Same(first.Budget, second.Budget);
 
         await Task.WhenAll(
             Task.Run(() => first.AddCost(1m)),

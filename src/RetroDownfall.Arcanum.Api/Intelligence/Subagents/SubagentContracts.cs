@@ -6,8 +6,6 @@ public static class SubagentFailureCodes
 {
     public const string BudgetExhausted = "Subagent.BudgetExhausted";
 
-    public const string MaximumDepth = "Subagent.MaximumDepth";
-
     public const string DurableStartFailed = "Subagent.DurableStartFailed";
 
     public const string ChildFailed = "Subagent.ChildFailed";
@@ -21,7 +19,6 @@ public sealed record SubagentRunRequest(
     IReadOnlyList<AttachedFileDto> Files,
     long? MaxTokens,
     decimal? MaxCostUsd,
-    int MaxTurns,
     IReadOnlySet<Guid>? AttachmentAllowlist = null);
 
 public sealed record SubagentRunResult(

@@ -44,11 +44,41 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 
         ICampaignRepository repo = scope.ServiceProvider.GetRequiredService<ICampaignRepository>();
 
-        ListPageResult<Campaign> page = await repo
-            .ListAsync(typeFilter: null, limit: ArcanumSettingClamps.ListQueryLimit(10_000), cancellationToken: ct)
-            .ConfigureAwait(false);
+        int pageSize = ArcanumSettingClamps.ListQueryLimit(10_000);
 
-        IReadOnlyList<Campaign> campaigns = page.Items;
+        int offset = 0;
+
+        List<Campaign> campaigns = [];
+
+        while (true)
+        {
+
+            ListPageResult<Campaign> page = await repo
+                .ListAsync(typeFilter: null, limit: pageSize, offset: offset, cancellationToken: ct)
+                .ConfigureAwait(false);
+
+            campaigns.AddRange(page.Items);
+
+            if (!page.HasMore)
+            {
+
+                break;
+
+            }
+
+            int nextOffset = page.NextOffset ?? checked(offset + page.Items.Length);
+
+            if (nextOffset <= offset)
+            {
+
+                throw new InvalidOperationException(
+                    "Campaign pagination returned a non-advancing continuation offset. Retry the request; if the problem persists, inspect the campaign repository.");
+
+            }
+
+            offset = nextOffset;
+
+        }
 
         WorkspaceInfo[] result = new WorkspaceInfo[campaigns.Count];
 
@@ -136,14 +166,7 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 
         if (addResult.IsFailure)
         {
-            return string.Equals(
-                addResult.Error.Code,
-                ErrorCodes.Campaign.MaxReached,
-                StringComparison.Ordinal)
-                    ? new Error(
-                        ErrorCodes.Campaign.MaxReached,
-                        "The maximum number of campaigns has been reached.")
-                    : addResult.Error;
+            return addResult.Error;
         }
 
         Directory.CreateDirectory(Path.Combine(normalizedPath, ".arcanum"));

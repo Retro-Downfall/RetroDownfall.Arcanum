@@ -100,7 +100,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
 
     [SkippableFact]
 
-    public async Task Prune_ReportsAndDeletesOnlyBoundedOldTerminalDaemonExecutions()
+    public async Task Prune_ReportsAndDeletesAllOldTerminalDaemonExecutions()
     {
 
         RequireSqlCipher();
@@ -134,7 +134,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             "Daemon Running",
             CancellationToken.None);
 
-        ArcanumSettings settings = CreateSettings(maxItemsPerSweep: 1);
+        ArcanumSettings settings = CreateSettings();
 
         DataRetentionService service = CreateService(settings, repository, time);
 
@@ -153,16 +153,18 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             request,
             CancellationToken.None);
 
-        string candidate = Assert.Single(
-            plan.CandidateIds,
-            static id => id.StartsWith("daemon:", StringComparison.Ordinal));
+        string[] candidates = plan.CandidateIds
+            .Where(static id => id.StartsWith("daemon:", StringComparison.Ordinal))
+            .ToArray();
 
-        Assert.DoesNotContain(running, candidate, StringComparison.Ordinal);
+        Assert.Equal(2, candidates.Length);
+
+        Assert.DoesNotContain(candidates, candidate => candidate.Contains(running, StringComparison.Ordinal));
 
         Assert.Contains(
             plan.Items,
             static item => item.DataClass == RetentionDataClass.DaemonExecutions
-                && item.Rows == 1);
+                && item.Rows == 2);
 
         Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
             new DataRetentionApplyRequest(request, plan.PlanId),
@@ -170,17 +172,15 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
 
         Assert.True(applied.IsSuccess, applied.Error.Message);
 
-        Assert.Equal(1, applied.Value.RowsDeleted);
+        Assert.Equal(2, applied.Value.RowsDeleted);
 
         DaemonExecutionSummary[] remaining = await repository.GetHistoryAsync(
             null,
             CancellationToken.None);
 
-        Assert.Equal(2, remaining.Length);
+        Assert.Single(remaining);
 
         Assert.Contains(remaining, item => item.Id == running);
-
-        Assert.Single(remaining, item => item.Status != DaemonJobStatus.Running);
 
     }
 
@@ -214,7 +214,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
         time.Advance(TimeSpan.FromDays(30));
 
         DataRetentionService service = CreateService(
-            CreateSettings(maxItemsPerSweep: 10),
+            CreateSettings(),
             repository,
             time);
 
@@ -316,7 +316,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             CancellationToken.None);
 
         DataRetentionService service = CreateService(
-            CreateSettings(maxItemsPerSweep: 10),
+            CreateSettings(),
             repository,
             time);
 
@@ -377,7 +377,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
         BlockingDaemonMutationGate gate = new(repository);
 
         DataRetentionService service = CreateService(
-            CreateSettings(maxItemsPerSweep: 10),
+            CreateSettings(),
             repository,
             time,
             gate);
@@ -437,7 +437,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
         ActivatingDaemonRepository repository = new(time, activateOnHistoryCall);
 
         DataRetentionService service = CreateService(
-            CreateSettings(maxItemsPerSweep: 10),
+            CreateSettings(),
             repository,
             time);
 
@@ -501,7 +501,7 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
 
     }
 
-    private static ArcanumSettings CreateSettings(int maxItemsPerSweep) =>
+    private static ArcanumSettings CreateSettings() =>
         new()
         {
 
@@ -509,8 +509,6 @@ public sealed class DataRetentionDaemonHistoryTests : IAsyncLifetime
             {
 
                 AutomaticSweepsEnabled = false,
-
-                MaxItemsPerSweep = maxItemsPerSweep,
 
                 DaemonHistory = new RetentionRuleSettings
                 {

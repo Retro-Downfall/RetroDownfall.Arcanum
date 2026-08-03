@@ -259,6 +259,7 @@ internal static class WorkspaceEndpoints
                 string? relativePath,
                 bool? recursive,
                 string? searchPattern,
+                string? cursor,
                 IWorkspaceRegistry registry,
                 IFileSystemBrowser browser,
                 HttpContext ctx) =>
@@ -280,7 +281,13 @@ internal static class WorkspaceEndpoints
                 }
 
                 Result<FileListResult> result = await browser
-                    .ListAsync(workspace, relativePath, recursive ?? false, searchPattern, ctx.RequestAborted)
+                    .ListAsync(
+                        workspace,
+                        relativePath,
+                        recursive ?? false,
+                        searchPattern,
+                        cursor,
+                        ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 return result.IsSuccess

@@ -18,6 +18,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Events;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Pattern;
 using RetroDownfall.Arcanum.Core.Resilience;
@@ -611,15 +612,7 @@ public static class ServiceCollectionExtensions
 
         services.AddHttpClient(
             ArcanumBrowseWebConstants.HttpClientName,
-            (sp, client) =>
-            {
-                IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
-
-                int timeoutSeconds = ArcanumSettingClamps.WebBrowsingRequestTimeoutSeconds(
-                    opts.CurrentValue.ResolveWebBrowsing().RequestTimeoutSeconds);
-
-                client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
-            })
+            static client => client.Timeout = Timeout.InfiniteTimeSpan)
             // Legacy embedder fallback only. URLs may contain credentials in
             // path/query data, so suppress IHttpClientFactory URI logging.
             .RemoveAllLoggers()
@@ -642,16 +635,21 @@ public static class ServiceCollectionExtensions
 
         services.AddHttpClient(
             McpConnectionManager.McpHttpClientName,
-            (sp, client) =>
+            static client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(sp =>
             {
                 IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
 
-                int timeoutSeconds = ArcanumSettingClamps.McpHttpRequestTimeoutSeconds(
-                    opts.CurrentValue.ResolveMcp().HttpRequestTimeoutSeconds);
+                int connectTimeoutSeconds = ArcanumSettingClamps.McpHttpConnectTimeoutSeconds(
+                    opts.CurrentValue.ResolveMcp().HttpConnectTimeoutSeconds);
 
-                client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
-            })
-            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
+                SocketsHttpHandler handler =
+                    OutboundUrlGuard.CreateUntrustedEgressHandler();
+
+                handler.ConnectTimeout = TimeSpan.FromSeconds(connectTimeoutSeconds);
+
+                return handler;
+            });
 
         services.AddSingleton<McpConnectionManager>();
 
@@ -675,6 +673,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IFileSystemWriter, PhysicalFileSystemWriter>();
 
         services.AddSingleton<ISpellRepository, SpellRepository>();
+
+        services.AddSingleton<IArcanumSpellCatalog, SpellCatalogService>();
 
         services.AddSingleton<ISpellCastPreviewService, SpellCastPreviewService>();
 

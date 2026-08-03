@@ -19,18 +19,11 @@ public static class GrimoireLimits
 
         SessionSettings resolved = settings ?? ArcanumRuntimeDefaults.Sessions;
 
-        int maxEntries = ArcanumSettingClamps.MaxEntriesPerSession(resolved.MaxEntriesPerSession);
-
         int maxBytes = ArcanumSettingClamps.MaxEntryContentBytes(resolved.MaxEntryContentBytes);
 
-        if (currentEntryCount + entriesToAdd > maxEntries)
-        {
+        _ = currentEntryCount;
 
-            return new Error(
-                ErrorCodes.Session.TooManyEntries,
-                $"Session.TooManyEntries: Session cannot exceed {maxEntries} entries.");
-
-        }
+        _ = entriesToAdd;
 
         foreach (string? content in contents)
         {

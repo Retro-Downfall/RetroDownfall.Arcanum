@@ -192,6 +192,8 @@ internal sealed class SessionLogBuffer
 
     public const string OlderMessagesMarker = "Older messages not loaded";
 
+    public const string NewerMessagesMarker = "Newer messages not loaded";
+
     public const string EmptySessionMessage = "No messages in this session yet.";
 
     /// <summary>
@@ -207,7 +209,8 @@ internal sealed class SessionLogBuffer
 
     public void ReplaceWithApiHistory(
         IReadOnlyList<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> entries,
-        bool showOlderMessagesMarker)
+        bool showOlderMessagesMarker,
+        bool showNewerMessagesMarker = false)
     {
         ArgumentNullException.ThrowIfNull(entries);
 
@@ -236,6 +239,11 @@ internal sealed class SessionLogBuffer
             if (!addedHistory)
             {
                 _entries.Add(new SessionLogEntry(SessionLogEntryKind.Status, EmptySessionMessage));
+            }
+
+            if (showNewerMessagesMarker)
+            {
+                _entries.Add(new SessionLogEntry(SessionLogEntryKind.Status, NewerMessagesMarker));
             }
 
             TrimUnlocked();

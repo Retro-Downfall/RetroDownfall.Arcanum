@@ -82,6 +82,37 @@ public sealed class SpellCastPreviewServiceTests : IAsyncLifetime
                 StringComparer.Ordinal));
     }
 
+    [Fact]
+    public async Task CastAsync_resolves_dependencies_beyond_the_former_total_count_ceiling()
+    {
+        const int dependencyCount = 11;
+        string primaryName = $"primary-{Guid.NewGuid():N}";
+        string[] dependencyNames = Enumerable.Range(0, dependencyCount)
+            .Select(static index => $"dependency-{index:D2}")
+            .ToArray();
+
+        WriteSpellWithDependencies(primaryName, dependencyNames);
+
+        foreach (string dependencyName in dependencyNames)
+        {
+            WriteSpellWithDependencies(dependencyName, []);
+        }
+
+        SpellCastPreviewService service = new(
+            new FakeMcpConnectionManager(),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            NullLogger<SpellCastPreviewService>.Instance);
+
+        Result<SpellCastResult> result = await service.CastAsync(
+            primaryName,
+            _workspace.Root,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+        Assert.Equal(dependencyCount, result.Value.ResonantDependencies.Length);
+        Assert.Equal(dependencyNames, result.Value.ResonantDependencies);
+    }
+
     private void WriteSpell(
         string spellName,
         string? declaredTool)
@@ -111,6 +142,36 @@ public sealed class SpellCastPreviewServiceTests : IAsyncLifetime
                 "tags": [],
                 "declaredTools": ["{{declaredTool}}"],
                 "dependencies": []
+              }
+              """);
+    }
+
+    private void WriteSpellWithDependencies(
+        string spellName,
+        string[] dependencies)
+    {
+        _workspace.WriteFile(
+            $"spells/{spellName}/SPELL.md",
+            $"""
+             ---
+             name: {spellName}
+             description: Preview dependency test spell
+             ---
+             body
+             """);
+
+        string dependenciesJson = System.Text.Json.JsonSerializer.Serialize(dependencies);
+
+        _workspace.WriteFile(
+            $"spells/{spellName}/SKILL.json",
+            $$"""
+              {
+                "name": "{{spellName}}",
+                "version": "1.0.0",
+                "description": "Preview dependency test spell",
+                "tags": [],
+                "declaredTools": [],
+                "dependencies": {{dependenciesJson}}
               }
               """);
     }

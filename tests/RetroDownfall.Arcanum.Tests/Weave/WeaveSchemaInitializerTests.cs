@@ -52,6 +52,8 @@ public sealed class WeaveSchemaInitializerTests
 
             "ChunkId",
 
+            "GenerationId",
+
             "SessionId",
 
             "AttachmentId",
@@ -104,6 +106,56 @@ public sealed class WeaveSchemaInitializerTests
         }
 
         Assert.Equal(expectedChunkColumns, actualColumns);
+
+        string[] expectedStateColumns =
+        [
+
+            "AttachmentId",
+
+            "Status",
+
+            "ContentSha256",
+
+            "AttemptCount",
+
+            "FailureReason",
+
+            "ExtractedAt",
+
+            "IndexedAt",
+
+            "PublishedGenerationId",
+
+            "PendingGenerationId",
+
+            "NextChunkIndex",
+
+            "PendingEmbeddingDimension",
+
+            "PendingPipelineFingerprint",
+
+            "PendingExtractedAt",
+
+            "UpdatedAt",
+
+        ];
+
+        List<string> actualStateColumns = [];
+
+        await using SqliteCommand inspectState = connection.CreateCommand();
+
+        inspectState.CommandText = "PRAGMA table_info('session_attachment_index_state')";
+
+        await using SqliteDataReader stateReader = await inspectState.ExecuteReaderAsync();
+
+        while (await stateReader.ReadAsync())
+        {
+
+            actualStateColumns.Add(stateReader.GetString(1));
+
+        }
+
+        Assert.Equal(expectedStateColumns, actualStateColumns);
 
     }
 

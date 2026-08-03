@@ -665,6 +665,42 @@ public sealed class FileBatchCommandTests
 
     [Fact]
 
+    public void Batch_list_cursor_is_forwarded_and_human_output_prints_exact_continuation()
+
+    {
+
+        string batch = BatchJson("in_progress", 4, 2, 1);
+
+        RecordingHandler handler = new(
+
+            _ => JsonResponse(
+
+                $$"""{"data":[{{batch}}],"has_more":true,"next_cursor":"opaque-next","object":"list"}"""));
+
+        CliTestResult result = RunCommand(
+
+            handler,
+
+            ["batch", "list", "--status", "in_progress", "--cursor", "opaque-current"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        RecordedRequest request = Assert.Single(handler.Requests);
+
+        Assert.Equal("?status=in_progress&after=opaque-current", request.Query);
+
+        Assert.Contains(
+
+            "arcanum batch list --status in_progress --cursor opaque-next",
+
+            result.Output,
+
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+
     public void Batch_errors_downloads_the_error_artifact_id()
     {
 
@@ -883,6 +919,7 @@ public sealed class FileBatchCommandTests
             RecordedRequest recorded = new(
                 request.Method,
                 request.RequestUri!.AbsolutePath,
+                request.RequestUri.Query,
                 request.Content?.Headers.ContentType?.ToString() ?? string.Empty,
                 body);
 
@@ -899,6 +936,7 @@ public sealed class FileBatchCommandTests
     private sealed record RecordedRequest(
         HttpMethod Method,
         string Path,
+        string Query,
         string ContentType,
         string Body);
 

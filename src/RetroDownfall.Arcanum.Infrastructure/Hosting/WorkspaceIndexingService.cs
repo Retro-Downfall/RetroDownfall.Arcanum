@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
@@ -63,27 +64,7 @@ internal sealed class WorkspaceIndexingService(
         "build",
     };
 
-    /// <summary>
-    /// Heuristic pre-read filter: UTF-8 never uses more than 4 bytes per character, so a file whose
-    /// byte length already exceeds <c>MaxFileSizeChars * 4</c> cannot possibly be within the char limit
-    /// and is skipped without reading it. Files that pass this filter still get an authoritative
-    /// <c>content.Length &lt;= MaxFileSizeChars</c> check after being read.
-    /// </summary>
-    private const int MaxUtf8BytesPerChar = 4;
-
     private const int MaxPendingPathsPerWorkspace = 4_096;
-
-    /// <summary>
-    /// Hard cap on total filesystem entries (files + directories combined) visited by a single
-    /// indexing tick's walk of a workspace, independent of <c>CodebaseEmbeddingSettings.MaxFilesToIndex</c>
-    /// (which only bounds how many changed files get re-embedded). Protects against a pathological or
-    /// enormous directory tree (for example a workspace root that turns out to contain — or symlink to
-    /// — a much larger tree than intended) making a tick run unboundedly long, on top of the
-    /// ignored-directory pruning in <see cref="EnumerateCandidateFiles"/> which already skips the
-    /// common cause of a slow walk (<c>node_modules</c>, <c>.git</c>, <c>bin</c>/<c>obj</c>, etc.)
-    /// entirely rather than visiting and then discarding their contents.
-    /// </summary>
-    private const int MaxWalkEntries = 200_000;
 
     private readonly ConcurrentDictionary<string, byte> _knownWorkspaces = new(StringComparer.Ordinal);
 
@@ -485,8 +466,6 @@ internal sealed class WorkspaceIndexingService(
 
         HashSet<string> extensions = new(codebase.FileExtensions, StringComparer.OrdinalIgnoreCase);
 
-        int maxFileSizeChars = ArcanumSettingClamps.EmbeddingsCodebaseMaxFileSizeChars(codebase.MaxFileSizeChars);
-
         int maxFilesToIndex = ArcanumSettingClamps.EmbeddingsCodebaseMaxFilesToIndex(codebase.MaxFilesToIndex);
 
         int filesIndexed = 0;
@@ -597,15 +576,6 @@ internal sealed class WorkspaceIndexingService(
 
             FileInfo info = new(normalizedPath);
 
-            if (info.Length > (long)maxFileSizeChars * MaxUtf8BytesPerChar)
-            {
-
-                await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
-
-                continue;
-
-            }
-
             if (filesIndexed >= maxFilesToIndex)
             {
 
@@ -620,7 +590,6 @@ internal sealed class WorkspaceIndexingService(
                 normalizedPath,
                 expectedIdentity,
                 info.LastWriteTimeUtc,
-                maxFileSizeChars,
                 cancellationToken).ConfigureAwait(false);
 
             if (!indexed)
@@ -967,8 +936,6 @@ internal sealed class WorkspaceIndexingService(
 
         int maxFilesToIndex = ArcanumSettingClamps.EmbeddingsCodebaseMaxFilesToIndex(codebase.MaxFilesToIndex);
 
-        int maxFileSizeChars = ArcanumSettingClamps.EmbeddingsCodebaseMaxFileSizeChars(codebase.MaxFileSizeChars);
-
         HashSet<string> extensions = new(codebase.FileExtensions, StringComparer.OrdinalIgnoreCase);
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
@@ -977,34 +944,8 @@ internal sealed class WorkspaceIndexingService(
 
         int filesIndexed = 0;
 
-        List<string> candidates;
-
-        bool truncated;
-
-        try
-        {
-
-            candidates = EnumerateCandidateFiles(workspacePath, extensions, MaxWalkEntries, out truncated);
-
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-
-            logger.LogWarning(ex, "Workspace indexing could not enumerate {WorkspacePath}.", workspacePath);
-
-            return false;
-
-        }
-
-        if (truncated)
-        {
-
-            logger.LogWarning(
-                "Workspace indexing walk for {WorkspacePath} was truncated at {MaxWalkEntries} entries; some files may not be indexed this tick, and orphaned-chunk cleanup is skipped until a tick completes the full walk.",
-                workspacePath,
-                MaxWalkEntries);
-
-        }
+        IEnumerable<string> candidates =
+            EnumerateCandidateFiles(workspacePath, extensions);
 
         // Every candidate that reaches this point still exists at its relative path, regardless of
         // whether this tick actually gets to re-embed it (see the maxFilesToIndex check below) — so
@@ -1063,13 +1004,6 @@ internal sealed class WorkspaceIndexingService(
 
                 FileInfo info = new(fullPath);
 
-                if (info.Length > (long)maxFileSizeChars * MaxUtf8BytesPerChar)
-                {
-
-                    continue;
-
-                }
-
                 DateTime lastWriteUtc = info.LastWriteTimeUtc;
 
                 if (existingLastWriteByRelativePath.TryGetValue(relativePath, out DateTime existing)
@@ -1088,7 +1022,6 @@ internal sealed class WorkspaceIndexingService(
                     fullPath,
                     expectedIdentity,
                     lastWriteUtc,
-                    maxFileSizeChars,
                     cancellationToken).ConfigureAwait(false);
 
                 if (indexed)
@@ -1114,14 +1047,9 @@ internal sealed class WorkspaceIndexingService(
 
         }
 
-        if (!truncated)
-        {
+        await DeleteOrphanedChunksAsync(db, workspacePath, seenRelativePaths, cancellationToken).ConfigureAwait(false);
 
-            await DeleteOrphanedChunksAsync(db, workspacePath, seenRelativePaths, cancellationToken).ConfigureAwait(false);
-
-        }
-
-        return !truncated;
+        return true;
 
     }
 
@@ -1131,23 +1059,13 @@ internal sealed class WorkspaceIndexingService(
     /// <see cref="IgnoredDirectorySegments"/> and symlink-escaping subdirectories <b>before</b>
     /// descending into them — unlike <see cref="Directory.EnumerateFiles(string, string, EnumerationOptions)"/>
     /// with <c>RecurseSubdirectories = true</c>, which would still visit every entry under a huge
-    /// ignored directory (for example <c>node_modules</c>) only to discard them one by one. Stops and
-    /// reports <paramref name="truncated"/> once <paramref name="maxWalkEntries"/> total filesystem
-    /// entries (files + directories) have been visited, bounding worst-case tick duration.
+    /// ignored directory (for example <c>node_modules</c>) only to discard them one by one. The walk
+    /// continues until every reachable candidate has been visited or the caller cancels.
     /// </summary>
-    private static List<string> EnumerateCandidateFiles(
+    private static IEnumerable<string> EnumerateCandidateFiles(
         string workspacePath,
-        HashSet<string> extensions,
-        int maxWalkEntries,
-        out bool truncated)
+        HashSet<string> extensions)
     {
-
-        List<string> files = [];
-
-        truncated = false;
-
-        int visited = 0;
-
         Queue<string> pendingDirectories = new();
 
         pendingDirectories.Enqueue(workspacePath);
@@ -1157,36 +1075,8 @@ internal sealed class WorkspaceIndexingService(
 
             string directory = pendingDirectories.Dequeue();
 
-            IEnumerable<string> entries;
-
-            try
+            foreach (string fullPath in EnumerateAccessibleEntries(directory))
             {
-
-                entries = Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.TopDirectoryOnly);
-
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-
-                // Inaccessible directory (permissions, race with a delete) — skip it and keep walking
-                // the rest of the tree, mirroring EnumerationOptions.IgnoreInaccessible's old behavior.
-                continue;
-
-            }
-
-            foreach (string fullPath in entries)
-            {
-
-                if (visited >= maxWalkEntries)
-                {
-
-                    truncated = true;
-
-                    return files;
-
-                }
-
-                visited++;
 
                 FileAttributes attributes;
 
@@ -1238,7 +1128,7 @@ internal sealed class WorkspaceIndexingService(
                 else if (extensions.Contains(Path.GetExtension(fullPath)))
                 {
 
-                    files.Add(fullPath);
+                    yield return fullPath;
 
                 }
 
@@ -1246,7 +1136,65 @@ internal sealed class WorkspaceIndexingService(
 
         }
 
-        return files;
+    }
+
+    private static IEnumerable<string> EnumerateAccessibleEntries(
+        string directory)
+    {
+
+        IEnumerator<string>? enumerator = null;
+
+        try
+        {
+
+            enumerator = Directory
+                .EnumerateFileSystemEntries(
+                    directory,
+                    "*",
+                    SearchOption.TopDirectoryOnly)
+                .GetEnumerator();
+
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+
+            yield break;
+
+        }
+
+        using (enumerator)
+        {
+
+            while (true)
+            {
+
+                string fullPath;
+
+                try
+                {
+
+                    if (!enumerator.MoveNext())
+                    {
+
+                        yield break;
+
+                    }
+
+                    fullPath = enumerator.Current;
+
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+
+                    yield break;
+
+                }
+
+                yield return fullPath;
+
+            }
+
+        }
 
     }
 
@@ -1255,9 +1203,8 @@ internal sealed class WorkspaceIndexingService(
     /// relative path is not in <paramref name="seenRelativePaths"/> — i.e. a file that was deleted (or
     /// renamed, or moved outside every configured file extension) since the last successful full walk.
     /// Without this, a removed file's stale chunks/embeddings persist forever and keep surfacing in
-    /// semantic search results for content that no longer exists. Only called after a non-truncated
-    /// walk (see <see cref="IndexWorkspaceAsync"/>) so a budget-truncated tick never misclassifies an
-    /// unvisited-but-still-present file as orphaned.
+    /// semantic search results for content that no longer exists. It runs only after the complete
+    /// cancellable workspace walk, so an unvisited-but-still-present file is never misclassified.
     /// </summary>
     private async Task DeleteOrphanedChunksAsync(
         ArcanumDbContext db,
@@ -1340,7 +1287,7 @@ internal sealed class WorkspaceIndexingService(
 
     /// <summary>
     /// Chunks, embeds, and persists a single changed/new file. Returns <c>false</c> (without throwing)
-    /// when the file is too large after reading, empty, or embedding fails — all graceful-degradation
+    /// when the file is empty or embedding fails — all graceful-degradation
     /// outcomes that simply do not consume the per-tick file budget.
     /// </summary>
     private async Task<bool> IndexFileAsync(
@@ -1350,11 +1297,17 @@ internal sealed class WorkspaceIndexingService(
         string fullPath,
         FileHandleIdentity expectedIdentity,
         DateTime lastWriteUtc,
-        int maxFileSizeChars,
         CancellationToken cancellationToken)
     {
 
-        string content;
+        int maxChunkChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
+            optionsMonitor.CurrentValue.ResolveEmbeddings().ChunkSizeChars);
+
+        int readPageCharacters = checked(maxChunkChars * 8);
+
+        char[] buffer = ArrayPool<char>.Shared.Rent(readPageCharacters);
+
+        List<string> insertedIds = [];
 
         try
         {
@@ -1386,165 +1339,270 @@ internal sealed class WorkspaceIndexingService(
 
             using StreamReader reader = new(stream);
 
-            content = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+            string extension = Path.GetExtension(relativePath);
+
+            DateTimeOffset indexedAt = DateTimeOffset.UtcNow;
+
+            HashSet<string> existingIds = await LoadExistingChunkIdsAsync(
+                db,
+                workspacePath,
+                relativePath,
+                cancellationToken).ConfigureAwait(false);
+
+            HashSet<string> nextIds = new(StringComparer.Ordinal);
+
+            Dictionary<string, int> occurrences = new(StringComparer.Ordinal);
+
+            List<IndexedChunkMetadata> metadata = [];
+
+            int globalCharacterOffset = 0;
+
+            int globalLineOffset = 0;
+
+            int globalChunkIndex = 0;
+
+            while (true)
+            {
+
+                int read = await reader
+                    .ReadBlockAsync(
+                        buffer.AsMemory(0, readPageCharacters),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (read == 0)
+                {
+
+                    break;
+
+                }
+
+                string page = new(buffer, 0, read);
+
+                WorkspaceCodeChunker.Chunk[] pageChunks =
+                    WorkspaceCodeChunker.ChunkText(
+                        page,
+                        extension,
+                        maxChunkChars);
+
+                if (pageChunks.Length > 0)
+                {
+
+                    IndexedChunk[] indexedChunks = new IndexedChunk[pageChunks.Length];
+
+                    for (int index = 0; index < pageChunks.Length; index++)
+                    {
+
+                        WorkspaceCodeChunker.Chunk chunk = pageChunks[index];
+
+                        int occurrence = occurrences.GetValueOrDefault(chunk.Content);
+
+                        occurrences[chunk.Content] = occurrence + 1;
+
+                        indexedChunks[index] = new IndexedChunk(
+                            CreateStableChunkId(
+                                workspacePath,
+                                relativePath,
+                                chunk.Content,
+                                occurrence),
+                            chunk);
+
+                    }
+
+                    IndexedChunk[] missing = indexedChunks
+                        .Where(chunk => !existingIds.Contains(chunk.ChunkId))
+                        .ToArray();
+
+                    Embedding<float>[] generated = [];
+
+                    if (missing.Length > 0)
+                    {
+
+                        Result<Embedding<float>[]> embedResult = await weaveService
+                            .EmbedBatchAsync(
+                                missing
+                                    .Select(static chunk => chunk.Chunk.Content)
+                                    .ToList(),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+
+                        if (embedResult.IsFailure
+                            || embedResult.Value.Length != missing.Length)
+                        {
+
+                            logger.LogWarning(
+                                "Workspace indexing embed page failed for {FullPath} ({Code}): {Message}",
+                                fullPath,
+                                embedResult.IsFailure
+                                    ? embedResult.Error.Code
+                                    : ErrorCodes.Embeddings.ProviderUnavailable,
+                                embedResult.IsFailure
+                                    ? embedResult.Error.Message
+                                    : "Embedding provider returned an unexpected result count.");
+
+                            await DeleteInsertedChunksAsync(db, insertedIds).ConfigureAwait(false);
+
+                            return false;
+
+                        }
+
+                        generated = embedResult.Value;
+
+                    }
+
+                    Dictionary<string, float[]> vectorsByChunkId = new(StringComparer.Ordinal);
+
+                    for (int index = 0; index < missing.Length; index++)
+                    {
+
+                        vectorsByChunkId[missing[index].ChunkId] = generated[index].Vector.ToArray();
+
+                    }
+
+                    for (int index = 0; index < indexedChunks.Length; index++)
+                    {
+
+                        IndexedChunk indexedChunk = indexedChunks[index];
+
+                        WorkspaceCodeChunker.Chunk chunk = indexedChunk.Chunk;
+
+                        int chunkIndex = globalChunkIndex++;
+
+                        nextIds.Add(indexedChunk.ChunkId);
+
+                        metadata.Add(new IndexedChunkMetadata(
+                            indexedChunk.ChunkId,
+                            chunkIndex,
+                            globalCharacterOffset + chunk.CharOffset,
+                            chunk.Content.Length,
+                            globalLineOffset + chunk.StartLine,
+                            globalLineOffset + chunk.EndLine));
+
+                        if (existingIds.Contains(indexedChunk.ChunkId))
+                        {
+
+                            continue;
+
+                        }
+
+                        insertedIds.Add(indexedChunk.ChunkId);
+
+                        await InsertChunkAsync(
+                                db,
+                                indexedChunk.ChunkId,
+                                workspacePath,
+                                relativePath,
+                                chunkIndex,
+                                chunk.Content,
+                                globalCharacterOffset + chunk.CharOffset,
+                                chunk.Content.Length,
+                                globalLineOffset + chunk.StartLine,
+                                globalLineOffset + chunk.EndLine,
+                                DateTime.MinValue,
+                                indexedAt,
+                                vectorsByChunkId[indexedChunk.ChunkId],
+                                cancellationToken)
+                            .ConfigureAwait(false);
+
+                    }
+
+                }
+
+                globalCharacterOffset += read;
+
+                globalLineOffset += page.Count(static character => character == '\n');
+
+            }
+
+            foreach (string obsoleteId in existingIds.Where(id => !nextIds.Contains(id)))
+            {
+
+                await DeleteChunkByIdAsync(db, obsoleteId, cancellationToken).ConfigureAwait(false);
+
+            }
+
+            foreach (IndexedChunkMetadata chunk in metadata)
+            {
+
+                await UpdateChunkMetadataAsync(
+                    db,
+                    chunk.ChunkId,
+                    chunk.ChunkIndex,
+                    chunk.CharOffset,
+                    chunk.CharLength,
+                    chunk.StartLine,
+                    chunk.EndLine,
+                    lastWriteUtc,
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+            return true;
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            await DeleteInsertedChunksAsync(db, insertedIds).ConfigureAwait(false);
+
+            throw;
 
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+
+            await DeleteInsertedChunksAsync(db, insertedIds).ConfigureAwait(false);
 
             logger.LogWarning(ex, "Workspace indexing could not read {FullPath}; skipping.", fullPath);
 
             return false;
 
         }
-
-        if (content.Length == 0 || content.Length > maxFileSizeChars)
+        catch
         {
 
-            await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+            await DeleteInsertedChunksAsync(db, insertedIds).ConfigureAwait(false);
 
-            return true;
+            throw;
+
+        }
+        finally
+        {
+
+            ArrayPool<char>.Shared.Return(buffer);
 
         }
 
-        int maxChunkChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
-            optionsMonitor.CurrentValue.ResolveEmbeddings().ChunkSizeChars);
+    }
 
-        WorkspaceCodeChunker.Chunk[] chunks = WorkspaceCodeChunker.ChunkText(
-            content,
-            Path.GetExtension(relativePath),
-            maxChunkChars);
+    private async Task DeleteInsertedChunksAsync(
+        ArcanumDbContext db,
+        IEnumerable<string> insertedIds)
+    {
 
-        if (chunks.Length == 0)
+        foreach (string chunkId in insertedIds)
         {
 
-            await DeleteExistingChunksAsync(db, workspacePath, relativePath, cancellationToken).ConfigureAwait(false);
+            try
+            {
 
-            return true;
+                await DeleteChunkByIdAsync(
+                    db,
+                    chunkId,
+                    CancellationToken.None).ConfigureAwait(false);
 
-        }
-
-        Dictionary<string, int> occurrences = new(StringComparer.Ordinal);
-
-        IndexedChunk[] indexedChunks = new IndexedChunk[chunks.Length];
-
-        for (int i = 0; i < chunks.Length; i++)
-        {
-
-            WorkspaceCodeChunker.Chunk chunk = chunks[i];
-
-            int occurrence = occurrences.GetValueOrDefault(chunk.Content);
-
-            occurrences[chunk.Content] = occurrence + 1;
-
-            indexedChunks[i] = new IndexedChunk(
-                CreateStableChunkId(workspacePath, relativePath, chunk.Content, occurrence),
-                chunk);
-
-        }
-
-        HashSet<string> existingIds = await LoadExistingChunkIdsAsync(
-            db,
-            workspacePath,
-            relativePath,
-            cancellationToken).ConfigureAwait(false);
-
-        IndexedChunk[] missing = indexedChunks
-            .Where(chunk => !existingIds.Contains(chunk.ChunkId))
-            .ToArray();
-
-        Embedding<float>[] generated = [];
-
-        if (missing.Length > 0)
-        {
-
-            Result<Embedding<float>[]> embedResult = await weaveService
-                .EmbedBatchAsync(missing.Select(static c => c.Chunk.Content).ToList(), cancellationToken)
-                .ConfigureAwait(false);
-
-            if (embedResult.IsFailure || embedResult.Value.Length != missing.Length)
+            }
+            catch (Exception ex)
             {
 
                 logger.LogWarning(
-                    "Workspace indexing embed batch failed for {FullPath} ({Code}): {Message}",
-                    fullPath,
-                    embedResult.IsFailure ? embedResult.Error.Code : ErrorCodes.Embeddings.ProviderUnavailable,
-                    embedResult.IsFailure ? embedResult.Error.Message : "Embedding provider returned an unexpected result count.");
-
-                return false;
+                    ex,
+                    "Workspace indexing could not clean up incomplete chunk {ChunkId}; reconciliation will retry it.",
+                    chunkId);
 
             }
 
-            generated = embedResult.Value;
-
         }
-
-        HashSet<string> nextIds = indexedChunks
-            .Select(static chunk => chunk.ChunkId)
-            .ToHashSet(StringComparer.Ordinal);
-
-        foreach (string obsoleteId in existingIds.Where(id => !nextIds.Contains(id)))
-        {
-
-            await DeleteChunkByIdAsync(db, obsoleteId, cancellationToken).ConfigureAwait(false);
-
-        }
-
-        DateTimeOffset indexedAt = DateTimeOffset.UtcNow;
-
-        Dictionary<string, float[]> vectorsByChunkId = new(StringComparer.Ordinal);
-
-        for (int i = 0; i < missing.Length; i++)
-        {
-
-            vectorsByChunkId[missing[i].ChunkId] = generated[i].Vector.ToArray();
-
-        }
-
-        for (int i = 0; i < indexedChunks.Length; i++)
-        {
-
-            IndexedChunk indexedChunk = indexedChunks[i];
-
-            WorkspaceCodeChunker.Chunk chunk = indexedChunk.Chunk;
-
-            if (existingIds.Contains(indexedChunk.ChunkId))
-            {
-
-                await UpdateChunkMetadataAsync(
-                    db,
-                    indexedChunk.ChunkId,
-                    chunkIndex: i,
-                    charOffset: chunk.CharOffset,
-                    charLength: chunk.Content.Length,
-                    startLine: chunk.StartLine,
-                    endLine: chunk.EndLine,
-                    fileLastWriteTimeUtc: lastWriteUtc,
-                    cancellationToken).ConfigureAwait(false);
-
-                continue;
-
-            }
-
-            await InsertChunkAsync(
-                db,
-                indexedChunk.ChunkId,
-                workspacePath,
-                relativePath,
-                chunkIndex: i,
-                content: chunk.Content,
-                charOffset: chunk.CharOffset,
-                charLength: chunk.Content.Length,
-                startLine: chunk.StartLine,
-                endLine: chunk.EndLine,
-                fileLastWriteTimeUtc: lastWriteUtc,
-                indexedAt: indexedAt,
-                vector: vectorsByChunkId[indexedChunk.ChunkId],
-                cancellationToken).ConfigureAwait(false);
-
-        }
-
-        return true;
 
     }
 
@@ -1734,9 +1792,10 @@ internal sealed class WorkspaceIndexingService(
                 // in IndexFileAsync). DISTINCT is enough; if rows somehow diverge, the last value wins.
                 cmd.CommandText =
                     """
-                    SELECT DISTINCT "RelativePath", "FileLastWriteTime"
+                    SELECT "RelativePath", MIN("FileLastWriteTime")
                     FROM "workspace_file_chunks"
                     WHERE "WorkspacePath" = @workspacePath
+                    GROUP BY "RelativePath"
                     """;
 
                 AddParameter(cmd, "@workspacePath", workspacePath);
@@ -2195,5 +2254,13 @@ internal sealed class WorkspaceIndexingService(
     private sealed record IndexedChunk(
         string ChunkId,
         WorkspaceCodeChunker.Chunk Chunk);
+
+    private sealed record IndexedChunkMetadata(
+        string ChunkId,
+        int ChunkIndex,
+        int CharOffset,
+        int CharLength,
+        int StartLine,
+        int EndLine);
 
 }

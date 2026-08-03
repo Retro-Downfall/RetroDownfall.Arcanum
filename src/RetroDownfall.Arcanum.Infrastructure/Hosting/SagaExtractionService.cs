@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
@@ -15,6 +16,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -43,7 +45,9 @@ public sealed class SagaExtractionService(
     ILogger<SagaExtractionService> logger) : BackgroundService
 {
 
-    private const int QueueCapacity = 100;
+    private const int ExtractionPageEntryTarget = 10;
+
+    private static readonly TimeSpan AutomaticRetryDelay = TimeSpan.FromSeconds(1);
 
     private const string ExtractionSystemPrompt =
         """
@@ -58,20 +62,21 @@ public sealed class SagaExtractionService(
         If there is nothing worth remembering, return { "memories": [] }.
         """;
 
-    private readonly Channel<SagaExtractionRequest> _channel =
-        Channel.CreateBounded<SagaExtractionRequest>(
-        new BoundedChannelOptions(QueueCapacity)
+    private readonly Channel<Guid> _channel = Channel.CreateUnbounded<Guid>(
+        new UnboundedChannelOptions
         {
-            FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
             SingleWriter = false,
         });
 
+    private readonly ConcurrentDictionary<Guid, SagaExtractionRequest> _pending = new();
+
+    internal IReadOnlyCollection<SagaExtractionRequest> PendingRequestsForTests =>
+        [.. _pending.Values];
+
     /// <summary>
-    /// Enqueues a session for Saga memory extraction. Thread-safe; never throws. When the queue is
-    /// full, the oldest pending session id is dropped (<see cref="BoundedChannelFullMode.DropOldest"/>)
-    /// — losing an enqueue here is acceptable, since the next successful turn for that session
-    /// re-enqueues it.
+    /// Enqueues a session for Saga memory extraction. Thread-safe; never throws. Pending work is
+    /// deduplicated by session while provenance from every accepted source turn is retained.
     /// </summary>
     public void EnqueueExtraction(Guid sessionId)
     {
@@ -90,12 +95,46 @@ public sealed class SagaExtractionService(
         try
         {
 
-            if (!_channel.Writer.TryWrite(request))
+            while (true)
             {
 
+                if (_pending.TryGetValue(request.SessionId, out SagaExtractionRequest? existing))
+                {
+
+                    SagaExtractionRequest merged = MergeRequests(existing, request);
+
+                    if (_pending.TryUpdate(request.SessionId, merged, existing))
+                    {
+
+                        return;
+
+                    }
+
+                    continue;
+
+                }
+
+                if (!_pending.TryAdd(request.SessionId, request))
+                {
+
+                    continue;
+
+                }
+
+                if (_channel.Writer.TryWrite(request.SessionId))
+                {
+
+                    return;
+
+                }
+
+                _pending.TryRemove(request.SessionId, out _);
+
                 logger.LogDebug(
-                    "Saga extraction queue is full; dropping enqueue for session {SessionId}.",
+                    "Saga extraction queue is closed; enqueue for session {SessionId} was not accepted.",
                     request.SessionId);
+
+                return;
 
             }
 
@@ -112,6 +151,35 @@ public sealed class SagaExtractionService(
 
     }
 
+    private static SagaExtractionRequest MergeRequests(
+        SagaExtractionRequest existing,
+        SagaExtractionRequest incoming)
+    {
+
+        Dictionary<Guid, AttachmentMemoryProvenance> provenance = [];
+
+        foreach (AttachmentMemoryProvenance item in existing.MaterializedAttachments)
+        {
+
+            provenance[item.AttachmentId] = item;
+
+        }
+
+        foreach (AttachmentMemoryProvenance item in incoming.MaterializedAttachments)
+        {
+
+            provenance[item.AttachmentId] = item;
+
+        }
+
+        return new SagaExtractionRequest(
+            existing.SessionId,
+            [.. provenance.Values.OrderBy(static item => item.AttachmentId)],
+            existing.HadUnprovenancedAttachmentContent
+            || incoming.HadUnprovenancedAttachmentContent);
+
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
 
@@ -120,10 +188,17 @@ public sealed class SagaExtractionService(
         try
         {
 
-            await foreach (SagaExtractionRequest request in _channel.Reader.ReadAllAsync(stoppingToken).ConfigureAwait(false))
+            await foreach (Guid sessionId in _channel.Reader.ReadAllAsync(stoppingToken).ConfigureAwait(false))
             {
 
-                Guid sessionId = request.SessionId;
+                if (!_pending.TryRemove(sessionId, out SagaExtractionRequest? request))
+                {
+
+                    continue;
+
+                }
+
+                bool retry = false;
 
                 try
                 {
@@ -146,7 +221,7 @@ public sealed class SagaExtractionService(
 
                     await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
-                    await ExtractForSessionAsync(
+                    retry = !await ExtractForSessionAsync(
                         scope.ServiceProvider,
                         request,
                         embeddings,
@@ -165,6 +240,17 @@ public sealed class SagaExtractionService(
 
                     logger.LogWarning(ex, "Saga extraction failed for session {SessionId}", sessionId);
 
+                    retry = true;
+
+                }
+
+                if (retry)
+                {
+
+                    await Task.Delay(AutomaticRetryDelay, stoppingToken).ConfigureAwait(false);
+
+                    EnqueueExtraction(request);
+
                 }
 
             }
@@ -182,7 +268,7 @@ public sealed class SagaExtractionService(
     /// so tests can drive it directly without needing the full channel/<see cref="ExecuteAsync"/>
     /// machinery — mirrors <c>EntryWeavingService.RunTickAsync</c>'s testability pattern.
     /// </summary>
-    internal async Task ExtractForSessionAsync(
+    internal async Task<bool> ExtractForSessionAsync(
         IServiceProvider services,
         Guid sessionId,
         EmbeddingSettings embeddings,
@@ -198,7 +284,7 @@ public sealed class SagaExtractionService(
             settings,
             cancellationToken).ConfigureAwait(false);
 
-    internal async Task ExtractForSessionAsync(
+    internal async Task<bool> ExtractForSessionAsync(
         IServiceProvider services,
         SagaExtractionRequest request,
         EmbeddingSettings embeddings,
@@ -217,7 +303,7 @@ public sealed class SagaExtractionService(
                 "Saga extraction skipped for session {SessionId}: embedding provider unavailable.",
                 sessionId);
 
-            return;
+            return false;
 
         }
 
@@ -225,293 +311,229 @@ public sealed class SagaExtractionService(
 
         IGrimoireRepository grimoire = services.GetRequiredService<IGrimoireRepository>();
 
-        DateTimeOffset? watermark = await store.GetWatermarkAsync(sessionId, cancellationToken).ConfigureAwait(false);
-
-        int windowEntries = ArcanumSettingClamps.EmbeddingsSagaExtractionWindowEntries(
-            embeddings.Saga.ExtractionWindowEntries);
-
-        List<GrimoireEntryDto>? recent = await grimoire
-            .GetRecentSessionEntriesAsync(sessionId, windowEntries, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (recent is null || recent.Count == 0)
-        {
-
-            logger.LogDebug("Saga extraction skipped for session {SessionId}: no entries found.", sessionId);
-
-            return;
-
-        }
-
-        List<GrimoireEntryDto> newEntries = watermark is null
-            ? recent
-            : [.. recent.Where(entry => entry.CreatedAt > watermark.Value)];
-
-        if (newEntries.Count == 0)
-        {
-
-            logger.LogDebug(
-                "Saga extraction skipped for session {SessionId}: no new entries beyond watermark {Watermark:o}.",
-                sessionId,
-                watermark);
-
-            return;
-
-        }
-
-        int maxTotal = ArcanumSettingClamps.EmbeddingsSagaMaxMemoriesTotal(embeddings.Saga.MaxMemoriesTotal);
-
-        int totalCount = await store.CountAsync(cancellationToken).ConfigureAwait(false);
-
-        if (totalCount >= maxTotal)
-        {
-
-            logger.LogWarning(
-                "Saga extraction skipped for session {SessionId}: total memory cap ({MaxTotal}) reached.",
-                sessionId,
-                maxTotal);
-
-            return;
-
-        }
-
-        int maxPerSession = ArcanumSettingClamps.EmbeddingsSagaMaxMemoriesPerSession(
-            embeddings.Saga.MaxMemoriesPerSession);
-
-        int sessionCount = await store.CountBySessionAsync(sessionId, cancellationToken).ConfigureAwait(false);
-
-        if (sessionCount >= maxPerSession)
-        {
-
-            logger.LogWarning(
-                "Saga extraction skipped for session {SessionId}: per-session memory cap ({MaxPerSession}) reached.",
-                sessionId,
-                maxPerSession);
-
-            return;
-
-        }
-
         IArcanumIntelligenceProvider intelligence = services.GetRequiredService<IArcanumIntelligenceProvider>();
 
-        string prompt = BuildExtractionPrompt(newEntries, request);
+        DateTimeOffset? watermark = await store.GetWatermarkAsync(
+            sessionId,
+            cancellationToken).ConfigureAwait(false);
 
-        string? model = ResolveExtractionModel(embeddings.Saga.ExtractionModel, settings);
-
-        int maxTokens = ArcanumSettingClamps.EmbeddingsSagaExtractionMaxTokens(embeddings.Saga.ExtractionMaxTokens);
-
-        List<CoreChatMessage> statelessMessages =
-        [
-            new CoreChatMessage("system", ExtractionSystemPrompt),
-
-            new CoreChatMessage("user", prompt),
-        ];
-
-        PingRequest ping = new(
-            Prompt: string.Empty,
-            Model: model,
-            WorkingDirectory: string.Empty,
-            UnattendedMode: true,
-            DisableMcpTools: true,
-            StatelessMessages: statelessMessages,
-            SkipSpellRouting: true,
-            MaxOutputTokens: maxTokens);
-
-        Result<PromptTurnResult> result;
-
-        try
+        while (true)
         {
 
-            result = await intelligence.ExecutePromptAsync(ping, cancellationToken).ConfigureAwait(false);
+            DateTime watermarkUtc = watermark?.UtcDateTime
+                ?? DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
 
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-
-            throw;
-
-        }
-        catch (Exception ex)
-        {
-
-            logger.LogWarning(ex, "Saga extraction LLM call threw for session {SessionId}.", sessionId);
-
-            return;
-
-        }
-
-        if (result.IsFailure)
-        {
-
-            // Watermark is deliberately not advanced: the next tick (re-enqueued after the session's
-            // next successful turn) retries from the same starting point.
-            logger.LogWarning(
-                "Saga extraction LLM call failed for session {SessionId}: {Code} {Message}",
+            List<Entry> newEntries = await grimoire.GetUnsummarizedEntriesAsync(
                 sessionId,
-                result.Error.Code,
-                result.Error.Message);
+                watermarkUtc,
+                ExtractionPageEntryTarget,
+                cancellationToken).ConfigureAwait(false);
 
-            return;
-
-        }
-
-        IReadOnlyList<SagaExtractionCandidate>? memories = ParseMemories(
-            result.Value.Text,
-            sessionId);
-
-        if (memories is null)
-        {
-
-            // Malformed LLM response (JSON parse failure): the watermark is deliberately not advanced
-            // — like the LLM-call-failure path above — so the next enqueue for this session retries
-            // the same entry window instead of silently skipping it forever.
-            return;
-
-        }
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        int insertedCount = 0;
-
-        int eligibleCount = 0;
-
-        foreach (SagaExtractionCandidate memory in memories)
-        {
-
-            string trimmed = memory.Content.Trim();
-
-            if (trimmed.Length == 0)
+            if (newEntries.Count == 0)
             {
 
-                continue;
+                logger.LogDebug(
+                    "Saga extraction caught up for session {SessionId} at watermark {Watermark:o}.",
+                    sessionId,
+                    watermark);
+
+                return true;
 
             }
 
-            AttachmentMemoryProvenance? provenance = null;
+            string prompt = BuildExtractionPrompt(newEntries, request);
 
-            if (memory.AttachmentId is { } attachmentId)
+            string? model = ResolveExtractionModel(embeddings.Saga.ExtractionModel, settings);
+
+            List<CoreChatMessage> statelessMessages =
+            [
+                new CoreChatMessage("system", ExtractionSystemPrompt),
+
+                new CoreChatMessage("user", prompt),
+            ];
+
+            PingRequest ping = new(
+                Prompt: string.Empty,
+                Model: model,
+                WorkingDirectory: string.Empty,
+                UnattendedMode: true,
+                DisableMcpTools: true,
+                StatelessMessages: statelessMessages,
+                SkipSpellRouting: true);
+
+            Result<PromptTurnResult> result;
+
+            try
             {
 
-                provenance = request.MaterializedAttachments.FirstOrDefault(
-                    source => source.AttachmentId == attachmentId);
+                result = await intelligence.ExecutePromptAsync(ping, cancellationToken).ConfigureAwait(false);
 
-                if (provenance is null)
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+
+                throw;
+
+            }
+            catch (Exception ex)
+            {
+
+                logger.LogWarning(ex, "Saga extraction LLM call threw for session {SessionId}.", sessionId);
+
+                return false;
+
+            }
+
+            if (result.IsFailure)
+            {
+
+                // Watermark is deliberately not advanced: the background worker automatically
+                // retries from the same starting point.
+                logger.LogWarning(
+                    "Saga extraction LLM call failed for session {SessionId}: {Code} {Message}",
+                    sessionId,
+                    result.Error.Code,
+                    result.Error.Message);
+
+                return false;
+
+            }
+
+            IReadOnlyList<SagaExtractionCandidate>? memories = ParseMemories(
+                result.Value.Text,
+                sessionId);
+
+            if (memories is null)
+            {
+
+                // Malformed LLM response: the watermark is deliberately not advanced so the
+                // automatic retry reviews the same entries again.
+                return false;
+
+            }
+
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+
+            int insertedCount = 0;
+
+            int eligibleCount = 0;
+
+            foreach (SagaExtractionCandidate memory in memories)
+            {
+
+                string trimmed = memory.Content.Trim();
+
+                if (trimmed.Length == 0)
+                {
+
+                    continue;
+
+                }
+
+                AttachmentMemoryProvenance? provenance = null;
+
+                if (memory.AttachmentId is { } attachmentId)
+                {
+
+                    provenance = request.MaterializedAttachments.FirstOrDefault(
+                        source => source.AttachmentId == attachmentId);
+
+                    if (provenance is null)
+                    {
+
+                        logger.LogWarning(
+                            "Saga extraction discarded attachment claim {AttachmentId} because it was not materialized in source turn {SessionId}.",
+                            attachmentId,
+                            sessionId);
+
+                        continue;
+
+                    }
+
+                }
+                else if (request.HadUnprovenancedAttachmentContent)
                 {
 
                     logger.LogWarning(
-                        "Saga extraction discarded attachment claim {AttachmentId} because it was not materialized in source turn {SessionId}.",
-                        attachmentId,
+                        "Saga extraction discarded an unprovenanced conclusion for session {SessionId} because ephemeral attachment content was materialized in the source turn.",
                         sessionId);
 
                     continue;
 
                 }
 
+                eligibleCount++;
+
+                Result<Embedding<float>> embedResult = await weave.EmbedAsync(trimmed, cancellationToken).ConfigureAwait(false);
+
+                if (embedResult.IsFailure)
+                {
+
+                    logger.LogDebug(
+                        "Saga extraction: failed to embed a memory for session {SessionId}; skipping that memory.",
+                        sessionId);
+
+                    continue;
+
+                }
+
+                string id = Guid.NewGuid().ToString();
+
+                if (provenance is null)
+                {
+
+                    await store.InsertAsync(
+                        id,
+                        trimmed,
+                        now,
+                        sessionId,
+                        tags: null,
+                        source: "extraction",
+                        embedResult.Value.Vector.ToArray(),
+                        cancellationToken).ConfigureAwait(false);
+
+                }
+                else
+                {
+
+                    await store.InsertAsync(
+                        id,
+                        trimmed,
+                        now,
+                        sessionId,
+                        tags: null,
+                        source: "attachment-extraction",
+                        embedResult.Value.Vector.ToArray(),
+                        provenance,
+                        cancellationToken).ConfigureAwait(false);
+
+                }
+
+                insertedCount++;
+
             }
-            else if (request.HadUnprovenancedAttachmentContent)
+
+            if (eligibleCount > 0 && insertedCount == 0)
             {
 
+                // Every parsed memory failed to embed/insert (e.g. embedding provider outage):
+                // leave the watermark alone so the automatic retry cannot lose these memories.
                 logger.LogWarning(
-                    "Saga extraction discarded an unprovenanced conclusion for session {SessionId} because ephemeral attachment content was materialized in the source turn.",
-                    sessionId);
-
-                continue;
-
-            }
-
-            eligibleCount++;
-
-            if (sessionCount + insertedCount >= maxPerSession)
-            {
-
-                logger.LogWarning(
-                    "Saga extraction for session {SessionId} stopped mid-batch: per-session memory cap ({MaxPerSession}) reached.",
+                    "Saga extraction for session {SessionId}: 0 of {Count} parsed memories were persisted; watermark not advanced.",
                     sessionId,
-                    maxPerSession);
+                    eligibleCount);
 
-                break;
-
-            }
-
-            if (totalCount + insertedCount >= maxTotal)
-            {
-
-                logger.LogWarning(
-                    "Saga extraction for session {SessionId} stopped mid-batch: total memory cap ({MaxTotal}) reached.",
-                    sessionId,
-                    maxTotal);
-
-                break;
+                return false;
 
             }
 
-            Result<Embedding<float>> embedResult = await weave.EmbedAsync(trimmed, cancellationToken).ConfigureAwait(false);
+            DateTimeOffset latestEntryCreatedAt = newEntries[^1].CreatedAt;
 
-            if (embedResult.IsFailure)
-            {
+            await store.SetWatermarkAsync(sessionId, latestEntryCreatedAt, cancellationToken).ConfigureAwait(false);
 
-                logger.LogDebug(
-                    "Saga extraction: failed to embed a memory for session {SessionId}; skipping that memory.",
-                    sessionId);
-
-                continue;
-
-            }
-
-            string id = Guid.NewGuid().ToString();
-
-            if (provenance is null)
-            {
-
-                await store.InsertAsync(
-                    id,
-                    trimmed,
-                    now,
-                    sessionId,
-                    tags: null,
-                    source: "extraction",
-                    embedResult.Value.Vector.ToArray(),
-                    cancellationToken).ConfigureAwait(false);
-
-            }
-            else
-            {
-
-                await store.InsertAsync(
-                    id,
-                    trimmed,
-                    now,
-                    sessionId,
-                    tags: null,
-                    source: "attachment-extraction",
-                    embedResult.Value.Vector.ToArray(),
-                    provenance,
-                    cancellationToken).ConfigureAwait(false);
-
-            }
-
-            insertedCount++;
+            watermark = latestEntryCreatedAt;
 
         }
-
-        if (eligibleCount > 0 && insertedCount == 0)
-        {
-
-            // Every parsed memory failed to embed/insert (e.g. embedding provider outage): treat this
-            // like the LLM-call-failure path and leave the watermark alone so the next enqueue retries
-            // the same entry window instead of losing these memories forever.
-            logger.LogWarning(
-                "Saga extraction for session {SessionId}: 0 of {Count} parsed memories were persisted; watermark not advanced.",
-                sessionId,
-                eligibleCount);
-
-            return;
-
-        }
-
-        DateTimeOffset latestEntryCreatedAt = newEntries[^1].CreatedAt;
-
-        await store.SetWatermarkAsync(sessionId, latestEntryCreatedAt, cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -621,13 +643,13 @@ public sealed class SagaExtractionService(
     }
 
     private static string BuildExtractionPrompt(
-        List<GrimoireEntryDto> entries,
+        IReadOnlyList<Entry> entries,
         SagaExtractionRequest request)
     {
 
         StringBuilder sb = new();
 
-        foreach (GrimoireEntryDto entry in entries)
+        foreach (Entry entry in entries)
         {
 
             sb.Append('[').Append(entry.Role).Append("]: ").AppendLine(entry.Content);

@@ -108,8 +108,6 @@ public sealed partial class DataRetentionServiceTests
 
         settings.Retention.CompletedBatches = EnabledRule(days: 30);
 
-        settings.Retention.MaxItemsPerSweep = 1;
-
         DataRetentionService service = CreateService(settings);
 
         DataRetentionRequest request = new(DataRetentionOperation.Prune);
@@ -155,10 +153,6 @@ public sealed partial class DataRetentionServiceTests
         ArcanumSettings settings = CreatePruneSettings();
 
         seeded.Enable(settings.Retention);
-
-        settings.Retention.MaxItemsPerSweep = 1;
-
-        settings.Retention.CheckpointInterval = 1;
 
         DataRetentionService service = CreateService(settings);
 
@@ -229,10 +223,6 @@ public sealed partial class DataRetentionServiceTests
         ArcanumSettings settings = CreatePruneSettings();
 
         settings.Retention.Entries = EnabledRule();
-
-        settings.Retention.MaxItemsPerSweep = 1;
-
-        settings.Retention.CheckpointInterval = 1;
 
         DataRetentionService service = CreateService(settings);
 
@@ -324,8 +314,6 @@ public sealed partial class DataRetentionServiceTests
 
         settings.Retention.WorkspaceIndexes = EnabledRule();
 
-        settings.Retention.MaxItemsPerSweep = 1;
-
         DataRetentionService service = CreateService(settings);
 
         DataRetentionRequest request = new(DataRetentionOperation.Prune);
@@ -384,8 +372,6 @@ public sealed partial class DataRetentionServiceTests
         ArcanumSettings settings = CreatePruneSettings();
 
         settings.Retention.SessionEntryEmbeddings = EnabledRule();
-
-        settings.Retention.MaxItemsPerSweep = 1;
 
         DataRetentionService service = CreateService(settings);
 
@@ -446,8 +432,6 @@ public sealed partial class DataRetentionServiceTests
         ArcanumSettings settings = CreatePruneSettings();
 
         settings.Retention.CompletedBatches = EnabledRule(days: 30);
-
-        settings.Retention.MaxItemsPerSweep = 1;
 
         DataRetentionService service = CreateService(settings);
 

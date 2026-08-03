@@ -21,13 +21,53 @@ internal static class SpellEndpoints
             "/spells",
             async (
                 string? workspace,
+                bool? paged,
+                string? q,
+                string? tag,
+                string? tool,
+                SpellSource? source,
+                string? cursor,
                 ISpellRepository repo,
+                IArcanumSpellCatalog catalog,
                 SpellWorkspaceResolver workspaceResolver,
                 HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 Result<string?> workspaceResult = workspaceResolver.Resolve(workspace);
+
+                if (paged == true)
+                {
+
+                    IResult? pagedWorkspaceFailure = SpellApiResults.MapOptionalWorkspaceFailure<SpellCatalogPage>(
+                        workspaceResult,
+                        traceId,
+                        ArcanumJsonContext.Default.ApiResponseSpellCatalogPage,
+                        out string? pagedWorkspace);
+
+                    if (pagedWorkspaceFailure is not null)
+                    {
+
+                        return pagedWorkspaceFailure;
+
+                    }
+
+                    Result<SpellCatalogPage> page = await catalog.PageAsync(
+                        pagedWorkspace,
+                        new SpellCatalogQuery(q, tag, tool, source, cursor),
+                        ctx.RequestAborted).ConfigureAwait(false);
+
+                    ApiResponse<SpellCatalogPage> envelope =
+                        ApiResponse<SpellCatalogPage>.FromResult(page, traceId);
+
+                    return Results.Json(
+                        envelope,
+                        ArcanumJsonContext.Default.ApiResponseSpellCatalogPage,
+                        statusCode: page.IsSuccess
+                            ? StatusCodes.Status200OK
+                            : StatusCodes.Status400BadRequest);
+
+                }
 
                 IResult? workspaceFailure = SpellApiResults.MapOptionalWorkspaceFailure<SpellSummary[]>(
                     workspaceResult,

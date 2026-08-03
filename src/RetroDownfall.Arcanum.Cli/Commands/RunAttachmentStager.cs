@@ -45,18 +45,15 @@ internal sealed class RunAttachmentStager(
     internal const int MaxAttachedFileChunkBytes =
         (int)ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes;
 
-    internal const int MaxAttachedFiles =
-        ArcanumRuntimeDefaults.CliMaxAttachedFilesPerRequest;
-
     internal const int MaxTextFileSourceBytes =
-        MaxAttachedFileChunkBytes * MaxAttachedFiles;
+        (int)ArcanumRuntimeDefaults.CliMaxAttachedTotalBytes;
 
     private const int Utf8BomBytes = 3;
 
     private const int FileReadBufferBytes = 81920;
 
     private const long MaxAttachedTotalBytes =
-        (long)MaxAttachedFileChunkBytes * MaxAttachedFiles;
+        ArcanumRuntimeDefaults.CliMaxAttachedTotalBytes;
 
     private static readonly UTF8Encoding StrictUtf8 = new(
         encoderShouldEmitUTF8Identifier: false,
@@ -188,7 +185,10 @@ internal sealed class RunAttachmentStager(
                 {
 
                     return Failure(
-                        $"The staged images exceed the maximum of {maximumImages} images per request.");
+                        $"Provider request-shape boundary reached: measured {scryingFoci.Count + 1} images, "
+                        + $"which exceeds the maximum of {maximumImages} images per request. "
+                        + "No staged work was saved; send the remaining images in a later turn "
+                        + "or choose a provider/model with a larger factual image capacity.");
 
                 }
 
@@ -323,7 +323,9 @@ internal sealed class RunAttachmentStager(
         {
 
             return Failure(
-                $"The --with image '{relativePath}' exceeds the {maximumBytes}-byte image limit.");
+                $"Physical single-image allocation boundary reached for '{relativePath}': measured "
+                + $"{imageBytes.LongLength} bytes; limit {maximumBytes}. No staged work was saved. "
+                + "Resize the image or send it in a provider-supported form and retry.");
 
         }
 
@@ -363,25 +365,22 @@ internal sealed class RunAttachmentStager(
         {
 
             return Failure(
-                $"Text source '{source}' exceeds the {maximumSourceBytes}-byte UTF-8 limit.");
+                $"Physical single-source allocation boundary reached for '{source}': measured "
+                + $"{utf8Bytes} UTF-8 bytes; limit {maximumSourceBytes}. No staged work was saved. "
+                + "Split the source and retry with smaller chunks.");
 
         }
 
         List<string> chunks = SplitUtf8(content, MaxAttachedFileChunkBytes);
 
-        if (attachedFiles.Count + chunks.Count > MaxAttachedFiles)
-        {
-
-            return Failure(
-                $"The staged text requires more than the server limit of {MaxAttachedFiles} attached files.");
-
-        }
-
         if (attachedUtf8Bytes + utf8Bytes > MaxAttachedTotalBytes)
         {
 
             return Failure(
-                $"The staged text exceeds the server aggregate limit of {MaxAttachedTotalBytes} UTF-8 bytes.");
+                "Physical single-request allocation boundary reached for staged text: "
+                + $"measured {attachedUtf8Bytes + utf8Bytes} UTF-8 bytes; limit {MaxAttachedTotalBytes}. "
+                + "No staged work was saved. Send the remaining sources in a later turn "
+                + "or persist and reference session attachments.");
 
         }
 

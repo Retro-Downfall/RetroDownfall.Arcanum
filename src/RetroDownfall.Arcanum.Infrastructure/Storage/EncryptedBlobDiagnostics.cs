@@ -8,8 +8,6 @@ public sealed class EncryptedBlobDiagnostics(
     ISecretStore secretStore,
     IEncryptedBlobStore blobStore) : IEncryptedBlobDiagnostics
 {
-    private const int ScanLimit = 512;
-
     public async Task<FileEncryptionDiagnostics> InspectAsync(
         CancellationToken cancellationToken = default)
     {
@@ -26,18 +24,9 @@ public sealed class EncryptedBlobDiagnostics(
         int encrypted = 0;
         int legacy = 0;
         int corrupt = 0;
-        int scanned = 0;
-        bool truncated = false;
         foreach ((string Path, EncryptedBlobPurpose[] Purposes) candidate in EnumerateCandidates())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (scanned >= ScanLimit)
-            {
-                truncated = true;
-                break;
-            }
-
-            scanned++;
             if (!blobStore.HasEnvelope(candidate.Path))
             {
                 legacy++;
@@ -86,7 +75,6 @@ public sealed class EncryptedBlobDiagnostics(
         };
         string detail =
             $"{secretDetail}; encrypted={encrypted}; legacyPlaintext={legacy}; corrupt={corrupt}"
-            + (truncated ? $"; scan limited to {ScanLimit} files" : string.Empty)
             + (legacy > 0
                 ? "; run 'arcanum data encryption migrate' followed by 'verify'"
                 : string.Empty)
@@ -96,7 +84,7 @@ public sealed class EncryptedBlobDiagnostics(
             encrypted,
             legacy,
             corrupt,
-            truncated,
+            false,
             detail);
     }
 

@@ -29,11 +29,7 @@ public sealed record SpellSettings
     /// </summary>
     public int MetadataScanCacheTtlSeconds { get; set; } = 5;
 
-    public int MaxDependencies { get; set; } = 20;
-
     public int MaxDeclaredTools { get; set; } = 50;
-
-    public int MaxResonantDependencies { get; set; } = 10;
 
     public int MaxResonantBytes { get; set; } = 131_072;
 

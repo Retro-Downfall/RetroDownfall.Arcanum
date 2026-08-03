@@ -436,7 +436,7 @@ internal sealed class LexiconService(
     private static List<string> NormalizeIncomingFacts(IReadOnlyList<string> facts)
     {
 
-        List<string> result = new(LexiconLimits.MaxFactsPerUpsert);
+        List<string> result = [];
 
         if (facts is null)
         {
@@ -445,21 +445,11 @@ internal sealed class LexiconService(
 
         foreach (string fact in facts)
         {
-            if (result.Count >= LexiconLimits.MaxFactsPerUpsert)
-            {
-                break;
-            }
-
             string trimmed = fact?.Trim() ?? string.Empty;
 
             if (trimmed.Length == 0)
             {
                 continue;
-            }
-
-            if (trimmed.Length > LexiconLimits.MaxFactLength)
-            {
-                trimmed = trimmed[..LexiconLimits.MaxFactLength];
             }
 
             result.Add(trimmed);
@@ -487,7 +477,7 @@ internal sealed class LexiconService(
     private static List<string> MergeFacts(LexiconEntryDto? existing, List<string> incoming)
     {
 
-        List<string> merged = new(LexiconLimits.MaxFactsRetainedPerEntry);
+        List<string> merged = [];
 
         HashSet<string> seen = new(StringComparer.Ordinal);
 
@@ -508,12 +498,6 @@ internal sealed class LexiconService(
             {
                 merged.Add(fact);
             }
-        }
-
-        if (merged.Count > LexiconLimits.MaxFactsRetainedPerEntry)
-        {
-            // Keep the most recently appended facts: drop the oldest overflow from the front.
-            merged = merged.GetRange(merged.Count - LexiconLimits.MaxFactsRetainedPerEntry, LexiconLimits.MaxFactsRetainedPerEntry);
         }
 
         return merged;

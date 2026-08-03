@@ -6,7 +6,6 @@ public enum DelegatedBudgetExhaustionReason
 {
     Tokens = 1,
     Cost = 2,
-    Turns = 3,
 }
 
 public sealed record DelegatedManaUsage(
@@ -41,8 +40,6 @@ public sealed class DelegatedManaTracker
 
     private readonly decimal? _maxCostUsd;
 
-    private readonly int _maxTurns;
-
     private readonly object _costGate = new();
 
     private long _tokens;
@@ -55,8 +52,7 @@ public sealed class DelegatedManaTracker
 
     public DelegatedManaTracker(
         long? maxTokens,
-        decimal? maxCostUsd,
-        int maxTurns)
+        decimal? maxCostUsd)
     {
         if (maxTokens is null && maxCostUsd is null)
         {
@@ -74,38 +70,15 @@ public sealed class DelegatedManaTracker
             throw new ArgumentOutOfRangeException(nameof(maxCostUsd));
         }
 
-        if (maxTurns <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxTurns));
-        }
-
         _maxTokens = maxTokens;
         _maxCostUsd = maxCostUsd;
-        _maxTurns = maxTurns;
     }
 
     public void BeginModelCall()
     {
         ThrowIfExhausted();
 
-        while (true)
-        {
-            int current = Volatile.Read(ref _modelCalls);
-
-            if (current >= _maxTurns)
-            {
-                MarkExhausted(DelegatedBudgetExhaustionReason.Turns);
-                ThrowIfExhausted();
-            }
-
-            if (Interlocked.CompareExchange(
-                    ref _modelCalls,
-                    current + 1,
-                    current) == current)
-            {
-                return;
-            }
-        }
+        _ = Interlocked.Increment(ref _modelCalls);
     }
 
     public void RecordUsage(

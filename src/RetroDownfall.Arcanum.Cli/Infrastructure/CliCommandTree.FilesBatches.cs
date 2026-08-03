@@ -180,12 +180,23 @@ internal static partial class CliCommandTree
 
         };
 
+        Option<string?> cursor = new("--cursor")
+
+        {
+
+            Description = "Opaque continuation cursor returned by the previous batch-list page.",
+
+        };
+
         list.Add(status);
+
+        list.Add(cursor);
 
         list.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
                 await handler.ListBatches(
                     result.GetValue(status),
+                    result.GetValue(cursor),
                     cancellationToken).ConfigureAwait(false));
 
         Command show = new(

@@ -31,14 +31,20 @@ public sealed record OpenAiBatchObject(
 
     public static string ToWireId(Guid id) => WireIdPrefix + id.ToString("N");
 
-    public static OpenAiBatchObject FromRecord(BatchRecord record, OpenAiBatchRequestCounts requestCounts) => new(
+    public static OpenAiBatchObject FromRecord(BatchRecord record) => new(
         Id: ToWireId(record.Id),
         Endpoint: record.Endpoint,
         InputFileId: $"file-{record.InputFileId:N}",
         CompletionWindow: "24h",
         Status: record.Status,
         CreatedAt: record.CreatedAt.ToUnixTimeSeconds(),
-        RequestCounts: requestCounts,
+        RequestCounts: new OpenAiBatchRequestCounts(
+
+            record.TotalRequestCount,
+
+            record.CompletedRequestCount,
+
+            record.FailedRequestCount),
         OutputFileId: record.OutputFileId is { } outputId ? $"file-{outputId:N}" : null,
         ErrorFileId: record.ErrorFileId is { } errorId ? $"file-{errorId:N}" : null,
         CompletedAt: record.CompletedAt?.ToUnixTimeSeconds());
@@ -47,9 +53,9 @@ public sealed record OpenAiBatchObject(
 
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; mapper tests cover wire serialization.
 public sealed record OpenAiBatchRequestCounts(
-    [property: JsonPropertyName("total")] int Total,
-    [property: JsonPropertyName("completed")] int Completed,
-    [property: JsonPropertyName("failed")] int Failed)
+    [property: JsonPropertyName("total")] long Total,
+    [property: JsonPropertyName("completed")] long Completed,
+    [property: JsonPropertyName("failed")] long Failed)
 {
 
     public static readonly OpenAiBatchRequestCounts Empty = new(0, 0, 0);
@@ -60,4 +66,5 @@ public sealed record OpenAiBatchRequestCounts(
 public sealed record OpenAiBatchListResponse(
     [property: JsonPropertyName("data")] List<OpenAiBatchObject> Data,
     [property: JsonPropertyName("has_more")] bool HasMore = false,
+    [property: JsonPropertyName("next_cursor")] string? NextCursor = null,
     [property: JsonPropertyName("object")] string ObjectKind = "list");

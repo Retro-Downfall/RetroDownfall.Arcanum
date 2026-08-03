@@ -14,25 +14,11 @@ public static class ArcanumSettingClamps
 
     public static int RetentionSweepIntervalHours(int value) => Math.Clamp(value, 1, 168);
 
-    public static int RetentionMaxItemsPerSweep(int value) => Math.Clamp(value, 1, 10_000);
-
-    public static int RetentionCheckpointInterval(int value, int maxItemsPerSweep) =>
-        Math.Clamp(
-            value,
-            1,
-            RetentionMaxItemsPerSweep(maxItemsPerSweep));
-
     public static int RetentionAccountingMinimumDays(int value) => Math.Clamp(value, 30, 3_650);
 
     public static int RetentionRuleDays(int value) => Math.Clamp(value, 1, 3_650);
 
-    public static int McpRequestTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
-
-    public static int McpMaxPaginationPages(int value) => Math.Clamp(value, 1, 256);
-
-    public static int ListDirectoryMaxPaths(int value) => Math.Clamp(value, 1, 2_000);
-
-    public static int ListDirectoryMaxDepth(int value) => Math.Clamp(value, 1, 256);
+    public static int McpInitializationTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
     public static int SemanticRouterMaxTokens(int value) => Math.Clamp(value, 1, 4096);
 
@@ -41,8 +27,6 @@ public static class ArcanumSettingClamps
     public static int LexiconMaxInjectedBytes(int value) => Math.Clamp(value, 256, 65_536);
 
     public static float SemanticRouterTemperature(float value) => Math.Clamp(value, 0f, 2f);
-
-    public static int MaxEnumerationSteps(int value) => Math.Clamp(value, 1, 10_000_000);
 
     public static int MaxTableOfContentsLines(int value) => Math.Clamp(value, 1, 500);
 
@@ -80,8 +64,6 @@ public static class ArcanumSettingClamps
 
     public static int MaxApiKeyHeaderUtf16Chars(int value) => Math.Clamp(value, 128, 8192);
 
-    public static int MaxAttachedFilesPerRequest(int value) => Math.Clamp(value, 1, 256);
-
     public static int MaxAttachedFileRelativePathChars(int value) => Math.Clamp(value, 256, 8192);
 
     public static int ArchiveSearchMaxQueryLength(int value) => Math.Clamp(value, 32, 4096);
@@ -98,33 +80,13 @@ public static class ArcanumSettingClamps
 
     public static int ContextWindowLimit(int value) => Math.Clamp(value, 256, 2_097_152);
 
-    public static int MaxModelCallsPerTurn(int value) => Math.Clamp(value, 1, 128);
-
-    public static int MaxToolRoundsPerTurn(int value) => Math.Clamp(value, 1, 64);
-
-    public static int MaxToolCallsPerTurn(int value) => Math.Clamp(value, 1, 256);
-
-    public static int MaxToolResultTokensPerTurn(int value) => Math.Clamp(value, 1, 2_097_152);
-
-    public static int MaxTurnElapsedSeconds(int value) => Math.Clamp(value, 1, 3_600);
+    public static int SessionMaxPinnedEntries(int value) => Math.Clamp(value, 0, 100);
 
     public static int ReasoningBudgetTokens(int value) => Math.Clamp(value, 1, 2_097_152);
-
-    public static int ExecuteCommandTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
 
     public static int WorkspaceSearchMaxPatternChars(int value) => Math.Clamp(value, 1, 16_384);
 
     public static int WorkspaceSearchRegexTimeoutMilliseconds(int value) => Math.Clamp(value, 10, 10_000);
-
-    public static int WorkspaceSearchMaxElapsedMilliseconds(int value) => Math.Clamp(value, 100, 120_000);
-
-    public static int WorkspaceSearchMaxFiles(int value) => Math.Clamp(value, 1, 100_000);
-
-    public static long WorkspaceSearchMaxBytes(long value) => Math.Clamp(value, 1_024L, 1024L * 1024L * 1024L);
-
-    public static int WorkspaceSearchMaxTraversalSteps(int value) => Math.Clamp(value, 1, 10_000_000);
-
-    public static int WorkspaceSearchMaxMatches(int value) => Math.Clamp(value, 1, 100_000);
 
     public static int WorkspaceSearchMaxPreviewChars(int value) => Math.Clamp(value, 16, 4_096);
 
@@ -132,9 +94,6 @@ public static class ArcanumSettingClamps
 
     public static long WorkspacePatchMaxInputBytesPerFile(long value) =>
         Math.Clamp(value, 1_024L, 256L * 1024L * 1024L);
-
-    public static long WorkspacePatchMaxTotalInputBytes(long value) =>
-        Math.Clamp(value, 1_024L, 1L * 1024L * 1024L * 1024L);
 
     public static long WorkspacePatchMaxOutputBytesPerFile(long value) =>
         Math.Clamp(value, 1_024L, 256L * 1024L * 1024L);
@@ -148,34 +107,15 @@ public static class ArcanumSettingClamps
     public static long WorkspacePatchMaxTotalStagingBytes(long value) =>
         Math.Clamp(value, 1_024L, 2L * 1024L * 1024L * 1024L);
 
-    public static int WorkspacePatchMaxElapsedMilliseconds(int value) =>
-        Math.Clamp(value, 100, 300_000);
-
-    public static int WorkspacePatchRollbackReserveMilliseconds(int value) =>
+    public static int WorkspacePatchRecoveryTimeoutMilliseconds(int value) =>
         Math.Clamp(value, 50, 60_000);
 
-    public static int WorkspacePatchMaxFiles(int value) => Math.Clamp(value, 1, 1_000);
-
-    public static int WorkspacePatchMaxHunks(int value) => Math.Clamp(value, 1, 10_000);
-
-    public static int WorkspacePatchMaxLinesPerHunk(int value) => Math.Clamp(value, 1, 100_000);
-
     public static int WorkspacePatchFuzzyMatchWindowLines(int value) => Math.Clamp(value, 0, 1_000);
-
-    public static int WorkspacePatchMaxResultItems(int value) => Math.Clamp(value, 1, 10_000);
 
     public static WorkspacePatchSettings NormalizeWorkspacePatchSettings(
         WorkspacePatchSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
-
-        int maxElapsedMilliseconds =
-            WorkspacePatchMaxElapsedMilliseconds(
-                settings.MaxElapsedMilliseconds);
-        int rollbackReserveMilliseconds = Math.Min(
-            WorkspacePatchRollbackReserveMilliseconds(
-                settings.RollbackReserveMilliseconds),
-            maxElapsedMilliseconds - 1);
 
         return new WorkspacePatchSettings
         {
@@ -185,9 +125,6 @@ public static class ArcanumSettingClamps
             MaxInputBytesPerFile =
                 WorkspacePatchMaxInputBytesPerFile(
                     settings.MaxInputBytesPerFile),
-            MaxTotalInputBytes =
-                WorkspacePatchMaxTotalInputBytes(
-                    settings.MaxTotalInputBytes),
             MaxOutputBytesPerFile =
                 WorkspacePatchMaxOutputBytesPerFile(
                     settings.MaxOutputBytesPerFile),
@@ -200,30 +137,16 @@ public static class ArcanumSettingClamps
             MaxTotalStagingBytes =
                 WorkspacePatchMaxTotalStagingBytes(
                     settings.MaxTotalStagingBytes),
-            MaxElapsedMilliseconds = maxElapsedMilliseconds,
-            RollbackReserveMilliseconds =
-                rollbackReserveMilliseconds,
-            MaxFiles =
-                WorkspacePatchMaxFiles(
-                    settings.MaxFiles),
-            MaxHunks =
-                WorkspacePatchMaxHunks(
-                    settings.MaxHunks),
-            MaxLinesPerHunk =
-                WorkspacePatchMaxLinesPerHunk(
-                    settings.MaxLinesPerHunk),
+            RecoveryTimeoutMilliseconds =
+                WorkspacePatchRecoveryTimeoutMilliseconds(
+                    settings.RecoveryTimeoutMilliseconds),
             FuzzyMatchWindowLines =
                 WorkspacePatchFuzzyMatchWindowLines(
                     settings.FuzzyMatchWindowLines),
-            MaxResultItems =
-                WorkspacePatchMaxResultItems(
-                    settings.MaxResultItems),
         };
     }
 
     public const int WorkspaceCheckCleanupGraceSeconds = 30;
-
-    public static int WorkspaceCheckTimeoutSeconds(int value) => Math.Clamp(value, 30, 1_800);
 
     public static int WorkspaceCheckMaxCustomProfiles(int value) => Math.Clamp(value, 0, 256);
 
@@ -254,10 +177,6 @@ public static class ArcanumSettingClamps
 
     public static long FilesMaxUploadSizeBytes(long value) => Math.Clamp(value, 1024L * 1024L, 10L * 1024L * 1024L * 1024L);
 
-    public static int AttachmentsMaxReferencesPerTurn(int value) => Math.Clamp(value, 1, 32);
-
-    public static int AttachmentsMaxVersionsPerLogicalKey(int value) => Math.Clamp(value, 1, 100);
-
     public static long AttachmentsMaxBytesPerSession(long value) => Math.Clamp(value, 1024L * 1024L, 10L * 1024L * 1024L * 1024L);
 
     public static int AttachmentsPendingRetentionHours(int value) => Math.Clamp(value, 1, 168);
@@ -267,10 +186,6 @@ public static class ArcanumSettingClamps
     public static int AttachmentsMaxIndexBytesInPrompt(int value) => Math.Clamp(value, 256, 64_000);
 
     public static int BatchesMaxConcurrentBatches(int value) => Math.Clamp(value, 1, 20);
-
-    public static int BatchesMaxRequestsPerBatch(int value) => Math.Clamp(value, 1, 1_000_000);
-
-    public static int BatchesBatchExpiryHours(int value) => Math.Clamp(value, 1, 168);
 
     public static int BatchesMaxConcurrentRequestsPerBatch(int value) => Math.Clamp(value, 1, 10);
 
@@ -337,8 +252,6 @@ public static class ArcanumSettingClamps
 
     public static int DoctorHealthTimeoutSeconds(int value) => Math.Clamp(value, 1, 60);
 
-    public static int ApiRequestTimeoutSeconds(int value) => Math.Clamp(value, 1, 600);
-
     public static int EventBusChannelCapacity(int value) => Math.Clamp(value, 64, 65_536);
 
     public static int EventBusHeartbeatSeconds(int value) => Math.Clamp(value, 0, 300);
@@ -359,8 +272,6 @@ public static class ArcanumSettingClamps
 
     public static int SessionStreamReplayLimit(int value) => Math.Clamp(value, 1, 10_000);
 
-    public static int MaxCampaigns(int value) => Math.Clamp(value, 10, 10_000);
-
     public static int WardTimeoutSeconds(int value) => Math.Clamp(value, 10, 600);
 
     public static int MaxConcurrentApprentices(int value) => Math.Clamp(value, 1, 50);
@@ -370,8 +281,6 @@ public static class ArcanumSettingClamps
     public static int MaxConcurrentA2ATasks(int value) => Math.Clamp(value, 1, 500);
 
     public static int ChronicleChannelCapacity(int value) => Math.Clamp(value, 100, 10_000);
-
-    public static int MaxPendingStarts(int value) => Math.Clamp(value, 1, 1_000);
 
     public static int SanctumMaxProcessMemoryMb(int value) => Math.Clamp(value, 64, 8192);
 
@@ -399,21 +308,13 @@ public static class ArcanumSettingClamps
 
     public static int SseConnectionsPerType(int value) => Math.Clamp(value, 1, 50);
 
-    public static int MaxEntriesPerSession(int value) => Math.Clamp(value, 100, 1_000_000);
-
     public static int MaxEntryContentBytes(int value) => Math.Clamp(value, 1024, 16_777_216);
-
-    public static int McpMaxServers(int value) => Math.Clamp(value, 1, 500);
-
-    public static int McpMaxToolsPerServer(int value) => Math.Clamp(value, 1, 2048);
-
-    public static int McpMaxToolsPerListPage(int value) => Math.Clamp(value, 1, 256);
 
     public static int McpMaxToolsTotalBytes(int value) => Math.Clamp(value, 65_536, 16_777_216);
 
     public static int McpMaxJsonRpcLineBytes(int value) => Math.Clamp(value, 65_536, 8_388_608);
 
-    public static int McpHttpRequestTimeoutSeconds(int value) => Math.Clamp(value, 10, 600);
+    public static int McpHttpConnectTimeoutSeconds(int value) => Math.Clamp(value, 1, 300);
 
     public static int MaxOpenApiMessages(int value) => Math.Clamp(value, 1, 10_000);
 
@@ -423,11 +324,7 @@ public static class ArcanumSettingClamps
 
     public static int MaxPingPromptChars(int value) => Math.Clamp(value, 1, 262_144);
 
-    public static int MaxDependencies(int value) => Math.Clamp(value, 0, 100);
-
     public static int MaxDeclaredTools(int value) => Math.Clamp(value, 0, 256);
-
-    public static int MaxResonantDependencies(int value) => Math.Clamp(value, 0, 50);
 
     public static int MaxResonantBytes(int value) => Math.Clamp(value, 4096, 1_048_576);
 
@@ -453,15 +350,11 @@ public static class ArcanumSettingClamps
 
     public static int EmbeddingsMaxResults(int value) => Math.Clamp(value, 1, 50);
 
-    public static int EmbeddingsRequestTimeoutSeconds(int value) => Math.Clamp(value, 5, 300);
-
     public static int EmbeddingsMaxEmbeddingInputChars(int value) => Math.Clamp(value, 1_000, 10_000_000);
 
     public static int EmbeddingsEmbeddingQueueIntervalSeconds(int value) => Math.Clamp(value, 1, 300);
 
     public static int EmbeddingsCodebaseMaxFilesToIndex(int value) => Math.Clamp(value, 1, 10_000);
-
-    public static int EmbeddingsCodebaseMaxFileSizeChars(int value) => Math.Clamp(value, 1_000, 500_000);
 
     public static int EmbeddingsCodebaseIndexingIntervalMinutes(int value) => Math.Clamp(value, 5, 1_440);
 
@@ -473,10 +366,6 @@ public static class ArcanumSettingClamps
 
     public static int EmbeddingsCodebaseMaxRetrievedChunks(int value) => Math.Clamp(value, 1, 50);
 
-    public static int EmbeddingsAttachmentMaxBytes(int value) => Math.Clamp(value, 1_024, 20 * 1024 * 1024);
-
-    public static int EmbeddingsAttachmentMaxExtractedCharacters(int value) => Math.Clamp(value, 1_000, 1_000_000);
-
     public static int EmbeddingsAttachmentChunkSizeCharacters(int value) => Math.Clamp(value, 128, 8_192);
 
     public static int EmbeddingsAttachmentChunkOverlapCharacters(int value) => Math.Clamp(value, 0, 8_191);
@@ -484,17 +373,9 @@ public static class ArcanumSettingClamps
     public static int EmbeddingsAttachmentChunkOverlapForChunkSize(int value, int chunkSize) =>
         Math.Clamp(value, 0, Math.Max(0, chunkSize - 1));
 
-    public static int EmbeddingsAttachmentMaxChunksPerAttachment(int value) => Math.Clamp(value, 1, 2_048);
-
     public static int EmbeddingsAttachmentMaxAttachmentsPerBatch(int value) => Math.Clamp(value, 1, 100);
 
     public static int EmbeddingsAttachmentQueueCapacity(int value) => Math.Clamp(value, 1, 10_000);
-
-    public static int EmbeddingsAttachmentMaxRetries(int value) => Math.Clamp(value, 0, 10);
-
-    public static int EmbeddingsAttachmentRetryDelaySeconds(int value) => Math.Clamp(value, 1, 300);
-
-    public static int EmbeddingsAttachmentProcessingTimeoutSeconds(int value) => Math.Clamp(value, 5, 600);
 
     public static int EmbeddingsAttachmentMaxRetrievedChunks(int value) => Math.Clamp(value, 1, 50);
 
@@ -504,16 +385,6 @@ public static class ArcanumSettingClamps
 
     public static int EmbeddingsAttachmentMaxRetrievedTokens(int value) => Math.Clamp(value, 128, 1024 * 1024);
 
-    public static int EmbeddingsSagaMaxMemoriesPerSession(int value) => Math.Clamp(value, 1, 1_000);
-
-    public static int EmbeddingsSagaMaxMemoriesTotal(int value) => Math.Clamp(value, 100, 1_000_000);
-
-    public static int EmbeddingsSagaExtractionMaxTokens(int value) => Math.Clamp(value, 100, 4_096);
-
-    public static int EmbeddingsSagaExtractionIntervalMinutes(int value) => Math.Clamp(value, 1, 1_440);
-
-    public static int EmbeddingsSagaExtractionWindowEntries(int value) => Math.Clamp(value, 2, 50);
-
     public static int EmbeddingsSpellRoutingHybridTopK(int value) => Math.Clamp(value, 1, 20);
 
     public static long ScryingMaxImageBytes(long value) => Math.Clamp(value, 1024L, 20L * 1024L * 1024L);
@@ -521,12 +392,6 @@ public static class ArcanumSettingClamps
     public static int ScryingMaxImagesPerRequest(int value) => Math.Clamp(value, 1, 100);
 
     public static int HostAuditLogMaxSizeMb(int value) => Math.Clamp(value, 10, 1_000);
-
-    public static int HostAuditLogRetentionDays(int value) => Math.Clamp(value, 1, 365);
-
-    public static int MaxForkDepth(int value) => Math.Clamp(value, 0, 20);
-
-    public static int SessionMaxPinnedEntries(int value) => Math.Clamp(value, 0, 100);
 
     public static double PricingInputPer1M(double value) => Math.Clamp(value, 0.0, 1_000_000.0);
 
@@ -540,7 +405,7 @@ public static class ArcanumSettingClamps
 
     public static int WebBrowsingMaxContentBytes(int value) => Math.Clamp(value, 1_000, 1_000_000);
 
-    public static int WebBrowsingRequestTimeoutSeconds(int value) => Math.Clamp(value, 1, 60);
+    public static int WebBrowsingIdleTimeoutSeconds(int value) => Math.Clamp(value, 1, 300);
 
     public static int WebBrowsingMaxLinks(int value) => Math.Clamp(value, 0, 100);
 

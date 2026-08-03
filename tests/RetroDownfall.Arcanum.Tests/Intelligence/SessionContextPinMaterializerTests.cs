@@ -108,7 +108,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
     }
 
     [Fact]
-    public async Task Oversized_file_pin_fails_closed_without_materializing_content()
+    public async Task Large_file_pin_streams_a_bounded_preview_and_full_hash()
     {
 
         string file = Path.Combine(_workspace, "oversized.bin");
@@ -116,7 +116,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         await using (FileStream stream = new(file, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
 
-            stream.SetLength(SessionContextPinMaterializer.MaxSourceFileBytes + 1);
+            stream.SetLength(64L * 1024L * 1024L + 1L);
 
         }
 
@@ -135,7 +135,9 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
         Assert.Contains("status: Truncated", text, StringComparison.Ordinal);
 
-        Assert.Contains("safe materialization limit", text, StringComparison.Ordinal);
+        Assert.Contains("sha256=", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("safe materialization limit", text, StringComparison.Ordinal);
 
     }
 
@@ -167,7 +169,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
     }
 
     [Fact]
-    public async Task Oversized_symbol_source_fails_closed_before_scanning()
+    public async Task Large_symbol_source_streams_only_the_requested_range()
     {
 
         string file = Path.Combine(_workspace, "oversized-lines.txt");
@@ -175,7 +177,11 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         await using (FileStream stream = new(file, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
 
-            stream.SetLength(SessionContextPinMaterializer.MaxSourceFileBytes + 1);
+            byte[] firstLine = "requested line\n"u8.ToArray();
+
+            await stream.WriteAsync(firstLine);
+
+            stream.SetLength(64L * 1024L * 1024L + 1L);
 
         }
 
@@ -192,7 +198,294 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
         string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
 
-        Assert.Contains("safe materialization limit", text, StringComparison.Ordinal);
+        Assert.Contains("requested line", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("safe materialization limit", text, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Symbol_range_has_no_arbitrary_line_count_ceiling()
+    {
+
+        string file = Path.Combine(_workspace, "many-lines.txt");
+
+        string contents = string.Join(
+            '\n',
+            Enumerable.Range(1, 2_101).Select(static line => $"line-{line}"));
+
+        await File.WriteAllTextAsync(file, contents);
+
+        SessionContextPinRecord pin = Pin(
+            SessionContextPinKind.SymbolRange,
+            "many-lines.txt:1-2101",
+            "many-lines",
+            null);
+
+        SessionContextPinMaterialization result = await Create(pin).MaterializeAsync(
+            pin.SessionId,
+            _workspace,
+            CancellationToken.None);
+
+        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+        Assert.Contains("line-2101", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Invalid or excessive line range", text, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Directory_snapshot_never_enumerates_through_a_symlink_outside_the_workspace()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string outside = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-pin-outside-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(outside);
+
+        string marker = $"outside-secret-{Guid.NewGuid():N}.txt";
+
+        await File.WriteAllTextAsync(
+            Path.Combine(outside, marker),
+            "secret");
+
+        string link = Path.Combine(_workspace, "escape-directory");
+
+        Directory.CreateSymbolicLink(link, outside);
+
+        try
+        {
+
+            await File.WriteAllTextAsync(
+                Path.Combine(_workspace, "visible.txt"),
+                "visible");
+
+            SessionContextPinRecord pin = Pin(
+                SessionContextPinKind.DirectorySnapshot,
+                ".",
+                "workspace",
+                null);
+
+            SessionContextPinMaterialization result =
+                await Create(pin).MaterializeAsync(
+                    pin.SessionId,
+                    _workspace,
+                    CancellationToken.None);
+
+            string text = Assert.IsType<TextContent>(
+                Assert.Single(result.Contents)).Text;
+
+            Assert.Contains("visible.txt", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(marker, text, StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            Directory.Delete(link);
+
+            Directory.Delete(outside, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Directory_snapshot_visits_a_canonical_directory_only_once_across_symlink_cycles()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_workspace, "cycle-visible.txt"),
+            "visible");
+
+        string nested = Path.Combine(_workspace, "nested");
+
+        Directory.CreateDirectory(nested);
+
+        string link = Path.Combine(nested, "back-to-root");
+
+        Directory.CreateSymbolicLink(link, _workspace);
+
+        try
+        {
+
+            SessionContextPinRecord pin = Pin(
+                SessionContextPinKind.DirectorySnapshot,
+                ".",
+                "workspace",
+                null);
+
+            SessionContextPinMaterialization result =
+                await Create(pin).MaterializeAsync(
+                    pin.SessionId,
+                    _workspace,
+                    CancellationToken.None);
+
+            string text = Assert.IsType<TextContent>(
+                Assert.Single(result.Contents)).Text;
+
+            Assert.Equal(
+                1,
+                CountOccurrences(text, "cycle-visible.txt"));
+
+            Assert.DoesNotContain(
+                "nested/back-to-root/",
+                text,
+                StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            Directory.Delete(link);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Directory_snapshot_preserves_access_through_a_contained_noncyclic_directory_symlink()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string shared = Path.Combine(_workspace, "shared");
+
+        Directory.CreateDirectory(shared);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(shared, "allowed.txt"),
+            "allowed");
+
+        string scope = Path.Combine(_workspace, "scope");
+
+        Directory.CreateDirectory(scope);
+
+        string link = Path.Combine(scope, "linked-shared");
+
+        Directory.CreateSymbolicLink(link, shared);
+
+        try
+        {
+
+            SessionContextPinRecord pin = Pin(
+                SessionContextPinKind.DirectorySnapshot,
+                "scope",
+                "scope",
+                null);
+
+            SessionContextPinMaterialization result =
+                await Create(pin).MaterializeAsync(
+                    pin.SessionId,
+                    _workspace,
+                    CancellationToken.None);
+
+            string text = Assert.IsType<TextContent>(
+                Assert.Single(result.Contents)).Text;
+
+            Assert.Contains(
+                Path.Combine(
+                    "linked-shared",
+                    "allowed.txt"),
+                text,
+                StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            Directory.Delete(link);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Per_turn_truncation_suffix_is_included_inside_the_exact_byte_budget()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        string payload = new(
+            'x',
+            SessionContextPinMaterializer.MaxBytesPerPin * 2);
+
+        List<SessionContextPinRecord> pins = [];
+
+        for (int index = 0; index < 4; index++)
+        {
+
+            string relativePath = $"budget-{index}.txt";
+
+            await File.WriteAllTextAsync(
+                Path.Combine(_workspace, relativePath),
+                payload);
+
+            pins.Add(
+                new SessionContextPinRecord(
+                    Guid.NewGuid(),
+                    sessionId,
+                    SessionContextPinKind.File,
+                    relativePath,
+                    $"file-{index}",
+                    ContentVersion: null,
+                    DateTimeOffset.UtcNow,
+                    DateTimeOffset.UtcNow));
+
+        }
+
+        SessionContextPinMaterialization result =
+            await Create([.. pins]).MaterializeAsync(
+                sessionId,
+                _workspace,
+                CancellationToken.None);
+
+        int actualBytes = result.Contents
+            .OfType<TextContent>()
+            .Sum(static content => Encoding.UTF8.GetByteCount(content.Text));
+
+        Assert.Equal(
+            SessionContextPinMaterializer.MaxBytesPerTurn,
+            result.IncludedBytes);
+
+        Assert.Equal(pins.Count, result.Contents.Count);
+
+        Assert.Equal(0, result.OmittedCount);
+
+        Assert.Equal(result.IncludedBytes, actualBytes);
+
+        string finalBlock = Assert.IsType<TextContent>(
+            result.Contents[^1]).Text;
+
+        Assert.EndsWith(
+            "[TRUNCATED BY PER-TURN CONTEXT BUDGET]",
+            finalBlock,
+            StringComparison.Ordinal);
 
     }
 
@@ -252,18 +545,45 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
     }
 
-    private SessionContextPinMaterializer Create(SessionContextPinRecord pin) =>
-        new(new StaticPinStore(pin), new NoOpSessionAttachmentStore(), _db!);
+    private SessionContextPinMaterializer Create(
+        params SessionContextPinRecord[] pins) =>
+        new(new StaticPinStore(pins), new NoOpSessionAttachmentStore(), _db!);
 
     private static SessionContextPinRecord Pin(
         SessionContextPinKind kind, string target, string label, string? version) =>
         new(Guid.NewGuid(), Guid.NewGuid(), kind, target, label, version, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
 
-    private sealed class StaticPinStore(SessionContextPinRecord pin) : ISessionContextPinStore
+    private static int CountOccurrences(
+        string value,
+        string search)
+    {
+
+        int count = 0;
+
+        int offset = 0;
+
+        while ((offset = value.IndexOf(
+                   search,
+                   offset,
+                   StringComparison.Ordinal)) >= 0)
+        {
+
+            count++;
+
+            offset += search.Length;
+
+        }
+
+        return count;
+
+    }
+
+    private sealed class StaticPinStore(
+        params SessionContextPinRecord[] pins) : ISessionContextPinStore
     {
         public Task<IReadOnlyList<SessionContextPinRecord>> ListAsync(
             Guid sessionId, CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<SessionContextPinRecord>>([pin]);
+            Task.FromResult<IReadOnlyList<SessionContextPinRecord>>(pins);
 
         public Task<SessionContextPinRecord> UpsertAsync(
             Guid sessionId, SessionContextPinKind kind, string targetIdentifier, string displayLabel,

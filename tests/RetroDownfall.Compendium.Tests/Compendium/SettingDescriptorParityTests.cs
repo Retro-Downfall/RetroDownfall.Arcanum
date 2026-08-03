@@ -45,13 +45,7 @@ public sealed class SettingDescriptorParityTests
 
             ParameterInfo[] parameters = method.GetParameters();
 
-            bool isRelationalCheckpointClamp =
-                descriptor.Key == "retention.checkpointInterval"
-                && method.Name == nameof(ArcanumSettingClamps.RetentionCheckpointInterval)
-                && parameters.Length == 2
-                && parameters.All(static parameter => parameter.ParameterType == typeof(int));
-
-            if (parameters.Length != 1 && !isRelationalCheckpointClamp)
+            if (parameters.Length != 1)
 
             {
 
@@ -69,11 +63,11 @@ public sealed class SettingDescriptorParityTests
 
             object clampedMin = method.Invoke(
                 null,
-                isRelationalCheckpointClamp ? [minInput, int.MaxValue] : [minInput])!;
+                [minInput])!;
 
             object clampedMax = method.Invoke(
                 null,
-                isRelationalCheckpointClamp ? [maxInput, int.MaxValue] : [maxInput])!;
+                [maxInput])!;
 
             double actualMin = Convert.ToDouble(clampedMin, System.Globalization.CultureInfo.InvariantCulture);
 
@@ -170,32 +164,6 @@ public sealed class SettingDescriptorParityTests
 
     [Fact]
 
-    public void Retention_checkpoint_descriptor_exposes_and_explains_its_relational_clamp()
-    {
-
-        SettingDescriptor descriptor = Assert.Single(
-            SettingDescriptors.All,
-            static candidate => candidate.Key == "retention.checkpointInterval");
-
-        Assert.Equal(ConfigSection.Retention, descriptor.Section);
-
-        Assert.Equal(1, descriptor.Min);
-
-        Assert.Equal(10_000, descriptor.Max);
-
-        Assert.Equal(
-            nameof(ArcanumSettingClamps.RetentionCheckpointInterval),
-            descriptor.ClampName);
-
-        Assert.Contains(
-            "maximum items per sweep",
-            descriptor.Description,
-            StringComparison.OrdinalIgnoreCase);
-
-    }
-
-    [Fact]
-
     public void Retention_rules_have_editable_enabled_and_days_fields_in_named_groups()
     {
 
@@ -260,11 +228,6 @@ public sealed class SettingDescriptorParityTests
         50,
         nameof(ArcanumSettingClamps.MaxConcurrentApprentices))]
     [InlineData(
-        "execution.maxPendingApprenticeStarts",
-        1,
-        1_000,
-        nameof(ArcanumSettingClamps.MaxPendingStarts))]
-    [InlineData(
         "execution.maxSseConnections",
         1,
         100,
@@ -275,35 +238,6 @@ public sealed class SettingDescriptorParityTests
         1_024,
         nameof(ArcanumSettingClamps.DaemonMaxConcurrentJobs))]
     public void Capacity_descriptor_matches_contract_bounds(
-        string key,
-        double min,
-        double max,
-        string clampName)
-    {
-        SettingDescriptor descriptor = Assert.Single(SettingDescriptors.All, d => d.Key == key);
-
-        Assert.Equal(min, descriptor.Min);
-        Assert.Equal(max, descriptor.Max);
-        Assert.Equal(clampName, descriptor.ClampName);
-    }
-
-    [Theory]
-    [InlineData(
-        "integrations.embeddings.codebaseIndexing.watcherDebounceMilliseconds",
-        50,
-        5_000,
-        nameof(ArcanumSettingClamps.EmbeddingsCodebaseWatcherDebounceMilliseconds))]
-    [InlineData(
-        "integrations.embeddings.codebaseIndexing.maxWatchers",
-        0,
-        128,
-        nameof(ArcanumSettingClamps.EmbeddingsCodebaseMaxWatchers))]
-    [InlineData(
-        "integrations.embeddings.codebaseIndexing.reconciliationIntervalMinutes",
-        1,
-        1_440,
-        nameof(ArcanumSettingClamps.EmbeddingsCodebaseReconciliationIntervalMinutes))]
-    public void Codebase_watcher_descriptor_matches_contract_bounds(
         string key,
         double min,
         double max,

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -153,12 +154,42 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
         CancellationToken cancellationToken)
     {
 
+        Result<AuditQueryPage<GuardrailAuditRecord>> page = await QueryPageAsync(
+            from,
+            to,
+            stage,
+            violationType,
+            sessionId,
+            limit,
+            cursor: null,
+            cancellationToken).ConfigureAwait(false);
+
+        return page.IsSuccess
+            ? page.Value.Records
+            : [];
+
+    }
+
+    public async Task<Result<AuditQueryPage<GuardrailAuditRecord>>> QueryPageAsync(
+        DateTimeOffset? from,
+        DateTimeOffset? to,
+        string? stage,
+        string? violationType,
+        string? sessionId,
+        int limit,
+        string? cursor,
+        CancellationToken cancellationToken)
+    {
+
         GuardrailsAuditLogSettings config =
             _optionsMonitor.CurrentValue.ResolveGuardrails().AuditLog;
 
         if (!config.Enabled)
         {
-            return [];
+
+            return Result<AuditQueryPage<GuardrailAuditRecord>>.Success(
+                new AuditQueryPage<GuardrailAuditRecord>([], null));
+
         }
 
         (string directory, string stem) =
@@ -166,141 +197,87 @@ public sealed class GuardrailAuditLogger : IGuardrailAuditLogger, IDisposable
 
         if (!Directory.Exists(directory))
         {
-            return [];
+
+            return string.IsNullOrWhiteSpace(cursor)
+                ? Result<AuditQueryPage<GuardrailAuditRecord>>.Success(
+                    new AuditQueryPage<GuardrailAuditRecord>([], null))
+                : Result<AuditQueryPage<GuardrailAuditRecord>>.Failure(
+                    new Error(
+                        ErrorCodes.Validation.InvalidQuery,
+                        "The audit cursor no longer references retained log data. Restart without 'cursor'."));
+
         }
 
-        DateTimeOffset effectiveTo = to ?? DateTimeOffset.UtcNow;
-
-        DateTimeOffset effectiveFrom = from
-            ?? effectiveTo.AddDays(-ArcanumSettingClamps.HostAuditLogRetentionDays(config.RetentionDays));
-
-        string fromStamp = effectiveFrom.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
-
-        List<GuardrailAuditRecord> results = [];
-
-        DateTimeOffset cursor = effectiveTo;
-
-        int daySafetyCounter = 0;
-
-        while (results.Count < limit && daySafetyCounter < 400)
-        {
-            string dateStamp = cursor.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
-
-            if (string.CompareOrdinal(dateStamp, fromStamp) < 0)
-            {
-                break;
-            }
-
-            string filePath = Path.Combine(directory, $"{stem}-{dateStamp}.jsonl");
-
-            if (File.Exists(filePath))
-            {
-                await ReadMatchingRecordsAsync(
-                    filePath,
-                    effectiveFrom,
-                    effectiveTo,
-                    stage,
-                    violationType,
-                    sessionId,
-                    limit,
-                    results,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            cursor = cursor.AddDays(-1);
-
-            daySafetyCounter++;
-        }
-
-        return results;
+        return await AuditLogPageReader.QueryAsync(
+            directory,
+            stem,
+            family: "guardrail",
+            from,
+            to,
+            limit,
+            cursor,
+            AuditJsonContext.Default.GuardrailAuditRecord,
+            static record => record.Timestamp,
+            record =>
+                (stage is null
+                    || string.Equals(record.Stage, stage, StringComparison.OrdinalIgnoreCase))
+                && (violationType is null
+                    || string.Equals(record.ViolationType, violationType, StringComparison.OrdinalIgnoreCase))
+                && (sessionId is null
+                    || string.Equals(record.SessionId, sessionId, StringComparison.OrdinalIgnoreCase)),
+            _logger,
+            cancellationToken,
+            stage,
+            violationType,
+            sessionId).ConfigureAwait(false);
 
     }
 
-    private async Task ReadMatchingRecordsAsync(
-        string filePath,
-        DateTimeOffset effectiveFrom,
-        DateTimeOffset effectiveTo,
-        string? stage,
-        string? violationType,
-        string? sessionId,
-        int limit,
-        List<GuardrailAuditRecord> sink,
-        CancellationToken cancellationToken)
+    private static IEnumerable<string> EnumerateDatedLogFiles(
+        string directory,
+        string stem,
+        DateTimeOffset from,
+        DateTimeOffset to)
     {
 
-        string[] lines;
+        string prefix = stem + "-";
 
-        try
-        {
-            lines = await File.ReadAllLinesAsync(filePath, cancellationToken).ConfigureAwait(false);
-
-        }
-        catch (IOException ex)
-        {
-            _logger.LogDebug(ex, "Could not read guardrails audit log file {FilePath} for this query; skipping.", filePath);
-
-            return;
-        }
-
-        for (int i = lines.Length - 1; i >= 0 && sink.Count < limit; i--)
+        foreach ((string Path, DateTimeOffset Date) candidate in Directory
+                     .EnumerateFiles(directory, "*.jsonl", SearchOption.TopDirectoryOnly)
+                     .Select(path => (Path: path, Date: ParseDatedLogFile(path, prefix)))
+                     .Where(static candidate => candidate.Date is not null)
+                     .Select(static candidate => (candidate.Path, candidate.Date!.Value))
+                     .Where(candidate => candidate.Item2.Date >= from.Date && candidate.Item2.Date <= to.Date)
+                     .OrderByDescending(static candidate => candidate.Item2))
         {
 
-            string line = lines[i];
-
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                continue;
-            }
-
-            GuardrailAuditRecord? record;
-
-            try
-            {
-                record = JsonSerializer.Deserialize(line, AuditJsonContext.Default.GuardrailAuditRecord);
-
-            }
-            catch (JsonException)
-            {
-                continue;
-            }
-
-            if (record is null)
-            {
-                continue;
-            }
-
-            if (!DateTimeOffset.TryParse(
-                    record.Timestamp,
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind,
-                    out DateTimeOffset recordTimestamp))
-            {
-                continue;
-            }
-
-            if (recordTimestamp < effectiveFrom || recordTimestamp > effectiveTo)
-            {
-                continue;
-            }
-
-            if (stage is not null && !string.Equals(record.Stage, stage, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (violationType is not null && !string.Equals(record.ViolationType, violationType, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (sessionId is not null && !string.Equals(record.SessionId, sessionId, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            sink.Add(record);
+            yield return candidate.Path;
 
         }
+
+    }
+
+    private static DateTimeOffset? ParseDatedLogFile(string path, string prefix)
+    {
+
+        string name = Path.GetFileNameWithoutExtension(path);
+
+        if (!name.StartsWith(prefix, StringComparison.Ordinal)
+            || name.Length != prefix.Length + 8)
+        {
+
+            return null;
+
+        }
+
+        return DateTimeOffset.TryParseExact(
+            name.AsSpan(prefix.Length),
+            "yyyyMMdd",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal,
+            out DateTimeOffset date)
+            ? date
+            : null;
 
     }
 

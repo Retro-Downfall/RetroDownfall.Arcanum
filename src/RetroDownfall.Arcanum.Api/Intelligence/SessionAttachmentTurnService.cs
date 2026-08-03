@@ -232,94 +232,12 @@ public static class SessionAttachmentTurnService
 
                     explicitlyVisibleAttachmentIds.Add(record.Id);
 
-                    List<AIContent> referenceContents = [];
-
-                    operation = "read-reference";
-
-                    ReadOnlyMemory<byte> bytes = await store
-                        .ReadBytesAsync(record, cancellationToken)
-                        .ConfigureAwait(false);
-
-                    if (record.Kind == SessionAttachmentKind.Image)
-                    {
-                        string? imageError = SessionAttachmentToolInjection.ValidateImageAttach(
-                            record,
-                            bytes.Length,
-                            settings,
-                            request.Model);
-
-                        if (imageError is not null)
-                        {
-                            return new SessionAttachmentTurnPreparation(
-                                [],
-                                [],
-                                effectivePending,
-                                imageError);
-                        }
-
-                        string imageLabel = SystemPromptBuilder.HardenAttachmentIndexName(record.OriginalFileName);
-
-                        if (imageLabel.Length == 0)
-                        {
-                            imageLabel = SystemPromptBuilder.HardenAttachmentIndexName(record.LogicalKey);
-                        }
-
-                        if (imageLabel.Length == 0)
-                        {
-                            imageLabel = "image";
-                        }
-
-                        referenceContents.Add(
-                            new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(imageLabel))
-                            {
-
-                                AdditionalProperties = ExplicitAttachmentContextProperties(),
-
-                            });
-
-                        referenceContents.Add(
-                            new DataContent(bytes, record.MimeType)
-                            {
-
-                                AdditionalProperties = ExplicitAttachmentContextProperties(),
-
-                            });
-                    }
-                    else
-                    {
-                        long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
-                            ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
-
-                        string text = DecodeTextWithByteBound(bytes, maxTextBytes);
-
-                        string label = SystemPromptBuilder.HardenAttachmentIndexName(record.OriginalFileName);
-
-                        if (label.Length == 0)
-                        {
-                            label = SystemPromptBuilder.HardenAttachmentIndexName(record.LogicalKey);
-                        }
-
-                        if (label.Length == 0)
-                        {
-                            label = "attachment";
-                        }
-
-                        referenceContents.Add(
-                            new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))
-                            {
-
-                                AdditionalProperties = ExplicitAttachmentContextProperties(),
-
-                            });
-                    }
-
-                    rehydrated.AddRange(referenceContents);
-
                     explicitMaterializations.Add(
                         new SessionAttachmentExplicitMaterialization(
                             record,
                             ContextMaterializationSourceKind.ExplicitAttachmentReference,
-                            referenceContents));
+                            [],
+                            RequiresMaterialization: true));
                 }
             }
 
@@ -338,14 +256,29 @@ public static class SessionAttachmentTurnService
                     .BuildIndexAsync(boundSessionId, maxItems, cancellationToken)
                     .ConfigureAwait(false);
 
-                HashSet<string> indexedLogicalKeys = indexItems
-                    .Select(static item => item.LogicalKey)
-                    .ToHashSet(StringComparer.Ordinal);
-                explicitlyVisibleAttachmentIds.UnionWith((await store
-                        .ListBoundAsync(boundSessionId, cancellationToken)
-                        .ConfigureAwait(false))
-                    .Where(row => indexedLogicalKeys.Contains(row.LogicalKey))
-                    .Select(static row => row.Id));
+                List<string> indexedLogicalKeys =
+                    new(indexItems.Count);
+                HashSet<string> seenLogicalKeys =
+                    new(StringComparer.Ordinal);
+
+                foreach (SessionAttachmentIndexItem item in indexItems)
+                {
+
+                    if (seenLogicalKeys.Add(item.LogicalKey))
+                    {
+
+                        indexedLogicalKeys.Add(item.LogicalKey);
+                    }
+                }
+
+                IReadOnlyList<SessionAttachmentRecord> indexedLatest =
+                    await store.ListLatestBoundByLogicalKeysAsync(
+                            boundSessionId,
+                            indexedLogicalKeys,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                explicitlyVisibleAttachmentIds.UnionWith(
+                    indexedLatest.Select(static row => row.Id));
                 visibleAttachmentIds = explicitlyVisibleAttachmentIds;
             }
 
@@ -375,6 +308,136 @@ public static class SessionAttachmentTurnService
                 [],
                 null,
                 PublicPersistenceFailureMessage);
+        }
+
+    }
+
+    internal static async Task<SessionAttachmentReferenceMaterialization> MaterializeReferenceAsync(
+        SessionAttachmentRecord record,
+        ISessionAttachmentStore store,
+        ArcanumSettings settings,
+        string resolvedModel,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentNullException.ThrowIfNull(record);
+
+        ArgumentNullException.ThrowIfNull(store);
+
+        ArgumentNullException.ThrowIfNull(settings);
+
+        try
+        {
+
+            List<AIContent> contents = [];
+
+            if (record.Kind == SessionAttachmentKind.Image)
+            {
+
+                int declaredLength = int.CreateSaturating(record.ByteLength);
+
+                string? imageError = SessionAttachmentToolInjection.ValidateImageAttach(
+                    record,
+                    declaredLength,
+                    settings,
+                    resolvedModel);
+
+                if (imageError is not null)
+                {
+
+                    return new SessionAttachmentReferenceMaterialization([], imageError);
+
+                }
+
+                await using Stream stream = await store
+                    .OpenReadAsync(record, cancellationToken)
+                    .ConfigureAwait(false);
+
+                ReadOnlyMemory<byte> bytes = await ReadDeclaredBytesAsync(
+                    stream,
+                    record.ByteLength,
+                    cancellationToken).ConfigureAwait(false);
+
+                string imageLabel = ResolveReferenceLabel(record, "image");
+
+                contents.Add(
+                    new TextContent(SystemPromptBuilder.FormatUntrustedImageNotice(imageLabel))
+                    {
+
+                        AdditionalProperties = ExplicitAttachmentContextProperties(),
+
+                    });
+
+                contents.Add(
+                    new DataContent(bytes, record.MimeType)
+                    {
+
+                        AdditionalProperties = ExplicitAttachmentContextProperties(),
+
+                    });
+
+                return new SessionAttachmentReferenceMaterialization(contents, ErrorMessage: null);
+
+            }
+
+            if (record.Kind != SessionAttachmentKind.Text)
+            {
+
+                return new SessionAttachmentReferenceMaterialization(
+                    [],
+                    $"Attachment '{record.Id}' cannot be injected into model context.");
+
+            }
+
+            long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
+                ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+
+            long readLength = Math.Min(
+                record.ByteLength,
+                checked(maxTextBytes + 1));
+
+            await using (Stream stream = await store
+                .OpenReadAsync(record, cancellationToken)
+                .ConfigureAwait(false))
+            {
+
+                ReadOnlyMemory<byte> bytes = await ReadDeclaredBytesAsync(
+                    stream,
+                    readLength,
+                    cancellationToken).ConfigureAwait(false);
+
+                string text = DecodeTextWithByteBound(bytes, maxTextBytes);
+
+                string label = ResolveReferenceLabel(record, "attachment");
+
+                contents.Add(
+                    new TextContent(SystemPromptBuilder.FormatUntrusted(label, text))
+                    {
+
+                        AdditionalProperties = ExplicitAttachmentContextProperties(),
+
+                    });
+
+            }
+
+            return new SessionAttachmentReferenceMaterialization(contents, ErrorMessage: null);
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
+
+        }
+        catch (Exception)
+        {
+
+            string label = ResolveReferenceLabel(record, record.Id.ToString());
+
+            return new SessionAttachmentReferenceMaterialization(
+                [],
+                $"Attachment '{label}' could not be read for model context. Retry the request or refresh the attachment.");
+
         }
 
     }
@@ -435,6 +498,65 @@ public static class SessionAttachmentTurnService
 
     }
 
+    private static async Task<ReadOnlyMemory<byte>> ReadDeclaredBytesAsync(
+        Stream stream,
+        long declaredLength,
+        CancellationToken cancellationToken)
+    {
+
+        if (declaredLength < 0 || declaredLength > int.MaxValue)
+        {
+
+            throw new InvalidDataException(
+                "Attachment exceeds the per-item in-memory provider boundary.");
+
+        }
+
+        byte[] bytes = GC.AllocateUninitializedArray<byte>((int)declaredLength);
+
+        int offset = 0;
+
+        while (offset < bytes.Length)
+        {
+
+            int read = await stream
+                .ReadAsync(bytes.AsMemory(offset), cancellationToken)
+                .ConfigureAwait(false);
+
+            if (read == 0)
+            {
+
+                throw new InvalidDataException(
+                    "Attachment ended before its declared byte length.");
+
+            }
+
+            offset += read;
+
+        }
+
+        return bytes;
+
+    }
+
+    private static string ResolveReferenceLabel(
+        SessionAttachmentRecord record,
+        string fallback)
+    {
+
+        string label = SystemPromptBuilder.HardenAttachmentIndexName(record.OriginalFileName);
+
+        if (label.Length == 0)
+        {
+
+            label = SystemPromptBuilder.HardenAttachmentIndexName(record.LogicalKey);
+
+        }
+
+        return label.Length == 0 ? fallback : label;
+
+    }
+
     private static AdditionalPropertiesDictionary ExplicitAttachmentContextProperties() =>
         new()
         {
@@ -469,4 +591,9 @@ public sealed record SessionAttachmentExplicitMaterialization(
     ContextMaterializationSourceKind SourceKind,
     IReadOnlyList<AIContent> Contents,
     int? AttachedFileIndex = null,
-    int? ScryingFocusIndex = null);
+    int? ScryingFocusIndex = null,
+    bool RequiresMaterialization = false);
+
+internal sealed record SessionAttachmentReferenceMaterialization(
+    IReadOnlyList<AIContent> Contents,
+    string? ErrorMessage);

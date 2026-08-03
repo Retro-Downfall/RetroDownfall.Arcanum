@@ -97,7 +97,7 @@ public sealed class DiWiringSmokeTests
             new ThrowingChatClient(canary),
             [new ChatMessage(ChatRole.User, "ping")],
             new ChatOptions(),
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None,
             new ModelCallContext(

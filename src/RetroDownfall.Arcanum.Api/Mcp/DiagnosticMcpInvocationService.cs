@@ -223,14 +223,6 @@ public sealed class DiagnosticMcpInvocationService
 
         }
 
-        int timeoutSeconds = Math.Max(
-            1,
-            _settings.CurrentValue.ResolveMcp().RequestTimeoutSeconds);
-
-        using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-
         Stopwatch sw = Stopwatch.StartNew();
 
         try
@@ -240,7 +232,7 @@ public sealed class DiagnosticMcpInvocationService
                 ? new AIFunctionArguments(ToArgumentDictionary(arguments))
                 : [];
 
-            object? output = await tool.InvokeAsync(args, timeoutCts.Token).ConfigureAwait(false);
+            object? output = await tool.InvokeAsync(args, cancellationToken).ConfigureAwait(false);
 
             sw.Stop();
 
@@ -264,12 +256,10 @@ public sealed class DiagnosticMcpInvocationService
                 truncated));
 
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
 
-            return Result<DiagnosticMcpInvocationOutcome>.Failure(
-                new Error(ErrorCodes.Mcp.DiagnosticTimeout,
-                    $"Diagnostic MCP invocation of '{toolName}' on '{resolvedServerName}' exceeded the {timeoutSeconds}s timeout."));
+            throw;
 
         }
         catch (InvalidOperationException ex)

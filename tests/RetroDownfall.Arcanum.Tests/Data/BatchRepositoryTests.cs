@@ -98,6 +98,64 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+
+    public async Task CreateAsync_StoresCanonicalNFormatBatchIdentity()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
+        Guid batchId = Guid.NewGuid();
+
+        await _repo!.CreateAsync(
+
+            new BatchRecord(
+
+                batchId,
+
+                inputFileId,
+
+                "/v1/chat/completions",
+
+                BatchStatuses.Validating,
+
+                DateTimeOffset.UtcNow,
+
+                null,
+
+                null,
+
+                null),
+
+            CancellationToken.None);
+
+        System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT \"Id\" FROM \"Batches\" WHERE \"Id\" = @id";
+
+        System.Data.Common.DbParameter parameter = command.CreateParameter();
+
+        parameter.ParameterName = "@id";
+
+        parameter.Value = batchId.ToString("N");
+
+        command.Parameters.Add(parameter);
+
+        Assert.Equal(
+
+            batchId.ToString("N"),
+
+            await command.ExecuteScalarAsync(CancellationToken.None));
+
+    }
+
     [SkippableTheory]
 
     [InlineData("input")]
@@ -427,26 +485,338 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task ListActiveAsync_returns_only_validating_and_inProgress()
+
+    public async Task LineCheckpoints_UpdateDurableRequestCountsExactlyOnce()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
+        Guid batchId = Guid.NewGuid();
+
+        await _repo!.CreateAsync(
+
+            new BatchRecord(
+
+                batchId,
+
+                inputFileId,
+
+                "/v1/chat/completions",
+
+                BatchStatuses.InProgress,
+
+                DateTimeOffset.UtcNow,
+
+                null,
+
+                null,
+
+                null),
+
+            CancellationToken.None);
+
+        Assert.True(await _repo.TryBeginLineAsync(
+
+            batchId,
+
+            1,
+
+            "one",
+
+            CancellationToken.None));
+
+        await _repo.CompleteLineAsync(
+
+            batchId,
+
+            1,
+
+            BatchLineOutputKind.Output,
+
+            BatchRequestOutcome.Completed,
+
+            "{\"one\":true}",
+
+            CancellationToken.None);
+
+        await _repo.CompleteLineAsync(
+
+            batchId,
+
+            1,
+
+            BatchLineOutputKind.Output,
+
+            BatchRequestOutcome.Completed,
+
+            "{\"one\":true}",
+
+            CancellationToken.None);
+
+        Assert.True(await _repo.TryBeginLineAsync(
+
+            batchId,
+
+            2,
+
+            "two",
+
+            CancellationToken.None));
+
+        await _repo.CompleteLineAsync(
+
+            batchId,
+
+            2,
+
+            BatchLineOutputKind.Error,
+
+            BatchRequestOutcome.Failed,
+
+            "{\"two\":false}",
+
+            CancellationToken.None);
+
+        BatchRecord loaded = Assert.IsType<BatchRecord>(
+
+            await _repo.GetByIdAsync(batchId, CancellationToken.None));
+
+        Assert.Equal(2, loaded.TotalRequestCount);
+
+        Assert.Equal(1, loaded.CompletedRequestCount);
+
+        Assert.Equal(1, loaded.FailedRequestCount);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ListPageAsync_UsesStableKeysetInsteadOfMutableOffset()
+
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        await CreateBatchAsync(BatchStatuses.Validating, now, null);
+        BatchRecord oldest = await CreateBatchAndReturnAsync(
 
-        await CreateBatchAsync(BatchStatuses.InProgress, now, null);
+            BatchStatuses.Completed,
 
-        await CreateBatchAsync(BatchStatuses.Completed, now, now);
+            now.AddMinutes(-3),
 
-        await CreateBatchAsync(BatchStatuses.Cancelled, now, now);
+            now.AddMinutes(-2));
 
-        IReadOnlyList<BatchRecord> active = await _repo!.ListActiveAsync(CancellationToken.None);
+        BatchRecord middle = await CreateBatchAndReturnAsync(
 
-        Assert.Equal(2, active.Count);
+            BatchStatuses.Completed,
 
-        Assert.All(active, b => Assert.True(b.Status is BatchStatuses.Validating or BatchStatuses.InProgress));
+            now.AddMinutes(-2),
+
+            now.AddMinutes(-1));
+
+        BatchRecord newest = await CreateBatchAndReturnAsync(
+
+            BatchStatuses.Completed,
+
+            now.AddMinutes(-1),
+
+            now);
+
+        BatchListPage first = await _repo!.ListPageAsync(
+
+            BatchStatuses.Completed,
+
+            after: null,
+
+            pageSize: 2,
+
+            CancellationToken.None);
+
+        Assert.True(first.HasMore);
+
+        Assert.Equal([newest.Id, middle.Id], first.Records.Select(static item => item.Id));
+
+        _ = await CreateBatchAndReturnAsync(
+
+            BatchStatuses.Completed,
+
+            now,
+
+            now);
+
+        BatchRecord checkpoint = first.Records[^1];
+
+        BatchListPage second = await _repo.ListPageAsync(
+
+            BatchStatuses.Completed,
+
+            new BatchListPosition(checkpoint.CreatedAt, checkpoint.Id),
+
+            pageSize: 2,
+
+            CancellationToken.None);
+
+        Assert.False(second.HasMore);
+
+        Assert.Equal([oldest.Id], second.Records.Select(static item => item.Id));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ListPageAsync_SameCreatedAtVisitsEveryGuidWithoutSkipOrDuplicate()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset createdAt = DateTimeOffset.UtcNow;
+
+        BatchRecord first = await CreateBatchAndReturnAsync(
+
+            BatchStatuses.Completed,
+
+            createdAt,
+
+            createdAt);
+
+        BatchRecord second = await CreateBatchAndReturnAsync(
+
+            BatchStatuses.Completed,
+
+            createdAt,
+
+            createdAt);
+
+        BatchRecord third = await CreateBatchAndReturnAsync(
+
+            BatchStatuses.Completed,
+
+            createdAt,
+
+            createdAt);
+
+        HashSet<Guid> visited = [];
+
+        BatchListPosition? after = null;
+
+        while (true)
+
+        {
+
+            BatchListPage page = await _repo!.ListPageAsync(
+
+                BatchStatuses.Completed,
+
+                after,
+
+                pageSize: 1,
+
+                CancellationToken.None);
+
+            BatchRecord item = Assert.Single(page.Records);
+
+            Assert.True(visited.Add(item.Id));
+
+            if (!page.HasMore)
+
+            {
+
+                break;
+
+            }
+
+            after = new BatchListPosition(item.CreatedAt, item.Id);
+
+        }
+
+        Assert.Equal(
+
+            new HashSet<Guid> { first.Id, second.Id, third.Id },
+
+            visited);
+
+    }
+
+    [SkippableFact]
+    public async Task ListPendingPageAsync_VisitsEveryOldestValidatingBatchThroughAvailableCapacityPages()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        List<BatchRecord> expected = [];
+
+        for (int index = 0; index < 7; index++)
+
+        {
+
+            expected.Add(await CreateBatchAndReturnAsync(
+
+                BatchStatuses.Validating,
+
+                now.AddMinutes(index),
+
+                null));
+
+        }
+
+        _ = await CreateBatchAndReturnAsync(BatchStatuses.InProgress, now.AddMinutes(-2), null);
+
+        _ = await CreateBatchAndReturnAsync(BatchStatuses.Completed, now.AddMinutes(-1), now);
+
+        List<Guid> visited = [];
+
+        while (true)
+
+        {
+
+            IReadOnlyList<BatchRecord> page = await _repo!.ListPendingPageAsync(
+
+                pageSize: 2,
+
+                CancellationToken.None);
+
+            if (page.Count == 0)
+
+            {
+
+                break;
+
+            }
+
+            foreach (BatchRecord batch in page)
+
+            {
+
+                visited.Add(batch.Id);
+
+                await _repo.UpdateStatusAsync(
+
+                    batch.Id,
+
+                    BatchStatuses.InProgress,
+
+                    null,
+
+                    null,
+
+                    null,
+
+                    CancellationToken.None);
+
+            }
+
+        }
+
+        Assert.Equal(expected.Select(static batch => batch.Id), visited);
 
     }
 
@@ -584,6 +954,44 @@ public sealed class BatchRepositoryTests : IAsyncLifetime
                 null,
                 null),
             CancellationToken.None);
+
+    }
+
+    private async Task<BatchRecord> CreateBatchAndReturnAsync(
+
+        string status,
+
+        DateTimeOffset createdAt,
+
+        DateTimeOffset? completedAt)
+
+    {
+
+        Guid inputFileId = Guid.NewGuid();
+
+        await SeedUploadedFileAsync(inputFileId);
+
+        BatchRecord record = new(
+
+            Guid.NewGuid(),
+
+            inputFileId,
+
+            "/v1/chat/completions",
+
+            status,
+
+            createdAt,
+
+            completedAt,
+
+            null,
+
+            null);
+
+        await _repo!.CreateAsync(record, CancellationToken.None);
+
+        return record;
 
     }
 

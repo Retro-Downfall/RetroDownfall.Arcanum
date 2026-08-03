@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -21,9 +22,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 internal static class AuditEndpoints
 {
 
-    private const int DefaultLimit = 100;
+    private const int DefaultPageSize = 100;
 
-    private const int MaxLimit = 1_000;
+    private const int MaxPageSize = 1_000;
 
     internal static void MapAuditEndpoints(this RouteGroupBuilder apiGroup)
     {
@@ -38,6 +39,7 @@ internal static class AuditEndpoints
         string? model,
         string? sessionId,
         int? limit,
+        string? cursor,
         IInferenceAuditLogger auditLogger,
         HttpContext httpContext,
         CancellationToken cancellationToken)
@@ -84,11 +86,34 @@ internal static class AuditEndpoints
 
         }
 
-        int effectiveLimit = Math.Clamp(limit ?? DefaultLimit, 1, MaxLimit);
+        int effectiveLimit = Math.Clamp(limit ?? DefaultPageSize, 1, MaxPageSize);
 
-        IReadOnlyList<InferenceAuditRecord> records = await auditLogger
-            .QueryAsync(parsedFrom, parsedTo, model, sessionId, effectiveLimit, cancellationToken)
+        Result<AuditQueryPage<InferenceAuditRecord>> page = await auditLogger
+            .QueryPageAsync(
+                parsedFrom,
+                parsedTo,
+                model,
+                sessionId,
+                effectiveLimit,
+                cursor,
+                cancellationToken)
             .ConfigureAwait(false);
+
+        if (page.IsFailure)
+        {
+
+            return ValidationError(traceId, page.Error.Message, page.Error.Code);
+
+        }
+
+        if (page.Value.NextCursor is not null)
+        {
+
+            httpContext.Response.Headers[ArcanumApiHeaders.AuditNextCursor] = page.Value.NextCursor;
+
+        }
+
+        IReadOnlyList<InferenceAuditRecord> records = page.Value.Records;
 
         Result<InferenceAuditRecord[]> result = Result<InferenceAuditRecord[]>.Success([.. records]);
 
@@ -96,11 +121,14 @@ internal static class AuditEndpoints
 
     }
 
-    private static IResult ValidationError(string traceId, string message)
+    private static IResult ValidationError(
+        string traceId,
+        string message,
+        string errorCode = ErrorCodes.Validation.InvalidBody)
     {
 
         Result<InferenceAuditRecord[]> invalid = Result<InferenceAuditRecord[]>.Failure(
-            new Error(ErrorCodes.Validation.InvalidBody, message));
+            new Error(errorCode, message));
 
         return Results.Json(
             ApiResponse<InferenceAuditRecord[]>.FromResult(invalid, traceId),

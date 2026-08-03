@@ -17,30 +17,13 @@ public sealed class SessionAttachmentIndexingQueueTests
 
     [Fact]
 
-    public void TryEnqueue_AtCapacity_ReturnsFalseWithoutThrowing()
+    public void TryEnqueue_WhenAutomaticQueueIsTemporarilyFull_ReturnsFalseWithoutThrowing()
     {
 
         ArcanumSettings settings = new()
         {
 
             Features = new FeatureSettings { AttachmentRetrieval = true },
-
-            Integrations = new IntegrationSettings
-            {
-
-                Embeddings = new EmbeddingIntegrationSettings
-                {
-
-                    AttachmentIndexing = new AttachmentIndexingIntegrationSettings
-                    {
-
-                        QueueCapacity = 1,
-
-                    },
-
-                },
-
-            },
 
         };
 
@@ -53,9 +36,60 @@ public sealed class SessionAttachmentIndexingQueueTests
             new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLogger<SessionAttachmentIndexingService>.Instance);
 
-        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(Guid.NewGuid(), Guid.NewGuid())));
+        for (int index = 0; index < ArcanumRuntimeDefaults.Embeddings.Attachments.QueueCapacity; index++)
+        {
+
+            Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(Guid.NewGuid(), Guid.NewGuid())));
+
+        }
 
         Assert.False(service.TryEnqueue(new SessionAttachmentIndexRequest(Guid.NewGuid(), Guid.NewGuid())));
+
+    }
+
+    [Theory]
+
+    [InlineData(0, 1)]
+
+    [InlineData(3, 4)]
+
+    [InlineData(int.MaxValue, int.MaxValue)]
+
+    public void AutomaticRetry_HasNoAttemptCeiling(int attempt, int expectedNextAttempt)
+    {
+
+        SessionAttachmentIndexOutcome outcome = new(
+            SessionAttachmentIndexStatus.Failed,
+            ShouldRetry: true);
+
+        Assert.True(
+            SessionAttachmentIndexingService.ShouldAutomaticallyRetry(
+                outcome,
+                CancellationToken.None));
+
+        Assert.Equal(
+            expectedNextAttempt,
+            SessionAttachmentIndexingService.NextAttempt(attempt));
+
+    }
+
+    [Fact]
+
+    public void AutomaticRetry_StopsWhenServiceIsCancelled()
+    {
+
+        using CancellationTokenSource cancellation = new();
+
+        cancellation.Cancel();
+
+        SessionAttachmentIndexOutcome outcome = new(
+            SessionAttachmentIndexStatus.Failed,
+            ShouldRetry: true);
+
+        Assert.False(
+            SessionAttachmentIndexingService.ShouldAutomaticallyRetry(
+                outcome,
+                cancellation.Token));
 
     }
 

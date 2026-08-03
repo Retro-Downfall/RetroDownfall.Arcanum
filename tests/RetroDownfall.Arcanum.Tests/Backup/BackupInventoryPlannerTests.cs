@@ -933,6 +933,39 @@ public sealed class BackupInventoryPlannerTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task Trusted_mcp_inventory_includes_every_rotated_approval_page()
+    {
+
+        await WriteFileAsync(
+            "trusted-mcp-workspaces.json",
+            """{"entries":{"/workspace-a":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}""");
+
+        await WriteFileAsync(
+            "trusted-mcp-workspaces.page-00000001.json",
+            """{"entries":{"/workspace-b":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}}""");
+
+        BackupInventory inventory = await new BackupInventoryPlanner(Paths()).BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.TrustedMcpWorkspaceMetadata],
+                Exclude: []),
+            Path.Combine(_root, "missing.db"),
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Equal(
+            [
+                "mcp/trusted-workspaces.json",
+                "mcp/trusted-workspaces.page-00000001.json",
+            ],
+            inventory.Files
+                .Select(static file => file.ArchivePath)
+                .Order(StringComparer.Ordinal));
+
+    }
+
     private BackupStatePaths Paths() => new(
         _root,
         _root,

@@ -513,8 +513,6 @@ public sealed class AttachSessionFileToolTests
             scopeFactory,
             pacer,
             workspaceRootNormalizedOrNull: null,
-            executeCommandTimeout: TimeSpan.FromSeconds(30),
-            executeCommandTimeoutSecondsForDisplay: 30,
             listDirectoryMaxPaths: 64,
             intelligenceSettings: intelligenceSettings,
             maxFileReadSizeBytes: 1024 * 1024,
@@ -640,7 +638,6 @@ public sealed class AttachSessionFileToolTests
         public Task ValidateReferencesAsync(
             Guid sessionId,
             IReadOnlyList<Guid> attachmentIds,
-            int maxReferences,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 

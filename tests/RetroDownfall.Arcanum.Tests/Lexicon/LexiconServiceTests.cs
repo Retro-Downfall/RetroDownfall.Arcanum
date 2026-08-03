@@ -17,6 +17,12 @@ namespace RetroDownfall.Arcanum.Tests.Lexicon;
 public sealed class LexiconServiceTests : IAsyncLifetime
 {
 
+    private const int FormerMaxFactsPerUpsert = 32;
+
+    private const int FormerMaxFactsRetainedPerEntry = 256;
+
+    private const int FormerMaxFactLength = 1024;
+
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -342,20 +348,78 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task UpsertAsync_CapsFactsPerUpsert()
+    public async Task UpsertAsync_preserves_facts_beyond_the_former_request_total()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        List<string> many = Enumerable.Range(0, LexiconLimits.MaxFactsPerUpsert + 5)
+        List<string> many = Enumerable.Range(0, FormerMaxFactsPerUpsert + 5)
             .Select(i => $"fact {i}")
             .ToList();
 
-        Result<LexiconEntryDto> result = await _service!.UpsertAsync("Capped", "Project", many, CancellationToken.None);
+        Result<LexiconEntryDto> result = await _service!.UpsertAsync(
+            "Uncapped",
+            "Project",
+            many,
+            CancellationToken.None);
 
         Assert.True(result.IsSuccess);
 
-        Assert.Equal(LexiconLimits.MaxFactsPerUpsert, result.Value.Facts.Length);
+        Assert.Equal(many, result.Value.Facts);
+
+    }
+
+    [SkippableFact]
+    public async Task UpsertAsync_preserves_old_and_new_facts_beyond_the_former_retained_total()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        List<string> allFacts = Enumerable
+            .Range(0, FormerMaxFactsRetainedPerEntry + 1)
+            .Select(static index => $"durable fact {index}")
+            .ToList();
+
+        foreach (string[] page in allFacts.Chunk(FormerMaxFactsPerUpsert))
+        {
+
+            Result<LexiconEntryDto> appended = await _service!.UpsertAsync(
+                "Durable",
+                "Project",
+                page,
+                CancellationToken.None);
+
+            Assert.True(appended.IsSuccess);
+
+        }
+
+        Result<LexiconEntryDto?> reloaded = await _service!.GetByNameAsync(
+            "Durable",
+            CancellationToken.None);
+
+        Assert.True(reloaded.IsSuccess);
+
+        Assert.Equal(allFacts, reloaded.Value!.Facts);
+
+    }
+
+    [SkippableFact]
+    public async Task UpsertAsync_preserves_fact_text_beyond_the_former_scalar_limit()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string longFact = new('x', FormerMaxFactLength + 257);
+
+        Result<LexiconEntryDto> result = await _service!.UpsertAsync(
+            "Long fact",
+            "Project",
+            [longFact],
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(longFact, Assert.Single(result.Value.Facts));
 
     }
 

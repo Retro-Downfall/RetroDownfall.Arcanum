@@ -357,6 +357,255 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
     [SkippableFact]
 
+    public async Task ProcessAsync_ContinuesAutomaticEmbeddingBatchesUntilEveryChunkIsIndexed()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        string text = new('x', 70_000);
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "large-notes",
+            "large-notes.txt",
+            "text/plain",
+            text);
+
+        FakeWeaveService weave = new();
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessAsync(
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
+
+        Assert.True(weave.EmbedBatchCallCount > 1);
+
+        SessionAttachmentIndexedChunk[] chunks = await _index!.GetChunksForAttachmentAsync(
+            attachment.Id,
+            CancellationToken.None);
+
+        Assert.True(chunks.Length > 64);
+
+        Assert.Equal(text.Length, chunks[^1].CharacterEnd);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ProcessAsync_CheckpointsEachEmbeddingBatchBeforeRequestingTheNextBatch()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        string text = new('x', 70_000);
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "checkpointed-notes",
+            "checkpointed-notes.txt",
+            "text/plain",
+            text);
+
+        int checkpointedChunkCount = -1;
+
+        FakeWeaveService weave = new()
+        {
+
+            BeforeEmbedBatchAsync = async callNumber =>
+            {
+
+                if (callNumber != 2)
+                {
+
+                    return;
+
+                }
+
+                SessionAttachmentIndexedChunk[] checkpoint = await _index!
+                    .GetChunksForAttachmentAsync(
+                        attachment.Id,
+                        CancellationToken.None);
+
+                checkpointedChunkCount = checkpoint.Length;
+
+                Assert.All(checkpoint, static chunk => Assert.Null(chunk.RetrievalScope));
+
+                SessionAttachmentRetrievedChunk[] historicalSearch =
+                    await CreateRetrievalService().SearchAsync(
+                        sessionId,
+                        new Embedding<float>(CreateVector(Dimensions)),
+                        includeHistorical: true,
+                        CancellationToken.None);
+
+                Assert.Empty(historicalSearch);
+
+            },
+
+        };
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessAsync(
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
+
+        Assert.Equal(64, checkpointedChunkCount);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ProcessAsync_ReadsAttachmentThroughStreamingStoreBoundary()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "streamed-notes",
+            "streamed-notes.txt",
+            "text/plain",
+            new string('x', 70_000));
+
+        StreamingOnlyAttachmentStore streamingStore = new(_attachments!);
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(
+                new FakeWeaveService(),
+                streamingStore)
+            .ProcessAsync(
+                new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+                CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
+
+        Assert.True(streamingStore.OpenReadCallCount > 0);
+
+        Assert.Equal(0, streamingStore.ReadBytesCallCount);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ProcessAsync_CancellationResumesAfterDurableBatchAndAtomicallyReplacesPublishedGeneration()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistAsync(
+            sessionId,
+            "resumable-notes",
+            "resumable-notes.txt",
+            "text/plain",
+            new string('x', 70_000));
+
+        SessionAttachmentIndexOutcome first = await CreateProcessor(new FakeWeaveService())
+            .ProcessAsync(
+                new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+                CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, first.Status);
+
+        SessionAttachmentIndexedChunk[] publishedBefore = await _index!
+            .GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None);
+
+        HashSet<string> publishedChunkIds = publishedBefore
+            .Select(static chunk => chunk.ChunkId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        SessionAttachmentIndexState publishedState = await _index.GetStateAsync(
+            attachment.Id,
+            CancellationToken.None);
+
+        using CancellationTokenSource interrupted = new();
+
+        FakeWeaveService cancellingWeave = new()
+        {
+
+            BeforeEmbedBatchAsync = callNumber =>
+            {
+
+                if (callNumber == 2)
+                {
+
+                    interrupted.Cancel();
+
+                }
+
+                return Task.CompletedTask;
+
+            },
+
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            CreateProcessor(cancellingWeave).ProcessAsync(
+                new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+                interrupted.Token));
+
+        SessionAttachmentIndexState interruptedState = await _index.GetStateAsync(
+            attachment.Id,
+            CancellationToken.None);
+
+        Assert.Equal(64, interruptedState.NextChunkIndex);
+
+        Assert.Equal(publishedState.PublishedGenerationId, interruptedState.PublishedGenerationId);
+
+        Assert.NotNull(interruptedState.PendingGenerationId);
+
+        SessionAttachmentRetrievedChunk[] visibleDuringRetry =
+            await CreateRetrievalService().SearchAsync(
+                sessionId,
+                new Embedding<float>(CreateVector(Dimensions)),
+                includeHistorical: true,
+                CancellationToken.None);
+
+        Assert.NotEmpty(visibleDuringRetry);
+
+        Assert.All(
+            visibleDuringRetry,
+            chunk => Assert.Contains(chunk.ChunkId, publishedChunkIds));
+
+        FakeWeaveService resumedWeave = new();
+
+        SessionAttachmentIndexOutcome resumed = await CreateProcessor(resumedWeave).ProcessAsync(
+            new SessionAttachmentIndexRequest(attachment.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, resumed.Status);
+
+        Assert.Equal(1, resumedWeave.EmbedBatchCallCount);
+
+        SessionAttachmentIndexState completedState = await _index.GetStateAsync(
+            attachment.Id,
+            CancellationToken.None);
+
+        Assert.Null(completedState.PendingGenerationId);
+
+        Assert.Equal(0, completedState.NextChunkIndex);
+
+        Assert.NotEqual(publishedState.PublishedGenerationId, completedState.PublishedGenerationId);
+
+        SessionAttachmentIndexedChunk[] publishedAfter = await _index.GetChunksForAttachmentAsync(
+            attachment.Id,
+            CancellationToken.None);
+
+        Assert.DoesNotContain(
+            publishedAfter,
+            chunk => publishedChunkIds.Contains(chunk.ChunkId));
+
+    }
+
+    [SkippableFact]
+
     public async Task ProcessAsync_UnsupportedBinary_MarksNotEligibleWithoutEmbedding()
     {
 
@@ -630,11 +879,13 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             _index!,
             NullLogger<SessionAttachmentRetrievalService>.Instance);
 
-    private SessionAttachmentIndexProcessor CreateProcessor(IWeaveService weave) =>
+    private SessionAttachmentIndexProcessor CreateProcessor(
+        IWeaveService weave,
+        ISessionAttachmentStore? attachments = null) =>
         new(
             new TestOptionsMonitor<ArcanumSettings>(_settings),
             weave,
-            _attachments!,
+            attachments ?? _attachments!,
             _index!,
             NullLogger<SessionAttachmentIndexProcessor>.Instance);
 
@@ -672,19 +923,6 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
                 Dimensions = Dimensions,
 
-                AttachmentIndexing = new AttachmentIndexingIntegrationSettings
-                {
-
-                    ChunkSizeCharacters = 128,
-
-                    ChunkOverlapCharacters = 16,
-
-                    MaxChunksPerAttachment = 8,
-
-                    MaxRetrievedChunks = 20,
-
-                },
-
             },
 
         },
@@ -707,6 +945,8 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         public bool FailEmbedding { get; init; }
 
+        public Func<int, Task>? BeforeEmbedBatchAsync { get; init; }
+
         public int OutputDimensions { get; init; } = Dimensions;
 
         public int EmbedBatchCallCount { get; private set; }
@@ -718,19 +958,28 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             CancellationToken cancellationToken) =>
             Task.FromResult(Result<Embedding<float>>.Success(new Embedding<float>(CreateVector(OutputDimensions))));
 
-        public Task<Result<Embedding<float>[]>> EmbedBatchAsync(
+        public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(
             IReadOnlyList<string> texts,
             CancellationToken cancellationToken)
         {
 
             EmbedBatchCallCount++;
 
+            if (BeforeEmbedBatchAsync is not null)
+            {
+
+                await BeforeEmbedBatchAsync(EmbedBatchCallCount);
+
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (FailEmbedding)
             {
 
-                return Task.FromResult(Result<Embedding<float>[]>.Failure(new Error(
+                return Result<Embedding<float>[]>.Failure(new Error(
                     ErrorCodes.Embeddings.ProviderUnavailable,
-                    "Simulated embedding failure.")));
+                    "Simulated embedding failure."));
 
             }
 
@@ -738,7 +987,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
                 .Select(_ => new Embedding<float>(CreateVector(OutputDimensions)))
                 .ToArray();
 
-            return Task.FromResult(Result<Embedding<float>[]>.Success(generated));
+            return Result<Embedding<float>[]>.Success(generated);
 
         }
 
@@ -762,6 +1011,133 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             return true;
 
         }
+
+    }
+
+    private sealed class StreamingOnlyAttachmentStore(
+        ISessionAttachmentStore inner) : ISessionAttachmentStore
+    {
+
+        public int OpenReadCallCount { get; private set; }
+
+        public int ReadBytesCallCount { get; private set; }
+
+        public Task<SessionAttachmentRecord?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default) =>
+            inner.GetByIdAsync(id, cancellationToken);
+
+        public async Task<Stream> OpenReadAsync(
+            SessionAttachmentRecord record,
+            CancellationToken cancellationToken = default)
+        {
+
+            OpenReadCallCount++;
+
+            return await inner.OpenReadAsync(record, cancellationToken);
+
+        }
+
+        public Task<ReadOnlyMemory<byte>> ReadBytesAsync(
+            SessionAttachmentRecord record,
+            CancellationToken cancellationToken = default)
+        {
+
+            ReadBytesCallCount++;
+
+            throw new InvalidOperationException("The processor must use the streaming read boundary.");
+
+        }
+
+        public Task<SessionAttachmentRecord> PersistNewAsync(
+            Guid? sessionId,
+            string? pendingTurnId,
+            Guid? entryId,
+            string logicalNameHint,
+            string originalFileName,
+            ReadOnlyMemory<byte> bytes,
+            string mimeType,
+            SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task PromotePendingAsync(
+            string pendingTurnId,
+            Guid sessionId,
+            Guid? entryId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SessionAttachmentRecord?> GetByLogicalAsync(
+            Guid sessionId,
+            string logicalKey,
+            int? version,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
+            Guid sessionId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<SessionAttachmentIndexItem>> BuildIndexAsync(
+            Guid sessionId,
+            int maxItems,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task DeleteStalePendingAsync(
+            TimeSpan olderThan,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task ReconcileAsync(
+            TimeSpan pendingOlderThan,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task ValidateReferencesAsync(
+            Guid sessionId,
+            IReadOnlyList<Guid> attachmentIds,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IDisposable> AcquireSessionGateAsync(
+            Guid sessionId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task DeleteRowsForSessionInAmbientTransactionAsync(
+            Guid sessionId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public bool TryDeleteSessionDirectory(Guid sessionId) =>
+            throw new NotSupportedException();
+
+        public Task ClearEntryIdsInAmbientTransactionAsync(
+            Guid sessionId,
+            IReadOnlyList<Guid> entryIds,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundForForkAsync(
+            Guid sourceSessionId,
+            IReadOnlySet<Guid>? copiedSourceEntryIds,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task CopyBytesForForkAsync(
+            Guid forkSessionId,
+            IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task InsertForkRowsInAmbientTransactionAsync(
+            Guid forkSessionId,
+            IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
 
     }
 

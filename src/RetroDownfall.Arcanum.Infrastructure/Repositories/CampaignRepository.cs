@@ -129,10 +129,6 @@ public sealed class CampaignRepository : ICampaignRepository
         Campaign campaign,
         CancellationToken cancellationToken = default)
     {
-        CampaignsSettings settings = ArcanumRuntimeDefaults.Campaigns;
-
-        int maxCampaigns = ArcanumSettingClamps.MaxCampaigns(settings.MaxCampaigns);
-
         if (_db.Database.GetDbConnection() is not SqliteConnection connection)
         {
             throw new InvalidOperationException("Campaign persistence requires a SQLite connection.");
@@ -178,7 +174,6 @@ public sealed class CampaignRepository : ICampaignRepository
                     return await AddWithinImmediateTransactionAsync(
                         connection,
                         campaign,
-                        maxCampaigns,
                         cancellationToken).ConfigureAwait(false);
                 },
                 cancellationToken,
@@ -204,7 +199,6 @@ public sealed class CampaignRepository : ICampaignRepository
     private async Task<Result<Campaign>> AddWithinImmediateTransactionAsync(
         SqliteConnection connection,
         Campaign campaign,
-        int maxCampaigns,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -230,20 +224,6 @@ public sealed class CampaignRepository : ICampaignRepository
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-
-            int count = await _db.Campaigns
-                .CountAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            if (count >= maxCampaigns)
-            {
-                await efTransaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-
-                return Result<Campaign>.Failure(
-                    new Error(
-                        ErrorCodes.Campaign.MaxReached,
-                        "The maximum number of campaigns has been reached."));
-            }
 
             campaign.NameLower = campaign.Name.Trim().ToLowerInvariant();
 

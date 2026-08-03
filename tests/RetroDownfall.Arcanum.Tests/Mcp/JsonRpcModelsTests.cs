@@ -89,6 +89,7 @@ public sealed class JsonRpcModelsTests
             Root = "src",
             Globs = ["**/*.cs"],
             Extensions = [".cs"],
+            Cursor = "opaque-checkpoint",
         };
 
         string wire = JsonSerializer.Serialize(original, Json.SearchWorkspaceParams);
@@ -101,6 +102,7 @@ public sealed class JsonRpcModelsTests
         Assert.Equal("src", parsed.Root);
         Assert.Equal(["**/*.cs"], parsed.Globs);
         Assert.Equal([".cs"], parsed.Extensions);
+        Assert.Equal("opaque-checkpoint", parsed.Cursor);
 
     }
 

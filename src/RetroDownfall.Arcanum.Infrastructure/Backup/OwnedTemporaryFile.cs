@@ -22,7 +22,8 @@ internal sealed class OwnedTemporaryFile
 
     public static OwnedTemporaryFile Create(
         string path,
-        out FileStream stream)
+        out FileStream stream,
+        FileAccess access = FileAccess.Write)
     {
 
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -45,7 +46,7 @@ internal sealed class OwnedTemporaryFile
 
                 Mode = FileMode.CreateNew,
 
-                Access = FileAccess.Write,
+                Access = access,
 
                 Share = FileShare.None,
 

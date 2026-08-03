@@ -25,6 +25,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 internal sealed class SessionAttachmentIndexingService : BackgroundService, ISessionAttachmentIndexQueue
 {
 
+    private static readonly TimeSpan AutomaticRetryDelay = TimeSpan.FromSeconds(5);
+
     private readonly IServiceScopeFactory _scopeFactory;
 
     private readonly IOptionsMonitor<ArcanumSettings> _options;
@@ -188,7 +190,7 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
                     }
 
-                    await ProcessOneAsync(request, embeddings, stoppingToken).ConfigureAwait(false);
+                    await ProcessOneAsync(request, stoppingToken).ConfigureAwait(false);
 
                 }
 
@@ -216,37 +218,34 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
     private async Task ProcessOneAsync(
         SessionAttachmentIndexRequest request,
-        EmbeddingSettings embeddings,
         CancellationToken stoppingToken)
     {
 
-        SessionAttachmentIndexOutcome? outcome = null;
+        SessionAttachmentIndexOutcome outcome;
 
         try
         {
-
-            int timeoutSeconds = ArcanumSettingClamps.EmbeddingsAttachmentProcessingTimeoutSeconds(
-                embeddings.Attachments.ProcessingTimeoutSeconds);
-
-            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(timeoutSeconds));
-
-            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
-                stoppingToken,
-                timeout.Token);
 
             await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
 
             SessionAttachmentIndexProcessor processor = scope.ServiceProvider
                 .GetRequiredService<SessionAttachmentIndexProcessor>();
 
-            outcome = await processor.ProcessAsync(request, linked.Token).ConfigureAwait(false);
+            outcome = await processor.ProcessAsync(request, stoppingToken).ConfigureAwait(false);
 
         }
-        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+
+            throw;
+
+        }
+        catch (OperationCanceledException ex)
         {
 
             _logger.LogWarning(
-                "Session attachment {AttachmentId} indexing exceeded its processing timeout.",
+                ex,
+                "Session attachment {AttachmentId} indexing was interrupted and will be retried.",
                 request.AttachmentId);
 
             outcome = new SessionAttachmentIndexOutcome(
@@ -255,13 +254,7 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
             await MarkFailedAsync(
                 request,
-                "Attachment indexing exceeded its processing timeout.").ConfigureAwait(false);
-
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-
-            throw;
+                "Attachment indexing was interrupted and will be retried.").ConfigureAwait(false);
 
         }
         catch (Exception ex)
@@ -285,22 +278,24 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
         }
 
-        int maxRetries = ArcanumSettingClamps.EmbeddingsAttachmentMaxRetries(
-            embeddings.Attachments.MaxRetries);
-
-        if (outcome.ShouldRetry && request.Attempt < maxRetries)
+        if (ShouldAutomaticallyRetry(outcome, stoppingToken))
         {
 
-            int delaySeconds = ArcanumSettingClamps.EmbeddingsAttachmentRetryDelaySeconds(
-                embeddings.Attachments.RetryDelaySeconds);
+            await Task.Delay(AutomaticRetryDelay, stoppingToken).ConfigureAwait(false);
 
-            await Task.Delay(TimeSpan.FromSeconds(delaySeconds), stoppingToken).ConfigureAwait(false);
-
-            _ = TryEnqueue(request with { Attempt = request.Attempt + 1 });
+            _ = TryEnqueue(request with { Attempt = NextAttempt(request.Attempt) });
 
         }
 
     }
+
+    internal static bool ShouldAutomaticallyRetry(
+        SessionAttachmentIndexOutcome outcome,
+        CancellationToken stoppingToken) =>
+        outcome.ShouldRetry && !stoppingToken.IsCancellationRequested;
+
+    internal static int NextAttempt(int attempt) =>
+        attempt == int.MaxValue ? int.MaxValue : attempt + 1;
 
     private async Task MarkFailedAsync(
         SessionAttachmentIndexRequest request,

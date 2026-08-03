@@ -35,6 +35,8 @@ internal sealed class ApprenticeService(
 
     private readonly ConcurrentDictionary<Guid, byte> _pendingStartIds = new();
 
+    private readonly ConcurrentDictionary<Guid, byte> _freshStartIds = new();
+
     private readonly Lock _pendingStartsLock = new();
 
     private readonly ApprenticeConcurrencyGate _concurrencyGate = new();
@@ -111,8 +113,16 @@ internal sealed class ApprenticeService(
             return Result<string>.Failure(new Error(ErrorCodes.Apprentice.AlreadyRunning, "Apprentice is already running or not in a startable state."));
         }
 
+        apprentice.Status = ApprenticeStatus.Planning.ToString();
+
+        await repo.UpdateAsync(apprentice, cancellationToken).ConfigureAwait(false);
+
+        _freshStartIds.TryAdd(apprenticeId, 0);
+
         if (!TryAcquireExecutionSlot(apprenticeId, queueOnCapacity: true, out bool queued, out Result<string>? capacityFailure))
         {
+
+            _freshStartIds.TryRemove(apprenticeId, out _);
 
             return capacityFailure!;
 
@@ -678,9 +688,6 @@ internal sealed class ApprenticeService(
 
         if (queueOnCapacity)
         {
-
-            int maxPending = ArcanumSettingClamps.MaxPendingStarts(settings.MaxPendingStarts);
-
             lock (_pendingStartsLock)
             {
 
@@ -689,19 +696,6 @@ internal sealed class ApprenticeService(
 
                 if (_pendingStartIds.TryAdd(apprenticeId, 0))
                 {
-
-                    if (_pendingStarts.Count >= maxPending)
-                    {
-
-                        _pendingStartIds.TryRemove(apprenticeId, out _);
-
-                        failure = Result<string>.Failure(
-                            new Error(ErrorCodes.Apprentice.PendingQueueFull, "Maximum concurrent Apprentices and pending start queue are full."));
-
-                        return false;
-
-                    }
-
                     _pendingStarts.Enqueue(apprenticeId);
 
                 }
@@ -897,6 +891,8 @@ internal sealed class ApprenticeService(
 
             }
 
+            _freshStartIds.TryRemove(apprenticeId, out _);
+
             // ConcurrentQueue has no O(1) removal of a specific element: drain
             // and re-enqueue all ids except the target. The lock keeps the queue
             // and dedup set in sync atomically.
@@ -991,8 +987,13 @@ internal sealed class ApprenticeService(
                 // ApprenticeStarted. A fresh start (Idle/Failed/Completed/Cancelled)
                 // still emits ApprenticeStarted.
 
-                bool isResumeAfterRestart = string.Equals(
-                    apprentice.Status, ApprenticeStatus.Planning.ToString(), StringComparison.Ordinal);
+                bool isFreshStart = _freshStartIds.TryRemove(apprenticeId, out _);
+
+                bool isResumeAfterRestart = !isFreshStart
+                    && string.Equals(
+                        apprentice.Status,
+                        ApprenticeStatus.Planning.ToString(),
+                        StringComparison.Ordinal);
 
                 apprentice.Status = ApprenticeStatus.Planning.ToString();
 

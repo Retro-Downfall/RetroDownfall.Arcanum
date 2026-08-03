@@ -71,9 +71,7 @@ internal sealed partial class ArcanumInternalToolServer
                     request.Profile,
                     request.Options
                         ?? new Dictionary<string, string>(
-                            StringComparer.OrdinalIgnoreCase),
-                    WorkspaceCheckInferenceDeadlineAmbient
-                        .CurrentDeadlineTimestamp),
+                            StringComparer.OrdinalIgnoreCase)),
                 cancellationToken).ConfigureAwait(false);
 
         return BuildBoundedStructuredWorkspaceCheckResult(result);

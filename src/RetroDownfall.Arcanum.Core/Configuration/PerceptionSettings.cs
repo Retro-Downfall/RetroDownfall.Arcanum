@@ -2,12 +2,10 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 
 /// <summary>
 /// Perception runtime projection. Path authority comes from
-/// <c>Arcanum:Security:PerceptionWorkspaceRoots</c>; traversal limits are code-owned.
+/// <c>Arcanum:Security:PerceptionWorkspaceRoots</c>; the table-of-contents projection is code-owned.
 /// </summary>
 public sealed record PerceptionSettings
 {
-
-    public int MaxEnumerationSteps { get; set; } = 50_000;
 
     public int MaxTableOfContentsLines { get; set; } = 20;
 

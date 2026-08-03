@@ -23,6 +23,4 @@ public sealed record ApprenticeSettings
 
     public bool EnableDivineIntervention { get; set; } = true;
 
-    public int MaxPendingStarts { get; set; } = 100;
-
 }

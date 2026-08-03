@@ -517,7 +517,54 @@ public sealed class SpellScannerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ScanAsync_does_not_descend_beyond_max_depth()
+    public async Task LoadFullAsync_accepts_dependencies_beyond_the_former_total_count_ceiling()
+    {
+
+        const int dependencyCount = 21;
+
+        _workspace.WriteFile(
+            "spells/many-dependencies/SPELL.md",
+            """
+            ---
+            name: many-dependencies
+            description: declares many dependencies
+            ---
+            body
+            """);
+
+        string dependencies = System.Text.Json.JsonSerializer.Serialize(
+            Enumerable.Range(0, dependencyCount)
+                .Select(static index => $"dependency-{index:D2}")
+                .ToArray());
+
+        _workspace.WriteFile(
+            "spells/many-dependencies/SKILL.json",
+            $$"""
+            {
+              "name": "many-dependencies",
+              "version": "1.0.0",
+              "description": "declares many dependencies",
+              "tags": [],
+              "declaredTools": [],
+              "dependencies": {{dependencies}}
+            }
+            """);
+
+        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(
+            Path.Combine(_workspace.Root, "spells", "many-dependencies", "SPELL.md"),
+            CancellationToken.None,
+            MaxFileSizeBytes);
+
+        Assert.NotNull(loaded);
+
+        Assert.NotNull(loaded!.SkillMetadata);
+
+        Assert.Equal(dependencyCount, loaded.SkillMetadata!.Dependencies.Count);
+
+    }
+
+    [Fact]
+    public async Task ScanAsync_reaches_beyond_the_former_total_depth_ceiling()
     {
 
         string relative = "spells";
@@ -539,7 +586,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
-        Assert.DoesNotContain(spells, s => s.Name == "too-deep");
+        Assert.Contains(spells, s => s.Name == "too-deep");
 
     }
 

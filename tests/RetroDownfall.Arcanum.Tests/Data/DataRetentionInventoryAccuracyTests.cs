@@ -381,10 +381,6 @@ public sealed partial class DataRetentionServiceTests
 
         settings.Retention.CompletedBatches = EnabledRule();
 
-        settings.Retention.CheckpointInterval = 1;
-
-        settings.Retention.MaxItemsPerSweep = 2;
-
         IDataRetentionService service = CreateService(settings);
 
         DataRetentionRequest request = new(DataRetentionOperation.Prune);

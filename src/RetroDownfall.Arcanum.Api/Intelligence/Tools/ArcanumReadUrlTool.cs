@@ -111,9 +111,9 @@ public sealed class ArcanumReadUrlTool : AIFunction
 
         WebReadOptions options = new()
         {
-            Timeout = TimeSpan.FromSeconds(
-                ArcanumSettingClamps.WebBrowsingRequestTimeoutSeconds(
-                    settings.RequestTimeoutSeconds)),
+            IdleTimeout = TimeSpan.FromSeconds(
+                ArcanumSettingClamps.WebBrowsingIdleTimeoutSeconds(
+                    settings.IdleTimeoutSeconds)),
             MaxResponseBytes =
                 ArcanumSettingClamps.WebBrowsingMaxResponseBytes(
                     settings.MaxResponseBytes),

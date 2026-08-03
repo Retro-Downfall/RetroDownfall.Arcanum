@@ -11,16 +11,7 @@ public sealed record SessionSettings
 
     public int MaxStreamReplayEntries { get; set; } = 500;
 
-    public int MaxEntriesPerSession { get; set; } = 100_000;
-
     public int MaxEntryContentBytes { get; set; } = 1_048_576;
-
-    /// <summary>
-    /// Maximum fork lineage depth — a session forked from a session that was itself forked
-    /// <see cref="MaxForkDepth"/> times is rejected with <c>Session.ForkDepthExceeded</c>. Default
-    /// <c>3</c>; clamped 0–20 (<c>0</c> permits only forking an un-forked, "root" session).
-    /// </summary>
-    public int MaxForkDepth { get; set; } = 3;
 
     /// <summary>
     /// When false (default), memory-management endpoints (<c>DELETE /entries</c>, pin/unpin, compact)
@@ -30,8 +21,8 @@ public sealed record SessionSettings
     public bool AllowMemoryManagement { get; set; } = false;
 
     /// <summary>
-    /// Maximum pinned entries per session. Pinned entries are always included in inference context
-    /// even when compression would otherwise drop them. Default <c>10</c>; clamped 0–100.
+    /// Maximum pinned entries exposed by the existing Forge session-management contract. Forge is
+    /// outside the unrestricted-harness migration and retains this compatibility setting unchanged.
     /// </summary>
     public int MaxPinnedEntries { get; set; } = 10;
 

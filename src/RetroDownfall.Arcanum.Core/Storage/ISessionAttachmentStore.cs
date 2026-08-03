@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Storage;
@@ -131,7 +132,9 @@ public sealed record SessionAttachmentIndexItem(
     string OriginalFileName,
     IReadOnlyList<int> Versions,
     SessionAttachmentKind Kind,
-    long LatestByteLength);
+    long LatestByteLength,
+    bool HasMoreVersions = false,
+    int? NextVersion = null);
 
 /// <summary>
 /// Preallocated fork attachment plan: new row identity + remapped entry, with source metadata for FS copy.
@@ -208,6 +211,95 @@ public interface ISessionAttachmentStore
 
     Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(Guid sessionId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Streams every bound version in stable logical-key/version pages. <paramref name="pageSize"/>
+    /// bounds one yielded allocation only; iteration has no total row ceiling.
+    /// </summary>
+    async IAsyncEnumerable<IReadOnlyList<SessionAttachmentRecord>> ReadBoundPagesAsync(
+        Guid sessionId,
+        int pageSize = 128,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+
+        int effectivePageSize = Math.Clamp(pageSize, 1, 512);
+
+        IReadOnlyList<SessionAttachmentRecord> rows = await ListBoundAsync(
+            sessionId,
+            cancellationToken).ConfigureAwait(false);
+
+        for (int offset = 0; offset < rows.Count; offset += effectivePageSize)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            yield return rows
+                .Skip(offset)
+                .Take(effectivePageSize)
+                .ToArray();
+
+        }
+
+    }
+
+    /// <summary>
+    /// Returns only the newest bound row for each exact logical key.
+    /// </summary>
+    async Task<IReadOnlyList<SessionAttachmentRecord>> ListLatestBoundAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken = default) =>
+        (await ListBoundAsync(sessionId, cancellationToken).ConfigureAwait(false))
+            .GroupBy(static row => row.LogicalKey, StringComparer.Ordinal)
+            .Select(static group => group.MaxBy(static row => row.Version)!)
+            .OrderBy(static row => row.LogicalKey, StringComparer.Ordinal)
+            .ToArray();
+
+    /// <summary>
+    /// Returns the newest bound row only for the requested logical keys, preserving the
+    /// caller's first-occurrence order. Production stores should push selection into bounded
+    /// database-query pages; this compatibility implementation is for lightweight stores.
+    /// </summary>
+    async Task<IReadOnlyList<SessionAttachmentRecord>> ListLatestBoundByLogicalKeysAsync(
+        Guid sessionId,
+        IReadOnlyList<string> logicalKeys,
+        CancellationToken cancellationToken = default)
+    {
+
+        ArgumentNullException.ThrowIfNull(logicalKeys);
+
+        if (logicalKeys.Count == 0)
+        {
+
+            return [];
+        }
+
+        IReadOnlyList<SessionAttachmentRecord> latest =
+            await ListLatestBoundAsync(
+                    sessionId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        Dictionary<string, SessionAttachmentRecord> byLogicalKey =
+            latest.ToDictionary(
+                static row => row.LogicalKey,
+                StringComparer.Ordinal);
+        HashSet<string> emitted = new(StringComparer.Ordinal);
+        List<SessionAttachmentRecord> selected = [];
+
+        foreach (string logicalKey in logicalKeys)
+        {
+
+            if (emitted.Add(logicalKey)
+                && byLogicalKey.TryGetValue(
+                    logicalKey,
+                    out SessionAttachmentRecord? row))
+            {
+
+                selected.Add(row);
+            }
+        }
+
+        return selected;
+    }
+
     Task<IReadOnlyList<SessionAttachmentRecord>> RevalidateBoundSourcesAsync(
 
         Guid sessionId,
@@ -237,7 +329,10 @@ public interface ISessionAttachmentStore
     /// </summary>
     Task ReconcileAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken = default);
 
-    Task ValidateReferencesAsync(Guid sessionId, IReadOnlyList<Guid> attachmentIds, int maxReferences, CancellationToken cancellationToken = default);
+    Task ValidateReferencesAsync(
+        Guid sessionId,
+        IReadOnlyList<Guid> attachmentIds,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Acquires the per-session attachment gate used by purge, fork, and bound reconciliation.
@@ -274,6 +369,19 @@ public interface ISessionAttachmentStore
         Guid sourceSessionId,
         IReadOnlySet<Guid>? copiedSourceEntryIds,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Streams bounded pages of source attachment metadata for a fork. A full fork includes
+    /// entryless rows; a cutoff fork excludes them and selects only rows whose source entry
+    /// sequence is at or before <paramref name="maximumSourceEntrySequence"/>.
+    /// </summary>
+    IAsyncEnumerable<IReadOnlyList<SessionAttachmentRecord>> ReadBoundForForkPagesAsync(
+        Guid sourceSessionId,
+        long maximumSourceEntrySequence,
+        bool includeEntrylessAttachments,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            "Paged fork attachment enumeration is not supported by this store.");
 
     /// <summary>
     /// Copies and hash-verifies attachment bytes into the fork session tree before the DB transaction.

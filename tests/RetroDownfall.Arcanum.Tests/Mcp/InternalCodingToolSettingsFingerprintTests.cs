@@ -15,22 +15,20 @@ public sealed class InternalCodingToolSettingsFingerprintTests
     }
 
     [Fact]
-    public void Fingerprint_uses_normalized_workspace_patch_deadline_relation()
+    public void Fingerprint_uses_normalized_workspace_patch_recovery_timeout()
     {
         CodingToolsSettings first = new()
         {
             Patch = new WorkspacePatchSettings
             {
-                MaxElapsedMilliseconds = 100,
-                RollbackReserveMilliseconds = 50_000,
+                RecoveryTimeoutMilliseconds = 100_000,
             },
         };
         CodingToolsSettings second = new()
         {
             Patch = new WorkspacePatchSettings
             {
-                MaxElapsedMilliseconds = 100,
-                RollbackReserveMilliseconds = 60_000,
+                RecoveryTimeoutMilliseconds = int.MaxValue,
             },
         };
 

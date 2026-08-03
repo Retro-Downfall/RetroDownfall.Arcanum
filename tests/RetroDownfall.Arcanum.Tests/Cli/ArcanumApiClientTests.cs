@@ -7,6 +7,8 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
+using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -18,6 +20,108 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class ArcanumApiClientTests
 {
+
+    [Fact]
+    public async Task ListLoreAsync_rejects_a_non_advancing_page_instead_of_using_a_total_page_limit()
+    {
+
+        RecordingHandler handler = new(_ =>
+        {
+
+            ListPageResult<LoreDto> page = new(
+                [new LoreDto("key", "value", DateTime.UtcNow)],
+                HasMore: true,
+                NextOffset: 0);
+
+            byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<ListPageResult<LoreDto>>(page, true, null),
+                ArcanumJsonContext.Default.ApiResponseListPageResultLoreDto);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+
+                Content = new ByteArrayContent(payload),
+
+            };
+
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        Result<List<LoreDto>> result = await client.ListLoreAsync();
+
+        Assert.False(result.IsSuccess);
+
+        Assert.Equal("Api.PaginationNoProgress", result.Error.Code);
+
+        Assert.Single(handler.Requests);
+
+    }
+
+    [Fact]
+    public async Task GetSpellCatalogPageAsync_sends_paged_filters_and_cursor()
+    {
+
+        SpellCatalogPage expected = new(
+            [new SpellSummary(
+                "catalog-spell",
+                "description",
+                SpellSource.Workspace,
+                [])],
+            true,
+            "opaque-next",
+            "continue");
+
+        RecordingHandler handler = new(_ =>
+        {
+
+            byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<SpellCatalogPage>(expected, true, null),
+                ArcanumJsonContext.Default.ApiResponseSpellCatalogPage);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+
+                Content = new ByteArrayContent(payload),
+
+            };
+
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        Result<SpellCatalogPage> result = await client.GetSpellCatalogPageAsync(
+            workspace: "/workspace root",
+            cursor: "opaque prior",
+            query: "needle",
+            tag: "review",
+            tool: "read_file",
+            source: SpellSource.Workspace,
+            cancellationToken: CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("opaque-next", result.Value?.NextCursor);
+
+        Uri requestUri = Assert.Single(handler.Requests).RequestUri!;
+
+        Assert.Equal("/api/spells", requestUri.AbsolutePath);
+
+        Assert.Contains("paged=true", requestUri.Query, StringComparison.Ordinal);
+
+        Assert.Contains("workspace=%2Fworkspace%20root", requestUri.Query, StringComparison.Ordinal);
+
+        Assert.Contains("cursor=opaque%20prior", requestUri.Query, StringComparison.Ordinal);
+
+        Assert.Contains("q=needle", requestUri.Query, StringComparison.Ordinal);
+
+        Assert.Contains("tag=review", requestUri.Query, StringComparison.Ordinal);
+
+        Assert.Contains("tool=read_file", requestUri.Query, StringComparison.Ordinal);
+
+        Assert.Contains("source=Workspace", requestUri.Query, StringComparison.Ordinal);
+
+    }
 
     [Fact]
 
@@ -831,7 +935,7 @@ public sealed class ArcanumApiClientTests
 
             if (string.Equals(name, ArcanumApiClient.RequestHttpClientName, StringComparison.Ordinal))
             {
-                client.Timeout = requestTimeout ?? TimeSpan.FromSeconds(60);
+                client.Timeout = requestTimeout ?? Timeout.InfiniteTimeSpan;
             }
             else
             {

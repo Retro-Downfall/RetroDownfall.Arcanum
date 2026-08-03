@@ -18,9 +18,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// </summary>
 /// <remarks>
 /// Concurrency is governed by an in-memory <see cref="SemaphoreSlim"/> sized from the retained
-/// host-capacity policy at first use. External A2A tasks are intentionally process-local and never
-/// written to the Grimoire, so unlike <c>ConclaveLineage</c>'s breadth check this cannot be enforced
-/// via a repository query.
+/// host-capacity policy at first use. Excess work waits behind that admission boundary until a slot
+/// opens or its caller cancels; the capacity is not a total-work rejection rule.
 /// </remarks>
 public sealed class A2AClientService : IA2AClientService
 {
@@ -123,15 +122,7 @@ public sealed class A2AClientService : IA2AClientService
 
         SemaphoreSlim gate = _gate.Value;
 
-        if (!await gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
-        {
-            int maxConcurrentTasks = ArcanumSettingClamps.MaxConcurrentA2ATasks(
-                settings.Execution.MaxConcurrentA2ATasks);
-
-            return Result<A2ADispatchResult>.Failure(
-                new Error(ErrorCodes.Sending.MaxTasksReached, $"The maximum number of concurrent external delegations ({maxConcurrentTasks}) has been reached."));
-
-        }
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {

@@ -15,12 +15,6 @@ public sealed record CodebaseEmbeddingSettings
     public int MaxFilesToIndex { get; set; } = 500;
 
     /// <summary>
-    /// Files larger than this (in characters) are skipped during indexing. Default <c>50,000</c>;
-    /// clamped 1,000–500,000 at runtime.
-    /// </summary>
-    public int MaxFileSizeChars { get; set; } = 50_000;
-
-    /// <summary>
     /// File extensions (including the leading dot) eligible for indexing, matched case-insensitively.
     /// An empty array means nothing is indexed.
     /// </summary>
