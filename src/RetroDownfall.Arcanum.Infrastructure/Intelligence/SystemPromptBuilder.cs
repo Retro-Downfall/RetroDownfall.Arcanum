@@ -474,8 +474,13 @@ public static class SystemPromptBuilder
 
             string versions = string.Join(",", item.Versions);
 
+            string continuation = item.HasMoreVersions
+                && item.NextVersion is int nextVersion
+                    ? $"  has-more-versions=true  next-version={nextVersion}"
+                    : string.Empty;
+
             string line =
-                $"- {hardenedName}  versions={versions}  kind={item.Kind}  bytes={item.LatestByteLength}";
+                $"- {hardenedName}  versions={versions}{continuation}  kind={item.Kind}  bytes={item.LatestByteLength}";
 
             int lineBytes = Encoding.UTF8.GetByteCount(line) + 1;
 

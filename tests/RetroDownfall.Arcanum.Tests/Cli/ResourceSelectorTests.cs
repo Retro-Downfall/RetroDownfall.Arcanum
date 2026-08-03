@@ -112,6 +112,121 @@ public sealed class ResourceSelectorTests
     }
 
     [Fact]
+    public async Task Interactive_omission_fetches_only_the_page_the_picker_needs()
+    {
+
+        FakePicker picker = new() { SelectedId = "one" };
+
+        FakeRecentResourceStore recent = new();
+
+        ResourceSelector<Candidate> selector = new(picker, recent);
+
+        int calls = 0;
+
+        ResourceSelectionRequest<Candidate> request = new(
+            "session",
+            Identifier: null,
+            IsInteractive: true,
+            new ResourceDescriptor<Candidate>(
+                "session",
+                ["Title", "Status"],
+                static x => x.Id,
+                static x => x.Name,
+                static x => x.Summary,
+                static x => [x.Name, x.Summary]),
+            (token, _) =>
+            {
+
+                calls++;
+
+                ResourcePage<Candidate> page = token is null
+                    ? new ResourcePage<Candidate>(
+                        [new Candidate("one", "first", "active")],
+                        "page-2")
+                    : new ResourcePage<Candidate>(
+                        [new Candidate("two", "second", "active")],
+                        null);
+
+                return Task.FromResult(
+                    Result<ResourcePage<Candidate>>.Success(page));
+
+            });
+
+        ResourceSelectionResult<Candidate> result = await selector.SelectAsync(request);
+
+        Assert.Equal(ResourceSelectionStatus.Selected, result.Status);
+
+        Assert.Equal("one", result.Value!.Id);
+
+        Assert.Equal(1, calls);
+
+        Assert.Equal(["one"], picker.LastChoiceIds);
+
+    }
+
+    [Fact]
+    public async Task Interactive_omission_loads_the_next_page_only_when_the_picker_requests_it()
+    {
+
+        FakePicker picker = new()
+        {
+
+            SelectedId = "two",
+
+            RequestNextPageBeforeSelection = true,
+
+        };
+
+        FakeRecentResourceStore recent = new();
+
+        ResourceSelector<Candidate> selector = new(picker, recent);
+
+        int calls = 0;
+
+        ResourceSelectionRequest<Candidate> request = new(
+            "session",
+            Identifier: null,
+            IsInteractive: true,
+            new ResourceDescriptor<Candidate>(
+                "session",
+                ["Title", "Status"],
+                static x => x.Id,
+                static x => x.Name,
+                static x => x.Summary,
+                static x => [x.Name, x.Summary]),
+            (token, _) =>
+            {
+
+                calls++;
+
+                ResourcePage<Candidate> page = token is null
+                    ? new ResourcePage<Candidate>(
+                        [new Candidate("one", "first", "active")],
+                        "page-2")
+                    : new ResourcePage<Candidate>(
+                        [new Candidate("two", "second", "active")],
+                        null);
+
+                return Task.FromResult(
+                    Result<ResourcePage<Candidate>>.Success(page));
+
+            });
+
+        ResourceSelectionResult<Candidate> result = await selector.SelectAsync(request);
+
+        Assert.Equal(ResourceSelectionStatus.Selected, result.Status);
+
+        Assert.Equal("two", result.Value!.Id);
+
+        Assert.Equal(2, calls);
+
+        Assert.Equal(2, picker.CallCount);
+
+        Assert.Equal([["one"], ["two"]], picker.ChoiceHistory);
+
+    }
+
+    [Fact]
     public async Task Recent_selection_changes_picker_order_but_not_ambiguous_authority()
     {
         SelectionFixture fixture = new(
@@ -162,6 +277,43 @@ public sealed class ResourceSelectorTests
         Assert.Equal(2, calls);
     }
 
+    [Fact]
+    public async Task Selector_fetches_beyond_the_former_total_page_ceiling()
+    {
+        FakePicker picker = new();
+        FakeRecentResourceStore recent = new();
+        ResourceSelector<Candidate> selector = new(picker, recent);
+        int calls = 0;
+        ResourceSelectionRequest<Candidate> request = new(
+            "session",
+            "target",
+            IsInteractive: false,
+            new ResourceDescriptor<Candidate>(
+                "session",
+                ["Title", "Status"],
+                static x => x.Id,
+                static x => x.Name,
+                static x => x.Summary,
+                static x => [x.Name, x.Summary]),
+            (_, _) =>
+            {
+                calls++;
+
+                bool isTargetPage = calls == 101;
+                ResourcePage<Candidate> page = new(
+                    [new Candidate($"id-{calls}", isTargetPage ? "target" : $"candidate-{calls}", "active")],
+                    isTargetPage ? null : $"page-{calls + 1}");
+
+                return Task.FromResult(Result<ResourcePage<Candidate>>.Success(page));
+            });
+
+        ResourceSelectionResult<Candidate> result = await selector.SelectAsync(request);
+
+        Assert.Equal(ResourceSelectionStatus.Selected, result.Status);
+        Assert.Equal("target", result.Value!.Name);
+        Assert.Equal(101, calls);
+    }
+
     private sealed record Candidate(string Id, string Name, string Summary);
 
     private sealed class SelectionFixture
@@ -210,19 +362,38 @@ public sealed class ResourceSelectorTests
 
         public string? SelectedId { get; set; }
 
+        public bool RequestNextPageBeforeSelection { get; set; }
+
         public bool LastRequestWasSearchable { get; private set; }
 
         public string[] LastChoiceIds { get; private set; } = [];
 
-        public Task<T?> PickAsync<T>(ResourcePickerRequest<T> request, CancellationToken cancellationToken)
+        public List<string[]> ChoiceHistory { get; } = [];
+
+        public Task<ResourcePickerResult<T>> PickAsync<T>(
+            ResourcePickerRequest<T> request,
+            CancellationToken cancellationToken)
             where T : class
         {
             CallCount++;
             LastRequestWasSearchable = request.Searchable;
             LastChoiceIds = request.Choices.Select(request.Descriptor.GetId).ToArray();
+
+            ChoiceHistory.Add(LastChoiceIds);
+
+            if (RequestNextPageBeforeSelection && CallCount == 1)
+            {
+
+                return Task.FromResult(ResourcePickerResult<T>.NextPage());
+
+            }
+
             T? selected = request.Choices.FirstOrDefault(
                 value => string.Equals(request.Descriptor.GetId(value), SelectedId, StringComparison.Ordinal));
-            return Task.FromResult(selected);
+
+            return Task.FromResult(selected is null
+                ? ResourcePickerResult<T>.Cancelled()
+                : ResourcePickerResult<T>.Selected(selected));
         }
     }
 

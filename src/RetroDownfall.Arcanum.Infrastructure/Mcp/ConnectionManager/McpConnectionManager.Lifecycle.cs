@@ -537,10 +537,9 @@ public sealed partial class McpConnectionManager
             TaskScheduler.Default);
     }
 
-    private int GetClampedListDirectoryMaxPaths()
+    private int GetListDirectoryPageSize()
     {
-        return ArcanumSettingClamps.ListDirectoryMaxPaths(
-            ArcanumRuntimeDefaults.Intelligence.ListDirectoryMaxPaths);
+        return ArcanumRuntimeDefaults.Intelligence.ListDirectoryPageSize;
     }
 
     private long GetClampedToolOutputCapBytes()
@@ -555,13 +554,9 @@ public sealed partial class McpConnectionManager
         List<LoadedMcpToolRow> tagged,
         CancellationToken cancellationToken)
     {
-        int timeoutSeconds = GetClampedExecuteCommandTimeoutSeconds();
-
-        TimeSpan executeTimeout = TimeSpan.FromSeconds(timeoutSeconds);
-
         string? workspaceRoot = workspaceKey == NoWorkspaceKey ? null : workspaceKey;
 
-        int listDirectoryMaxPaths = GetClampedListDirectoryMaxPaths();
+        int listDirectoryMaxPaths = GetListDirectoryPageSize();
 
         long maxFileReadSizeBytes = ArcanumSettingClamps.MaxFileReadSizeBytes(
             ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes);
@@ -596,8 +591,6 @@ public sealed partial class McpConnectionManager
                 scopeFactory,
                 pacer,
                 workspaceRoot,
-                executeTimeout,
-                timeoutSeconds,
                 listDirectoryMaxPaths,
                 settings.CurrentValue.ResolveIntelligence(),
                 maxFileReadSizeBytes,
@@ -652,12 +645,6 @@ public sealed partial class McpConnectionManager
 
             attached = true;
 
-            TimeSpan workspaceCheckRequestTimeout =
-                WorkspaceCheckDeadlinePolicy.GetMcpRequestTimeout(
-                    TimeSpan.FromSeconds(
-                        ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(
-                            workspaceCheck.TimeoutSeconds)));
-
             foreach (McpBridgeTool t in tools)
             {
                 McpBridgeTool trustedTool = t;
@@ -687,7 +674,6 @@ public sealed partial class McpConnectionManager
                 {
 
                     trustedTool = trustedTool
-                        .WithRequestTimeout(workspaceCheckRequestTimeout)
                         .WithTrustedStructuredResult(
                             TrustedStructuredToolResultKind.WorkspaceCheck);
                 }

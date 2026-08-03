@@ -906,6 +906,28 @@ internal sealed class CommandCenterHost(
                 window.MoveSessionSelection(1, state);
                 break;
 
+            case CommandCenterAction.LoadOlderSessionPage:
+                await LoadSessionPageCoreAsync(
+                        state,
+                        window,
+                        app,
+                        ui,
+                        older: true,
+                        cancellationToken: linked.Token)
+                    .ConfigureAwait(false);
+                break;
+
+            case CommandCenterAction.LoadNewerSessionPage:
+                await LoadSessionPageCoreAsync(
+                        state,
+                        window,
+                        app,
+                        ui,
+                        older: false,
+                        cancellationToken: linked.Token)
+                    .ConfigureAwait(false);
+                break;
+
             case CommandCenterAction.ResumeSelectedSession:
                 await RunGatedAsync(
                         state,
@@ -968,6 +990,28 @@ internal sealed class CommandCenterHost(
                 window.PageLogDown();
                 break;
 
+            case CommandCenterAction.LoadOlderTranscriptPage:
+                await LoadTranscriptPageCoreAsync(
+                        state,
+                        window,
+                        app,
+                        ui,
+                        older: true,
+                        cancellationToken: linked.Token)
+                    .ConfigureAwait(false);
+                break;
+
+            case CommandCenterAction.LoadNewerTranscriptPage:
+                await LoadTranscriptPageCoreAsync(
+                        state,
+                        window,
+                        app,
+                        ui,
+                        older: false,
+                        cancellationToken: linked.Token)
+                    .ConfigureAwait(false);
+                break;
+
             case CommandCenterAction.JumpTranscriptHome:
                 window.ScrollLogHome();
                 break;
@@ -1000,6 +1044,129 @@ internal sealed class CommandCenterHost(
                 window.ScrollIncantationsEnd();
                 break;
         }
+    }
+
+    private async Task LoadTranscriptPageCoreAsync(
+        CommandCenterState state,
+        CommandCenterWindow window,
+        IApplication app,
+        ChannelWriter<CommandCenterUiUpdate> ui,
+        bool older,
+        CancellationToken cancellationToken)
+    {
+        if (state.Generating)
+        {
+            state.FooterHint = "Finish or cancel the active turn before changing transcript pages.";
+
+            await ui.WriteAsync(
+                    new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshFooter),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return;
+        }
+
+        bool loaded = older
+            ? await sessionWorkspace
+                .LoadOlderTranscriptPageAsync(state, cancellationToken)
+                .ConfigureAwait(false)
+            : await sessionWorkspace
+                .LoadNewerTranscriptPageAsync(state, cancellationToken)
+                .ConfigureAwait(false);
+
+        if (!loaded)
+        {
+            state.FooterHint = state.LastError
+                ?? (older
+                    ? "No older transcript page is available."
+                    : "No newer transcript page is available.");
+
+            await ui.WriteAsync(
+                    new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshFooter),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return;
+        }
+
+        state.FooterHint = older
+            ? "Loaded older transcript page · Ctrl+PgDn returns toward the latest entries"
+            : "Loaded newer transcript page · Ctrl+PgUp returns toward older entries";
+
+        app.Invoke(() =>
+        {
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshLog);
+
+            if (older)
+            {
+                window.ScrollLogEnd();
+            }
+            else
+            {
+                window.ScrollLogHome();
+            }
+
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+        });
+    }
+
+    private async Task LoadSessionPageCoreAsync(
+        CommandCenterState state,
+        CommandCenterWindow window,
+        IApplication app,
+        ChannelWriter<CommandCenterUiUpdate> ui,
+        bool older,
+        CancellationToken cancellationToken)
+    {
+        if (state.Generating)
+        {
+            state.FooterHint = "Finish or cancel the active turn before changing session pages.";
+
+            await ui.WriteAsync(
+                    new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshFooter),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return;
+        }
+
+        bool loaded = older
+            ? await sessionWorkspace
+                .LoadOlderSessionsPageAsync(state, cancellationToken)
+                .ConfigureAwait(false)
+            : await sessionWorkspace
+                .LoadNewerSessionsPageAsync(state, cancellationToken)
+                .ConfigureAwait(false);
+
+        if (!loaded)
+        {
+            state.FooterHint = state.LastError
+                ?? (older
+                    ? "No older session page is available."
+                    : "No newer session page is available.");
+
+            await ui.WriteAsync(
+                    new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshFooter),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return;
+        }
+
+        state.SessionFilter = string.Empty;
+
+        state.FooterHint = older
+            ? "Loaded older sessions · Ctrl+PgUp returns toward recent sessions"
+            : "Loaded newer sessions · Ctrl+PgDn continues toward older sessions";
+
+        app.Invoke(() =>
+        {
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshSidebar);
+
+            window.EnsureSessionSelection(state);
+
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+        });
     }
 
     private async Task RefreshSessionsCoreAsync(
@@ -1294,6 +1461,7 @@ internal sealed class CommandCenterHost(
                     "Ctrl+Q Quit",
                     "Esc Close overlay / focus composer",
                     "PgUp/PgDn Transcript scroll (also from composer)",
+                    "Ctrl+PgUp/PgDn Load adjacent Transcript or Sessions page",
                     "↑↓/Home/End Scroll focused Transcript or Incantations",
                     "",
                     "Slash: /help /keys /session list|new|resume",
@@ -1987,12 +2155,14 @@ internal sealed class CommandCenterHost(
         bool ctrl = key.IsCtrl;
         char? ch = TryGetChar(key);
         bool isLetter = ch is { } c && char.IsLetter(c);
+        KeyCode baseCode = key.KeyCode
+            & ~(KeyCode.ShiftMask | KeyCode.AltMask | KeyCode.CtrlMask);
         // Ctrl/Shift/Alt+Enter may arrive as WithCtrl/WithShift/WithAlt rather than bare Key.Enter.
         bool isEnter = key == Key.Enter
             || key == Key.Enter.WithShift
             || key == Key.Enter.WithAlt
             || key == Key.Enter.WithCtrl
-            || (key.KeyCode & ~(KeyCode.ShiftMask | KeyCode.AltMask | KeyCode.CtrlMask)) == KeyCode.Enter;
+            || baseCode == KeyCode.Enter;
         return new KeyChord(
             IsEnter: isEnter,
             IsEsc: key == Key.Esc,
@@ -2011,8 +2181,8 @@ internal sealed class CommandCenterHost(
             IsF5: key == Key.F5,
             IsUp: key == Key.CursorUp,
             IsDown: key == Key.CursorDown,
-            IsPageUp: key == Key.PageUp,
-            IsPageDown: key == Key.PageDown,
+            IsPageUp: baseCode == KeyCode.PageUp,
+            IsPageDown: baseCode == KeyCode.PageDown,
             IsHome: key == Key.Home,
             IsEnd: key == Key.End,
             IsJ: !ctrl && ch is 'j' or 'J',

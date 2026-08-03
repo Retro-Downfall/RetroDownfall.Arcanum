@@ -92,24 +92,17 @@ internal static partial class CliCommandTree
 
         Option<string?> frequencyPenalty = new("--frequency-penalty");
 
-        Option<int?> maxSources = new("--max-sources")
+        Option<int?> sourceTarget = new("--sources")
         {
 
-            Description = "Research source limit (1-20; default 5).",
-
-        };
-
-        Option<int?> maxHops = new("--max-hops")
-        {
-
-            Description = "Research hop limit (1-5; default 2).",
+            Description = "Optional positive research source target; otherwise continue until source exhaustion.",
 
         };
 
         Option<int?> tokenBudget = new("--token-budget")
         {
 
-            Description = "Research synthesis output-token limit (64-32768; default 2000).",
+            Description = "Explicit positive research synthesis output-token budget (default 2000).",
 
         };
 
@@ -160,9 +153,7 @@ internal static partial class CliCommandTree
 
         command.Add(frequencyPenalty);
 
-        command.Add(maxSources);
-
-        command.Add(maxHops);
+        command.Add(sourceTarget);
 
         command.Add(tokenBudget);
 
@@ -193,8 +184,7 @@ internal static partial class CliCommandTree
                         result.GetValue(responseFormat),
                         result.GetValue(presencePenalty),
                         result.GetValue(frequencyPenalty),
-                        result.GetValue(maxSources) ?? 5,
-                        result.GetValue(maxHops) ?? 2,
+                        result.GetValue(sourceTarget),
                         result.GetValue(tokenBudget) ?? 2_000,
                         result.GetValue(costBudget)),
                     cancellationToken).ConfigureAwait(false));

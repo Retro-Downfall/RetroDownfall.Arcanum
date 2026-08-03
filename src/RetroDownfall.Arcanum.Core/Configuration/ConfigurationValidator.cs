@@ -46,6 +46,21 @@ public sealed class ConfigurationValidator(
     internal const string ObsoleteModerationsMigrationMessage =
         "Arcanum:Moderations is no longer supported. POST /v1/moderations always returns 501 not_supported; remove the Moderations block from arcanum.json.";
 
+    internal const string ObsoleteAutomaticAuditLookbackMessage =
+        "Remove this default audit-lookback control. Audit queries automatically traverse retained dated logs and stop at the requested result page, cancellation, or the explicit from boundary.";
+
+    internal const string ObsoleteAutomaticCodebaseIndexingMessage =
+        "Remove this codebase-indexing implementation control. Watcher coalescing, reconciliation, and physical watcher admission are automatic; unfinished indexing continues in later checkpoints.";
+
+    internal const string ObsoleteAutomaticAttachmentIndexingMessage =
+        "Remove this attachment-indexing implementation control. Extraction, chunking, batching, durable reconciliation, retry progress, and model-aware retrieval are automatic.";
+
+    internal const string ObsoleteAutomaticApprenticeQueueMessage =
+        "Remove this Apprentice queue-size control. Pending starts are persisted and queue automatically under the configured concurrent-Apprentice admission policy.";
+
+    internal const string ObsoleteAutomaticRetentionWorkMessage =
+        "Remove this retention implementation control. Eligible work continues automatically through internal checkpoints until it completes or the operator cancels it.";
+
     private static readonly HashSet<string> ReservedRuntimeEnvironmentVariableNames =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -98,6 +113,32 @@ public sealed class ConfigurationValidator(
         ("webBrowsing", "Web-tool enablement moved to Features.WebBrowsing and provider facts moved to Integrations.WebResearch; fetch and output limits are internal."),
     ];
 
+    private static readonly (string Path, string Message)[] ObsoleteInternalWorkflowPaths =
+    [
+        ("host.auditLog.retentionDays", ObsoleteAutomaticAuditLookbackMessage),
+        ("security.guardrails.auditLog.retentionDays", ObsoleteAutomaticAuditLookbackMessage),
+        ("integrations.embeddings.codebaseIndexing.watcherDebounceMilliseconds", ObsoleteAutomaticCodebaseIndexingMessage),
+        ("integrations.embeddings.codebaseIndexing.maxWatchers", ObsoleteAutomaticCodebaseIndexingMessage),
+        ("integrations.embeddings.codebaseIndexing.reconciliationIntervalMinutes", ObsoleteAutomaticCodebaseIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.maxAttachmentBytes", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.maxExtractedCharacters", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.chunkSizeCharacters", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.chunkOverlapCharacters", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.maxChunksPerAttachment", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.maxAttachmentsPerBatch", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.queueCapacity", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.maxRetries", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.retryDelaySeconds", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.processingTimeoutSeconds", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.maxRetrievedChunks", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.maxRetrievedAttachments", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.maxRetrievedBytes", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("integrations.embeddings.attachmentIndexing.maxRetrievedTokens", ObsoleteAutomaticAttachmentIndexingMessage),
+        ("execution.maxPendingApprenticeStarts", ObsoleteAutomaticApprenticeQueueMessage),
+        ("retention.maxItemsPerSweep", ObsoleteAutomaticRetentionWorkMessage),
+        ("retention.checkpointInterval", ObsoleteAutomaticRetentionWorkMessage),
+    ];
+
     /// <summary>
     /// Walks the complete <c>Arcanum</c> configuration subtree against source-generated JSON
     /// metadata before options binding. Unknown paths fail closed; selected removed paths retain
@@ -137,6 +178,20 @@ public sealed class ConfigurationValidator(
             errors.Add(new ConfigurationValidationError(
                 "moderations",
                 ObsoleteModerationsMigrationMessage));
+        }
+
+        foreach ((string path, string message) in ObsoleteInternalWorkflowPaths)
+        {
+
+            if (arcanum.GetSection(path.Replace('.', ':')).Exists())
+            {
+
+                AddErrorIfMissing(
+                    new ConfigurationValidationError(path, message),
+                    errors);
+
+            }
+
         }
 
         if (arcanum.GetSection("Host:Https:CertificatePassword").Exists())
@@ -298,6 +353,20 @@ public sealed class ConfigurationValidator(
             errors.Add(new ConfigurationValidationError(
                 "moderations",
                 ObsoleteModerationsMigrationMessage));
+        }
+
+        foreach ((string path, string message) in ObsoleteInternalWorkflowPaths)
+        {
+
+            if (TryGetNestedPropertyIgnoreCase(root, path, out _))
+            {
+
+                AddErrorIfMissing(
+                    new ConfigurationValidationError(path, message),
+                    errors);
+
+            }
+
         }
 
         if (TryGetPropertyIgnoreCase(root, "host", out JsonElement host)
@@ -857,6 +926,33 @@ public sealed class ConfigurationValidator(
         value = default;
 
         return false;
+
+    }
+
+    private static bool TryGetNestedPropertyIgnoreCase(
+        JsonElement root,
+        string path,
+        out JsonElement value)
+    {
+
+        value = root;
+
+        foreach (string segment in path.Split('.'))
+        {
+
+            if (value.ValueKind != JsonValueKind.Object
+                || !TryGetPropertyIgnoreCase(value, segment, out value))
+            {
+
+                value = default;
+
+                return false;
+
+            }
+
+        }
+
+        return true;
 
     }
 

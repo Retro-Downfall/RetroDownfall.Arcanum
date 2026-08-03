@@ -261,36 +261,34 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task AddAsync_at_limit_returns_max_result()
+    public async Task AddAsync_beyond_the_former_total_count_ceiling_succeeds()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         CampaignRepository repository = CreateRepository();
 
-        await SeedCampaignsAsync(CodeOwnedMaxCampaigns, "seed");
+        await SeedCampaignsAsync(FormerCodeOwnedMaxCampaigns, "seed");
 
         Result<Campaign> result = await repository.AddAsync(
-            NewCampaign("over-limit"),
+            NewCampaign("beyond-former-limit"),
             CancellationToken.None);
 
-        Assert.True(result.IsFailure);
-
-        Assert.Equal(ErrorCodes.Campaign.MaxReached, result.Error.Code);
+        Assert.True(result.IsSuccess, result.Error.Code);
 
         Assert.Equal(
-            CodeOwnedMaxCampaigns,
+            FormerCodeOwnedMaxCampaigns + 1,
             await repository.CountAsync(CancellationToken.None));
 
     }
 
     [SkippableFact]
-    public async Task AddAsync_two_contexts_at_max_minus_one_only_one_succeeds()
+    public async Task AddAsync_two_contexts_near_the_former_ceiling_both_succeed()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        await SeedCampaignsAsync(CodeOwnedMaxCampaigns - 1, "concurrent-seed");
+        await SeedCampaignsAsync(FormerCodeOwnedMaxCampaigns - 1, "concurrent-seed");
 
         await using ArcanumDbContext firstContext = _fixture.CreateContext(_dbPath);
 
@@ -336,16 +334,12 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         Result<Campaign>[] results = await Task.WhenAll(firstTask, secondTask);
 
-        Assert.Single(results, result => result.IsSuccess);
-
-        Result<Campaign> rejected = Assert.Single(results, result => result.IsFailure);
-
-        Assert.Equal(ErrorCodes.Campaign.MaxReached, rejected.Error.Code);
+        Assert.All(results, static result => Assert.True(result.IsSuccess, result.Error.Code));
 
         await using ArcanumDbContext verificationContext = _fixture.CreateContext(_dbPath);
 
         Assert.Equal(
-            CodeOwnedMaxCampaigns,
+            FormerCodeOwnedMaxCampaigns + 1,
             await verificationContext.Campaigns.CountAsync(CancellationToken.None));
 
     }
@@ -378,7 +372,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task AddAsync_exhausted_lock_failure_does_not_report_max_or_poison_entity_state()
+    public async Task AddAsync_waits_beyond_former_retry_ceiling_without_poisoning_entity_state()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -406,12 +400,34 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         CampaignRepository repository = CreateRepository();
 
-        SqliteException failure;
+        TaskCompletionSource retryCeilingPassed = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        repository.RetryingForTesting = (attempt, _, _) =>
+        {
+
+            if (attempt >= 5)
+            {
+
+                _ = retryCeilingPassed.TrySetResult();
+
+            }
+
+            return ValueTask.CompletedTask;
+
+        };
+
+        using CancellationTokenSource watchdog = new(TimeSpan.FromSeconds(20));
+
+        Task<Result<Campaign>> pendingAdd = repository.AddAsync(
+            campaign,
+            watchdog.Token);
 
         try
         {
-            failure = await Assert.ThrowsAsync<SqliteException>(
-                () => repository.AddAsync(campaign, CancellationToken.None));
+
+            await retryCeilingPassed.Task.WaitAsync(watchdog.Token);
+
         }
         finally
         {
@@ -422,17 +438,11 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
             _ = await rollback.ExecuteNonQueryAsync(CancellationToken.None);
         }
 
-        Assert.Contains(failure.SqliteErrorCode, new[] { 5, 6 });
+        Result<Campaign> result = await pendingAdd.WaitAsync(watchdog.Token);
 
-        Assert.Equal(EntityState.Detached, _db.Entry(campaign).State);
+        Assert.True(result.IsSuccess, result.Error.Code);
 
-        repositoryConnection.DefaultTimeout = 30;
-
-        Result<Campaign> retry = await repository.AddAsync(
-            campaign,
-            CancellationToken.None);
-
-        Assert.True(retry.IsSuccess, retry.Error.Code);
+        Assert.Equal(EntityState.Unchanged, _db.Entry(campaign).State);
 
         Assert.Equal(1, await repository.CountAsync(CancellationToken.None));
 
@@ -529,11 +539,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
     }
 
-    /// <summary>
-    /// Registry capacity is a code-owned invariant, so capacity tests must fill the real ceiling.
-    /// </summary>
-    private static int CodeOwnedMaxCampaigns =>
-        ArcanumSettingClamps.MaxCampaigns(ArcanumRuntimeDefaults.Campaigns.MaxCampaigns);
+    private const int FormerCodeOwnedMaxCampaigns = 500;
 
     private async Task SeedCampaignsAsync(int count, string namePrefix)
     {

@@ -217,19 +217,4 @@ internal static class EntryTemporalQueries
 
     }
 
-    /// <summary>
-    /// Count entries at or before an inclusive <see cref="Entry.Sequence"/> cutoff — used by session
-    /// fork's "up to and including this entry" cutoff to pre-check the code-owned per-session entry
-    /// limit before copying anything.
-    /// </summary>
-    public static IQueryable<int> CountAtOrBeforeSequence(
-        ArcanumDbContext db,
-        Guid sessionId,
-        long atOrBeforeSequence) =>
-        db.Database.SqlQuery<int>(
-            $"""
-            SELECT COUNT(*) AS "Value" FROM "Entries"
-            WHERE "SessionId" = {sessionId} AND "Sequence" <= {atOrBeforeSequence}
-            """);
-
 }

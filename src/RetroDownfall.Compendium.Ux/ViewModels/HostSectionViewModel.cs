@@ -17,8 +17,6 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
     [ObservableProperty] private bool _auditLogEnabled;
 
-    [ObservableProperty] private int _auditLogRetentionDays;
-
     [ObservableProperty] private bool _auditLogRedactToolArguments;
 
     [ObservableProperty] private bool _httpsEnabled;
@@ -73,8 +71,6 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
         AuditLogEnabled = settings.AuditLog.Enabled;
 
-        AuditLogRetentionDays = settings.AuditLog.RetentionDays;
-
         AuditLogRedactToolArguments = settings.AuditLog.RedactToolArguments;
 
         HttpsEnabled = settings.Https.Enabled;
@@ -119,7 +115,6 @@ public sealed partial class HostSectionViewModel : ObservableObject
             AuditLog = _snapshot.AuditLog with
             {
                 Enabled = AuditLogEnabled,
-                RetentionDays = AuditLogRetentionDays,
                 RedactToolArguments = AuditLogRedactToolArguments,
             },
             Https = _snapshot.Https with

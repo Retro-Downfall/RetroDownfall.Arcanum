@@ -357,8 +357,7 @@ internal sealed class DataRetentionCommands(
 
         dispatcher.WritePayload(
             $"Sweep interval: {FormatCount(settings.SweepIntervalHours)} hours; "
-            + $"maximum {FormatCount(settings.MaxItemsPerSweep)} items; "
-            + $"checkpoint every {FormatCount(settings.CheckpointInterval)} items");
+            + "eligible work continues through internal checkpoints until complete or cancelled");
 
         dispatcher.WritePayload(
             $"Accounting minimum: {FormatCount(settings.AccountingMinimumDays)} days; "

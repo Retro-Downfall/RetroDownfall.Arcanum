@@ -35,7 +35,7 @@ public sealed class SpellDependencyResolverTests : IDisposable
     }
 
     [Fact]
-    public async Task Depth3Chain_IncludesAbc_ExcludesD()
+    public async Task Dependency_chain_reaches_beyond_the_former_total_depth_ceiling()
     {
         await CreateSpellAsync("primary", "Primary", "primary body", ["SpellA"]);
 
@@ -59,35 +59,8 @@ public sealed class SpellDependencyResolverTests : IDisposable
 
         Assert.Equal("Primary", resolved.Primary!.Name);
 
-        Assert.Equal(["SpellA", "SpellB", "SpellC"], resolved.Resonants.Select(static s => s.Name));
+        Assert.Equal(["SpellA", "SpellB", "SpellC", "SpellD"], resolved.Resonants.Select(static s => s.Name));
 
-        Assert.DoesNotContain(resolved.Resonants, static s => s.Name == "SpellD");
-    }
-
-    [Fact]
-    public async Task Depth4Dependency_IsExcluded()
-    {
-        await CreateSpellAsync("primary", "Primary", "primary body", ["SpellA"]);
-
-        await CreateSpellAsync("spell-a", "SpellA", "a body", ["SpellB"]);
-
-        await CreateSpellAsync("spell-b", "SpellB", "b body", ["SpellC"]);
-
-        await CreateSpellAsync("spell-c", "SpellC", "c body", ["SpellD"]);
-
-        await CreateSpellAsync("spell-d", "SpellD", "d body", dependencies: null);
-
-        ParsedSpell? primary = await LoadSpellAsync("primary");
-
-        Assert.NotNull(primary);
-
-        ResolvedSpell resolved = await SpellDependencyResolver.ResolveAsync(
-            primary!,
-            _workspace,
-            _maxFileSizeBytes,
-            CancellationToken.None);
-
-        Assert.DoesNotContain(resolved.Resonants, static s => s.Name == "SpellD");
     }
 
     [Fact]

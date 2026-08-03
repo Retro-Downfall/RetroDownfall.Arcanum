@@ -121,8 +121,6 @@ public sealed partial class DataRetentionServiceTests
 
         settings.Retention.UploadedFiles = EnabledRule();
 
-        settings.Retention.MaxItemsPerSweep = 1;
-
         DataRetentionService service = CreateBoundaryService(
             settings,
             static (_, _) => Task.CompletedTask);
@@ -318,8 +316,6 @@ public sealed partial class DataRetentionServiceTests
 
         settings.Retention.Entries = EnabledRule();
 
-        settings.Retention.MaxItemsPerSweep = 1;
-
         DataRetentionService service = CreateBoundaryService(
             settings,
             static (_, _) => Task.CompletedTask);
@@ -372,8 +368,6 @@ public sealed partial class DataRetentionServiceTests
         ArcanumSettings settings = CreatePruneSettings();
 
         settings.Retention.Attachments = EnabledRule();
-
-        settings.Retention.MaxItemsPerSweep = 1;
 
         DataRetentionService service = CreateBoundaryService(
             settings,

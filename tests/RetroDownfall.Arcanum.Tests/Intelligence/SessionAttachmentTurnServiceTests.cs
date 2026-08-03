@@ -141,6 +141,73 @@ public sealed class SessionAttachmentTurnServiceTests
         Assert.Null(prep.ErrorMessage);
         Guid visible = Assert.Single(Assert.IsAssignableFrom<IReadOnlySet<Guid>>(prep.VisibleAttachmentIds));
         Assert.Equal(indexedId, visible);
+        Assert.Equal(0, store.ListBoundCallCount);
+        Assert.Equal(1, store.SelectedLatestCallCount);
+        Assert.Equal(["indexed"], store.LastSelectedLogicalKeys);
+    }
+
+    [Fact]
+    public async Task PrepareAsync_queries_latest_rows_for_distinct_index_keys_in_index_order()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+        SessionAttachmentRecord alpha =
+            FakeSessionAttachmentStore.BoundRecord(
+                Guid.NewGuid(),
+                sessionId,
+                "alpha");
+        SessionAttachmentRecord bravo =
+            FakeSessionAttachmentStore.BoundRecord(
+                Guid.NewGuid(),
+                sessionId,
+                "bravo");
+        FakeSessionAttachmentStore store = new()
+        {
+            IndexItems =
+            [
+                new SessionAttachmentIndexItem(
+                    "bravo",
+                    "bravo.txt",
+                    [1],
+                    SessionAttachmentKind.Text,
+                    4),
+                new SessionAttachmentIndexItem(
+                    "alpha",
+                    "alpha.txt",
+                    [1],
+                    SessionAttachmentKind.Text,
+                    4),
+                new SessionAttachmentIndexItem(
+                    "bravo",
+                    "bravo.txt",
+                    [1],
+                    SessionAttachmentKind.Text,
+                    4),
+            ],
+        };
+        store.Records[alpha.Id] = alpha;
+        store.Records[bravo.Id] = bravo;
+
+        SessionAttachmentTurnPreparation prep =
+            await SessionAttachmentTurnService.PrepareAsync(
+                new PingRequest("hi", SessionId: sessionId),
+                store,
+                new ArcanumSettings(),
+                turnSessionId: sessionId,
+                turnEntryId: null,
+                pendingTurnId: null);
+
+        Assert.Null(prep.ErrorMessage);
+        Assert.Equal(
+            ["bravo", "alpha"],
+            store.LastSelectedLogicalKeys);
+        Assert.Equal(0, store.ListBoundCallCount);
+        Assert.Equal(
+            new[] { alpha.Id, bravo.Id }.Order(),
+            Assert.IsAssignableFrom<IReadOnlySet<Guid>>(
+                    prep.VisibleAttachmentIds)
+                .Order());
+
     }
 
     [Fact]
@@ -331,7 +398,7 @@ public sealed class SessionAttachmentTurnServiceTests
     }
 
     [Fact]
-    public async Task PrepareAsync_RehydratesTextAndImageReferences()
+    public async Task PrepareAsync_DefersReferencedTextAndImageWithoutReadingBytes()
     {
 
         Guid sessionId = Guid.NewGuid();
@@ -410,21 +477,19 @@ public sealed class SessionAttachmentTurnServiceTests
             pendingTurnId: null);
 
         Assert.Null(prep.ErrorMessage);
-        Assert.Equal(3, prep.RehydratedContents.Count);
+        Assert.Empty(prep.RehydratedContents);
 
-        TextContent framed = Assert.IsType<TextContent>(prep.RehydratedContents[0]);
+        SessionAttachmentExplicitMaterialization[] deferred = prep.ExplicitMaterializations!
+            .Where(static item => item.RequiresMaterialization)
+            .ToArray();
 
-        Assert.Contains("[Attached: notes.txt]", framed.Text, StringComparison.Ordinal);
+        Assert.Equal([textId, imageId], deferred.Select(static item => item.Record.Id));
 
-        Assert.Contains("hello", framed.Text, StringComparison.Ordinal);
+        Assert.All(deferred, static item => Assert.Empty(item.Contents));
 
-        TextContent imageNotice = Assert.IsType<TextContent>(prep.RehydratedContents[1]);
+        Assert.Equal(0, store.ReadBytesCallCount);
 
-        Assert.Contains("[Attached image:", imageNotice.Text, StringComparison.Ordinal);
-
-        Assert.IsType<DataContent>(prep.RehydratedContents[2]);
-
-        Assert.True(((DataContent)prep.RehydratedContents[2]).Data.Span.SequenceEqual(imageBytes));
+        Assert.Equal(0, store.OpenReadCallCount);
 
     }
 
@@ -455,6 +520,16 @@ public sealed class SessionAttachmentTurnServiceTests
     {
 
         public int PersistCallCount { get; private set; }
+
+        public int OpenReadCallCount { get; private set; }
+
+        public int ReadBytesCallCount { get; private set; }
+
+        public int ListBoundCallCount { get; private set; }
+
+        public int SelectedLatestCallCount { get; private set; }
+
+        public IReadOnlyList<string>? LastSelectedLogicalKeys { get; private set; }
 
         public Guid? LastPersistSessionId { get; private set; }
 
@@ -567,12 +642,60 @@ public sealed class SessionAttachmentTurnServiceTests
 
         public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
             Guid sessionId,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(
+            CancellationToken cancellationToken = default)
+        {
+
+            ListBoundCallCount++;
+
+            return Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(
                 Records.Values
                     .Where(record => record.SessionId == sessionId
                         && record.State == SessionAttachmentState.Bound)
                     .ToList());
+
+        }
+
+        public Task<IReadOnlyList<SessionAttachmentRecord>>
+            ListLatestBoundByLogicalKeysAsync(
+                Guid sessionId,
+                IReadOnlyList<string> logicalKeys,
+                CancellationToken cancellationToken = default)
+        {
+
+            SelectedLatestCallCount++;
+            LastSelectedLogicalKeys = logicalKeys.ToArray();
+            Dictionary<string, SessionAttachmentRecord> latestByLogicalKey =
+                Records.Values
+                    .Where(record =>
+                        record.SessionId == sessionId
+                        && record.State == SessionAttachmentState.Bound)
+                    .GroupBy(
+                        static record => record.LogicalKey,
+                        StringComparer.Ordinal)
+                    .ToDictionary(
+                        static group => group.Key,
+                        static group => group.MaxBy(
+                            static record => record.Version)!,
+                        StringComparer.Ordinal);
+            HashSet<string> emitted = new(StringComparer.Ordinal);
+            List<SessionAttachmentRecord> selected = [];
+
+            foreach (string logicalKey in logicalKeys)
+            {
+
+                if (emitted.Add(logicalKey)
+                    && latestByLogicalKey.TryGetValue(
+                        logicalKey,
+                        out SessionAttachmentRecord? record))
+                {
+
+                    selected.Add(record);
+                }
+            }
+
+            return Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>(
+                selected);
+        }
 
         public Task<IReadOnlyList<SessionAttachmentIndexItem>> BuildIndexAsync(
             Guid sessionId,
@@ -616,11 +739,34 @@ public sealed class SessionAttachmentTurnServiceTests
 
         public Task<ReadOnlyMemory<byte>> ReadBytesAsync(
             SessionAttachmentRecord record,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(
+            CancellationToken cancellationToken = default)
+        {
+
+            ReadBytesCallCount++;
+
+            return Task.FromResult(
                 BytesById.TryGetValue(record.Id, out ReadOnlyMemory<byte> bytes)
                     ? bytes
                     : ReadOnlyMemory<byte>.Empty);
+
+        }
+
+        public Task<Stream> OpenReadAsync(
+            SessionAttachmentRecord record,
+            CancellationToken cancellationToken = default)
+        {
+
+            OpenReadCallCount++;
+
+            ReadOnlyMemory<byte> bytes = BytesById.TryGetValue(
+                record.Id,
+                out ReadOnlyMemory<byte> stored)
+                    ? stored
+                    : ReadOnlyMemory<byte>.Empty;
+
+            return Task.FromResult<Stream>(new MemoryStream(bytes.ToArray(), writable: false));
+
+        }
 
         public Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
@@ -631,7 +777,6 @@ public sealed class SessionAttachmentTurnServiceTests
         public Task ValidateReferencesAsync(
             Guid sessionId,
             IReadOnlyList<Guid> attachmentIds,
-            int maxReferences,
             CancellationToken cancellationToken = default)
         {
 

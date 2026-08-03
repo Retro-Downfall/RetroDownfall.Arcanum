@@ -22,9 +22,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 // EmbeddingBlobCodec. Column names are shared between both tables by convention (see
 // WeaveSchemaInitializer) so the same primaryKeyColumn/embeddingColumn pair works either way.
 //
-// Managed-path safeguards (hardcoded internal budgets — not Arcanum:* settings): a row scan budget
-// caps worst-case work, results are tracked in a streaming top-K heap (no full scored list + OrderBy),
-// and scoped searches join the scope table in SQL instead of an unbounded IN (...) of every chunk id.
+// Managed-path mechanics: every matching row is scored, results are tracked in a streaming top-K
+// heap (no full scored list + OrderBy), and scoped searches join the scope table in SQL instead of an
+// unbounded IN (...) of every chunk id.
 internal sealed class DivinationService(
     ArcanumDbContext db,
     WeaveIndexAvailability availability,
@@ -32,13 +32,6 @@ internal sealed class DivinationService(
 {
 
     private const string VecTableSuffix = "_vec";
-
-    /// <summary>
-    /// Hard cap on embedding rows scored by a single managed (brute-force) Divination search.
-    /// Internal safeguard only — not an <c>Arcanum:*</c> setting. When exceeded, scoring stops early
-    /// and a warning is logged; top-K among the rows already scored is still returned.
-    /// </summary>
-    internal const int ManagedSearchRowBudget = WeaveIndexAvailability.ManagedSearchRowBudget;
 
     private static readonly IReadOnlyDictionary<string, string> EmptyMetadata =
         new Dictionary<string, string>(0);
@@ -206,7 +199,6 @@ internal sealed class DivinationService(
 
         return await ScoreManagedRowsAsync(
             cmd,
-            blobTableName,
             queryVector,
             maxResults,
             similarityThreshold,
@@ -293,7 +285,6 @@ internal sealed class DivinationService(
 
         return await ScoreManagedRowsAsync(
             cmd,
-            blobTableName,
             queryVector,
             maxResults,
             similarityThreshold,
@@ -302,13 +293,11 @@ internal sealed class DivinationService(
     }
 
     /// <summary>
-    /// Scores rows from an already-configured command with a streaming top-K heap and a hard row
-    /// budget. Stops after <see cref="ManagedSearchRowBudget"/> rows (logging a warning) and never
+    /// Scores every row from an already-configured command with a streaming top-K heap and never
     /// materializes a full scored list for <c>OrderBy</c>/<c>Take</c>.
     /// </summary>
     private async Task<DivinationResult[]> ScoreManagedRowsAsync(
         DbCommand cmd,
-        string blobTableName,
         float[] queryVector,
         int maxResults,
         float similarityThreshold,
@@ -320,25 +309,10 @@ internal sealed class DivinationService(
         // Min-heap by similarity: when full, the peek is the weakest of the current top-K.
         PriorityQueue<string, float> topK = new();
 
-        int rowsScanned = 0;
-
-        bool budgetExceeded = false;
-
         await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
-            if (rowsScanned >= ManagedSearchRowBudget)
-            {
-
-                budgetExceeded = true;
-
-                break;
-
-            }
-
-            rowsScanned++;
 
             string id = reader.GetString(0);
 
@@ -369,18 +343,6 @@ internal sealed class DivinationService(
                 topK.Enqueue(id, similarity);
 
             }
-
-        }
-
-        if (budgetExceeded)
-        {
-
-            logger.LogWarning(
-                "Managed Divination search against {TableName} hit the internal row budget of {RowBudget} after scoring {RowsScanned} rows; returning top-{MaxResults} among rows already scored (results may be incomplete).",
-                blobTableName,
-                ManagedSearchRowBudget,
-                rowsScanned,
-                take);
 
         }
 

@@ -76,4 +76,29 @@ public sealed class PhysicalWorkspaceScannerTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task BuildProjectSummaryAsync_discovers_solutions_beyond_the_former_depth_ceiling()
+    {
+
+        string current = _workspace.Root;
+
+        for (int depth = 0; depth < 70; depth++)
+        {
+
+            current = Directory.CreateDirectory(Path.Combine(current, $"level-{depth:D2}")).FullName;
+
+        }
+
+        string solutionPath = Path.Combine(current, "Deep.sln");
+
+        await File.WriteAllTextAsync(solutionPath, "fake solution");
+
+        PhysicalWorkspaceScanner scanner = new();
+
+        string summary = await scanner.BuildProjectSummaryAsync(_workspace.Root);
+
+        Assert.Contains("Deep.sln", summary, StringComparison.Ordinal);
+
+    }
+
 }

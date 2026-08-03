@@ -70,11 +70,6 @@ public sealed record EmbeddingSettings
     public int MaxResults { get; set; } = 5;
 
     /// <summary>
-    /// Timeout in seconds for embedding API calls. Default <c>30</c>; clamped 5–300 at runtime.
-    /// </summary>
-    public int RequestTimeoutSeconds { get; set; } = 30;
-
-    /// <summary>
     /// Maximum total UTF-8 character count across all inputs in a single <c>POST /v1/embeddings</c>
     /// request. Default <c>1,000,000</c>; clamped 1,000–10,000,000 at runtime. Exceeding this returns
     /// <c>400 invalid_request_error</c> — distinct from <see cref="ChunkSizeChars"/>, which bounds a
@@ -126,8 +121,9 @@ public sealed record EmbeddingSettings
     public bool SagaEnabled { get; set; }
 
     /// <summary>
-    /// Code-owned Saga mechanics (extraction cadence, caps, model, and
-    /// window size). Only relevant when <see cref="SagaEnabled"/> is <c>true</c>.
+    /// Code-owned Saga extraction opt-in and model selection. Work paging, checkpoints, and retry
+    /// are automatic so this carries no user-facing history or memory ceilings. Only relevant when
+    /// <see cref="SagaEnabled"/> is <c>true</c>.
     /// </summary>
     public SagaEmbeddingSettings Saga { get; set; } = new();
 

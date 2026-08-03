@@ -131,6 +131,49 @@ internal sealed class ShellCommandParser
             return Denied(raw, "Key commands are not available in Command Center (secrets). Run `arcanum key …` outside.");
         }
 
+        if (head is "campaign" or "spell" or "ward"
+            && parts.Length >= 2
+            && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase))
+        {
+
+            ShellCommandKind kind = head switch
+            {
+                "campaign" => ShellCommandKind.CampaignList,
+                "spell" => ShellCommandKind.SpellList,
+                _ => ShellCommandKind.WardList,
+            };
+
+            if (parts.Length == 2)
+            {
+                return new ParsedShellCommand(kind, raw);
+            }
+
+            if (parts.Length == 3
+                && kind == ShellCommandKind.SpellList)
+            {
+
+                return new ParsedShellCommand(
+                    kind,
+                    raw,
+                    Argument: parts[2]);
+
+            }
+
+            if (parts.Length == 3
+                && int.TryParse(parts[2], out int offset)
+                && offset >= 0)
+            {
+                return new ParsedShellCommand(kind, raw, Argument: offset.ToString());
+            }
+
+            return Denied(
+                raw,
+                kind == ShellCommandKind.SpellList
+                    ? "Usage: /spell list [opaque-cursor]."
+                    : $"Usage: /{head} list [nonnegative-offset].");
+
+        }
+
         return head switch
         {
             "help" or "?" => new ParsedShellCommand(ShellCommandKind.Help, raw),
@@ -148,8 +191,6 @@ internal sealed class ShellCommandParser
                 => new ParsedShellCommand(ShellCommandKind.ModelList, raw),
             "provider" when parts.Length >= 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(ShellCommandKind.ProviderList, raw),
-            "campaign" when parts.Length >= 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)
-                => new ParsedShellCommand(ShellCommandKind.CampaignList, raw),
             "session" when parts.Length >= 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(ShellCommandKind.SessionList, raw),
             "session" when parts.Length >= 2 && parts[1].Equals("new", StringComparison.OrdinalIgnoreCase)
@@ -170,10 +211,6 @@ internal sealed class ShellCommandParser
                 => new ParsedShellCommand(ShellCommandKind.BranchChild, raw),
             "session" when parts.Length >= 3 && parts[1].Equals("resume", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(ShellCommandKind.SessionResume, raw, Argument: parts[2]),
-            "spell" when parts.Length >= 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)
-                => new ParsedShellCommand(ShellCommandKind.SpellList, raw),
-            "ward" when parts.Length >= 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)
-                => new ParsedShellCommand(ShellCommandKind.WardList, raw),
             "ward" when parts.Length >= 2 && parts[1].Equals("allow", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(
                     ShellCommandKind.WardAllow,

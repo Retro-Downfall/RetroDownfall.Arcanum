@@ -105,7 +105,16 @@ internal sealed partial class ArcanumInternalToolServer
             psi.ArgumentList.Add(token);
         }
 
-        long totalOutputCapBytes = ArcanumSettingClamps.ToolOutputCapBytes(_settings.ToolOutputCapBytes);
+        long effectiveToolOutputBytes =
+            ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
+                _settings.ToolOutputCapBytes,
+                _maxJsonRpcLineBytes);
+
+        const long retrievalMetadataReserveBytes = 4096L;
+
+        long totalOutputCapBytes = Math.Max(
+            2048L,
+            effectiveToolOutputBytes - retrievalMetadataReserveBytes);
 
         await using AsyncServiceScope resourceScope = _scopeFactory.CreateAsyncScope();
 
@@ -132,16 +141,49 @@ internal sealed partial class ArcanumInternalToolServer
             allowUnsandboxed,
             windowsPathBoundaryRequired: boundary?.PathBoundaryRequired == true);
 
+        string outputSpillDirectory;
+
+        try
+        {
+
+            outputSpillDirectory = _commandOutputArtifacts.SpillDirectory;
+
+        }
+        catch (Exception ex)
+            when (ex is IOException
+                  or UnauthorizedAccessException)
+        {
+
+            _logger?.LogError(
+                "execute_command: private complete-output storage allocation failed ({ExceptionType}).",
+                ex.GetType().Name);
+
+            return ToolError(
+                "execute_command: private complete-output storage could not be allocated, so the process was not started.");
+
+        }
+
         CappedChildProcessRunResult runResult = await CappedChildProcessRunner.RunAsync(
             psi,
             ChildProcessEnvironmentProfile.ToolExec,
             totalOutputCapBytes,
-            _executeCommandTimeout,
+            Timeout.InfiniteTimeSpan,
             resourceLimits,
             resourceLimiter,
             cancellationToken,
             sandboxRequest,
-            _logger).ConfigureAwait(false);
+            _logger,
+            outputSpillDirectory: outputSpillDirectory)
+            .ConfigureAwait(false);
+
+        if (runResult.Outcome != CappedChildProcessOutcome.Completed)
+        {
+
+            _commandOutputArtifacts.Discard(
+                runResult.Stdout,
+                runResult.Stderr);
+
+        }
 
         switch (runResult.Outcome)
         {
@@ -198,8 +240,7 @@ internal sealed partial class ArcanumInternalToolServer
 
             case CappedChildProcessOutcome.TimedOut:
 
-                return ToolError(
-                    $"execute_command: the command timed out after {_executeCommandTimeoutSeconds} seconds.");
+                return ToolError("execute_command: canceled by an external process deadline.");
 
             case CappedChildProcessOutcome.Canceled when cancellationToken.IsCancellationRequested:
 
@@ -207,7 +248,7 @@ internal sealed partial class ArcanumInternalToolServer
 
             case CappedChildProcessOutcome.Canceled:
 
-                return ToolError("execute_command: canceled or timed out.");
+                return ToolError("execute_command: canceled.");
 
             case CappedChildProcessOutcome.IoErrorReadingOutput:
 
@@ -225,6 +266,20 @@ internal sealed partial class ArcanumInternalToolServer
 
                 return ToolError("execute_command: canceled while reading output.");
 
+            case CappedChildProcessOutcome.OutputPreservationFailed:
+
+                _logger?.LogError(
+                    "execute_command: complete output preservation failed ({ExceptionType}).",
+                    runResult.FaultException?.GetType().Name ?? "unknown");
+
+                Exception? preservationFailure =
+                    runResult.FaultException?.GetBaseException();
+
+                return preservationFailure is CommandOutputSpillLimitException spillLimit
+                    ? ToolError("execute_command: " + spillLimit.Message)
+                    : ToolError(
+                        "execute_command: complete output could not be preserved, so the process tree was terminated instead of silently discarding diagnostics.");
+
             case CappedChildProcessOutcome.Completed:
 
                 break;
@@ -237,6 +292,41 @@ internal sealed partial class ArcanumInternalToolServer
 
         long perStreamCapBytes = runResult.PerStreamCapBytes;
 
+        CommandOutputArtifactRegistration? completeOutput = null;
+
+        if (runResult.Stdout.Truncated || runResult.Stderr.Truncated)
+        {
+
+            try
+            {
+
+                completeOutput = _commandOutputArtifacts.Register(
+                    runResult.Stdout,
+                    runResult.Stderr);
+
+            }
+            catch (Exception ex)
+                when (ex is IOException
+                      or UnauthorizedAccessException
+                      or InvalidOperationException
+                      or ObjectDisposedException)
+            {
+
+                _commandOutputArtifacts.Discard(
+                    runResult.Stdout,
+                    runResult.Stderr);
+
+                _logger?.LogError(
+                    "execute_command: complete output retention failed ({ExceptionType}).",
+                    ex.GetType().Name);
+
+                return ToolError(
+                    "execute_command: complete output could not be retained, so the invocation failed without silently discarding diagnostics.");
+
+            }
+
+        }
+
         StringBuilder text = new();
 
         text.AppendLine("--- stdout ---");
@@ -245,7 +335,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (runResult.Stdout.Truncated)
         {
-            text.AppendLine($"[truncated: exceeded {perStreamCapBytes} bytes]");
+            text.AppendLine($"[preview ended after {perStreamCapBytes} bytes; complete stdout is available below]");
         }
 
         text.AppendLine("--- stderr ---");
@@ -254,12 +344,30 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (runResult.Stderr.Truncated)
         {
-            text.AppendLine($"[truncated: exceeded {perStreamCapBytes} bytes]");
+            text.AppendLine($"[preview ended after {perStreamCapBytes} bytes; complete stderr is available below]");
         }
 
         text.Append("--- exit code ---\n");
 
         text.Append(runResult.ExitCode);
+
+        if (completeOutput is not null)
+        {
+
+            text.AppendLine();
+
+            text.AppendLine("--- complete output handle ---");
+
+            text.AppendLine(completeOutput.Value.Handle);
+
+            text.AppendLine("--- complete output streams ---");
+
+            text.AppendLine(string.Join(", ", completeOutput.Value.AvailableStreams));
+
+            text.Append(
+                "Use read_command_output with this handle, a listed stream, offset 0, then each returned nextOffset. The handle expires when this connection closes.");
+
+        }
 
         return new McpToolsCallResultWire
         {
@@ -269,6 +377,227 @@ internal sealed partial class ArcanumInternalToolServer
             ],
             IsError = false,
         };
+    }
+
+    private async Task<McpToolsCallResultWire> ExecuteReadCommandOutputAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+
+        if (!_allowHostProcessTools)
+        {
+
+            return ToolError(
+                Core.Security.HostProcessToolPolicy.DeniedMessage);
+
+        }
+
+        McpToolsCallResultWire? gate = TryRequireWorkspaceRoot();
+
+        if (gate is not null)
+        {
+
+            return gate;
+
+        }
+
+        ReadCommandOutputParams? args;
+
+        try
+        {
+
+            args = JsonSerializer.Deserialize(
+                arguments,
+                _json.ReadCommandOutputParams);
+
+        }
+        catch (JsonException ex)
+        {
+
+            _logger?.LogError(
+                ex,
+                "read_command_output argument deserialization failed.");
+
+            return ToolError(
+                "Invalid arguments for read_command_output.");
+
+        }
+
+        if (args is null
+            || string.IsNullOrWhiteSpace(args.Handle)
+            || !Guid.TryParseExact(
+                args.Handle,
+                "N",
+                out _))
+        {
+
+            return ToolError(
+                "read_command_output requires the opaque 'handle' returned by execute_command.");
+
+        }
+
+        string streamName;
+
+        if (string.Equals(
+                args.Stream,
+                "stdout",
+                StringComparison.OrdinalIgnoreCase))
+        {
+
+            streamName = "stdout";
+
+        }
+        else if (string.Equals(
+                     args.Stream,
+                     "stderr",
+                     StringComparison.OrdinalIgnoreCase))
+        {
+
+            streamName = "stderr";
+
+        }
+        else
+        {
+
+            return ToolError(
+                "read_command_output stream must be 'stdout' or 'stderr'.");
+
+        }
+
+        int maximumPageBytes = GetMaxCommandOutputPageBytes();
+
+        int pageBytes = args.MaxBytes
+            ?? Math.Min(
+                64 * 1024,
+                maximumPageBytes);
+
+        if (pageBytes < 4 || pageBytes > maximumPageBytes)
+        {
+
+            return ToolError(
+                $"read_command_output maxBytes must be between 4 and {maximumPageBytes}; the upper bound preserves the existing JSON-RPC line boundary. Continue with additional pages for any remaining output.");
+
+        }
+
+        try
+        {
+
+            CommandOutputArtifactPage page = await _commandOutputArtifacts
+                .ReadPageAsync(
+                    args.Handle,
+                    streamName,
+                    args.Offset,
+                    pageBytes,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            CommandOutputPageResultWire wire = new()
+            {
+
+                Handle = args.Handle,
+
+                Stream = streamName,
+
+                Text = page.Text,
+
+                Offset = page.Offset,
+
+                NextOffset = page.NextOffset,
+
+                TotalBytes = page.TotalBytes,
+
+                Complete = page.NextOffset is null,
+
+            };
+
+            string text = JsonSerializer.Serialize(
+                wire,
+                _json.CommandOutputPageResultWire);
+
+            return new McpToolsCallResultWire
+            {
+
+                Content =
+                [
+                    new McpToolContentTextWire
+                    {
+
+                        Text = text,
+
+                    },
+                ],
+
+                IsError = false,
+
+            };
+
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+
+            return ToolError(
+                "read_command_output: canceled.");
+
+        }
+        catch (Exception ex)
+            when (ex is InvalidDataException
+                  or ArgumentOutOfRangeException
+                  or KeyNotFoundException)
+        {
+
+            _logger?.LogWarning(
+                "read_command_output could not read the requested page: {ExceptionType}",
+                ex.GetType().Name);
+
+            return ToolError(
+                "read_command_output: " + ex.Message);
+
+        }
+        catch (Exception ex)
+            when (ex is IOException
+                  or UnauthorizedAccessException
+                  or ObjectDisposedException)
+        {
+
+            _logger?.LogWarning(
+                "read_command_output artifact access failed: {ExceptionType}",
+                ex.GetType().Name);
+
+            return ToolError(
+                "read_command_output: the private artifact could not be read.");
+
+        }
+
+    }
+
+    private int GetMaxCommandOutputPageBytes()
+    {
+
+        const int envelopeReserveBytes = 4096;
+
+        const int worstCaseNestedJsonExpansion = 8;
+
+        int payloadBoundary = Math.Max(
+            32,
+            _maxJsonRpcLineBytes - envelopeReserveBytes);
+
+        long inProcessOutputBoundary =
+            ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
+                _settings.ToolOutputCapBytes,
+                _maxJsonRpcLineBytes);
+
+        int nestedJsonBoundary = (int)Math.Max(
+            32L,
+            inProcessOutputBoundary - 1024L);
+
+        return Math.Max(
+            4,
+            Math.Min(
+                payloadBoundary,
+                nestedJsonBoundary)
+            / worstCaseNestedJsonExpansion);
+
     }
 
     private static IReadOnlyList<string> ResolveCommandArgumentTokens(string[]? argumentList, string? argumentsString)

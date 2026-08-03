@@ -48,6 +48,18 @@ public sealed record WorkspaceSearchToolResultEnvelope
 
     public WorkspaceSearchToolResultItem[] Matches { get; init; } = [];
 
+    public string? NextCursor { get; init; }
+
+    [JsonPropertyName("_pageStartCursor")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PageStartCursor { get; init; }
+
+    [JsonPropertyName("_matchCursors")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string[]? MatchCursors { get; init; }
+
+    public string? ContinuationAction { get; init; }
+
     public int TotalMatchCount { get; init; }
 
     public int OmittedMatchCount { get; init; }
@@ -99,10 +111,22 @@ public sealed record WorkspaceSearchToolResultEnvelope
             return this;
         }
 
+        string? continuationCursor = itemCount switch
+        {
+            > 0 when MatchCursors?.Length >= itemCount => MatchCursors[itemCount - 1],
+            0 => PageStartCursor,
+            _ => null,
+        };
+
         return this with
         {
             Matches = Matches[..itemCount],
+            MatchCursors = MatchCursors?[..itemCount],
             OmittedMatchCount = OmittedMatchCount + Matches.Length - itemCount,
+            NextCursor = continuationCursor,
+            ContinuationAction = continuationCursor is null
+                ? null
+                : "Call search_workspace again with cursor set to nextCursor and the same search arguments.",
             Truncated = true,
         };
     }

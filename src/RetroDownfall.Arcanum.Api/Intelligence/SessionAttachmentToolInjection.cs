@@ -237,16 +237,9 @@ public static class SessionAttachmentToolInjection
         if (ledger is null)
         {
 
-            return SessionAttachmentTurnBudget.TryConsumeAndMarkInjected(
+            return SessionAttachmentTurnBudget.TryMarkInjected(
                 record.LogicalKey,
                 record.Version);
-
-        }
-
-        if (SessionAttachmentTurnBudget.Remaining <= 0)
-        {
-
-            return false;
 
         }
 
@@ -277,7 +270,8 @@ public static class SessionAttachmentToolInjection
             },
             materialized: true);
 
-        if (!entry.Accepted || !SessionAttachmentTurnBudget.TryConsume())
+        if (!entry.Accepted ||
+            !SessionAttachmentTurnBudget.TryMarkInjected(record.LogicalKey, record.Version))
         {
 
             return false;

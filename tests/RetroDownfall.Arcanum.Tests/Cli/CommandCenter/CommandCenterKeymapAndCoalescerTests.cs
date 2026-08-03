@@ -82,6 +82,48 @@ public sealed class CommandCenterKeymapTests
     }
 
     [Fact]
+    public void CtrlPage_keys_request_adjacent_transcript_pages()
+    {
+
+        Assert.Equal(
+            CommandCenterAction.LoadOlderTranscriptPage,
+            CommandCenterKeymap.Map(
+                CommandCenterFocusRegion.Transcript,
+                false,
+                false,
+                false,
+                new KeyChord(IsCtrl: true, IsPageUp: true)));
+
+        Assert.Equal(
+            CommandCenterAction.LoadNewerTranscriptPage,
+            CommandCenterKeymap.Map(
+                CommandCenterFocusRegion.Transcript,
+                false,
+                false,
+                false,
+                new KeyChord(IsCtrl: true, IsPageDown: true)));
+
+        Assert.Equal(
+            CommandCenterAction.LoadOlderSessionPage,
+            CommandCenterKeymap.Map(
+                CommandCenterFocusRegion.Sessions,
+                false,
+                false,
+                false,
+                new KeyChord(IsCtrl: true, IsPageDown: true)));
+
+        Assert.Equal(
+            CommandCenterAction.LoadNewerSessionPage,
+            CommandCenterKeymap.Map(
+                CommandCenterFocusRegion.Sessions,
+                false,
+                false,
+                false,
+                new KeyChord(IsCtrl: true, IsPageUp: true)));
+
+    }
+
+    [Fact]
     public void Enter_in_composer_falls_through_for_newline()
     {
         Assert.Equal(

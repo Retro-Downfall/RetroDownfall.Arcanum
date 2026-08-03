@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.Intelligence;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
@@ -15,6 +16,15 @@ internal static class ArtifactAttunement
         }
 
         HashSet<string> allow = new(declaredTools, StringComparer.OrdinalIgnoreCase);
+
+        if (allow.Contains(
+                ToolRiskClassifier.ExecuteCommandToolName))
+        {
+
+            allow.Add(
+                ToolRiskClassifier.ReadCommandOutputToolName);
+
+        }
 
         var allowed = new List<AITool>(mcpTools.Count);
 

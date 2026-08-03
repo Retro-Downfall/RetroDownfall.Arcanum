@@ -106,11 +106,7 @@ internal static class SemanticRouter
         {
             IModelCallExecutor executor = modelCallExecutor ?? new ModelCallExecutor();
 
-            TurnBudget auxBudget = new(new TurnLimits(
-                MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64,
-                MaxToolResultTokens: 512_000, MaxToolResultBytes: 4_194_304,
-                MaxElapsedTime: TimeSpan.FromSeconds(300),
-                MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m));
+            ITurnBudget auxBudget = UnrestrictedTurnBudget.Instance;
 
             var callResult = await executor
                 .ExecuteBufferedAsync(
@@ -215,25 +211,15 @@ internal static class SemanticRouter
 
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
 
-        List<string> result = new(LexiconLimits.MaxExtractedEntities);
+        List<string> result = [];
 
         foreach (string entity in entities)
         {
-            if (result.Count >= LexiconLimits.MaxExtractedEntities)
-            {
-                break;
-            }
-
             string trimmed = entity?.Trim() ?? string.Empty;
 
             if (trimmed.Length == 0)
             {
                 continue;
-            }
-
-            if (trimmed.Length > LexiconLimits.MaxNameLength)
-            {
-                trimmed = trimmed[..LexiconLimits.MaxNameLength];
             }
 
             if (seen.Add(trimmed))

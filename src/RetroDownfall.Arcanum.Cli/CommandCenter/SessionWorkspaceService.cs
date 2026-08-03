@@ -62,7 +62,7 @@ internal sealed class SessionWorkspaceService(
         try
         {
             Result<SessionQueryResult> result = await apiClient
-                .QuerySessionsAsync(limit: CommandCenterState.RecentSessionLimit, cancellationToken: cancellationToken)
+                .QuerySessionsAsync(limit: CommandCenterState.SessionPageSize, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             if (!result.IsSuccess)
@@ -73,15 +73,148 @@ internal sealed class SessionWorkspaceService(
                 return;
             }
 
+            if (result.Value?.HasMore == true
+                && result.Value.NextBeforeUpdatedAt is null)
+            {
+                state.LastError =
+                    "The session provider reported more rows without an advancing cursor. Retry the refresh.";
+
+                return;
+            }
+
             SessionSummaryDto[] summaries = result.Value?.Summaries ?? [];
             // API returns UpdatedAt DESC; keep that order.
             state.Sessions = summaries.Select(SessionListItem.FromSummary).ToArray();
+
+            state.SessionPageBeforeUpdatedAt = null;
+
+            state.NextSessionPageBeforeUpdatedAt = result.Value?.HasMore == true
+                ? result.Value.NextBeforeUpdatedAt
+                : null;
+
+            state.SessionPageHistory.Clear();
+
             state.LastError = null;
         }
         catch (Exception ex)
         {
             logger.LogDebug(ex, "Session list refresh failed.");
             state.LastError = ex.Message;
+        }
+        finally
+        {
+            state.TransientStatus = null;
+        }
+    }
+
+    public async Task<bool> LoadOlderSessionsPageAsync(
+        CommandCenterState state,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (state.NextSessionPageBeforeUpdatedAt is not { } nextCursor)
+        {
+            return false;
+        }
+
+        DateTimeOffset? currentCursor = state.SessionPageBeforeUpdatedAt;
+
+        if (!await LoadSessionsPageAsync(state, nextCursor, cancellationToken).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        state.SessionPageHistory.Add(currentCursor);
+
+        return true;
+    }
+
+    public async Task<bool> LoadNewerSessionsPageAsync(
+        CommandCenterState state,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (state.SessionPageHistory.Count == 0)
+        {
+            return false;
+        }
+
+        int previousIndex = state.SessionPageHistory.Count - 1;
+
+        DateTimeOffset? previousCursor = state.SessionPageHistory[previousIndex];
+
+        if (!await LoadSessionsPageAsync(state, previousCursor, cancellationToken).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        state.SessionPageHistory.RemoveAt(previousIndex);
+
+        return true;
+    }
+
+    private async Task<bool> LoadSessionsPageAsync(
+        CommandCenterState state,
+        DateTimeOffset? beforeUpdatedAt,
+        CancellationToken cancellationToken)
+    {
+        state.TransientStatus = "Loading session page…";
+
+        try
+        {
+            Result<SessionQueryResult> result = await apiClient
+                .QuerySessionsAsync(
+                    limit: CommandCenterState.SessionPageSize,
+                    beforeUpdatedAt: beforeUpdatedAt,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            if (result.IsFailure)
+            {
+                state.LastError = string.IsNullOrWhiteSpace(result.Error.Message)
+                    ? "Failed to load the session page."
+                    : result.Error.Message;
+
+                return false;
+            }
+
+            SessionQueryResult page = result.Value;
+
+            if (page.HasMore
+                && (page.NextBeforeUpdatedAt is null
+                    || page.NextBeforeUpdatedAt == beforeUpdatedAt))
+            {
+                state.LastError =
+                    "The session provider reported more rows without an advancing cursor. Refresh sessions to restart paging.";
+
+                return false;
+            }
+
+            state.Sessions = page.Summaries
+                .Select(SessionListItem.FromSummary)
+                .ToArray();
+
+            state.SessionPageBeforeUpdatedAt = beforeUpdatedAt;
+
+            state.NextSessionPageBeforeUpdatedAt = page.HasMore
+                ? page.NextBeforeUpdatedAt
+                : null;
+
+            state.SelectedSessionId = state.Sessions.FirstOrDefault()?.Id;
+
+            state.LastError = null;
+
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(ex, "Session page load failed.");
+
+            state.LastError = ex.Message;
+
+            return false;
         }
         finally
         {
@@ -140,7 +273,7 @@ internal sealed class SessionWorkspaceService(
                 .GetSessionEntriesAsync(
                     sessionId,
                     offset: 0,
-                    limit: CommandCenterState.TranscriptEntryLimit,
+                    limit: CommandCenterState.TranscriptPageSize,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
@@ -155,40 +288,20 @@ internal sealed class SessionWorkspaceService(
             }
 
             EntryDto[] descending = entriesResult.Value ?? [];
-            // API returns newest-first; render chronological.
-            EntryDto[] chronological = descending.Reverse().ToArray();
-            bool hadOlder = detail.EntryCount > chronological.Length;
 
-            List<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> mapped = [];
-            state.Incantations.Clear();
-            foreach (EntryDto e in chronological)
-            {
-                if (SessionLogBuffer.IsEphemeralReasoningRole(e.Role))
-                {
-                    continue;
-                }
-
-                SessionLogEntryKind kind = SessionLogBuffer.MapEntryRole(e.Role);
-                if (PersistedToolInteraction.IsToolInteraction(e)
-                    || kind == SessionLogEntryKind.Tool)
-                {
-                    IngestHistoryTool(state.Incantations, e);
-                    continue;
-                }
-
-                mapped.Add((kind, FormatEntryContent(e), e.Id));
-            }
+            bool hadOlder = detail.EntryCount > descending.Length;
 
             // Commit only after successful load.
             state.ApplySessionMeta(
                 detail.Id, detail.Title, detail.Status, detail.EntryCount, detail.ForkedFromSessionId);
-            state.LoadedTranscriptEntries = chronological;
-            state.Log.ReplaceWithApiHistory(mapped, showOlderMessagesMarker: hadOlder);
+
+            ApplyTranscriptPage(state, descending, offset: 0);
+
             lastSessionStore.SaveSessionId(detail.Id);
 
             return new SessionResumeResult(
                 SessionResumeOutcome.Success,
-                WasEmpty: chronological.Length == 0,
+                WasEmpty: descending.Length == 0,
                 HadOlderMessages: hadOlder);
         }
         catch (Exception ex)
@@ -197,6 +310,106 @@ internal sealed class SessionWorkspaceService(
             state.LastError = ex.Message;
             state.Log.Append(SessionLogEntryKind.Error, ex.Message);
             return new SessionResumeResult(SessionResumeOutcome.Failed, ex.Message);
+        }
+        finally
+        {
+            state.TransientStatus = null;
+        }
+    }
+
+    public Task<bool> LoadOlderTranscriptPageAsync(
+        CommandCenterState state,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (!state.HasOlderTranscriptEntries || state.SessionId is null)
+        {
+            return Task.FromResult(false);
+        }
+
+        int nextOffset = checked(
+            state.TranscriptEntryOffset + state.LoadedTranscriptEntries.Count);
+
+        return LoadTranscriptPageAsync(state, nextOffset, cancellationToken);
+    }
+
+    public Task<bool> LoadNewerTranscriptPageAsync(
+        CommandCenterState state,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (!state.HasNewerTranscriptEntries || state.SessionId is null)
+        {
+            return Task.FromResult(false);
+        }
+
+        int nextOffset = Math.Max(
+            0,
+            state.TranscriptEntryOffset - CommandCenterState.TranscriptPageSize);
+
+        return LoadTranscriptPageAsync(state, nextOffset, cancellationToken);
+    }
+
+    private async Task<bool> LoadTranscriptPageAsync(
+        CommandCenterState state,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        if (state.SessionId is not { } sessionId)
+        {
+            return false;
+        }
+
+        state.TransientStatus = "Loading transcript page…";
+
+        try
+        {
+            Result<EntryDto[]> result = await apiClient
+                .GetSessionEntriesAsync(
+                    sessionId,
+                    offset,
+                    CommandCenterState.TranscriptPageSize,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (result.IsFailure)
+            {
+                state.LastError = string.IsNullOrWhiteSpace(result.Error.Message)
+                    ? "Failed to load the transcript page."
+                    : result.Error.Message;
+
+                return false;
+            }
+
+            EntryDto[] descending = result.Value ?? [];
+
+            if (descending.Length == 0)
+            {
+                state.LastError =
+                    "The requested transcript page is no longer available. Refresh the session and retry.";
+
+                return false;
+            }
+
+            ApplyTranscriptPage(state, descending, offset);
+
+            state.LastError = null;
+
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(
+                ex,
+                "Transcript page load failed for {SessionId} at offset {Offset}.",
+                sessionId,
+                offset);
+
+            state.LastError = ex.Message;
+
+            return false;
         }
         finally
         {
@@ -255,7 +468,7 @@ internal sealed class SessionWorkspaceService(
                 .GetSessionAsync(forkId, cancellationToken).ConfigureAwait(false);
             Result<EntryDto[]> entriesResult = await apiClient
                 .GetSessionEntriesAsync(
-                    forkId, 0, CommandCenterState.TranscriptEntryLimit, cancellationToken)
+                    forkId, 0, CommandCenterState.TranscriptPageSize, cancellationToken)
                 .ConfigureAwait(false);
             Result<SessionAttachmentDto[]> attachmentsResult = await apiClient
                 .GetSessionAttachmentsAsync(forkId, cancellationToken).ConfigureAwait(false);
@@ -272,18 +485,14 @@ internal sealed class SessionWorkspaceService(
             }
 
             SessionDetailDto detail = detailResult.Value;
-            EntryDto[] chronological = (entriesResult.Value ?? []).Reverse().ToArray();
-            List<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> mapped = chronological
-                .Where(static e => !SessionLogBuffer.IsEphemeralReasoningRole(e.Role))
-                .Where(static e => !PersistedToolInteraction.IsToolInteraction(e))
-                .Select(static e => (
-                    SessionLogBuffer.MapEntryRole(e.Role), FormatEntryContent(e), (Guid?)e.Id))
-                .ToList();
+
+            EntryDto[] descending = entriesResult.Value ?? [];
 
             state.ApplySessionMeta(
                 detail.Id, detail.Title, detail.Status, detail.EntryCount, detail.ForkedFromSessionId);
-            state.LoadedTranscriptEntries = chronological;
-            state.Log.ReplaceWithApiHistory(mapped, detail.EntryCount > chronological.Length);
+
+            ApplyTranscriptPage(state, descending, offset: 0);
+
             lastSessionStore.SaveSessionId(detail.Id);
             state.LastError = null;
             await RefreshSessionsAsync(state, cancellationToken).ConfigureAwait(false);
@@ -369,6 +578,47 @@ internal sealed class SessionWorkspaceService(
         {
             state.SessionId = sessionId;
         }
+    }
+
+    private static void ApplyTranscriptPage(
+        CommandCenterState state,
+        IReadOnlyList<EntryDto> descending,
+        int offset)
+    {
+        EntryDto[] chronological = descending.Reverse().ToArray();
+
+        List<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> mapped = [];
+
+        state.Incantations.Clear();
+
+        foreach (EntryDto entry in chronological)
+        {
+            if (SessionLogBuffer.IsEphemeralReasoningRole(entry.Role))
+            {
+                continue;
+            }
+
+            SessionLogEntryKind kind = SessionLogBuffer.MapEntryRole(entry.Role);
+
+            if (PersistedToolInteraction.IsToolInteraction(entry)
+                || kind == SessionLogEntryKind.Tool)
+            {
+                IngestHistoryTool(state.Incantations, entry);
+
+                continue;
+            }
+
+            mapped.Add((kind, FormatEntryContent(entry), entry.Id));
+        }
+
+        state.LoadedTranscriptEntries = chronological;
+
+        state.TranscriptEntryOffset = offset;
+
+        state.Log.ReplaceWithApiHistory(
+            mapped,
+            showOlderMessagesMarker: state.HasOlderTranscriptEntries,
+            showNewerMessagesMarker: state.HasNewerTranscriptEntries);
     }
 
     private static string FormatEntryContent(EntryDto entry)

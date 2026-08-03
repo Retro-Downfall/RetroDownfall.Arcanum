@@ -132,67 +132,6 @@ public sealed record EmbeddingIntegrationSettings
 
     public int Dimensions { get; set; } = 768;
 
-    public CodebaseIndexingIntegrationSettings CodebaseIndexing { get; set; } = new();
-
-    public AttachmentIndexingIntegrationSettings AttachmentIndexing { get; set; } = new();
-
-}
-
-/// <summary>
-/// Operator-tunable resource bounds for versioned session-attachment extraction and indexing.
-/// </summary>
-public sealed record AttachmentIndexingIntegrationSettings
-{
-
-    public int MaxAttachmentBytes { get; set; } = 2 * 1024 * 1024;
-
-    public int MaxExtractedCharacters { get; set; } = 200_000;
-
-    public int ChunkSizeCharacters { get; set; } = 1_000;
-
-    public int ChunkOverlapCharacters { get; set; } = 100;
-
-    public int MaxChunksPerAttachment { get; set; } = 256;
-
-    public int MaxAttachmentsPerBatch { get; set; } = 8;
-
-    public int QueueCapacity { get; set; } = 256;
-
-    public int MaxRetries { get; set; } = 3;
-
-    public int RetryDelaySeconds { get; set; } = 5;
-
-    public int ProcessingTimeoutSeconds { get; set; } = 60;
-
-    public int MaxRetrievedChunks { get; set; } = 5;
-
-    public int MaxRetrievedAttachments { get; set; } = 4;
-
-    public int MaxRetrievedBytes { get; set; } = 256 * 1024;
-
-    public int MaxRetrievedTokens { get; set; } = 32 * 1024;
-
-}
-
-/// <summary>
-/// Operator-tunable event-driven workspace indexing controls. File eligibility and traversal limits
-/// remain code-owned in <see cref="CodebaseEmbeddingSettings"/>.
-/// </summary>
-public sealed record CodebaseIndexingIntegrationSettings
-{
-
-    /// <summary>Watcher event debounce window in milliseconds. Clamped to 50–5,000.</summary>
-    public int WatcherDebounceMilliseconds { get; set; } = 300;
-
-    /// <summary>
-    /// Maximum active recursive workspace watchers. Zero disables watchers while retaining polling.
-    /// Clamped to 0–128.
-    /// </summary>
-    public int MaxWatchers { get; set; } = 32;
-
-    /// <summary>Periodic correctness reconciliation cadence in minutes. Clamped to 1–1,440.</summary>
-    public int ReconciliationIntervalMinutes { get; set; } = 60;
-
 }
 
 public sealed record McpIntegrationSettings
@@ -238,8 +177,6 @@ public sealed record ExecutionSettings
 
     public int MaxConcurrentApprentices { get; set; } = 5;
 
-    public int MaxPendingApprenticeStarts { get; set; } = 100;
-
     public int MaxConcurrentApprenticeBranches { get; set; } = 3;
 
     public int MaxConcurrentA2ATasks { get; set; } = 50;
@@ -280,8 +217,6 @@ public sealed record HostAuditPolicySettings
 
     public bool Enabled { get; set; }
 
-    public int RetentionDays { get; set; } = 7;
-
     public bool RedactToolArguments { get; set; } = true;
 
 }
@@ -320,7 +255,5 @@ public sealed record GuardrailsAuditPolicySettings
 {
 
     public bool Enabled { get; set; }
-
-    public int RetentionDays { get; set; } = 7;
 
 }

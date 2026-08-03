@@ -48,10 +48,6 @@ public sealed class ArcanumSpellScriptTool : AIFunction
     /// </summary>
     internal IReadOnlyList<string> ScriptRoots => _scriptsRootsFull;
 
-    private readonly TimeSpan _executeTimeout;
-
-    private readonly int _executeTimeoutSeconds;
-
     private readonly long _toolOutputCapBytes;
 
     private readonly ILogger? _logger;
@@ -71,8 +67,6 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     public ArcanumSpellScriptTool(
         IReadOnlyList<string> scriptsDirectoryPaths,
-        TimeSpan executeTimeout,
-        int executeTimeoutSecondsForDisplay,
         long toolOutputCapBytes = 1L * 1024L * 1024L,
         ILogger? logger = null,
         ISanctumGuard? sanctumGuard = null,
@@ -80,10 +74,6 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         string? campaignWorkspaceRoot = null,
         bool allowUnsandboxedToolChildren = false)
     {
-        _executeTimeout = executeTimeout;
-
-        _executeTimeoutSeconds = executeTimeoutSecondsForDisplay;
-
         _toolOutputCapBytes = toolOutputCapBytes < 2048L ? 2048L : toolOutputCapBytes;
 
         _logger = logger;
@@ -124,8 +114,6 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     public ArcanumSpellScriptTool(
         string scriptsDirectoryPath,
-        TimeSpan executeTimeout,
-        int executeTimeoutSecondsForDisplay,
         long toolOutputCapBytes = 1L * 1024L * 1024L,
         ILogger? logger = null,
         ISanctumGuard? sanctumGuard = null,
@@ -134,8 +122,6 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         bool allowUnsandboxedToolChildren = false)
         : this(
             [scriptsDirectoryPath],
-            executeTimeout,
-            executeTimeoutSecondsForDisplay,
             toolOutputCapBytes,
             logger,
             sanctumGuard,
@@ -150,7 +136,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
     public override string Description =>
         $"Runs a script file only from the active spell and its resonant dependency scripts/ directories (no path traversal). "
         + $"Stdout and stderr are captured; execution uses UseShellExecute=false. "
-        + $"Hard timeout {_executeTimeoutSeconds}s with full process tree termination on timeout or cancel.";
+        + $"Execution continues until the script exits or caller cancellation terminates the full process tree.";
 
     public override JsonElement JsonSchema => SchemaDocument.RootElement;
 
@@ -298,7 +284,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             psi,
             ChildProcessEnvironmentProfile.SpellScript,
             _toolOutputCapBytes,
-            _executeTimeout,
+            Timeout.InfiniteTimeSpan,
             resourceLimits,
             _resourceLimiter,
             cancellationToken,
@@ -351,7 +337,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
             case CappedChildProcessOutcome.TimedOut:
 
-                return $"run_spell_script: the command timed out after {_executeTimeoutSeconds} seconds.";
+                return "run_spell_script: canceled by an external process deadline.";
 
             case CappedChildProcessOutcome.Canceled:
 

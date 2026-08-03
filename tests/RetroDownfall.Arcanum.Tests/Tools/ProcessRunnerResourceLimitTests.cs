@@ -60,8 +60,6 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
 
         ArcanumSpellScriptTool tool = new(
             [_scriptsRoot],
-            TimeSpan.FromSeconds(10),
-            10,
             sanctumGuard: guard,
             resourceLimiter: new ProcessResourceLimiter(),
             campaignWorkspaceRoot: "/fake/workspace",
@@ -89,8 +87,6 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
 
         ArcanumSpellScriptTool tool = new(
             [_scriptsRoot],
-            TimeSpan.FromSeconds(15),
-            15,
             sanctumGuard: guard,
             resourceLimiter: new ProcessResourceLimiter(),
             campaignWorkspaceRoot: "/fake/workspace",
@@ -122,8 +118,6 @@ public sealed class ProcessRunnerResourceLimitTests : IDisposable
 
         ArcanumSpellScriptTool tool = new(
             [_scriptsRoot],
-            TimeSpan.FromSeconds(15),
-            15,
             sanctumGuard: guard,
             resourceLimiter: new ProcessResourceLimiter(),
             campaignWorkspaceRoot: "/fake/workspace",

@@ -367,7 +367,7 @@ public sealed class SemanticRouterTests
     }
 
     [Fact]
-    public async Task DetermineActiveSpellAsync_DedupesAndCapsEntities()
+    public async Task DetermineActiveSpellAsync_preserves_every_distinct_extracted_entity()
     {
         List<string> many = Enumerable.Range(0, 12).Select(i => i % 2 == 0 ? $"entity{i}" : $"Entity{i}").ToList();
 
@@ -389,8 +389,7 @@ public sealed class SemanticRouterTests
             0f,
             CancellationToken.None);
 
-        // entity0/Entity0 collapse under case-insensitive dedupe; total capped at MaxExtractedEntities (8).
-        Assert.Equal(8, result!.Entities.Count);
+        Assert.Equal(many, result!.Entities);
     }
 
     [Fact]

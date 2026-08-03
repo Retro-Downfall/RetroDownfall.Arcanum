@@ -43,7 +43,6 @@ internal sealed partial class ArcanumInternalToolServer
             string answer = await _humanPrompts
                 .AwaitReservedAsync(
                     args.PromptId.Trim(),
-                    HumanPromptRegistryHardCeiling,
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -60,21 +59,6 @@ internal sealed partial class ArcanumInternalToolServer
         {
             throw;
         }
-        catch (HumanPromptTimeoutException)
-        {
-            return new McpToolsCallResultWire
-            {
-                Content =
-                [
-                    new McpToolContentTextWire { Text = HumanPromptTimeoutException.DefaultMessage },
-                ],
-                IsError = true,
-            };
-        }
-        catch (HumanPromptCapExceededException ex)
-        {
-            return ToolError(ex.Message);
-        }
         catch (InvalidOperationException ex)
         {
             _logger?.LogError(ex, "ask_human await failed.");
@@ -82,9 +66,6 @@ internal sealed partial class ArcanumInternalToolServer
             return ToolError("ask_human: an internal error occurred.");
         }
     }
-
-    // Mirrors HumanPromptRegistry.HardCeiling without taking a dependency on the Api assembly.
-    private static readonly TimeSpan HumanPromptRegistryHardCeiling = TimeSpan.FromMinutes(30);
 
     private Task<McpToolsCallResultWire> ExecuteAdjustInitiativeAsync(
         JsonElement arguments,

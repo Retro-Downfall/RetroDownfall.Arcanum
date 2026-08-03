@@ -81,6 +81,39 @@ public sealed class SettingDescriptorCoverageTests
 
     }
 
+    [Theory]
+
+    [InlineData("host.auditLog.retentionDays")]
+
+    [InlineData("security.guardrails.auditLog.retentionDays")]
+
+    [InlineData("integrations.embeddings.codebaseIndexing")]
+
+    [InlineData("integrations.embeddings.attachmentIndexing")]
+
+    [InlineData("integrations.embeddings.requestTimeoutSeconds")]
+
+    [InlineData("execution.maxPendingApprenticeStarts")]
+
+    [InlineData("retention.maxItemsPerSweep")]
+
+    [InlineData("retention.checkpointInterval")]
+
+    public void Internal_workflow_controls_are_not_exposed(string removedPath)
+    {
+
+        Assert.DoesNotContain(
+            SettingDescriptors.All,
+            descriptor => string.Equals(
+                    descriptor.Key,
+                    removedPath,
+                    StringComparison.Ordinal)
+                || descriptor.Key.StartsWith(
+                    removedPath + ".",
+                    StringComparison.Ordinal));
+
+    }
+
     [Fact]
     public void Descriptor_sections_are_exactly_the_minimal_navigation()
     {

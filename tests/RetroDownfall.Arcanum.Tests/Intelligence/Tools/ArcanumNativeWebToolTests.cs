@@ -136,7 +136,7 @@ public sealed class ArcanumNativeWebToolTests
             root.GetProperty("usage").GetProperty("totalTokens").GetInt64());
         Assert.NotNull(observedOptions);
         Assert.Equal(WebResearchModels.SonarPro, observedOptions.Model);
-        Assert.Equal(TimeSpan.FromSeconds(15), observedOptions.Timeout);
+        Assert.Equal(TimeSpan.FromSeconds(15), observedOptions.IdleTimeout);
     }
 
     [Fact]
@@ -173,6 +173,45 @@ public sealed class ArcanumNativeWebToolTests
             ArcanumWebSearchTool.ToolName,
             root.GetProperty("suggestedTool").GetString());
         Assert.DoesNotContain("secret", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task WebSearch_IdleTimeoutNamesTheBoundaryOwnerSavedStateAndRecovery()
+    {
+
+        StubProvider provider = CreateSearchProvider(
+            static (_, _, _) => Task.FromResult(
+                Result<WebSearchResult>.Failure(
+                    new Error(
+                        ErrorCodes.WebResearch.Timeout,
+                        "raw transport detail"))));
+
+        ArcanumWebSearchTool tool = new(
+            new StubCatalog(provider),
+            Settings(),
+            NullLogger.Instance);
+
+        string json = Assert.IsType<string>(
+            await tool.InvokeAsync(
+                new AIFunctionArguments(
+                    new Dictionary<string, object?>
+                    {
+                        ["query"] = "test",
+                    }),
+                CancellationToken.None));
+
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        string message = document.RootElement.GetProperty("message").GetString()!;
+
+        Assert.Contains("provider/transport timeout boundary", message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("No partial provider response was saved", message, StringComparison.Ordinal);
+
+        Assert.Contains("Retry", message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("raw transport detail", json, StringComparison.Ordinal);
+
     }
 
     [Fact]

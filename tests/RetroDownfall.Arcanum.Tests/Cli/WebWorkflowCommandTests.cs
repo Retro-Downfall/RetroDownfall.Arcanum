@@ -25,7 +25,7 @@ public sealed class WebWorkflowCommandTests
 
     [InlineData("browse", "--render", "--save", "--attach-to-session")]
 
-    [InlineData("research", "--max-sources", "--max-hops", "--token-budget", "--continue-session")]
+    [InlineData("research", "--sources", "--token-budget", "--continue-session")]
 
     public void Help_exposes_first_class_web_workflows(
         string command,
@@ -225,8 +225,8 @@ public sealed class WebWorkflowCommandTests
         RecordingHandler handler = new(
             request => NdjsonResponse(
                 """
-                {"type":"limits","message":"Limits: 4 sources, 2 hops, 1200 tokens, $0.25."}
-                {"type":"progress","stage":"searching","message":"Searching hop 1 of 2."}
+                {"type":"limits","message":"Policy: continue while new sources are discovered; an explicit target of 4 unique sources, 1200 synthesis tokens, $0.25."}
+                {"type":"progress","stage":"searching","message":"Searching research pass 1."}
                 {"type":"progress","stage":"fetching","message":"Fetching source 1 of 1."}
                 {"type":"progress","stage":"rendering","message":"Rendering source 1 of 1."}
                 {"type":"progress","stage":"synthesizing","message":"Synthesizing the final answer."}
@@ -238,10 +238,8 @@ public sealed class WebWorkflowCommandTests
             [
                 "research",
                 "What changed?",
-                "--max-sources",
+                "--sources",
                 "4",
-                "--max-hops",
-                "2",
                 "--token-budget",
                 "1200",
                 "--cost-budget",
@@ -262,9 +260,7 @@ public sealed class WebWorkflowCommandTests
 
         string body = ReadBody(request);
 
-        Assert.Contains("\"maxSources\":4", body, StringComparison.Ordinal);
-
-        Assert.Contains("\"maxHops\":2", body, StringComparison.Ordinal);
+        Assert.Contains("\"sourceTarget\":4", body, StringComparison.Ordinal);
 
         Assert.Contains("\"tokenBudget\":1200", body, StringComparison.Ordinal);
 
@@ -276,7 +272,7 @@ public sealed class WebWorkflowCommandTests
 
         Assert.DoesNotContain("Searching", result.Output, StringComparison.Ordinal);
 
-        Assert.Contains("Limits:", result.Error, StringComparison.Ordinal);
+        Assert.Contains("Policy:", result.Error, StringComparison.Ordinal);
 
         Assert.Contains("Searching", result.Error, StringComparison.Ordinal);
 

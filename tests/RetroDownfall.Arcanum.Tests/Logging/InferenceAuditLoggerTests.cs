@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 
 using RetroDownfall.Arcanum.Infrastructure.Logging;
@@ -93,6 +94,37 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         Assert.Equal("abc-123", found.SessionId);
 
         Assert.Equal(record.TotalTokens, found.TotalTokens);
+
+    }
+
+    [Fact]
+
+    public async Task QueryAsync_WithoutFrom_ReturnsRecordsOlderThanFormerLookbackCeiling()
+    {
+
+        InferenceAuditLogger logger = CreateLogger(enabled: true);
+
+        DateTimeOffset oldTimestamp = DateTimeOffset.UtcNow.AddDays(-500);
+
+        InferenceAuditRecord record = MakeRecord("old", sessionId: "old-session") with
+        {
+
+            Timestamp = oldTimestamp.ToString("O"),
+
+        };
+
+        string oldFile = Path.Combine(_tempDirectory, $"audit-{oldTimestamp:yyyyMMdd}.jsonl");
+
+        string json = JsonSerializer.Serialize(record, AuditJsonContext.Default.InferenceAuditRecord);
+
+        await File.WriteAllTextAsync(oldFile, json + "\n");
+
+        IReadOnlyList<InferenceAuditRecord> results =
+            await logger.QueryAsync(null, null, null, null, 100, CancellationToken.None);
+
+        InferenceAuditRecord found = Assert.Single(results);
+
+        Assert.Equal("old-session", found.SessionId);
 
     }
 
@@ -289,6 +321,182 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     }
 
     [Fact]
+    public async Task QueryPageAsync_Cursor_preserves_snapshot_when_new_records_are_appended()
+    {
+
+        InferenceAuditLogger logger = CreateLogger(enabled: true);
+
+        InferenceAuditRecord oldest = MakeRecord("ping", sessionId: "oldest");
+
+        await logger.LogAsync(oldest, CancellationToken.None);
+
+        await logger.LogAsync(oldest with { SessionId = "middle" }, CancellationToken.None);
+
+        await logger.LogAsync(oldest with { SessionId = "newest" }, CancellationToken.None);
+
+        Result<AuditQueryPage<InferenceAuditRecord>> first = await logger.QueryPageAsync(
+            null,
+            null,
+            null,
+            null,
+            2,
+            cursor: null,
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess);
+
+        Assert.Equal(["newest", "middle"], first.Value.Records.Select(static record => record.SessionId));
+
+        string cursor = Assert.IsType<string>(first.Value.NextCursor);
+
+        await logger.LogAsync(oldest with { SessionId = "appended-after-snapshot" }, CancellationToken.None);
+
+        Result<AuditQueryPage<InferenceAuditRecord>> second = await logger.QueryPageAsync(
+            null,
+            null,
+            null,
+            null,
+            2,
+            cursor,
+            CancellationToken.None);
+
+        Assert.True(second.IsSuccess);
+
+        InferenceAuditRecord result = Assert.Single(second.Value.Records);
+
+        Assert.Equal("oldest", result.SessionId);
+
+        Assert.Null(second.Value.NextCursor);
+
+    }
+
+    [Fact]
+    public async Task QueryPageAsync_Rejects_cursor_from_a_different_filter()
+    {
+
+        InferenceAuditLogger logger = CreateLogger(enabled: true);
+
+        await logger.LogAsync(MakeRecord("ping", model: "model-a"), CancellationToken.None);
+
+        await logger.LogAsync(MakeRecord("ping", model: "model-a"), CancellationToken.None);
+
+        Result<AuditQueryPage<InferenceAuditRecord>> first = await logger.QueryPageAsync(
+            null,
+            null,
+            "model-a",
+            null,
+            1,
+            cursor: null,
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess);
+
+        string cursor = Assert.IsType<string>(first.Value.NextCursor);
+
+        Result<AuditQueryPage<InferenceAuditRecord>> mismatched = await logger.QueryPageAsync(
+            null,
+            null,
+            "model-b",
+            null,
+            1,
+            cursor,
+            CancellationToken.None);
+
+        Assert.True(mismatched.IsFailure);
+
+        Assert.Equal("Validation.InvalidQuery", mismatched.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task QueryPageAsync_Rejects_cursor_when_its_file_was_replaced()
+    {
+
+        InferenceAuditLogger logger = CreateLogger(enabled: true);
+
+        await logger.LogAsync(MakeRecord("ping", sessionId: "oldest"), CancellationToken.None);
+
+        await logger.LogAsync(MakeRecord("ping", sessionId: "newest"), CancellationToken.None);
+
+        Result<AuditQueryPage<InferenceAuditRecord>> first = await logger.QueryPageAsync(
+            null,
+            null,
+            null,
+            null,
+            1,
+            cursor: null,
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess);
+
+        string cursor = Assert.IsType<string>(first.Value.NextCursor);
+
+        string todayFile = Path.Combine(_tempDirectory, $"audit-{DateTime.UtcNow:yyyyMMdd}.jsonl");
+
+        await File.WriteAllTextAsync(todayFile, "{}\n");
+
+        Result<AuditQueryPage<InferenceAuditRecord>> replaced = await logger.QueryPageAsync(
+            null,
+            null,
+            null,
+            null,
+            1,
+            cursor,
+            CancellationToken.None);
+
+        Assert.True(replaced.IsFailure);
+
+        Assert.Equal("Validation.InvalidQuery", replaced.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task ReverseJsonlReader_Returns_newest_record_without_reading_older_payload()
+    {
+
+        InferenceAuditRecord newest = MakeRecord("ping", sessionId: "newest");
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            newest,
+            AuditJsonContext.Default.InferenceAuditRecord);
+
+        byte[] content = new byte[1_000_000 + 1 + json.Length + 1];
+
+        Array.Fill(content, (byte)'x', 0, 1_000_000);
+
+        content[1_000_000] = (byte)'\n';
+
+        json.CopyTo(content.AsSpan(1_000_001));
+
+        content[^1] = (byte)'\n';
+
+        await using ReadBudgetStream stream = new(content, maxBytesRead: 128 * 1024);
+
+        InferenceAuditRecord? found = null;
+
+        await foreach (ReverseJsonlRecord<InferenceAuditRecord> candidate in ReverseJsonlFileReader
+                           .ReadAsync(
+                               stream,
+                               stream.Length,
+                               AuditJsonContext.Default.InferenceAuditRecord,
+                               CancellationToken.None))
+        {
+
+            found = candidate.Value;
+
+            break;
+
+        }
+
+        Assert.NotNull(found);
+
+        Assert.Equal("newest", found!.SessionId);
+
+        Assert.InRange(stream.BytesRead, 1, 128 * 1024);
+
+    }
+
+    [Fact]
     public async Task QueryAsync_ReturnsNewestFirst()
     {
 
@@ -339,7 +547,6 @@ public sealed class InferenceAuditLoggerTests : IDisposable
 
         InferenceAuditLogger logger = CreateLogger(
             enabled: true,
-            retentionDays: 7,
             automaticSweepsEnabled: true,
             unifiedRetentionEnabled: true,
             unifiedRetentionDays: 7);
@@ -362,7 +569,7 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     public async Task LogAsync_DoesNotDeleteRecentFiles()
     {
 
-        InferenceAuditLogger logger = CreateLogger(enabled: true, retentionDays: 30);
+        InferenceAuditLogger logger = CreateLogger(enabled: true, unifiedRetentionDays: 30);
 
         string recentDate = DateTime.UtcNow.AddDays(-2).ToString("yyyyMMdd");
 
@@ -399,10 +606,9 @@ public sealed class InferenceAuditLoggerTests : IDisposable
     private InferenceAuditLogger CreateLogger(
         bool enabled,
         bool redactToolArguments = true,
-        int retentionDays = 7,
         bool automaticSweepsEnabled = true,
         bool unifiedRetentionEnabled = true,
-        int? unifiedRetentionDays = null)
+        int unifiedRetentionDays = 7)
     {
 
         ArcanumSettings settings = new()
@@ -412,7 +618,6 @@ public sealed class InferenceAuditLoggerTests : IDisposable
                 AuditLog = new HostAuditPolicySettings
                 {
                     Enabled = enabled,
-                    RetentionDays = retentionDays,
                     RedactToolArguments = redactToolArguments,
                 },
             },
@@ -422,7 +627,7 @@ public sealed class InferenceAuditLoggerTests : IDisposable
                 AuditLogs = new RetentionRuleSettings
                 {
                     Enabled = unifiedRetentionEnabled,
-                    Days = unifiedRetentionDays ?? retentionDays,
+                    Days = unifiedRetentionDays,
                 },
             },
         };
@@ -455,5 +660,126 @@ public sealed class InferenceAuditLoggerTests : IDisposable
             ClientIp: "127.0.0.1",
             SpellName: null,
             CampaignId: null);
+
+    private sealed class ReadBudgetStream : Stream
+    {
+
+        private readonly MemoryStream _inner;
+
+        private readonly long _maxBytesRead;
+
+        internal ReadBudgetStream(
+            byte[] content,
+            long maxBytesRead)
+        {
+
+            _inner = new MemoryStream(content, writable: false);
+
+            _maxBytesRead = maxBytesRead;
+
+        }
+
+        internal long BytesRead { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => true;
+
+        public override bool CanWrite => false;
+
+        public override long Length => _inner.Length;
+
+        public override long Position
+        {
+
+            get => _inner.Position;
+
+            set => _inner.Position = value;
+
+        }
+
+        public override void Flush()
+        {
+
+        }
+
+        public override int Read(
+            byte[] buffer,
+            int offset,
+            int count)
+        {
+
+            int read = _inner.Read(buffer, offset, count);
+
+            Account(read);
+
+            return read;
+
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+
+            int read = _inner.Read(buffer);
+
+            Account(read);
+
+            return read;
+
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+
+            int read = await _inner.ReadAsync(buffer, cancellationToken);
+
+            Account(read);
+
+            return read;
+
+        }
+
+        public override long Seek(
+            long offset,
+            SeekOrigin origin) => _inner.Seek(offset, origin);
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(
+            byte[] buffer,
+            int offset,
+            int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+
+            if (disposing)
+            {
+
+                _inner.Dispose();
+
+            }
+
+            base.Dispose(disposing);
+
+        }
+
+        private void Account(int count)
+        {
+
+            BytesRead += count;
+
+            if (BytesRead > _maxBytesRead)
+            {
+
+                throw new IOException("The reverse reader exceeded its bounded read budget.");
+
+            }
+
+        }
+
+    }
 
 }

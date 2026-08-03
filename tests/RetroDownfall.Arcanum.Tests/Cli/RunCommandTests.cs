@@ -805,9 +805,7 @@ public sealed class RunCommandTests
 
             TopP = "0.8",
 
-            MaxSources = 7,
-
-            MaxHops = 3,
+            SourceTarget = 7,
 
             TokenBudget = 1_500,
 
@@ -848,9 +846,7 @@ public sealed class RunCommandTests
 
         Assert.Equal("provider/research-model", request.Model);
 
-        Assert.Equal(7, request.MaxSources);
-
-        Assert.Equal(3, request.MaxHops);
+        Assert.Equal(7, request.SourceTarget);
 
         Assert.Equal(1_500, request.TokenBudget);
 
@@ -985,15 +981,12 @@ public sealed class RunCommandTests
 
     [Theory]
 
-    [InlineData(0, 2, 2_000)]
+    [InlineData(0, 2_000)]
 
-    [InlineData(5, 0, 2_000)]
-
-    [InlineData(5, 2, 63)]
+    [InlineData(5, 0)]
 
     public async Task RunExecutionDispatcher_research_dry_run_rejects_invalid_research_bounds_before_preview(
-        int maxSources,
-        int maxHops,
+        int sourceTarget,
         int tokenBudget)
     {
 
@@ -1031,9 +1024,7 @@ public sealed class RunCommandTests
             dryRun: true) with
         {
 
-            MaxSources = maxSources,
-
-            MaxHops = maxHops,
+            SourceTarget = sourceTarget,
 
             TokenBudget = tokenBudget,
 
@@ -1056,7 +1047,7 @@ public sealed class RunCommandTests
         Assert.Contains(
             console.Diagnostics,
             static diagnostic => diagnostic.Contains(
-                "1-20 sources",
+                "positive source target",
                 StringComparison.Ordinal));
 
     }
@@ -1234,8 +1225,7 @@ public sealed class RunCommandTests
             ResponseFormat: null,
             PresencePenalty: null,
             FrequencyPenalty: null,
-            MaxSources: 5,
-            MaxHops: 2,
+            SourceTarget: null,
             TokenBudget: 2_000,
             CostBudget: null);
 

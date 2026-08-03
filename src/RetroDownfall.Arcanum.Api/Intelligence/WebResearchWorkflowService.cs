@@ -280,7 +280,7 @@ public sealed class WebResearchWorkflowService(
             Type = WebResearchStreamFrameType.Limits,
 
             Message =
-                $"Limits: {request.MaxSources} sources, {request.MaxHops} hops, {request.TokenBudget} tokens, {FormatCostLimit(request.CostBudgetUsd)}.",
+                $"Policy: continue while new sources are discovered; {FormatSourceTarget(request.SourceTarget)}, {request.TokenBudget} synthesis tokens, {FormatCostLimit(request.CostBudgetUsd)}.",
 
         };
 
@@ -301,20 +301,28 @@ public sealed class WebResearchWorkflowService(
 
         bool hasReportedCost = false;
 
-        for (int hop = 1; hop <= request.MaxHops; hop++)
+        int pass = 0;
+
+        while (true)
         {
+
+            pass++;
 
             yield return Progress(
                 "searching",
-                $"Searching hop {hop} of {request.MaxHops}.");
+                $"Searching research pass {pass}; {citations.Count} unique sources discovered.");
 
-            string query = hop == 1
+            string query = pass == 1
                 ? request.Question.Trim()
-                : $"{request.Question.Trim()} Follow-up research hop {hop}: find corroborating evidence, disagreements, and missing current facts.";
+                : $"{request.Question.Trim()} Follow-up research pass {pass}: find new corroborating evidence, disagreements, and missing current facts not covered by earlier sources.";
+
+            int resultCount = request.SourceTarget is int sourceTarget
+                ? Math.Clamp(sourceTarget - citations.Count, 1, 20)
+                : 20;
 
             Result<WebSearchOptions> options = BuildSearchOptions(
                 query,
-                request.MaxSources,
+                resultCount,
                 freshness: null,
                 [],
                 []);
@@ -352,17 +360,17 @@ public sealed class WebResearchWorkflowService(
                 ref totalCost,
                 ref hasReportedCost);
 
+            int newCitationCount = 0;
+
             foreach (WebCitation citation in search.Value.Citations)
             {
 
-                if (citations.Count >= request.MaxSources)
+                if (citations.TryAdd(citation.Url, citation))
                 {
 
-                    break;
+                    newCitationCount++;
 
                 }
-
-                _ = citations.TryAdd(citation.Url, citation);
 
             }
 
@@ -380,13 +388,36 @@ public sealed class WebResearchWorkflowService(
 
             }
 
+            if (request.SourceTarget is int target
+                && citations.Count >= target)
+            {
+
+                yield return Progress(
+                    "source_target_reached",
+                    $"The explicit source target of {target} was reached; synthesis will begin.");
+
+                break;
+
+            }
+
+            if (newCitationCount == 0)
+            {
+
+                yield return Progress(
+                    "source_exhausted",
+                    "No new sources were discovered; research reached deterministic no-progress and synthesis will begin.");
+
+                break;
+
+            }
+
         }
 
         List<ResearchSource> sources = [];
 
-        WebCitation[] selectedCitations = citations.Values
-            .Take(request.MaxSources)
-            .ToArray();
+        WebCitation[] selectedCitations = request.SourceTarget is int targetCount
+            ? citations.Values.Take(targetCount).ToArray()
+            : citations.Values.ToArray();
 
         for (int index = 0; index < selectedCitations.Length; index++)
         {
@@ -592,9 +623,9 @@ public sealed class WebResearchWorkflowService(
 
                 Model = web.PerplexityModel,
 
-                Timeout = TimeSpan.FromSeconds(
-                    ArcanumSettingClamps.WebBrowsingRequestTimeoutSeconds(
-                        web.RequestTimeoutSeconds)),
+                IdleTimeout = TimeSpan.FromSeconds(
+                    ArcanumSettingClamps.WebBrowsingIdleTimeoutSeconds(
+                        web.IdleTimeoutSeconds)),
 
                 MaxResponseBytes =
                     ArcanumSettingClamps.WebBrowsingMaxResponseBytes(
@@ -635,9 +666,9 @@ public sealed class WebResearchWorkflowService(
         return new WebReadOptions
         {
 
-            Timeout = TimeSpan.FromSeconds(
-                ArcanumSettingClamps.WebBrowsingRequestTimeoutSeconds(
-                    web.RequestTimeoutSeconds)),
+            IdleTimeout = TimeSpan.FromSeconds(
+                ArcanumSettingClamps.WebBrowsingIdleTimeoutSeconds(
+                    web.IdleTimeoutSeconds)),
 
             MaxResponseBytes =
                 ArcanumSettingClamps.WebBrowsingMaxResponseBytes(
@@ -718,16 +749,15 @@ public sealed class WebResearchWorkflowService(
     {
 
         if (string.IsNullOrWhiteSpace(request.Question)
-            || request.MaxSources is < 1 or > 20
-            || request.MaxHops is < 1 or > 5
-            || request.TokenBudget is < 64 or > 32_768
+            || request.SourceTarget is < 1
+            || request.TokenBudget < 1
             || request.CostBudgetUsd is < 0)
         {
 
             return Result.Failure(
                 new Error(
                     ErrorCodes.WebResearch.RequestRejected,
-                    "Research requires a question, 1-20 sources, 1-5 hops, a 64-32768 token budget, and a nonnegative cost budget."));
+                    "Research requires a question, an optional positive source target, a positive explicit synthesis-token budget, and a nonnegative cost budget."));
 
         }
 
@@ -1048,6 +1078,11 @@ public sealed class WebResearchWorkflowService(
         costBudget is decimal value
             ? $"${value:0.####}"
             : "no explicit cost ceiling";
+
+    private static string FormatSourceTarget(int? sourceTarget) =>
+        sourceTarget is int value
+            ? $"an explicit target of {value} unique sources"
+            : "source exhaustion or deterministic no-progress";
 
     private static WebResearchStreamFrame Progress(
         string stage,

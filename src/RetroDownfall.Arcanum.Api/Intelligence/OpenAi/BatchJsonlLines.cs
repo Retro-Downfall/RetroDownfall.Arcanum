@@ -37,5 +37,5 @@ public sealed record BatchJsonlError(
 /// <summary>One line of a <c>/v1/batches</c> *error* JSONL file — a line that could not even be parsed as a <see cref="BatchJsonlRequestLine"/>.</summary>
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible-adjacent JSON contract POCO; processor tests cover wire parsing.
 public sealed record BatchJsonlParseError(
-    [property: JsonPropertyName("line")] int Line,
+    [property: JsonPropertyName("line")] long Line,
     [property: JsonPropertyName("error")] string Error);

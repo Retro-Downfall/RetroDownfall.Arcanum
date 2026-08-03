@@ -31,15 +31,15 @@ public sealed class SessionContextPinMaterializer(
     ISessionAttachmentStore attachments,
     ArcanumDbContext db)
 {
-    public const int MaxPinsPerTurn = 32;
+    private const string PerTurnTruncationSuffix =
+        "\n[TRUNCATED BY PER-TURN CONTEXT BUDGET]";
+
+    private const string DirectoryTruncationSuffix =
+        "[TRUNCATED BY CONTEXT MATERIALIZATION BUDGET]";
 
     public const int MaxBytesPerPin = 64 * 1024;
 
     public const int MaxBytesPerTurn = 256 * 1024;
-
-    public const long MaxSourceFileBytes = 64L * 1024L * 1024L;
-
-    private const int MaxDirectoryFiles = 64;
 
     public async Task<SessionContextPinMaterialization> MaterializeAsync(
         Guid sessionId,
@@ -51,9 +51,9 @@ public sealed class SessionContextPinMaterializer(
         List<AIContent> contents = [];
         List<ContextPinMaterializedItem> items = [];
         int bytes = 0;
-        int omitted = Math.Max(0, rows.Count - MaxPinsPerTurn);
+        int omitted = 0;
 
-        foreach (SessionContextPinRecord pin in rows.Take(MaxPinsPerTurn))
+        foreach (SessionContextPinRecord pin in rows)
         {
             int remaining = MaxBytesPerTurn - bytes;
             if (remaining <= 0)
@@ -78,7 +78,10 @@ public sealed class SessionContextPinMaterializer(
             int blockBytes = Encoding.UTF8.GetByteCount(block);
             if (blockBytes > remaining)
             {
-                block = TruncateUtf8(block, remaining) + "\n[TRUNCATED BY PER-TURN CONTEXT BUDGET]";
+                block = AppendSuffixWithinUtf8Budget(
+                    block,
+                    PerTurnTruncationSuffix,
+                    remaining);
                 blockBytes = Encoding.UTF8.GetByteCount(block);
             }
 
@@ -107,7 +110,7 @@ public sealed class SessionContextPinMaterializer(
         if (omitted > 0)
         {
             contents.Add(new TextContent(
-                $"[SESSION CONTEXT PINS: {omitted} pin(s) omitted by the {MaxPinsPerTurn}-pin/{MaxBytesPerTurn}-byte budget.]"));
+                $"[SESSION CONTEXT PINS: {omitted} pin(s) deferred by the {MaxBytesPerTurn}-byte context materialization budget.]"));
         }
 
         return new(contents, bytes, omitted, items);
@@ -121,7 +124,11 @@ public sealed class SessionContextPinMaterializer(
         CancellationToken cancellationToken) =>
         pin.Kind switch
         {
-            SessionContextPinKind.DirectorySnapshot => MaterializeDirectory(pin, workingDirectory, byteLimit),
+            SessionContextPinKind.DirectorySnapshot => MaterializeDirectory(
+                pin,
+                workingDirectory,
+                byteLimit,
+                cancellationToken),
             SessionContextPinKind.File => await MaterializeFileAsync(
                 pin,
                 workingDirectory,
@@ -179,16 +186,6 @@ public sealed class SessionContextPinMaterializer(
         await using (stream)
         {
 
-            if (stream.Length > MaxSourceFileBytes)
-            {
-
-                return new(
-                    SessionContextPinStatus.Truncated,
-                    null,
-                    $"File exceeds the {MaxSourceFileBytes}-byte safe materialization limit.");
-
-            }
-
             BoundedFileRead source = await ReadBoundedFileAsync(
                 stream,
                 byteLimit,
@@ -216,7 +213,10 @@ public sealed class SessionContextPinMaterializer(
     }
 
     private static MaterializedPin MaterializeDirectory(
-        SessionContextPinRecord pin, string? workingDirectory, int byteLimit)
+        SessionContextPinRecord pin,
+        string? workingDirectory,
+        int byteLimit,
+        CancellationToken cancellationToken)
     {
         if (!TryResolveWorkspacePath(workingDirectory, pin.TargetIdentifier, out string path, out string error))
         {
@@ -228,24 +228,165 @@ public sealed class SessionContextPinMaterializer(
             return new(SessionContextPinStatus.Missing, null, "Directory no longer exists.");
         }
 
-        string[] files = Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
-            .OrderBy(static value => value, StringComparer.Ordinal)
-            .Take(MaxDirectoryFiles + 1)
-            .ToArray();
-        StringBuilder snapshot = new();
-        foreach (string file in files.Take(MaxDirectoryFiles))
+        string workspaceRoot = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(workingDirectory!));
+
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                workspaceRoot,
+                path,
+                out string? resolvedSnapshotRoot))
         {
-            string resolved = Path.GetFullPath(file);
-            if (!resolved.StartsWith(Path.GetFullPath(path) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-            {
-                continue;
-            }
-            snapshot.Append(Path.GetRelativePath(path, file)).Append('\t').Append(new FileInfo(file).Length).AppendLine();
+
+            return new(
+                SessionContextPinStatus.Unsafe,
+                null,
+                "Directory failed canonical workspace containment revalidation.");
+
         }
 
-        if (files.Length > MaxDirectoryFiles)
+        string snapshotRoot = Path.GetFullPath(
+            resolvedSnapshotRoot ?? path);
+
+        StringComparer pathComparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
+        HashSet<string> visitedCanonicalDirectories = new(
+            pathComparer);
+
+        _ = visitedCanonicalDirectories.Add(snapshotRoot);
+
+        Queue<(string TraversalPath, string CanonicalIdentity)> directories = new();
+
+        directories.Enqueue((snapshotRoot, snapshotRoot));
+
+        StringBuilder snapshot = new();
+
+        int snapshotBytes = 0;
+
+        bool truncated = false;
+
+        while (directories.Count > 0
+            && !truncated)
         {
-            snapshot.AppendLine($"[TRUNCATED: more than {MaxDirectoryFiles} files]");
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            (string directory, string queuedIdentity) =
+                directories.Dequeue();
+
+            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                    workspaceRoot,
+                    directory,
+                    out string? resolvedDirectory))
+            {
+
+                continue;
+
+            }
+
+            string currentIdentity = Path.GetFullPath(
+                resolvedDirectory ?? directory);
+
+            if (!pathComparer.Equals(
+                    currentIdentity,
+                    queuedIdentity)
+                && !visitedCanonicalDirectories.Add(
+                    currentIdentity))
+            {
+
+                continue;
+
+            }
+
+            string[] entries = Directory
+                .EnumerateFileSystemEntries(
+                    directory,
+                    "*",
+                    SearchOption.TopDirectoryOnly)
+                .OrderBy(static entry => entry, StringComparer.Ordinal)
+                .ToArray();
+
+            foreach (string entry in entries)
+            {
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                        workspaceRoot,
+                        entry,
+                        out string? resolvedEntry))
+                {
+
+                    continue;
+
+                }
+
+                if (Directory.Exists(entry))
+                {
+
+                    string canonicalDirectory = Path.GetFullPath(
+                        resolvedEntry ?? entry);
+
+                    if (visitedCanonicalDirectories.Add(
+                            canonicalDirectory))
+                    {
+
+                        directories.Enqueue(
+                            (entry, canonicalDirectory));
+
+                    }
+
+                    continue;
+
+                }
+
+                if (!File.Exists(entry))
+                {
+
+                    continue;
+
+                }
+
+                string row =
+                    $"{Path.GetRelativePath(snapshotRoot, entry)}\t{new FileInfo(entry).Length}{Environment.NewLine}";
+
+                int rowBytes = Encoding.UTF8.GetByteCount(row);
+
+                if (snapshotBytes + rowBytes > byteLimit)
+                {
+
+                    truncated = true;
+
+                    break;
+
+                }
+
+                _ = snapshot.Append(row);
+
+                snapshotBytes += rowBytes;
+
+            }
+
+        }
+
+        if (truncated)
+        {
+
+            string suffix = snapshot.Length == 0
+                ? DirectoryTruncationSuffix
+                : Environment.NewLine + DirectoryTruncationSuffix;
+
+            string content = AppendSuffixWithinUtf8Budget(
+                snapshot.ToString(),
+                suffix,
+                byteLimit);
+
+            return new(
+                SessionContextPinStatus.Truncated,
+                content,
+                $"Limited to {byteLimit} bytes.");
+
         }
 
         return FromText(snapshot.ToString(), byteLimit);
@@ -267,9 +408,9 @@ public sealed class SessionContextPinMaterializer(
         string[] range = pin.TargetIdentifier[(separator + 1)..].Split('-', 2);
         if (!int.TryParse(range[0], out int start) || start < 1
             || !int.TryParse(range.Length == 2 ? range[1] : range[0], out int end)
-            || end < start || end - start > 2_000)
+            || end < start)
         {
-            return new(SessionContextPinStatus.Error, null, "Invalid or excessive line range.");
+            return new(SessionContextPinStatus.Error, null, "Invalid line range.");
         }
 
         if (!TryResolveWorkspacePath(workingDirectory, pathPart, out string path, out string error))
@@ -300,16 +441,6 @@ public sealed class SessionContextPinMaterializer(
 
         await using (stream)
         {
-
-            if (stream.Length > MaxSourceFileBytes)
-            {
-
-                return new(
-                    SessionContextPinStatus.Truncated,
-                    null,
-                    $"File exceeds the {MaxSourceFileBytes}-byte safe materialization limit.");
-
-            }
 
             return await ReadBoundedLineRangeAsync(
                 stream,
@@ -649,6 +780,38 @@ public sealed class SessionContextPinMaterializer(
         }
 
         return Encoding.UTF8.GetString(bytes, 0, length);
+    }
+
+    private static string AppendSuffixWithinUtf8Budget(
+        string value,
+        string suffix,
+        int maxBytes)
+    {
+
+        if (maxBytes <= 0)
+        {
+
+            return string.Empty;
+
+        }
+
+        int suffixBytes = Encoding.UTF8.GetByteCount(suffix);
+
+        if (suffixBytes >= maxBytes)
+        {
+
+            return TruncateUtf8(
+                suffix,
+                maxBytes);
+
+        }
+
+        string prefix = TruncateUtf8(
+            value,
+            maxBytes - suffixBytes);
+
+        return prefix + suffix;
+
     }
 
     private sealed record MaterializedPin(

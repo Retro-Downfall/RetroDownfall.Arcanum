@@ -425,10 +425,6 @@ public sealed partial class DataRetentionServiceTests
 
         ArcanumSettings settings = CreatePruneSettings();
 
-        settings.Retention.MaxItemsPerSweep = 1;
-
-        settings.Retention.CheckpointInterval = 1;
-
         switch (kind)
         {
 

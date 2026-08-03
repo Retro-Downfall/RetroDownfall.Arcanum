@@ -47,7 +47,17 @@ internal static class McpSecurityLimits
 
         }
 
-        return TruncateUtf8(description, MaxMcpToolDescriptionUtf8Bytes);
+        int bytes = Encoding.UTF8.GetByteCount(description);
+
+        if (bytes > MaxMcpToolDescriptionUtf8Bytes)
+        {
+
+            throw new InvalidDataException(
+                $"The MCP tool description exceeded the physical metadata allocation boundary of {MaxMcpToolDescriptionUtf8Bytes} UTF-8 bytes; the server must publish a smaller description.");
+
+        }
+
+        return description;
 
     }
 
@@ -63,7 +73,8 @@ internal static class McpSecurityLimits
 
         }
 
-        return JsonSerializer.SerializeToElement(new McpEmptyJsonObject(), json.McpEmptyJsonObject);
+        throw new InvalidDataException(
+            $"The MCP tool input schema exceeded the physical metadata allocation boundary of {MaxMcpToolInputSchemaUtf8Bytes} UTF-8 bytes; the server must publish a smaller or externally referenced schema.");
 
     }
 

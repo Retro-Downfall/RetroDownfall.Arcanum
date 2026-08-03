@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
@@ -170,12 +171,38 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         CancellationToken cancellationToken)
     {
 
+        Result<AuditQueryPage<InferenceAuditRecord>> page = await QueryPageAsync(
+            from,
+            to,
+            model,
+            sessionId,
+            limit,
+            cursor: null,
+            cancellationToken).ConfigureAwait(false);
+
+        return page.IsSuccess
+            ? page.Value.Records
+            : [];
+
+    }
+
+    public async Task<Result<AuditQueryPage<InferenceAuditRecord>>> QueryPageAsync(
+        DateTimeOffset? from,
+        DateTimeOffset? to,
+        string? model,
+        string? sessionId,
+        int limit,
+        string? cursor,
+        CancellationToken cancellationToken)
+    {
+
         HostAuditLogSettings config = ResolveConfig();
 
         if (!config.Enabled)
         {
 
-            return [];
+            return Result<AuditQueryPage<InferenceAuditRecord>>.Success(
+                new AuditQueryPage<InferenceAuditRecord>([], null));
 
         }
 
@@ -185,163 +212,83 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
         if (!Directory.Exists(directory))
         {
 
-            return [];
+            return string.IsNullOrWhiteSpace(cursor)
+                ? Result<AuditQueryPage<InferenceAuditRecord>>.Success(
+                    new AuditQueryPage<InferenceAuditRecord>([], null))
+                : Result<AuditQueryPage<InferenceAuditRecord>>.Failure(
+                    new Error(
+                        ErrorCodes.Validation.InvalidQuery,
+                        "The audit cursor no longer references retained log data. Restart without 'cursor'."));
 
         }
 
-        DateTimeOffset effectiveTo = to ?? DateTimeOffset.UtcNow;
-
-        DateTimeOffset effectiveFrom = from
-            ?? effectiveTo.AddDays(-ArcanumSettingClamps.HostAuditLogRetentionDays(config.RetentionDays));
-
-        string fromStamp = effectiveFrom.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
-
-        List<InferenceAuditRecord> results = [];
-
-        DateTimeOffset cursor = effectiveTo;
-
-        int daySafetyCounter = 0;
-
-        while (results.Count < limit && daySafetyCounter < 400)
-        {
-
-            string dateStamp = cursor.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
-
-            if (string.CompareOrdinal(dateStamp, fromStamp) < 0)
-            {
-
-                break;
-
-            }
-
-            string filePath = Path.Combine(directory, $"{stem}-{dateStamp}.jsonl");
-
-            if (File.Exists(filePath))
-            {
-
-                await ReadMatchingRecordsAsync(
-                    filePath,
-                    effectiveFrom,
-                    effectiveTo,
-                    model,
-                    sessionId,
-                    limit,
-                    results,
-                    cancellationToken).ConfigureAwait(false);
-
-            }
-
-            cursor = cursor.AddDays(-1);
-
-            daySafetyCounter++;
-
-        }
-
-        return results;
+        return await AuditLogPageReader.QueryAsync(
+            directory,
+            stem,
+            family: "inference",
+            from,
+            to,
+            limit,
+            cursor,
+            AuditJsonContext.Default.InferenceAuditRecord,
+            static record => record.Timestamp,
+            record =>
+                (model is null
+                    || string.Equals(record.Model, model, StringComparison.OrdinalIgnoreCase))
+                && (sessionId is null
+                    || string.Equals(record.SessionId, sessionId, StringComparison.OrdinalIgnoreCase)),
+            _logger,
+            cancellationToken,
+            model,
+            sessionId).ConfigureAwait(false);
 
     }
 
-    private async Task ReadMatchingRecordsAsync(
-        string filePath,
-        DateTimeOffset effectiveFrom,
-        DateTimeOffset effectiveTo,
-        string? model,
-        string? sessionId,
-        int limit,
-        List<InferenceAuditRecord> sink,
-        CancellationToken cancellationToken)
+    private static IEnumerable<string> EnumerateDatedLogFiles(
+        string directory,
+        string stem,
+        DateTimeOffset from,
+        DateTimeOffset to)
     {
 
-        string[] lines;
+        string prefix = stem + "-";
 
-        try
+        foreach ((string Path, DateTimeOffset Date) candidate in Directory
+                     .EnumerateFiles(directory, "*.jsonl", SearchOption.TopDirectoryOnly)
+                     .Select(path => (Path: path, Date: ParseDatedLogFile(path, prefix)))
+                     .Where(static candidate => candidate.Date is not null)
+                     .Select(static candidate => (candidate.Path, candidate.Date!.Value))
+                     .Where(candidate => candidate.Item2.Date >= from.Date && candidate.Item2.Date <= to.Date)
+                     .OrderByDescending(static candidate => candidate.Item2))
         {
 
-            lines = await File.ReadAllLinesAsync(filePath, cancellationToken).ConfigureAwait(false);
-
-        }
-        catch (IOException ex)
-        {
-
-            // Being actively written concurrently (or transient FS issue) — skip this file for this
-            // query rather than failing the whole request.
-            _logger.LogDebug(ex, "Could not read inference audit log file {FilePath} for this query; skipping.", filePath);
-
-            return;
+            yield return candidate.Path;
 
         }
 
-        // Records are appended chronologically; walk backwards for newest-first results.
-        for (int i = lines.Length - 1; i >= 0 && sink.Count < limit; i--)
+    }
+
+    private static DateTimeOffset? ParseDatedLogFile(string path, string prefix)
+    {
+
+        string name = Path.GetFileNameWithoutExtension(path);
+
+        if (!name.StartsWith(prefix, StringComparison.Ordinal)
+            || name.Length != prefix.Length + 8)
         {
 
-            string line = lines[i];
-
-            if (string.IsNullOrWhiteSpace(line))
-            {
-
-                continue;
-
-            }
-
-            InferenceAuditRecord? record;
-
-            try
-            {
-
-                record = JsonSerializer.Deserialize(line, AuditJsonContext.Default.InferenceAuditRecord);
-
-            }
-            catch (JsonException)
-            {
-
-                // A partial line from a write that raced this read (e.g. mid-flush) — skip it.
-                continue;
-
-            }
-
-            if (record is null)
-            {
-
-                continue;
-
-            }
-
-            if (!DateTimeOffset.TryParse(
-                    record.Timestamp,
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind,
-                    out DateTimeOffset recordTimestamp))
-            {
-
-                continue;
-
-            }
-
-            if (recordTimestamp < effectiveFrom || recordTimestamp > effectiveTo)
-            {
-
-                continue;
-
-            }
-
-            if (model is not null && !string.Equals(record.Model, model, StringComparison.OrdinalIgnoreCase))
-            {
-
-                continue;
-
-            }
-
-            if (sessionId is not null && !string.Equals(record.SessionId, sessionId, StringComparison.OrdinalIgnoreCase))
-            {
-
-                continue;
-
-            }
-
-            sink.Add(record);
+            return null;
 
         }
+
+        return DateTimeOffset.TryParseExact(
+            name.AsSpan(prefix.Length),
+            "yyyyMMdd",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal,
+            out DateTimeOffset date)
+            ? date
+            : null;
 
     }
 

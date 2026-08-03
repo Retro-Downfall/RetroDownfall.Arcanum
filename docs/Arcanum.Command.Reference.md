@@ -33,7 +33,7 @@ and may appear before or after subcommands. Help aliases are available at every 
 
 ## Shared selection and context behavior
 
-Resource-taking commands resolve an explicit exact ID first, then an exact case-insensitive name, then a unique case-insensitive name prefix. Omitted selectors may open a searchable picker only when stdin and stdout are interactive and output is not JSON. Redirected, ambiguous, or cancelled selection never guesses.
+Resource-taking commands resolve an explicit exact ID first, then an exact case-insensitive name, then a unique case-insensitive name prefix. Omitted selectors may open a searchable picker only when stdin and stdout are interactive and output is not JSON. Cursor catalogs are followed until exhaustion, cancellation, a fetch error, or a repeated-token no-progress failure; there is no 100-page product ceiling. Redirected, ambiguous, or cancelled selection never guesses.
 
 Effective inference context precedence is: explicit command option, saved active CLI context, current-directory detection, then server default. `--no-context` skips only the saved-context layer. Workspace paths are always paths on the server host, even when the bundled client and host run on the same machine.
 
@@ -48,6 +48,13 @@ Effective inference context precedence is: explicit command option, saved active
 | `130` | Caller cancellation or Ctrl+C for non-interactive streaming/watch commands. In `chat`, Ctrl+C cancels the active turn and returns to the prompt. |
 
 Structured stdout is never mixed with diagnostics. `--plain` strips presentation only; it does not change payload content. Watch reconnect is opt-in and always warns that a gap may exist.
+
+Long-running turns, commands, research, indexing, and durable operations are not assigned an
+Arcanum-owned expected duration. They continue while they complete work and emit progress; Ctrl+C
+or the corresponding `cancel` command is the normal operator stop. A local page, frame, buffer, or
+checkpoint bound protects one allocation only and must expose or automatically follow its
+continuation. Retained-boundary diagnostics name the owner, safe measurement/limit, saved or
+checkpointed state, and exact continuation or recovery action.
 
 Command-specific refinements:
 
@@ -69,8 +76,8 @@ Command-specific refinements:
   and `130` on cancellation.
 - `trial run` returns `1` when the completed Trial result is not passing, independently of HTTP
   or validation failure.
-- `operation reconcile` returns `2` when reconciliation succeeds but one or more operations still
-  require operator repair; otherwise it returns `0` for a successful pass.
+- `operation reconcile` returns `2` when all recoverable pages were processed but one or more
+  operations still require operator repair; otherwise it returns `0`.
 - `backup create` returns `1` for an incomplete result and never labels it complete or publishes an
   archive; `backup verify` returns `1` when authentication, structure, checksums, or database
   verification fail. Typed backup-plan validation returns `2`. Commands that consume a passphrase
@@ -120,6 +127,11 @@ A bare interactive invocation opens Command Center. A non-interactive invocation
 Unlike the automatic bare launch, an explicit request is not suppressed by
 `ARCANUM_NO_COMMAND_CENTER`; the normal terminal and UI requirements still apply.
 
+Interactive auto-start uses short connection/readiness observation only: two seconds per health
+probe, three seconds for an already-listening unhealthy host, and 20 seconds after spawn. A launcher
+timeout never kills the spawned host; retry, run `arcanum doctor`, verify `arcanum key show`, or
+inspect `~/.config/arcanum/logs/auto-serve-bootstrap.log`.
+
 | Command Center input | Action |
 |---|---|
 | `/help`, `/?` | Show Command Center help. |
@@ -133,7 +145,7 @@ Unlike the automatic bare launch, an explicit request is not suppressed by
 | `/provider list` | List configured providers. |
 | `/mcp` | Show MCP server status. |
 | `/arsenal` | Show the effective workspace arsenal. |
-| `/campaign list` | List campaigns. |
+| `/campaign list [offset]` | List a 50-line terminal page of campaigns. When more state exists, the result prints the exact next offset command. |
 | `/session list` | Refresh and list sessions. |
 | `/session new` | Start a new session. |
 | `/session resume <id>` | Load a transcript and continue the selected session. |
@@ -151,11 +163,23 @@ Unlike the automatic bare launch, an explicit request is not suppressed by
 | `/context [list]` | List persistent session context pins. |
 | `/context pin <kind> <target>` | Pin a file, directory snapshot, symbol range, session entry, attachment, URL, or diagnostic. |
 | `/context unpin <id>` | Remove one context pin. |
-| `/spell list` | List spells. |
-| `/ward list` | List open Wards. |
+| `/spell list [offset]` | List a 50-line terminal page of spells with exact next-offset continuation. |
+| `/ward list [offset]` | List a 50-line terminal page of open Wards with exact next-offset continuation. |
 | `/ward allow [<id>]` | Allow the supplied or currently prompted Ward. |
 | `/ward deny [<id>]` | Deny the supplied or currently prompted Ward. |
 | `/exit`, `/quit` | Leave Command Center. |
+
+List offsets must be nonnegative integers. Campaign pages are fetched from the API at the requested
+offset; Spell and Ward pages slice the complete fetched state for terminal rendering. When another
+page exists, Command Center states that server/durable state was not changed and prints the exact
+next command instead of silently truncating the list.
+
+The Sessions pane keeps one 40-session page and the Transcript pane keeps one 200-entry page;
+these are view allocations, not history totals. In Sessions, `Ctrl+PgDn` loads older sessions and
+`Ctrl+PgUp` returns toward recent sessions. In Transcript, `Ctrl+PgUp` loads older entries and
+`Ctrl+PgDn` returns toward the latest entries. Paging uses exact server cursors/offsets, refuses a
+repeated or missing checkpoint as no progress, honors cancellation, and rebuilds Incantations from
+the current transcript page.
 
 ## `arcanum chat` slash commands
 
@@ -288,7 +312,8 @@ Repeat `--with @path` to stage files for this turn. Relative paths resolve from 
 working directory, while an explicitly supplied absolute path is honored. Text staging uses strict
 UTF-8 and does not impose a filename-extension allowlist; recognized images use the existing
 Scrying MIME, size, and model-capability checks. Text and stdin share the existing request authority:
-at most 32 UTF-8-safe `AttachedFileDto` parts of 1 MiB each, and 32 MiB aggregate. The 10 MiB stdin
+1 MiB UTF-8-safe `AttachedFileDto` chunks and a 32 MiB aggregate, with no incidental file/part-count
+ceiling. The 10 MiB stdin
 reader ceiling is not a separate per-file ceiling for `--with`. Diagnostics report UTF-8 byte count,
 part count, and SHA-256 for text; image diagnostics report decoded byte count and SHA-256. The client
 sends images as `ScryingFocusDto` values, and the client filesystem
@@ -296,7 +321,7 @@ path is never treated as server authority. On a live route, these values enter t
 pipeline: an Attachments-enabled host persists and Session-binds them before inference, while an
 Attachments-disabled host keeps them in memory for the current turn. A dry-run never persists them.
 
-The default route is the ordinary Agent Loop. `--research` selects the bounded server-owned web
+The default route is the ordinary Agent Loop. `--research` selects the progress-driven server-owned web
 research workflow. `--spell <spell>` forces a named Spell resolved by exact case-insensitive name
 or unique case-insensitive prefix. `--research` and `--spell` are the only route conflict; prompt,
 stdin, `--with`, context, sampling, output, and dry-run options otherwise compose. `--dry-run`
@@ -315,7 +340,7 @@ retain their global meanings and may appear before or after `run`.
 
 | Option | Meaning |
 |---|---|
-| `--research` | Route through bounded server-side multi-hop research. Cannot be combined with `--spell`. |
+| `--research` | Route through progress-driven server-side research. Cannot be combined with `--spell`. |
 | `--spell <spell>` | Force a Spell by exact name or unique name prefix. Cannot be combined with `--research`. |
 | `--with <@path>` | Stage one turn-scoped text file or image; repeat for several files. Relative and explicitly supplied absolute paths are supported. |
 | `--dry-run` | Preview the resolved static pre-inference payload/context plan without provider spend, search, tools, or persistence. |
@@ -334,16 +359,15 @@ retain their global meanings and may appear before or after `run`.
 | `--response-format <response-format>` | Response format: text, json (alias of json_object), json_object, or json_schema. |
 | `--presence-penalty <presence-penalty>` | Presence penalty from -2 through 2. |
 | `--frequency-penalty <frequency-penalty>` | Frequency penalty from -2 through 2. |
-| `--max-sources <max-sources>` | Research source limit (1-20; default 5). |
-| `--max-hops <max-hops>` | Research hop limit (1-5; default 2). |
-| `--token-budget <token-budget>` | Research synthesis output-token limit (64-32768; default 2000). |
+| `--sources <sources>` | Optional positive unique-source target. Omit it to continue until source exhaustion or deterministic no-progress. |
+| `--token-budget <token-budget>` | Explicit positive research synthesis output-token budget (default 2000). |
 | `--cost-budget <cost-budget>` | Optional nonnegative research search-provider cost limit in USD. |
 
 ### `arcanum chat`
 
 Interactive multi-turn REPL with the Mage.
 
-Starts the multi-turn Mage REPL. Inference controls apply to every turn, while `--attachment` values are staged for the next successful turn. See the REPL slash-command table above.
+Starts the multi-turn Mage REPL. Inference controls apply to every turn, while `--attachment` values are staged for the next successful turn. Complete assistant Markdown renders lazily in allocation-safe chunks; content after the former 256 Ki-character display cutoff is not discarded. See the REPL slash-command table above.
 
 **Syntax:** `arcanum chat`
 
@@ -378,7 +402,7 @@ Builds an Eye of the World snapshot for the current directory locally, without r
 
 Run environment diagnostics (version, paths, API health).
 
-Runs System, Paths, Configuration, MCP, Tokenizer, File Encryption, durable-operation, and authenticated API-health diagnostics. The health probe has a code-owned two-second timeout: an unreachable API is a warning, while hard local checks return a nonzero exit. `--json` emits the typed doctor report rather than decorated panels.
+Runs System, Paths, Configuration, MCP, Tokenizer, File Encryption, durable-operation, and authenticated API-health diagnostics. Embedding status distinguishes sqlite-vec from the complete streamed managed SIMD fallback; managed compatibility budget `0` means no total row budget. The health probe has a code-owned two-second timeout: an unreachable API is a warning, while hard local checks return a nonzero exit. `--json` emits the typed doctor report rather than decorated panels.
 
 **Syntax:** `arcanum doctor`
 
@@ -405,7 +429,7 @@ Reads and writes secure local credentials without an HTTP request. Master-key ou
 
 Manage Grimoire explicit memory (lore) directly.
 
-Maintains the legacy operator-owned key/value MageSettings store. Lore is distinct from Lexicon entities, Saga memories, session entries, and attachments.
+Maintains the legacy operator-owned key/value MageSettings store. Lore is distinct from Lexicon entities, Saga memories, session entries, and attachments. `lore list` follows every advancing server offset with no client-owned total-page ceiling; a non-advancing or overflowing continuation fails explicitly instead of looping or silently returning a prefix.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
@@ -459,6 +483,12 @@ Manage and continue sessions through the Arcanum API.
 
 Provides the complete durable session lifecycle. Optional session selectors accept a GUID, exact title, unique title prefix, saved session context, or an interactive picker when allowed.
 
+Sessions do not impose a total entry-count or fork-depth ceiling. The existing
+`sessions.maxPinnedEntries` admission setting remains unchanged outside issue #55. Entry listings
+page, long unsummarized history consolidates in timestamp-group-safe checkpoints, and
+provider-context materialization adds no second pin-count ceiling: it retains per-item/per-turn byte
+protections while explicitly reporting deferred accepted pins.
+
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum session list` | List recent sessions. | `--campaign <campaign>` — Filter by campaign GUID.<br>`--status <status>` — Filter by session status.<br>`--search <search>` — Filter by search text.<br>`--model <model>` — Filter by model.<br>`--from <from>` — Include sessions on or after this ISO-8601 timestamp.<br>`--to <to>` — Include sessions on or before this ISO-8601 timestamp.<br>`--limit <limit>` — Maximum sessions per page. |
@@ -482,6 +512,11 @@ Provides the complete durable session lifecycle. Optional session selectors acce
 ### `arcanum saga`
 
 Saga long-term associative memory (requires arcanum serve).
+
+Automatic extraction has no public interval/window/output-token controls or total memory-count
+ceiling. It processes durable history oldest-first in timestamp-group-safe checkpoint pages and
+retries a failed page without advancing its watermark. Listing and semantic search remain paged;
+explicit deletion, retention policy, provider capability, and cancellation own the real boundaries.
 
 Inspects and deletes long-term associative Saga memory. These commands do not merge Saga with Lexicon, session, attachment, or workspace stores.
 
@@ -514,7 +549,7 @@ Provides read-only cross-store inspection plus explicit Lexicon deletion. Search
 
 Spell utilities (requires arcanum serve).
 
-Manages built-in and workspace spells, named version files, validation, dry-run casting, and execution. Workspace selectors resolve server-host resources.
+Manages built-in and workspace spells, named version files, validation, dry-run casting, and execution. Workspace selectors resolve server-host resources. Legacy direct listing retains the array response, while resource selection uses the 50-item opaque-cursor catalog and follows pages as needed. Command Center `/spell list [opaque-cursor]` fetches one metadata page and prints the exact continuation; a changed/missing cursor anchor or mismatched filter instructs a cursor-free restart.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
@@ -593,7 +628,7 @@ Manages durable Apprentice orchestration, intervention, replanning, child delega
 | `arcanum apprentice get [<id>]` | Show Apprentice detail. | None beyond global or inherited family options. |
 | `arcanum apprentice create` | Create an Apprentice. | `--goal <goal>` — Apprentice goal: inline text, or @filename to read from a file.<br>`--name <name>` — Display name; defaults to a truncated form of the goal.<br>`--campaign-id, --campaignId <campaign-id>` — Campaign GUID to associate with.<br>`--workspace <workspace>` — Workspace root to scope the Apprentice. |
 | `arcanum apprentice delete [<id>]` | Delete a terminal Apprentice. | None beyond global or inherited family options. |
-| `arcanum apprentice start [<id>]` | Start plan generation and execution. | None beyond global or inherited family options. |
+| `arcanum apprentice start [<id>]` | Persist the start and begin plan generation/execution when a host concurrency slot is available. Temporary capacity queues the start instead of rejecting it; Chronicle/status surfaces progress and `cancel` removes queued work. | None beyond global or inherited family options. |
 | `arcanum apprentice pause [<id>]` | Pause at the next step boundary. | None beyond global or inherited family options. |
 | `arcanum apprentice resume [<id>]` | Resume from checkpoint. | None beyond global or inherited family options. |
 | `arcanum apprentice cancel [<id>]` | Cancel execution. | None beyond global or inherited family options. |
@@ -641,11 +676,11 @@ Manages registered server-host filesystem and indexing boundaries. Optional work
 | `arcanum workspace register [<path>]` | Register a server-host path; omit path to register this directory when client and server share a host. | `--name <name>` — Workspace display name; defaults to the path's final segment.<br>`--type <type>` — Workspace type: spell, campaign, data, or custom (default). |
 | `arcanum workspace show [<workspace>]` | Show one registered workspace and its server-host path. | None beyond global or inherited family options. |
 | `arcanum workspace get [<workspace>]` | Compatibility alias for 'workspace show'. | None beyond global or inherited family options. |
-| `arcanum workspace tree [<workspace>]` | List the server-side workspace tree recursively. | `--path <path>` — Optional relative path inside the selected workspace. |
+| `arcanum workspace tree [<workspace>]` | List the complete server-side workspace tree recursively by following every opaque `nextCursor` from the 500-entry workspace-files API; each page keeps a bounded 501-candidate heap, and a changed/missing exact checkpoint returns an actionable restart error instead of offset-shift skips or duplicates. | `--path <path>` — Optional relative path inside the selected workspace. |
 | `arcanum workspace info <path>` | Inspect a path through the server workspace API. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum workspace read <path>` | Read a file through the bounded server workspace API. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum workspace search <query>` | Semantically search the selected workspace's server-side index. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection.<br>`--limit <limit>` — Optional bounded result count. |
-| `arcanum workspace index [<workspace>]` | Request a server-side workspace re-index. | None beyond global or inherited family options. |
+| `arcanum workspace index [<workspace>]` | Request a complete cancellable server-side workspace re-index. Internal file/checkpoint pages continue until eligible work is visited; repository size is not a total-work rejection. | None beyond global or inherited family options. |
 | `arcanum workspace index-status [<workspace>]` | Show server-side workspace indexing status. | None beyond global or inherited family options. |
 | `arcanum workspace chunks [<workspace>]` | Inspect bounded previews of server-side indexed chunks. | `--path <path>` — Optional relative-path filter.<br>`--limit <limit>` — Maximum indexed chunks to return.<br>`--offset <offset>` — Number of indexed chunks to skip. |
 | `arcanum workspace unregister [<workspace>]` | Remove a workspace registration without deleting files. | None beyond global or inherited family options. |
@@ -654,7 +689,7 @@ Manages registered server-host filesystem and indexing boundaries. Optional work
 
 Operate MCP lifecycle, trust, discovery, and external-only diagnostics without exposing server secrets.
 
-Administers MCP server lifecycle, trust, tool discovery, and external diagnostics. Safe projections omit URLs, commands, arguments, environment variables, working directories, and credentials. `invoke [arguments]` accepts inline JSON, `@file`, or redirected stdin and uses `{}` when omitted interactively; input is bounded to 1 MiB of UTF-8 JSON and depth 64.
+Administers MCP server lifecycle, trust, tool discovery, and external diagnostics. Safe projections omit URLs, commands, arguments, environment variables, working directories, and credentials. `invoke [arguments]` accepts inline JSON, `@file`, or redirected stdin and uses `{}` when omitted interactively; input is bounded to 1 MiB of UTF-8 JSON and depth 64. Initialization and HTTP connection establishment keep local lifecycle deadlines, but a connected invocation has no total request clock and runs until completion, terminal protocol/provider failure, or Ctrl+C/caller cancellation.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
@@ -674,6 +709,15 @@ Administers MCP server lifecycle, trust, tool discovery, and external diagnostic
 Discover and invoke built-in diagnostic tools through the authenticated API.
 
 Discovers and invokes built-in diagnostic tools through the authenticated API. `invoke [arguments]` accepts inline JSON, `@file`, or redirected stdin and uses `{}` when omitted interactively; input is bounded to 1 MiB of UTF-8 JSON and depth 64.
+
+The inference-only internal MCP surface pairs `execute_command` with automatically attuned
+`read_command_output`. Oversized stdout/stderr yields a bounded preview plus an opaque
+connection-lifetime handle and stream names. Continue each stream from byte offset `0` through each
+returned `nextOffset`; strict UTF-8 page size is a JSON-RPC-safe allocation bound, not a total-output
+ceiling. Each stream is deleted immediately after its final page; the handle expires after all
+streams finish or when the connection closes. Complete stdout and stderr share the existing explicit
+Sanctum `MaxFileWriteMb` policy, whose classified error reports the measured bytes and exact rerun or
+configuration action.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
@@ -714,19 +758,22 @@ Reads one bounded URL as Markdown. JavaScript rendering is explicit; when unavai
 
 ### `arcanum research`
 
-Run bounded server-side multi-hop research with progress and citations.
+Run progress-driven server-side research with citations and cancellation.
 
-Runs server-owned bounded multi-hop research. Progress is written to stderr; the selected final format is written to stdout.
+The server performs another research pass while it discovers new unique sources. It stops when an
+optional source target is reached, a pass discovers no new sources, the user/host cancels, an
+explicit token/cost policy is reached, or a provider/safety boundary fails. Progress and the exact
+target/no-progress terminal reason are written to stderr; the selected final format is written to
+stdout. There is no hop counter or default total-source ceiling.
 
 **Syntax:** `arcanum research <question>`
 
 | Option | Meaning |
 |---|---|
-| `--max-sources <max-sources>` | Maximum unique sources (1-20; default 5). |
-| `--max-hops <max-hops>` | Maximum search hops (1-5; default 2). |
+| `--sources <sources>` | Optional positive unique-source target; omit for source exhaustion/deterministic no-progress. |
 | `--model <model>` | Server-configured model for final synthesis. |
-| `--token-budget <token-budget>` | Maximum synthesis output tokens (64-32768; default 2000). |
-| `--cost-budget <cost-budget>` | Maximum reported search-provider cost in USD. |
+| `--token-budget <token-budget>` | Explicit positive synthesis output-token budget (default 2000). |
+| `--cost-budget <cost-budget>` | Optional nonnegative reported search-provider cost policy in USD. |
 | `--continue-session <continue-session>` | Continue an existing session by GUID, exact title, or unique prefix. |
 | `--format <format>` | Final output: terminal (default), markdown, or json. |
 | `--save <save>` | Atomically save the final Markdown content to a local path. |
@@ -750,12 +797,12 @@ Uses the OpenAI-compatible `/v1/files` surface. Uploads and downloads stream byt
 
 Create and operate asynchronous OpenAI-compatible batches.
 
-Uses the OpenAI-compatible `/v1/batches` surface. Local JSONL preflight catches basic shape errors; the server remains authoritative. Output/error downloads use safe filenames and overwrite confirmation. `batch watch --json` emits the final terminal batch object, unlike live `watch ... --json` NDJSON.
+Uses the OpenAI-compatible `/v1/batches` surface. Local JSONL preflight catches basic shape errors; the server remains authoritative. Output/error downloads use safe filenames and overwrite confirmation. `batch watch --json` emits the final terminal batch object, unlike live `watch ... --json` NDJSON. There is no total request-count or wall-clock age ceiling: the server streams internal 64-line processing pages through explicit budget reservation and durable per-line dispatch/result checkpoints. One physical record keeps a pooled 256 KiB prefix before owner-only spill; the retained 64 MiB one-request materialization boundary reports measured bytes and lets later records continue. Durable 64-bit counters make show/list independent of artifact recounting. Batch metadata pages default to 20 and cap one response at 100, with an opaque status-bound cursor; worker pickup likewise selects only the oldest rows needed for free concurrency slots. Completed lines publish in input order and are skipped on resume; cancellation, host interruption, or an unexpected pre-publication failure leaves every claimed line either published as `batch_interrupted_after_dispatch` or durable for startup reconciliation, never silently deleted or replayed. A budget rejection preserves completed output and identifies the first remaining line and continuation action. The OpenAI `completion_window` field is accepted as compatibility metadata only; explicit cancellation, terminal retention, and startup reconciliation own the lifecycle.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum batch create <input-file>` | Create a batch from a local JSONL file or an existing uploaded file ID. | None beyond global or inherited family options. |
-| `arcanum batch list` | List batches with request counts and status. | `--status <status>` — Filter by exact batch status. |
+| `arcanum batch list` | List one batch metadata page with durable request counts and status; human output prints the exact next command when more rows remain and JSON preserves `next_cursor`. | `--status <status>` — Filter by exact batch status.<br>`--cursor <cursor>` — Continue from the opaque cursor returned by the same status query. |
 | `arcanum batch show <id>` | Show one batch with request counts and artifact IDs. | None beyond global or inherited family options. |
 | `arcanum batch watch <id>` | Poll with bounded exponential backoff until the batch reaches a terminal state. | `--poll-interval <poll-interval>` — Initial poll interval in milliseconds (1-10000; default: 1000). |
 | `arcanum batch cancel <id>` | Request cancellation using the server's idempotent semantics. | None beyond global or inherited family options. |
@@ -794,7 +841,7 @@ Inspects and repairs durable long-running operations. Safe detail omits checkpoi
 | `arcanum operation show <id>` | Show safe operation detail (checkpoint payloads are never returned). | None beyond global or inherited family options. |
 | `arcanum operation cancel <id>` | Request cancellation through a compare-and-swap transition. | None beyond global or inherited family options. |
 | `arcanum operation retry <id>` | Reset a failed, abandoned, or repair-required operation to Pending. | None beyond global or inherited family options. |
-| `arcanum operation reconcile` | Run one bounded recovery pass; exit 2 means the pass completed but operator repair is still required. | None beyond global or inherited family options. |
+| `arcanum operation reconcile` | Process every recoverable operation in bounded internal pages/concurrency; exit 2 means automatic recovery completed but operator repair is still required. | None beyond global or inherited family options. |
 
 ### `arcanum backup`
 

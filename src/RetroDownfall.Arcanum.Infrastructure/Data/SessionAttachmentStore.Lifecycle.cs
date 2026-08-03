@@ -1,6 +1,7 @@
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -11,6 +12,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 internal sealed partial class SessionAttachmentStore
 {
+
+    private const int ForkAttachmentPageSize = 128;
 
     public async Task DeleteRowsForSessionInAmbientTransactionAsync(
         Guid sessionId,
@@ -174,6 +177,131 @@ internal sealed partial class SessionAttachmentStore
 
     }
 
+    public async IAsyncEnumerable<IReadOnlyList<SessionAttachmentRecord>> ReadBoundForForkPagesAsync(
+        Guid sourceSessionId,
+        long maximumSourceEntrySequence,
+        bool includeEntrylessAttachments,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+
+        Guid? afterAttachmentId = null;
+
+        while (true)
+        {
+
+            IReadOnlyList<SessionAttachmentRecord> page = await ReadBoundForForkPageAsync(
+                    sourceSessionId,
+                    maximumSourceEntrySequence,
+                    includeEntrylessAttachments,
+                    afterAttachmentId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (page.Count == 0)
+            {
+
+                yield break;
+
+            }
+
+            yield return page;
+
+            afterAttachmentId = page[^1].Id;
+
+        }
+
+    }
+
+    private async Task<IReadOnlyList<SessionAttachmentRecord>> ReadBoundForForkPageAsync(
+        Guid sourceSessionId,
+        long maximumSourceEntrySequence,
+        bool includeEntrylessAttachments,
+        Guid? afterAttachmentId,
+        CancellationToken cancellationToken)
+    {
+
+        return await SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                EnlistAmbientTransaction(cmd);
+
+                string cursorClause = afterAttachmentId is null
+                    ? string.Empty
+                    : "AND attachment.\"Id\" > @afterAttachmentId";
+
+                cmd.CommandText =
+                    $$"""
+                    SELECT attachment."Id", attachment."SessionId", attachment."EntryId",
+                           attachment."PendingTurnId", attachment."State", attachment."LogicalKey",
+                           attachment."OriginalFileName", attachment."Version", attachment."RelativePath",
+                           attachment."ContentSha256", attachment."MimeType", attachment."ByteLength",
+                           attachment."Kind", attachment."CreatedAt", attachment."SourceKind",
+                           attachment."SourceWorkspaceIdentity", attachment."SourceRelativePath",
+                           attachment."SourceCanonicalPath", attachment."SourceContentSha256",
+                           attachment."SourceFileIdentity", attachment."SourceLastWriteAt",
+                           attachment."SourceByteLength", attachment."SourceStatus",
+                           attachment."SourceDiagnosticReason", attachment."EncryptionVersion",
+                           attachment."EncryptionKeyId"
+                    FROM "SessionAttachments" AS attachment
+                    WHERE attachment."SessionId" = @sessionId
+                      AND attachment."State" = @state
+                      {{cursorClause}}
+                      AND (
+                          @includeAllBound = 1
+                          OR EXISTS (
+                              SELECT 1
+                              FROM "Entries" AS sourceEntry
+                              WHERE sourceEntry."Id" = attachment."EntryId" COLLATE NOCASE
+                                AND sourceEntry."SessionId" = @sessionId COLLATE NOCASE
+                                AND sourceEntry."Sequence" <= @maximumSourceEntrySequence
+                          )
+                      )
+                    ORDER BY attachment."Id" ASC
+                    LIMIT @pageSize
+                    """;
+
+                AddParameter(cmd, "@sessionId", sourceSessionId.ToString());
+
+                AddParameter(cmd, "@state", nameof(SessionAttachmentState.Bound));
+
+                AddParameter(cmd, "@includeAllBound", includeEntrylessAttachments ? 1 : 0);
+
+                AddParameter(cmd, "@maximumSourceEntrySequence", maximumSourceEntrySequence);
+
+                AddParameter(cmd, "@pageSize", ForkAttachmentPageSize);
+
+                if (afterAttachmentId is Guid cursor)
+                {
+
+                    AddParameter(cmd, "@afterAttachmentId", cursor.ToString());
+
+                }
+
+                List<SessionAttachmentRecord> rows = new(ForkAttachmentPageSize);
+
+                await using DbDataReader reader = await cmd
+                    .ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+
+                    rows.Add(ReadRecord(reader));
+
+                }
+
+                return (IReadOnlyList<SessionAttachmentRecord>)rows;
+
+            },
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
     public async Task CopyBytesForForkAsync(
         Guid forkSessionId,
         IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
@@ -280,23 +408,47 @@ internal sealed partial class SessionAttachmentStore
 
             foreach (SessionAttachmentForkCopyPlan plan in plans)
             {
-
-                if (!_forkBlobAuthorities.TryGetValue(
-                        plan,
-                        out ForkBlobAuthority? authority))
-                {
-
-                    throw new IOException(
-                        "Fork attachment row insertion has no owned blob authority.");
-
-                }
-
                 string relativePath = NormalizeRelativePath(BuildRelativePath(
                     forkSessionId,
                     pendingTurnId: null,
                     plan.Source.LogicalKey,
                     plan.Source.Version,
                     plan.Source.OriginalFileName));
+
+                ForkBlobAuthority authority;
+
+                if (_forkBlobAuthorities.TryGetValue(
+                        plan,
+                        out ForkBlobAuthority? retainedAuthority))
+                {
+
+                    authority = retainedAuthority;
+
+                }
+                else
+                {
+
+                    string absolutePath = ResolveUnderRoot(relativePath);
+
+                    await VerifyCopiedFileAsync(
+                        absolutePath,
+                        plan.Source,
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                            absolutePath,
+                            FileSystemObjectKind.RegularFile,
+                            out IdentityOwnedFileSystemArtifact recapturedArtifact))
+                    {
+
+                        throw new IOException(
+                            "Fork attachment row insertion could not recapture the copied blob identity.");
+
+                    }
+
+                    authority = new ForkBlobAuthority(recapturedArtifact);
+
+                }
 
                 SessionAttachmentRecord row = new(
                     plan.NewAttachmentId,

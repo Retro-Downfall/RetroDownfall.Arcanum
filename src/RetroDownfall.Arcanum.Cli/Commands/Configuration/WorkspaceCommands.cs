@@ -253,40 +253,50 @@ public sealed class WorkspaceCommands(
 
         }
 
-        Result<FileListResult> result = await apiClient
-            .ListWorkspaceFilesAsync(
-                resolution.Workspace!.Id,
-                relativePath,
-                recursive: true,
-                cancellationToken)
-            .ConfigureAwait(false);
+        string? cursor = null;
 
-        if (result.IsFailure)
+        do
         {
 
-            return WriteError(result.Error);
+            Result<FileListResult> result = await apiClient
+                .ListWorkspaceFilesAsync(
+                    resolution.Workspace!.Id,
+                    relativePath,
+                    recursive: true,
+                    cursor,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-        }
+            if (result.IsFailure)
+            {
 
-        Table table = new();
+                return WriteError(result.Error);
 
-        table.AddColumn(themePalette.HeadingTableColumn("Path"));
+            }
 
-        table.AddColumn(themePalette.HeadingTableColumn("Type"));
+            Table table = new();
 
-        table.AddColumn(themePalette.HeadingTableColumn("Bytes"));
+            table.AddColumn(themePalette.HeadingTableColumn("Path"));
 
-        foreach (FileEntry entry in result.Value.Entries)
-        {
+            table.AddColumn(themePalette.HeadingTableColumn("Type"));
 
-            table.AddRow(
-                new Markup(themePalette.TextMarkup(Markup.Escape(entry.RelativePath))),
-                new Markup(themePalette.MutedMarkup(Markup.Escape(entry.Type.ToString()))),
-                new Markup(themePalette.MutedMarkup(entry.Size.ToString(CultureInfo.InvariantCulture))));
+            table.AddColumn(themePalette.HeadingTableColumn("Bytes"));
 
-        }
+            foreach (FileEntry entry in result.Value.Entries)
+            {
 
-        AnsiConsole.Write(table);
+                table.AddRow(
+                    new Markup(themePalette.TextMarkup(Markup.Escape(entry.RelativePath))),
+                    new Markup(themePalette.MutedMarkup(Markup.Escape(entry.Type.ToString()))),
+                    new Markup(themePalette.MutedMarkup(entry.Size.ToString(CultureInfo.InvariantCulture))));
+
+            }
+
+            AnsiConsole.Write(table);
+
+            cursor = result.Value.NextCursor;
+
+        } while (cursor is not null);
 
         return 0;
 

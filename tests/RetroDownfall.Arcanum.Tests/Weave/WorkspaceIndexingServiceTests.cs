@@ -21,6 +21,38 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 {
 
+    [Fact]
+
+    public void Candidate_walk_has_no_total_entry_ceiling()
+    {
+
+        Type serviceType = typeof(WorkspaceIndexingService);
+
+        Assert.Null(
+            serviceType.GetField(
+                "MaxWalkEntries",
+                System.Reflection.BindingFlags.NonPublic
+                | System.Reflection.BindingFlags.Static));
+
+        System.Reflection.MethodInfo method = Assert.Single(
+            serviceType.GetMethods(
+                    System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.Static),
+            static candidate =>
+                string.Equals(
+                    candidate.Name,
+                    "EnumerateCandidateFiles",
+                    StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            method.GetParameters(),
+            static parameter => string.Equals(
+                parameter.Name,
+                "maxWalkEntries",
+                StringComparison.Ordinal));
+
+    }
+
     private readonly GrimoireFixture _fixture;
 
     private readonly TempWorkspace _workspace = new();
@@ -93,16 +125,14 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task IndexWorkspaceAsync_SkipsFilesLargerThanMaxFileSizeChars()
+    public async Task IndexWorkspaceAsync_IndexesFilesBeyondFormerTotalFileSizeCeiling()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _workspace.WriteFile("small.txt", "short content");
 
-        int maxFileSizeChars = ArcanumSettingClamps.EmbeddingsCodebaseMaxFileSizeChars(
-            ArcanumRuntimeDefaults.Embeddings.Codebase.MaxFileSizeChars);
-        _workspace.WriteFile("big.txt", new string('x', maxFileSizeChars + 1));
+        _workspace.WriteFile("big.txt", new string('x', 50_001));
 
         FakeWeaveService weave = new();
 
@@ -114,7 +144,49 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         Assert.Contains("small.txt", indexedPaths);
 
-        Assert.DoesNotContain("big.txt", indexedPaths);
+        Assert.Contains("big.txt", indexedPaths);
+
+        Assert.True(
+            weave.EmbedBatchCallCount > 1,
+            "Large files should be embedded through bounded streaming pages.");
+
+    }
+
+    [SkippableFact]
+
+    public async Task IndexWorkspaceAsync_ContinuesAcrossInternalCheckpointsUntilEveryFileIsIndexed()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("one.txt", "one");
+
+        _workspace.WriteFile("two.txt", "two");
+
+        _workspace.WriteFile("three.txt", "three");
+
+        WorkspaceIndexingService service = CreateService(
+            new FakeWeaveService(),
+            out EmbeddingSettings embeddings);
+
+        embeddings.Codebase.MaxFilesToIndex = 1;
+
+        for (int checkpoint = 0; checkpoint < 3; checkpoint++)
+        {
+
+            Assert.True(
+                await service.IndexWorkspaceAsync(
+                    _workspace.Root,
+                    embeddings,
+                    CancellationToken.None));
+
+        }
+
+        Assert.Equal(
+            ["one.txt", "three.txt", "two.txt"],
+            (await GetIndexedRelativePathsAsync())
+                .OrderBy(static path => path, StringComparer.Ordinal)
+                .ToArray());
 
     }
 
@@ -458,25 +530,34 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        string secondWorkspace = Directory.CreateDirectory(Path.Combine(_workspace.Root, "second")).FullName;
+        int watcherCapacity = ArcanumRuntimeDefaults.Embeddings.Codebase.MaxWatchers;
+
+        string[] workspaces = Enumerable.Range(0, watcherCapacity + 1)
+            .Select(index =>
+                Directory.CreateDirectory(
+                        Path.Combine(_workspace.Root, $"workspace-{index}"))
+                    .FullName)
+            .ToArray();
 
         FakeWorkspaceFileWatcherFactory watchers = new();
 
         WorkspaceIndexingService service = CreateService(
             new FakeWeaveService(),
             out _,
-            watcherFactory: watchers,
-            configureCodebaseIndexing: settings => settings.MaxWatchers = 1);
+            watcherFactory: watchers);
 
-        service.RegisterWorkspace(_workspace.Root);
+        foreach (string workspace in workspaces)
+        {
 
-        service.RegisterWorkspace(secondWorkspace);
+            service.RegisterWorkspace(workspace);
 
-        Assert.Equal(1, service.ActiveWatcherCount);
+        }
 
-        Assert.True(service.GetRuntimeStatus(secondWorkspace).Degraded);
+        Assert.Equal(watcherCapacity, service.ActiveWatcherCount);
 
-        Assert.False(service.GetRuntimeStatus(secondWorkspace).Watching);
+        Assert.True(service.GetRuntimeStatus(workspaces[^1]).Degraded);
+
+        Assert.False(service.GetRuntimeStatus(workspaces[^1]).Watching);
 
         await service.DisposeAsync();
 
@@ -650,17 +731,14 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task WatcherEvents_IgnoreExcludedFoldersAndOversizedFiles()
+    public async Task WatcherEvents_IgnoreExcludedFoldersAndIndexLargeFiles()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string ignored = _workspace.WriteFile("node_modules/pkg/index.js", "console.log('ignored');");
 
-        int maxChars = ArcanumSettingClamps.EmbeddingsCodebaseMaxFileSizeChars(
-            ArcanumRuntimeDefaults.Embeddings.Codebase.MaxFileSizeChars);
-
-        string oversized = _workspace.WriteFile("large.txt", new string('x', maxChars + 1));
+        string large = _workspace.WriteFile("large.txt", new string('x', 50_001));
 
         FakeWorkspaceFileWatcherFactory watchers = new();
 
@@ -672,13 +750,13 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         watchers.Single.TriggerCreated(ignored);
 
-        watchers.Single.TriggerCreated(oversized);
+        watchers.Single.TriggerCreated(large);
 
         await service.ProcessPendingWatcherEventsAsync(_workspace.Root, CancellationToken.None);
 
-        Assert.Equal(0, weave.EmbedBatchCallCount);
+        Assert.True(weave.EmbedBatchCallCount > 0);
 
-        Assert.Empty(await GetIndexedRelativePathsAsync());
+        Assert.Contains("large.txt", await GetIndexedRelativePathsAsync());
 
         await service.DisposeAsync();
 
@@ -809,11 +887,11 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
         string unchangedBefore = Assert.Single(
             before,
-            static pair => pair.Key.Contains("unchanged", StringComparison.Ordinal)).Value;
+            static pair => pair.Key.StartsWith("public class Second", StringComparison.Ordinal)).Value;
 
         string unchangedAfter = Assert.Single(
             after,
-            static pair => pair.Key.Contains("unchanged", StringComparison.Ordinal)).Value;
+            static pair => pair.Key.StartsWith("public class Second", StringComparison.Ordinal)).Value;
 
         Assert.Equal(unchangedBefore, unchangedAfter);
 
@@ -853,8 +931,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         FakeWeaveService weave,
         out EmbeddingSettings embeddings,
         string[]? campaignAllowedRoots = null,
-        FakeWorkspaceFileWatcherFactory? watcherFactory = null,
-        Action<CodebaseIndexingIntegrationSettings>? configureCodebaseIndexing = null)
+        FakeWorkspaceFileWatcherFactory? watcherFactory = null)
     {
 
         embeddings = ArcanumRuntimeDefaults.Embeddings;
@@ -874,7 +951,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
                 {
                     Provider = "test",
                     Model = "test-embed",
-                    CodebaseIndexing = new CodebaseIndexingIntegrationSettings(),
                 },
             },
             Security = new SecuritySettings
@@ -882,8 +958,6 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
                 CampaignRoots = campaignAllowedRoots ?? [_workspace.Root],
             },
         };
-
-        configureCodebaseIndexing?.Invoke(settings.Integrations.Embeddings.CodebaseIndexing);
 
         embeddings = settings.ResolveEmbeddings();
 

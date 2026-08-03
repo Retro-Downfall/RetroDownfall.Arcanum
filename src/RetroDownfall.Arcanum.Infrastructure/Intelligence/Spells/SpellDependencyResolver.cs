@@ -29,16 +29,13 @@ public sealed record ResolvedSpell(
 internal static class SpellDependencyResolver
 {
 
-    public const int MaxDependencyDepth = 3;
-
     public static async Task<ResolvedSpell> ResolveAsync(
         ParsedSpell primary,
         string? workspaceRoot,
         long maxFileSizeBytes,
         CancellationToken cancellationToken,
         ILogger? logger = null,
-        IReadOnlyList<SpellMetadata>? spellCatalog = null,
-        int maxResonantDependencies = int.MaxValue)
+        IReadOnlyList<SpellMetadata>? spellCatalog = null)
     {
         List<string> primaryDependencies = primary.SkillMetadata?.Dependencies ?? [];
 
@@ -68,13 +65,13 @@ internal static class SpellDependencyResolver
 
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { primary.Name };
 
-        var queue = new Queue<(string Name, int Depth)>();
+        var queue = new Queue<string>();
 
         foreach (string depName in primaryDependencies)
         {
             if (!string.IsNullOrWhiteSpace(depName))
             {
-                queue.Enqueue((depName.Trim(), 1));
+                queue.Enqueue(depName.Trim());
             }
         }
 
@@ -85,12 +82,9 @@ internal static class SpellDependencyResolver
 
         while (queue.Count > 0)
         {
-            (string depName, int depth) = queue.Dequeue();
+            cancellationToken.ThrowIfCancellationRequested();
 
-            if (depth > MaxDependencyDepth)
-            {
-                continue;
-            }
+            string depName = queue.Dequeue();
 
             if (!visited.Add(depName))
             {
@@ -104,17 +98,6 @@ internal static class SpellDependencyResolver
                     depName);
 
                 continue;
-            }
-
-            if (resonants.Count >= maxResonantDependencies)
-            {
-
-                logger?.LogWarning(
-                    "Arcane Resonance: reached MaxResonantDependencies ({Max}); remaining dependency spells will be skipped.",
-                    maxResonantDependencies);
-
-                continue;
-
             }
 
             ParsedSpell? loaded = await SpellScanner
@@ -140,11 +123,6 @@ internal static class SpellDependencyResolver
                 .Select(static d => d.Trim())
                 .ToList();
 
-            if (depth >= MaxDependencyDepth)
-            {
-                continue;
-            }
-
             foreach (string childName in childDeps)
             {
                 if (string.IsNullOrWhiteSpace(childName))
@@ -152,7 +130,7 @@ internal static class SpellDependencyResolver
                     continue;
                 }
 
-                queue.Enqueue((childName.Trim(), depth + 1));
+                queue.Enqueue(childName.Trim());
             }
         }
 

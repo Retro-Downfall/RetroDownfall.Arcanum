@@ -25,8 +25,6 @@ public static class ArcanumRuntimeDefaults
 
     public const long WorkspaceMaxFileReadSizeBytes = 1024 * 1024;
 
-    public const int WorkspaceListDirectoryMaxDepth = 64;
-
     public const long WorkspaceMaxFileWriteSizeBytes = 1024 * 1024;
 
     public const long WorkspaceMaxReplaceTextBlockBytes = 512 * 1024;
@@ -37,13 +35,11 @@ public static class ArcanumRuntimeDefaults
 
     public const long CliMaxAttachFileSizeBytes = 1_048_576L;
 
-    public const int CliMaxAttachedFilesPerRequest = 32;
+    public const long CliMaxAttachedTotalBytes = 32L * 1024L * 1024L;
 
     public const int CliMaxAttachedFileRelativePathChars = 4096;
 
     public const int CliDoctorHealthTimeoutSeconds = 2;
-
-    public const int CliApiRequestTimeoutSeconds = 60;
 
     public static IntelligenceSettings Intelligence => new();
 
@@ -242,7 +238,6 @@ public static class ArcanumRuntimeSettings
         {
             Enabled = features.Apprentices,
             MaxConcurrentApprentices = execution.MaxConcurrentApprentices,
-            MaxPendingStarts = execution.MaxPendingApprenticeStarts,
         };
     }
 
@@ -286,10 +281,6 @@ public static class ArcanumRuntimeSettings
         FeatureSettings features = settings.Features ?? new FeatureSettings();
         EmbeddingIntegrationSettings integration =
             settings.Integrations?.Embeddings ?? new EmbeddingIntegrationSettings();
-        CodebaseIndexingIntegrationSettings codebaseIndexing =
-            integration.CodebaseIndexing ?? new CodebaseIndexingIntegrationSettings();
-        AttachmentIndexingIntegrationSettings attachmentIndexing =
-            integration.AttachmentIndexing ?? new AttachmentIndexingIntegrationSettings();
         bool sagaEnabled = features.Saga || features.SagaExtraction;
         bool enabled =
             features.Embeddings
@@ -305,32 +296,9 @@ public static class ArcanumRuntimeSettings
             Provider = integration.Provider,
             Model = integration.Model,
             Dimensions = integration.Dimensions,
-            Codebase = defaults.Codebase with
-            {
-                WatcherDebounceMilliseconds = codebaseIndexing.WatcherDebounceMilliseconds,
-                MaxWatchers = codebaseIndexing.MaxWatchers,
-                ReconciliationIntervalMinutes = codebaseIndexing.ReconciliationIntervalMinutes,
-            },
             SessionSearchEnabled = features.SessionSearch,
             CodebaseRetrievalEnabled = features.CodebaseRetrieval,
             AttachmentRetrievalEnabled = features.AttachmentRetrieval,
-            Attachments = defaults.Attachments with
-            {
-                MaxAttachmentBytes = attachmentIndexing.MaxAttachmentBytes,
-                MaxExtractedCharacters = attachmentIndexing.MaxExtractedCharacters,
-                ChunkSizeCharacters = attachmentIndexing.ChunkSizeCharacters,
-                ChunkOverlapCharacters = attachmentIndexing.ChunkOverlapCharacters,
-                MaxChunksPerAttachment = attachmentIndexing.MaxChunksPerAttachment,
-                MaxAttachmentsPerBatch = attachmentIndexing.MaxAttachmentsPerBatch,
-                QueueCapacity = attachmentIndexing.QueueCapacity,
-                MaxRetries = attachmentIndexing.MaxRetries,
-                RetryDelaySeconds = attachmentIndexing.RetryDelaySeconds,
-                ProcessingTimeoutSeconds = attachmentIndexing.ProcessingTimeoutSeconds,
-                MaxRetrievedChunks = attachmentIndexing.MaxRetrievedChunks,
-                MaxRetrievedAttachments = attachmentIndexing.MaxRetrievedAttachments,
-                MaxRetrievedBytes = attachmentIndexing.MaxRetrievedBytes,
-                MaxRetrievedTokens = attachmentIndexing.MaxRetrievedTokens,
-            },
             SagaEnabled = sagaEnabled,
             Saga = defaults.Saga with
             {
@@ -500,7 +468,6 @@ public static class ArcanumRuntimeSettings
             AuditLog = defaults.AuditLog with
             {
                 Enabled = policyAudit.Enabled,
-                RetentionDays = policyAudit.RetentionDays,
             },
         };
     }
@@ -514,7 +481,6 @@ public static class ArcanumRuntimeSettings
         return defaults with
         {
             Enabled = policy.Enabled,
-            RetentionDays = policy.RetentionDays,
             RedactToolArguments = policy.RedactToolArguments,
         };
     }

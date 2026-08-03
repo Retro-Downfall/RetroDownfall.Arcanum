@@ -182,8 +182,7 @@ public sealed class WebWorkflowCommands(
 
     public async Task<int> Research(
         string question,
-        int maxSources,
-        int maxHops,
+        int? sourceTarget,
         string? model,
         int tokenBudget,
         decimal? costBudget,
@@ -245,9 +244,7 @@ public sealed class WebWorkflowCommands(
 
                     Question = question,
 
-                    MaxSources = maxSources,
-
-                    MaxHops = maxHops,
+                    SourceTarget = sourceTarget,
 
                     Model = model,
 

@@ -88,7 +88,6 @@ public sealed class LocalHttpWebProvider : IWebResearchProvider
             using CancellationTokenSource deadline =
                 CancellationTokenSource.CreateLinkedTokenSource(
                     cancellationToken);
-            deadline.CancelAfter(options.Timeout);
 
             try
             {
@@ -127,11 +126,17 @@ public sealed class LocalHttpWebProvider : IWebResearchProvider
                             "text/plain",
                             0.9));
 
+                    using CancellationTokenSource headerIdle =
+                        CancellationTokenSource.CreateLinkedTokenSource(
+                            deadline.Token);
+
+                    headerIdle.CancelAfter(options.IdleTimeout);
+
                     using HttpResponseMessage response = await client
                         .SendAsync(
                             request,
                             HttpCompletionOption.ResponseHeadersRead,
-                            deadline.Token)
+                            headerIdle.Token)
                         .ConfigureAwait(false);
 
                     if (OutboundUrlGuard.IsRedirectStatusCode(
@@ -212,6 +217,7 @@ public sealed class LocalHttpWebProvider : IWebResearchProvider
                         await WebResearchBounds.ReadCappedAsync(
                             responseStream,
                             options.MaxResponseBytes,
+                            options.IdleTimeout,
                             deadline.Token).ConfigureAwait(false);
 
                     if (body.Truncated)
@@ -246,7 +252,7 @@ public sealed class LocalHttpWebProvider : IWebResearchProvider
             {
                 return Complete(Failure(
                     ErrorCodes.WebResearch.Timeout,
-                    "The page request timed out."));
+                    "The page connection or response stream exceeded its idle I/O timeout; retry or cancel the read."));
             }
             catch (HttpRequestException ex)
                 when (IsOutboundPolicyFailure(ex))
@@ -379,7 +385,7 @@ public sealed class LocalHttpWebProvider : IWebResearchProvider
         WebReadOptions options,
         out Error error)
     {
-        if (options.Timeout <= TimeSpan.Zero
+        if (options.IdleTimeout <= TimeSpan.Zero
             || options.MaxResponseBytes <= 0
             || options.MaxContentBytes <= 0
             || options.MaxLinks < 0

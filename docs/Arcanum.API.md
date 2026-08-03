@@ -29,7 +29,7 @@ test, and documentation citations remain stable.
 | GET | `/api/data/status` | Unified retained-data inventory (`ApiResponse<DataRetentionStatus>`): typed rows/files/estimated bytes, effective policy, physical store, safe provenance, aggregate totals, and categories preserved outside the selected root (§8.20). |
 | GET | `/api/data/retention` | Read the effective `Arcanum:Retention` policy (`ApiResponse<RetentionSettings>`; §8.20). |
 | PUT | `/api/data/retention` | Update one typed rule (`RetentionRuleUpdateRequest` → `ApiResponse<RetentionSettings>`); values are normalized and clamped by the server (§8.20). |
-| POST | `/api/data/prune/plan` | Build a non-mutating bounded plan (`DataRetentionRequest` → `ApiResponse<DataRetentionPlan>`; §8.20). |
+| POST | `/api/data/prune/plan` | Build the complete non-mutating selected plan (`DataRetentionRequest` → `ApiResponse<DataRetentionPlan>`), represented through internal checkpoint pages rather than a total candidate ceiling (§8.20). |
 | POST | `/api/data/prune` | Re-plan and apply through a durable operation (`DataRetentionApplyRequest` → `ApiResponse<DataRetentionApplyResult>`; optional stale-plan guard; §8.20). |
 | DELETE | `/api/data/sessions/{id}` | Explicit dependency-aware session deletion (`ApiResponse<DataRetentionApplyResult>`; pins, holds, and active work block; §8.20). |
 | DELETE | `/api/data/attachments/{id}` | Explicit attachment-version deletion including owned bytes and derived indexes (`ApiResponse<DataRetentionApplyResult>`; §8.20). |
@@ -49,7 +49,7 @@ test, and documentation citations remain stable.
 | POST | `/api/intelligence/context/inspect` | Read-only effective-turn preview (`ContextPreviewRequest` → `ApiResponse<ContextPreviewResult>`); accepts optional forced-Spell, preview-only text/image context, tool/system-prompt shaping, and inference-option fields while reusing production assembly components without main inference, tool invocation, attachment persistence, or assistant-entry persistence. |
 | POST | `/api/web/search` | First-class bounded web search (`WebSearchWorkflowRequest` → `ApiResponse<WebSearchWorkflowResult>`; citations and provider usage; DESIGN §11.27). |
 | POST | `/api/web/browse` | First-class bounded static page read (`WebBrowseWorkflowRequest` → `ApiResponse<WebBrowseWorkflowResult>`; JavaScript mode degrades explicitly when no renderer is configured; DESIGN §11.27). |
-| POST | `/api/web/research` | Server-owned bounded multi-hop research as NDJSON `WebResearchStreamFrame` lines (limits/progress/result/error); the request can carry effective Campaign/Workspace/Session/Model context, current-turn text/image context, and synthesis sampling controls (DESIGN §11.27). |
+| POST | `/api/web/research` | Server-owned progress-driven research as NDJSON `WebResearchStreamFrame` lines (policy/progress/terminal-reason/result/error); the request can carry effective Campaign/Workspace/Session/Model context, current-turn text/image context, and synthesis sampling controls (DESIGN §11.27). |
 | GET | `/api/mcp` | List managed MCP servers (`ApiResponse<McpServerInfo[]>`; DESIGN §5.6). |
 | GET | `/api/mcp/{name}` | One managed MCP server (`ApiResponse<McpServerInfo>`); optional `workingDirectory` query for disambiguation. |
 | POST | `/api/mcp/{name}/start` | Start one MCP server (`ApiResponse<bool>`); optional `workingDirectory` query. |
@@ -101,7 +101,7 @@ test, and documentation citations remain stable.
 | GET | `/api/memory/lexicon` | Lists every Lexicon entity (`ApiResponse<LexiconListDto>`); optional `?q=` searches name, type, and facts without the prompt-time match cap. |
 | GET | `/api/memory/lexicon/{name}` | Exact case-insensitive Lexicon lookup (`ApiResponse<LexiconEntryDto>`; **404** `Lexicon.NotFound`). |
 | DELETE | `/api/memory/lexicon/{name}` | Deletes exactly one named Lexicon entity (**204**; **404** `Lexicon.NotFound`). CLI callers must confirm. Other stores are unchanged. |
-| GET | `/api/spells` | List built-in + workspace spells (`ApiResponse<SpellSummary[]>`; optional `workspace` query; §8.14). |
+| GET | `/api/spells` | Compatibility list is still `ApiResponse<SpellSummary[]>`; `paged=true` selects the bounded `ApiResponse<SpellCatalogPage>` contract with `workspace`, `q`, `tag`, `tool`, `source`, and opaque `cursor` (§8.14). |
 | GET | `/api/spells/{name}` | Spell detail (`ApiResponse<SpellDetail>`; optional `workspace` query; **404** when missing). |
 | POST | `/api/spells` | Create workspace spell (`ApiResponse<bool>`; optional `workspace` query; **400** validation). |
 | PUT | `/api/spells/{name}` | Update workspace spell (`ApiResponse<bool>`; optional `workspace` query; **400** on built-in or validation failure). |
@@ -174,7 +174,7 @@ test, and documentation citations remain stable.
 | POST | `/api/workspaces` | Register a workspace directory (`ApiResponse<WorkspaceInfo>`; **201** with `Location`; **400** validation). |
 | PUT | `/api/workspaces/{id}` | Update workspace name/type (`ApiResponse<WorkspaceInfo>`; **404** when missing). |
 | DELETE | `/api/workspaces/{id}` | Unregister workspace (**204** on success; **404** when missing). |
-| GET | `/api/workspaces/{id}/files` | List files in a registered workspace (`ApiResponse<FileListResult>`; optional `relativePath`, `recursive`, `searchPattern`; §8.17). |
+| GET | `/api/workspaces/{id}/files` | List files in a registered workspace (`ApiResponse<FileListResult>`; optional `relativePath`, `recursive`, `searchPattern`, and opaque `cursor`; §8.17). Each response contains at most 500 entries plus `nextCursor` / `continuationAction` when more remain; reuse the same list arguments with `cursor=nextCursor`. The cursor is bound to that scope and exact last entry, so earlier mutations do not shift later pages; a vanished checkpoint returns `Workspace.ContinuationCheckpointMissing` with a restart-without-cursor action. |
 | GET | `/api/workspaces/{id}/files/info` | File or directory metadata (`ApiResponse<FileEntry>`; optional `relativePath`; §8.17). |
 | GET | `/api/workspaces/{id}/files/contents` | Read file contents as UTF-8 text (`ApiResponse<FileReadResult>`; required `relativePath`; §8.17). |
 | HEAD | `/api/workspaces/{id}/files/contents` | Size/freshness check for a file. |
@@ -195,8 +195,8 @@ test, and documentation citations remain stable.
 | GET | `/api/executions/{id}` | Execution detail (`ApiResponse<DaemonExecutionDetail>`; **404** when missing). |
 | POST | `/api/executions/{id}/cancel` | Cancel a running execution; returns updated `ApiResponse<DaemonExecutionSummary>` (**400** `Daemon.NotRunning` when not running). |
 | GET | `/api/logs` | Paginated in-memory log query (`ApiResponse<LogQueryResult>`; optional `minLevel`, `category`, `from`, `to`, `search`, `limit`, `beforeSequence`; §8.16). |
-| GET | `/api/audit` | Persisted inference audit log query (`ApiResponse<InferenceAuditRecord[]>`; optional `from`, `to`, `model`, `sessionId`, `limit`; §8.26). |
-| GET | `/api/guardrails/audit` | Persisted guardrails violation audit log query (`ApiResponse<GuardrailAuditRecord[]>`; optional `from`, `to`, `stage`, `violationType`, `sessionId`, `limit`; §8.27). |
+| GET | `/api/audit` | Persisted inference audit log query (`ApiResponse<InferenceAuditRecord[]>`; optional `from`, `to`, `model`, `sessionId`, `limit` up to the 1,000-record page, and opaque `cursor`; continue with `X-Arcanum-Next-Cursor`; §8.26). |
+| GET | `/api/guardrails/audit` | Persisted guardrails violation audit log query (`ApiResponse<GuardrailAuditRecord[]>`; optional `from`, `to`, `stage`, `violationType`, `sessionId`, `limit` up to the 1,000-record page, and opaque `cursor`; continue with `X-Arcanum-Next-Cursor`; §8.27). |
 | GET | `/api/operations` | List durable operations with optional `kind`, `state`, `limit`, and `offset` filters. Returns safe summaries only; encrypted checkpoint payloads and references are never serialized (DESIGN §10.8). |
 | GET | `/api/operations/{id}` | Show one durable operation's lifecycle, links, lease, attempt, checkpoint version/presence, safe summary, and terminal error code. |
 | POST | `/api/operations/{id}/cancel` | CAS-protected transition to `Cancelling`; **404** unknown, **409** stale/terminal. |
@@ -224,10 +224,10 @@ test, and documentation citations remain stable.
 | DELETE | `/v1/files/{id}` | Deletes metadata + owned bytes only when no batch input/output/error role references the file. Every batch insert conditionally resolves all supplied file roles, and every artifact-reference update conditionally resolves its new output/error roles, in the same database write; a concurrent delete therefore either observes the committed reference or wins and causes the reference write to be rejected. Bytes move to identity-safe same-parent quarantine around the serialized metadata mutation, are restored on rejection/failure, and are finalized after commit. **200** `deleted: true` means both are absent; terminal or active references return **409** `file_referenced_by_batch`; storage conflict/recovery returns **500** `file_delete_storage_conflict` / `file_delete_recovery_required`. |
 | GET | `/v1/files/{id}/content` | Raw bytes; always `Content-Disposition: attachment`. |
 | POST | `/v1/batches` | Create an async bulk chat-completion job over an uploaded JSONL file; the final insert conditionally rechecks the input metadata in the same database write and returns **404** if a concurrent file deletion won; otherwise **200** + `OpenAiBatchObject`, `status: "validating"`. |
-| GET | `/v1/batches` | List batches, optional `?status=` filter. |
-| GET | `/v1/batches/{id}` | Batch status + `request_counts`; **404** for unknown/malformed id. |
-| POST | `/v1/batches/{id}/cancel` | Idempotent cancel; stops in-flight processing within ~2s. |
-| POST | `/v1/batches/{id}/reset` | Reset a stuck `in_progress` batch back to `validating` (input file must still exist on disk; **409** if currently in-flight; **200** `OpenAiBatchObject`; DESIGN §11.21). |
+| GET | `/v1/batches` | Newest-first metadata page; optional `status`, `limit` (default 20, maximum 100), and opaque status-bound `after`; returns `has_more` plus `next_cursor`. |
+| GET | `/v1/batches/{id}` | Batch status + durable 64-bit `request_counts` without opening artifacts; **404** for unknown/malformed id. |
+| POST | `/v1/batches/{id}/cancel` | Idempotent cancel; stops in-flight processing within ~2s, seals every claimed unresolved line as `batch_interrupted_after_dispatch`, then publishes it before checkpoint cleanup. |
+| POST | `/v1/batches/{id}/reset` | Reset a stuck `in_progress` batch back to `validating` (input file must still exist on disk; **409** if currently in-flight; **200** `OpenAiBatchObject`). Recovery resumes completed per-line checkpoints and seals a previously dispatched line without a result as `batch_interrupted_after_dispatch`; it never replays that ambiguous provider call (DESIGN §11.21). |
 | GET | `/v1/models` | OpenAI-compatible models list (flattened configured models across providers via the same `ModelInfoBuilder` that backs `GET /api/models`); **not** wrapped in `ApiResponse<T>`. |
 **JSON wire shape (`/api` and shared primitives):** JSON endpoints under `/api` use the `ApiResponse<T>` envelope (`Data`, `IsSuccess`, `Error`, `TraceId`) except for these non-envelope routes:
 
@@ -248,7 +248,7 @@ test, and documentation citations remain stable.
 
 Envelope-payload specifics:
 
-- **`GET /api/meta`** wraps **`InstanceMetadataDto`** (version, OS, runtime, process identity, Grimoire paths, effective host binding, and intelligence feature flags).
+- **`GET /api/meta`** wraps **`InstanceMetadataDto`** (version, OS, runtime, process identity, Grimoire paths, effective host binding, and intelligence feature flags). `EmbeddingsVectorMode` / `EmbeddingsVectorDiagnostic` identify sqlite-vec versus the complete streamed managed fallback; the retained compatibility integer `EmbeddingsManagedSearchRowBudget` is `0`, meaning no total row budget.
 - **`GET /api/health`** wraps **`HealthReportDto`** even when overall status is Unhealthy. An
   Unhealthy report returns HTTP **503** with `IsSuccess: true` and populated `Data`; clients must
   not discard that readiness snapshot merely because the status is non-2xx.
@@ -403,7 +403,7 @@ locally produced `PatternSnapshot` and `ChronosyncDelta` context before inferenc
 
 ### 8.10.3 Web research workflow request (`POST /api/web/research`)
 
-`WebResearchWorkflowRequest` retains the bounded `question`, `maxSources`, `maxHops`, `model`,
+`WebResearchWorkflowRequest` carries bounded `question`, optional positive `sourceTarget`, `model`,
 `tokenBudget`, optional `costBudgetUsd`, `continueSessionId`, and `attachToSessionId` fields. It also
 accepts optional `workingDirectory`, `campaignId`, current-turn `attachedFiles`, current-turn
 `scryingFoci`, and synthesis controls `temperature`, `topP`, `stop`, `seed`, `responseFormat`,
@@ -411,13 +411,17 @@ accepts optional `workingDirectory`, `campaignId`, current-turn `attachedFiles`,
 same effective Campaign, Workspace, Session, Model, and explicit turn context as the ordinary Agent
 route. `tokenBudget` remains the synthesis output-token authority.
 
-Before any search-provider work, the server validates the research bounds and prospective synthesis
+Before any search-provider work, the server validates the request and prospective synthesis
 request, resolves a Campaign-only request to its server-host working directory, and validates the
-continuing and attachment target Sessions. It then performs the search hops and bounded reads and
+continuing and attachment target Sessions. It then performs progress-driven search/read passes and
 uses the preflighted `PingRequest` for final synthesis. The research-only untrusted-source system
 instruction and `DisableAllTools` remain server-owned. Client filesystem paths are never
 dereferenced by this endpoint: callers send typed content, and the host validates and materializes
 it through the normal inference path.
+
+There is no hop counter or default total-source ceiling. Passes continue while they discover new
+unique URLs and stop at an optional `sourceTarget`, deterministic source exhaustion/no-progress,
+caller cancellation, explicit token/cost policy, provider/context failure, or a safety denial.
 
 On live synthesis, supplied `attachedFiles` and `scryingFoci` enter the normal attachment pipeline:
 when Attachments are enabled they are persisted and bound to the synthesis Session before model
@@ -459,7 +463,20 @@ only at provider/certificate use. Status: **400** `Configuration.ValidationFaile
 
 ### 8.14 Spell Management API (`/api/spells`)
 
-Workspace resolution: `?workspace=` → `Arcanum:Workspaces:DefaultRoot` → CWD. CRUD needs a resolvable workspace; empty `Arcanum:Security:SpellWorkspaceRoots` denies all (**403** `Spell.PathNotAllowed`). Built-ins under `~/.config/arcanum/spells/` are read-only (`Spell.BuiltinReadOnly`). Format: `SPELL.md` frontmatter + body; optional `SPELL.json` (legacy `SKILL.json` read fallback; writes always `SPELL.json`). Search shadow order: campaign > workspace > builtin. Versions: string labels `SPELL.v{label}.md` (`^[A-Za-z0-9.]+$`); activate swaps into `SPELL.md` and records `activeVersion`. Clone/cast/import quirks and status codes: §1. Per-workspace locks; delete only under `{workspace}/spells/{name}`.
+Workspace resolution: `?workspace=` → `Arcanum:Workspaces:DefaultRoot` → CWD. CRUD needs a resolvable workspace; empty `Arcanum:Security:SpellWorkspaceRoots` denies all (**403** `Spell.PathNotAllowed`). Built-ins under `~/.config/arcanum/spells/` are read-only (`Spell.BuiltinReadOnly`). Format: `SPELL.md` frontmatter + body; optional `SPELL.json` (legacy `SKILL.json` read fallback; writes always `SPELL.json`). Search shadow order is campaign > workspace > builtin and returns the complete deterministic match set rather than silently dropping results after 1,000. Declared dependency lists and cycle-safe graph traversal have no count/depth ceiling; single-file allocation, cancellation, visited identity, `MaxDeclaredTools`, and provider-facing `MaxResonantBytes` remain. Versions: string labels `SPELL.v{label}.md` (`^[A-Za-z0-9.]+$`); activate swaps into `SPELL.md` and records `activeVersion`. Clone/cast/import quirks and status codes: §1. Per-workspace locks; delete only under `{workspace}/spells/{name}`.
+
+`GET /api/spells` preserves the legacy `ApiResponse<SpellSummary[]>` response unless the nullable
+query flag is explicitly `paged=true`. Paged mode returns `ApiResponse<SpellCatalogPage>` with 50
+metadata items, `hasMore`, opaque `nextCursor`, and `continuationAction`; it accepts `workspace`,
+`q`, `tag`, `tool`, `source`, and `cursor`. The cursor binds all filters/workspace plus the exact
+source/name/path identity of the prior anchor. A mismatched query, malformed cursor, or missing or
+changed anchor returns a structured **400** that instructs the client to restart with `cursor`
+omitted. Replaying the same input cursor is deterministic; the returned cursor advances. One
+cursor-name frame retains a 65,536-byte strict-UTF-8 boundary; **400**
+`Spell.ContinuationFrameTooLarge` reports the measurement and asks the operator to rename the
+spell or narrow the filters, then restart. The resource selector follows every advancing page,
+while Command Center `/spell list [opaque-cursor]` fetches one page and prints the exact next
+command. Legacy array consumers remain unchanged.
 
 ### 8.15 Daemon job management (`/api/daemons`, `/api/executions`)
 
@@ -538,13 +555,16 @@ Session. Successes use the native `ApiResponse<T>` envelope except the content s
   encrypted server metadata.
 - **List/versions:** `GET /api/sessions/{id}/attachments` returns all bound versions. Clients derive
   a latest-per-logical-key list or a version history without a second persistence authority.
+  The server fulfills that all-version array contract by exhausting bounded SQL keyset pages; turn
+  indexes and logical-name tool selectors use SQL-selected latest projections and retrieve version
+  ordinals only for the requested index keys, rather than loading every full historical row first.
   `SessionAttachmentDto.SessionId` enables direct CLI output; `RelativePath` names the encrypted
   stored snapshot, never the live source. CLI Reveal uses it only when the corresponding local file
   is present and has an `ARCABLOB` envelope; otherwise the user is directed to authenticated export.
 - **Refresh:** `POST /api/sessions/{id}/attachments/{attachmentId}/refresh` accepts no body or path.
   It calls the same `ToolExecutionPipeline.RefreshSessionAttachmentAsync` core used by
   `refresh_session_file`. An unchanged hash reuses the row; changed verified bytes create the next
-  version under the existing per-Session byte and per-key version caps. Detected MIME determines the
+  version under the measured per-Session byte protection without an incidental per-key version-count cap. Detected MIME determines the
   refreshed version's current Text/Image/Binary kind. Kind-specific policy is reapplied, but this
   operator endpoint does not require model vision capability because it injects no content.
 - **Content:** `GET /api/sessions/{id}/attachments/{attachmentId}/content` opens only the authenticated
@@ -556,6 +576,12 @@ Session. Successes use the native `ApiResponse<T>` envelope except the content s
   attachment id and whose content version is its snapshot hash. Text pins may materialize
   implicitly within the shared pin/turn budgets. Image pins remain stored but materialize with
   `Unsupported`; a vision-capable turn must explicitly pass that bound attachment id.
+- **Inference references:** native `attachmentReferences` remain ordered opaque IDs for Bound
+  snapshots in the effective Session. Preparation validates metadata without loading every file.
+  After provider/model resolution, the turn opens and admits each reference independently against
+  the actual context window; overflow stops before opening later references or calling the provider.
+  Successful content retains request order and typed attachment provenance. Caller cancellation
+  propagates immediately and does not materialize later references.
 
 `Attachment.Disabled` → **403**; `Attachment.InvalidRequest`, `InvalidContent`,
 `InvalidReference`, and `SourceUnavailable` → **400**; `Attachment.NotFound` and `SourceNotFound` →
@@ -635,8 +661,9 @@ session ids. A successful PUT persists the normalized rule and makes it immediat
 for subsequent GET, status, and planning calls.
 The same process-authoritative snapshot controls subsequent inference- and guardrail-log planning
 and apply calls. Log writers only create, secure, and append dated files; they never enumerate or
-delete historical files. The legacy host/security day fields remain default query-lookback values
-and cannot trigger a mutation.
+delete historical files. The former host/security day fields are removed. A query without `from`
+searches all dated files, and only the canonical `AuditLogs` / `GuardrailLogs` retention rules can
+trigger age-based mutation.
 Mutation selectors and `enabled` are required: omission never selects a default destructive scope
 or silently substitutes `false`. The sole presence-aware field is retention `days`, under the rule
 above. Data-class and memory-scope choices accept documented names and aliases only; JSON/CLI
@@ -764,7 +791,7 @@ mappers and tests.
 | `Data.NotFound` | 404 | Explicit data-lifecycle target not found |
 | `Data.PlanChanged` / `Blocked` / `Conflict` | 409 | Stale preview, retained dependency/hold, or active-work conflict |
 | `Session.TooManyPinned`; `Attachment.LimitExceeded`; `Apprentice.AlreadyRunning` / `Running` / `NotPaused` / `CannotReweave` / `NotEscalated` / `MaxReached` / `ConclaveDisabled`; `Security.IdempotencyConflict`; `Security.IdempotencyInProgress` | 409 | State or idempotency conflict |
-| `Sending.MaxTasksReached`; `RateLimit.TooManyRequests` | 429 | Concurrency / rate limit |
+| `Sending.MaxTasksReached`; `RateLimit.TooManyRequests` | 429 | Defensive compatibility/custom-provider mapping or explicit rate limit; the built-in outbound A2A client queues cancellably instead of emitting `Sending.MaxTasksReached` when its concurrency slots are occupied |
 | `Workspace.FileTooLarge`; `Files.TooLarge`; `Scrying.ImageTooLarge`; `Attachment.TooLarge` | 413 | Payload too large |
 | `Sending.AgentUnreachable` / `AgentCardInvalid`; `CommLink.Suppressed` | 502 | Downstream / webhook failure |
 | `Api.TooManyConnections`; `Connection.Unreachable`; `Embeddings.ProviderUnavailable` / `FeatureDisabled`; `Session.RestQueueFull` | 503 | Capacity / provider unavailable, or bounded Campaign Logger queue rejection |
@@ -776,7 +803,7 @@ mappers and tests.
 
 ### 8.24 OpenAI embeddings (`POST /v1/embeddings`)
 
-Composes `IWeaveService` + tokenizer. `model` must match `Arcanum:Integrations:Embeddings:Model` or be omitted → else **404** `model_not_found`. Long inputs use code-owned chunking + mean-pool/L2. `encoding_format` is `float|base64` (`EmbeddingBlobCodec`). Idempotency-Key is supported. Errors use the OpenAI envelope (**400** invalid input/chars; **503** when The Weave is unavailable).
+Composes `IWeaveService` + tokenizer. `model` must match `Arcanum:Integrations:Embeddings:Model` or be omitted → else **404** `model_not_found`. Long inputs use code-owned chunking + mean-pool/L2. `encoding_format` is `float|base64` (`EmbeddingBlobCodec`). Idempotency-Key is supported. Embedding provider calls have no Arcanum whole-operation deadline; request-abort/caller cancellation propagates directly, while provider failures are sanitized as **503**. Errors use the OpenAI envelope (**400** invalid input/chars; **503** when The Weave is unavailable).
 
 ### 8.25 HTTP response compression
 
@@ -784,11 +811,11 @@ Brotli+Gzip via ASP.NET ResponseCompression; early pipeline. Excludes `text/even
 
 ### 8.26 Persisted inference audit log
 
-Opt-in JSONL (`Arcanum:Host:AuditLog:*`); dated files, owner-only, with a soft daily size cap. A row is written only after a turn completes successfully (ping / ping-stream / v1-completion today); errors, timeouts, cancellations, and interrupted streams are not audit rows. The writer never deletes historical files: age-based removal runs only through the bounded, durable unified data-retention planner/service. The legacy `host.auditLog.retentionDays` value remains the default lookback when an audit query omits `from`. Tool names and counts are metadata; `Arcanum:Host:AuditLog:RedactToolArguments=true` (default) makes `toolArgumentsJson` null, while opting out records the exact raw argument snapshots at operator risk. Tool results, prompt/answer bodies, and reasoning bodies are never fields in this log. Audit failure is warning-only and never changes the already-successful turn. Query: `GET /api/audit`.
+Opt-in JSONL (`Arcanum:Host:AuditLog:*`); dated files, owner-only, with a soft daily size cap. A row is written only after a turn completes successfully (ping / ping-stream / v1-completion today); errors, cancellations, and interrupted streams are not audit rows. The writer never deletes historical files: age-based removal runs only through the bounded, durable unified data-retention planner/service under `Arcanum:Retention:AuditLogs`. When an audit query omits `from`, it searches every dated file instead of applying a hidden lookback. `GET /api/audit` keeps the existing `ApiResponse<InferenceAuditRecord[]>` body and supports `from`, `to`, `model`, `sessionId`, and `limit` (default 100, maximum 1,000). Records are newest-first. When more retained matches may remain, the response includes `X-Arcanum-Next-Cursor`; repeat the unchanged query with that opaque value as `cursor`. The cursor binds the audit family, configured file family, all filters, the first-page snapshot time, dated-file prefix identity, and reverse byte boundary, so active appends cannot shift the traversal. A malformed, filter-mismatched, replaced, or retained-away cursor returns **400** `Validation.InvalidQuery` with an exact restart-without-cursor action. Readers reverse-scan fixed 64 KiB blocks and stream one JSON record segment at a time; neither the complete file nor skipped records are materialized as a string array. Tool names and counts are metadata; `Arcanum:Host:AuditLog:RedactToolArguments=true` (default) makes `toolArgumentsJson` null, while opting out records the exact raw argument snapshots at operator risk. Tool results, prompt/answer bodies, and reasoning bodies are never fields in this log. Audit failure is warning-only and never changes the already-successful turn.
 
 ### 8.27 Content guardrails (PII / toxicity / topics)
 
-Opt-in via `Arcanum:Features:Guardrails` (default false), with policy under `Arcanum:Security:Guardrails`. Input PII (GeneratedRegex) → `Guardrails.PiiDetected`; toxicity/topics → `Guardrails.Blocked`. Streaming output filtering is code-owned **buffered** mode. Audit JSONL + `GET /api/guardrails/audit`. Only redacted matched spans appear in logs/errors.
+Opt-in via `Arcanum:Features:Guardrails` (default false), with policy under `Arcanum:Security:Guardrails`. Input PII (GeneratedRegex) → `Guardrails.PiiDetected`; toxicity/topics → `Guardrails.Blocked`. Streaming output filtering is code-owned **buffered** mode. Audit JSONL + `GET /api/guardrails/audit` keeps the existing `ApiResponse<GuardrailAuditRecord[]>` body and accepts `from`, `to`, `stage`, `violationType`, `sessionId`, `limit`, and optional `cursor`. Its default/max page, newest-first snapshot semantics, `X-Arcanum-Next-Cursor` continuation, bounded reverse scan, query binding, and **400** `Validation.InvalidQuery` restart contract match `/api/audit`. Only redacted matched spans appear in logs/errors.
 
 ---
 

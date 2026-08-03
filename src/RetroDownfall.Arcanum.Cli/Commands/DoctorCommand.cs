@@ -915,7 +915,7 @@ public sealed class DoctorCommand(
 
         string guidance = mode == "managed"
             ? "When the API host is running without sqlite-vec, Divination uses managed SIMD fallback "
-              + $"(preview/performance-limited; row budget {WeaveIndexAvailability.ManagedSearchRowBudget}). "
+              + "and streams the complete candidate set through bounded top-K memory. "
               + "Confirm live mode via GET /api/meta embeddingsVectorMode."
             : mode == "disabled"
                 ? "Set Arcanum:Features:Embeddings=true and configure Arcanum:Integrations:Embeddings:Provider and Arcanum:Integrations:Embeddings:Model to enable The Weave."
@@ -926,7 +926,7 @@ public sealed class DoctorCommand(
             ("Provider", provider),
             ("Model", model),
             ("Vector mode (configured default)", mode),
-            ("Managed row budget", WeaveIndexAvailability.ManagedSearchRowBudget.ToString()),
+            ("Managed row budget", "none (complete streamed scan)"),
             ("Guidance", guidance));
 
         return (true, table);
@@ -949,7 +949,7 @@ public sealed class DoctorCommand(
         return new DoctorCheck(
             "Embeddings",
             mode is "disabled" or "managed" ? "ok" : "warn",
-            $"enabled={embeddings.Enabled}; mode={mode}; budget={WeaveIndexAvailability.ManagedSearchRowBudget}");
+            $"enabled={embeddings.Enabled}; mode={mode}; budget=none");
 
     }
 

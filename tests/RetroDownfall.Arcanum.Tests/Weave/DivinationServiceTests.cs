@@ -206,11 +206,32 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
     }
 
-    [Fact]
-    public void ManagedSearchRowBudget_IsHardcodedInternalSafeguard()
+    [SkippableFact]
+    public async Task SearchAsync_ManagedFallback_ScoresRowsBeyondLegacyBudget()
     {
 
-        Assert.Equal(50_000, DivinationService.ManagedSearchRowBudget);
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await InsertLegacyBudgetRegressionRowsAsync();
+
+        DivinationService service = CreateService(vecAvailable: false);
+
+        Embedding<float> query = new(new float[] { 1f, 0f, 0f });
+
+        Result<DivinationResult[]> result = await service.SearchAsync(
+            "entry_embeddings_vec",
+            "EntryId",
+            "Embedding",
+            query,
+            maxResults: 1,
+            similarityThreshold: 0.5f,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        DivinationResult hit = Assert.Single(result.Value);
+
+        Assert.Equal("late-best-match", hit.Id);
 
     }
 
@@ -296,6 +317,42 @@ public sealed class DivinationServiceTests : IAsyncLifetime
         dimParam.Value = vector.Length;
 
         cmd.Parameters.Add(dimParam);
+
+        _ = await cmd.ExecuteNonQueryAsync();
+
+    }
+
+    private async Task InsertLegacyBudgetRegressionRowsAsync()
+    {
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != ConnectionState.Open)
+        {
+
+            await connection.OpenAsync();
+
+        }
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            """
+            WITH RECURSIVE sequence(value) AS (
+                SELECT 1
+                UNION ALL
+                SELECT value + 1 FROM sequence WHERE value < 50000
+            )
+            INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
+            SELECT printf('early-%05d', value), @orthogonal, 3 FROM sequence;
+
+            INSERT INTO "entry_embeddings" ("EntryId", "Embedding", "Dim")
+            VALUES ('late-best-match', @matching, 3);
+            """;
+
+        AddParam(cmd, "@orthogonal", EmbeddingBlobCodec.Encode([0f, 1f, 0f]));
+
+        AddParam(cmd, "@matching", EmbeddingBlobCodec.Encode([1f, 0f, 0f]));
 
         _ = await cmd.ExecuteNonQueryAsync();
 

@@ -32,31 +32,37 @@ public sealed class SessionAttachmentRequestValidatorTests
     }
 
     [Fact]
-    public async Task ValidateAsync_OverMaxReferences_Fails()
+    public async Task ValidateAsync_ReferencesBeyondFormerCountCeiling_Succeed()
     {
 
         Guid sessionId = Guid.NewGuid();
-        StubSessionAttachmentStore store = new();
+
+        Guid[] attachmentIds = Enumerable.Range(0, 33)
+            .Select(static _ => Guid.NewGuid())
+            .ToArray();
+
+        StubSessionAttachmentStore store = new()
+        {
+            ValidIds = attachmentIds.ToHashSet(),
+        };
+
         AttachmentsSettings settings = ResolveAttachments(enabled: true);
-        int maxReferences = ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn(
-            ArcanumRuntimeDefaults.Attachments.MaxReferencesPerTurn);
 
         PingRequest request = new(
             Prompt: "hi",
             SessionId: sessionId,
-            AttachmentReferences: Enumerable.Range(0, maxReferences + 1)
-                .Select(static _ => Guid.NewGuid())
-                .ToList());
+            AttachmentReferences: attachmentIds.ToList());
 
         string? error = await SessionAttachmentRequestValidator.ValidateAsync(
             request,
             store,
             settings);
 
-        Assert.Equal(
-            $"At most {maxReferences} attachment references are allowed per request.",
-            error);
-        Assert.Equal(0, store.ValidateCallCount);
+        Assert.Null(error);
+
+        Assert.Equal(1, store.ValidateCallCount);
+
+        Assert.Equal(attachmentIds, store.LastIds);
 
     }
 
@@ -152,19 +158,12 @@ public sealed class SessionAttachmentRequestValidatorTests
         public Task ValidateReferencesAsync(
             Guid sessionId,
             IReadOnlyList<Guid> attachmentIds,
-            int maxReferences,
             CancellationToken cancellationToken = default)
         {
 
             ValidateCallCount++;
             LastSessionId = sessionId;
             LastIds = attachmentIds.ToList();
-
-            if (attachmentIds.Count > maxReferences)
-            {
-                throw new InvalidOperationException(
-                    $"Too many attachment references ({attachmentIds.Count}); max is {maxReferences}.");
-            }
 
             foreach (Guid id in attachmentIds)
             {

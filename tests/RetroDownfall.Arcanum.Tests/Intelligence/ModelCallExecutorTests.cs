@@ -30,7 +30,7 @@ public sealed class ModelCallExecutorTests
     {
         const int callCount = 13;
         ScriptingChatClient chat = new(text: "pong");
-        TurnBudget budget = new(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m));
+        ITurnBudget budget = UnrestrictedTurnBudget.Instance;
         ModelCallExecutor executor = new();
 
         for (int call = 0; call < callCount; call++)
@@ -79,7 +79,7 @@ public sealed class ModelCallExecutorTests
                 chat,
                 messages,
                 options,
-                new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+                UnrestrictedTurnBudget.Instance,
                 ModelCallPurpose.MainInference,
                 CancellationToken.None,
                 context))
@@ -92,7 +92,7 @@ public sealed class ModelCallExecutorTests
                 chat,
                 messages,
                 options,
-                new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+                UnrestrictedTurnBudget.Instance,
                 ModelCallPurpose.MainInference,
                 CancellationToken.None,
                 context);
@@ -119,7 +119,7 @@ public sealed class ModelCallExecutorTests
             chat,
             [new ChatMessage(ChatRole.System, "stable")],
             new ChatOptions(),
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None,
             new ModelCallContext(
@@ -197,7 +197,7 @@ public sealed class ModelCallExecutorTests
                 chat,
                 [new ChatMessage(ChatRole.System, "stable")],
                 new ChatOptions(),
-                new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+                UnrestrictedTurnBudget.Instance,
                 ModelCallPurpose.MainInference,
                 CancellationToken.None,
                 new ModelCallContext(
@@ -261,7 +261,7 @@ public sealed class ModelCallExecutorTests
             new ScriptingChatClient(string.Empty) { BufferedResponse = response },
             [new ChatMessage(ChatRole.System, "stable")],
             new ChatOptions(),
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None,
             new ModelCallContext(
@@ -289,7 +289,7 @@ public sealed class ModelCallExecutorTests
             chat,
             [new ChatMessage(ChatRole.User, "ping")],
             new ChatOptions(),
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
@@ -329,7 +329,7 @@ public sealed class ModelCallExecutorTests
             chat,
             [new ChatMessage(ChatRole.User, "ping")],
             new ChatOptions(),
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
@@ -360,7 +360,7 @@ public sealed class ModelCallExecutorTests
                 chat,
                 [new ChatMessage(ChatRole.User, "ping")],
                 new ChatOptions(),
-                new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+                UnrestrictedTurnBudget.Instance,
                 ModelCallPurpose.MainInference,
                 cts.Token));
     }
@@ -370,7 +370,7 @@ public sealed class ModelCallExecutorTests
     {
         ScriptingChatClient chat = new(text: "ab");
 
-        TurnBudget budget = new(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m));
+        ITurnBudget budget = UnrestrictedTurnBudget.Instance;
 
         ModelCallExecutor executor = new();
 
@@ -427,7 +427,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
             },
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
@@ -469,7 +469,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.None },
             },
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
@@ -499,7 +499,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
             },
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.SpellRouting,
             CancellationToken.None);
 
@@ -530,7 +530,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
             },
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.StructuredOutputRetry,
             CancellationToken.None);
 
@@ -565,7 +565,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
             },
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
@@ -611,7 +611,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Summary },
             },
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None);
 
@@ -686,7 +686,7 @@ public sealed class ModelCallExecutorTests
             {
                 Reasoning = new ReasoningOptions { Output = ReasoningOutput.Full },
             },
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None))
         {
@@ -731,7 +731,7 @@ public sealed class ModelCallExecutorTests
             chat,
             [new ChatMessage(ChatRole.User, "reason")],
             new ChatOptions(),
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None))
         {
@@ -771,7 +771,7 @@ public sealed class ModelCallExecutorTests
             chat,
             [new ChatMessage(ChatRole.User, "reason")],
             new ChatOptions(),
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None))
         {
@@ -801,7 +801,7 @@ public sealed class ModelCallExecutorTests
             chat,
             [new ChatMessage(ChatRole.User, "reason")],
             new ChatOptions(),
-            new TurnBudget(new RetroDownfall.Arcanum.Core.Intelligence.TurnLimits(MaxModelCalls: 32, MaxToolRounds: 16, MaxToolCalls: 64, MaxToolResultTokens: 512000, MaxToolResultBytes: 4194304, MaxElapsedTime: System.TimeSpan.FromSeconds(300), MaxEstimatedCostUsd: 0.50m, MaxReservedCostUsd: 0.25m)),
+            UnrestrictedTurnBudget.Instance,
             ModelCallPurpose.MainInference,
             CancellationToken.None))
         {

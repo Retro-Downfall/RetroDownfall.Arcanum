@@ -26,6 +26,10 @@ internal sealed class SessionAttachmentIndexProcessor(
     ILogger<SessionAttachmentIndexProcessor> logger)
 {
 
+    private const int AutomaticEmbeddingBatchSize = 64;
+
+    private const string IndexPipelineVersion = "v1";
+
     public async Task<SessionAttachmentIndexOutcome> ProcessAsync(
         SessionAttachmentIndexRequest request,
         CancellationToken cancellationToken)
@@ -60,9 +64,7 @@ internal sealed class SessionAttachmentIndexProcessor(
             request.Attempt,
             cancellationToken).ConfigureAwait(false);
 
-        int maxBytes = ArcanumSettingClamps.EmbeddingsAttachmentMaxBytes(settings.MaxAttachmentBytes);
-
-        if (attachment.Kind != SessionAttachmentKind.Text || attachment.ByteLength > maxBytes)
+        if (attachment.Kind != SessionAttachmentKind.Text)
         {
 
             await MarkWithoutIndexAsync(
@@ -79,12 +81,27 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         DateTimeOffset extractedAt = DateTimeOffset.UtcNow;
 
-        ReadOnlyMemory<byte> bytes;
+        if (!weave.IsAvailable)
+        {
+
+            await MarkWithoutIndexAsync(
+                attachment,
+                SessionAttachmentIndexStatus.Failed,
+                request.Attempt,
+                "The embedding provider is unavailable.",
+                extractedAt,
+                cancellationToken).ConfigureAwait(false);
+
+            return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: true);
+
+        }
+
+        Stream stream;
 
         try
         {
 
-            bytes = await attachments.ReadBytesAsync(attachment, cancellationToken).ConfigureAwait(false);
+            stream = await attachments.OpenReadAsync(attachment, cancellationToken).ConfigureAwait(false);
 
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -113,34 +130,6 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         }
 
-        int maxCharacters = ArcanumSettingClamps.EmbeddingsAttachmentMaxExtractedCharacters(
-            settings.MaxExtractedCharacters);
-
-        SessionAttachmentExtractionResult extraction = SessionAttachmentTextExtractor.Extract(
-            bytes.Span,
-            attachment.MimeType,
-            attachment.OriginalFileName,
-            maxCharacters);
-
-        if (extraction.Status != SessionAttachmentExtractionStatus.Extracted)
-        {
-
-            SessionAttachmentIndexStatus status = extraction.Status == SessionAttachmentExtractionStatus.NotEligible
-                ? SessionAttachmentIndexStatus.NotEligible
-                : SessionAttachmentIndexStatus.Failed;
-
-            await MarkWithoutIndexAsync(
-                attachment,
-                status,
-                request.Attempt,
-                extraction.FailureReason,
-                extractedAt,
-                cancellationToken).ConfigureAwait(false);
-
-            return new SessionAttachmentIndexOutcome(status, ShouldRetry: false);
-
-        }
-
         int chunkSize = ArcanumSettingClamps.EmbeddingsAttachmentChunkSizeCharacters(
             settings.ChunkSizeCharacters);
 
@@ -148,16 +137,198 @@ internal sealed class SessionAttachmentIndexProcessor(
             settings.ChunkOverlapCharacters,
             chunkSize);
 
-        int maxChunks = ArcanumSettingClamps.EmbeddingsAttachmentMaxChunksPerAttachment(
-            settings.MaxChunksPerAttachment);
+        int expectedDimensions = ArcanumSettingClamps.EmbeddingsDimensions(embeddings.Dimensions);
 
-        SessionAttachmentTextChunk[] chunks = SessionAttachmentChunker.Chunk(
-            extraction.Text,
-            chunkSize,
-            overlap,
-            maxChunks);
+        DateTimeOffset indexedAt = DateTimeOffset.UtcNow;
 
-        if (chunks.Length == 0)
+        string pipelineFingerprint = string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{IndexPipelineVersion}:{chunkSize}:{overlap}");
+
+        SessionAttachmentIndexCheckpoint checkpoint = await index.BeginReplaceAsync(
+            attachment,
+            expectedDimensions,
+            pipelineFingerprint,
+            extractedAt,
+            cancellationToken).ConfigureAwait(false);
+
+        extractedAt = checkpoint.ExtractedAt;
+
+        List<SessionAttachmentTextChunk> chunkBatch = new(AutomaticEmbeddingBatchSize);
+
+        bool wroteAnyBatch = checkpoint.NextChunkIndex > 0;
+
+        int observedChunkCount = 0;
+
+        async Task<SessionAttachmentIndexOutcome?> FlushBatchAsync()
+        {
+
+            string[] inputs = chunkBatch
+                .Select(static chunk => chunk.Text)
+                .ToArray();
+
+            Result<Embedding<float>[]> batch = await weave
+                .EmbedBatchAsync(inputs, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (batch.IsFailure)
+            {
+
+                await MarkWithoutIndexAsync(
+                    attachment,
+                    SessionAttachmentIndexStatus.Failed,
+                    request.Attempt,
+                    "The embedding provider failed.",
+                    extractedAt,
+                    cancellationToken).ConfigureAwait(false);
+
+                return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: true);
+
+            }
+
+            if (batch.Value.Length != chunkBatch.Count
+                || batch.Value.Any(item => item.Vector.Length != expectedDimensions))
+            {
+
+                await MarkWithoutIndexAsync(
+                    attachment,
+                    SessionAttachmentIndexStatus.Failed,
+                    request.Attempt,
+                    "The embedding response dimensions did not match configuration.",
+                    extractedAt,
+                    cancellationToken).ConfigureAwait(false);
+
+                return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: false);
+
+            }
+
+            await index.AppendReplaceBatchAsync(
+                attachment,
+                checkpoint.GenerationId,
+                chunkBatch,
+                batch.Value,
+                expectedDimensions,
+                extractedAt,
+                indexedAt,
+                cancellationToken).ConfigureAwait(false);
+
+            wroteAnyBatch = true;
+
+            chunkBatch.Clear();
+
+            return null;
+
+        }
+
+        await using (stream)
+        {
+
+            await using IAsyncEnumerator<SessionAttachmentTextChunk> chunks =
+                SessionAttachmentTextExtractor
+                    .ReadChunksAsync(
+                        stream,
+                        attachment.MimeType,
+                        attachment.OriginalFileName,
+                        chunkSize,
+                        overlap,
+                        cancellationToken)
+                    .GetAsyncEnumerator(cancellationToken);
+
+            while (true)
+            {
+
+                bool hasNext;
+
+                try
+                {
+
+                    hasNext = await chunks.MoveNextAsync().ConfigureAwait(false);
+
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+
+                    throw;
+
+                }
+                catch (SessionAttachmentExtractionException ex)
+                {
+
+                    SessionAttachmentIndexStatus status =
+                        ex.Status == SessionAttachmentExtractionStatus.NotEligible
+                            ? SessionAttachmentIndexStatus.NotEligible
+                            : SessionAttachmentIndexStatus.Failed;
+
+                    await MarkWithoutIndexAsync(
+                        attachment,
+                        status,
+                        request.Attempt,
+                        ex.FailureReason,
+                        extractedAt,
+                        cancellationToken).ConfigureAwait(false);
+
+                    return new SessionAttachmentIndexOutcome(status, ShouldRetry: false);
+
+                }
+                catch (Exception ex)
+                {
+
+                    logger.LogWarning(
+                        ex,
+                        "Attachment {AttachmentId} could not be streamed through encrypted blob storage for indexing.",
+                        attachment.Id);
+
+                    await MarkWithoutIndexAsync(
+                        attachment,
+                        SessionAttachmentIndexStatus.Failed,
+                        request.Attempt,
+                        "Encrypted attachment bytes are unavailable.",
+                        extractedAt,
+                        cancellationToken).ConfigureAwait(false);
+
+                    return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: true);
+
+                }
+
+                if (!hasNext)
+                {
+
+                    break;
+
+                }
+
+                observedChunkCount = checked(chunks.Current.ChunkIndex + 1);
+
+                if (chunks.Current.ChunkIndex < checkpoint.NextChunkIndex)
+                {
+
+                    continue;
+
+                }
+
+                chunkBatch.Add(chunks.Current);
+
+                if (chunkBatch.Count == AutomaticEmbeddingBatchSize
+                    && await FlushBatchAsync().ConfigureAwait(false) is { } batchFailure)
+                {
+
+                    return batchFailure;
+
+                }
+
+            }
+
+        }
+
+        if (chunkBatch.Count > 0
+            && await FlushBatchAsync().ConfigureAwait(false) is { } finalBatchFailure)
+        {
+
+            return finalBatchFailure;
+
+        }
+
+        if (!wroteAnyBatch)
         {
 
             await MarkWithoutIndexAsync(
@@ -172,65 +343,12 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         }
 
-        if (!weave.IsAvailable)
-        {
-
-            await MarkWithoutIndexAsync(
-                attachment,
-                SessionAttachmentIndexStatus.Failed,
-                request.Attempt,
-                "The embedding provider is unavailable.",
-                extractedAt,
-                cancellationToken).ConfigureAwait(false);
-
-            return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: true);
-
-        }
-
-        Result<Embedding<float>[]> generated = await weave
-            .EmbedBatchAsync([.. chunks.Select(static chunk => chunk.Text)], cancellationToken)
-            .ConfigureAwait(false);
-
-        if (generated.IsFailure)
-        {
-
-            await MarkWithoutIndexAsync(
-                attachment,
-                SessionAttachmentIndexStatus.Failed,
-                request.Attempt,
-                "The embedding provider failed.",
-                extractedAt,
-                cancellationToken).ConfigureAwait(false);
-
-            return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: true);
-
-        }
-
-        int expectedDimensions = ArcanumSettingClamps.EmbeddingsDimensions(embeddings.Dimensions);
-
-        if (generated.Value.Length != chunks.Length
-            || generated.Value.Any(item => item.Vector.Length != expectedDimensions))
-        {
-
-            await MarkWithoutIndexAsync(
-                attachment,
-                SessionAttachmentIndexStatus.Failed,
-                request.Attempt,
-                "The embedding response dimensions did not match configuration.",
-                extractedAt,
-                cancellationToken).ConfigureAwait(false);
-
-            return new SessionAttachmentIndexOutcome(SessionAttachmentIndexStatus.Failed, ShouldRetry: false);
-
-        }
-
-        await index.ReplaceAsync(
+        await index.CompleteReplaceAsync(
             attachment,
-            chunks,
-            generated.Value,
-            expectedDimensions,
+            checkpoint.GenerationId,
+            observedChunkCount,
             extractedAt,
-            DateTimeOffset.UtcNow,
+            indexedAt,
             request.Attempt,
             cancellationToken).ConfigureAwait(false);
 

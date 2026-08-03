@@ -205,6 +205,11 @@ public static class ErrorCodes
 
         public const string PathIsFile = "Workspace.PathIsFile";
 
+        public const string ContinuationInvalid = "Workspace.ContinuationInvalid";
+
+        public const string ContinuationCheckpointMissing =
+            "Workspace.ContinuationCheckpointMissing";
+
     }
 
     /// <summary>Spell — workspace spell files and execution.</summary>
@@ -228,6 +233,17 @@ public static class ErrorCodes
         public const string DuplicateVersion = "Spell.DuplicateVersion";
 
         public const string InvalidVersion = "Spell.InvalidVersion";
+
+        public const string ContinuationInvalid = "Spell.ContinuationInvalid";
+
+        public const string ContinuationQueryMismatch =
+            "Spell.ContinuationQueryMismatch";
+
+        public const string ContinuationCheckpointMissing =
+            "Spell.ContinuationCheckpointMissing";
+
+        public const string ContinuationFrameTooLarge =
+            "Spell.ContinuationFrameTooLarge";
 
     }
 

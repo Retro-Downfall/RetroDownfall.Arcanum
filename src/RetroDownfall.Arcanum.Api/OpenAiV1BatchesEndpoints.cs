@@ -27,6 +27,10 @@ internal static partial class OpenAiV1Endpoints
 
     private const string BatchIdPrefix = "batch_";
 
+    private const int DefaultBatchListPageSize = 20;
+
+    private const int MaxBatchListPageSize = 100;
+
     internal static void MapOpenAiV1Batches(this RouteGroupBuilder v1)
     {
 
@@ -50,7 +54,6 @@ internal static partial class OpenAiV1Endpoints
     private static async Task<IResult> HandleResetBatchAsync(
         string id,
         IBatchRecoveryService batchRecovery,
-        IEncryptedBlobStore blobStore,
         CancellationToken cancellationToken)
     {
 
@@ -109,11 +112,7 @@ internal static partial class OpenAiV1Endpoints
 
         BatchRecord record = result.Record!;
 
-        OpenAiBatchRequestCounts counts = await BatchRequestCounter
-            .ComputeAsync(record, blobStore, cancellationToken)
-            .ConfigureAwait(false);
-
-        return Results.Json(OpenAiBatchObject.FromRecord(record, counts), ArcanumJsonContext.Default.OpenAiBatchObject);
+        return Results.Json(OpenAiBatchObject.FromRecord(record), ArcanumJsonContext.Default.OpenAiBatchObject);
 
     }
 
@@ -194,7 +193,7 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
-        OpenAiBatchObject wire = OpenAiBatchObject.FromRecord(record, OpenAiBatchRequestCounts.Empty);
+        OpenAiBatchObject wire = OpenAiBatchObject.FromRecord(record);
 
         return Results.Json(wire, ArcanumJsonContext.Default.OpenAiBatchObject, statusCode: StatusCodes.Status200OK);
 
@@ -203,7 +202,6 @@ internal static partial class OpenAiV1Endpoints
     private static async Task<IResult> HandleGetBatchAsync(
         string id,
         IBatchRepository batches,
-        IEncryptedBlobStore blobStore,
         CancellationToken cancellationToken)
     {
 
@@ -223,44 +221,118 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
-        OpenAiBatchRequestCounts counts = await BatchRequestCounter
-            .ComputeAsync(record, blobStore, cancellationToken)
-            .ConfigureAwait(false);
-
-        return Results.Json(OpenAiBatchObject.FromRecord(record, counts), ArcanumJsonContext.Default.OpenAiBatchObject);
+        return Results.Json(OpenAiBatchObject.FromRecord(record), ArcanumJsonContext.Default.OpenAiBatchObject);
 
     }
 
     private static async Task<IResult> HandleListBatchesAsync(
         string? status,
+        string? after,
+        int? limit,
         IBatchRepository batches,
-        IEncryptedBlobStore blobStore,
         CancellationToken cancellationToken)
     {
 
-        IReadOnlyList<BatchRecord> records = await batches.ListAsync(status, cancellationToken).ConfigureAwait(false);
+        int pageSize = limit ?? DefaultBatchListPageSize;
 
-        List<OpenAiBatchObject> data = new(records.Count);
+        if (pageSize < 1 || pageSize > MaxBatchListPageSize)
 
-        foreach (BatchRecord record in records)
         {
 
-            OpenAiBatchRequestCounts counts = await BatchRequestCounter
-                .ComputeAsync(record, blobStore, cancellationToken)
-                .ConfigureAwait(false);
+            return JsonError(
 
-            data.Add(OpenAiBatchObject.FromRecord(record, counts));
+                $"'limit' is a response-page allocation and must be between 1 and {MaxBatchListPageSize}. Continue through every page with 'next_cursor'; no total batch-history limit is applied.",
+
+                "invalid_request_error",
+
+                "invalid_value",
+
+                "limit",
+
+                StatusCodes.Status400BadRequest);
 
         }
 
-        return Results.Json(new OpenAiBatchListResponse(data), ArcanumJsonContext.Default.OpenAiBatchListResponse);
+        string? normalizedStatus = string.IsNullOrWhiteSpace(status)
+
+            ? null
+
+            : status.Trim();
+
+        BatchListPosition? position = null;
+
+        if (!string.IsNullOrWhiteSpace(after)
+
+            && !BatchListCursorCodec.TryDecode(after, normalizedStatus, out position))
+
+        {
+
+            return JsonError(
+
+                "The batch-list cursor is malformed or belongs to a different status query. Work was not changed; restart this read without 'after', then continue with the returned 'next_cursor'.",
+
+                "invalid_request_error",
+
+                "invalid_cursor",
+
+                "after",
+
+                StatusCodes.Status400BadRequest);
+
+        }
+
+        BatchListPage page = await batches.ListPageAsync(
+
+                normalizedStatus,
+
+                position,
+
+                pageSize,
+
+                cancellationToken)
+
+            .ConfigureAwait(false);
+
+        List<OpenAiBatchObject> data = new(page.Records.Count);
+
+        foreach (BatchRecord record in page.Records)
+        {
+
+            data.Add(OpenAiBatchObject.FromRecord(record));
+
+        }
+
+        string? nextCursor = page.HasMore && page.Records.Count > 0
+
+            ? BatchListCursorCodec.Encode(
+
+                normalizedStatus,
+
+                new BatchListPosition(
+
+                    page.Records[^1].CreatedAt,
+
+                    page.Records[^1].Id))
+
+            : null;
+
+        return Results.Json(
+
+            new OpenAiBatchListResponse(
+
+                data,
+
+                page.HasMore,
+
+                nextCursor),
+
+            ArcanumJsonContext.Default.OpenAiBatchListResponse);
 
     }
 
     private static async Task<IResult> HandleCancelBatchAsync(
         string id,
         IBatchRepository batches,
-        IEncryptedBlobStore blobStore,
         CancellationToken cancellationToken)
     {
 
@@ -285,23 +357,26 @@ internal static partial class OpenAiV1Endpoints
         if (!BatchStatuses.IsTerminal(record.Status))
         {
 
-            await batches.UpdateStatusAsync(
+            _ = await batches.TryCompareAndSetStatusAsync(
                 batchId,
+
+                record.Status,
+
                 BatchStatuses.Cancelled,
+
                 DateTimeOffset.UtcNow,
+
                 record.OutputFileId,
+
                 record.ErrorFileId,
+
                 cancellationToken).ConfigureAwait(false);
 
             record = await batches.GetByIdAsync(batchId, cancellationToken).ConfigureAwait(false) ?? record;
 
         }
 
-        OpenAiBatchRequestCounts counts = await BatchRequestCounter
-            .ComputeAsync(record, blobStore, cancellationToken)
-            .ConfigureAwait(false);
-
-        return Results.Json(OpenAiBatchObject.FromRecord(record, counts), ArcanumJsonContext.Default.OpenAiBatchObject);
+        return Results.Json(OpenAiBatchObject.FromRecord(record), ArcanumJsonContext.Default.OpenAiBatchObject);
 
     }
 

@@ -119,6 +119,13 @@ internal sealed partial class ArcanumInternalToolServer
 
             WriteBooleanProperty(w, "recursive", "When true, lists entries recursively; node_modules, bin, obj, and .git folders are skipped.");
 
+            w.WriteStartObject("continuation");
+            w.WriteString("type", "string");
+            w.WriteString(
+                "description",
+                "Optional opaque continuation token from a prior list_directory result. Reuse the same path and recursion arguments.");
+            w.WriteEndObject();
+
             w.WriteEndObject();
 
             w.WriteStartArray("required");
@@ -192,6 +199,13 @@ internal sealed partial class ArcanumInternalToolServer
             w.WriteNumber("minLength", 1);
             w.WriteNumber("maxLength", settings.MaxPatternChars);
             w.WriteEndObject();
+            w.WriteEndObject();
+
+            w.WriteStartObject("cursor");
+            w.WriteString("type", "string");
+            w.WriteString(
+                "description",
+                "Optional opaque continuation cursor from a prior search_workspace result. Reuse the same search arguments.");
             w.WriteEndObject();
 
             w.WriteEndObject();
@@ -324,7 +338,7 @@ internal sealed partial class ArcanumInternalToolServer
 
     }
 
-    private static JsonElement BuildExecuteCommandSchema(int timeoutSeconds)
+    private static JsonElement BuildExecuteCommandSchema()
     {
         return BuildSchema(w =>
         {
@@ -335,7 +349,7 @@ internal sealed partial class ArcanumInternalToolServer
             WriteStringProperty(
                 w,
                 "command",
-                $"Executable or binary name (no shell). The host enforces a {timeoutSeconds} second timeout.");
+                "Executable or binary name (no shell). The command runs until completion or caller cancellation.");
 
             WriteStringProperty(
                 w,
@@ -371,6 +385,82 @@ internal sealed partial class ArcanumInternalToolServer
 
             w.WriteBoolean("additionalProperties", false);
         });
+    }
+
+    private static JsonElement BuildReadCommandOutputSchema(
+        int maxPageBytes)
+    {
+
+        return BuildSchema(w =>
+        {
+
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "handle",
+                "Opaque complete-output handle returned by execute_command on this connection.");
+
+            w.WriteStartObject("stream");
+
+            w.WriteString("type", "string");
+
+            w.WriteString(
+                "description",
+                "Complete stream to read.");
+
+            w.WriteStartArray("enum");
+
+            w.WriteStringValue("stdout");
+
+            w.WriteStringValue("stderr");
+
+            w.WriteEndArray();
+
+            w.WriteEndObject();
+
+            w.WriteStartObject("offset");
+
+            w.WriteString("type", "integer");
+
+            w.WriteString(
+                "description",
+                "UTF-8 byte offset. Start at 0, then pass back each nextOffset exactly.");
+
+            w.WriteNumber("minimum", 0);
+
+            w.WriteEndObject();
+
+            w.WriteStartObject("maxBytes");
+
+            w.WriteString("type", "integer");
+
+            w.WriteString(
+                "description",
+                "Optional target page size in UTF-8 bytes. The maximum derives from the existing JSON-RPC line boundary.");
+
+            w.WriteNumber("minimum", 4);
+
+            w.WriteNumber("maximum", maxPageBytes);
+
+            w.WriteEndObject();
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("handle");
+
+            w.WriteStringValue("stream");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+
+        });
+
     }
 
     private static JsonElement BuildAskHumanSchema()

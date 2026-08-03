@@ -43,13 +43,7 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly string? _workspaceRoot;
 
-    private readonly TimeSpan _executeCommandTimeout;
-
-    private readonly int _executeCommandTimeoutSeconds;
-
-    private readonly int _listDirectoryMaxPaths;
-
-    private readonly string _listDirectoryTruncationSuffix;
+    private readonly int _listDirectoryPageSize;
 
     private readonly string _listDirectoryToolsListDescription;
 
@@ -68,6 +62,8 @@ internal sealed partial class ArcanumInternalToolServer
     private readonly JsonElement _workspaceCheckSchema;
 
     private readonly JsonElement _executeCommandSchema;
+
+    private readonly JsonElement _readCommandOutputSchema;
 
     private readonly JsonElement _askHumanSchema;
 
@@ -133,6 +129,11 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly string _ambientConnectionKey;
 
+    private readonly CommandOutputArtifactStore _commandOutputArtifacts = new();
+
+    internal string? CommandOutputArtifactRootForTests =>
+        _commandOutputArtifacts.RootPathForTests;
+
     /// <summary>Per-connection key shared with the paired client transport for ambient session binding.</summary>
     internal string AmbientConnectionKey => _ambientConnectionKey;
 
@@ -152,8 +153,6 @@ internal sealed partial class ArcanumInternalToolServer
         IServiceScopeFactory scopeFactory,
         IUnseenServantPacer pacer,
         string? workspaceRootNormalizedOrNull,
-        TimeSpan executeCommandTimeout,
-        int executeCommandTimeoutSecondsForDisplay,
         int listDirectoryMaxPaths,
         IntelligenceSettings intelligenceSettings,
         long maxFileReadSizeBytes,
@@ -211,18 +210,10 @@ internal sealed partial class ArcanumInternalToolServer
             ? null
             : workspaceRootNormalizedOrNull;
 
-        _executeCommandTimeout = executeCommandTimeout;
-
-        _executeCommandTimeoutSeconds = executeCommandTimeoutSecondsForDisplay;
-
-        _listDirectoryMaxPaths = listDirectoryMaxPaths;
-
-        _listDirectoryTruncationSuffix =
-            $"... [TRUNCATED: Max {listDirectoryMaxPaths} items reached. Please use a more specific path.]";
+        _listDirectoryPageSize = listDirectoryMaxPaths;
 
         _listDirectoryToolsListDescription =
-            "Lists files and folders under a path relative to the workspace root. Optional recursion; skips node_modules, bin, obj, and .git; returns at most "
-            + $"{listDirectoryMaxPaths} paths.";
+            "Lists files and folders under a path relative to the workspace root. Optional recursion; skips node_modules, bin, obj, and .git. Large listings return a continuation cursor instead of dropping paths.";
 
         _settings = intelligenceSettings;
 
@@ -237,21 +228,6 @@ internal sealed partial class ArcanumInternalToolServer
             RegexTimeoutMilliseconds =
                 ArcanumSettingClamps.WorkspaceSearchRegexTimeoutMilliseconds(
                     configuredSearch.RegexTimeoutMilliseconds),
-            MaxElapsedMilliseconds =
-                ArcanumSettingClamps.WorkspaceSearchMaxElapsedMilliseconds(
-                    configuredSearch.MaxElapsedMilliseconds),
-            MaxFiles =
-                ArcanumSettingClamps.WorkspaceSearchMaxFiles(
-                    configuredSearch.MaxFiles),
-            MaxBytes =
-                ArcanumSettingClamps.WorkspaceSearchMaxBytes(
-                    configuredSearch.MaxBytes),
-            MaxTraversalSteps =
-                ArcanumSettingClamps.WorkspaceSearchMaxTraversalSteps(
-                    configuredSearch.MaxTraversalSteps),
-            MaxMatches =
-                ArcanumSettingClamps.WorkspaceSearchMaxMatches(
-                    configuredSearch.MaxMatches),
             MaxPreviewChars =
                 ArcanumSettingClamps.WorkspaceSearchMaxPreviewChars(
                     configuredSearch.MaxPreviewChars),
@@ -311,7 +287,10 @@ internal sealed partial class ArcanumInternalToolServer
             _workspaceCheckProfiles,
             _workspaceCheckSettings);
 
-        _executeCommandSchema = BuildExecuteCommandSchema(_executeCommandTimeoutSeconds);
+        _executeCommandSchema = BuildExecuteCommandSchema();
+
+        _readCommandOutputSchema = BuildReadCommandOutputSchema(
+            GetMaxCommandOutputPageBytes());
 
         _askHumanSchema = BuildAskHumanSchema();
 
@@ -338,7 +317,7 @@ internal sealed partial class ArcanumInternalToolServer
         _dispatchSendingSchema = BuildDispatchSendingSchema();
 
         _executeCommandToolDescription =
-            $"Runs a command without a shell (stdout/stderr captured, {_executeCommandTimeoutSeconds}s timeout, process tree killed on timeout or cooperative cancel). Optional workingDirectory is relative to the workspace root.";
+            "Runs a command without a shell (stdout/stderr previewed in memory; complete larger streams remain retrievable through read_command_output until this connection closes). Runs until completion or cooperative caller cancellation, which kills the process tree. Optional workingDirectory is relative to the workspace root.";
 
         _toolHandlers = BuildToolHandlerRegistry();
     }
@@ -417,6 +396,9 @@ internal sealed partial class ArcanumInternalToolServer
                     // its response write fail harmlessly once _toClient is completed below.
                 }
             }
+
+            await _commandOutputArtifacts.DisposeAsync()
+                .ConfigureAwait(false);
 
             _toClient.TryComplete();
         }
@@ -767,13 +749,22 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (_allowHostProcessTools && _workspaceRoot is not null)
         {
-            tools.Add(
+            tools.AddRange(
+            [
                 new McpToolDefinitionWire
                 {
                     Name = "execute_command",
                     Description = _executeCommandToolDescription,
                     InputSchema = _executeCommandSchema,
-                });
+                },
+                new McpToolDefinitionWire
+                {
+                    Name = "read_command_output",
+                    Description =
+                        "Reads a UTF-8 page from a complete stdout or stderr artifact returned by execute_command. Use each nextOffset until complete; handles expire when this MCP connection closes.",
+                    InputSchema = _readCommandOutputSchema,
+                },
+            ]);
         }
 
         tools.Add(
@@ -974,9 +965,6 @@ internal sealed partial class ArcanumInternalToolServer
         // first call's cancellation registration and break notifications/cancelled correlation).
         if (!_inFlightToolCalls.TryAdd(requestKey, toolScope))
         {
-            WorkspaceCheckDeadlineBinding.UnbindRequest(
-                _ambientConnectionKey,
-                requestKey);
             ApplyPatchInvocationBinding.UnbindRequest(
                 _ambientConnectionKey,
                 requestKey);
@@ -1002,18 +990,6 @@ internal sealed partial class ArcanumInternalToolServer
             ApplyPatchInvocationAmbient.Current;
         PersistedToolInvocationContext? previousPersistedAmbient =
             PersistedToolInvocationAmbient.Current;
-        IDisposable? deadlineScope = null;
-
-        if (WorkspaceCheckDeadlineBinding.TryResolveRequest(
-                _ambientConnectionKey,
-                requestKey,
-                out long inferenceDeadline))
-        {
-
-            deadlineScope = WorkspaceCheckInferenceDeadlineAmbient
-                .BeginAtTimestamp(inferenceDeadline);
-        }
-
         try
         {
             JsonElement toolArguments = call.Arguments;
@@ -1071,12 +1047,6 @@ internal sealed partial class ArcanumInternalToolServer
                 _ambientConnectionKey,
                 requestKey);
             PersistedToolInvocationBinding.UnbindRequest(
-                _ambientConnectionKey,
-                requestKey);
-
-            deadlineScope?.Dispose();
-
-            WorkspaceCheckDeadlineBinding.UnbindRequest(
                 _ambientConnectionKey,
                 requestKey);
 

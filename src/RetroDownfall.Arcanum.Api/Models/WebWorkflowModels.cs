@@ -37,9 +37,7 @@ public sealed record WebResearchWorkflowRequest
 
     public string Question { get; init; } = string.Empty;
 
-    public int MaxSources { get; init; } = 5;
-
-    public int MaxHops { get; init; } = 2;
+    public int? SourceTarget { get; init; }
 
     public string? Model { get; init; }
 

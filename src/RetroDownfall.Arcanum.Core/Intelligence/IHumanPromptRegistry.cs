@@ -2,21 +2,22 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
 /// Correlates in-flight human prompts (e.g. MCP <c>ask_human</c>) with HTTP or CLI responses.
-/// Preferred lifecycle: <see cref="TryCreateReservation"/> → emit → await → dispose once.
+/// Preferred lifecycle: <see cref="CreateReservationAsync"/> → emit → await → dispose once.
 /// </summary>
 public interface IHumanPromptRegistry
 {
     /// <summary>
-    /// Atomically admits one waiter slot and registers a host-generated prompt id.
-    /// Returns <see langword="null"/> when the concurrent waiter cap is exhausted.
+    /// Waits cancellably for bounded waiter capacity, then atomically registers a host-generated
+    /// prompt id. Capacity is an active-concurrency boundary, not a total-work rejection.
     /// </summary>
-    IHumanPromptReservation? TryCreateReservation();
+    Task<IHumanPromptReservation> CreateReservationAsync(
+        CancellationToken cancellationToken);
 
     /// <summary>
     /// Waits on an already-reserved prompt without re-registering or releasing capacity.
     /// Used by the internal <c>ask_human</c> tool after the host has reserved.
     /// </summary>
-    Task<string> AwaitReservedAsync(string promptId, TimeSpan timeout, CancellationToken cancellationToken);
+    Task<string> AwaitReservedAsync(string promptId, CancellationToken cancellationToken);
 
     /// <summary>
     /// Legacy combined reserve+wait+dispose for callers that have not migrated to explicit reservation ownership

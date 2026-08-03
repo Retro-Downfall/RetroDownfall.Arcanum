@@ -61,21 +61,10 @@ internal static class PingRequestPreflightValidator
         long maxBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
             ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
 
-        int maxFiles = ArcanumSettingClamps.MaxAttachedFilesPerRequest(
-            ArcanumRuntimeDefaults.CliMaxAttachedFilesPerRequest);
-
         int maxPathChars = ArcanumSettingClamps.MaxAttachedFileRelativePathChars(
             ArcanumRuntimeDefaults.CliMaxAttachedFileRelativePathChars);
 
-        if (files.Count > maxFiles)
-        {
-
-            return Failure(
-                $"At most {maxFiles} attached files are allowed per request.");
-
-        }
-
-        long maxTotalBytes = maxBytes * maxFiles;
+        long maxTotalBytes = ArcanumRuntimeDefaults.CliMaxAttachedTotalBytes;
 
         long totalUtf8 = 0;
 
@@ -102,7 +91,10 @@ internal static class PingRequestPreflightValidator
             if (item.RelativePath.Length > maxPathChars)
             {
 
-                return Failure("Attached file path is too long.");
+                return Failure(
+                    $"Protocol path boundary reached for attached file {index + 1}: measured "
+                    + $"{item.RelativePath.Length} characters; limit {maxPathChars}. No attachment work was saved. "
+                    + "Shorten the workspace-relative path and retry.");
 
             }
 
@@ -114,7 +106,9 @@ internal static class PingRequestPreflightValidator
             {
 
                 return Failure(
-                    $"Attached file content exceeds the maximum size ({maxBytes} bytes UTF-8).");
+                    $"Physical single-request allocation boundary reached for attached file '{item.RelativePath}': "
+                    + $"measured {utf8Length} UTF-8 bytes; limit {maxBytes}. No attachment work was saved. "
+                    + "Split the content into smaller attached-file chunks and retry.");
 
             }
 
@@ -124,7 +118,10 @@ internal static class PingRequestPreflightValidator
             {
 
                 return Failure(
-                    "Total size of attached files exceeds the allowed limit for this request.");
+                    "Physical single-request allocation boundary reached for attached files: "
+                    + $"measured {totalUtf8} UTF-8 bytes; limit {maxTotalBytes}. "
+                    + "No attachment work was saved. Send the remaining files in a later turn "
+                    + "or persist and reference session attachments.");
 
             }
 

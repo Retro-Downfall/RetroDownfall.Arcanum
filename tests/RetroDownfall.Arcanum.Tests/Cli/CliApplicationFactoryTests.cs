@@ -523,7 +523,7 @@ public sealed class CliApplicationFactoryTests
     }
 
     [Fact]
-    public void ConfigureCliServices_registers_streaming_and_bounded_request_clients()
+    public void ConfigureCliServices_registers_clients_without_total_operation_timeouts()
     {
         ServiceCollection services = new();
         ConfigurationManager configuration = new();
@@ -535,7 +535,7 @@ public sealed class CliApplicationFactoryTests
         HttpClient requestClient = factory.CreateClient(ArcanumApiClient.RequestHttpClientName);
 
         Assert.Equal(Timeout.InfiniteTimeSpan, streamingClient.Timeout);
-        Assert.Equal(TimeSpan.FromSeconds(60), requestClient.Timeout);
+        Assert.Equal(Timeout.InfiniteTimeSpan, requestClient.Timeout);
     }
 
     [Fact]

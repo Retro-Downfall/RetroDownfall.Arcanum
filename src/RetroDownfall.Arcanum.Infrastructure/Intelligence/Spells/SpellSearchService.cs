@@ -55,26 +55,32 @@ public sealed class SpellSearchService
 
         long maxFileSizeBytes = GetMaxSpellFileSizeBytes();
 
-        SpellSettings spellSettings = ArcanumRuntimeDefaults.Spells;
+        if (query.Source is null or SpellSource.Builtin)
+        {
 
-        int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
+            await MergeSourceAsync(
+                results,
+                priority: 1,
+                await SpellScanner.ScanSummariesAsync(
+                    null,
+                    ct,
+                    maxFileSizeBytes).ConfigureAwait(false),
+                SpellSource.Builtin,
+                query,
+                ct).ConfigureAwait(false);
 
-        int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(spellSettings.MaxDeclaredTools);
+        }
 
-        await MergeSourceAsync(
-            results,
-            priority: 1,
-            await SpellScanner.ScanAsync(null, ct, maxFileSizeBytes, maxDependencies, maxDeclaredTools).ConfigureAwait(false),
-            SpellSource.Builtin,
-            query,
-            ct).ConfigureAwait(false);
-
-        if (!string.IsNullOrWhiteSpace(query.Workspace))
+        if (!string.IsNullOrWhiteSpace(query.Workspace)
+            && (query.Source is null or SpellSource.Workspace))
         {
             await MergeSourceAsync(
                 results,
                 priority: 2,
-                await SpellScanner.ScanAsync(query.Workspace, ct, maxFileSizeBytes, maxDependencies, maxDeclaredTools).ConfigureAwait(false),
+                await SpellScanner.ScanSummariesAsync(
+                    query.Workspace,
+                    ct,
+                    maxFileSizeBytes).ConfigureAwait(false),
                 SpellSource.Workspace,
                 query,
                 ct).ConfigureAwait(false);
@@ -87,15 +93,25 @@ public sealed class SpellSearchService
             campaigns = campaigns.Where(c => c.Id == campaignId);
         }
 
-        foreach (Campaign campaign in campaigns)
+        if (query.Source is null or SpellSource.Campaign)
         {
-            await MergeSourceAsync(
-                results,
-                priority: 3,
-                await SpellScanner.ScanAsync(campaign.Path, ct, maxFileSizeBytes, maxDependencies, maxDeclaredTools).ConfigureAwait(false),
-                SpellSource.Campaign,
-                query,
-                ct).ConfigureAwait(false);
+
+            foreach (Campaign campaign in campaigns)
+            {
+
+                await MergeSourceAsync(
+                    results,
+                    priority: 3,
+                    await SpellScanner.ScanSummariesAsync(
+                        campaign.Path,
+                        ct,
+                        maxFileSizeBytes).ConfigureAwait(false),
+                    SpellSource.Campaign,
+                    query,
+                    ct).ConfigureAwait(false);
+
+            }
+
         }
 
         string sanitizedQ = SpellSearchSanitizer.SanitizeQuery(query.Query);
@@ -103,8 +119,7 @@ public sealed class SpellSearchService
         IEnumerable<SpellSummary> filtered = results.Values
             .Select(v => v.Summary)
             .Where(s => MatchesFilters(s, query, sanitizedQ))
-            .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
-            .Take(1000);
+            .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase);
 
         return filtered.ToArray();
     }
@@ -112,32 +127,43 @@ public sealed class SpellSearchService
     private static async Task MergeSourceAsync(
         Dictionary<string, (SpellSummary Summary, int Priority)> results,
         int priority,
-        IReadOnlyList<ParsedSpell> spells,
+        IReadOnlyList<SpellSummary> spells,
         SpellSource source,
         SpellSearchQuery query,
         CancellationToken ct)
     {
-        _ = ct;
-
         if (query.Source is { } sourceFilter && sourceFilter != source)
         {
             return;
         }
 
-        foreach (ParsedSpell spell in spells)
+        foreach (SpellSummary spell in spells)
         {
-            SpellSummary summary = SpellRepository.MapToSummary(spell, source);
+            ct.ThrowIfCancellationRequested();
 
-            if (results.TryGetValue(spell.Name, out (SpellSummary Summary, int Priority) existing))
+            bool isExpectedRoot = source == SpellSource.Builtin
+                ? spell.Source == SpellSource.Builtin
+                : spell.Source == SpellSource.Workspace;
+
+            if (!isExpectedRoot)
+            {
+
+                continue;
+
+            }
+
+            SpellSummary summary = spell with { Source = source };
+
+            if (results.TryGetValue(summary.Name, out (SpellSummary Summary, int Priority) existing))
             {
                 if (priority > existing.Priority)
                 {
-                    results[spell.Name] = (summary, priority);
+                    results[summary.Name] = (summary, priority);
                 }
             }
             else
             {
-                results[spell.Name] = (summary, priority);
+                results[summary.Name] = (summary, priority);
             }
         }
 

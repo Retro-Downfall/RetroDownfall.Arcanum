@@ -14,9 +14,9 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 /// </summary>
 internal sealed class CommandCenterState
 {
-    public const int RecentSessionLimit = 40;
+    public const int SessionPageSize = 40;
 
-    public const int TranscriptEntryLimit = 200;
+    public const int TranscriptPageSize = 200;
 
     public CommandCenterState(SessionLogBuffer log)
     {
@@ -105,6 +105,16 @@ internal sealed class CommandCenterState
 
     public IReadOnlyList<SessionListItem> Sessions { get; set; } = [];
 
+    public DateTimeOffset? SessionPageBeforeUpdatedAt { get; set; }
+
+    public DateTimeOffset? NextSessionPageBeforeUpdatedAt { get; set; }
+
+    public bool HasOlderSessionPage => NextSessionPageBeforeUpdatedAt is not null;
+
+    public bool HasNewerSessionPage => SessionPageHistory.Count > 0;
+
+    internal List<DateTimeOffset?> SessionPageHistory { get; } = [];
+
     public string SessionFilter { get; set; } = string.Empty;
 
     public Guid? SelectedSessionId { get; set; }
@@ -112,6 +122,14 @@ internal sealed class CommandCenterState
     public Guid? SelectedTranscriptEntryId { get; set; }
 
     public IReadOnlyList<EntryDto> LoadedTranscriptEntries { get; set; } = [];
+
+    public int TranscriptEntryOffset { get; set; }
+
+    public bool HasOlderTranscriptEntries =>
+        SessionEntryCount is { } total
+        && TranscriptEntryOffset + LoadedTranscriptEntries.Count < total;
+
+    public bool HasNewerTranscriptEntries => TranscriptEntryOffset > 0;
 
     public string? PendingAlternativePrompt { get; set; }
 
@@ -188,9 +206,9 @@ internal sealed class CommandCenterState
             {
                 CommandCenterFocusRegion.Sessions or CommandCenterFocusRegion.Overlay
                     when Overlay is CommandCenterOverlayKind.SessionPicker or CommandCenterOverlayKind.None
-                    => "↑↓/jk select · Enter resume · type to filter · Esc composer · Ctrl+R refresh · F1 help",
+                    => "↑↓/jk select · Enter resume · Ctrl+PgDn/PgUp older/newer page · type to filter · Esc composer · Ctrl+R refresh · F1 help",
                 CommandCenterFocusRegion.Transcript
-                    => "↑↓ scroll · PgUp/PgDn · Home/End · Esc composer · Tab focus · F1 help",
+                    => "↑↓ scroll · PgUp/PgDn · Ctrl+PgUp/PgDn load adjacent page · Home/End · Esc composer · Tab focus · F1 help",
                 CommandCenterFocusRegion.Incantations
                     => "↑↓ scroll Incantations · PgUp/PgDn · Home/End · Esc composer · Tab focus · F1 help",
                 _
@@ -289,6 +307,10 @@ internal sealed class CommandCenterState
         ForkedFromSessionId = null;
         SelectedSessionId = null;
         LastContextBreakdown = null;
+
+        LoadedTranscriptEntries = [];
+
+        TranscriptEntryOffset = 0;
 
         SessionAttachments = [];
     }

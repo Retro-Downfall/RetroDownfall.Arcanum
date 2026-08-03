@@ -15,11 +15,9 @@ public sealed class GrimoireLimitsTests
     {
 
         SessionSettings settings = ArcanumRuntimeDefaults.Sessions;
-        int maxEntries = ArcanumSettingClamps.MaxEntriesPerSession(
-            settings.MaxEntriesPerSession);
 
         Error? result = GrimoireLimits.EnforceEntryLimits(
-            maxEntries - 2,
+            1_000_000,
             entriesToAdd: 2,
             settings,
             "hello");
@@ -29,24 +27,18 @@ public sealed class GrimoireLimitsTests
     }
 
     [Fact]
-    public void EnforceEntryLimits_TooManyEntries_ReturnsError()
+    public void EnforceEntryLimits_ManyEntries_ReturnsNull()
     {
 
         SessionSettings settings = ArcanumRuntimeDefaults.Sessions;
-        int maxEntries = ArcanumSettingClamps.MaxEntriesPerSession(
-            settings.MaxEntriesPerSession);
 
         Error? result = GrimoireLimits.EnforceEntryLimits(
-            maxEntries,
+            1_000_000,
             entriesToAdd: 1,
             settings,
             "hello");
 
-        Assert.NotNull(result);
-
-        Assert.Equal(ErrorCodes.Session.TooManyEntries, result.Value.Code);
-
-        Assert.StartsWith("Session.TooManyEntries:", result.Value.Message, StringComparison.Ordinal);
+        Assert.Null(result);
 
     }
 

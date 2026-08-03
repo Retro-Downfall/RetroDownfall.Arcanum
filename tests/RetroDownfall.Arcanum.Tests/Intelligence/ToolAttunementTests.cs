@@ -81,6 +81,34 @@ public sealed class ToolAttunementTests
     }
 
     [Fact]
+    public void ApplyAttunement_declared_execute_command_includes_its_read_continuation()
+    {
+
+        List<AITool> mcpTools =
+        [
+            CreateTool(ToolRiskClassifier.ExecuteCommandToolName),
+            CreateTool(ToolRiskClassifier.ReadCommandOutputToolName),
+            CreateTool("write_file"),
+        ];
+
+        AttunementResult result = ArtifactAttunement.ApplyAttunement(
+            mcpTools,
+            [ToolRiskClassifier.ExecuteCommandToolName]);
+
+        Assert.Equal(
+            [
+                ToolRiskClassifier.ExecuteCommandToolName,
+                ToolRiskClassifier.ReadCommandOutputToolName,
+            ],
+            result.Allowed
+                .OfType<AIFunction>()
+                .Select(static tool => tool.Name));
+
+        Assert.Equal(["write_file"], result.Excluded);
+
+    }
+
+    [Fact]
     public void BuiltInToolCatalog_DefinesExactlyThreeAttunementExemptions()
     {
         Assert.True(

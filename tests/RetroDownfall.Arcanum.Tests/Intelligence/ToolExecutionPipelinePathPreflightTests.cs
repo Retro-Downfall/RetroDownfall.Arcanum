@@ -190,11 +190,9 @@ public sealed class ToolExecutionPipelinePathPreflightTests
         WorkspacePatchSettings settings = new()
         {
             MaxPatchBytes = long.MinValue,
-            MaxFiles = int.MinValue,
-            MaxHunks = int.MinValue,
-            MaxLinesPerHunk = int.MinValue,
-            MaxElapsedMilliseconds = int.MinValue,
-            RollbackReserveMilliseconds = int.MaxValue,
+            MaxInputBytesPerFile = long.MinValue,
+            MaxOutputBytesPerFile = long.MinValue,
+            RecoveryTimeoutMilliseconds = int.MaxValue,
         };
 
         bool parsed = ToolExecutionPipeline.TryParseApplyPatchManifest(

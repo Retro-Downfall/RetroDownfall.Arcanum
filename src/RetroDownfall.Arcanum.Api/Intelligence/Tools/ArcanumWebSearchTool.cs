@@ -104,9 +104,9 @@ public sealed class ArcanumWebSearchTool : AIFunction
         WebSearchOptions options = new()
         {
             Model = settings.PerplexityModel,
-            Timeout = TimeSpan.FromSeconds(
-                ArcanumSettingClamps.WebBrowsingRequestTimeoutSeconds(
-                    settings.RequestTimeoutSeconds)),
+            IdleTimeout = TimeSpan.FromSeconds(
+                ArcanumSettingClamps.WebBrowsingIdleTimeoutSeconds(
+                    settings.IdleTimeoutSeconds)),
             MaxResponseBytes =
                 ArcanumSettingClamps.WebBrowsingMaxResponseBytes(
                     settings.MaxResponseBytes),

@@ -16,18 +16,6 @@ public static class LexiconLimits
     /// <summary>Maximum stored length (chars) of an entity <c>Type</c>.</summary>
     public const int MaxTypeLength = 64;
 
-    /// <summary>Maximum facts accepted in a single <c>scribe_lexicon</c> upsert call.</summary>
-    public const int MaxFactsPerUpsert = 32;
-
-    /// <summary>Maximum stored length (chars) of a single fact string.</summary>
-    public const int MaxFactLength = 1024;
-
-    /// <summary>Maximum facts retained per entity after merging successive appends.</summary>
-    public const int MaxFactsRetainedPerEntry = 256;
-
-    /// <summary>Maximum entity strings extracted by the SemanticRouter or the fallback extractor.</summary>
-    public const int MaxExtractedEntities = 8;
-
     /// <summary>Default type assigned to a brand-new entity when the caller omits a type.</summary>
     public const string DefaultType = "General";
 

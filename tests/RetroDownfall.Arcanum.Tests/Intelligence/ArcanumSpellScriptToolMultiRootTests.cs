@@ -66,9 +66,17 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 
         ArcanumSpellScriptTool tool = new(
             [_rootA],
-            TimeSpan.FromSeconds(10),
-            10,
             allowUnsandboxedToolChildren: true);
+
+        Assert.DoesNotContain(
+            "timeout",
+            tool.Description,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            "caller cancellation",
+            tool.Description,
+            StringComparison.OrdinalIgnoreCase);
 
         string? result = await tool.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = scriptName }))
             as string;
@@ -89,8 +97,6 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 
         ArcanumSpellScriptTool tool = new(
             [_rootA, _rootB],
-            TimeSpan.FromSeconds(10),
-            10,
             allowUnsandboxedToolChildren: true);
 
         string? result = await tool.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = "dup.sh" }))
@@ -119,8 +125,6 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 
         ArcanumSpellScriptTool tool = new(
             [_rootA],
-            TimeSpan.FromSeconds(10),
-            10,
             allowUnsandboxedToolChildren: true);
 
         string? result = await tool.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = "payload.bin" }))
@@ -136,8 +140,6 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
     {
         ArcanumSpellScriptTool tool = new(
             [_rootA],
-            TimeSpan.FromSeconds(10),
-            10,
             allowUnsandboxedToolChildren: true);
 
         string? result = await tool.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = "../outside.sh" }))

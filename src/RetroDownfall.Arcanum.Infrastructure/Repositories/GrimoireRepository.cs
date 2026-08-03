@@ -41,8 +41,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
     /// Lowers the code-owned summarization ceiling so overflow recovery can be exercised without
     /// seeding a production-sized session.
     /// </summary>
-    internal int? SummarizationEntryCeilingForTesting { get; set; }
-
     public GrimoireRepository(
         ArcanumDbContext db,
         ISessionAttachmentStore attachments,
@@ -1124,57 +1122,26 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
         DateTimeOffset watermarkOffset = new(watermarkUtc);
 
-        int unsummarizedCount = await CountEntriesAfterAsync(
-            sessionId,
-            watermarkOffset,
-            cancellationToken).ConfigureAwait(false);
-
-        cancellationToken.ThrowIfCancellationRequested();
-
-        int entryCeiling = SummarizationEntryCeilingForTesting
-            ?? ArcanumSettingClamps.MaxEntriesPerSession(
-                GetSessionSettings().MaxEntriesPerSession);
-
-        if (unsummarizedCount > entryCeiling)
-        {
-            throw CreateSummarizationWindowOverflow(
-                sessionId,
-                unsummarizedCount,
-                entryCeiling);
-        }
-
         int target = Math.Max(1, batchSize);
-
-        int boundedLimit = Math.Min(
-            Math.Max(target, unsummarizedCount),
-            entryCeiling);
 
         int selectedCount = await EntryTemporalQueries
             .CountAfterWatermarkThroughTimestampGroup(
                 _db,
                 sessionId,
                 watermarkOffset,
-                boundedLimit)
+                target)
             .FirstAsync(cancellationToken)
             .ConfigureAwait(false);
 
         cancellationToken.ThrowIfCancellationRequested();
-
-        if (selectedCount > entryCeiling)
-        {
-            throw CreateSummarizationWindowOverflow(
-                sessionId,
-                selectedCount,
-                entryCeiling);
-        }
 
         List<Entry> entries = await EntryTemporalQueries
             .LoadAfterWatermarkThroughTimestampGroup(
                 _db,
                 sessionId,
                 watermarkOffset,
-                boundedLimit,
-                entryCeiling)
+                target,
+                selectedCount)
             .AsNoTracking()
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -1454,15 +1421,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
     private SessionSettings GetSessionSettings() =>
         _arcOptions.Value.ResolveSessions();
-
-    private static InvalidOperationException CreateSummarizationWindowOverflow(
-        Guid sessionId,
-        int entryCount,
-        int entryCeiling) =>
-        new(
-            $"Campaign log consolidation for session {sessionId} requires {entryCount} entries, "
-            + $"exceeding the configured session ceiling of {entryCeiling}. The watermark was not "
-            + "advanced. Repair or reinstall the local database before retrying.");
 
     private static string TruncateTitle(string prompt)
     {

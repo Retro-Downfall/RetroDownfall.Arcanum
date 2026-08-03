@@ -12,7 +12,7 @@ public static class EmbeddingsVectorStatus
         WeaveIndexAvailability availability)
     {
 
-        int budget = WeaveIndexAvailability.ManagedSearchRowBudget;
+        const int noRowBudget = 0;
 
         if (!embeddings.Enabled)
         {
@@ -21,7 +21,7 @@ public static class EmbeddingsVectorStatus
                 false,
                 WeaveIndexAvailability.ModeDisabled,
                 "Embeddings are disabled (no embedding-backed Arcanum:Features opt-in is enabled).",
-                budget);
+                noRowBudget);
 
         }
 
@@ -32,25 +32,23 @@ public static class EmbeddingsVectorStatus
                 true,
                 WeaveIndexAvailability.ModeUnavailable,
                 "Embeddings are enabled but Arcanum:Integrations:Embeddings:Provider or Arcanum:Integrations:Embeddings:Model is not configured.",
-                budget);
+                noRowBudget);
 
         }
 
         if (availability.IsVecAvailable)
         {
 
-            return (true, WeaveIndexAvailability.ModeVec0, availability.Diagnostic, budget);
+            return (true, WeaveIndexAvailability.ModeVec0, availability.Diagnostic, noRowBudget);
 
         }
 
         return (
             true,
             WeaveIndexAvailability.ModeManaged,
-            "managed SIMD fallback; preview/performance-limited; row budget "
-            + budget
-            + ". "
+            "complete streamed managed SIMD fallback; no total row budget. "
             + availability.Diagnostic,
-            budget);
+            noRowBudget);
 
     }
 

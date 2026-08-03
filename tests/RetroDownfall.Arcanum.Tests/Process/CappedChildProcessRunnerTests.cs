@@ -11,7 +11,7 @@ public sealed class CappedChildProcessRunnerTests
     private const string SentinelToken = "ARCANUM_RUNNER_TEST";
 
     [Fact]
-    public async Task RunAsync_harmless_echo_returns_exit_code_zero()
+    public async Task RunAsync_infinite_timeout_harmless_echo_returns_exit_code_zero()
     {
 
         ProcessStartInfo psi = CreateHarmlessEchoProcessStartInfo();
@@ -20,7 +20,7 @@ public sealed class CappedChildProcessRunnerTests
             psi,
             ChildProcessEnvironmentProfile.SpellScript,
             totalOutputCapBytes: 65_536,
-            timeout: TimeSpan.FromSeconds(30),
+            timeout: Timeout.InfiniteTimeSpan,
             resourceLimits: null,
             resourceLimiter: null,
             CancellationToken.None);
@@ -53,6 +53,183 @@ public sealed class CappedChildProcessRunnerTests
         Assert.True(result.Stdout.Truncated);
 
         Assert.Equal(1024L, result.PerStreamCapBytes);
+
+    }
+
+    [Fact]
+    public async Task RunAsync_spills_complete_stdout_after_preview_cap()
+    {
+
+        string spillDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-command-output-test-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(spillDirectory);
+
+        try
+        {
+
+            const int payloadCharacters = 25_000;
+
+            ProcessStartInfo psi = CreateLargeOutputProcessStartInfo(payloadCharacters);
+
+            CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.SpellScript,
+                totalOutputCapBytes: 2048,
+                timeout: TimeSpan.FromSeconds(30),
+                resourceLimits: null,
+                resourceLimiter: null,
+                CancellationToken.None,
+                outputSpillDirectory: spillDirectory);
+
+            Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
+
+            Assert.True(result.Stdout.Truncated);
+
+            string spillPath = Assert.IsType<string>(result.Stdout.CompleteOutputPath);
+
+            Assert.Equal(
+                new string('x', payloadCharacters),
+                (await File.ReadAllTextAsync(spillPath)).TrimEnd('\r', '\n'));
+
+            Assert.Equal(
+                new FileInfo(spillPath).Length,
+                result.Stdout.TotalBytes);
+
+        }
+        finally
+        {
+
+            Directory.Delete(spillDirectory, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task RunAsync_cancellation_deletes_partial_spilled_output()
+    {
+
+        string spillDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-command-output-cancel-test-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(spillDirectory);
+
+        try
+        {
+
+            ProcessStartInfo psi = CreateLargeOutputThenSleepProcessStartInfo(
+                payloadCharCount: 500_000,
+                seconds: 60);
+
+            using CancellationTokenSource cancellation = new(TimeSpan.FromMilliseconds(750));
+
+            CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.SpellScript,
+                totalOutputCapBytes: 2048,
+                timeout: Timeout.InfiniteTimeSpan,
+                resourceLimits: null,
+                resourceLimiter: null,
+                cancellation.Token,
+                outputSpillDirectory: spillDirectory);
+
+            Assert.Equal(CappedChildProcessOutcome.Canceled, result.Outcome);
+
+            Assert.Empty(Directory.EnumerateFiles(spillDirectory));
+
+        }
+        finally
+        {
+
+            Directory.Delete(spillDirectory, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task RunAsync_spill_storage_failure_kills_process_instead_of_discarding_output()
+    {
+
+        string missingSpillDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-command-output-missing-test-" + Guid.NewGuid().ToString("N"),
+            "not-created");
+
+        ProcessStartInfo psi = CreateLargeOutputThenSleepProcessStartInfo(
+            payloadCharCount: 500_000,
+            seconds: 60);
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+
+        CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.SpellScript,
+            totalOutputCapBytes: 2048,
+            timeout: Timeout.InfiniteTimeSpan,
+            resourceLimits: null,
+            resourceLimiter: null,
+            CancellationToken.None,
+            outputSpillDirectory: missingSpillDirectory);
+
+        stopwatch.Stop();
+
+        Assert.Equal(
+            CappedChildProcessOutcome.OutputPreservationFailed,
+            result.Outcome);
+
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(10),
+            $"Expected output preservation failure to terminate the child promptly; took {stopwatch.Elapsed}.");
+
+        Assert.False(Directory.Exists(missingSpillDirectory));
+
+    }
+
+    [Fact]
+    public async Task RunAsync_spill_honors_existing_sanctum_file_write_policy()
+    {
+
+        string spillDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-command-output-budget-test-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(spillDirectory);
+
+        try
+        {
+
+            ProcessStartInfo psi = CreateLargeOutputProcessStartInfo(payloadCharCount: 2_000_000);
+
+            CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
+                psi,
+                ChildProcessEnvironmentProfile.SpellScript,
+                totalOutputCapBytes: 2048,
+                timeout: Timeout.InfiniteTimeSpan,
+                resourceLimits: new ResourceLimits { MaxFileWriteMb = 1 },
+                resourceLimiter: null,
+                CancellationToken.None,
+                outputSpillDirectory: spillDirectory);
+
+            Assert.Equal(
+                CappedChildProcessOutcome.OutputPreservationFailed,
+                result.Outcome);
+
+            Assert.Empty(Directory.EnumerateFiles(spillDirectory));
+
+            Assert.IsType<CommandOutputSpillLimitException>(
+                result.FaultException?.GetBaseException());
+
+        }
+        finally
+        {
+
+            Directory.Delete(spillDirectory, recursive: true);
+
+        }
 
     }
 
@@ -730,6 +907,61 @@ public sealed class CappedChildProcessRunnerTests
             CreateNoWindow = true,
 
             ArgumentList = { "-c", $"printf '%*s' {payloadCharCount} | tr ' ' 'x'" },
+
+        };
+
+    }
+
+    private static ProcessStartInfo CreateLargeOutputThenSleepProcessStartInfo(
+        int payloadCharCount,
+        int seconds)
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return new ProcessStartInfo
+            {
+
+                FileName = "powershell.exe",
+
+                RedirectStandardOutput = true,
+
+                RedirectStandardError = true,
+
+                UseShellExecute = false,
+
+                CreateNoWindow = true,
+
+                ArgumentList =
+                {
+                    "-NoProfile",
+                    "-Command",
+                    $"[Console]::Out.Write(('x' * {payloadCharCount})); Start-Sleep -Seconds {seconds}",
+                },
+
+            };
+
+        }
+
+        return new ProcessStartInfo
+        {
+
+            FileName = "/bin/sh",
+
+            RedirectStandardOutput = true,
+
+            RedirectStandardError = true,
+
+            UseShellExecute = false,
+
+            CreateNoWindow = true,
+
+            ArgumentList =
+            {
+                "-c",
+                $"printf '%*s' {payloadCharCount} | tr ' ' 'x'; sleep {seconds}",
+            },
 
         };
 

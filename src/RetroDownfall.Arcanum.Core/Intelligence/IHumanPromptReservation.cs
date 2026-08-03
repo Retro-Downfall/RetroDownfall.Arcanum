@@ -2,7 +2,7 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
 /// Host-owned handle for one admitted human-prompt waiter slot. Dispose releases capacity exactly once;
-/// timeout/cancel and <see cref="IHumanPromptRegistry.TrySubmitResponse"/> must not.
+/// cancellation and <see cref="IHumanPromptRegistry.TrySubmitResponse"/> must not.
 /// </summary>
 public interface IHumanPromptReservation : IAsyncDisposable
 {
@@ -10,8 +10,8 @@ public interface IHumanPromptReservation : IAsyncDisposable
     string PromptId { get; }
 
     /// <summary>
-    /// Waits for <see cref="IHumanPromptRegistry.TrySubmitResponse"/> (or timeout/cancel).
+    /// Waits for <see cref="IHumanPromptRegistry.TrySubmitResponse"/> or caller cancellation.
     /// Does not release capacity; the owner must <see cref="IAsyncDisposable.DisposeAsync"/>.
     /// </summary>
-    Task<string> WaitAsync(TimeSpan timeout, CancellationToken cancellationToken);
+    Task<string> WaitAsync(CancellationToken cancellationToken);
 }

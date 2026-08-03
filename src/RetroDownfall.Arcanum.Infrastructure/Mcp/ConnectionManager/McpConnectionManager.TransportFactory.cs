@@ -103,53 +103,11 @@ public sealed partial class McpConnectionManager
         return McpServerTransport.Stdio;
     }
 
-    private int GetClampedExecuteCommandTimeoutSeconds()
-    {
-        int executeSeconds = Math.Clamp(
-            ArcanumRuntimeDefaults.Intelligence.ExecuteCommandTimeoutSeconds,
-            1,
-            600);
-
-        int requestSeconds = ArcanumSettingClamps.McpRequestTimeoutSeconds(
-            ArcanumRuntimeDefaults.Mcp.RequestTimeoutSeconds);
-
-        return Math.Min(executeSeconds, requestSeconds);
-    }
-
-    private TimeSpan GetClampedMcpRequestTimeout()
+    private TimeSpan GetClampedMcpInitializationTimeout()
     {
         return TimeSpan.FromSeconds(
-            ArcanumSettingClamps.McpRequestTimeoutSeconds(
-                ArcanumRuntimeDefaults.Mcp.RequestTimeoutSeconds));
-    }
-
-    private int GetClampedMcpMaxPaginationPages()
-    {
-        return ArcanumSettingClamps.McpMaxPaginationPages(
-            ArcanumRuntimeDefaults.Mcp.MaxPaginationPages);
-    }
-
-    private int GetClampedMcpMaxServers()
-    {
-
-        return ArcanumSettingClamps.McpMaxServers(
-            ArcanumRuntimeDefaults.Mcp.MaxServers);
-
-    }
-
-    private int GetClampedMcpMaxToolsPerServer()
-    {
-
-        return ArcanumSettingClamps.McpMaxToolsPerServer(
-            ArcanumRuntimeDefaults.Mcp.MaxToolsPerServer);
-
-    }
-
-    private int GetClampedMcpMaxToolsPerListPage()
-    {
-
-        return ArcanumSettingClamps.McpMaxToolsPerListPage(
-            ArcanumRuntimeDefaults.Mcp.MaxToolsPerListPage);
+            ArcanumSettingClamps.McpInitializationTimeoutSeconds(
+                ArcanumRuntimeDefaults.Mcp.InitializationTimeoutSeconds));
 
     }
 
@@ -185,7 +143,7 @@ public sealed partial class McpConnectionManager
                 Name = typeof(McpConnectionManager).Assembly.GetName().Name ?? "RetroDownfall.Arcanum.Infrastructure",
                 Version = typeof(McpConnectionManager).Assembly.GetName().Version?.ToString() ?? "0.0.0",
             },
-            InitializationTimeout = GetClampedMcpRequestTimeout(),
+            InitializationTimeout = GetClampedMcpInitializationTimeout(),
             Handlers = new McpClientHandlers
             {
                 ElicitationHandler = HandleElicitationAsync,
@@ -216,11 +174,9 @@ public sealed partial class McpConnectionManager
             return DeclineElicitation(schemaDeclineReason ?? "Unsupported elicitation schema.");
         }
 
-        IHumanPromptReservation? reservation = humanPromptRegistry.TryCreateReservation();
-        if (reservation is null)
-        {
-            return DeclineElicitation(HumanPromptCapExceededException.DefaultMessage);
-        }
+        IHumanPromptReservation reservation = await humanPromptRegistry
+            .CreateReservationAsync(cancellationToken)
+            .ConfigureAwait(false);
 
         string callId = string.IsNullOrWhiteSpace(request?.ElicitationId)
             ? Guid.NewGuid().ToString("N")
@@ -240,7 +196,7 @@ public sealed partial class McpConnectionManager
                 .ConfigureAwait(false);
 
             string value = await reservation
-                .WaitAsync(HumanPromptElicitationHardCeiling, cancellationToken)
+                .WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             await EmitAskHumanCompatibleToolResultAsync(
@@ -260,18 +216,6 @@ public sealed partial class McpConnectionManager
                 },
             };
         }
-        catch (HumanPromptTimeoutException)
-        {
-            await EmitAskHumanCompatibleToolResultAsync(
-                    emitter,
-                    callId,
-                    HumanPromptTimeoutException.DefaultMessage,
-                    isError: true,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            return DeclineElicitation(HumanPromptTimeoutException.DefaultMessage);
-        }
         catch (OperationCanceledException)
         {
             throw;
@@ -281,9 +225,6 @@ public sealed partial class McpConnectionManager
             await reservation.DisposeAsync().ConfigureAwait(false);
         }
     }
-
-    // Mirrors HumanPromptRegistry.HardCeiling without taking a dependency on the Api assembly.
-    private static readonly TimeSpan HumanPromptElicitationHardCeiling = TimeSpan.FromMinutes(30);
 
     private static ModelContextProtocol.Protocol.ElicitResult DeclineElicitation(string reason) =>
         new()
@@ -399,21 +340,9 @@ public sealed partial class McpConnectionManager
         return new SdkMcpClientWrapper(
             clientTransport,
             BuildMcpClientOptions(),
-            GetClampedMcpRequestTimeout(),
-            GetClampedMcpMaxPaginationPages(),
+            GetClampedMcpInitializationTimeout(),
             GetClampedToolOutputCapBytes(),
-            GetClampedMcpMaxToolsPerServer(),
-            GetClampedMcpMaxToolsPerListPage(),
             GetClampedMcpMaxToolsTotalBytes());
-    }
-
-    private TimeSpan GetClampedMcpHttpRequestTimeout()
-    {
-
-        return TimeSpan.FromSeconds(
-            ArcanumSettingClamps.McpHttpRequestTimeoutSeconds(
-                ArcanumRuntimeDefaults.Mcp.HttpRequestTimeoutSeconds));
-
     }
 
     private SdkMcpClientWrapper CreateHttpMcpClient(Uri endpoint)

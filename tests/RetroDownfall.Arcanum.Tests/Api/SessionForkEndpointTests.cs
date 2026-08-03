@@ -242,15 +242,13 @@ public sealed class SessionForkEndpointTests
     }
 
     [SkippableFact]
-    public async Task PostFork_ChainWithinMaxForkDepth_Succeeds_ThenExceedingDepthFails()
+    public async Task PostFork_DeepAcyclicChain_RemainsUsable()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
 
-        // Default Arcanum:Sessions:MaxForkDepth = 3: root -> fork1 -> fork2 -> fork3 all succeed
-        // (fork3's source depth is 2, 2+1=3 is not > 3); forking fork3 (source depth 3) fails.
         SessionDetailDto root = await CreateSessionAsync(client, "Root");
 
         SessionDetailDto fork1 = await ReadSessionAsync(await PostForkAsync(client, root.Id, new ForkSessionRequest()));
@@ -261,13 +259,11 @@ public sealed class SessionForkEndpointTests
 
         HttpResponseMessage fourthForkResponse = await PostForkAsync(client, fork3.Id, new ForkSessionRequest());
 
-        Assert.Equal(HttpStatusCode.Conflict, fourthForkResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, fourthForkResponse.StatusCode);
 
-        ApiResponse<SessionDetailDto>? body = JsonSerializer.Deserialize(
-            await fourthForkResponse.Content.ReadAsStringAsync(),
-            ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+        SessionDetailDto fork4 = await ReadSessionAsync(fourthForkResponse);
 
-        Assert.Equal("Session.ForkDepthExceeded", body!.Error?.Code);
+        Assert.Equal(fork3.Id, fork4.ForkedFromSessionId);
 
     }
 

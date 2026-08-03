@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
@@ -246,7 +248,7 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Deadline_sliced_interpreted_regex_remains_valid()
+    public async Task Interpreted_regex_remains_valid_after_slow_filter_setup()
     {
         _workspace.WriteFile("stateful.txt", "abc");
 
@@ -256,7 +258,6 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
             caseSensitive: true,
             DefaultSettings() with
             {
-                MaxElapsedMilliseconds = 100,
                 RegexTimeoutMilliseconds = 500,
             },
             globs: new DelayedReadOnlyList("**/*", TimeSpan.FromMilliseconds(25)));
@@ -332,7 +333,7 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Search_applies_filters_before_the_file_cap()
+    public async Task Search_applies_filters_without_a_total_file_cap()
     {
 
         _workspace.WriteFile("a-ignored.txt", "needle");
@@ -343,16 +344,47 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
             "needle",
             WorkspaceSearchMode.Literal,
             caseSensitive: true,
-            DefaultSettings() with { MaxFiles = 1 },
+            DefaultSettings(),
             globs: ["**/*.cs"]);
 
         WorkspaceSearchToolResultItem match = Assert.Single(result.Matches);
 
         Assert.Equal("z-target.cs", match.Path);
 
-        Assert.NotEqual("max_files", result.Code);
+        Assert.Null(result.Code);
 
         Assert.Equal(1, result.SkippedFilteredFileCount);
+
+    }
+
+    [Fact]
+    public async Task Search_accepts_filters_beyond_the_former_per_kind_total()
+    {
+
+        _workspace.WriteFile("target.txt", "needle");
+
+        List<string> globs = Enumerable
+            .Range(0, 64)
+            .Select(static index => $"missing-{index}.txt")
+            .Append("target.txt")
+            .ToList();
+
+        List<string> extensions = Enumerable
+            .Range(0, 64)
+            .Select(static index => $".missing-{index}")
+            .Append(".txt")
+            .ToList();
+
+        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true,
+            globs: globs,
+            extensions: extensions);
+
+        WorkspaceSearchToolResultItem match = Assert.Single(result.Matches);
+
+        Assert.Equal("target.txt", match.Path);
 
     }
 
@@ -417,7 +449,7 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Search_enforces_pattern_and_match_caps()
+    public async Task Search_retains_the_pattern_allocation_boundary()
     {
 
         _workspace.WriteFile("matches.txt", "x x x x");
@@ -428,79 +460,427 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
             caseSensitive: true,
             DefaultSettings() with { MaxPatternChars = 3 });
 
-        WorkspaceSearchToolResultEnvelope matchLimited = await SearchAsync(
-            "x",
-            WorkspaceSearchMode.Literal,
-            caseSensitive: true,
-            DefaultSettings() with { MaxMatches = 2 });
-
         Assert.Equal("invalid_pattern", patternLimited.Status);
         Assert.Equal("pattern_too_long", patternLimited.Code);
-        Assert.Equal("capped", matchLimited.Status);
-        Assert.Equal("max_matches", matchLimited.Code);
-        Assert.Equal(2, matchLimited.Matches.Length);
-        Assert.True(matchLimited.Truncated);
 
     }
 
     [Fact]
-    public async Task Search_enforces_file_and_traversal_caps()
+    public async Task Search_pages_every_match_beyond_the_former_total_cap()
     {
 
-        _workspace.WriteFile("a.txt", "needle");
-        _workspace.WriteFile("b.txt", "needle");
+        const int expectedCount = 1_105;
 
-        WorkspaceSearchToolResultEnvelope fileLimited = await SearchAsync(
-            "needle",
-            WorkspaceSearchMode.Literal,
-            caseSensitive: true,
-            DefaultSettings() with { MaxFiles = 1 });
+        _workspace.WriteFile(
+            "matches.txt",
+            string.Join('\n', Enumerable.Repeat("needle", expectedCount)));
 
-        WorkspaceSearchToolResultEnvelope stepLimited = await SearchAsync(
-            "needle",
-            WorkspaceSearchMode.Literal,
-            caseSensitive: true,
-            DefaultSettings() with { MaxTraversalSteps = 1 });
+        List<WorkspaceSearchToolResultItem> allMatches = [];
 
-        Assert.Equal("capped", fileLimited.Status);
-        Assert.Equal("max_files", fileLimited.Code);
-        Assert.Single(fileLimited.Matches);
-        Assert.Equal("capped", stepLimited.Status);
-        Assert.Equal("max_traversal_steps", stepLimited.Code);
-        Assert.Equal(1, stepLimited.TraversalSteps);
+        string? cursor = null;
+
+        do
+        {
+
+            WorkspaceSearchToolResultEnvelope page = await SearchAsync(
+                "needle",
+                WorkspaceSearchMode.Literal,
+                caseSensitive: true,
+                cursor: cursor);
+
+            allMatches.AddRange(page.Matches);
+
+            if (page.NextCursor is not string nextCursor)
+            {
+
+                break;
+
+            }
+
+            Assert.True(page.Truncated);
+
+            Assert.NotEmpty(nextCursor);
+
+            Assert.DoesNotContain("matches.txt", nextCursor, StringComparison.Ordinal);
+
+            Assert.Equal(
+                "Call search_workspace again with cursor set to nextCursor and the same search arguments.",
+                page.ContinuationAction);
+
+            cursor = nextCursor;
+
+        } while (true);
+
+        Assert.Equal(expectedCount, allMatches.Count);
+
+        Assert.Equal(
+            Enumerable.Range(1, expectedCount),
+            allMatches.Select(static match => match.Line));
 
     }
 
     [Fact]
-    public async Task Search_enforces_total_byte_cap_before_reading_the_next_file()
+    public async Task Search_continuation_anchors_to_the_last_match_when_an_earlier_file_is_added()
     {
 
-        _workspace.WriteFile("a.txt", "needle" + new string('a', 700));
-        _workspace.WriteFile("b.txt", "needle" + new string('b', 700));
+        _workspace.WriteFile(
+            "b.txt",
+            string.Join(
+                '\n',
+                Enumerable.Range(1, 300).Select(
+                    static line => $"needle {line:D3}")));
+
+        WorkspaceSearchToolResultEnvelope first = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true);
+
+        string cursor = Assert.IsType<string>(first.NextCursor);
+
+        _workspace.WriteFile(
+            "a.txt",
+            string.Join('\n', Enumerable.Repeat("needle inserted", 10)));
+
+        WorkspaceSearchToolResultEnvelope second = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true,
+            cursor: cursor);
+
+        Assert.Equal("ok", second.Status);
+
+        Assert.Equal(44, second.Matches.Length);
+
+        Assert.All(
+            second.Matches,
+            static match => Assert.Equal("b.txt", match.Path));
+
+        Assert.Equal(
+            Enumerable.Range(257, 44),
+            second.Matches.Select(static match => match.Line));
+
+    }
+
+    [Fact]
+    public async Task Search_continuation_requests_restart_when_checkpoint_identity_vanished()
+    {
+
+        _workspace.WriteFile(
+            "matches.txt",
+            string.Join(
+                '\n',
+                Enumerable.Range(1, 300).Select(
+                    static line => $"needle {line:D3}")));
+
+        WorkspaceSearchToolResultEnvelope first = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true);
+
+        string cursor = Assert.IsType<string>(first.NextCursor);
+
+        _workspace.WriteFile(
+            "matches.txt",
+            string.Join(
+                '\n',
+                Enumerable.Range(1, 300)
+                    .Where(static line => line != 256)
+                    .Select(static line => $"needle {line:D3}")));
+
+        WorkspaceSearchToolResultEnvelope second = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true,
+            cursor: cursor);
+
+        Assert.Equal("invalid_cursor", second.Status);
+
+        Assert.Equal("continuation_checkpoint_missing", second.Code);
+
+        Assert.Empty(second.Matches);
+
+        Assert.Null(second.NextCursor);
+
+        Assert.Equal(
+            "The workspace changed and the continuation checkpoint no longer exists. Restart with cursor omitted.",
+            second.Message);
+
+    }
+
+    [Fact]
+    public void Structured_result_trimming_continues_after_the_last_retained_match_identity()
+    {
+
+        WorkspaceSearchToolResultEnvelope source = new()
+        {
+            Matches =
+            [
+                new("a.txt", 1, 1, "one"),
+                new("a.txt", 2, 1, "two"),
+                new("a.txt", 3, 1, "three"),
+            ],
+            NextCursor = "third-checkpoint",
+            MatchCursors =
+            [
+                "first-checkpoint",
+                "second-checkpoint",
+                "third-checkpoint",
+            ],
+            Truncated = true,
+        };
+
+        WorkspaceSearchToolResultEnvelope trimmed = source.RetainLeadingItems(2);
+
+        Assert.Equal(2, trimmed.Matches.Length);
+
+        Assert.Equal("second-checkpoint", trimmed.NextCursor);
+
+        Assert.Equal(
+            "Call search_workspace again with cursor set to nextCursor and the same search arguments.",
+            trimmed.ContinuationAction);
+
+    }
+
+    [Fact]
+    public async Task Search_streams_files_beyond_the_former_aggregate_byte_cap()
+    {
+
+        const int formerAggregateCap = 32 * 1024 * 1024;
+
+        _workspace.WriteFile(
+            "large.txt",
+            string.Concat(
+                Enumerable.Repeat(
+                    new string('a', 4_095) + "\n",
+                    (formerAggregateCap / 4_096) + 1))
+            + "needle");
 
         WorkspaceSearchToolResultEnvelope result = await SearchAsync(
             "needle",
             WorkspaceSearchMode.Literal,
-            caseSensitive: true,
-            DefaultSettings() with { MaxBytes = 1_024 });
+            caseSensitive: true);
 
-        Assert.Equal("capped", result.Status);
-        Assert.Equal("max_bytes", result.Code);
+        Assert.Equal("ok", result.Status);
         Assert.Single(result.Matches);
-        Assert.Equal("a.txt", result.Matches[0].Path);
-        Assert.InRange(result.BytesSearched, 700, 1_024);
+        Assert.Equal("large.txt", result.Matches[0].Path);
+        Assert.True(result.BytesSearched > formerAggregateCap);
+
+    }
+
+    [Theory]
+    [InlineData((int)WorkspaceSearchMode.Literal)]
+    [InlineData((int)WorkspaceSearchMode.Regex)]
+    public async Task Search_spills_a_giant_logical_line_owner_only_and_cleans_it_up(
+        int modeValue)
+    {
+
+        WorkspaceSearchMode mode = (WorkspaceSearchMode)modeValue;
+
+        string prefix = new(
+            'x',
+            WorkspaceSearchLogicalLine.InMemoryCharacterLimit + 37);
+
+        _workspace.WriteFile(
+            "giant.txt",
+            $"{prefix}needle");
+
+        RecordingLineSpillObserver spillObserver = new();
+
+        WorkspaceSearchEngine engine = new(
+            DefaultSettings(),
+            progressObserver: null,
+            spillObserver);
+
+        WorkspaceSearchToolResultEnvelope result = await engine.SearchAsync(
+            _workspace.Root,
+            new WorkspaceSearchRequest
+            {
+                Pattern = "needle",
+                Mode = mode,
+                CaseSensitive = true,
+            },
+            CancellationToken.None);
+
+        WorkspaceSearchToolResultItem match = Assert.Single(result.Matches);
+
+        Assert.Equal(prefix.Length + 1, match.Column);
+
+        string spillPath = Assert.Single(spillObserver.Paths);
+
+        Assert.True(spillObserver.OwnerOnlyAtCreation);
+
+        Assert.False(File.Exists(spillPath));
 
     }
 
     [Fact]
-    public async Task Search_enforces_monotonic_elapsed_cap()
+    public async Task Regex_search_preserves_whole_line_semantics_after_bounded_spill()
+    {
+
+        string prefix = new(
+            'x',
+            WorkspaceSearchLogicalLine.InMemoryCharacterLimit + 19);
+
+        _workspace.WriteFile(
+            "giant-regex.txt",
+            $"{prefix} magic42 magic42");
+
+        RecordingLineSpillObserver spillObserver = new();
+
+        WorkspaceSearchEngine engine = new(
+            DefaultSettings(),
+            progressObserver: null,
+            spillObserver);
+
+        WorkspaceSearchToolResultEnvelope result = await engine.SearchAsync(
+            _workspace.Root,
+            new WorkspaceSearchRequest
+            {
+                Pattern = @"(magic\d+)\s+\1$",
+                Mode = WorkspaceSearchMode.Regex,
+                CaseSensitive = true,
+            },
+            CancellationToken.None);
+
+        WorkspaceSearchToolResultItem match = Assert.Single(result.Matches);
+
+        Assert.Equal(prefix.Length + 2, match.Column);
+
+        Assert.Equal("interpreted", result.RegexEngine);
+
+        Assert.Single(spillObserver.Paths);
+
+    }
+
+    [Fact]
+    public async Task Search_cancellation_removes_the_current_owner_only_line_spill()
+    {
+
+        string content = new(
+            'x',
+            WorkspaceSearchLogicalLine.InMemoryCharacterLimit * 2);
+
+        _workspace.WriteFile("cancel-giant.txt", content);
+
+        using CancellationTokenSource cancellation = new();
+
+        CancellingLineSpillObserver spillObserver = new(cancellation);
+
+        WorkspaceSearchEngine engine = new(
+            DefaultSettings(),
+            progressObserver: null,
+            spillObserver);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => engine.SearchAsync(
+                _workspace.Root,
+                new WorkspaceSearchRequest
+                {
+                    Pattern = "absent",
+                    Mode = WorkspaceSearchMode.Literal,
+                    CaseSensitive = true,
+                },
+                cancellation.Token));
+
+        string spillPath = Assert.IsType<string>(spillObserver.Path);
+
+        Assert.False(File.Exists(spillPath));
+
+    }
+
+    [Fact]
+    public void Line_context_hash_keeps_the_existing_utf8_identity_without_a_full_byte_array()
+    {
+
+        byte[] previous = Enumerable.Range(0, 32)
+            .Select(static value => (byte)value)
+            .ToArray();
+
+        const string line = "alpha ✨ beta 𐐷";
+
+        byte[] expectedInput = previous
+            .Concat(Encoding.UTF8.GetBytes(line))
+            .ToArray();
+
+        byte[] expected = SHA256.HashData(expectedInput);
+
+        byte[] actual = WorkspaceSearchContinuationCursor
+            .CreateLineContextHash(previous, line.AsSpan());
+
+        Assert.Equal(expected, actual);
+
+    }
+
+    [Fact]
+    public async Task Giant_line_cursor_continues_after_the_exact_literal_match_identity()
+    {
+
+        string prefix = new(
+            'x',
+            WorkspaceSearchLogicalLine.InMemoryCharacterLimit + 11);
+
+        _workspace.WriteFile(
+            "giant-page.txt",
+            prefix + string.Concat(Enumerable.Repeat("needle", 300)));
+
+        WorkspaceSearchToolResultEnvelope first = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true);
+
+        string cursor = Assert.IsType<string>(first.NextCursor);
+
+        WorkspaceSearchToolResultEnvelope second = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true,
+            cursor: cursor);
+
+        Assert.Equal(256, first.Matches.Length);
+
+        Assert.Equal(44, second.Matches.Length);
+
+        Assert.Equal(
+            prefix.Length + (256 * "needle".Length) + 1,
+            second.Matches[0].Column);
+
+    }
+
+    [Fact]
+    public async Task Search_visits_files_beyond_the_former_total_file_cap()
+    {
+
+        const int formerFileCap = 2_000;
+
+        for (int index = 0; index <= formerFileCap; index++)
+        {
+
+            _workspace.WriteFile(
+                $"many/file-{index:D4}.txt",
+                index == formerFileCap ? "needle" : "haystack");
+
+        }
+
+        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true);
+
+        WorkspaceSearchToolResultItem match = Assert.Single(result.Matches);
+
+        Assert.Equal("many/file-2000.txt", match.Path);
+
+        Assert.True(result.FilesVisited > formerFileCap);
+
+    }
+
+    [Fact]
+    public async Task Search_is_not_stopped_by_a_product_owned_elapsed_clock()
     {
 
         _workspace.WriteFile("a.txt", "needle");
 
-        WorkspaceSearchEngine engine = new(
-            DefaultSettings() with { MaxElapsedMilliseconds = 100 },
-            new IncrementingTimeProvider());
+        WorkspaceSearchEngine engine = new(DefaultSettings());
 
         WorkspaceSearchToolResultEnvelope result = await engine.SearchAsync(
             _workspace.Root,
@@ -512,27 +892,9 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
             },
             CancellationToken.None);
 
-        Assert.Equal("capped", result.Status);
-        Assert.Equal("max_elapsed", result.Code);
-        Assert.True(result.Truncated);
+        Assert.Equal("ok", result.Status);
+        Assert.Single(result.Matches);
 
-    }
-
-    [Fact]
-    public async Task Search_elapsed_budget_starts_before_filter_setup()
-    {
-        _workspace.WriteFile("a.txt", "needle");
-
-        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
-            "needle",
-            WorkspaceSearchMode.Literal,
-            caseSensitive: true,
-            DefaultSettings() with { MaxElapsedMilliseconds = 100 },
-            globs: new DelayedReadOnlyList("**/*", TimeSpan.FromMilliseconds(150)));
-
-        Assert.Equal("capped", result.Status);
-        Assert.Equal("max_elapsed", result.Code);
-        Assert.Equal(0, result.TraversalSteps);
     }
 
     [Fact]
@@ -549,26 +911,6 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
                 caseSensitive: true,
                 globs: globs,
                 cancellationToken: cancellation.Token));
-    }
-
-    [Fact]
-    public async Task Search_regex_operation_never_outlives_remaining_elapsed_budget()
-    {
-        _workspace.WriteFile("expensive.txt", new string('a', 100_000) + "!");
-
-        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
-            @"^(a+)+(?=b)",
-            WorkspaceSearchMode.Regex,
-            caseSensitive: true,
-            DefaultSettings() with
-            {
-                MaxElapsedMilliseconds = 100,
-                RegexTimeoutMilliseconds = 500,
-            },
-            globs: new DelayedReadOnlyList("**/*", TimeSpan.FromMilliseconds(75)));
-
-        Assert.Equal("capped", result.Status);
-        Assert.Equal("max_elapsed", result.Code);
     }
 
     [Theory]
@@ -596,7 +938,6 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
         CancellingSearchObserver observer = new(phase, cancellation);
         WorkspaceSearchEngine engine = new(
             DefaultSettings(),
-            TimeProvider.System,
             observer);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
@@ -745,7 +1086,6 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
 
         WorkspaceSearchToolResultEnvelope result = await new WorkspaceSearchEngine(
             DefaultSettings(),
-            TimeProvider.System,
             observer)
             .SearchAsync(
                 _workspace.Root,
@@ -791,6 +1131,7 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
         string? root = null,
         IReadOnlyList<string>? globs = null,
         IReadOnlyList<string>? extensions = null,
+        string? cursor = null,
         CancellationToken cancellationToken = default)
     {
 
@@ -806,6 +1147,7 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
                 Root = root,
                 Globs = globs ?? [],
                 Extensions = extensions ?? [],
+                Cursor = cursor,
             },
             cancellationToken);
 
@@ -816,24 +1158,8 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
         {
             MaxPatternChars = 4_096,
             RegexTimeoutMilliseconds = 250,
-            MaxElapsedMilliseconds = 10_000,
-            MaxFiles = 2_000,
-            MaxBytes = 32L * 1024L * 1024L,
-            MaxTraversalSteps = 100_000,
-            MaxMatches = 1_000,
             MaxPreviewChars = 512,
         };
-
-    private sealed class IncrementingTimeProvider : TimeProvider
-    {
-
-        private long _timestamp;
-
-        public override long TimestampFrequency => 1_000;
-
-        public override long GetTimestamp() => Interlocked.Add(ref _timestamp, 1_000);
-
-    }
 
     private sealed class HardLinkingSearchObserver(
         string target,
@@ -856,6 +1182,49 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
             Assert.True(Linked);
 
         }
+    }
+
+    private sealed class RecordingLineSpillObserver : IWorkspaceSearchLineSpillObserver
+    {
+
+        public List<string> Paths { get; } = [];
+
+        public bool OwnerOnlyAtCreation { get; private set; } = true;
+
+        public void OnCreated(string path)
+        {
+
+            Paths.Add(path);
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                UnixFileMode mode = File.GetUnixFileMode(path);
+
+                OwnerOnlyAtCreation &= mode
+                    == (UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            }
+
+        }
+
+    }
+
+    private sealed class CancellingLineSpillObserver(
+        CancellationTokenSource cancellation) : IWorkspaceSearchLineSpillObserver
+    {
+
+        public string? Path { get; private set; }
+
+        public void OnCreated(string path)
+        {
+
+            Path = path;
+
+            cancellation.Cancel();
+
+        }
+
     }
 
     private static class UnixNative

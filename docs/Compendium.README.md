@@ -144,20 +144,28 @@ preserving unrelated and later manual edits. Bounded no-follow sidecar reads and
 ownership/value/hash/state validation reject untrusted provenance before reset or recovery.
 
 No preset silently enables `ListenAny`, unsandboxed tool children, untrusted workspace MCP,
-destructive memory operations, Forbidden Arts bypasses, or unlimited research/subagent behavior.
+destructive memory operations, Forbidden Arts bypasses, or changes to explicit token/cost/security policy.
 Presets do not add retry, timeout, loop-count, or other arbitrary tuning knobs. The guided
 `arcanum setup` wizard remains separate work tracked by issue #19; this page exposes the reusable
 preset service and does not implement that wizard.
 
 ## Complete configuration reference
 
-This is the sole complete documentation reference for `arcanum.json`. All 165 editable paths in
+This is the sole complete documentation reference for `arcanum.json`. All 143 editable paths in
 `SettingDescriptors.All` appear below. Six additional `providers.models.reasoning.*` capability
 declarations are documented because they remain part of the public configuration contract even
 though Compendium treats those provider facts as read-and-preserve rather than editable choices.
 Each key uses the exact camel-case dot path; `providers.models.*` applies to every model in every
 provider, and `daemon.jobs.*` applies to every job. JSON nests these paths beneath an exact
 top-level `"Arcanum"` object.
+
+Compendium exposes policy and facts, not incidental implementation mechanics. Retained fields are
+provider/model capabilities, credentials/endpoints, security/permission choices, explicit feature
+opt-ins, host concurrency/capacity, pricing/budgets, schedules, retention policy, or user
+preferences. Retry counts, total-operation timeouts, workflow/queue/page/checkpoint counts, and
+indexing slice sizes are code-owned adaptive behavior and are not editable. Removing a field never
+removes authentication, containment, SSRF protection, Wards/Sanctum, cryptographic/protocol
+integrity, single-allocation protection, or explicit operator policy.
 
 Arcanum does not flatten arbitrary environment variables into the configuration
 tree. `ARCANUM_EDITION` and `ARCANUM_HOST_ANY` are explicit runtime overrides;
@@ -172,7 +180,6 @@ secret values use only the dedicated environment references documented below.
 | `host.corsAllowedOrigins` | `string[]`, `["http://localhost:5001", "http://127.0.0.1:5001", "http://localhost:3000", "http://127.0.0.1:3000"]` | — | Browser origins allowed to read keyed responses. |
 | `host.listenAny` | `bool`, `false` | — | All-interface binding is HTTPS-only and also forces rate limiting and metrics authentication; `ARCANUM_HOST_ANY` overrides it. |
 | `host.auditLog.enabled` | `bool`, `false` | — | Enables the append-only inference audit trail. |
-| `host.auditLog.retentionDays` | `int`, `7` | 1–365 | Legacy compatibility value used as the default lookback when an inference-audit query omits `from`; it never triggers deletion. |
 | `host.auditLog.redactToolArguments` | `bool`, `true` | — | Records tool names without argument JSON. |
 | `host.https.enabled` | `bool`, `false` | — | Adds TLS on loopback; required for all-interface binding. |
 | `host.https.port` | `int`, `5443` | 1–65,535; must differ from `host.port` | TLS listen port. |
@@ -218,7 +225,6 @@ valid provider and model. A model's optional `reasoning` object defaults to
 | `security.guardrails.allowedTopics` | `string[]`, `[]` | — | Optional topic-pattern allowlist. |
 | `security.guardrails.blockedTopics` | `string[]`, `[]` | — | Optional topic-pattern blocklist. |
 | `security.guardrails.auditLog.enabled` | `bool`, `false` | — | Persists guardrail violations when guardrails are enabled. |
-| `security.guardrails.auditLog.retentionDays` | `int`, `7` | 1–365 | Legacy compatibility value used as the default lookback when a guardrail-audit query omits `from`; it never triggers deletion. |
 | `security.perceptionWorkspaceRoots` | `string[]`, `[]` | absolute roots | Roots Perception may scan; empty denies scans. |
 | `security.spellWorkspaceRoots` | `string[]`, `[]` | absolute roots | Roots spell CRUD may access; empty denies workspace spell CRUD. |
 | `security.campaignRoots` | `string[]`, `[]` | absolute roots | Roots from which campaigns may be registered; empty denies registration. |
@@ -254,7 +260,7 @@ shipping loopback client/server pairing. Campaign remains a separate persistent 
 | `features.sagaExtraction` | `bool`, `false` | — | Enables automatic concise Saga extraction and derives Saga/substrate availability; attachment claims must match the source turn's materialized allowlist. |
 | `features.semanticSpellRouting` | `bool`, `false` | — | Enables embedding-assisted spell routing and derives embedding-substrate activation. |
 | `features.scrying` | `bool`, `true` | — | Accepts images for vision-capable models. |
-| `features.attachments` | `bool`, `true` | — | Enables encrypted, versioned Session snapshots; standalone snapshot/reference/content APIs and `attachment list|add|reference|show|versions|refresh|pin|unpin|export|reveal`; direct `ask`/`chat --attachment <guid>`; `attach_session_file`; host-authorized `refresh_session_file`; and Command Center Snapshot/Live/Stale state. Snapshot add may upload any client-readable file/stdin, while reference/refresh paths are server-only and Workspace/Sanctum-authorized. Unsupported binary/PDF/Office files remain valid `NotEligible` attachments. Every path shares MIME, Scrying, byte/version, pin, and turn-reference policy; model vision is required only when an image enters model context, not for standalone refresh. Metadata never emits bytes; export is atomic plaintext; reveal requires a locally present encrypted `ARCABLOB` snapshot. |
+| `features.attachments` | `bool`, `true` | — | Enables encrypted, versioned Session snapshots; standalone snapshot/reference/content APIs and `attachment list|add|reference|show|versions|refresh|pin|unpin|export|reveal`; direct `ask`/`chat --attachment <guid>`; `attach_session_file`; host-authorized `refresh_session_file`; and Command Center Snapshot/Live/Stale state. Snapshot add may upload any client-readable file/stdin, while reference/refresh paths are server-only and Workspace/Sanctum-authorized. Unsupported binary/PDF/Office files remain valid `NotEligible` attachments. Every path shares MIME, Scrying, measured-byte, pin, identity/provenance, and provider-context policy without version/reference count ceilings; model vision is required only when an image enters model context, not for standalone refresh. Metadata never emits bytes; export is atomic plaintext; reveal requires a locally present encrypted `ARCABLOB` snapshot. |
 | `features.clientTools` | `bool`, `false` | — | Forwards client-declared tools to compatible providers. |
 | `features.webBrowsing` | `bool`, `false` | — | Advertises native `web_search` / `read_url` and enables authenticated `search`, `browse`, and server-orchestrated `research` CLI workflows. The deprecated `browse_web` name remains only as a direct-invoke compatibility alias. |
 | `features.reasoning` | `bool`, `true` | — | Hard gate for reasoning controls and reasoning production; enabling it does not itself request reasoning. |
@@ -272,13 +278,15 @@ materialize implicitly within the code-owned pin/turn budgets; image pins remain
 `Unsupported` until a vision-capable turn explicitly names the bound GUID. Attachment export asks
 before overwrite (or honors global `--yes`), stages beside the destination, and never permits
 stdout; all other attachment commands remain metadata-only. Server-side reference authorization,
-MIME/content validation, `MaxBytesPerSession`, `MaxVersionsPerLogicalKey`, and
-`MaxReferencesPerTurn` remain code-owned rather than becoming user restrictions configurable here.
+MIME/content validation, and `MaxBytesPerSession` remain code-owned. The former public
+`MaxReferencesPerTurn` and `MaxVersionsPerLogicalKey` controls were removed: identity/ownership,
+inject-once/provider-context admission, and measured session bytes own those risks without count ceilings.
 
-The native `delegate_task` subagent tool has no operator configuration key: its one-level
-recursion cap and per-call token/cost/turn delegation are code-owned safety requirements. Child
+The native `delegate_task` subagent tool has no operator configuration key: each call requires an
+explicit positive token or cost budget, and completion/no-progress/cancellation applies without a
+turn, depth, or explicit-file-count counter. Child tools are disabled by construction. Child
 requests inherit no attachment context; an explicit attachment file must name an id from the
-parent's current-turn materialized allowlist.
+parent's current-turn materialized allowlist, and each explicit path/content remains individually bounded.
 
 ### Integrations, execution, cost, retention, daemon, and CLI
 
@@ -295,23 +303,6 @@ parent's current-turn materialized allowlist.
 | `integrations.embeddings.provider` | `string?`, `null` | configured provider name | Provider used for embeddings. |
 | `integrations.embeddings.model` | `string?`, `null` | provider-advertised model | Embedding model ID. |
 | `integrations.embeddings.dimensions` | `int`, `768` | 64–4,096 | Expected vector dimensions. Changing this value requires clearing and re-indexing embeddings or reinstalling the local database. |
-| `integrations.embeddings.codebaseIndexing.watcherDebounceMilliseconds` | `int`, `300` | 50–5,000 | Debounce window for coalescing editor save/create/change/delete/rename events before incremental semantic indexing. |
-| `integrations.embeddings.codebaseIndexing.maxWatchers` | `int`, `32` | 0–128 | Maximum recursively watched workspaces. `0` disables watchers but retains bounded periodic reconciliation. |
-| `integrations.embeddings.codebaseIndexing.reconciliationIntervalMinutes` | `int`, `60` | 1–1,440 | Full workspace reconciliation cadence used even when watchers are healthy and as the complete fallback when they are unavailable. |
-| `integrations.embeddings.attachmentIndexing.maxAttachmentBytes` | `int`, `2,097,152` | 1,024–20,971,520 | Maximum plaintext bytes eligible for deterministic extraction. |
-| `integrations.embeddings.attachmentIndexing.maxExtractedCharacters` | `int`, `200,000` | 1,000–1,000,000 | Maximum extracted characters retained per attachment version. |
-| `integrations.embeddings.attachmentIndexing.chunkSizeCharacters` | `int`, `1,000` | 128–8,192 | Maximum characters per attachment chunk. |
-| `integrations.embeddings.attachmentIndexing.chunkOverlapCharacters` | `int`, `100` | 0–8,191 | Requested overlap; runtime also clamps it below effective chunk size. |
-| `integrations.embeddings.attachmentIndexing.maxChunksPerAttachment` | `int`, `256` | 1–2,048 | Maximum chunks persisted for one version. |
-| `integrations.embeddings.attachmentIndexing.maxAttachmentsPerBatch` | `int`, `8` | 1–100 | Maximum versions processed in one background batch. |
-| `integrations.embeddings.attachmentIndexing.queueCapacity` | `int`, `256` | 1–10,000 | Bounded event queue capacity; reconciliation recovers overflow. |
-| `integrations.embeddings.attachmentIndexing.maxRetries` | `int`, `3` | 0–10 | Transient indexing retry cap. |
-| `integrations.embeddings.attachmentIndexing.retryDelaySeconds` | `int`, `5` | 1–300 | Delay between transient retries. |
-| `integrations.embeddings.attachmentIndexing.processingTimeoutSeconds` | `int`, `60` | 5–600 | Per-attempt wall-clock bound. |
-| `integrations.embeddings.attachmentIndexing.maxRetrievedChunks` | `int`, `5` | 1–50 | Maximum attachment excerpts injected into a turn. |
-| `integrations.embeddings.attachmentIndexing.maxRetrievedAttachments` | `int`, `4` | 1–100 | Maximum distinct session attachments represented by semantic excerpts in one turn. |
-| `integrations.embeddings.attachmentIndexing.maxRetrievedBytes` | `int`, `262,144` | 1,024–16,777,216 | Maximum UTF-8 bytes of semantically retrieved attachment excerpts in one turn. |
-| `integrations.embeddings.attachmentIndexing.maxRetrievedTokens` | `int`, `32,768` | 128–1,048,576 | Maximum provider-profile estimated tokens consumed by attachment semantic excerpts in one turn. |
 | `integrations.mcp.allowedHttpHosts` | `string[]`, `[]` | hostnames | Explicit plaintext-HTTP MCP exceptions; empty permits none and HTTPS remains the default. |
 | `integrations.webResearch.searchProvider` | `string`, `"perplexity"` | nonblank registered provider name | Provider used by `web_search`. |
 | `integrations.webResearch.perplexityModel` | `string`, `"sonar"` | `sonar` or `sonar-pro` | Perplexity Sonar model used for synthesized search. |
@@ -319,9 +310,8 @@ parent's current-turn materialized allowlist.
 | `integrations.workspaceChecks.executableCatalog.dotNet.path` | `string`, `""` | canonical absolute path | Optional trusted native `dotnet`; empty delegates to trusted runtime resolution. |
 | `integrations.workspaceChecks.customProfiles` | `Dictionary<string, WorkspaceCheckProfileSettings>`, `{}` | closed shape described below | Case-insensitive operator-authored build, test, and lint profiles; models never supply raw commands. |
 | `execution.maxConcurrentApprentices` | `int`, `5` | 1–50 | Host-wide concurrent Apprentices. |
-| `execution.maxPendingApprenticeStarts` | `int`, `100` | 1–1,000 | Apprentice-start backpressure queue. |
 | `execution.maxConcurrentApprenticeBranches` | `int`, `3` | 1–64 | Concurrent Simulacrum branches within an Apprentice. |
-| `execution.maxConcurrentA2ATasks` | `int`, `50` | 1–500 | Concurrent outbound A2A delegations. |
+| `execution.maxConcurrentA2ATasks` | `int`, `50` | 1–500 | Simultaneous outbound A2A delegations; excess work waits cancellably for capacity rather than being rejected. |
 | `execution.maxSseConnections` | `int`, `50` | 1–100 | Global live-event connection capacity. |
 | `execution.maxSseConnectionsPerType` | `int`, `20` | 1–50 | Per-stream-family fairness capacity. |
 | `execution.maxConcurrentBatches` | `int`, `3` | 1–20 | Concurrent OpenAI-compatible batches. |
@@ -335,8 +325,6 @@ parent's current-turn materialized allowlist.
 | `cost.budget.dailyLimitUsd` | `decimal`, `0` | 0–1,000,000 | Maximum UTC-day spend when enforcement is enabled. |
 | `retention.automaticSweepsEnabled` | `bool`, `false` | — | Opts in to scheduled policy sweeps; status, dry-run planning, and explicit item-scoped deletion remain available when disabled. |
 | `retention.sweepIntervalHours` | `int`, `24` | 1–168 | Interval between automatic sweep attempts when scheduling is enabled. |
-| `retention.maxItemsPerSweep` | `int`, `500` | 1–10,000 | Aggregate candidate bound for one policy sweep. |
-| `retention.checkpointInterval` | `int`, `50` | 1–10,000; runtime also caps to `maxItemsPerSweep` | Candidate interval for durable cursor checkpoints and candidate-local post-delete ownership checks. |
 | `retention.accountingMinimumDays` | `int`, `365` | 30–3,650 | Minimum effective retention for inference runs, billable operations, budget reservations, and cost adjustments, regardless of the accounting rule's shorter requested period. |
 | `retention.protectedSessionIds` | `Guid[]`, `[]` | comma-separated GUIDs in Compendium | Explicit operator holds. Every value is validated as a GUID before save; a held session remains visible as a blocked plan candidate and is not deleted. |
 | `retention.activeSessions.enabled` | `bool`, `false` | — | Makes old active sessions eligible for policy sweeps; explicit deletion remains a separate confirmed operation. |
@@ -381,12 +369,27 @@ parent's current-turn materialized allowlist.
 | `cli.theme` | enum `"SystemDefault"` | `Light`, `Dark`, `SystemDefault` | CLI color theme. |
 | `cli.showManaBar` | `bool`, `true` | — | Shows the chat token-budget indicator. |
 
-The web workflow limits exposed by `arcanum search` and `arcanum research` are per-invocation inputs,
-not retained configuration. The server validates search count 1–20, research sources 1–20, hops
-1–5, and synthesis output 64–32,768 tokens. Freshness is `day`, `week`, `month`, or `year`; include
-and exclude domain lists are bounded. An optional research cost ceiling applies to provider-reported
-search cost between hops. Static URL reads retain code-owned timeout, body, redirect, SSRF, and
-content limits. No configuration switch implies that JavaScript rendering exists: `--render
+Issue #55 removed the former audit-query lookback fields, embedding watcher/attachment indexing
+mechanics, pending-Apprentice queue size, and retention candidate/checkpoint counts from the public
+schema. Audit deletion is governed only by unified retention. Watcher, extraction, chunking, queue,
+retry, retrieval-slice, and checkpoint values now protect internal work slices and continue through
+reconciliation. `execution.maxConcurrentApprentices` still protects simultaneous host load, while
+additional starts queue and remain cancellable instead of failing at a public pending-count limit.
+Retention still honors the operator's age/hold policy and uses an internal durable checkpoint size
+until the complete selected plan finishes.
+The managed embedding fallback likewise has no public or code-owned total row budget: when
+sqlite-vec is absent, it streams the complete matching corpus with cancellation and bounded top-K
+memory.
+
+Web workflow policy is per invocation, not retained configuration. `arcanum search --count` remains
+one provider-request result shape. Research accepts an optional positive `--sources` target, a
+positive explicit synthesis-token budget, and an optional nonnegative cost policy; it has no hop
+counter or default total-source ceiling. Passes continue while they add unique URLs and stop at the
+target, deterministic source exhaustion/no-progress, cancellation, explicit policy, or a
+provider/safety failure. Freshness is `day`, `week`, `month`, or `year`; include/exclude domain
+lists and each provider frame/body remain allocation-safe. Static URL reads retain SSRF,
+redirect-origin/DNS, connection/idle-I/O, body/frame, and content protections without a
+whole-operation wall-clock ceiling. No configuration switch implies that JavaScript rendering exists: `--render
 javascript` returns an explicit unavailable-renderer error until a server renderer is installed.
 
 Compendium edits MCP transport policy but does not operate server lifecycle or approve a
@@ -429,7 +432,10 @@ create|list|show|watch|cancel|reset|output|errors` add no configuration keys. Th
 authenticated OpenAI-compatible routes and inherit `security.allowedUploadMimeTypes`, the
 code-owned upload ceiling, `execution.maxConcurrentBatches`, and
 `execution.maxConcurrentRequestsPerBatch`. Local JSONL preflight checks only the obvious batch
-wrapper before upload; server validation remains authoritative. Download overwrite approval is a
+wrapper before upload; server validation remains authoritative. Total request count, internal
+64-line pages, and durable per-line dispatch/result checkpoints are code-owned rather than user
+restrictions. Restart skips completed lines and reports an uncertain dispatched line as
+`batch_interrupted_after_dispatch` without replaying it. Download overwrite approval is a
 per-invocation `--yes` decision and is never persisted by Compendium.
 
 ### Dynamic dictionary shapes

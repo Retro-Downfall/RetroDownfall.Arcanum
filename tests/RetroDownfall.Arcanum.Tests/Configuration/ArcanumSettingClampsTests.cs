@@ -39,7 +39,7 @@ public sealed class ArcanumSettingClampsTests
     }
 
     [Fact]
-    public void ResolveEmbeddings_ProjectsCodebaseIndexingConfiguration()
+    public void ResolveEmbeddings_UsesAutomaticCodebaseIndexingMechanics()
     {
 
         ArcanumSettings settings = new()
@@ -48,23 +48,28 @@ public sealed class ArcanumSettingClampsTests
             {
                 Embeddings = new EmbeddingIntegrationSettings
                 {
-                    CodebaseIndexing = new CodebaseIndexingIntegrationSettings
-                    {
-                        WatcherDebounceMilliseconds = 450,
-                        MaxWatchers = 12,
-                        ReconciliationIntervalMinutes = 90,
-                    },
+                    Provider = "embedding-provider",
                 },
             },
         };
 
         CodebaseEmbeddingSettings codebase = settings.ResolveEmbeddings().Codebase;
 
-        Assert.Equal(450, codebase.WatcherDebounceMilliseconds);
+        CodebaseEmbeddingSettings expected = ArcanumRuntimeDefaults.Embeddings.Codebase;
 
-        Assert.Equal(12, codebase.MaxWatchers);
+        Assert.Equal(expected.MaxFilesToIndex, codebase.MaxFilesToIndex);
 
-        Assert.Equal(90, codebase.ReconciliationIntervalMinutes);
+        Assert.Equal(expected.FileExtensions, codebase.FileExtensions);
+
+        Assert.Equal(expected.IndexingIntervalMinutes, codebase.IndexingIntervalMinutes);
+
+        Assert.Equal(expected.WatcherDebounceMilliseconds, codebase.WatcherDebounceMilliseconds);
+
+        Assert.Equal(expected.MaxWatchers, codebase.MaxWatchers);
+
+        Assert.Equal(expected.ReconciliationIntervalMinutes, codebase.ReconciliationIntervalMinutes);
+
+        Assert.Equal(expected.MaxRetrievedChunks, codebase.MaxRetrievedChunks);
 
     }
 
@@ -191,18 +196,12 @@ public sealed class ArcanumSettingClampsTests
 
         Assert.Equal(1_024L, normalized.MaxPatchBytes);
         Assert.Equal(1_024L, normalized.MaxInputBytesPerFile);
-        Assert.Equal(1_024L, normalized.MaxTotalInputBytes);
         Assert.Equal(1_024L, normalized.MaxOutputBytesPerFile);
         Assert.Equal(1_024L, normalized.MaxTotalOutputBytes);
         Assert.Equal(1_024L, normalized.MaxStagingBytesPerFile);
         Assert.Equal(1_024L, normalized.MaxTotalStagingBytes);
-        Assert.Equal(100, normalized.MaxElapsedMilliseconds);
-        Assert.Equal(50, normalized.RollbackReserveMilliseconds);
-        Assert.Equal(1, normalized.MaxFiles);
-        Assert.Equal(1, normalized.MaxHunks);
-        Assert.Equal(1, normalized.MaxLinesPerHunk);
+        Assert.Equal(50, normalized.RecoveryTimeoutMilliseconds);
         Assert.Equal(0, normalized.FuzzyMatchWindowLines);
-        Assert.Equal(1, normalized.MaxResultItems);
     }
 
     [Fact]
@@ -214,39 +213,28 @@ public sealed class ArcanumSettingClampsTests
 
         Assert.Equal(64L * 1024L * 1024L, normalized.MaxPatchBytes);
         Assert.Equal(256L * 1024L * 1024L, normalized.MaxInputBytesPerFile);
-        Assert.Equal(1L * 1024L * 1024L * 1024L, normalized.MaxTotalInputBytes);
         Assert.Equal(256L * 1024L * 1024L, normalized.MaxOutputBytesPerFile);
         Assert.Equal(1L * 1024L * 1024L * 1024L, normalized.MaxTotalOutputBytes);
         Assert.Equal(512L * 1024L * 1024L, normalized.MaxStagingBytesPerFile);
         Assert.Equal(2L * 1024L * 1024L * 1024L, normalized.MaxTotalStagingBytes);
-        Assert.Equal(300_000, normalized.MaxElapsedMilliseconds);
-        Assert.Equal(60_000, normalized.RollbackReserveMilliseconds);
-        Assert.Equal(1_000, normalized.MaxFiles);
-        Assert.Equal(10_000, normalized.MaxHunks);
-        Assert.Equal(100_000, normalized.MaxLinesPerHunk);
+        Assert.Equal(60_000, normalized.RecoveryTimeoutMilliseconds);
         Assert.Equal(1_000, normalized.FuzzyMatchWindowLines);
-        Assert.Equal(10_000, normalized.MaxResultItems);
     }
 
     [Fact]
-    public void NormalizeWorkspacePatchSettings_enforces_reserve_relation_without_mutating_source()
+    public void NormalizeWorkspacePatchSettings_clamps_recovery_cleanup_without_mutating_source()
     {
         WorkspacePatchSettings source = new()
         {
-            MaxElapsedMilliseconds = 100,
-            RollbackReserveMilliseconds = 60_000,
+            RecoveryTimeoutMilliseconds = int.MaxValue,
         };
 
         WorkspacePatchSettings normalized =
             ArcanumSettingClamps.NormalizeWorkspacePatchSettings(source);
 
         Assert.NotSame(source, normalized);
-        Assert.Equal(100, normalized.MaxElapsedMilliseconds);
-        Assert.Equal(99, normalized.RollbackReserveMilliseconds);
-        Assert.True(
-            normalized.RollbackReserveMilliseconds
-            < normalized.MaxElapsedMilliseconds);
-        Assert.Equal(60_000, source.RollbackReserveMilliseconds);
+        Assert.Equal(60_000, normalized.RecoveryTimeoutMilliseconds);
+        Assert.Equal(int.MaxValue, source.RecoveryTimeoutMilliseconds);
     }
 
     private static WorkspacePatchSettings ExtremePatchSettings(
@@ -256,17 +244,11 @@ public sealed class ArcanumSettingClampsTests
         {
             MaxPatchBytes = longValue,
             MaxInputBytesPerFile = longValue,
-            MaxTotalInputBytes = longValue,
             MaxOutputBytesPerFile = longValue,
             MaxTotalOutputBytes = longValue,
             MaxStagingBytesPerFile = longValue,
             MaxTotalStagingBytes = longValue,
-            MaxElapsedMilliseconds = intValue,
-            RollbackReserveMilliseconds = intValue,
-            MaxFiles = intValue,
-            MaxHunks = intValue,
-            MaxLinesPerHunk = intValue,
+            RecoveryTimeoutMilliseconds = intValue,
             FuzzyMatchWindowLines = intValue,
-            MaxResultItems = intValue,
         };
 }

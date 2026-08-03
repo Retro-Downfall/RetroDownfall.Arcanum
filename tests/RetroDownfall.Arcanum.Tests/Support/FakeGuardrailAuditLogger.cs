@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Support;
 
@@ -68,6 +69,79 @@ public sealed class FakeGuardrailAuditLogger : IGuardrailAuditLogger
         List<GuardrailAuditRecord> result = [.. query.Take(limit)];
 
         return Task.FromResult<IReadOnlyList<GuardrailAuditRecord>>(result);
+
+    }
+
+    public async Task<Result<AuditQueryPage<GuardrailAuditRecord>>> QueryPageAsync(
+        DateTimeOffset? from,
+        DateTimeOffset? to,
+        string? stage,
+        string? violationType,
+        string? sessionId,
+        int limit,
+        string? cursor,
+        CancellationToken cancellationToken)
+    {
+
+        int offset = DecodeOffset(cursor);
+
+        if (offset < 0)
+        {
+
+            return Result<AuditQueryPage<GuardrailAuditRecord>>.Failure(
+                new Error(ErrorCodes.Validation.InvalidQuery, "The audit cursor is invalid."));
+
+        }
+
+        IReadOnlyList<GuardrailAuditRecord> all = await QueryAsync(
+            from,
+            to,
+            stage,
+            violationType,
+            sessionId,
+            int.MaxValue,
+            cancellationToken).ConfigureAwait(false);
+
+        GuardrailAuditRecord[] records = [.. all.Skip(offset).Take(limit)];
+
+        string? nextCursor = offset + records.Length < all.Count
+            ? EncodeOffset(offset + records.Length)
+            : null;
+
+        return Result<AuditQueryPage<GuardrailAuditRecord>>.Success(
+            new AuditQueryPage<GuardrailAuditRecord>(records, nextCursor));
+
+    }
+
+    private static string EncodeOffset(int offset) =>
+        Convert.ToBase64String(BitConverter.GetBytes(offset));
+
+    private static int DecodeOffset(string? cursor)
+    {
+
+        if (cursor is null)
+        {
+
+            return 0;
+
+        }
+
+        try
+        {
+
+            byte[] bytes = Convert.FromBase64String(cursor);
+
+            return bytes.Length == sizeof(int)
+                ? BitConverter.ToInt32(bytes)
+                : -1;
+
+        }
+        catch (FormatException)
+        {
+
+            return -1;
+
+        }
 
     }
 

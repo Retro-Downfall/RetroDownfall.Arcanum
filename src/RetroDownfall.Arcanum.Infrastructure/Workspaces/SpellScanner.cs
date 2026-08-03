@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -93,18 +94,6 @@ internal static class SpellScanner
     };
 
     /// <summary>
-    /// Maximum directory depth the spell tree walk will descend (root is depth 0). Bounds pathological
-    /// or symlink-induced deep trees consistently with <c>EyeOfTheWorldService</c>.
-    /// </summary>
-    private const int MaxScanDirectoryDepth = 64;
-
-    /// <summary>
-    /// Total directory-visit budget for a single tree walk. Mirrors the <c>EyeOfTheWorldService</c>
-    /// step budget (and reuses its shared clamp) so a directory-symlink cycle cannot scan unbounded.
-    /// </summary>
-    private static readonly int MaxScanEnumerationSteps = ArcanumSettingClamps.MaxEnumerationSteps(50_000);
-
-    /// <summary>
     /// Path comparison used for the visited canonical-directory set that breaks symlink cycles.
     /// </summary>
     private static readonly StringComparer CanonicalDirectoryComparer =
@@ -114,7 +103,6 @@ internal static class SpellScanner
         string? workspaceRoot,
         CancellationToken cancellationToken,
         long maxFileSizeBytes,
-        int? maxDependencies = null,
         int? maxDeclaredTools = null)
     {
         string globalSpellsDir = ArcanumPaths.GlobalSpellsDirectory;
@@ -135,7 +123,7 @@ internal static class SpellScanner
         if (globalRoot.Length > 0 && Directory.Exists(globalRoot))
         {
             globalSpells = await Task.Run(
-                () => ScanTreeAsync(globalRoot, maxFileSizeBytes, maxDependencies, maxDeclaredTools, cancellationToken),
+                () => ScanTreeAsync(globalRoot, maxFileSizeBytes, maxDeclaredTools, cancellationToken),
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -157,7 +145,7 @@ internal static class SpellScanner
             if (localRoot.Length > 0 && Directory.Exists(localRoot))
             {
                 localSpells = await Task.Run(
-                    () => ScanTreeAsync(localRoot, maxFileSizeBytes, maxDependencies, maxDeclaredTools, cancellationToken),
+                    () => ScanTreeAsync(localRoot, maxFileSizeBytes, maxDeclaredTools, cancellationToken),
                     cancellationToken).ConfigureAwait(false);
             }
         }
@@ -249,11 +237,55 @@ internal static class SpellScanner
         return merged;
     }
 
+    /// <summary>
+    /// Streams metadata from one catalog root while retaining only live traversal state. Callers
+    /// choose their own bounded page representation; this method never builds a catalog-wide list.
+    /// </summary>
+    internal static async IAsyncEnumerable<SpellMetadata> StreamMetadataTreeAsync(
+        string rootFullPath,
+        long maxFileSizeBytes,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+
+        if (string.IsNullOrWhiteSpace(rootFullPath)
+            || !Directory.Exists(rootFullPath))
+        {
+
+            yield break;
+
+        }
+
+        string root = Path.GetFullPath(rootFullPath);
+
+        foreach (string filePath in EnumerateSpellFilesDepthFirst(
+                     root,
+                     cancellationToken))
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            SpellMetadata? metadata = await TryParseSpellMetadataAsync(
+                    filePath,
+                    maxFileSizeBytes,
+                    root,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (metadata is not null)
+            {
+
+                yield return metadata;
+
+            }
+
+        }
+
+    }
+
     internal static async Task<ParsedSpell?> LoadFullAsync(
         string filePath,
         CancellationToken cancellationToken,
         long maxFileSizeBytes,
-        int? maxDependencies = null,
         int? maxDeclaredTools = null)
     {
         if (string.IsNullOrWhiteSpace(filePath))
@@ -280,7 +312,7 @@ internal static class SpellScanner
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return await TryParseSpellFileAsync(fullPath, maxFileSizeBytes, maxDependencies, maxDeclaredTools, workspaceRootForRevalidation: null, cancellationToken).ConfigureAwait(false);
+            return await TryParseSpellFileAsync(fullPath, maxFileSizeBytes, maxDeclaredTools, workspaceRootForRevalidation: null, cancellationToken).ConfigureAwait(false);
         }
 
         string cacheKey = $"{fullPath}|{mtimeTicks}";
@@ -301,7 +333,6 @@ internal static class SpellScanner
                 ParsedSpell? result = await TryParseSpellFileAsync(
                     fullPath,
                     maxFileSizeBytes,
-                    maxDependencies,
                     maxDeclaredTools,
                     workspaceRootForRevalidation: null,
                     cancellationToken).ConfigureAwait(false);
@@ -459,7 +490,6 @@ internal static class SpellScanner
     private static async Task<List<ParsedSpell>> ScanTreeAsync(
         string rootFullPath,
         long maxFileSizeBytes,
-        int? maxDependencies,
         int? maxDeclaredTools,
         CancellationToken cancellationToken)
     {
@@ -470,7 +500,6 @@ internal static class SpellScanner
             ParsedSpell? parsed = await TryParseSpellFileAsync(
                 filePath,
                 maxFileSizeBytes,
-                maxDependencies,
                 maxDeclaredTools,
                 rootFullPath,
                 cancellationToken).ConfigureAwait(false);
@@ -509,9 +538,9 @@ internal static class SpellScanner
     }
 
     /// <summary>
-    /// Bounded, cycle-safe breadth-first walk that yields every in-root <c>SPELL.md</c> path. Each
+    /// Cancellation-aware, cycle-safe breadth-first walk that yields every in-root <c>SPELL.md</c> path. Each
     /// directory is canonicalized (resolving symlink targets) and tracked in a visited set so a
-    /// directory-symlink cycle terminates; a total-step budget and max-depth cap bound pathological trees.
+    /// directory-symlink cycle terminates without imposing a total directory or depth ceiling.
     /// </summary>
     private static IEnumerable<string> EnumerateSpellFiles(string rootFullPath, CancellationToken cancellationToken)
     {
@@ -521,42 +550,24 @@ internal static class SpellScanner
 
         _ = visitedCanonicalDirs.Add(canonicalRoot);
 
-        var queue = new Queue<(string Directory, int Depth)>();
+        var queue = new Queue<string>();
 
-        queue.Enqueue((rootFullPath, 0));
-
-        int steps = 0;
+        queue.Enqueue(rootFullPath);
 
         while (queue.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (steps >= MaxScanEnumerationSteps)
-            {
-                yield break;
-            }
-
-            steps++;
-
-            (string currentDir, int depth) = queue.Dequeue();
+            string currentDir = queue.Dequeue();
 
             if (!WorkspacePathPolicy.IsPathUnderWorkspace(rootFullPath, currentDir))
             {
                 continue;
             }
 
-            string[] files;
-
-            try
-            {
-                files = Directory.GetFiles(currentDir);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                continue;
-            }
-
-            foreach (string filePath in files)
+            foreach (string filePath in EnumerateDirectoryEntriesSafely(
+                         currentDir,
+                         directories: false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -573,23 +584,9 @@ internal static class SpellScanner
                 yield return filePath;
             }
 
-            if (depth >= MaxScanDirectoryDepth)
-            {
-                continue;
-            }
-
-            string[] subDirs;
-
-            try
-            {
-                subDirs = Directory.GetDirectories(currentDir);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                subDirs = Array.Empty<string>();
-            }
-
-            foreach (string subDir in subDirs.OrderBy(p => p, StringComparer.Ordinal))
+            foreach (string subDir in EnumerateDirectoryEntriesSafely(
+                         currentDir,
+                         directories: true))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -624,7 +621,298 @@ internal static class SpellScanner
                     continue;
                 }
 
-                queue.Enqueue((fullSub, depth + 1));
+                queue.Enqueue(fullSub);
+            }
+        }
+    }
+
+    private static IEnumerable<string> EnumerateSpellFilesDepthFirst(
+        string rootFullPath,
+        CancellationToken cancellationToken)
+    {
+
+        string canonicalRoot = ResolveCanonicalDirectory(rootFullPath);
+
+        HashSet<string> visitedCanonicalDirectories = new(
+            CanonicalDirectoryComparer)
+        {
+            canonicalRoot,
+        };
+
+        Stack<SpellDirectoryFrame> pending = new();
+
+        if (!SpellDirectoryFrame.TryOpen(rootFullPath, out SpellDirectoryFrame? rootFrame))
+        {
+
+            yield break;
+
+        }
+
+        pending.Push(rootFrame!);
+
+        try
+        {
+
+            while (pending.Count > 0)
+            {
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                SpellDirectoryFrame frame = pending.Peek();
+
+                if (!frame.TryTakeNext(out string? entry))
+                {
+
+                    pending.Pop().Dispose();
+
+                    continue;
+
+                }
+
+                string currentEntry = entry!;
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                FileAttributes attributes;
+
+                try
+                {
+
+                    attributes = File.GetAttributes(currentEntry);
+
+                }
+                catch (Exception exception) when (
+                    exception is IOException
+                        or UnauthorizedAccessException
+                        or FileNotFoundException)
+                {
+
+                    continue;
+
+                }
+
+                if (attributes.HasFlag(FileAttributes.Directory))
+                {
+
+                    string name = Path.GetFileName(currentEntry);
+
+                    if (name.Length == 0
+                        || name[0] == '.'
+                        || HeavyDirectoryNames.Contains(name))
+                    {
+
+                        continue;
+
+                    }
+
+                    string fullDirectory;
+
+                    try
+                    {
+
+                        fullDirectory = Path.GetFullPath(currentEntry);
+
+                    }
+                    catch (Exception exception) when (
+                        exception is IOException
+                            or UnauthorizedAccessException
+                            or ArgumentException)
+                    {
+
+                        continue;
+
+                    }
+
+                    if (!WorkspacePathPolicy.IsPathUnderWorkspace(
+                            rootFullPath,
+                            fullDirectory))
+                    {
+
+                        continue;
+
+                    }
+
+                    string canonicalDirectory = ResolveCanonicalDirectory(
+                        fullDirectory);
+
+                    if (!WorkspacePathPolicy.IsPathUnderWorkspace(
+                            canonicalRoot,
+                            canonicalDirectory)
+                        || !visitedCanonicalDirectories.Add(canonicalDirectory)
+                        || !SpellDirectoryFrame.TryOpen(
+                            fullDirectory,
+                            out SpellDirectoryFrame? childFrame))
+                    {
+
+                        continue;
+
+                    }
+
+                    pending.Push(childFrame!);
+
+                    continue;
+
+                }
+
+                if (string.Equals(
+                        Path.GetFileName(currentEntry),
+                        "SPELL.md",
+                        StringComparison.OrdinalIgnoreCase)
+                    && WorkspacePathPolicy.IsPathUnderWorkspace(
+                        rootFullPath,
+                        currentEntry))
+                {
+
+                    yield return currentEntry;
+
+                }
+
+            }
+
+        }
+        finally
+        {
+
+            while (pending.TryPop(out SpellDirectoryFrame? frame))
+            {
+
+                frame!.Dispose();
+
+            }
+
+        }
+
+    }
+
+    private sealed class SpellDirectoryFrame(
+        IEnumerator<string> entries) : IDisposable
+    {
+
+        internal static bool TryOpen(
+            string directory,
+            out SpellDirectoryFrame? frame)
+        {
+
+            frame = null;
+
+            try
+            {
+
+                frame = new SpellDirectoryFrame(
+                    Directory
+                        .EnumerateFileSystemEntries(directory)
+                        .GetEnumerator());
+
+                return true;
+
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or UnauthorizedAccessException
+                    or DirectoryNotFoundException)
+            {
+
+                return false;
+
+            }
+
+        }
+
+        internal bool TryTakeNext(out string? entry)
+        {
+
+            try
+            {
+
+                if (entries.MoveNext())
+                {
+
+                    entry = entries.Current;
+
+                    return true;
+
+                }
+
+            }
+            catch (Exception exception) when (
+                exception is IOException
+                    or UnauthorizedAccessException
+                    or DirectoryNotFoundException)
+            {
+
+            }
+
+            entry = null;
+
+            return false;
+
+        }
+
+        public void Dispose() => entries.Dispose();
+
+    }
+
+    private static IEnumerable<string> EnumerateDirectoryEntriesSafely(
+        string directory,
+        bool directories)
+    {
+        IEnumerable<string>? entries = null;
+
+        try
+        {
+            entries = directories
+                ? Directory.EnumerateDirectories(directory)
+                : Directory.EnumerateFiles(directory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        if (entries is null)
+        {
+            yield break;
+        }
+
+        IEnumerator<string>? enumerator = null;
+
+        try
+        {
+            enumerator = entries.GetEnumerator();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        if (enumerator is null)
+        {
+            yield break;
+        }
+
+        using (enumerator)
+        {
+
+            while (true)
+            {
+                bool hasNext;
+                string? entry;
+
+                try
+                {
+                    hasNext = enumerator.MoveNext();
+                    entry = hasNext ? enumerator.Current : null;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    hasNext = false;
+                    entry = null;
+                }
+
+                if (!hasNext)
+                {
+                    yield break;
+                }
+
+                yield return entry!;
             }
         }
     }
@@ -772,7 +1060,6 @@ internal static class SpellScanner
     private static async Task<ParsedSpell?> TryParseSpellFileAsync(
         string filePath,
         long maxFileSizeBytes,
-        int? maxDependencies,
         int? maxDeclaredTools,
         string? workspaceRootForRevalidation,
         CancellationToken cancellationToken)
@@ -862,8 +1149,6 @@ internal static class SpellScanner
                     if (skillMetadata is not null
                         && SkillJsonBoundsValidator.Validate(
                             skillMetadata,
-                            ArcanumSettingClamps.MaxDependencies(
-                                maxDependencies ?? ArcanumRuntimeDefaults.Spells.MaxDependencies),
                             ArcanumSettingClamps.MaxDeclaredTools(
                                 maxDeclaredTools ?? ArcanumRuntimeDefaults.Spells.MaxDeclaredTools)) is not null)
                     {

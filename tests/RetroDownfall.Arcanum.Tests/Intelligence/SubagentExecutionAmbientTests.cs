@@ -5,39 +5,40 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class SubagentExecutionAmbientTests
 {
     [Fact]
-    public void EnterChild_ExposesIsolatedDepthAndRestoresParent()
+    public void EnterChild_ExposesIsolationAndRestoresParent()
     {
-        DelegatedManaTracker tracker = new(1_000, null, 2);
+        DelegatedManaTracker tracker = new(1_000, null);
 
-        Assert.Equal(0, SubagentExecutionAmbient.Depth);
-        Assert.True(SubagentExecutionAmbient.CanDelegate);
+        Assert.False(SubagentExecutionAmbient.IsIsolated);
 
         using (SubagentExecutionAmbient.EnterChild(tracker))
         {
-            Assert.Equal(1, SubagentExecutionAmbient.Depth);
-            Assert.False(SubagentExecutionAmbient.CanDelegate);
             Assert.True(SubagentExecutionAmbient.IsIsolated);
             Assert.Same(tracker, SubagentExecutionAmbient.Tracker);
         }
 
-        Assert.Equal(0, SubagentExecutionAmbient.Depth);
-        Assert.True(SubagentExecutionAmbient.CanDelegate);
         Assert.False(SubagentExecutionAmbient.IsIsolated);
         Assert.Null(SubagentExecutionAmbient.Tracker);
     }
 
     [Fact]
-    public void EnterChild_AtMaximumDepth_RejectsRecursion()
+    public void EnterChild_NestedScope_UsesChildTrackerAndRestoresParentTracker()
     {
-        DelegatedManaTracker parentTracker = new(1_000, null, 2);
-        DelegatedManaTracker childTracker = new(500, null, 1);
+        DelegatedManaTracker parentTracker = new(1_000, null);
+        DelegatedManaTracker childTracker = new(500, null);
 
         using (SubagentExecutionAmbient.EnterChild(parentTracker))
         {
-            SubagentDepthExceededException exception = Assert.Throws<SubagentDepthExceededException>(
-                () => SubagentExecutionAmbient.EnterChild(childTracker));
+            using (SubagentExecutionAmbient.EnterChild(childTracker))
+            {
 
-            Assert.Equal(SubagentExecutionAmbient.MaxSubagentDepth, exception.MaxDepth);
+                Assert.True(SubagentExecutionAmbient.IsIsolated);
+
+                Assert.Same(childTracker, SubagentExecutionAmbient.Tracker);
+
+            }
+
+            Assert.Same(parentTracker, SubagentExecutionAmbient.Tracker);
         }
     }
 }

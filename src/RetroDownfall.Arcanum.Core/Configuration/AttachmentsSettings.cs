@@ -9,10 +9,6 @@ public sealed record AttachmentsSettings
 
     public bool Enabled { get; set; } = true;
 
-    public int MaxReferencesPerTurn { get; set; } = 8;
-
-    public int MaxVersionsPerLogicalKey { get; set; } = 20;
-
     public long MaxBytesPerSession { get; set; } = 256L * 1024L * 1024L;
 
     public int PendingRetentionHours { get; set; } = 24;

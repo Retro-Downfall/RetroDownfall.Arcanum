@@ -5,29 +5,17 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 public sealed class AttachmentsSettingsClampTests
 {
 
-    [Theory]
-    [InlineData(0, 1)]
-    [InlineData(1, 1)]
-    [InlineData(8, 8)]
-    [InlineData(32, 32)]
-    [InlineData(100, 32)]
-    public void AttachmentsMaxReferencesPerTurn_clamps_to_1_through_32(int value, int expected)
+    [Fact]
+    public void Attachment_runtime_projection_omits_former_total_count_controls()
     {
 
-        Assert.Equal(expected, ArcanumSettingClamps.AttachmentsMaxReferencesPerTurn(value));
+        Assert.Null(typeof(AttachmentsSettings).GetProperty("MaxReferencesPerTurn"));
 
-    }
+        Assert.Null(typeof(AttachmentsSettings).GetProperty("MaxVersionsPerLogicalKey"));
 
-    [Theory]
-    [InlineData(0, 1)]
-    [InlineData(1, 1)]
-    [InlineData(20, 20)]
-    [InlineData(100, 100)]
-    [InlineData(200, 100)]
-    public void AttachmentsMaxVersionsPerLogicalKey_clamps_to_1_through_100(int value, int expected)
-    {
+        Assert.Null(typeof(ArcanumSettingClamps).GetMethod("AttachmentsMaxReferencesPerTurn"));
 
-        Assert.Equal(expected, ArcanumSettingClamps.AttachmentsMaxVersionsPerLogicalKey(value));
+        Assert.Null(typeof(ArcanumSettingClamps).GetMethod("AttachmentsMaxVersionsPerLogicalKey"));
 
     }
 
@@ -90,10 +78,6 @@ public sealed class AttachmentsSettingsClampTests
         AttachmentsSettings settings = ArcanumRuntimeDefaults.Attachments;
 
         Assert.True(settings.Enabled);
-
-        Assert.Equal(8, settings.MaxReferencesPerTurn);
-
-        Assert.Equal(20, settings.MaxVersionsPerLogicalKey);
 
         Assert.Equal(256L * 1024L * 1024L, settings.MaxBytesPerSession);
 

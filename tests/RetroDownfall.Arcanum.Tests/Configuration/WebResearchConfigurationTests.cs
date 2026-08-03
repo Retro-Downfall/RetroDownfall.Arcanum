@@ -39,7 +39,7 @@ public sealed class WebResearchConfigurationTests : IDisposable
         Assert.Equal(
             "ARCANUM_TEST_WEB_RESEARCH_KEY",
             resolved.CredentialEnvironmentVariable);
-        Assert.Equal(15, resolved.RequestTimeoutSeconds);
+        Assert.Equal(15, resolved.IdleTimeoutSeconds);
         Assert.Equal(1_000_000, resolved.MaxResponseBytes);
         Assert.Equal(50_000, resolved.MaxContentBytes);
         Assert.Equal(20, resolved.MaxCitations);

@@ -57,7 +57,7 @@ internal sealed partial class ArcanumInternalToolServer
             else
             {
                 IReadOnlyList<SessionAttachmentRecord> bound = await store
-                    .ListBoundAsync(sessionId, cancellationToken)
+                    .ListLatestBoundAsync(sessionId, cancellationToken)
                     .ConfigureAwait(false);
                 List<IGrouping<string, SessionAttachmentRecord>> matches = bound
                     .GroupBy(static row => row.LogicalKey, StringComparer.Ordinal)
@@ -148,7 +148,7 @@ internal sealed partial class ArcanumInternalToolServer
             if (record is null)
             {
                 IReadOnlyList<SessionAttachmentRecord> bound = await store
-                    .ListBoundAsync(sessionId.Value, cancellationToken)
+                    .ListLatestBoundAsync(sessionId.Value, cancellationToken)
                     .ConfigureAwait(false);
 
                 return ToolError(BuildMissingAttachmentMessage(logicalName, args.Version, bound));

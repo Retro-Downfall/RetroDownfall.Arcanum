@@ -3,10 +3,28 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Api.Models;
+
 namespace RetroDownfall.Arcanum.Tests.Intelligence.WebResearch;
 
 public sealed class WebResearchContractTests
 {
+    [Fact]
+    public void Research_request_uses_an_optional_source_target_without_a_hop_ceiling()
+    {
+
+        Assert.Null(typeof(WebResearchWorkflowRequest).GetProperty("MaxHops"));
+
+        Assert.Null(typeof(WebResearchWorkflowRequest).GetProperty("MaxSources"));
+
+        Assert.Equal(
+            typeof(int?),
+            typeof(WebResearchWorkflowRequest)
+                .GetProperty("SourceTarget")?
+                .PropertyType);
+
+    }
+
     [Fact]
     public void Canonical_tool_names_include_web_tools_and_retain_legacy_alias()
     {
@@ -42,23 +60,27 @@ public sealed class WebResearchContractTests
     }
 
     [Fact]
-    public void Code_owned_option_defaults_match_runtime_web_browsing_limits()
+    public void Code_owned_option_defaults_use_idle_io_timeouts_not_total_deadlines()
     {
         WebBrowsingSettings runtime = ArcanumRuntimeDefaults.WebBrowsing;
         WebSearchOptions search = new();
         WebReadOptions read = new();
 
         Assert.Equal(
-            TimeSpan.FromSeconds(runtime.RequestTimeoutSeconds),
-            search.Timeout);
+            TimeSpan.FromSeconds(runtime.IdleTimeoutSeconds),
+            search.IdleTimeout);
+
+        Assert.Null(typeof(WebSearchOptions).GetProperty("Timeout"));
         Assert.Equal(runtime.MaxResponseBytes, search.MaxResponseBytes);
         Assert.Equal(runtime.MaxContentBytes, search.MaxAnswerBytes);
         Assert.Equal(runtime.MaxCitations, search.MaxCitations);
         Assert.Equal(runtime.MaxCitationUrlChars, search.MaxCitationUrlChars);
 
         Assert.Equal(
-            TimeSpan.FromSeconds(runtime.RequestTimeoutSeconds),
-            read.Timeout);
+            TimeSpan.FromSeconds(runtime.IdleTimeoutSeconds),
+            read.IdleTimeout);
+
+        Assert.Null(typeof(WebReadOptions).GetProperty("Timeout"));
         Assert.Equal(runtime.MaxResponseBytes, read.MaxResponseBytes);
         Assert.Equal(runtime.MaxContentBytes, read.MaxContentBytes);
         Assert.Equal(runtime.MaxLinks, read.MaxLinks);

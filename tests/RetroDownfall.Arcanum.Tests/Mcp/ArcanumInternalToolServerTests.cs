@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -103,6 +104,22 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         Assert.Contains("execute_command", names);
 
+        Assert.Contains("read_command_output", names);
+
+        McpToolDefinitionWire executeCommand = Assert.Single(
+            tools.Tools,
+            static tool => tool.Name == "execute_command");
+
+        Assert.DoesNotContain(
+            "timeout",
+            executeCommand.Description,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            "caller cancellation",
+            executeCommand.InputSchema.GetRawText(),
+            StringComparison.OrdinalIgnoreCase);
+
     }
 
     [Fact]
@@ -166,6 +183,7 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
                 .EnumerateArray()
                 .Select(static item => item.GetString()));
         Assert.Equal("boolean", properties.GetProperty("caseSensitive").GetProperty("type").GetString());
+        Assert.Equal("string", properties.GetProperty("cursor").GetProperty("type").GetString());
         Assert.Equal(
             ["pattern", "mode", "caseSensitive"],
             schema.GetProperty("required")
@@ -504,19 +522,13 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ToolsCall_workspace_check_receives_host_bound_monotonic_inference_deadline()
+    public async Task ToolsCall_workspace_check_runs_without_an_ambient_total_deadline()
     {
 
         FakeWorkspaceCheckRuntime runtime = new(
             new WorkspaceCheckExecutionStatus(true, false, "available"));
         await using TestMcpSession session = await CreateSessionAsync(
             workspaceCheckRuntime: runtime);
-        long before = TimeProvider.System.GetTimestamp();
-
-        using IDisposable deadline =
-            WorkspaceCheckInferenceDeadlineAmbient.Begin(
-                TimeProvider.System,
-                TimeSpan.FromMinutes(10));
         _ = await session.CallToolAsync(
             ToolRiskClassifier.WorkspaceCheckToolName,
             JsonSerializer.SerializeToElement(
@@ -527,8 +539,12 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
                 McpJsonSerializerContext.Default.WorkspaceCheckParams));
 
         Assert.NotNull(runtime.LastRequest);
-        Assert.True(
-            runtime.LastRequest.InferenceDeadlineTimestamp > before);
+
+        Assert.Equal(1, runtime.RunCount);
+
+        Assert.Null(
+            typeof(WorkspaceCheckRuntimeRequest).GetProperty(
+                "InferenceDeadlineTimestamp"));
     }
 
     [Fact]
@@ -612,7 +628,6 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             Search = ArcanumRuntimeDefaults.CodingTools.Search with
             {
                 RegexTimeoutMilliseconds = 1_000,
-                MaxElapsedMilliseconds = 5_000,
             },
         };
 
@@ -673,7 +688,6 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         {
             Search = ArcanumRuntimeDefaults.CodingTools.Search with
             {
-                MaxMatches = 1_000,
                 MaxPreviewChars = 128,
             },
         };
@@ -1525,6 +1539,177 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ExecuteCommand_large_stdout_is_retrievable_and_released_after_final_page()
+    {
+
+        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
+        {
+
+            ToolOutputCapBytes = 65_536,
+
+        };
+
+        TestMcpSession session = await CreateSessionAsync(
+            intelligenceSettings: settings);
+
+        string? artifactRoot = null;
+
+        try
+        {
+
+            const int payloadCharacters = 150_000;
+
+            (string command, string[] argumentList) =
+                ResolveLargeOutputCommand(payloadCharacters);
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ExecuteCommandParams
+                {
+                    Command = command,
+                    ArgumentList = argumentList,
+                },
+                McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "execute_command",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            string output = result.Content![0].Text!;
+
+            string handle = ExtractCompleteOutputHandle(output);
+
+            StringBuilder complete = new();
+
+            long offset = 0L;
+
+            do
+            {
+
+                JsonElement pageArguments = JsonSerializer.SerializeToElement(
+                    new ReadCommandOutputParams
+                    {
+                        Handle = handle,
+                        Stream = "stdout",
+                        Offset = offset,
+                        MaxBytes = 4096,
+                    },
+                    McpJsonSerializerContext.Default.ReadCommandOutputParams);
+
+                McpToolsCallResultWire pageResult = await session.CallToolAsync(
+                    "read_command_output",
+                    pageArguments);
+
+                Assert.False(pageResult.IsError);
+
+                CommandOutputPageResultWire page = JsonSerializer.Deserialize(
+                    pageResult.Content![0].Text!,
+                    McpJsonSerializerContext.Default.CommandOutputPageResultWire)!;
+
+                Assert.Equal(offset, page.Offset);
+
+                complete.Append(page.Text);
+
+                if (page.NextOffset is null)
+                {
+
+                    break;
+
+                }
+
+                Assert.True(page.NextOffset > offset);
+
+                offset = page.NextOffset.Value;
+
+            }
+            while (true);
+
+            Assert.Equal(
+                new string('x', payloadCharacters),
+                complete.ToString().TrimEnd('\r', '\n'));
+
+            Assert.DoesNotContain(
+                Path.GetTempPath(),
+                output,
+                StringComparison.Ordinal);
+
+            artifactRoot = Assert.IsType<string>(
+                session.Server.CommandOutputArtifactRootForTests);
+
+            Assert.True(Directory.Exists(artifactRoot));
+
+            Assert.Empty(Directory.EnumerateFiles(artifactRoot));
+
+        }
+        finally
+        {
+
+            await session.DisposeAsync();
+
+        }
+
+        Assert.NotNull(artifactRoot);
+
+        Assert.False(Directory.Exists(artifactRoot));
+
+    }
+
+    [Fact]
+    public async Task ExecuteCommand_large_stdout_and_stderr_still_publish_retrieval_handle()
+    {
+
+        IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
+        {
+
+            ToolOutputCapBytes = 65_536,
+
+        };
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            intelligenceSettings: settings);
+
+        const int payloadCharacters = 75_000;
+
+        (string command, string[] argumentList) =
+            ResolveLargeDualOutputCommand(payloadCharacters);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ExecuteCommandParams
+            {
+                Command = command,
+                ArgumentList = argumentList,
+            },
+            McpJsonSerializerContext.Default.ExecuteCommandParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "execute_command",
+            arguments);
+
+        Assert.False(result.IsError);
+
+        string output = result.Content![0].Text!;
+
+        string handle = ExtractCompleteOutputHandle(output);
+
+        Assert.Contains(
+            "stdout, stderr",
+            output,
+            StringComparison.Ordinal);
+
+        string completeStderr = await ReadCompleteCommandOutputAsync(
+            session,
+            handle,
+            "stderr");
+
+        Assert.EndsWith(
+            new string('y', payloadCharacters),
+            completeStderr.TrimEnd('\r', '\n'),
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public async Task ToolsCall_list_directory_recursive_lists_nested_entries()
     {
 
@@ -1543,6 +1728,208 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         string text = result.Content![0].Text!;
 
         Assert.Contains("child.txt", text, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_list_directory_recursive_yields_contained_directory_symlink_once_without_following_cycle()
+    {
+
+        if (!OperatingSystem.IsMacOS()
+            && !OperatingSystem.IsLinux())
+        {
+
+            return;
+
+        }
+
+        string loopDirectory = _workspace.CreateSubdir("directory-cycle");
+
+        Directory.CreateSymbolicLink(
+            Path.Combine(loopDirectory, "back-to-root"),
+            _workspace.Root);
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams
+            {
+                RelativePath = ".",
+                Recursive = true,
+            },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync(
+            "list_directory",
+            arguments);
+
+        Assert.False(result.IsError);
+
+        string text = Assert.Single(result.Content).Text!;
+
+        string[] entries = text.Split('\n');
+
+        Assert.Contains("directory-cycle/back-to-root", entries);
+
+        Assert.DoesNotContain(
+            entries,
+            static entry => entry.StartsWith(
+                "directory-cycle/back-to-root/",
+                StringComparison.Ordinal));
+
+        Assert.DoesNotContain("[MORE:", text, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_list_directory_pages_every_entry_beyond_the_former_total_cap()
+    {
+
+        const int expectedCount = 130;
+
+        for (int index = 0; index < expectedCount; index++)
+        {
+
+            _workspace.WriteFile($"paged-{index:D3}.txt", "x");
+
+        }
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        HashSet<string> observed = new(StringComparer.Ordinal);
+
+        string? continuation = null;
+
+        do
+        {
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ListDirectoryParams
+                {
+                    RelativePath = ".",
+                    Recursive = false,
+                    Continuation = continuation,
+                },
+                McpJsonSerializerContext.Default.ListDirectoryParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "list_directory",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            string text = Assert.Single(result.Content).Text!;
+
+            foreach (string line in text.Split('\n'))
+            {
+
+                if (line.StartsWith("paged-", StringComparison.Ordinal))
+                {
+
+                    observed.Add(line);
+
+                }
+
+            }
+
+            const string cursorPrefix = "continuation=";
+
+            int cursorStart = text.LastIndexOf(
+                cursorPrefix,
+                StringComparison.Ordinal);
+
+            if (cursorStart < 0)
+            {
+
+                break;
+
+            }
+
+            cursorStart += cursorPrefix.Length;
+
+            int cursorEnd = text.IndexOf(';', cursorStart);
+
+            Assert.True(cursorEnd > cursorStart);
+
+            continuation = text[cursorStart..cursorEnd];
+
+        } while (true);
+
+        Assert.Equal(expectedCount, observed.Count);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_list_directory_continuation_does_not_skip_after_prior_entry_is_deleted()
+    {
+
+        const int expectedCount = 130;
+
+        for (int index = 0; index < expectedCount; index++)
+        {
+
+            _workspace.WriteFile($"stable-{index:D3}.txt", "x");
+
+        }
+
+        await using TestMcpSession session = await CreateSessionAsync();
+
+        JsonElement firstArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams
+            {
+                RelativePath = ".",
+                Recursive = false,
+            },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire first = await session.CallToolAsync(
+            "list_directory",
+            firstArguments);
+
+        string firstText = Assert.Single(first.Content).Text!;
+
+        string[] firstPaths = firstText.Split('\n')
+            .Where(static line => line.StartsWith("stable-", StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.NotEmpty(firstPaths);
+
+        string lastFirstPath = firstPaths[^1];
+
+        int lastFirstIndex = int.Parse(
+            lastFirstPath.AsSpan("stable-".Length, 3),
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        string expectedNextPath = $"stable-{lastFirstIndex + 1:D3}.txt";
+
+        File.Delete(Path.Combine(_workspace.Root, firstPaths[0]));
+
+        const string cursorPrefix = "continuation=";
+
+        int cursorStart = firstText.LastIndexOf(
+            cursorPrefix,
+            StringComparison.Ordinal) + cursorPrefix.Length;
+
+        int cursorEnd = firstText.IndexOf(';', cursorStart);
+
+        string continuation = firstText[cursorStart..cursorEnd];
+
+        JsonElement secondArguments = JsonSerializer.SerializeToElement(
+            new ListDirectoryParams
+            {
+                RelativePath = ".",
+                Recursive = false,
+                Continuation = continuation,
+            },
+            McpJsonSerializerContext.Default.ListDirectoryParams);
+
+        McpToolsCallResultWire second = await session.CallToolAsync(
+            "list_directory",
+            secondArguments);
+
+        string secondText = Assert.Single(second.Content).Text!;
+
+        Assert.Contains(expectedNextPath, secondText.Split('\n'));
 
     }
 
@@ -2220,8 +2607,6 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             scopeFactory,
             pacer,
             normalizedRoot,
-            executeCommandTimeout: TimeSpan.FromSeconds(30),
-            executeCommandTimeoutSecondsForDisplay: 30,
             listDirectoryMaxPaths: 64,
             intelligenceSettings: settings,
             maxFileReadSizeBytes: maxFileReadSizeBytes,
@@ -2275,6 +2660,125 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
         }
 
         return ("/bin/sh", ["-c", $"sleep 5 && echo done > '{sentinelPath}'"]);
+
+    }
+
+    private static (string Command, string[] ArgumentList) ResolveLargeOutputCommand(
+        int payloadCharacters)
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return (
+                "powershell.exe",
+                [
+                    "-NoProfile",
+                    "-Command",
+                    $"[Console]::Out.Write(('x' * {payloadCharacters}))",
+                ]);
+
+        }
+
+        return (
+            "/bin/sh",
+            ["-c", $"printf '%*s' {payloadCharacters} | tr ' ' 'x'"]);
+
+    }
+
+    private static (string Command, string[] ArgumentList) ResolveLargeDualOutputCommand(
+        int payloadCharacters)
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return (
+                "powershell.exe",
+                [
+                    "-NoProfile",
+                    "-Command",
+                    $"[Console]::Out.Write(('x' * {payloadCharacters})); [Console]::Error.Write(('y' * {payloadCharacters}))",
+                ]);
+
+        }
+
+        return (
+            "/bin/sh",
+            [
+                "-c",
+                $"printf '%*s' {payloadCharacters} | tr ' ' 'x'; printf '%*s' {payloadCharacters} | tr ' ' 'y' >&2",
+            ]);
+
+    }
+
+    private static async Task<string> ReadCompleteCommandOutputAsync(
+        TestMcpSession session,
+        string handle,
+        string stream)
+    {
+
+        StringBuilder complete = new();
+
+        long offset = 0L;
+
+        do
+        {
+
+            JsonElement arguments = JsonSerializer.SerializeToElement(
+                new ReadCommandOutputParams
+                {
+                    Handle = handle,
+                    Stream = stream,
+                    Offset = offset,
+                    MaxBytes = 4096,
+                },
+                McpJsonSerializerContext.Default.ReadCommandOutputParams);
+
+            McpToolsCallResultWire result = await session.CallToolAsync(
+                "read_command_output",
+                arguments);
+
+            Assert.False(result.IsError);
+
+            CommandOutputPageResultWire page = JsonSerializer.Deserialize(
+                result.Content![0].Text!,
+                McpJsonSerializerContext.Default.CommandOutputPageResultWire)!;
+
+            complete.Append(page.Text);
+
+            if (page.NextOffset is null)
+            {
+
+                return complete.ToString();
+
+            }
+
+            Assert.True(page.NextOffset > offset);
+
+            offset = page.NextOffset.Value;
+
+        }
+        while (true);
+
+    }
+
+    private static string ExtractCompleteOutputHandle(string output)
+    {
+
+        const string marker = "--- complete output handle ---\n";
+
+        int markerIndex = output.IndexOf(marker, StringComparison.Ordinal);
+
+        Assert.True(markerIndex >= 0, "execute_command did not publish a complete-output handle.");
+
+        int handleStart = markerIndex + marker.Length;
+
+        int handleEnd = output.IndexOf('\n', handleStart);
+
+        Assert.True(handleEnd > handleStart, "execute_command published an invalid complete-output handle.");
+
+        return output[handleStart..handleEnd];
 
     }
 

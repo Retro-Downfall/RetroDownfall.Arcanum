@@ -24,10 +24,6 @@ public sealed record RetentionSettings
 
     public int SweepIntervalHours { get; set; } = 24;
 
-    public int MaxItemsPerSweep { get; set; } = 500;
-
-    public int CheckpointInterval { get; set; } = 50;
-
     public int AccountingMinimumDays { get; set; } = 365;
 
     public RetentionRuleSettings ActiveSessions { get; set; } =

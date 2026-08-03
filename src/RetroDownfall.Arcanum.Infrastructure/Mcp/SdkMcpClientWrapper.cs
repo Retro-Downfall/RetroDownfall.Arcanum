@@ -11,10 +11,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// <summary>
 /// Adapts the official ModelContextProtocol SDK's <see cref="SdkMcpClient"/> to <see cref="IMcpClient"/>.
 /// Owns one SDK client session over a caller-supplied <see cref="IClientTransport"/> (stdio, Streamable
-/// HTTP, or the in-process <see cref="ChannelClientTransport"/>), manually paginates <c>tools/list</c> so
-/// Arcanum's <c>MaxPaginationPages</c>/<c>MaxToolsPerServer</c>/<c>MaxToolsPerListPage</c>/<c>MaxToolsTotalBytes</c>
-/// caps still apply exactly as before, and wraps <c>tools/call</c> with Arcanum's own per-request timeout
-/// (the SDK imposes none of its own beyond the caller's <see cref="CancellationToken"/>).
+/// HTTP, or the in-process <see cref="ChannelClientTransport"/>), follows <c>tools/list</c> pagination
+/// until completion with cursor-cycle detection, and lets <c>tools/call</c> run until completion or
+/// caller cancellation unless a caller explicitly supplies a request policy.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: thin adapter over the ModelContextProtocol SDK client; covered via SdkMcpClientWrapperTests using an in-memory transport.
 internal sealed class SdkMcpClientWrapper : IMcpClient
@@ -25,13 +24,7 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
     private readonly ILoggerFactory? _loggerFactory;
 
-    private readonly TimeSpan _defaultRequestTimeout;
-
-    private readonly int _maxToolsListPages;
-
-    private readonly int _maxToolsPerServer;
-
-    private readonly int _maxToolsPerListPage;
+    private readonly TimeSpan _initializationTimeout;
 
     private readonly int _maxToolsTotalBytes;
 
@@ -62,11 +55,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
     public SdkMcpClientWrapper(
         IClientTransport clientTransport,
         McpClientOptions clientOptions,
-        TimeSpan defaultRequestTimeout,
-        int maxToolsListPages,
+        TimeSpan initializationTimeout,
         long toolOutputCapBytes,
-        int maxToolsPerServer,
-        int maxToolsPerListPage,
         int maxToolsTotalBytes,
         ILoggerFactory? loggerFactory = null)
     {
@@ -74,19 +64,9 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
         ArgumentNullException.ThrowIfNull(clientOptions);
 
-        if (maxToolsListPages < 1)
+        if (initializationTimeout <= TimeSpan.Zero)
         {
-            throw new ArgumentOutOfRangeException(nameof(maxToolsListPages));
-        }
-
-        if (maxToolsPerServer < 1)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxToolsPerServer));
-        }
-
-        if (maxToolsPerListPage < 1)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxToolsPerListPage));
+            throw new ArgumentOutOfRangeException(nameof(initializationTimeout));
         }
 
         if (maxToolsTotalBytes < 1)
@@ -103,13 +83,7 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
         _clientOptions = clientOptions;
 
-        _defaultRequestTimeout = defaultRequestTimeout;
-
-        _maxToolsListPages = maxToolsListPages;
-
-        _maxToolsPerServer = maxToolsPerServer;
-
-        _maxToolsPerListPage = maxToolsPerListPage;
+        _initializationTimeout = initializationTimeout;
 
         _maxToolsTotalBytes = maxToolsTotalBytes;
 
@@ -132,8 +106,18 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
                 throw new InvalidOperationException("SdkMcpClientWrapper is already initialized.");
             }
 
+            using CancellationTokenSource initialization =
+                CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken);
+
+            initialization.CancelAfter(_initializationTimeout);
+
             _sdkClient = await SdkMcpClient
-                .CreateAsync(_clientTransport, _clientOptions, _loggerFactory, cancellationToken)
+                .CreateAsync(
+                    _clientTransport,
+                    _clientOptions,
+                    _loggerFactory,
+                    initialization.Token)
                 .ConfigureAwait(false);
 
             _initialized = true;
@@ -193,35 +177,26 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
         HashSet<string> seenCursors = new(StringComparer.Ordinal);
 
-        for (int page = 0; page < _maxToolsListPages && collected.Count < _maxToolsPerServer; page++)
+        while (true)
         {
             if (cursor is not null && !seenCursors.Add(cursor))
             {
-                // A server that echoes back a cursor it already returned would otherwise loop forever.
-                break;
+                throw new InvalidDataException(
+                    "The MCP server repeated a tools/list cursor; pagination cannot continue safely.");
             }
 
             ListToolsResult pageResult = await _sdkClient
                 .ListToolsAsync(new ListToolsRequestParams { Cursor = cursor }, cancellationToken)
                 .ConfigureAwait(false);
 
-            int toolsOnPage = 0;
-
             foreach (Tool tool in pageResult.Tools)
             {
-                if (collected.Count >= _maxToolsPerServer || toolsOnPage >= _maxToolsPerListPage)
-                {
-                    break;
-                }
-
                 if (string.IsNullOrWhiteSpace(tool.Name))
                 {
                     continue;
                 }
 
                 collected.Add(tool);
-
-                toolsOnPage++;
             }
 
             cursor = pageResult.NextCursor;
@@ -248,7 +223,8 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
 
             if (totalBytes + toolBytes > _maxToolsTotalBytes)
             {
-                break;
+                throw new InvalidDataException(
+                    $"The MCP tool catalog exceeded the physical metadata allocation boundary of {_maxToolsTotalBytes} UTF-8 bytes; the server must expose a smaller or paged schema catalog.");
             }
 
             totalBytes += toolBytes;
@@ -273,7 +249,7 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
             throw new InvalidOperationException("SdkMcpClientWrapper must be initialized before calling CallToolAsync.");
         }
 
-        TimeSpan timeout = requestTimeout ?? _defaultRequestTimeout;
+        TimeSpan timeout = requestTimeout ?? Timeout.InfiniteTimeSpan;
 
         bool noPerRequestTimeout = timeout == Timeout.InfiniteTimeSpan;
 

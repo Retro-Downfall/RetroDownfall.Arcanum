@@ -19,47 +19,13 @@ public sealed class RetentionSettingsTests
 
         Assert.False(settings.AutomaticSweepsEnabled);
 
-        Assert.Equal(500, settings.MaxItemsPerSweep);
-
-        Assert.Equal(50, settings.CheckpointInterval);
+        Assert.Equal(24, settings.SweepIntervalHours);
 
         Assert.Equal(365, settings.AccountingMinimumDays);
 
         Assert.False(settings.ActiveSessions.Enabled);
 
         Assert.False(settings.ArchivedSessions.Enabled);
-
-    }
-
-    [Theory]
-    [InlineData(0, 1)]
-    [InlineData(1, 1)]
-    [InlineData(500, 500)]
-    [InlineData(10_000, 10_000)]
-    [InlineData(10_001, 10_000)]
-    public void RetentionMaxItemsPerSweep_clamps_to_safe_bounds(int value, int expected)
-    {
-
-        Assert.Equal(expected, ArcanumSettingClamps.RetentionMaxItemsPerSweep(value));
-
-    }
-
-    [Theory]
-    [InlineData(0, 500, 1)]
-    [InlineData(1, 500, 1)]
-    [InlineData(50, 500, 50)]
-    [InlineData(500, 500, 500)]
-    [InlineData(501, 500, 500)]
-    [InlineData(50, 25, 25)]
-    public void RetentionCheckpointInterval_clamps_to_the_effective_sweep_size(
-        int value,
-        int maxItemsPerSweep,
-        int expected)
-    {
-
-        Assert.Equal(
-            expected,
-            ArcanumSettingClamps.RetentionCheckpointInterval(value, maxItemsPerSweep));
 
     }
 
@@ -103,8 +69,7 @@ public sealed class RetentionSettingsTests
               "Arcanum": {
                 "retention": {
                   "automaticSweepsEnabled": true,
-                  "maxItemsPerSweep": 250,
-                  "checkpointInterval": 25,
+                  "sweepIntervalHours": 12,
                   "accountingMinimumDays": 730,
                   "activeSessions": {
                     "enabled": true,
@@ -138,9 +103,7 @@ public sealed class RetentionSettingsTests
 
         Assert.True(settings.AutomaticSweepsEnabled);
 
-        Assert.Equal(250, settings.MaxItemsPerSweep);
-
-        Assert.Equal(25, settings.CheckpointInterval);
+        Assert.Equal(12, settings.SweepIntervalHours);
 
         Assert.Equal(730, settings.AccountingMinimumDays);
 
@@ -161,18 +124,12 @@ public sealed class RetentionSettingsTests
             Retention = source.Retention with
             {
                 AutomaticSweepsEnabled = true,
-
-                MaxItemsPerSweep = 750,
             },
         };
 
         Assert.False(source.Retention.AutomaticSweepsEnabled);
 
-        Assert.Equal(500, source.Retention.MaxItemsPerSweep);
-
         Assert.True(copy.Retention.AutomaticSweepsEnabled);
-
-        Assert.Equal(750, copy.Retention.MaxItemsPerSweep);
 
     }
 

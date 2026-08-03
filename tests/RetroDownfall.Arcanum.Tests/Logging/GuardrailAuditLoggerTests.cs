@@ -1,6 +1,10 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -92,6 +96,37 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
     }
 
     [Fact]
+
+    public async Task QueryAsync_WithoutFrom_ReturnsRecordsOlderThanFormerLookbackCeiling()
+    {
+
+        GuardrailAuditLogger logger = CreateLogger(enabled: true);
+
+        DateTimeOffset oldTimestamp = DateTimeOffset.UtcNow.AddDays(-500);
+
+        GuardrailAuditRecord record = MakeRecord("old", sessionId: "old-session") with
+        {
+
+            Timestamp = oldTimestamp.ToString("O"),
+
+        };
+
+        string oldFile = Path.Combine(_tempDirectory, $"guardrails-{oldTimestamp:yyyyMMdd}.jsonl");
+
+        string json = JsonSerializer.Serialize(record, AuditJsonContext.Default.GuardrailAuditRecord);
+
+        await File.WriteAllTextAsync(oldFile, json + "\n");
+
+        IReadOnlyList<GuardrailAuditRecord> results =
+            await logger.QueryAsync(null, null, null, null, null, 100, CancellationToken.None);
+
+        GuardrailAuditRecord found = Assert.Single(results);
+
+        Assert.Equal("old-session", found.SessionId);
+
+    }
+
+    [Fact]
     public async Task QueryAsync_FiltersByStageAndViolationType()
     {
 
@@ -116,12 +151,63 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
     }
 
     [Fact]
+    public async Task QueryPageAsync_Cursor_preserves_snapshot_when_new_records_are_appended()
+    {
+
+        GuardrailAuditLogger logger = CreateLogger(enabled: true);
+
+        GuardrailAuditRecord oldest = MakeRecord("oldest", sessionId: "oldest");
+
+        await logger.LogAsync(oldest, CancellationToken.None);
+
+        await logger.LogAsync(oldest with { SessionId = "middle" }, CancellationToken.None);
+
+        await logger.LogAsync(oldest with { SessionId = "newest" }, CancellationToken.None);
+
+        Result<AuditQueryPage<GuardrailAuditRecord>> first = await logger.QueryPageAsync(
+            null,
+            null,
+            null,
+            null,
+            null,
+            2,
+            cursor: null,
+            CancellationToken.None);
+
+        Assert.True(first.IsSuccess);
+
+        Assert.Equal(["newest", "middle"], first.Value.Records.Select(static record => record.SessionId));
+
+        string cursor = Assert.IsType<string>(first.Value.NextCursor);
+
+        await logger.LogAsync(oldest with { SessionId = "appended-after-snapshot" }, CancellationToken.None);
+
+        Result<AuditQueryPage<GuardrailAuditRecord>> second = await logger.QueryPageAsync(
+            null,
+            null,
+            null,
+            null,
+            null,
+            2,
+            cursor,
+            CancellationToken.None);
+
+        Assert.True(second.IsSuccess);
+
+        GuardrailAuditRecord result = Assert.Single(second.Value.Records);
+
+        Assert.Equal("oldest", result.SessionId);
+
+        Assert.Null(second.Value.NextCursor);
+
+    }
+
+    [Fact]
     public async Task LogAsync_WhenUnifiedAutomaticSweepIsEnabled_DoesNotDeleteOldFiles()
     {
 
         GuardrailAuditLogger logger = CreateLogger(
             enabled: true,
-            retentionDays: 7,
             automaticSweepsEnabled: true,
             unifiedRetentionEnabled: true,
             unifiedRetentionDays: 7);
@@ -142,10 +228,9 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
 
     private GuardrailAuditLogger CreateLogger(
         bool enabled,
-        int retentionDays = 7,
         bool automaticSweepsEnabled = true,
         bool unifiedRetentionEnabled = true,
-        int? unifiedRetentionDays = null)
+        int unifiedRetentionDays = 7)
     {
 
         ArcanumSettings settings = new()
@@ -158,7 +243,6 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
                     AuditLog = new GuardrailsAuditPolicySettings
                     {
                         Enabled = enabled,
-                        RetentionDays = retentionDays,
                     },
                 },
             },
@@ -168,7 +252,7 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
                 GuardrailLogs = new RetentionRuleSettings
                 {
                     Enabled = unifiedRetentionEnabled,
-                    Days = unifiedRetentionDays ?? retentionDays,
+                    Days = unifiedRetentionDays,
                 },
             },
         };

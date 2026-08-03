@@ -6,7 +6,7 @@ public sealed class WeaveIndexAvailabilityTests
 {
 
     [Fact]
-    public void Default_IsManagedMode_WithBudgetConstant()
+    public void Default_IsCompleteManagedMode()
     {
 
         WeaveIndexAvailability availability = new();
@@ -14,8 +14,6 @@ public sealed class WeaveIndexAvailabilityTests
         Assert.False(availability.IsVecAvailable);
 
         Assert.Equal(WeaveIndexAvailability.ModeManaged, availability.Mode);
-
-        Assert.Equal(50_000, WeaveIndexAvailability.ManagedSearchRowBudget);
 
         Assert.Contains("managed", availability.Diagnostic, StringComparison.OrdinalIgnoreCase);
 

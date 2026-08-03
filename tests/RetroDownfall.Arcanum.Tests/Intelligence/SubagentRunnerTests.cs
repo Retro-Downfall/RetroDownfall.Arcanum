@@ -33,8 +33,7 @@ public sealed class SubagentRunnerTests
                 "test-model",
                 [explicitFile],
                 MaxTokens: 1_000,
-                MaxCostUsd: null,
-                MaxTurns: 2),
+                MaxCostUsd: null),
             CancellationToken.None);
 
         Assert.True(result.Success);
@@ -108,8 +107,7 @@ public sealed class SubagentRunnerTests
                 null,
                 [],
                 MaxTokens: 1_000,
-                MaxCostUsd: null,
-                MaxTurns: 2),
+                MaxCostUsd: null),
             CancellationToken.None);
 
         Assert.False(result.Success);

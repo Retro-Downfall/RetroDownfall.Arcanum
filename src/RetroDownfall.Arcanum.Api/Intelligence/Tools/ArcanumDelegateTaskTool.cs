@@ -13,11 +13,7 @@ internal sealed class ArcanumDelegateTaskTool(
 {
     private const int MaxPromptCharacters = 262_144;
 
-    private const int MaxFiles = 16;
-
     private const int MaxFileCharacters = 262_144;
-
-    private const int MaxTurns = 16;
 
     private static readonly JsonDocument SchemaDocument = JsonDocument.Parse(
         """
@@ -33,7 +29,6 @@ internal sealed class ArcanumDelegateTaskTool(
             "files": {
               "type": "array",
               "description": "Optional explicit file content to pass to the child. No other parent files or chat history are inherited.",
-              "maxItems": 16,
               "items": {
                 "type": "object",
                 "properties": {
@@ -58,13 +53,6 @@ internal sealed class ArcanumDelegateTaskTool(
               "type": "number",
               "description": "Optional hard USD cost ceiling delegated to the child.",
               "exclusiveMinimum": 0
-            },
-            "max_turns": {
-              "type": "integer",
-              "description": "Maximum provider calls allowed in the child loop.",
-              "minimum": 1,
-              "maximum": 16,
-              "default": 4
             }
           },
           "required": ["prompt"],
@@ -79,7 +67,7 @@ internal sealed class ArcanumDelegateTaskTool(
     public override string Name => ArcanumBuiltInToolNames.DelegateTask;
 
     public override string Description =>
-        "Runs a self-contained task in one isolated child agent with an explicit token/cost/turn budget and returns only its final summary.";
+        "Runs a self-contained task in one isolated child agent with an explicit token or cost budget and returns only its final summary.";
 
     public override JsonElement JsonSchema => SchemaDocument.RootElement;
 
@@ -107,15 +95,6 @@ internal sealed class ArcanumDelegateTaskTool(
             return "Subagent task failed: A delegated token or cost budget is required.";
         }
 
-        int maxTurns = TryReadInt64(arguments, "max_turns", out long turnValue)
-            ? int.CreateSaturating(turnValue)
-            : 4;
-
-        if (maxTurns is < 1 or > MaxTurns)
-        {
-            return $"Subagent task failed: max_turns must be between 1 and {MaxTurns}.";
-        }
-
         FileReadResult fileResult = TryReadFiles(
             arguments,
             out IReadOnlyList<AttachedFileDto> files,
@@ -141,7 +120,6 @@ internal sealed class ArcanumDelegateTaskTool(
                     files,
                     maxTokens,
                     maxCostUsd,
-                    maxTurns,
                     attachmentAllowlist),
                 cancellationToken)
             .ConfigureAwait(false);
@@ -151,8 +129,6 @@ internal sealed class ArcanumDelegateTaskTool(
             null when result.Success => result.Summary,
             SubagentFailureCodes.BudgetExhausted =>
                 SubagentParentContextInjector.BudgetExhaustedMessage,
-            SubagentFailureCodes.MaximumDepth =>
-                "Subagent task failed: Maximum subagent depth reached.",
             _ => "Subagent task failed.",
         };
     }
@@ -177,8 +153,7 @@ internal sealed class ArcanumDelegateTaskTool(
             return FileReadResult.Invalid;
         }
 
-        if (element.ValueKind != JsonValueKind.Array
-            || element.GetArrayLength() > MaxFiles)
+        if (element.ValueKind != JsonValueKind.Array)
         {
             return FileReadResult.Invalid;
         }

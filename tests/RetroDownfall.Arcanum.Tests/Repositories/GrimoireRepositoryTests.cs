@@ -400,7 +400,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task GetUnsummarizedEntriesAsync_widens_target_to_every_actual_row()
+    public async Task GetUnsummarizedEntriesAsync_pages_a_long_session_window()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -446,10 +446,10 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             batchSize: 50,
             CancellationToken.None);
 
-        Assert.Equal(60, result.Count);
+        Assert.Equal(50, result.Count);
 
         Assert.Equal(
-            Enumerable.Range(1, 60).Select(EntryId),
+            Enumerable.Range(1, 50).Select(EntryId),
             result.Select(entry => entry.Id));
 
     }
@@ -557,7 +557,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task GetUnsummarizedEntriesAsync_returns_exact_session_entry_ceiling()
+    public async Task GetUnsummarizedEntriesAsync_returns_one_checkpoint_page()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -573,24 +573,22 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         GrimoireRepository repository = CreateRepository();
 
-        repository.SummarizationEntryCeilingForTesting = entryCeiling;
-
         List<Entry> result = await repository.GetUnsummarizedEntriesAsync(
             sessionId,
             watermark,
             batchSize: 25,
             CancellationToken.None);
 
-        Assert.Equal(entryCeiling, result.Count);
+        Assert.Equal(25, result.Count);
 
         Assert.Equal(
-            Enumerable.Range(1, entryCeiling).Select(EntryId),
+            Enumerable.Range(1, 25).Select(EntryId),
             result.Select(entry => entry.Id));
 
     }
 
     [SkippableFact]
-    public async Task GetUnsummarizedEntriesAsync_legacy_overflow_fails_without_advancing_watermark()
+    public async Task GetUnsummarizedEntriesAsync_more_than_former_ceiling_is_checkpointed()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -606,27 +604,20 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         GrimoireRepository repository = CreateRepository();
 
-        repository.SummarizationEntryCeilingForTesting = entryCeiling;
+        List<Entry> result = await repository.GetUnsummarizedEntriesAsync(
+            sessionId,
+            watermark,
+            batchSize: 25,
+            CancellationToken.None);
 
-        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => repository.GetUnsummarizedEntriesAsync(
-                sessionId,
-                watermark,
-                batchSize: 25,
-                CancellationToken.None));
-
-        Assert.Contains(sessionId.ToString(), failure.Message, StringComparison.Ordinal);
-
-        Assert.Contains(
-            $"101 entries, exceeding the configured session ceiling of {entryCeiling}",
-            failure.Message,
-            StringComparison.Ordinal);
+        Assert.Equal(25, result.Count);
 
         Session unchanged = await _db!.Sessions
             .AsNoTracking()
             .SingleAsync(session => session.Id == sessionId, CancellationToken.None);
 
         Assert.Equal(watermark, unchanged.LastSummarizedMessageAt);
+
         Assert.Equal(entryCeiling + 1, unchanged.UnsummarizedEntryCount);
 
     }

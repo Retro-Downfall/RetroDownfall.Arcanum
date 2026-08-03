@@ -52,34 +52,19 @@ internal sealed partial class SpellRepository : ISpellRepository
     private long GetMaxSpellFileSizeBytes() =>
         ArcanumSettingClamps.EffectiveSpellMaxFileSizeBytes(_settingsMonitor.CurrentValue);
 
-    private int GetMaxSpellDependencies() =>
-        ArcanumSettingClamps.MaxDependencies(ArcanumRuntimeDefaults.Spells.MaxDependencies);
-
     private int GetMaxSpellDeclaredTools() =>
         ArcanumSettingClamps.MaxDeclaredTools(ArcanumRuntimeDefaults.Spells.MaxDeclaredTools);
 
     public async Task<SpellSummary[]> ListAsync(string? workingDirectory, CancellationToken ct)
     {
-        IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        IReadOnlyList<SpellSummary> summaries = await SpellScanner
+            .ScanSummariesAsync(
+                workingDirectory,
+                ct,
+                GetMaxSpellFileSizeBytes())
+            .ConfigureAwait(false);
 
-        HashSet<string> catalogNames = new(StringComparer.OrdinalIgnoreCase);
-
-        foreach (ParsedSpell spell in spells)
-        {
-            if (!string.IsNullOrWhiteSpace(spell.Name))
-            {
-                _ = catalogNames.Add(spell.Name.Trim());
-            }
-        }
-
-        var summaries = new SpellSummary[spells.Count];
-
-        for (int i = 0; i < spells.Count; i++)
-        {
-            summaries[i] = ToSummaryWithValidity(spells[i], catalogNames);
-        }
-
-        return summaries;
+        return summaries.ToArray();
     }
 
     public async Task<SpellDetail?> GetAsync(string name, string? workingDirectory, CancellationToken ct)
@@ -89,16 +74,33 @@ internal sealed partial class SpellRepository : ISpellRepository
             return null;
         }
 
-        IReadOnlyList<ParsedSpell> spells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        IReadOnlyList<SpellMetadata> metadata = await SpellScanner
+            .ScanMetadataAsync(
+                workingDirectory,
+                ct,
+                GetMaxSpellFileSizeBytes())
+            .ConfigureAwait(false);
 
-        ParsedSpell? match = FindByName(spells, name.Trim());
+        SpellMetadata? match = metadata.FirstOrDefault(
+            spell => string.Equals(
+                spell.Name,
+                name.Trim(),
+                StringComparison.OrdinalIgnoreCase));
 
         if (match is null)
         {
             return null;
         }
 
-        return ToDetail(match, workingDirectory);
+        ParsedSpell? spell = await SpellScanner.LoadFullAsync(
+            match.FilePath,
+            ct,
+            GetMaxSpellFileSizeBytes(),
+            GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+
+        return spell is null
+            ? null
+            : ToDetail(spell, workingDirectory);
     }
 
     public async Task<Result> CreateAsync(string? workingDirectory, CreateSpellRequest request, CancellationToken ct)
@@ -117,7 +119,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string trimmedName = request.Name.Trim();
 
-        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         if (FindByName(allSpells, trimmedName) is ParsedSpell existing)
         {
@@ -143,11 +145,9 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         SpellSettings spellSettings = ArcanumRuntimeDefaults.Spells;
 
-        int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
-
         int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(spellSettings.MaxDeclaredTools);
 
-        string? skillBoundsError = SkillJsonBoundsValidator.ValidateCreate(request, maxDependencies, maxDeclaredTools);
+        string? skillBoundsError = SkillJsonBoundsValidator.ValidateCreate(request, maxDeclaredTools);
 
         if (skillBoundsError is not null)
         {
@@ -243,7 +243,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string trimmedName = name.Trim();
 
-        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         ParsedSpell? workspaceSpell = FindWorkspaceSpell(allSpells, trimmedName, workingDirectory);
 
@@ -266,11 +266,9 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         SpellSettings spellSettings = ArcanumRuntimeDefaults.Spells;
 
-        int maxDependencies = ArcanumSettingClamps.MaxDependencies(spellSettings.MaxDependencies);
-
         int maxDeclaredTools = ArcanumSettingClamps.MaxDeclaredTools(spellSettings.MaxDeclaredTools);
 
-        string? skillBoundsError = SkillJsonBoundsValidator.ValidateUpdate(request, maxDependencies, maxDeclaredTools);
+        string? skillBoundsError = SkillJsonBoundsValidator.ValidateUpdate(request, maxDeclaredTools);
 
         if (skillBoundsError is not null)
         {
@@ -318,7 +316,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string trimmedName = name.Trim();
 
-        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         ParsedSpell? workspaceSpell = FindWorkspaceSpell(allSpells, trimmedName, workingDirectory);
 
@@ -645,7 +643,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             return Result<SpellSummary>.Failure(new Error(ErrorCodes.Spell.BuiltinReadOnly, "Cannot clone into the built-in spells directory."));
         }
 
-        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         ParsedSpell? source = FindByName(allSpells, name.Trim());
 
@@ -732,7 +730,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string workspaceRoot = workingDirectory.Trim();
 
-        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         string trimmedName = name.Trim();
 
@@ -793,7 +791,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string workspaceRoot = workingDirectory.Trim();
 
-        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         string trimmedName = name.Trim();
 
@@ -846,7 +844,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string label = version.Trim();
 
-        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         string trimmedName = name.Trim();
 
@@ -952,7 +950,7 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         string workspaceRoot = workingDirectory.Trim();
 
-        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDependencies(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         string trimmedName = name.Trim();
 

@@ -98,7 +98,6 @@ internal sealed record WorkspaceCheckTrxSource(
 
 internal static class WorkspaceCheckTrxParser
 {
-    private const int MaxTrxFiles = 32;
     private const int MaxDiagnosticMessageChars = 4 * 1024;
 
     internal static WorkspaceCheckTrxParseResult Parse(
@@ -161,29 +160,10 @@ internal static class WorkspaceCheckTrxParser
             return Empty(truncated: true);
         }
 
-        List<string> files;
-
-        try
-        {
-            files = Directory
-                .EnumerateFiles(
-                    source.TestResultsRoot,
-                    "*.trx",
-                    SearchOption.TopDirectoryOnly)
-                .OrderBy(
-                    static path => path,
-                    StringComparer.Ordinal)
-                .Take(MaxTrxFiles + 1)
-                .ToList();
-        }
-        catch (Exception ex) when (
-            ex is IOException
-                or UnauthorizedAccessException)
-        {
-            return Empty(truncated: true);
-        }
-
-        bool truncated = files.Count > MaxTrxFiles;
+        bool truncated = false;
+        IEnumerable<string> files = EnumerateTrxFiles(
+            source.TestResultsRoot,
+            () => truncated = true);
         long consumedBytes = 0;
         long aggregateTotalTests = 0;
         long aggregatePassedTests = 0;
@@ -199,7 +179,7 @@ internal static class WorkspaceCheckTrxParser
         HashSet<string> seenDiagnostics =
             new(StringComparer.Ordinal);
 
-        foreach (string path in files.Take(MaxTrxFiles))
+        foreach (string path in files)
         {
             try
             {
@@ -453,6 +433,89 @@ internal static class WorkspaceCheckTrxParser
             parsedAny,
             truncated
             || totalDiagnostics > diagnostics.Count);
+    }
+
+    private static IEnumerable<string> EnumerateTrxFiles(
+        string testResultsRoot,
+        Action markTruncated)
+    {
+        IEnumerable<string>? files = null;
+
+        try
+        {
+            files = Directory.EnumerateFiles(
+                testResultsRoot,
+                "*.trx",
+                SearchOption.TopDirectoryOnly);
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException)
+        {
+        }
+
+        if (files is null)
+        {
+            markTruncated();
+            yield break;
+        }
+
+        IEnumerator<string>? enumerator = null;
+
+        try
+        {
+            enumerator = files.GetEnumerator();
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException)
+        {
+        }
+
+        if (enumerator is null)
+        {
+            markTruncated();
+            yield break;
+        }
+
+        using (enumerator)
+        {
+
+            while (true)
+            {
+                bool hasNext;
+                string? path;
+                bool failed;
+
+                try
+                {
+                    hasNext = enumerator.MoveNext();
+                    path = hasNext ? enumerator.Current : null;
+                    failed = false;
+                }
+                catch (Exception ex) when (
+                    ex is IOException
+                        or UnauthorizedAccessException)
+                {
+                    hasNext = false;
+                    path = null;
+                    failed = true;
+                }
+
+                if (failed)
+                {
+                    markTruncated();
+                    yield break;
+                }
+
+                if (!hasNext)
+                {
+                    yield break;
+                }
+
+                yield return path!;
+            }
+        }
     }
 
     private static bool TryReadCount(

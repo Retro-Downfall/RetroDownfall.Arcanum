@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence;
 
@@ -24,8 +25,8 @@ public interface IGuardrailAuditLogger
     /// <summary>
     /// Reads matching records across the retained dated log files for <c>GET /api/guardrails/audit</c>,
     /// newest first. All filters are optional (<see langword="null"/> = no filter on that field).
-    /// <paramref name="limit"/> bounds the result count (already clamped by the caller). Malformed/
-    /// partial lines (a concurrent write mid-flush) are skipped, not thrown.
+    /// <paramref name="limit"/> bounds the first result page (already clamped by the caller).
+    /// Malformed/partial lines (a concurrent write mid-flush) are skipped, not thrown.
     /// </summary>
     Task<IReadOnlyList<GuardrailAuditRecord>> QueryAsync(
         DateTimeOffset? from,
@@ -34,6 +35,21 @@ public interface IGuardrailAuditLogger
         string? violationType,
         string? sessionId,
         int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads one stable newest-first page. <paramref name="cursor"/> is an opaque continuation from
+    /// the immediately preceding page and is rejected if it is malformed, references replaced or
+    /// retained-away data, or is reused with different filters.
+    /// </summary>
+    Task<Result<AuditQueryPage<GuardrailAuditRecord>>> QueryPageAsync(
+        DateTimeOffset? from,
+        DateTimeOffset? to,
+        string? stage,
+        string? violationType,
+        string? sessionId,
+        int limit,
+        string? cursor,
         CancellationToken cancellationToken);
 
 }

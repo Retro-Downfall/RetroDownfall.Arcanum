@@ -8,15 +8,17 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 public sealed record IntelligenceSettings
 {
 
-    public int ExecuteCommandTimeoutSeconds { get; set; } = 30;
-
     public int SemanticRouterPreflightTimeoutSeconds { get; set; } = 15;
 
     public int SemanticRouterMaxTokens { get; set; } = 128;
 
     public float SemanticRouterTemperature { get; set; } = 0.0f;
 
-    public int ListDirectoryMaxPaths { get; set; } = 500;
+    /// <summary>
+    /// Internal materialization page size for directory tool output. A continuation cursor exposes
+    /// every remaining entry; this value is never a total-work restriction.
+    /// </summary>
+    public int ListDirectoryPageSize { get; set; } = 500;
 
     public bool EnableLexiconSystem { get; set; } = true;
 
@@ -115,35 +117,8 @@ public sealed record IntelligenceSettings
     /// </summary>
     public int ReservedOutputTokens { get; set; } = 1024;
 
-    /// <summary>Hard cap on model calls per turn for bounded autonomous behavior.</summary>
-    public int MaxModelCallsPerTurn { get; init; } = 32;
-
-    /// <summary>Hard cap on tool execution rounds per turn.</summary>
-    public int MaxToolRoundsPerTurn { get; init; } = 16;
-
-    /// <summary>Hard cap on total tool invocations per turn.</summary>
-    public int MaxToolCallsPerTurn { get; init; } = 64;
-
-    /// <summary>Hard cap on cumulative tool result tokens per turn.</summary>
-    public int MaxToolResultTokensPerTurn { get; init; } = 512_000;
-
-    /// <summary>Hard cap on cumulative tool result bytes per turn.</summary>
-    public int MaxToolResultBytesPerTurn { get; init; } = 4_194_304;
-
-    /// <summary>Hard cap on wall-clock turn duration in seconds.</summary>
-    public int MaxTurnElapsedSeconds { get; init; } = 300;
-
-    /// <summary>Hard cap on estimated cost per turn.</summary>
-    public decimal MaxTurnEstimatedCostUsd { get; init; } = 0.50m;
-
-    /// <summary>Hard cap on reserved cost per turn.</summary>
-    public decimal MaxTurnReservedCostUsd { get; init; } = 0.25m;
-
     /// <summary>Enable structured turn planning with visible plan events.</summary>
     public bool EnableStructuredTurnPlanning { get; init; } = true;
-
-    /// <summary>Enable adaptive loop budget enforcement.</summary>
-    public bool EnableAdaptiveLoopBudget { get; init; } = true;
 
     /// <summary>Enable repetition detection with clear termination results.</summary>
     public bool EnableRepetitionDetection { get; init; } = true;
@@ -157,6 +132,3 @@ public sealed record IntelligenceSettings
     public bool UseFastModelForSpellRouting { get; set; }
 
 }
-
-
-

@@ -20,7 +20,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
-/// <summary>RAG Phase 4 — <see cref="SagaExtractionService"/> extraction logic, caps, watermark tracking, and queue behavior.</summary>
+/// <summary>RAG Phase 4 — <see cref="SagaExtractionService"/> extraction, checkpoint, provenance, and queue behavior.</summary>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
 public sealed class SagaExtractionServiceTests : IAsyncLifetime
@@ -173,6 +173,119 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         // Prompt sent to the extraction LLM includes the raw entry content.
         Assert.Contains("I like dark mode.", intelligence.LastStatelessUserContent, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ExtractForSessionAsync_MoreThanFormerTailWindow_ProcessesEveryEntryOldestFirst()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        DateTimeOffset firstTimestamp = DateTimeOffset.UtcNow.AddHours(-1);
+
+        DateTimeOffset latestTimestamp = firstTimestamp;
+
+        for (int index = 0; index < 25; index++)
+        {
+
+            latestTimestamp = await CreateEntryAsync(
+                sessionId,
+                $"history-{index:D2}",
+                firstTimestamp.AddSeconds(index));
+
+        }
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = """{ "memories": [] }""",
+        };
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) =
+            BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        await service.ExtractForSessionAsync(
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+        Assert.Equal(3, intelligence.CallCount);
+
+        Assert.Contains("history-00", intelligence.StatelessUserContents[0], StringComparison.Ordinal);
+
+        Assert.DoesNotContain("history-24", intelligence.StatelessUserContents[0], StringComparison.Ordinal);
+
+        Assert.Contains("history-24", intelligence.StatelessUserContents[^1], StringComparison.Ordinal);
+
+        Assert.Equal(latestTimestamp, await GetWatermarkAsync(sessionId));
+
+    }
+
+    [SkippableFact]
+
+    public async Task ExtractForSessionAsync_PageBoundary_KeepsToolCallAndResultTogether()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        DateTimeOffset firstTimestamp = DateTimeOffset.UtcNow.AddHours(-1);
+
+        for (int index = 0; index < 9; index++)
+        {
+
+            _ = await CreateEntryAsync(
+                sessionId,
+                $"history-{index:D2}",
+                firstTimestamp.AddSeconds(index));
+
+        }
+
+        GrimoireRepository repository = CreateRepository(new ArcanumSettings());
+
+        await repository.AppendToolInteractionAsync(
+            sessionId,
+            "inspect",
+            "{}",
+            "paired-result",
+            "test-model",
+            CancellationToken.None);
+
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new();
+
+        SagaExtractionService service = CreateService();
+
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) =
+            BuildScope(weave, intelligence);
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        await service.ExtractForSessionAsync(
+            scope.ServiceProvider,
+            sessionId,
+            embeddings,
+            settings,
+            CancellationToken.None);
+
+        Assert.Single(intelligence.StatelessUserContents);
+
+        Assert.Contains("[ToolCall: inspect({})]", intelligence.StatelessUserContents[0], StringComparison.Ordinal);
+
+        Assert.Contains("[ToolResult: paired-result]", intelligence.StatelessUserContents[0], StringComparison.Ordinal);
 
     }
 
@@ -450,7 +563,19 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         Guid sessionId = await CreateSessionAsync();
 
-        await CreateEntryAsync(sessionId, "some content");
+        DateTimeOffset firstTimestamp = DateTimeOffset.UtcNow.AddHours(-1);
+
+        DateTimeOffset latestTimestamp = firstTimestamp;
+
+        for (int index = 0; index < 25; index++)
+        {
+
+            latestTimestamp = await CreateEntryAsync(
+                sessionId,
+                $"retry-history-{index:D2}",
+                firstTimestamp.AddSeconds(index));
+
+        }
 
         FakeWeaveService weave = new();
 
@@ -471,6 +596,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         Assert.Null(await GetWatermarkAsync(sessionId));
 
+        Assert.Contains("retry-history-00", intelligence.StatelessUserContents[0], StringComparison.Ordinal);
+
         // Next tick retries from the same starting point since the watermark never advanced.
         intelligence.NextFailure = null;
 
@@ -478,14 +605,18 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         await service.ExtractForSessionAsync(scope.ServiceProvider, sessionId, embeddings, settings, CancellationToken.None);
 
-        Assert.Equal(1, await CountMemoriesAsync());
+        Assert.Equal(3, await CountMemoriesAsync());
 
-        Assert.NotNull(await GetWatermarkAsync(sessionId));
+        Assert.Equal(latestTimestamp, await GetWatermarkAsync(sessionId));
+
+        Assert.Equal(4, intelligence.CallCount);
+
+        Assert.Contains("retry-history-00", intelligence.StatelessUserContents[1], StringComparison.Ordinal);
 
     }
 
     [SkippableFact]
-    public async Task ExtractForSessionAsync_TotalMemoryCapReached_SkipsExtraction()
+    public async Task ExtractForSessionAsync_BeyondFormerGlobalAndPerSessionCaps_StillPersistsMemory()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -494,113 +625,48 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         await CreateEntryAsync(sessionId, "some content");
 
-        // ArcanumSettingClamps.EmbeddingsSagaMaxMemoriesTotal clamps to a 100-1,000,000 floor, so the
-        // cap under test (100, the minimum valid value) requires exactly that many pre-existing rows.
-        const int cap = 100;
+        string sessionKey = sessionId.ToString();
 
-        SagaMemoryStore store = CreateStore();
-
-        for (int i = 0; i < cap; i++)
-        {
-
-            await store.InsertAsync($"existing-{i}", $"pre-existing memory {i}", DateTimeOffset.UtcNow, null, null, "extraction", Vec(1f), CancellationToken.None);
-
-        }
+        _ = await _db!.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            WITH digits(value) AS
+            (
+                VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9)
+            )
+            INSERT INTO saga_memories (Id, Content, CreatedAt, SessionId, Tags, Source)
+            SELECT
+                'existing-' || (a.value * 1000 + b.value * 100 + c.value * 10 + d.value),
+                'pre-existing memory',
+                '2000-01-01T00:00:00.0000000+00:00',
+                {sessionKey},
+                NULL,
+                'extraction'
+            FROM digits AS a
+            CROSS JOIN digits AS b
+            CROSS JOIN digits AS c
+            CROSS JOIN digits AS d
+            """);
 
         FakeWeaveService weave = new();
 
-        FakeIntelligenceProvider intelligence = new() { NextText = """{ "memories": ["should not be extracted"] }""" };
+        FakeIntelligenceProvider intelligence = new() { NextText = """{ "memories": ["memory beyond former caps"] }""" };
 
         SagaExtractionService service = CreateService();
 
-        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(
-            weave,
-            intelligence,
-            maxMemoriesTotal: cap);
+        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) =
+            BuildScope(weave, intelligence);
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         await service.ExtractForSessionAsync(scope.ServiceProvider, sessionId, embeddings, settings, CancellationToken.None);
 
-        Assert.Equal(0, intelligence.CallCount);
+        Assert.Equal(1, intelligence.CallCount);
 
-        Assert.Equal(cap, await CountMemoriesAsync());
-
-    }
-
-    [SkippableFact]
-    public async Task ExtractForSessionAsync_PerSessionMemoryCapReached_SkipsExtraction()
-    {
-
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        Guid sessionId = await CreateSessionAsync();
-
-        await CreateEntryAsync(sessionId, "some content");
+        Assert.Equal(10_001, await CountMemoriesAsync());
 
         SagaMemoryStore store = CreateStore();
 
-        await store.InsertAsync("existing-1", "pre-existing memory", DateTimeOffset.UtcNow, sessionId, null, "extraction", Vec(1f), CancellationToken.None);
-
-        FakeWeaveService weave = new();
-
-        FakeIntelligenceProvider intelligence = new() { NextText = """{ "memories": ["should not be extracted"] }""" };
-
-        SagaExtractionService service = CreateService();
-
-        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(
-            weave,
-            intelligence,
-            maxMemoriesPerSession: 1);
-
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-
-        await service.ExtractForSessionAsync(scope.ServiceProvider, sessionId, embeddings, settings, CancellationToken.None);
-
-        Assert.Equal(0, intelligence.CallCount);
-
-        Assert.Equal(1, await CountMemoriesAsync());
-
-    }
-
-    [SkippableFact]
-    public async Task ExtractForSessionAsync_PerSessionCapReachedMidBatch_StopsInsertingWithoutExceedingCap()
-    {
-
-        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
-
-        Guid sessionId = await CreateSessionAsync();
-
-        await CreateEntryAsync(sessionId, "some content");
-
-        SagaMemoryStore store = CreateStore();
-
-        // One pre-existing memory, cap of 2: only one more may be inserted, even though the LLM
-        // response below parses three candidate memories in a single extraction call.
-        await store.InsertAsync("existing-1", "pre-existing memory", DateTimeOffset.UtcNow, sessionId, null, "extraction", Vec(1f), CancellationToken.None);
-
-        FakeWeaveService weave = new();
-
-        FakeIntelligenceProvider intelligence = new()
-        {
-            NextText = """{ "memories": ["first new memory", "second new memory", "third new memory"] }""",
-        };
-
-        SagaExtractionService service = CreateService();
-
-        (IServiceScopeFactory scopeFactory, EmbeddingSettings embeddings, ArcanumSettings settings) = BuildScope(
-            weave,
-            intelligence,
-            maxMemoriesPerSession: 2);
-
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-
-        await service.ExtractForSessionAsync(scope.ServiceProvider, sessionId, embeddings, settings, CancellationToken.None);
-
-        // The cap (2) is re-checked before every insert in the batch, not just once before the LLM
-        // call, so the per-session cap is never exceeded even when a single extraction call parses
-        // more candidate memories than remaining headroom.
-        Assert.Equal(2, await CountMemoriesAsync());
+        Assert.Equal(10_001, await store.CountBySessionAsync(sessionId, CancellationToken.None));
 
     }
 
@@ -674,21 +740,105 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task EnqueueExtraction_ManyRapidCalls_NeverThrows_DropsOldestWhenFull()
+    public async Task EnqueueExtraction_BeyondFormerQueueCapacity_EventuallyProcessesEverySession()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SagaExtractionService service = CreateService();
+        Guid[] sessionIds = await CreateSessionsWithEntriesAsync(101);
 
-        // No consumer is running (ExecuteAsync was never started), so the bounded channel (capacity
-        // 100, DropOldest) fills up quickly; EnqueueExtraction must never throw regardless.
-        for (int i = 0; i < 250; i++)
+        FakeWeaveService weave = new();
+
+        FakeIntelligenceProvider intelligence = new()
         {
 
-            service.EnqueueExtraction(Guid.NewGuid());
+            ExpectedCallCount = sessionIds.Length,
+
+        };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(
+            weave,
+            intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<SagaExtractionService>.Instance);
+
+        foreach (Guid sessionId in sessionIds)
+        {
+
+            service.EnqueueExtraction(sessionId);
 
         }
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+
+            await intelligence.WaitForExpectedCallsAsync(TimeSpan.FromSeconds(15));
+
+            await WaitForWatermarkAsync(sessionIds[^1], TimeSpan.FromSeconds(15));
+
+        }
+        finally
+        {
+
+            await hosted.StopAsync(CancellationToken.None);
+
+        }
+
+        Assert.Equal(sessionIds.Length, intelligence.CallCount);
+
+        Assert.NotNull(await GetWatermarkAsync(sessionIds[0]));
+
+        Assert.NotNull(await GetWatermarkAsync(sessionIds[^1]));
+
+    }
+
+    [Fact]
+
+    public void EnqueueExtraction_DeduplicatesPendingSessionAndMergesProvenance()
+    {
+
+        SagaExtractionService service = CreateService();
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid firstAttachment = Guid.NewGuid();
+
+        Guid secondAttachment = Guid.NewGuid();
+
+        service.EnqueueExtraction(
+            new SagaExtractionRequest(
+                sessionId,
+                [
+                    CreateProvenance(sessionId, firstAttachment),
+
+                    CreateProvenance(sessionId, firstAttachment),
+                ],
+                HadUnprovenancedAttachmentContent: false));
+
+        service.EnqueueExtraction(
+            new SagaExtractionRequest(
+                sessionId,
+                [CreateProvenance(sessionId, secondAttachment)],
+                HadUnprovenancedAttachmentContent: true));
+
+        SagaExtractionRequest pending = Assert.Single(service.PendingRequestsForTests);
+
+        Assert.Equal(sessionId, pending.SessionId);
+
+        Assert.Equal(2, pending.MaterializedAttachments.Count);
+
+        Assert.Contains(pending.MaterializedAttachments, item => item.AttachmentId == firstAttachment);
+
+        Assert.Contains(pending.MaterializedAttachments, item => item.AttachmentId == secondAttachment);
+
+        Assert.True(pending.HadUnprovenancedAttachmentContent);
 
     }
 
@@ -714,6 +864,26 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                     },
                 }));
 
+    private GrimoireRepository CreateRepository(ArcanumSettings settings) =>
+        new(
+            _db!,
+            new NoOpSessionAttachmentStore(),
+            NullLogger<GrimoireRepository>.Instance,
+            new TestOptionsSnapshot<ArcanumSettings>(settings));
+
+    private static AttachmentMemoryProvenance CreateProvenance(
+        Guid sessionId,
+        Guid attachmentId) =>
+        new(
+            sessionId,
+            attachmentId,
+            "notes",
+            1,
+            "content-hash",
+            DateTimeOffset.UtcNow,
+            "SessionAttachmentRag",
+            AttachmentSourceAvailability.Available);
+
     /// <summary>Builds a <see cref="TestDimensions"/>-length vector with <paramref name="leading"/> in its first slots and zeros elsewhere.</summary>
     private static float[] Vec(params float[] leading)
     {
@@ -728,9 +898,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
     private (IServiceScopeFactory ScopeFactory, EmbeddingSettings Embeddings, ArcanumSettings Settings) BuildScope(
         FakeWeaveService weave,
-        FakeIntelligenceProvider intelligence,
-        int maxMemoriesTotal = 10_000,
-        int maxMemoriesPerSession = 50)
+        FakeIntelligenceProvider intelligence)
     {
 
         EmbeddingSettings embeddings = ArcanumRuntimeDefaults.Embeddings with
@@ -743,9 +911,6 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             Saga = ArcanumRuntimeDefaults.Embeddings.Saga with
             {
                 ExtractionEnabled = true,
-                MaxMemoriesTotal = maxMemoriesTotal,
-                MaxMemoriesPerSession = maxMemoriesPerSession,
-                ExtractionWindowEntries = 10,
             },
         };
 
@@ -783,11 +948,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         services.AddSingleton(new WeaveIndexAvailability());
 
-        services.AddScoped<IGrimoireRepository>(sp => new GrimoireRepository(
-            sp.GetRequiredService<ArcanumDbContext>(),
-            new NoOpSessionAttachmentStore(),
-            NullLogger<GrimoireRepository>.Instance,
-            new TestOptionsSnapshot<ArcanumSettings>(settings)));
+        services.AddScoped<IGrimoireRepository>(_ => CreateRepository(settings));
 
         IServiceScopeFactory scopeFactory = services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
 
@@ -814,13 +975,56 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
     }
 
+    private async Task<Guid[]> CreateSessionsWithEntriesAsync(int count)
+    {
+
+        DateTimeOffset createdAt = DateTimeOffset.UtcNow.AddHours(-1);
+
+        Guid[] sessionIds = new Guid[count];
+
+        for (int index = 0; index < count; index++)
+        {
+
+            Guid sessionId = Guid.NewGuid();
+
+            sessionIds[index] = sessionId;
+
+            _db!.Sessions.Add(new Session
+            {
+                Id = sessionId,
+                Status = "active",
+                CreatedAt = createdAt,
+                UpdatedAt = createdAt,
+            });
+
+            _db.Entries.Add(new Entry
+            {
+                Id = Guid.NewGuid(),
+                SessionId = sessionId,
+                Role = MessageRole.User,
+                Content = $"queue-session-{index}",
+                CreatedAt = createdAt.AddSeconds(index),
+                Sequence = 1,
+            });
+
+        }
+
+        await _db!.SaveChangesAsync();
+
+        return sessionIds;
+
+    }
+
     /// <summary>
     /// Direct seeding bypasses the repository allocation of <see cref="Entry.Sequence"/>, and the
     /// unique <c>(SessionId, Sequence)</c> index rejects duplicates, so stamp append order here.
     /// </summary>
     private long _seededSequence;
 
-    private async Task<DateTimeOffset> CreateEntryAsync(Guid sessionId, string content)
+    private async Task<DateTimeOffset> CreateEntryAsync(
+        Guid sessionId,
+        string content,
+        DateTimeOffset? createdAt = null)
     {
 
         Entry entry = new()
@@ -829,7 +1033,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             SessionId = sessionId,
             Role = MessageRole.User,
             Content = content,
-            CreatedAt = DateTimeOffset.UtcNow,
+            CreatedAt = createdAt ?? DateTimeOffset.UtcNow,
             Sequence = ++_seededSequence,
         };
 
@@ -856,6 +1060,20 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         SagaMemoryStore store = CreateStore();
 
         return await store.GetWatermarkAsync(sessionId, CancellationToken.None);
+
+    }
+
+    private async Task WaitForWatermarkAsync(Guid sessionId, TimeSpan timeout)
+    {
+
+        using CancellationTokenSource timeoutCancellation = new(timeout);
+
+        while (await GetWatermarkAsync(sessionId) is null)
+        {
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10), timeoutCancellation.Token);
+
+        }
 
     }
 
@@ -897,22 +1115,40 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     private sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider
     {
 
+        private readonly TaskCompletionSource<bool> _expectedCallsReached =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int _callCount;
+
         public string NextText { get; set; } = """{ "memories": [] }""";
 
         public Error? NextFailure { get; set; }
 
-        public int CallCount { get; private set; }
+        public int ExpectedCallCount { get; init; }
+
+        public int CallCount => Volatile.Read(ref _callCount);
 
         public string LastStatelessUserContent { get; private set; } = string.Empty;
+
+        public List<string> StatelessUserContents { get; } = [];
 
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(PingRequest request, CancellationToken cancellationToken = default, InferenceAuditContext? auditContext = null)
         {
 
-            CallCount++;
+            int callCount = Interlocked.Increment(ref _callCount);
 
             LastStatelessUserContent = request.StatelessMessages?
                 .LastOrDefault(static m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))?
                 .Content ?? string.Empty;
+
+            StatelessUserContents.Add(LastStatelessUserContent);
+
+            if (ExpectedCallCount > 0 && callCount >= ExpectedCallCount)
+            {
+
+                _expectedCallsReached.TrySetResult(true);
+
+            }
 
             if (NextFailure is { } failure)
             {
@@ -927,6 +1163,9 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public IAsyncEnumerable<IntelligenceEvent> StreamPromptAsync(PingRequest request, CancellationToken cancellationToken = default, InferenceAuditContext? auditContext = null) =>
             throw new NotSupportedException("SagaExtractionService only calls ExecutePromptAsync.");
+
+        public Task WaitForExpectedCallsAsync(TimeSpan timeout) =>
+            _expectedCallsReached.Task.WaitAsync(timeout);
 
     }
 

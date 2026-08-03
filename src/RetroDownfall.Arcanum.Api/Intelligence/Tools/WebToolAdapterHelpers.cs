@@ -80,7 +80,7 @@ internal static class WebToolAdapterHelpers
             ErrorCodes.WebResearch.InvalidResponse =>
                 "The web-research provider returned an invalid response.",
             ErrorCodes.WebResearch.Timeout =>
-                "The web-research operation timed out.",
+                "Provider/transport timeout boundary: the remote provider reported a timeout or the connection/response stream made no progress during its configured idle interval. No partial provider response was saved. Retry; if it recurs, verify provider availability or use a different research source.",
             ErrorCodes.WebResearch.InvalidUrl =>
                 "The URL is invalid. Only absolute HTTP and HTTPS URLs are accepted.",
             ErrorCodes.WebResearch.SsrfBlocked =>

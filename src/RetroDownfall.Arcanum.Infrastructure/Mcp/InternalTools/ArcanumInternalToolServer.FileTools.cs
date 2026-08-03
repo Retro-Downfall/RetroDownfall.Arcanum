@@ -387,127 +387,104 @@ internal sealed partial class ArcanumInternalToolServer
                 return ToolError($"list_directory: directory not found: '{absolutePath}'.");
             }
 
-            List<string> lines = new(_listDirectoryMaxPaths + 1);
-
-            bool truncated = false;
-
-            if (args.Recursive)
+            if (!TryDecodeListDirectoryContinuation(
+                    args,
+                    out string? afterPath,
+                    out string? continuationError))
             {
-                Queue<string> dirs = new();
 
-                dirs.Enqueue(absolutePath);
+                return ToolError(
+                    "list_directory: " + continuationError);
 
-                while (dirs.Count > 0 && !truncated)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    string dir = dirs.Dequeue();
-
-                    IEnumerable<string> entries;
-
-                    try
-                    {
-                        entries = Directory.EnumerateFileSystemEntries(dir, "*", SearchOption.TopDirectoryOnly);
-                    }
-                    catch (IOException ex)
-                    {
-                        _logger?.LogError(ex, "list_directory: I/O error listing subdirectory.");
-
-                        return ToolError("list_directory: an I/O error occurred. See server logs.");
-                    }
-                    catch (UnauthorizedAccessException ex)
-                    {
-                        _logger?.LogError(ex, "list_directory: access denied listing subdirectory.");
-
-                        return ToolError("list_directory: access denied.");
-                    }
-
-                    foreach (string entry in entries)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspaceRoot!, entry, out _))
-                        {
-                            continue;
-                        }
-
-                        string name = Path.GetFileName(entry);
-
-                        if (Directory.Exists(entry) && IsListDirectorySkipFolder(name))
-                        {
-                            continue;
-                        }
-
-                        if (lines.Count >= _listDirectoryMaxPaths)
-                        {
-                            truncated = true;
-
-                            break;
-                        }
-
-                        lines.Add(entry);
-
-                        if (Directory.Exists(entry))
-                        {
-                            dirs.Enqueue(entry);
-                        }
-                    }
-                }
-            }
-            else
-            {
-                IEnumerable<string> entries;
-
-                try
-                {
-                    entries = Directory.EnumerateFileSystemEntries(
-                        absolutePath,
-                        "*",
-                        SearchOption.TopDirectoryOnly);
-                }
-                catch (IOException ex)
-                {
-                    _logger?.LogError(ex, "list_directory: I/O error listing root.");
-
-                    return ToolError("list_directory: an I/O error occurred. See server logs.");
-                }
-                catch (UnauthorizedAccessException ex)
-                {
-                    _logger?.LogError(ex, "list_directory: access denied listing root.");
-
-                    return ToolError("list_directory: access denied.");
-                }
-
-                foreach (string entry in entries)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(_workspaceRoot!, entry, out _))
-                    {
-                        continue;
-                    }
-
-                    string name = Path.GetFileName(entry);
-
-                    if (Directory.Exists(entry) && IsListDirectorySkipFolder(name))
-                    {
-                        continue;
-                    }
-
-                    if (lines.Count >= _listDirectoryMaxPaths)
-                    {
-                        truncated = true;
-
-                        break;
-                    }
-
-                    lines.Add(entry);
-                }
             }
 
-            if (truncated)
+            List<string> lines = new(_listDirectoryPageSize + 1);
+
+            bool continuationReached = afterPath is null;
+
+            long textBudget = Math.Max(
+                1_024,
+                Math.Min(
+                    ArcanumSettingClamps.EffectiveInProcessToolOutputCapBytes(
+                        _settings.ToolOutputCapBytes,
+                        _maxJsonRpcLineBytes),
+                    _maxJsonRpcLineBytes) / 2);
+
+            long materializedBytes = 0;
+
+            bool hasMore = false;
+
+            string? lastPath = null;
+
+            foreach (string entry in EnumerateListDirectoryEntries(
+                         absolutePath,
+                         args.Recursive,
+                         cancellationToken))
             {
-                lines.Add(_listDirectoryTruncationSuffix);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                string relativePath = Path.GetRelativePath(_workspaceRoot!, entry)
+                    .Replace(Path.DirectorySeparatorChar, '/');
+
+                if (!continuationReached)
+                {
+
+                    if (string.Equals(
+                            relativePath,
+                            afterPath,
+                            OperatingSystem.IsWindows()
+                                ? StringComparison.OrdinalIgnoreCase
+                                : StringComparison.Ordinal))
+                    {
+
+                        continuationReached = true;
+
+                    }
+
+                    continue;
+
+                }
+
+                int entryBytes = System.Text.Encoding.UTF8.GetByteCount(relativePath) + 1;
+
+                if (entryBytes > textBudget)
+                {
+                    return ToolError(
+                        $"list_directory: protocol-owned output protection rejected one {entryBytes}-byte path because the safe text page is {textBudget} bytes. No page was checkpointed; list a more specific contained directory.");
+                }
+
+                if (lines.Count >= _listDirectoryPageSize
+                    || materializedBytes + entryBytes > textBudget)
+                {
+                    hasMore = true;
+
+                    break;
+                }
+
+                lines.Add(relativePath);
+
+                materializedBytes += entryBytes;
+
+                lastPath = relativePath;
+            }
+
+            if (!continuationReached)
+            {
+
+                return ToolError(
+                    "list_directory: the opaque continuation entry no longer exists in this directory snapshot. No page was checkpointed; restart from the first page to observe the changed workspace safely.");
+
+            }
+
+            if (hasMore)
+            {
+
+                string continuation = EncodeListDirectoryContinuation(
+                    args,
+                    lastPath!);
+
+                lines.Add(
+                    $"... [MORE: continuation={continuation}; call list_directory again with the same relativePath/recursive arguments and this opaque continuation token.]" );
             }
 
             string joined = string.Join("\n", lines);
@@ -540,6 +517,203 @@ internal sealed partial class ArcanumInternalToolServer
             _logger?.LogError(ex, "list_directory: access denied.");
 
             return ToolError("list_directory: access denied.");
+        }
+    }
+
+    private bool TryDecodeListDirectoryContinuation(
+        ListDirectoryParams args,
+        out string? afterPath,
+        out string? error)
+    {
+
+        afterPath = null;
+
+        error = null;
+
+        if (string.IsNullOrEmpty(args.Continuation))
+        {
+
+            return true;
+
+        }
+
+        if (Encoding.UTF8.GetByteCount(args.Continuation) > _maxJsonRpcLineBytes)
+        {
+
+            error = "protocol-owned continuation protection rejected a token larger than the JSON-RPC frame budget. No work was performed; restart from the first page.";
+
+            return false;
+
+        }
+
+        try
+        {
+
+            byte[] bytes = Convert.FromBase64String(args.Continuation);
+
+            string payload = new UTF8Encoding(
+                encoderShouldEmitUTF8Identifier: false,
+                throwOnInvalidBytes: true).GetString(bytes);
+
+            int separator = payload.IndexOf('\n');
+
+            if (separator <= 0
+                || !string.Equals(
+                    payload[..separator],
+                    ComputeListDirectoryScopeFingerprint(args),
+                    StringComparison.Ordinal))
+            {
+
+                error = "the opaque continuation token does not belong to the same relativePath and recursive arguments. No work was performed; reuse the original arguments or restart from the first page.";
+
+                return false;
+
+            }
+
+            afterPath = payload[(separator + 1)..];
+
+            if (afterPath.Length == 0)
+            {
+
+                error = "the opaque continuation token contains no checkpoint path. No work was performed; restart from the first page.";
+
+                afterPath = null;
+
+                return false;
+
+            }
+
+            return true;
+
+        }
+        catch (Exception exception)
+            when (exception is FormatException
+                  or System.Text.DecoderFallbackException)
+        {
+
+            error = "the opaque continuation token is malformed. No work was performed; use a token returned by list_directory or restart from the first page.";
+
+            return false;
+
+        }
+
+    }
+
+    private static string EncodeListDirectoryContinuation(
+        ListDirectoryParams args,
+        string lastPath)
+    {
+
+        string payload = ComputeListDirectoryScopeFingerprint(args)
+            + "\n"
+            + lastPath;
+
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
+
+    }
+
+    private static string ComputeListDirectoryScopeFingerprint(
+        ListDirectoryParams args)
+    {
+
+        string scope = args.RelativePath.Trim()
+            .Replace('\\', '/')
+            + "\n"
+            + args.Recursive;
+
+        byte[] digest = System.Security.Cryptography.SHA256.HashData(
+            Encoding.UTF8.GetBytes(scope));
+
+        return Convert.ToHexString(digest.AsSpan(0, 16));
+
+    }
+
+    private IEnumerable<string> EnumerateListDirectoryEntries(
+        string absolutePath,
+        bool recursive,
+        CancellationToken cancellationToken)
+    {
+
+        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                _workspaceRoot!,
+                absolutePath,
+                out string? resolvedRoot))
+        {
+
+            yield break;
+
+        }
+
+        StringComparer pathComparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
+        HashSet<string> visitedCanonicalDirectories = new(
+            pathComparer);
+
+        _ = visitedCanonicalDirectories.Add(
+            Path.GetFullPath(resolvedRoot ?? absolutePath));
+
+        Queue<string> directories = new();
+
+        directories.Enqueue(absolutePath);
+
+        while (directories.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            string directory = directories.Dequeue();
+
+            string[] entries = Directory.EnumerateFileSystemEntries(
+                    directory,
+                    "*",
+                    SearchOption.TopDirectoryOnly)
+                .OrderBy(static path => path, StringComparer.Ordinal)
+                .ToArray();
+
+            foreach (string entry in entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                        _workspaceRoot!,
+                        entry,
+                        out string? resolvedEntry))
+                {
+                    continue;
+                }
+
+                bool isDirectory = Directory.Exists(entry);
+
+                if (isDirectory
+                    && IsListDirectorySkipFolder(Path.GetFileName(entry)))
+                {
+                    continue;
+                }
+
+                yield return entry;
+
+                if (recursive && isDirectory)
+                {
+
+                    string canonicalDirectory = Path.GetFullPath(
+                        resolvedEntry ?? entry);
+
+                    if (visitedCanonicalDirectories.Add(
+                            canonicalDirectory))
+                    {
+
+                        directories.Enqueue(entry);
+
+                    }
+
+                }
+            }
+
+            if (!recursive)
+            {
+                yield break;
+            }
         }
     }
 

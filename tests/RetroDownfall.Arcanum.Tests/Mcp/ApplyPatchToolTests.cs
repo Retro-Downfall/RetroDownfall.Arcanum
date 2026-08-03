@@ -291,7 +291,7 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public void Parser_enforces_patch_file_hunk_and_line_caps()
+    public void Parser_retains_single_request_patch_byte_allocation_boundary()
     {
 
         const string patch =
@@ -308,26 +308,86 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             UnifiedDiffParser.Parse(
                 patch,
                 DefaultPatchSettings() with { MaxPatchBytes = 8 }).Code);
-        Assert.Equal(
-            "max_files",
-            UnifiedDiffParser.Parse(
-                patch + "\n" + patch,
-                DefaultPatchSettings() with { MaxFiles = 1 }).Code);
-        Assert.Equal(
-            "max_hunks",
-            UnifiedDiffParser.Parse(
-                patch,
-                DefaultPatchSettings() with { MaxHunks = 0 }).Code);
-        Assert.Equal(
-            "max_lines_per_hunk",
-            UnifiedDiffParser.Parse(
-                patch,
-                DefaultPatchSettings() with { MaxLinesPerHunk = 1 }).Code);
 
     }
 
     [Fact]
-    public async Task Planner_enforces_per_file_and_aggregate_input_output_and_staging_caps()
+    public void Parser_accepts_work_beyond_former_file_hunk_and_line_totals()
+    {
+
+        const int fileCount = 129;
+
+        const int hunkCount = 1_025;
+
+        const int lineCount = 10_001;
+
+        System.Text.StringBuilder files = new();
+
+        for (int index = 0; index < fileCount; index++)
+        {
+
+            _ = files
+                .AppendLine("--- /dev/null")
+                .Append("+++ b/files/")
+                .Append(index)
+                .AppendLine(".txt")
+                .AppendLine("@@ -0,0 +1 @@")
+                .AppendLine("+value");
+
+        }
+
+        System.Text.StringBuilder hunks = new();
+
+        _ = hunks
+            .AppendLine("--- /dev/null")
+            .AppendLine("+++ b/hunks.txt");
+
+        for (int index = 0; index < hunkCount; index++)
+        {
+
+            _ = hunks
+                .Append("@@ -0,0 +")
+                .Append(index + 1)
+                .AppendLine(" @@")
+                .AppendLine("+value");
+
+        }
+
+        System.Text.StringBuilder lines = new();
+
+        _ = lines
+            .AppendLine("--- /dev/null")
+            .AppendLine("+++ b/lines.txt")
+            .Append("@@ -0,0 +1,")
+            .Append(lineCount)
+            .AppendLine(" @@");
+
+        for (int index = 0; index < lineCount; index++)
+        {
+
+            _ = lines.AppendLine("+value");
+
+        }
+
+        Assert.True(
+            UnifiedDiffParser.Parse(
+                files.ToString(),
+                DefaultPatchSettings()).Success);
+
+        Assert.True(
+            UnifiedDiffParser.Parse(
+                hunks.ToString(),
+                DefaultPatchSettings()).Success);
+
+        Assert.True(
+            UnifiedDiffParser.Parse(
+                lines.ToString(),
+                DefaultPatchSettings()).Success);
+
+    }
+
+    [Fact]
+    public async Task Planner_enforces_per_allocation_and_transaction_staging_caps()
     {
         static string ModifyPatch(
             string path,
@@ -342,7 +402,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             """;
 
         string inputFileBefore = new('i', 1_024);
-        string inputTotalBefore = new('t', 600);
         string outputFileAfter = new('o', 1_024);
         string outputTotalAfter = new('u', 600);
         string stagingFileBefore = new('s', 600);
@@ -351,8 +410,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         string stagingTotalAfter = new('h', 300);
 
         _workspace.WriteFile("input-file.txt", inputFileBefore + "\n");
-        _workspace.WriteFile("input-total-a.txt", inputTotalBefore + "\n");
-        _workspace.WriteFile("input-total-b.txt", inputTotalBefore + "\n");
         _workspace.WriteFile("output-file.txt", "before\n");
         _workspace.WriteFile("output-total-a.txt", "before\n");
         _workspace.WriteFile("output-total-b.txt", "before\n");
@@ -362,10 +419,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         UnifiedDiffManifest inputFile = ParseManifest(
             ModifyPatch("input-file.txt", inputFileBefore, "after"));
-        UnifiedDiffManifest inputTotal = ParseManifest(
-            ModifyPatch("input-total-a.txt", inputTotalBefore, "after")
-            + "\n"
-            + ModifyPatch("input-total-b.txt", inputTotalBefore, "after"));
         UnifiedDiffManifest outputFile = ParseManifest(
             ModifyPatch("output-file.txt", "before", outputFileAfter));
         UnifiedDiffManifest outputTotal = ParseManifest(
@@ -415,12 +468,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 defaults with { MaxInputBytesPerFile = 1_024 }));
 
         Assert.Equal(
-            "input_total_too_large",
-            await FailureCodeAsync(
-                inputTotal,
-                defaults with { MaxTotalInputBytes = 1_024 }));
-
-        Assert.Equal(
             "output_file_too_large",
             await FailureCodeAsync(
                 outputFile,
@@ -450,6 +497,46 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal(
             stagingTotalBefore + "\n",
             await ReadTextAsync("staging-total-b.txt"));
+
+    }
+
+    [Fact]
+    public async Task Planner_processes_all_inputs_when_each_file_fits_its_allocation_boundary()
+    {
+
+        string before = new('i', 600);
+
+        _workspace.WriteFile("input-a.txt", before + "\n");
+
+        _workspace.WriteFile("input-b.txt", before + "\n");
+
+        UnifiedDiffManifest manifest = ParseManifest(
+            $"""
+            --- a/input-a.txt
+            +++ b/input-a.txt
+            @@ -1 +1 @@
+            -{before}
+            +after-a
+            --- a/input-b.txt
+            +++ b/input-b.txt
+            @@ -1 +1 @@
+            -{before}
+            +after-b
+            """);
+
+        WorkspacePatchPlanResult result = await new WorkspacePatchPlanner(
+            DefaultPatchSettings() with
+            {
+                MaxInputBytesPerFile = 1_024,
+            })
+            .PlanAsync(
+                _workspace.Root,
+                manifest,
+                CancellationToken.None);
+
+        Assert.True(result.Success, result.Message);
+
+        Assert.Equal(2, result.Plan!.Files.Count);
 
     }
 
@@ -768,63 +855,21 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Planner_enforces_monotonic_absolute_deadline()
-    {
-
-        _workspace.WriteFile("deadline.txt", "before\n");
-
-        WorkspacePatchPlanResult result = await new WorkspacePatchPlanner(
-            DefaultPatchSettings() with
-            {
-                MaxElapsedMilliseconds = 100,
-                RollbackReserveMilliseconds = 25,
-            },
-            new WorkspacePatchPlannerOptions
-            {
-                TimeProvider = new IncrementingPatchTimeProvider(),
-            })
-            .PlanAsync(
-                _workspace.Root,
-                ParseManifest(
-                    """
-                    --- a/deadline.txt
-                    +++ b/deadline.txt
-                    @@ -1 +1 @@
-                    -before
-                    +after
-                    """),
-                CancellationToken.None);
-
-        Assert.False(result.Success);
-
-        Assert.Equal("max_elapsed", result.Code);
-
-        Assert.Equal("before\n", await ReadTextAsync("deadline.txt"));
-
-    }
-
-    [Fact]
     public async Task Planner_clamps_extreme_resource_settings_at_entry()
     {
         WorkspacePatchSettings settings = new()
         {
             MaxInputBytesPerFile = long.MinValue,
-            MaxTotalInputBytes = long.MinValue,
             MaxOutputBytesPerFile = long.MinValue,
             MaxTotalOutputBytes = long.MinValue,
             MaxStagingBytesPerFile = long.MinValue,
             MaxTotalStagingBytes = long.MinValue,
-            MaxElapsedMilliseconds = int.MaxValue,
-            RollbackReserveMilliseconds = int.MinValue,
+            RecoveryTimeoutMilliseconds = int.MinValue,
             FuzzyMatchWindowLines = int.MinValue,
         };
 
         WorkspacePatchPlanResult result = await new WorkspacePatchPlanner(
-            settings,
-            new WorkspacePatchPlannerOptions
-            {
-                TimeProvider = new ManualPatchTimeProvider(),
-            })
+            settings)
             .PlanAsync(
                 _workspace.Root,
                 ParseManifest(
@@ -869,34 +914,7 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Planner_normalizes_extreme_deadline_relation_before_budgeting()
-    {
-        WorkspacePatchPlanResult result = await new WorkspacePatchPlanner(
-            DefaultPatchSettings() with
-            {
-                MaxElapsedMilliseconds = int.MaxValue,
-                RollbackReserveMilliseconds = int.MinValue,
-            },
-            new WorkspacePatchPlannerOptions
-            {
-                TimeProvider = new IncrementingPatchTimeProvider(),
-            })
-            .PlanAsync(
-                _workspace.Root,
-                ParseManifest(
-                    """
-                    --- /dev/null
-                    +++ b/relational-deadline.txt
-                    @@ -0,0 +1 @@
-                    +value
-                    """),
-                CancellationToken.None);
-
-        Assert.True(result.Success, result.Message);
-    }
-
-    [Fact]
-    public async Task Executor_deadline_starts_before_receipt_probe_and_reserves_rollback_time()
+    public async Task Executor_allows_progress_across_former_wall_clock_deadline()
     {
 
         _workspace.WriteFile("absolute-deadline.txt", "before\n");
@@ -910,44 +928,11 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         ApplyPatchToolExecutionResponse response = await CreateExecutor(
             settings: DefaultPatchSettings() with
             {
-                MaxElapsedMilliseconds = 100,
-                RollbackReserveMilliseconds = 25,
+                RecoveryTimeoutMilliseconds = 50,
             },
             timeProvider: time)
             .ExecuteAsync(
                 ModifyRequest("absolute-deadline.txt", "before", "after"),
-                InvocationContext(sink),
-                CancellationToken.None);
-
-        Assert.Equal("max_elapsed", ResultCode(response));
-
-        Assert.Equal(
-            "before\n",
-            await ReadTextAsync("absolute-deadline.txt"));
-
-        Assert.False(sink.PreflightCalled);
-
-    }
-
-    [Fact]
-    public async Task Executor_normalizes_extreme_deadline_relation_before_starting_timers()
-    {
-        _workspace.WriteFile("normalized-deadline.txt", "before\n");
-
-        ManualPatchTimeProvider time = new();
-        AdvancingSuccessfulReceiptSink sink = new(
-            time,
-            TimeSpan.FromMilliseconds(80));
-
-        ApplyPatchToolExecutionResponse response = await CreateExecutor(
-            settings: DefaultPatchSettings() with
-            {
-                MaxElapsedMilliseconds = int.MaxValue,
-                RollbackReserveMilliseconds = int.MinValue,
-            },
-            timeProvider: time)
-            .ExecuteAsync(
-                ModifyRequest("normalized-deadline.txt", "before", "after"),
                 InvocationContext(sink),
                 CancellationToken.None);
 
@@ -957,9 +942,13 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         Assert.Equal(
             "ok",
             payload.RootElement.GetProperty("status").GetString());
+
         Assert.Equal(
             "after\n",
-            await ReadTextAsync("normalized-deadline.txt"));
+            await ReadTextAsync("absolute-deadline.txt"));
+
+        Assert.True(sink.PreflightCalled);
+
     }
 
     [Fact]
@@ -1578,27 +1567,25 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Executor_post_commit_deadline_propagates_ambiguous_handoff_instead_of_normal_timeout()
+    public async Task Executor_post_commit_user_cancellation_propagates_ambiguous_handoff()
     {
 
         _workspace.WriteFile("handoff-timeout.txt", "before\n");
+
+        using CancellationTokenSource cancellation = new();
+
         ApplyPatchInvocationContext context = InvocationContext(
-            new WaitForHandoffCancellationSink());
+            new WaitForHandoffCancellationSink(cancellation));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => CreateExecutor(
-                    settings: DefaultPatchSettings() with
-                    {
-                        MaxElapsedMilliseconds = 150,
-                        RollbackReserveMilliseconds = 50,
-                    })
+            () => CreateExecutor()
                 .ExecuteAsync(
                     ModifyRequest(
                         "handoff-timeout.txt",
                         "before",
                         "after"),
                     context,
-                    CancellationToken.None));
+                    cancellation.Token));
 
         Assert.True(context.CancellationClassified);
         Assert.True(context.RequiresTurnFailure);
@@ -1983,6 +1970,52 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task Executor_reports_every_file_when_the_output_page_has_capacity()
+    {
+
+        const int fileCount = 257;
+
+        System.Text.StringBuilder patch = new();
+
+        for (int index = 0; index < fileCount; index++)
+        {
+
+            _ = patch
+                .AppendLine("--- /dev/null")
+                .Append("+++ b/result-page/file-")
+                .Append(index)
+                .AppendLine(".txt")
+                .AppendLine("@@ -0,0 +1 @@")
+                .AppendLine("+value");
+
+        }
+
+        ApplyPatchToolExecutionResponse response = await CreateExecutor(
+            outputBudgetBytes: 4L * 1024L * 1024L)
+            .ExecuteAsync(
+                new ApplyPatchParams(
+                    patch.ToString(),
+                    DryRun: true),
+                InvocationContext(new RecordingPendingReceiptSink()),
+                CancellationToken.None);
+
+        using JsonDocument payload = JsonDocument.Parse(
+            response.SerializedResult);
+
+        Assert.Equal(
+            fileCount,
+            payload.RootElement.GetProperty("files").GetArrayLength());
+
+        Assert.Equal(
+            fileCount,
+            payload.RootElement.GetProperty("totalFileCount").GetInt32());
+
+        Assert.False(
+            payload.RootElement.GetProperty("truncated").GetBoolean());
+
+    }
+
     private ApplyPatchToolExecutionService CreateExecutor(
         long outputBudgetBytes = 1024 * 1024,
         Func<string, MultiFileCommitCoordinator>? coordinatorFactory = null,
@@ -2134,38 +2167,22 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
 
         }
 
-        public override ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
-            PendingApplyPatchReceipt receipt,
-            CancellationToken cancellationToken) =>
-            throw new InvalidOperationException(
-                "A deadline-expired patch must not reach receipt handoff.");
-    }
-
-    private sealed class AdvancingSuccessfulReceiptSink(
-        ManualPatchTimeProvider timeProvider,
-        TimeSpan advanceBy)
-        : AdmittingPendingReceiptSink
-    {
-        public override ValueTask<ApplyPatchReceiptProbeResult> ProbeAsync(
-            ApplyPatchReceiptProbe probe,
-            CancellationToken cancellationToken)
-        {
-            timeProvider.Advance(advanceBy);
-
-            return base.ProbeAsync(probe, cancellationToken);
-        }
-
-        public override ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
+        public override async ValueTask<ApplyPatchPendingReceiptHandoffResult> HandoffAsync(
             PendingApplyPatchReceipt receipt,
             CancellationToken cancellationToken)
         {
+
             cancellationToken.ThrowIfCancellationRequested();
 
-            return ValueTask.FromResult(
-                new ApplyPatchPendingReceiptHandoffResult(
-                    MandatoryToolInteractionAppendOutcome.NewlyCommitted,
-                    Cleanup: null,
-                    Rollback: null));
+            WorkspaceArtifactCleanupResult cleanup =
+                await receipt.MarkIrreversibleAsync(
+                    cancellationToken);
+
+            return new ApplyPatchPendingReceiptHandoffResult(
+                MandatoryToolInteractionAppendOutcome.NewlyCommitted,
+                cleanup,
+                Rollback: null);
+
         }
     }
 
@@ -2295,7 +2312,8 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         }
     }
 
-    private sealed class WaitForHandoffCancellationSink
+    private sealed class WaitForHandoffCancellationSink(
+        CancellationTokenSource cancellation)
         : AdmittingPendingReceiptSink
     {
         public override async ValueTask<ApplyPatchPendingReceiptHandoffResult>
@@ -2303,6 +2321,8 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
                 PendingApplyPatchReceipt receipt,
                 CancellationToken cancellationToken)
         {
+
+            cancellation.Cancel();
 
             await Task.Delay(
                 Timeout.InfiniteTimeSpan,
@@ -2401,16 +2421,6 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
             Path.Combine(_workspace.Root, relativePath),
             CancellationToken.None);
 
-    private sealed class IncrementingPatchTimeProvider : TimeProvider
-    {
-        private long _timestamp;
-
-        public override long TimestampFrequency => 1_000;
-
-        public override long GetTimestamp() =>
-            Interlocked.Add(ref _timestamp, 1_000);
-    }
-
     private sealed class ManualPatchTimeProvider : TimeProvider
     {
         private long _timestamp;
@@ -2430,11 +2440,7 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
         new()
         {
             MaxPatchBytes = 4L * 1024L * 1024L,
-            MaxFiles = 128,
-            MaxHunks = 1_024,
-            MaxLinesPerHunk = 10_000,
             FuzzyMatchWindowLines = 100,
-            MaxResultItems = 256,
         };
 
 }

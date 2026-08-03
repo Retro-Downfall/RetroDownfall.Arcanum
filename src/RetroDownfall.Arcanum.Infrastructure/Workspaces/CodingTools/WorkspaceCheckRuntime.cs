@@ -13,8 +13,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
 internal sealed record WorkspaceCheckRuntimeRequest(
     string WorkspaceRoot,
     string ProfileId,
-    IReadOnlyDictionary<string, string> Options,
-    long? InferenceDeadlineTimestamp);
+    IReadOnlyDictionary<string, string> Options);
 
 internal interface IWorkspaceCheckRuntime
 {
@@ -36,8 +35,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
     private readonly IServiceScopeFactory _scopeFactory;
 
     private readonly ILogger? _logger;
-
-    private readonly TimeProvider _timeProvider;
 
     private readonly WorkspaceCheckExecutableRuntimePolicy _executablePolicy;
 
@@ -64,7 +61,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         _profiles = WorkspaceCheckProfileCatalog.Create(settings);
         _scopeFactory = scopeFactory;
         _logger = logger;
-        _timeProvider = timeProvider ?? TimeProvider.System;
+        _ = timeProvider;
         _executablePolicy = executablePolicy
             ?? WorkspaceCheckExecutableRuntimePolicy.ForCurrentPlatform();
         _processTimeoutOverride = processTimeoutOverride;
@@ -222,43 +219,8 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 request.ProfileId);
         }
 
-        TimeSpan timeout = _processTimeoutOverride
-            ?? TimeSpan.FromSeconds(
-                ArcanumSettingClamps.WorkspaceCheckTimeoutSeconds(
-                    _settings.TimeoutSeconds));
-
-        if (request.InferenceDeadlineTimestamp is not long inferenceDeadline)
-        {
-
-            return Outcome(
-                "insufficient_deadline",
-                "insufficient_deadline",
-                "workspace_check requires a host-bound inference deadline.",
-                request.ProfileId);
-        }
-
-        WorkspaceCheckDeadlineAdmission admission =
-            WorkspaceCheckDeadlinePolicy.Evaluate(
-                _timeProvider,
-                inferenceDeadline,
-                timeout);
-
-        if (!admission.CanSpawn)
-        {
-
-            return Outcome(
-                "insufficient_deadline",
-                admission.Code,
-                "The remaining inference deadline cannot fit the check timeout plus cleanup grace.",
-                request.ProfileId);
-        }
-
-        WorkspaceCheckDeadlineBudget deadlineBudget =
-            WorkspaceCheckDeadlinePolicy.CreateBudget(
-                _timeProvider,
-                inferenceDeadline,
-                timeout);
-        long preflightStarted = _timeProvider.GetTimestamp();
+        TimeSpan processTimeout = _processTimeoutOverride
+            ?? Timeout.InfiniteTimeSpan;
 
         WorkspaceCheckExecutableCapture executable =
             _executablePolicy.ResolveConfiguredOrInstalled(
@@ -300,8 +262,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         if (!sdk.Success || sdk.Snapshot is null)
         {
             await TryDeleteRunDirectoriesAsync(
-                directories,
-                deadlineBudget).ConfigureAwait(false);
+                directories).ConfigureAwait(false);
 
             return Outcome(
                 "unavailable",
@@ -317,8 +278,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         if (!packages.Success || packages.Snapshot is null)
         {
             await TryDeleteRunDirectoriesAsync(
-                directories,
-                deadlineBudget).ConfigureAwait(false);
+                directories).ConfigureAwait(false);
 
             return Outcome(
                 "restore_required",
@@ -334,8 +294,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         if (launchChain is null)
         {
             await TryDeleteRunDirectoriesAsync(
-                directories,
-                deadlineBudget).ConfigureAwait(false);
+                directories).ConfigureAwait(false);
 
             return Outcome(
                 "unavailable",
@@ -345,39 +304,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 sdk.Snapshot.Version);
         }
 
-        using CancellationTokenSource preflightCts =
-            CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken);
-        TimeSpan preflightElapsed = _timeProvider.GetElapsedTime(
-            preflightStarted,
-            _timeProvider.GetTimestamp());
-        TimeSpan preflightRemaining =
-            TimeSpan.FromSeconds(10) - preflightElapsed;
-        TimeSpan budgetedPreflight =
-            deadlineBudget.GetPreflightTimeout(
-                TimeSpan.FromSeconds(10));
-
-        if (budgetedPreflight < preflightRemaining)
-        {
-            preflightRemaining = budgetedPreflight;
-        }
-
-        if (preflightRemaining <= TimeSpan.Zero)
-        {
-            await TryDeleteRunDirectoriesAsync(
-                directories,
-                deadlineBudget).ConfigureAwait(false);
-
-            return Outcome(
-                "insufficient_deadline",
-                "preflight_timeout",
-                "workspace_check preflight exhausted its absolute check budget.",
-                request.ProfileId,
-                sdk.Snapshot.Version);
-        }
-
-        preflightCts.CancelAfter(preflightRemaining);
-        CancellationToken preflightToken = preflightCts.Token;
+        CancellationToken preflightToken = cancellationToken;
 
         try
         {
@@ -396,11 +323,31 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                     sdk.Snapshot.Version);
             }
 
+            await using AsyncServiceScope scope =
+                _scopeFactory.CreateAsyncScope();
+            ISanctumGuard sanctum = scope.ServiceProvider
+                .GetRequiredService<ISanctumGuard>();
+            IProcessResourceLimiter resourceLimiter = scope.ServiceProvider
+                .GetRequiredService<IProcessResourceLimiter>();
+            ResourceLimits limits = await sanctum
+                .GetEffectiveResourceLimitsForWorkspaceAsync(
+                    request.WorkspaceRoot,
+                    preflightToken)
+                .ConfigureAwait(false);
+            WorkspaceCheckRestoreSeedOptions seedOptions =
+                WorkspaceCheckRestoreSeedOptions.Default with
+                {
+                    MaxBytes = checked(
+                        (long)limits.MaxFileWriteMb
+                        * 1024L
+                        * 1024L),
+                };
+
             WorkspaceCheckRestoreSeedResult seeded =
                 await WorkspaceCheckRestoreArtifactSeeder.SeedAsync(
                     request.WorkspaceRoot,
                     directories.Artifacts,
-                    WorkspaceCheckRestoreSeedOptions.Default,
+                    seedOptions,
                     preflightToken).ConfigureAwait(false);
 
             if (!seeded.Success)
@@ -435,17 +382,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                     environment,
                     workspaceTarget);
 
-            await using AsyncServiceScope scope =
-                _scopeFactory.CreateAsyncScope();
-            ISanctumGuard sanctum = scope.ServiceProvider
-                .GetRequiredService<ISanctumGuard>();
-            IProcessResourceLimiter resourceLimiter = scope.ServiceProvider
-                .GetRequiredService<IProcessResourceLimiter>();
-            ResourceLimits limits = await sanctum
-                .GetEffectiveResourceLimitsForWorkspaceAsync(
-                    request.WorkspaceRoot,
-                    preflightToken)
-                .ConfigureAwait(false);
             ChildProcessSandboxRequest sandbox =
                 ChildProcessSandboxRoots.ForWorkspaceCheck(
                     request.WorkspaceRoot,
@@ -471,8 +407,8 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 WorkspaceCheckRestoreArtifactSeeder
                     .RevalidateManifest(
                         request.WorkspaceRoot,
-                        seeded.InputFingerprints,
-                        WorkspaceCheckRestoreSeedOptions.Default,
+                        seeded.InputManifest!,
+                        seedOptions,
                         preflightToken);
 
             if (!restoreInputsValid)
@@ -503,19 +439,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
             }
 
             preflightToken.ThrowIfCancellationRequested();
-            TimeSpan processTime =
-                deadlineBudget.GetRemainingProcessTime();
-
-            if (processTime <= TimeSpan.Zero)
-            {
-                return Outcome(
-                    "insufficient_deadline",
-                    "preflight_timeout",
-                    "workspace_check preflight exhausted its absolute check budget.",
-                    request.ProfileId,
-                    sdk.Snapshot.Version);
-            }
-
             cancellationToken.ThrowIfCancellationRequested();
             CappedChildProcessRunResult run =
                 await CappedChildProcessRunner.RunAsync(
@@ -523,7 +446,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                     ChildProcessEnvironmentProfile.WorkspaceCheck,
                     ArcanumSettingClamps.WorkspaceCheckMaxOutputBytes(
                         _settings.MaxOutputBytes),
-                    processTime,
+                    processTimeout,
                     limits,
                     resourceLimiter,
                     cancellationToken,
@@ -542,15 +465,12 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                         WorkspaceCheckPackageRootRevalidation packagesNow =
                             WorkspaceCheckPackageRootPolicy.Revalidate(
                                 packages.Snapshot);
-                        bool deadlineAvailable =
-                            deadlineBudget.GetRemainingProcessTime()
-                            > TimeSpan.Zero;
                         bool restoreInputsNowValid =
                             WorkspaceCheckRestoreArtifactSeeder
                                 .RevalidateManifest(
                                     request.WorkspaceRoot,
-                                    seeded.InputFingerprints,
-                                    WorkspaceCheckRestoreSeedOptions.Default,
+                                    seeded.InputManifest!,
+                                    seedOptions,
                                     CancellationToken.None);
                         bool identitiesValid =
                             executableNow.Success
@@ -561,23 +481,18 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
 
                         return new CappedChildProcessPreStartValidationResult(
                             identitiesValid
-                            && restoreInputsNowValid
-                            && deadlineAvailable,
-                            !deadlineAvailable
-                                ? "The absolute workspace-check process window expired before spawn."
-                                : !restoreInputsNowValid
+                            && restoreInputsNowValid,
+                            !restoreInputsNowValid
                                     ? "A restore-affecting workspace input changed immediately before process start."
                                     : executableNow.Message
                                       ?? sdkNow.Message
                                       ?? packagesNow.Message,
-                            !deadlineAvailable
-                                ? "insufficient_deadline"
-                                : !restoreInputsNowValid
+                            !restoreInputsNowValid
                                     ? "restore_inputs_changed"
                                     : "trusted_identity_changed");
                     },
                     getCleanupTimeRemaining:
-                        deadlineBudget.GetRemainingTotalTime)
+                        static () => TimeSpan.FromSeconds(5))
                 .ConfigureAwait(false);
 
             if (cancellationToken.IsCancellationRequested
@@ -599,17 +514,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 directories.TestResultsSource!,
                 run);
         }
-        catch (OperationCanceledException)
-            when (preflightCts.IsCancellationRequested
-                  && !cancellationToken.IsCancellationRequested)
-        {
-
-            return Outcome(
-                "insufficient_deadline",
-                "preflight_timeout",
-                "workspace_check preflight exhausted its absolute check budget.",
-                request.ProfileId);
-        }
         finally
         {
 
@@ -617,8 +521,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
             {
 
                 await TryDeleteRunDirectoriesAsync(
-                    directories,
-                    deadlineBudget).ConfigureAwait(false);
+                    directories).ConfigureAwait(false);
             }
 
         }
@@ -736,10 +639,8 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 };
             case CappedChildProcessOutcome.PreStartValidationFailed:
                 return Outcome(
-                    run.PreStartValidationCode == "insufficient_deadline"
-                        ? "insufficient_deadline"
-                        : run.PreStartValidationCode
-                            == "restore_inputs_changed"
+                    run.PreStartValidationCode
+                        == "restore_inputs_changed"
                             ? "restore_required"
                         : "unavailable",
                     run.PreStartValidationCode
@@ -875,41 +776,26 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         };
 
     private static async Task TryDeleteRunDirectoriesAsync(
-        WorkspaceCheckRunDirectories directories,
-        WorkspaceCheckDeadlineBudget deadlineBudget)
+        WorkspaceCheckRunDirectories directories)
     {
         await TryDeleteRunRootAsync(
-            directories.Root,
-            deadlineBudget).ConfigureAwait(false);
+            directories.Root).ConfigureAwait(false);
 
         if (directories.SharedMemoryRoot is not null)
         {
             await TryDeleteRunRootAsync(
-                directories.SharedMemoryRoot,
-                deadlineBudget).ConfigureAwait(false);
+                directories.SharedMemoryRoot).ConfigureAwait(false);
         }
     }
 
     private static async Task TryDeleteRunRootAsync(
-        string root,
-        WorkspaceCheckDeadlineBudget deadlineBudget)
+        string root)
     {
         Task? cleanup = null;
 
         try
         {
-            TimeSpan remaining =
-                deadlineBudget.GetRemainingTotalTime();
-
-            if (remaining <= TimeSpan.Zero)
-            {
-                return;
-            }
-
-            TimeSpan cleanupTimeout =
-                remaining < TimeSpan.FromSeconds(5)
-                    ? remaining
-                    : TimeSpan.FromSeconds(5);
+            TimeSpan cleanupTimeout = TimeSpan.FromSeconds(5);
 
             cleanup = Task.Run(
                 () =>

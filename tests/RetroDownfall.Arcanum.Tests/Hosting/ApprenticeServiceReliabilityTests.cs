@@ -248,60 +248,48 @@ public sealed class ApprenticeServiceReliabilityTests
 
     }
 
-    // W2.4 Fix 2: crash recovery must not silently drop a resumable apprentice
-    // when the concurrency gate AND the pending queue are full. It must emit a
-    // warning (with id + failure code) so operators get a signal.
-
     [Fact]
-    public async Task ResumeCrashRecovery_WhenGateAndQueueFull_LogsWarning()
+    public async Task StartAsync_QueuedBeyondFormerCapacity_IsDurableAndEventuallyRuns()
     {
 
-        Guid resumable = Guid.NewGuid();
+        Apprentice first = TestApprentice(Guid.NewGuid());
 
-        Apprentice apprentice = new()
-        {
+        Apprentice second = TestApprentice(Guid.NewGuid());
 
-            Id = resumable,
-
-            Name = "Reliability-2",
-
-            Goal = "Be surfaced when recovery cannot resume.",
-
-            WorkspacePath = "/tmp/arcanum-test",
-
-            Status = ApprenticeStatus.Running.ToString(),
-
-            Plan = "[]",
-
-            CurrentStep = 0,
-
-            CheckpointData = null,
-
-        };
-
-        InMemoryApprenticeRepository repo = new(apprentice);
+        StartSignalingApprenticeRepository repo = new(first, second);
 
         ArcanumSettings settings = CreateCapacitySettings();
 
         CapturingLogger<ApprenticeService> logger = new();
 
-        ApprenticeService service = CreateService(repo, settings, logger);
+        ApprenticeService service = CreateService(
+            repo,
+            settings,
+            logger,
+            new FailingPlanIntelligence(),
+            new NotImplementedGrimoireRepository());
 
-        // Pre-fill the concurrency gate and the pending queue so the resumable
-        // apprentice hits the PendingQueueFull branch of TryAcquireExecutionSlot.
+        Guid holderId = Guid.NewGuid();
 
-        Assert.True(GetConcurrencyGate(service).TryAcquire(1, out _));
+        Assert.True(TryAcquireExecutionSlot(service, holderId));
 
-        GetPendingStarts(service).Enqueue(Guid.NewGuid());
+        Result<string> firstStart = await service.StartAsync(first.Id, CancellationToken.None);
 
-        await InvokeResumeCrashRecoveryAsync(service, CancellationToken.None);
+        Result<string> secondStart = await service.StartAsync(second.Id, CancellationToken.None);
 
-        LogEntry? warning = logger.Entries.FirstOrDefault(e =>
-            e.Level == LogLevel.Warning
-            && e.Message.Contains(resumable.ToString(), StringComparison.Ordinal)
-            && e.Message.Contains("PendingQueueFull", StringComparison.Ordinal));
+        Assert.True(firstStart.IsSuccess, firstStart.Error.Message);
 
-        Assert.NotNull(warning);
+        Assert.True(secondStart.IsSuccess, secondStart.Error.Message);
+
+        Assert.Equal(ApprenticeStatus.Planning.ToString(), repo.Get(first.Id).Status);
+
+        Assert.Equal(ApprenticeStatus.Planning.ToString(), repo.Get(second.Id).Status);
+
+        ReleaseAcquiredExecutionSlot(service, holderId);
+
+        await repo.WaitForExecutionAsync(first.Id).WaitAsync(TimeSpan.FromSeconds(5));
+
+        await repo.WaitForExecutionAsync(second.Id).WaitAsync(TimeSpan.FromSeconds(5));
 
     }
 
@@ -765,7 +753,6 @@ public sealed class ApprenticeServiceReliabilityTests
         Execution = new ExecutionSettings
         {
             MaxConcurrentApprentices = 1,
-            MaxPendingApprenticeStarts = 1,
         },
     };
 
@@ -861,6 +848,40 @@ public sealed class ApprenticeServiceReliabilityTests
         Assert.NotNull(field);
 
         return (ApprenticeConcurrencyGate)field!.GetValue(service)!;
+
+    }
+
+    private static bool TryAcquireExecutionSlot(
+        ApprenticeService service,
+        Guid apprenticeId)
+    {
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod(
+                "TryAcquireExecutionSlot",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        object?[] arguments = [apprenticeId, false, false, null];
+
+        return Assert.IsType<bool>(method!.Invoke(service, arguments));
+
+    }
+
+    private static void ReleaseAcquiredExecutionSlot(
+        ApprenticeService service,
+        Guid apprenticeId)
+    {
+
+        MethodInfo? method = typeof(ApprenticeService)
+            .GetMethod(
+                "ReleaseAcquiredExecutionSlot",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        _ = method!.Invoke(service, [apprenticeId]);
 
     }
 
@@ -1142,6 +1163,46 @@ public sealed class ApprenticeServiceReliabilityTests
             throw new NotImplementedException();
 
         }
+
+    }
+
+    private sealed class StartSignalingApprenticeRepository(
+        params Apprentice[] apprentices)
+        : InMemoryApprenticeRepository(apprentices)
+    {
+
+        private readonly ConcurrentDictionary<Guid, int> _reads = new();
+
+        private readonly ConcurrentDictionary<Guid, TaskCompletionSource> _executionReads = new();
+
+        public override Task<Apprentice?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default)
+        {
+
+            if (_reads.AddOrUpdate(id, 1, static (_, current) => current + 1) >= 2)
+            {
+
+                _executionReads
+                    .GetOrAdd(
+                        id,
+                        static _ => new TaskCompletionSource(
+                            TaskCreationOptions.RunContinuationsAsynchronously))
+                    .TrySetResult();
+
+            }
+
+            return base.GetByIdAsync(id, cancellationToken);
+
+        }
+
+        public Task WaitForExecutionAsync(Guid id) =>
+            _executionReads
+                .GetOrAdd(
+                    id,
+                    static _ => new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously))
+                .Task;
 
     }
 

@@ -91,7 +91,6 @@ public sealed class ArcanumDelegateTaskToolTests
                 ["prompt"] = "Review A.",
                 ["files"] = files,
                 ["max_tokens"] = 1_000,
-                ["max_turns"] = 2,
             });
 
         object? output = await tool.InvokeAsync(arguments, CancellationToken.None);
@@ -101,10 +100,47 @@ public sealed class ArcanumDelegateTaskToolTests
         Assert.Equal("Review A.", runner.Request.Prompt);
         Assert.Equal("test-model", runner.Request.Model);
         Assert.Equal(1_000, runner.Request.MaxTokens);
-        Assert.Equal(2, runner.Request.MaxTurns);
         AttachedFileDto file = Assert.Single(runner.Request.Files);
         Assert.Equal("src/A.cs", file.RelativePath);
         Assert.Equal("sealed class A {}", file.Content);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_AcceptsFilesBeyondTheFormerTotalCountCeiling()
+    {
+        CapturingSubagentRunner runner = new(
+            new SubagentRunResult(
+                Success: true,
+                Summary: "reviewed",
+                RunId: Guid.NewGuid(),
+                Usage: new DelegatedManaUsage(100, 0.01m, 1, Exhausted: false),
+                FailureCode: null));
+
+        ArcanumDelegateTaskTool tool = new(runner, inheritedModel: null);
+
+        JsonElement files = JsonSerializer.SerializeToElement(
+            Enumerable.Range(0, 40)
+                .Select(static index => new
+                {
+                    path = $"src/File{index:D2}.cs",
+                    content = $"sealed class File{index:D2} {{}}",
+                })
+                .ToArray());
+
+        object? output = await tool.InvokeAsync(
+            new AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["prompt"] = "Review every delegated file.",
+                    ["files"] = files,
+                    ["max_tokens"] = 2_000,
+                }),
+            CancellationToken.None);
+
+        Assert.Equal("reviewed", output);
+
+        Assert.Equal(40, runner.Request!.Files.Count);
+
     }
 
     [Fact]

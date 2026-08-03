@@ -1,4 +1,7 @@
 using System.Security;
+
+using System.IO.Enumeration;
+
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -10,6 +13,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 {
 
+    private const int ListPageSize = 500;
+
     public PhysicalFileSystemBrowser(IOptionsMonitor<ArcanumSettings> optionsMonitor)
     {
         ArgumentNullException.ThrowIfNull(optionsMonitor);
@@ -20,6 +25,21 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
         string? relativePath,
         bool recursive,
         string? searchPattern,
+        CancellationToken ct)
+        => ListAsync(
+            workspace,
+            relativePath,
+            recursive,
+            searchPattern,
+            cursor: null,
+            ct);
+
+    public Task<Result<FileListResult>> ListAsync(
+        WorkspaceInfo workspace,
+        string? relativePath,
+        bool recursive,
+        string? searchPattern,
+        string? cursor,
         CancellationToken ct)
     {
 
@@ -48,97 +68,161 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
 
-        StringComparer nameComparer = OperatingSystem.IsWindows()
-            ? StringComparer.OrdinalIgnoreCase
-            : StringComparer.Ordinal;
+        byte[] queryFingerprint =
+            FileBrowserContinuationCursor.CreateQueryFingerprint(
+                workspaceRoot,
+                resolvedDir,
+                recursive,
+                searchPattern);
 
-        int maxPaths = GetListDirectoryMaxPaths();
+        FileBrowserContinuationDecodeResult cursorResult =
+            FileBrowserContinuationCursor.TryDecode(
+                cursor,
+                queryFingerprint,
+                out FileBrowserContinuationCheckpoint? continuationCheckpoint);
 
-        int maxDepth = GetListDirectoryMaxDepth();
+        if (cursorResult != FileBrowserContinuationDecodeResult.Success)
+        {
 
-        List<FileEntry> entries = [];
+            string message = cursorResult == FileBrowserContinuationDecodeResult.QueryMismatch
+                ? "The continuation cursor belongs to different list arguments. Restart with cursor omitted."
+                : "The file-list continuation cursor is invalid. Restart with cursor omitted.";
+
+            return Task.FromResult<Result<FileListResult>>(
+                new Error(ErrorCodes.Workspace.ContinuationInvalid, message));
+
+        }
+
+        SortedSet<FileEntry> candidates = new(
+            new FileEntryRelativePathComparer());
+
+        bool continuationCheckpointFound = continuationCheckpoint is null;
+
+        Stack<IEnumerator<string>> directoryEnumerators = [];
+
+        HashSet<string> visitedDirectories = new(
+            OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal);
 
         try
         {
 
-            if (recursive)
-            {
-                Queue<(string Path, int Depth)> dirs = new();
+            _ = visitedDirectories.Add(Path.GetFullPath(resolvedDir));
 
-                dirs.Enqueue((resolvedDir, 0));
+            directoryEnumerators.Push(
+                Directory.EnumerateFileSystemEntries(
+                        resolvedDir,
+                        "*",
+                        SearchOption.TopDirectoryOnly)
+                    .GetEnumerator());
 
-                while (dirs.Count > 0)
-                {
-
-                    ct.ThrowIfCancellationRequested();
-
-                    (string dir, int depth) = dirs.Dequeue();
-
-                    foreach (string fullPath in Directory.EnumerateFileSystemEntries(
-                                 dir,
-                                 searchPattern ?? "*",
-                                 SearchOption.TopDirectoryOnly))
-                    {
-
-                        ct.ThrowIfCancellationRequested();
-
-                        if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, fullPath, out _))
-                        {
-                            continue;
-                        }
-
-                        FileEntry? entry = TryMapToFileEntry(workspaceRoot, fullPath);
-
-                        if (entry is not null)
-                        {
-                            entries.Add(entry);
-                        }
-
-                        if (entries.Count >= maxPaths)
-                        {
-                            break;
-                        }
-
-                        if (depth < maxDepth && Directory.Exists(fullPath))
-                        {
-                            dirs.Enqueue((fullPath, depth + 1));
-                        }
-                    }
-
-                    if (entries.Count >= maxPaths)
-                    {
-                        break;
-                    }
-                }
-            }
-            else
+            while (directoryEnumerators.Count > 0)
             {
 
-                foreach (string fullPath in Directory.EnumerateFileSystemEntries(
-                             resolvedDir,
-                             searchPattern ?? "*",
-                             SearchOption.TopDirectoryOnly))
+                ct.ThrowIfCancellationRequested();
+
+                IEnumerator<string> enumerator = directoryEnumerators.Peek();
+
+                if (!enumerator.MoveNext())
                 {
 
-                    ct.ThrowIfCancellationRequested();
+                    enumerator.Dispose();
 
-                    if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, fullPath, out _))
-                    {
-                        continue;
-                    }
+                    _ = directoryEnumerators.Pop();
 
-                    FileEntry? entry = TryMapToFileEntry(workspaceRoot, fullPath);
+                    continue;
 
-                    if (entry is not null)
-                    {
-                        entries.Add(entry);
-                    }
-
-                    if (entries.Count >= maxPaths)
-                    {
-                        break;
-                    }
                 }
+
+                string fullPath = enumerator.Current;
+
+                ct.ThrowIfCancellationRequested();
+
+                if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
+                        workspaceRoot,
+                        fullPath,
+                        out string? resolvedPath))
+                {
+
+                    continue;
+
+                }
+
+                FileEntry? entry = TryMapToFileEntry(workspaceRoot, fullPath);
+
+                if (entry is null)
+                {
+
+                    continue;
+
+                }
+
+                bool traverseDirectory = false;
+
+                if (recursive && entry.Type == FileEntryType.Directory)
+                {
+
+                    string directoryIdentity = Path.GetFullPath(
+                        resolvedPath ?? fullPath);
+
+                    traverseDirectory = visitedDirectories.Add(directoryIdentity);
+
+                }
+
+                bool matchesPattern = searchPattern is null
+                    || FileSystemName.MatchesSimpleExpression(
+                        searchPattern,
+                        entry.Name,
+                        ignoreCase: OperatingSystem.IsWindows());
+
+                if (matchesPattern)
+                {
+
+                    if (continuationCheckpoint?.Matches(entry) == true)
+                    {
+
+                        continuationCheckpointFound = true;
+
+                    }
+
+                    string normalizedRelativePath =
+                        FileBrowserContinuationCursor.NormalizeRelativePath(
+                            entry.RelativePath);
+
+                    bool followsCursor = continuationCheckpoint is null
+                        || FileBrowserContinuationCursor.PathComparer.Compare(
+                            normalizedRelativePath,
+                            continuationCheckpoint.RelativePath) > 0;
+
+                    if (followsCursor)
+                    {
+
+                        _ = candidates.Add(entry);
+
+                        if (candidates.Count > ListPageSize + 1)
+                        {
+
+                            _ = candidates.Remove(candidates.Max!);
+
+                        }
+
+                    }
+
+                }
+
+                if (traverseDirectory)
+                {
+
+                    directoryEnumerators.Push(
+                        Directory.EnumerateFileSystemEntries(
+                                fullPath,
+                                "*",
+                                SearchOption.TopDirectoryOnly)
+                            .GetEnumerator());
+
+                }
+
             }
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
@@ -146,15 +230,52 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
             return Task.FromResult<Result<FileListResult>>(
                 new Error("Workspace.AccessDenied", "Insufficient permissions to read the directory."));
         }
+        finally
+        {
 
-        FileEntry[] sorted = entries
-            .OrderBy(e => e.Type == FileEntryType.Directory ? 0 : 1)
-            .ThenBy(e => e.Name, nameComparer)
-            .ToArray();
+            while (directoryEnumerators.Count > 0)
+            {
+
+                directoryEnumerators.Pop().Dispose();
+
+            }
+
+        }
+
+        if (!continuationCheckpointFound)
+        {
+
+            return Task.FromResult<Result<FileListResult>>(
+                new Error(
+                    ErrorCodes.Workspace.ContinuationCheckpointMissing,
+                    "The workspace changed and the continuation checkpoint no longer exists. Restart with cursor omitted."));
+
+        }
 
         string? parentPath = ComputeParentRelativePath(workspaceRoot, resolvedDir);
 
-        return Task.FromResult<Result<FileListResult>>(new FileListResult(sorted, parentPath));
+        FileEntry[] orderedCandidates = candidates.ToArray();
+
+        bool hasMore = orderedCandidates.Length > ListPageSize;
+
+        FileEntry[] entries = hasMore
+            ? orderedCandidates[..ListPageSize]
+            : orderedCandidates;
+
+        string? nextCursor = hasMore
+            ? FileBrowserContinuationCursor.Encode(
+                queryFingerprint,
+                entries[^1])
+            : null;
+
+        return Task.FromResult<Result<FileListResult>>(
+            new FileListResult(
+                entries.ToArray(),
+                parentPath,
+                nextCursor,
+                nextCursor is null
+                    ? null
+                    : "Call the workspace files endpoint again with cursor set to nextCursor and the same list arguments."));
     }
 
     public async Task<Result<FileReadResult>> ReadAsync(
@@ -330,18 +451,45 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
         }
     }
 
-    private int GetListDirectoryMaxPaths()
+    private sealed class FileEntryRelativePathComparer : IComparer<FileEntry>
     {
-        int configured = ArcanumRuntimeDefaults.Intelligence.ListDirectoryMaxPaths;
 
-        return ArcanumSettingClamps.ListDirectoryMaxPaths(configured);
-    }
+        public int Compare(FileEntry? left, FileEntry? right)
+        {
 
-    private int GetListDirectoryMaxDepth()
-    {
-        int configured = ArcanumRuntimeDefaults.WorkspaceListDirectoryMaxDepth;
+            if (ReferenceEquals(left, right))
+            {
 
-        return ArcanumSettingClamps.ListDirectoryMaxDepth(configured);
+                return 0;
+
+            }
+
+            if (left is null)
+            {
+
+                return -1;
+
+            }
+
+            if (right is null)
+            {
+
+                return 1;
+
+            }
+
+            int pathComparison = FileBrowserContinuationCursor.PathComparer.Compare(
+                FileBrowserContinuationCursor.NormalizeRelativePath(
+                    left.RelativePath),
+                FileBrowserContinuationCursor.NormalizeRelativePath(
+                    right.RelativePath));
+
+            return pathComparison != 0
+                ? pathComparison
+                : left.Type.CompareTo(right.Type);
+
+        }
+
     }
 
     private long GetMaxFileReadSizeBytes()

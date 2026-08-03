@@ -216,10 +216,9 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
             components,
             cancellationToken);
 
-        AddOptionalFile(
+        AddTrustedMcpWorkspaceFiles(
             BackupComponent.TrustedMcpWorkspaceMetadata,
             Path.Combine(paths.GrimoireDirectory, "trusted-mcp-workspaces.json"),
-            "mcp/trusted-workspaces.json",
             selected,
             files,
             components,
@@ -966,6 +965,72 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         accumulator.Set(
             BackupComponentStatus.Failed,
             "Preset state and rollback were linked, changed, or did not describe the same committed generation.");
+
+    }
+
+    private void AddTrustedMcpWorkspaceFiles(
+        BackupComponent component,
+        string primaryPath,
+        IReadOnlySet<BackupComponent> selected,
+        List<BackupInventoryFile> files,
+        IReadOnlyDictionary<BackupComponent, ComponentAccumulator> components,
+        CancellationToken cancellationToken)
+    {
+
+        if (!selected.Contains(component))
+        {
+
+            return;
+
+        }
+
+        if (!File.Exists(primaryPath))
+        {
+
+            components[component].Set(
+                BackupComponentStatus.Unavailable,
+                "No state exists for this optional component.");
+
+            return;
+
+        }
+
+        AddCandidate(
+            component,
+            primaryPath,
+            "mcp/trusted-workspaces.json",
+            files,
+            components[component],
+            cancellationToken);
+
+        string directory = Path.GetDirectoryName(primaryPath)!;
+
+        for (long pageIndex = 1; ; pageIndex++)
+        {
+
+            string pageName = $"trusted-mcp-workspaces.page-{pageIndex:D8}.json";
+
+            string pagePath = Path.Combine(directory, pageName);
+
+            if (!File.Exists(pagePath))
+            {
+
+                return;
+
+            }
+
+            AddCandidate(
+                component,
+                pagePath,
+                "mcp/" + pageName.Replace(
+                    "trusted-mcp-workspaces",
+                    "trusted-workspaces",
+                    StringComparison.Ordinal),
+                files,
+                components[component],
+                cancellationToken);
+
+        }
 
     }
 

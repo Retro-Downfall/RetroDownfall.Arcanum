@@ -6,26 +6,16 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// <summary>
 /// In-process registry: MCP <c>ask_human</c> and standard MCP elicitation await
 /// <see cref="TrySubmitResponse"/> (HTTP or CLI) without blocking threads.
-/// Capacity is owned by <see cref="IHumanPromptReservation"/>; submit/timeout/cancel complete
+/// Capacity is owned by <see cref="IHumanPromptReservation"/>; submit/cancel complete
 /// the waiter but do not release the admission slot.
 /// </summary>
 public sealed class HumanPromptRegistry : IHumanPromptRegistry
 {
 
     /// <summary>
-    /// Soft cap on concurrent waiters. Excess admissions fail rather than growing without bound.
+    /// Active waiter capacity. Additional reservations wait cancellably for a slot.
     /// </summary>
     public const int MaxConcurrentWaiters = 64;
-
-    /// <summary>
-    /// Hard ceiling leak guard when the caller token never cancels. Prefer linked inference/stream
-    /// cancellation first (default inference timeout is typically 10 minutes); this ceiling is only
-    /// a backstop.
-    /// </summary>
-    public static readonly TimeSpan HardCeiling = TimeSpan.FromMinutes(30);
-
-    /// <summary>Overridable in tests to exercise the hard-ceiling path without waiting 30 minutes.</summary>
-    internal TimeSpan CeilingForTesting { get; set; } = HardCeiling;
 
     private readonly SemaphoreSlim _admission = new(MaxConcurrentWaiters, MaxConcurrentWaiters);
 
@@ -33,15 +23,17 @@ public sealed class HumanPromptRegistry : IHumanPromptRegistry
         new(StringComparer.Ordinal);
 
     /// <inheritdoc />
-    public IHumanPromptReservation? TryCreateReservation()
+    public Task<IHumanPromptReservation> CreateReservationAsync(
+        CancellationToken cancellationToken)
     {
-        return TryCreateReservationCore(Guid.NewGuid().ToString("N"));
+        return CreateReservationCoreAsync(
+            Guid.NewGuid().ToString("N"),
+            cancellationToken);
     }
 
     /// <inheritdoc />
     public Task<string> AwaitReservedAsync(
         string promptId,
-        TimeSpan timeout,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(promptId);
@@ -52,7 +44,7 @@ public sealed class HumanPromptRegistry : IHumanPromptRegistry
                 $"No human prompt reservation exists for promptId '{promptId}'.");
         }
 
-        return AwaitExistingAsync(promptId, tcs, timeout, cancellationToken);
+        return AwaitExistingAsync(promptId, tcs, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -60,16 +52,14 @@ public sealed class HumanPromptRegistry : IHumanPromptRegistry
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(promptId);
 
-        IHumanPromptReservation? reservation = TryCreateReservationCore(promptId);
-
-        if (reservation is null)
-        {
-            throw new HumanPromptCapExceededException();
-        }
+        IHumanPromptReservation reservation = await CreateReservationCoreAsync(
+                promptId,
+                cancellationToken)
+            .ConfigureAwait(false);
 
         await using (reservation.ConfigureAwait(false))
         {
-            return await reservation.WaitAsync(CeilingForTesting, cancellationToken).ConfigureAwait(false);
+            return await reservation.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -93,87 +83,53 @@ public sealed class HumanPromptRegistry : IHumanPromptRegistry
     /// <summary>Remaining admission slots for assertions in the test suite.</summary>
     internal int AvailableSlotsForTesting => _admission.CurrentCount;
 
-    private IHumanPromptReservation? TryCreateReservationCore(string promptId)
+    private async Task<IHumanPromptReservation> CreateReservationCoreAsync(
+        string promptId,
+        CancellationToken cancellationToken)
     {
-        if (!_admission.Wait(0))
+        await _admission.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
         {
-            return null;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            TaskCompletionSource<string> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            if (!_waiters.TryAdd(promptId, tcs))
+            {
+                throw new InvalidOperationException(
+                    $"A human prompt is already registered for promptId '{promptId}'. Use a new UUID for each ask_human call.");
+            }
+
+            return new Reservation(this, promptId, tcs);
         }
-
-        TaskCompletionSource<string> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        if (!_waiters.TryAdd(promptId, tcs))
+        catch
         {
             _admission.Release();
 
-            throw new InvalidOperationException(
-                $"A human prompt is already registered for promptId '{promptId}'. Use a new UUID for each ask_human call.");
+            throw;
         }
-
-        return new Reservation(this, promptId, tcs);
     }
 
     private async Task<string> AwaitExistingAsync(
         string promptId,
         TaskCompletionSource<string> tcs,
-        TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        TimeSpan effectiveTimeout = NormalizeTimeout(timeout);
-
-        using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-        linkedCts.CancelAfter(effectiveTimeout);
-
-        try
-        {
-            using (linkedCts.Token.Register(
-                       () =>
+        using (cancellationToken.Register(
+                   () =>
+                   {
+                       if (!_waiters.TryGetValue(promptId, out TaskCompletionSource<string>? current)
+                           || !ReferenceEquals(current, tcs))
                        {
-                           // Timeout/cancel complete the waiter but must not release capacity or
-                           // remove the reservation — the owner dispose does that.
-                           if (!_waiters.TryGetValue(promptId, out TaskCompletionSource<string>? current)
-                               || !ReferenceEquals(current, tcs))
-                           {
-                               return;
-                           }
+                           return;
+                       }
 
-                           if (cancellationToken.IsCancellationRequested)
-                           {
-                               _ = tcs.TrySetCanceled(cancellationToken);
-                           }
-                           else
-                           {
-                               _ = tcs.TrySetException(new HumanPromptTimeoutException());
-                           }
-                       }))
-            {
-                return await tcs.Task.ConfigureAwait(false);
-            }
-        }
-        catch (HumanPromptTimeoutException)
+                       _ = tcs.TrySetCanceled(cancellationToken);
+                   }))
         {
-            throw;
+            return await tcs.Task.ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is OperationCanceledException or TaskCanceledException)
-        {
-            if (!cancellationToken.IsCancellationRequested)
-            {
-                throw new HumanPromptTimeoutException();
-            }
-
-            throw;
-        }
-    }
-
-    private TimeSpan NormalizeTimeout(TimeSpan timeout)
-    {
-        if (timeout <= TimeSpan.Zero || timeout > CeilingForTesting)
-        {
-            return CeilingForTesting;
-        }
-
-        return timeout;
     }
 
     private void ReleaseReservation(string promptId, TaskCompletionSource<string> tcs)
@@ -206,9 +162,9 @@ public sealed class HumanPromptRegistry : IHumanPromptRegistry
 
         public string PromptId { get; }
 
-        public Task<string> WaitAsync(TimeSpan timeout, CancellationToken cancellationToken)
+        public Task<string> WaitAsync(CancellationToken cancellationToken)
         {
-            return _registry.AwaitExistingAsync(PromptId, _tcs, timeout, cancellationToken);
+            return _registry.AwaitExistingAsync(PromptId, _tcs, cancellationToken);
         }
 
         public ValueTask DisposeAsync()

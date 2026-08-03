@@ -415,7 +415,7 @@ public sealed class SessionAttachmentToolInjectionTests
     }
 
     [Fact]
-    public async Task TryBuildContentsAsync_FailedImageValidation_DoesNotConsumeBudgetOrInjectOnce()
+    public async Task TryBuildContentsAsync_FailedImageValidation_DoesNotMarkInjectOnce()
     {
 
         Guid sessionId = Guid.NewGuid();
@@ -465,7 +465,7 @@ public sealed class SessionAttachmentToolInjectionTests
             Features = new FeatureSettings { Attachments = true, Scrying = false },
         };
 
-        SessionAttachmentTurnBudget.BeginTurn(maxReferences: 1, initialConsumed: 0);
+        SessionAttachmentTurnBudget.BeginTurn();
 
         try
         {
@@ -479,8 +479,6 @@ public sealed class SessionAttachmentToolInjectionTests
 
             Assert.Null(failed);
 
-            Assert.Equal(1, SessionAttachmentTurnBudget.Remaining);
-
             IReadOnlyList<AIContent>? ok = await SessionAttachmentToolInjection.TryBuildContentsAsync(
                 store,
                 sessionId,
@@ -490,8 +488,6 @@ public sealed class SessionAttachmentToolInjectionTests
                 requestModel: null);
 
             Assert.NotNull(ok);
-
-            Assert.Equal(0, SessionAttachmentTurnBudget.Remaining);
 
             IReadOnlyList<AIContent>? secondNotes = await SessionAttachmentToolInjection.TryBuildContentsAsync(
                 store,
@@ -742,7 +738,7 @@ public sealed class SessionAttachmentToolInjectionTests
         {
             Tools = [AIFunctionFactory.Create(() => "accepted", "refresh_session_file")],
         };
-        SessionAttachmentTurnBudget.BeginTurn(maxReferences: 2, initialConsumed: 0);
+        SessionAttachmentTurnBudget.BeginTurn();
         SessionAttachmentToolAmbient.CurrentSessionId = sessionId;
 
         try
@@ -1409,7 +1405,6 @@ public sealed class SessionAttachmentToolInjectionTests
         public Task ValidateReferencesAsync(
             Guid sessionId,
             IReadOnlyList<Guid> attachmentIds,
-            int maxReferences,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 

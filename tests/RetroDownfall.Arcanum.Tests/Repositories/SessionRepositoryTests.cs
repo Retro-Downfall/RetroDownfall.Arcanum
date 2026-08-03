@@ -2,12 +2,17 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
+
+using System.Data.Common;
+
 using System.Text.Json;
 
 namespace RetroDownfall.Arcanum.Tests.Repositories;
@@ -115,6 +120,164 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
         Assert.NotNull(loadedEntry);
 
         Assert.Equal(entry.Content, loadedEntry!.Content);
+
+    }
+
+    [SkippableFact]
+    public async Task ForkAsync_large_source_pages_entries_and_attachments_without_aggregate_tracking()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const int entryCount = 750;
+
+        const int attachmentCount = 513;
+
+        const int maximumAttachmentPage = 128;
+
+        Guid sourceSessionId = Guid.NewGuid();
+
+        DateTimeOffset baseline = new(2026, 8, 3, 12, 0, 0, TimeSpan.Zero);
+
+        _db!.Sessions.Add(NewSession(sourceSessionId, "large fork", baseline));
+
+        List<Guid> sourceEntryIds = new(entryCount);
+
+        for (int index = 0; index < entryCount; index++)
+        {
+
+            Guid entryId = Guid.NewGuid();
+
+            sourceEntryIds.Add(entryId);
+
+            _db.Entries.Add(NewEntry(
+                entryId,
+                sourceSessionId,
+                $"large-fork-entry-{index}",
+                baseline.AddSeconds(index),
+                sequence: index + 1L));
+
+        }
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        _db.ChangeTracker.Clear();
+
+        SessionAttachmentRecord[] sourceAttachments = Enumerable
+            .Range(0, attachmentCount)
+            .Select(index => new SessionAttachmentRecord(
+                Guid.NewGuid(),
+                sourceSessionId,
+                sourceEntryIds[index],
+                PendingTurnId: null,
+                SessionAttachmentState.Bound,
+                $"attachment-{index}",
+                $"attachment-{index}.txt",
+                Version: 1,
+                $"source/{index}.arcablob",
+                $"HASH-{index}",
+                "text/plain",
+                ByteLength: 1,
+                SessionAttachmentKind.Text,
+                baseline.AddSeconds(index)))
+            .ToArray();
+
+        int copyCalls = 0;
+
+        int insertCalls = 0;
+
+        int largestCopyPage = 0;
+
+        int largestInsertPage = 0;
+
+        int largestTrackedEntrySetAtAttachmentInsert = 0;
+
+        List<Guid> mappedForkEntryIds = [];
+
+        NoOpSessionAttachmentStore attachmentStore = new(
+            forkRecords: sourceAttachments,
+            copyForkPage: (_, plans, _) =>
+            {
+
+                copyCalls++;
+
+                largestCopyPage = Math.Max(largestCopyPage, plans.Count);
+
+                return Task.CompletedTask;
+
+            },
+            insertForkPage: (_, plans, _) =>
+            {
+
+                insertCalls++;
+
+                largestInsertPage = Math.Max(largestInsertPage, plans.Count);
+
+                largestTrackedEntrySetAtAttachmentInsert = Math.Max(
+                    largestTrackedEntrySetAtAttachmentInsert,
+                    _db.ChangeTracker.Entries<Entry>().Count());
+
+                mappedForkEntryIds.AddRange(
+                    plans
+                        .Select(plan => plan.NewEntryId)
+                        .OfType<Guid>());
+
+                return Task.CompletedTask;
+
+            });
+
+        RecordingAttachmentIndexQueue indexQueue = new();
+
+        SessionRepository repository = new(
+            _db,
+            attachmentStore,
+            _fixture.CreateOptionsMonitor(),
+            indexQueue);
+
+        Result<Session> result = await repository.ForkAsync(
+            sourceSessionId,
+            new ForkSessionRequest(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Code);
+
+        Assert.Equal(entryCount, result.Value.UnsummarizedEntryCount);
+
+        Assert.True(copyCalls > 1, "Attachment copying must continue through bounded pages.");
+
+        Assert.True(insertCalls > 1, "Attachment row insertion must continue through bounded pages.");
+
+        Assert.InRange(largestCopyPage, 1, maximumAttachmentPage);
+
+        Assert.InRange(largestInsertPage, 1, maximumAttachmentPage);
+
+        Assert.Equal(0, largestTrackedEntrySetAtAttachmentInsert);
+
+        Entry[] forkEntries = await _db.Entries
+            .AsNoTracking()
+            .Where(entry => entry.SessionId == result.Value.Id)
+            .OrderBy(entry => entry.Sequence)
+            .ToArrayAsync(CancellationToken.None);
+
+        Assert.Equal(entryCount, forkEntries.Length);
+
+        Assert.Equal("large-fork-entry-0", forkEntries[0].Content);
+
+        Assert.Equal($"large-fork-entry-{entryCount - 1}", forkEntries[^1].Content);
+
+        HashSet<Guid> forkEntryIds = forkEntries
+            .Select(entry => entry.Id)
+            .ToHashSet();
+
+        Assert.Equal(attachmentCount, mappedForkEntryIds.Count);
+
+        Assert.All(mappedForkEntryIds, entryId => Assert.Contains(entryId, forkEntryIds));
+
+        Assert.Equal(attachmentCount, indexQueue.Requests.Count);
+
+        Assert.All(
+            indexQueue.Requests,
+            request => Assert.Equal(result.Value.Id, request.SessionId));
 
     }
 
@@ -697,6 +860,101 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task QueryAsync_search_reaches_sessions_beyond_the_former_fts_id_total()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const int formerFtsSessionIdLimit = 2_048;
+
+        DateTimeOffset baseline = new(2026, 8, 3, 12, 0, 0, TimeSpan.Zero);
+
+        List<Guid> insertedIds = [];
+
+        for (int index = 0; index <= formerFtsSessionIdLimit; index++)
+        {
+
+            Guid sessionId = Guid.NewGuid();
+
+            DateTimeOffset timestamp = baseline.AddSeconds(index);
+
+            _db!.Sessions.Add(NewSession(
+                sessionId,
+                $"unrelated-title-{index}",
+                timestamp));
+
+            _db.Entries.Add(NewEntry(
+                Guid.NewGuid(),
+                sessionId,
+                $"formerftsbound entry {index}",
+                timestamp,
+                sequence: 1));
+
+            insertedIds.Add(sessionId);
+
+        }
+
+        await _db!.SaveChangesAsync(CancellationToken.None);
+
+        _db.ChangeTracker.Clear();
+
+        DbConnection connection = _db.Database.GetDbConnection();
+
+        await connection.OpenAsync(CancellationToken.None);
+
+        await using DbCommand formerlyBoundQuery = connection.CreateCommand();
+
+        formerlyBoundQuery.CommandText =
+            """
+            SELECT DISTINCT c."SessionId"
+            FROM "Entries_fts"
+            INNER JOIN "Entries" AS c ON c."Id" = "Entries_fts"."Id"
+            WHERE "Entries_fts" MATCH 'formerftsbound'
+            LIMIT 2048
+            """;
+
+        HashSet<Guid> formerlyReachable = [];
+
+        await using (DbDataReader reader = await formerlyBoundQuery.ExecuteReaderAsync(CancellationToken.None))
+        {
+
+            while (await reader.ReadAsync(CancellationToken.None))
+            {
+
+                formerlyReachable.Add(reader.GetGuid(0));
+
+            }
+
+        }
+
+        Guid expectedId = Assert.Single(
+            insertedIds,
+            id => !formerlyReachable.Contains(id));
+
+        await _db.Sessions
+            .Where(session => session.Id == expectedId)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(
+                    session => session.UpdatedAt,
+                    baseline.AddDays(1)),
+                CancellationToken.None);
+
+        SessionRepository repository = new(
+            _db,
+            new NoOpSessionAttachmentStore(),
+            _fixture.CreateOptionsMonitor());
+
+        SessionQueryResult result = await repository.QueryAsync(
+            new SessionQueryRequest(
+                Search: "formerftsbound",
+                Limit: 50),
+            CancellationToken.None);
+
+        Assert.Contains(result.Summaries, session => session.Id == expectedId);
+
+    }
+
+    [SkippableFact]
     public async Task QueryAsync_filters_by_role_and_model_via_exists_subqueries()
     {
 
@@ -898,5 +1156,21 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             CreatedAt = createdAt,
             Sequence = sequence ?? ++_seededSequence,
         };
+
+    private sealed class RecordingAttachmentIndexQueue : ISessionAttachmentIndexQueue
+    {
+
+        internal List<SessionAttachmentIndexRequest> Requests { get; } = [];
+
+        public bool TryEnqueue(SessionAttachmentIndexRequest request)
+        {
+
+            Requests.Add(request);
+
+            return true;
+
+        }
+
+    }
 
 }

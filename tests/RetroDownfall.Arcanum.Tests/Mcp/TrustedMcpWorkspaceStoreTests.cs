@@ -12,6 +12,8 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 public sealed class TrustedMcpWorkspaceStoreTests : IAsyncLifetime
 {
 
+    private const int FormerMaxTrustDocumentEntries = 256;
+
     private TempWorkspace _workspace = null!;
 
     private string _storePath = string.Empty;
@@ -417,28 +419,27 @@ public sealed class TrustedMcpWorkspaceStoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Trust_document_with_too_many_entries_fails_closed_and_is_preserved()
+    public async Task Trust_document_accepts_entries_beyond_the_former_total_ceiling()
     {
 
         _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");
 
         TrustedMcpWorkspaceDocument document = CreateTrustDocument(
-            TrustedMcpWorkspaceStore.MaxTrustDocumentEntries + 1);
+            FormerMaxTrustDocumentEntries + 1);
 
-        byte[] tooMany = JsonSerializer.SerializeToUtf8Bytes(
+        byte[] many = JsonSerializer.SerializeToUtf8Bytes(
             document,
             McpConfigJsonSerializerContext.Default.TrustedMcpWorkspaceDocument);
 
-        WriteTrustStoreBytes(tooMany);
+        WriteTrustStoreBytes(many);
 
         using TrustedMcpWorkspaceStore store = new();
 
-        Assert.False(await store.IsTrustedAsync(_workspace.Root));
+        string firstPath = document.Entries.Keys.First();
 
-        await Assert.ThrowsAsync<TrustedMcpWorkspaceStoreException>(
-            () => store.TrustAsync(_workspace.Root));
-
-        Assert.Equal(tooMany, await File.ReadAllBytesAsync(_storePath));
+        Assert.True(await store.IsApprovedDigestAsync(
+            firstPath,
+            new string('A', TrustedMcpWorkspaceStore.Sha256HexLength)));
 
     }
 
@@ -627,26 +628,89 @@ public sealed class TrustedMcpWorkspaceStoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task TrustAsync_preserves_full_valid_document_when_new_entry_exceeds_limit()
+    public async Task TrustAsync_appends_after_the_former_total_entry_ceiling()
     {
 
         _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");
 
         TrustedMcpWorkspaceDocument document = CreateTrustDocument(
-            TrustedMcpWorkspaceStore.MaxTrustDocumentEntries);
+            FormerMaxTrustDocumentEntries);
 
-        byte[] full = JsonSerializer.SerializeToUtf8Bytes(
-            document,
-            McpConfigJsonSerializerContext.Default.TrustedMcpWorkspaceDocument);
-
-        WriteTrustStoreBytes(full);
+        WriteTrustStoreDocument(document);
 
         using TrustedMcpWorkspaceStore store = new();
 
-        await Assert.ThrowsAsync<TrustedMcpWorkspaceStoreException>(
-            () => store.TrustAsync(_workspace.Root));
+        await store.TrustAsync(_workspace.Root);
 
-        Assert.Equal(full, await File.ReadAllBytesAsync(_storePath));
+        Assert.True(await store.IsTrustedAsync(_workspace.Root));
+
+        TrustedMcpWorkspaceDocument persisted = JsonSerializer.Deserialize(
+            await File.ReadAllBytesAsync(_storePath),
+            McpConfigJsonSerializerContext.Default.TrustedMcpWorkspaceDocument)!;
+
+        Assert.Equal(
+            FormerMaxTrustDocumentEntries + 1,
+            persisted.Entries.Count);
+
+    }
+
+    [Fact]
+    public async Task TrustAsync_rotates_bounded_documents_and_queries_every_page()
+    {
+
+        _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");
+
+        string secondWorkspace = Path.Combine(_workspace.Root, "second-workspace");
+
+        Directory.CreateDirectory(secondWorkspace);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(secondWorkspace, "mcp.json"),
+            """{"mcpServers":{"second":{}}}""");
+
+        TrustedMcpWorkspaceDocument oneEntry = new();
+
+        oneEntry.Entries[Path.GetFullPath(_workspace.Root)] =
+            new string('A', TrustedMcpWorkspaceStore.Sha256HexLength);
+
+        int oneEntryBytes = JsonSerializer.SerializeToUtf8Bytes(
+            oneEntry,
+            McpConfigJsonSerializerContext.Default.TrustedMcpWorkspaceDocument).Length;
+
+        TrustedMcpWorkspaceDocument secondEntry = new();
+
+        secondEntry.Entries[Path.GetFullPath(secondWorkspace)] =
+            new string('A', TrustedMcpWorkspaceStore.Sha256HexLength);
+
+        int secondEntryBytes = JsonSerializer.SerializeToUtf8Bytes(
+            secondEntry,
+            McpConfigJsonSerializerContext.Default.TrustedMcpWorkspaceDocument).Length;
+
+        using TrustedMcpWorkspaceStore store = new()
+        {
+            TrustDocumentPageBytesForTesting = Math.Max(
+                oneEntryBytes,
+                secondEntryBytes) + 16,
+        };
+
+        await store.TrustAsync(_workspace.Root);
+
+        await store.TrustAsync(secondWorkspace);
+
+        string[] pagePaths = Directory.GetFiles(
+            ArcanumPaths.GrimoireDirectory,
+            "trusted-mcp-workspaces.page-*.json",
+            SearchOption.TopDirectoryOnly);
+
+        Assert.Single(pagePaths);
+
+        Assert.True(new FileInfo(_storePath).Length <= store.TrustDocumentPageBytesForTesting);
+
+        Assert.True(new FileInfo(pagePaths[0]).Length <= store.TrustDocumentPageBytesForTesting);
+
+        Assert.True(await store.IsTrustedAsync(_workspace.Root));
+
+        Assert.True(await store.IsTrustedAsync(secondWorkspace));
 
     }
 

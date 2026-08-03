@@ -32,11 +32,6 @@ internal sealed class WorkspacePatchPlannerOptions
 
     internal Action? FuzzyMatchCheckpoint { get; init; }
 
-    internal TimeProvider TimeProvider { get; init; } = TimeProvider.System;
-
-    internal long? StartedAtTimestamp { get; init; }
-
-    internal TimeSpan? WorkDuration { get; init; }
 }
 
 /// <summary>
@@ -84,11 +79,7 @@ internal sealed class WorkspacePatchPlanner
 
         ArgumentNullException.ThrowIfNull(manifest);
 
-        PatchPlanningBudget budget = new(
-            _settings,
-            _options.TimeProvider,
-            _options.StartedAtTimestamp,
-            _options.WorkDuration);
+        PatchPlanningBudget budget = new();
 
         try
         {
@@ -445,14 +436,6 @@ internal sealed class WorkspacePatchPlanner
 
         Checkpoint(budget, cancellationToken);
 
-        long totalRemaining = Math.Max(
-            0,
-            _settings.MaxTotalInputBytes - budget.TotalInputBytes);
-
-        long maximumRead = Math.Min(
-            Math.Max(0, _settings.MaxInputBytesPerFile),
-            totalRemaining);
-
         WorkspaceMutationRead source;
 
         try
@@ -463,20 +446,16 @@ internal sealed class WorkspacePatchPlanner
                     relativePath,
                     cancellationToken,
                     () => _options.AfterSourceHandleOpened?.Invoke(relativePath),
-                    maximumRead)
+                    _settings.MaxInputBytesPerFile)
                 .ConfigureAwait(false);
 
         }
         catch (WorkspaceMutationReadLimitExceededException exception)
         {
 
-            throw exception.ObservedLength > _settings.MaxInputBytesPerFile
-                ? PlanningFailure(
-                    "input_file_too_large",
-                    "A patch source exceeds the per-file input byte limit.")
-                : PlanningFailure(
-                    "input_total_too_large",
-                    "Patch sources exceed the aggregate input byte limit.");
+            throw PlanningFailure(
+                "input_file_too_large",
+                $"Physical resource boundary: patch source '{relativePath}' is {exception.ObservedLength} bytes; the per-file allocation limit is {exception.MaximumLength} bytes. No workspace changes were made. Split or reduce that file before applying the patch.");
 
         }
 
@@ -486,9 +465,6 @@ internal sealed class WorkspacePatchPlanner
                 "file_not_found",
                 "A patch source does not exist.");
         }
-
-        budget.TotalInputBytes = checked(
-            budget.TotalInputBytes + source.Bytes.LongLength);
 
         Checkpoint(budget, cancellationToken);
 
@@ -1054,7 +1030,7 @@ internal sealed class WorkspacePatchPlanner
 
             throw PlanningFailure(
                 "output_file_too_large",
-                "A patched file exceeds the per-file output byte limit.");
+                "Physical resource boundary: the patched file cannot be represented within the per-file output allocation. No workspace changes were made. Split or reduce that file before applying the patch.");
 
         }
 
@@ -1063,7 +1039,7 @@ internal sealed class WorkspacePatchPlanner
 
             throw PlanningFailure(
                 "output_file_too_large",
-                "A patched file exceeds the per-file output byte limit.");
+                $"Physical resource boundary: a patched file is {outputBytes} bytes; the per-file output allocation limit is {_settings.MaxOutputBytesPerFile} bytes. No workspace changes were made. Split or reduce that file before applying the patch.");
 
         }
 
@@ -1072,7 +1048,7 @@ internal sealed class WorkspacePatchPlanner
 
             throw PlanningFailure(
                 "output_total_too_large",
-                "Patched files exceed the aggregate output byte limit.");
+                $"Physical resource boundary: this patch would retain {budget.TotalOutputBytes + outputBytes} output bytes in one reversible plan; the per-request in-memory limit is {_settings.MaxTotalOutputBytes} bytes. No workspace changes were made. Split the diff into smaller apply_patch calls.");
 
         }
 
@@ -1089,7 +1065,7 @@ internal sealed class WorkspacePatchPlanner
 
             throw PlanningFailure(
                 "staging_file_too_large",
-                "A patch file exceeds the per-file staging byte limit.");
+                "Physical resource boundary: one patch file exceeds the representable staging allocation. No workspace changes were made. Split or reduce that file before applying the patch.");
 
         }
 
@@ -1139,7 +1115,7 @@ internal sealed class WorkspacePatchPlanner
 
             throw PlanningFailure(
                 "staging_file_too_large",
-                "A patch file exceeds the per-file staging byte limit.");
+                $"Physical resource boundary: one patch file requires {stagingBytes} staging bytes; the per-file reversible staging limit is {_settings.MaxStagingBytesPerFile} bytes. No workspace changes were made. Split or reduce that file before applying the patch.");
 
         }
 
@@ -1149,7 +1125,7 @@ internal sealed class WorkspacePatchPlanner
 
             throw PlanningFailure(
                 "staging_total_too_large",
-                "Patch files exceed the aggregate staging byte limit.");
+                $"Transaction-integrity boundary: this patch requires {budget.TotalStagingBytes + stagingBytes} staging bytes before mutation; the reversible transaction limit is {_settings.MaxTotalStagingBytes} bytes. No workspace changes were made. Split the diff into smaller apply_patch calls.");
 
         }
 
@@ -1161,16 +1137,6 @@ internal sealed class WorkspacePatchPlanner
     {
 
         cancellationToken.ThrowIfCancellationRequested();
-
-        if (budget.TimeProvider.GetElapsedTime(budget.StartedAt)
-            >= budget.WorkDuration)
-        {
-
-            throw PlanningFailure(
-                "max_elapsed",
-                "Patch planning exceeded its absolute work deadline.");
-
-        }
 
     }
 
@@ -1264,28 +1230,8 @@ internal sealed class WorkspacePatchPlanner
         IReadOnlyList<int> MatchedLines,
         IReadOnlyList<WorkspacePatchHunkDiagnostic> Hunks);
 
-    private sealed class PatchPlanningBudget(
-        WorkspacePatchSettings settings,
-        TimeProvider timeProvider,
-        long? startedAtTimestamp,
-        TimeSpan? workDuration)
+    private sealed class PatchPlanningBudget
     {
-        internal TimeProvider TimeProvider { get; } =
-            timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
-
-        internal long StartedAt { get; } =
-            startedAtTimestamp ?? timeProvider.GetTimestamp();
-
-        internal TimeSpan WorkDuration { get; } =
-            workDuration
-            ?? TimeSpan.FromMilliseconds(
-                Math.Max(
-                    1,
-                    settings.MaxElapsedMilliseconds
-                    - settings.RollbackReserveMilliseconds));
-
-        internal long TotalInputBytes { get; set; }
-
         internal long TotalOutputBytes { get; set; }
 
         internal long TotalStagingBytes { get; set; }

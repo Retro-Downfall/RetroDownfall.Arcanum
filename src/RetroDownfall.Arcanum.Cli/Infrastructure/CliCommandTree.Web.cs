@@ -149,7 +149,7 @@ internal static partial class CliCommandTree
 
         Command command = new(
             "research",
-            "Run bounded server-side multi-hop research with progress and citations.");
+            "Run progress-driven server-side research with citations and cancellation.");
 
         Argument<string> question = new("question")
         {
@@ -158,17 +158,10 @@ internal static partial class CliCommandTree
 
         };
 
-        Option<int?> maxSources = new("--max-sources")
+        Option<int?> sourceTarget = new("--sources")
         {
 
-            Description = "Maximum unique sources (1-20; default 5).",
-
-        };
-
-        Option<int?> maxHops = new("--max-hops")
-        {
-
-            Description = "Maximum search hops (1-5; default 2).",
+            Description = "Optional positive target for unique sources; otherwise continue until source exhaustion.",
 
         };
 
@@ -182,7 +175,7 @@ internal static partial class CliCommandTree
         Option<int?> tokenBudget = new("--token-budget")
         {
 
-            Description = "Maximum synthesis output tokens (64-32768; default 2000).",
+            Description = "Explicit positive synthesis output-token budget (default 2000).",
 
         };
 
@@ -213,9 +206,7 @@ internal static partial class CliCommandTree
 
         command.Add(question);
 
-        command.Add(maxSources);
-
-        command.Add(maxHops);
+        command.Add(sourceTarget);
 
         command.Add(model);
 
@@ -235,8 +226,7 @@ internal static partial class CliCommandTree
             async (ParseResult result, CancellationToken cancellationToken) =>
                 await handler.Research(
                     result.GetValue(question)!,
-                    result.GetValue(maxSources) ?? 5,
-                    result.GetValue(maxHops) ?? 2,
+                    result.GetValue(sourceTarget),
                     result.GetValue(model),
                     result.GetValue(tokenBudget) ?? 2_000,
                     result.GetValue(costBudget),

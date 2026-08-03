@@ -567,7 +567,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     [Fact]
     public async Task Scenario04_BufferedToolLoop_ChangingEvidenceBeyondFormerLimits_Completes()
     {
-        const int toolRoundCount = 12;
+        const int toolRoundCount = 40;
         const string progressToolName = "record_progress";
         ScriptingChatClient chat = new();
         FakeMcpConnectionManager mcp = new();
@@ -602,6 +602,45 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                         expectedEvidence,
                         StringComparison.Ordinal));
         }
+    }
+
+    [Fact]
+    public async Task BufferedToolLoop_RepeatedIdenticalRound_ReturnsTypedNoProgressFailure()
+    {
+
+        const string progressToolName = "record_progress";
+
+        ScriptingChatClient chat = new();
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateProgressMcpTool(progressToolName));
+
+        Dictionary<string, object?> arguments = new()
+        {
+
+            ["evidence"] = 1,
+
+        };
+
+        chat.EnqueueToolCall(progressToolName, "repeat-1", arguments);
+
+        chat.EnqueueToolCall(progressToolName, "repeat-2", arguments);
+
+        chat.EnqueueText("must not be reached");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with { Prompt = "detect no progress", SkipSpellRouting = true },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Hub.NoProgressDetected, result.Error.Code);
+
+        Assert.Equal(2, chat.BufferedCallCount);
+
     }
 
     [Fact]
@@ -1308,11 +1347,60 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario20_AttachedFilesTooMany_ReturnsValidationError()
+    public async Task StreamingToolLoop_RepeatedIdenticalRound_EmitsTypedNoProgressError()
     {
-        int fileCount = ArcanumSettingClamps.MaxAttachedFilesPerRequest(
-            ArcanumRuntimeDefaults.CliMaxAttachedFilesPerRequest) + 1;
-        WizardIntelligenceProvider wizard = CreateWizard(new ScriptingChatClient());
+
+        const string progressToolName = "record_progress";
+
+        ScriptingChatClient chat = new();
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateProgressMcpTool(progressToolName));
+
+        Dictionary<string, object?> arguments = new()
+        {
+
+            ["evidence"] = 1,
+
+        };
+
+        chat.EnqueueStreamToolCall(progressToolName, "repeat-1", arguments);
+
+        chat.EnqueueStreamToolCall(progressToolName, "repeat-2", arguments);
+
+        chat.EnqueueStreamTokens("must not be reached");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with { Prompt = "detect no progress", SkipSpellRouting = true });
+
+        IntelligenceEvent error = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.Error);
+
+        Assert.Equal(ErrorCodes.Hub.NoProgressDetected, error.Data);
+
+        Assert.DoesNotContain(
+            events,
+            static e => e.Type == IntelligenceEventType.Result);
+
+        Assert.Equal(2, chat.StreamingCallCount);
+
+    }
+
+    [Fact]
+    public async Task Scenario20_AttachedFilesBeyondFormerCountCeiling_AreAccepted()
+    {
+        const int fileCount = 33;
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("accepted");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
         List<AttachedFileDto> files = Enumerable.Range(1, fileCount)
             .Select(static index => new AttachedFileDto($"file-{index}.txt", "content"))
             .ToList();
@@ -1327,9 +1415,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             },
             CancellationToken.None);
 
-        Assert.True(result.IsFailure);
+        Assert.True(result.IsSuccess, result.Error.Message);
 
-        Assert.Equal("Validation.AttachedFiles", result.Error.Code);
+        Assert.Equal("accepted", result.Value!.Text);
 
     }
 
@@ -1513,11 +1601,15 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scenario28_StreamAttachedFilesValidation_EmitsError()
+    public async Task Scenario28_StreamAttachedFilesBeyondFormerCountCeiling_Completes()
     {
-        int fileCount = ArcanumSettingClamps.MaxAttachedFilesPerRequest(
-            ArcanumRuntimeDefaults.CliMaxAttachedFilesPerRequest) + 1;
-        WizardIntelligenceProvider wizard = CreateWizard(new ScriptingChatClient());
+        const int fileCount = 33;
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamTokens("accepted");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat);
 
         List<IntelligenceEvent> events = await CollectStreamAsync(
             wizard,
@@ -1531,7 +1623,9 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
                     .ToList(),
             });
 
-        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Error);
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Result);
+
+        Assert.DoesNotContain(events, static e => e.Type == IntelligenceEventType.Error);
 
     }
 
@@ -4044,6 +4138,315 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
+    }
+
+    [Fact]
+
+    public async Task ExplicitAttachmentReferences_StopMaterializingAtResolvedProviderContextBoundary()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        string payload = string.Concat(
+            Enumerable.Repeat(
+                "alpha beta gamma delta epsilon zeta eta theta ",
+                300));
+
+        Guid[] attachmentIds = [Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()];
+
+        Dictionary<Guid, SessionAttachmentRecord> records = attachmentIds.ToDictionary(
+            static id => id,
+            id => new SessionAttachmentRecord(
+                id,
+                sessionId,
+                EntryId: null,
+                PendingTurnId: null,
+                SessionAttachmentState.Bound,
+                $"notes-{Array.IndexOf(attachmentIds, id) + 1}",
+                $"notes-{Array.IndexOf(attachmentIds, id) + 1}.txt",
+                Version: 1,
+                RelativePath: $"noop/{id:N}",
+                ContentSha256: id.ToString("N"),
+                MimeType: "text/plain",
+                ByteLength: System.Text.Encoding.UTF8.GetByteCount(payload),
+                SessionAttachmentKind.Text,
+                DateTimeOffset.UtcNow));
+
+        int materializedReferences = 0;
+
+        NoOpSessionAttachmentStore store = new(
+            records: records,
+            readBytes: (_, _) =>
+            {
+
+                materializedReferences++;
+
+                return Task.FromResult<ReadOnlyMemory<byte>>(
+                    System.Text.Encoding.UTF8.GetBytes(payload));
+
+            },
+            openRead: (_, _) =>
+            {
+
+                materializedReferences++;
+
+                return Task.FromResult<Stream>(new MemoryStream(
+                    System.Text.Encoding.UTF8.GetBytes(payload),
+                    writable: false));
+
+            });
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+
+            Providers =
+            [
+
+                DefaultProvider() with { ContextWindowLimit = 4_096 },
+
+            ],
+
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("must not be called");
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            settings,
+            grimoire: new FakeGrimoireRepository
+            {
+
+                Session = new Session { Id = sessionId, Entries = [] },
+
+            },
+            sessionAttachmentStore: store);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+
+                Prompt = "Compare the referenced notes.",
+
+                SessionId = sessionId,
+
+                AttachmentReferences = [.. attachmentIds],
+
+                SkipSpellRouting = true,
+
+                DisableMcpTools = true,
+
+                MaxOutputTokens = 128,
+
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
+
+        Assert.InRange(materializedReferences, 1, attachmentIds.Length - 1);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+    }
+
+    [Fact]
+
+    public async Task ExplicitAttachmentReferences_CancellationStopsLaterMaterializationAndProviderCall()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid[] attachmentIds = [Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid()];
+
+        byte[] payload = System.Text.Encoding.UTF8.GetBytes("small attachment body");
+
+        Dictionary<Guid, SessionAttachmentRecord> records = attachmentIds.ToDictionary(
+            static id => id,
+            id => new SessionAttachmentRecord(
+                id,
+                sessionId,
+                EntryId: null,
+                PendingTurnId: null,
+                SessionAttachmentState.Bound,
+                $"notes-{Array.IndexOf(attachmentIds, id) + 1}",
+                $"notes-{Array.IndexOf(attachmentIds, id) + 1}.txt",
+                Version: 1,
+                RelativePath: $"noop/{id:N}",
+                ContentSha256: id.ToString("N"),
+                MimeType: "text/plain",
+                ByteLength: payload.Length,
+                SessionAttachmentKind.Text,
+                DateTimeOffset.UtcNow));
+
+        using CancellationTokenSource cancellation = new();
+
+        List<Guid> openedAttachmentIds = [];
+
+        NoOpSessionAttachmentStore store = new(
+            records: records,
+            openRead: (record, cancellationToken) =>
+            {
+
+                openedAttachmentIds.Add(record.Id);
+
+                if (record.Id == attachmentIds[1])
+                {
+
+                    cancellation.Cancel();
+
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                }
+
+                return Task.FromResult<Stream>(new MemoryStream(payload, writable: false));
+
+            });
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("must not be called");
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            grimoire: new FakeGrimoireRepository
+            {
+
+                Session = new Session { Id = sessionId, Entries = [] },
+
+            },
+            sessionAttachmentStore: store);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            wizard.ExecutePromptAsync(
+                BaseRequest() with
+                {
+
+                    Prompt = "Compare the referenced notes.",
+
+                    SessionId = sessionId,
+
+                    AttachmentReferences = [.. attachmentIds],
+
+                    SkipSpellRouting = true,
+
+                    DisableMcpTools = true,
+
+                },
+                cancellation.Token));
+
+        Assert.Equal(attachmentIds[..2], openedAttachmentIds);
+
+        Assert.Equal(0, chat.BufferedCallCount);
+
+    }
+
+    [Fact]
+
+    public async Task ExplicitAttachmentReferences_MaterializeInRequestOrderWithProvenance()
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid[] attachmentIds = [Guid.NewGuid(), Guid.NewGuid()];
+
+        Dictionary<Guid, byte[]> payloads = new()
+        {
+
+            [attachmentIds[0]] = System.Text.Encoding.UTF8.GetBytes("first attachment body"),
+
+            [attachmentIds[1]] = System.Text.Encoding.UTF8.GetBytes("second attachment body"),
+
+        };
+
+        Dictionary<Guid, SessionAttachmentRecord> records = attachmentIds.ToDictionary(
+            static id => id,
+            id => new SessionAttachmentRecord(
+                id,
+                sessionId,
+                EntryId: null,
+                PendingTurnId: null,
+                SessionAttachmentState.Bound,
+                $"notes-{Array.IndexOf(attachmentIds, id) + 1}",
+                $"notes-{Array.IndexOf(attachmentIds, id) + 1}.txt",
+                Version: 1,
+                RelativePath: $"noop/{id:N}",
+                ContentSha256: id.ToString("N"),
+                MimeType: "text/plain",
+                ByteLength: payloads[id].Length,
+                SessionAttachmentKind.Text,
+                DateTimeOffset.UtcNow));
+
+        List<Guid> openedAttachmentIds = [];
+
+        NoOpSessionAttachmentStore store = new(
+            records: records,
+            openRead: (record, _) =>
+            {
+
+                openedAttachmentIds.Add(record.Id);
+
+                return Task.FromResult<Stream>(new MemoryStream(
+                    payloads[record.Id],
+                    writable: false));
+
+            });
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("compared");
+
+        WizardIntelligenceProvider wizard = CreateWizard(
+            chat,
+            grimoire: new FakeGrimoireRepository
+            {
+
+                Session = new Session { Id = sessionId, Entries = [] },
+
+            },
+            sessionAttachmentStore: store);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest() with
+            {
+
+                Prompt = "Compare the referenced notes.",
+
+                SessionId = sessionId,
+
+                AttachmentReferences = [.. attachmentIds],
+
+                SkipSpellRouting = true,
+
+                DisableMcpTools = true,
+
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(attachmentIds, openedAttachmentIds);
+
+        MeAiChatMessage userMessage = chat.LastBufferedMessages.Last(
+            static message => message.Role == ChatRole.User);
+
+        TextContent[] explicitContents = userMessage.Contents
+            .OfType<TextContent>()
+            .Where(static content => content.AdditionalProperties is not null
+                && content.AdditionalProperties.TryGetValue(
+                    "arcanum.context_source",
+                    out object? source)
+                && string.Equals(source as string, "explicitAttachment", StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.Equal(2, explicitContents.Length);
+
+        Assert.Contains("first attachment body", explicitContents[0].Text, StringComparison.Ordinal);
+
+        Assert.Contains("second attachment body", explicitContents[1].Text, StringComparison.Ordinal);
+
     }
 
     [Fact]

@@ -13,6 +13,14 @@ public interface IFileSystemBrowser
         string? searchPattern,
         CancellationToken ct);
 
+    Task<Result<FileListResult>> ListAsync(
+        WorkspaceInfo workspace,
+        string? relativePath,
+        bool recursive,
+        string? searchPattern,
+        string? cursor,
+        CancellationToken ct);
+
     Task<Result<FileReadResult>> ReadAsync(
         WorkspaceInfo workspace,
         string relativePath,

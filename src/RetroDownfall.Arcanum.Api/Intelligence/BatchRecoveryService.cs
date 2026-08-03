@@ -55,6 +55,8 @@ internal sealed class BatchRecoveryService(
     ILogger<BatchRecoveryService> logger) : IBatchRecoveryService
 {
 
+    private const int CheckpointPageSize = 64;
+
     public async Task ReconcileStrandedAsync(CancellationToken cancellationToken = default)
     {
 
@@ -75,6 +77,8 @@ internal sealed class BatchRecoveryService(
 
             if (await InputExistsAsync(batch, files, cancellationToken).ConfigureAwait(false))
             {
+
+                await SealInterruptedLinesAsync(batch.Id, batches, cancellationToken).ConfigureAwait(false);
 
                 await ClearOutputAndErrorArtifactsAsync(batch, files, cancellationToken).ConfigureAwait(false);
 
@@ -166,6 +170,8 @@ internal sealed class BatchRecoveryService(
 
         }
 
+        await SealInterruptedLinesAsync(record.Id, batches, cancellationToken).ConfigureAwait(false);
+
         await ClearOutputAndErrorArtifactsAsync(record, files, cancellationToken).ConfigureAwait(false);
 
         bool cas = await batches.TryCompareAndSetStatusAsync(
@@ -193,6 +199,64 @@ internal sealed class BatchRecoveryService(
             OutputFileId = null,
             ErrorFileId = null,
         });
+
+    }
+
+    private static async Task SealInterruptedLinesAsync(
+
+        Guid batchId,
+
+        IBatchRepository batches,
+
+        CancellationToken cancellationToken)
+
+    {
+
+        long afterLine = 0;
+
+        while (true)
+
+        {
+
+            IReadOnlyList<BatchLineCheckpoint> page = await batches.ListLineCheckpointsAsync(
+
+                batchId,
+
+                BatchLineCheckpointState.Dispatched,
+
+                afterLine,
+
+                CheckpointPageSize,
+
+                cancellationToken).ConfigureAwait(false);
+
+            if (page.Count == 0)
+
+            {
+
+                return;
+
+            }
+
+            foreach (BatchLineCheckpoint checkpoint in page)
+
+            {
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                await BatchProcessingService.CompleteInterruptedLineAsync(
+
+                    checkpoint,
+
+                    batches,
+
+                    cancellationToken).ConfigureAwait(false);
+
+            }
+
+            afterLine = page[^1].LineNumber;
+
+        }
 
     }
 

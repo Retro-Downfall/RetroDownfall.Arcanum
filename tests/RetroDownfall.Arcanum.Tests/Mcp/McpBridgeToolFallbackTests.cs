@@ -196,6 +196,32 @@ public sealed class McpBridgeToolFallbackTests
         Assert.Equal(TimeSpan.FromSeconds(330), client.LastRequestTimeout);
     }
 
+    [Theory]
+    [InlineData("ask_human")]
+    [InlineData("execute_command")]
+    [InlineData(ArcanumBuiltInToolNames.RunSpellScript)]
+    public async Task Caller_cancellation_owned_tools_disable_mcp_request_timeout(string toolName)
+    {
+
+        FakeMcpClient client = new(
+            _ => Task.FromResult(TextResult("ok")));
+
+        McpBridgeTool tool = new McpBridgeTool(
+                toolName,
+                "description",
+                EmptySchema(),
+                client,
+                toolOutputCapBytes: 4096)
+            .WithRequestTimeout(TimeSpan.FromSeconds(1));
+
+        _ = await tool.InvokeAsync(
+            new AIFunctionArguments(),
+            CancellationToken.None);
+
+        Assert.Equal(Timeout.InfiniteTimeSpan, client.LastRequestTimeout);
+
+    }
+
     private static JsonElement EmptySchema() => JsonDocument.Parse("{}").RootElement.Clone();
 
     private static CallToolResult TextResult(string text, bool isError = false) => new()

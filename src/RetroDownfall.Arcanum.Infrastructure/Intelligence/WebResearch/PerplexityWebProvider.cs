@@ -81,7 +81,6 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
             using CancellationTokenSource deadline =
                 CancellationTokenSource.CreateLinkedTokenSource(
                     cancellationToken);
-            deadline.CancelAfter(options.Timeout);
 
             try
             {
@@ -140,17 +139,24 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
                 HttpClient client = _httpClientFactory.CreateClient(
                     WebResearchConstants.PerplexityHttpClientName);
 
+                using CancellationTokenSource headerIdle =
+                    CancellationTokenSource.CreateLinkedTokenSource(
+                        deadline.Token);
+
+                headerIdle.CancelAfter(options.IdleTimeout);
+
                 using HttpResponseMessage response = await client
                     .SendAsync(
                         request,
                         HttpCompletionOption.ResponseHeadersRead,
-                        deadline.Token)
+                        headerIdle.Token)
                     .ConfigureAwait(false);
 
                 if (!response.IsSuccessStatusCode)
                 {
                     byte[] errorBody = await ReadErrorBodyAsync(
                         response,
+                        options.IdleTimeout,
                         deadline.Token).ConfigureAwait(false);
                     Error error = ClassifyHttpFailure(
                         response.StatusCode,
@@ -174,6 +180,7 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
                     await WebResearchBounds.ReadCappedAsync(
                         responseStream,
                         options.MaxResponseBytes,
+                        options.IdleTimeout,
                         deadline.Token).ConfigureAwait(false);
 
                 if (body.Truncated)
@@ -230,7 +237,7 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
             {
                 return Complete(Failure(
                     ErrorCodes.WebResearch.Timeout,
-                    "The Perplexity request timed out."));
+                    "The Perplexity connection or response stream exceeded its idle I/O timeout; retry or cancel the research operation."));
             }
             catch (HttpRequestException ex)
             {
@@ -391,7 +398,7 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
             return false;
         }
 
-        if (options.Timeout <= TimeSpan.Zero
+        if (options.IdleTimeout <= TimeSpan.Zero
             || options.MaxResponseBytes <= 0
             || options.MaxAnswerBytes <= 0
             || options.MaxCitations < 0
@@ -452,6 +459,7 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
 
     private static async Task<byte[]> ReadErrorBodyAsync(
         HttpResponseMessage response,
+        TimeSpan idleTimeout,
         CancellationToken cancellationToken)
     {
         await using Stream responseStream = await response.Content
@@ -461,6 +469,7 @@ public sealed class PerplexityWebProvider : IWebResearchProvider
             await WebResearchBounds.ReadCappedAsync(
                 responseStream,
                 MaxErrorBodyBytes,
+                idleTimeout,
                 cancellationToken).ConfigureAwait(false);
         return body.Bytes;
     }

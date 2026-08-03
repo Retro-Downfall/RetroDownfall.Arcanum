@@ -217,8 +217,7 @@ internal sealed class RunExecutionDispatcher(
 
         return webWorkflowCommands.Research(
             request.Prompt,
-            options.MaxSources,
-            options.MaxHops,
+            options.SourceTarget,
             request.Context.Model.Value,
             options.TokenBudget,
             options.CostBudget,
@@ -293,13 +292,12 @@ internal sealed class RunExecutionDispatcher(
     private static string? ValidateResearchOptions(RunCommandRequest options)
     {
 
-        if (options.MaxSources is < 1 or > 20
-            || options.MaxHops is < 1 or > 5
-            || options.TokenBudget is < 64 or > 32_768
+        if (options.SourceTarget is < 1
+            || options.TokenBudget < 1
             || options.CostBudget is < 0)
         {
 
-            return "Research requires 1-20 sources, 1-5 hops, a 64-32768 token budget, and a nonnegative cost budget.";
+            return "Research requires an optional positive source target, a positive explicit synthesis-token budget, and a nonnegative cost budget.";
 
         }
 

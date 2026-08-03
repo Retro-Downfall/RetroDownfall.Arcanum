@@ -230,8 +230,6 @@ public sealed class ReadSagaToolTests
             scopeFactory,
             pacer,
             workspaceRootNormalizedOrNull: null,
-            executeCommandTimeout: TimeSpan.FromSeconds(30),
-            executeCommandTimeoutSecondsForDisplay: 30,
             listDirectoryMaxPaths: 64,
             intelligenceSettings: intelligenceSettings,
             maxFileReadSizeBytes: 1024 * 1024,

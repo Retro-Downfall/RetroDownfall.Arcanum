@@ -282,6 +282,24 @@ public sealed class WeaveServiceTests
     }
 
     [Fact]
+    public async Task EmbedAsync_WithoutCallerCancellation_DoesNotCreateInternalDeadline()
+    {
+
+        FakeEmbeddingGeneratorFactory factory = new();
+
+        WeaveService service = CreateService(EnabledSettings(), factory);
+
+        Result<Embedding<float>> result = await service.EmbedAsync("hello", CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.False(factory.ResolveCancellationToken.CanBeCanceled);
+
+        Assert.False(factory.Generator.GenerateCancellationToken.CanBeCanceled);
+
+    }
+
+    [Fact]
     public async Task EmbedAsync_Success_ReturnsGeneratedEmbedding()
     {
 
@@ -492,10 +510,14 @@ public sealed class WeaveServiceTests
 
         public int ResolveCount { get; private set; }
 
+        public CancellationToken ResolveCancellationToken { get; private set; }
+
         public Task<EmbeddingGeneratorLease> ResolveGeneratorAsync(CancellationToken cancellationToken)
         {
 
             ResolveCount++;
+
+            ResolveCancellationToken = cancellationToken;
 
             return Task.FromResult(new EmbeddingGeneratorLease(Generator, ownsGenerator: false));
 
@@ -516,11 +538,15 @@ public sealed class WeaveServiceTests
 
         public int? ThrowOnCallNumber { get; set; }
 
+        public CancellationToken GenerateCancellationToken { get; private set; }
+
         public async Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
             IEnumerable<string> values,
             EmbeddingGenerationOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+
+            GenerateCancellationToken = cancellationToken;
 
             List<string> list = [.. values];
 
