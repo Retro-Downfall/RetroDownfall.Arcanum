@@ -62,6 +62,7 @@ flowchart LR
     Cli --> Infrastructure
     Cli --> Core
     Compendium["Compendium configuration editor"] --> Core
+    Compendium --> Infrastructure
     Forge["The Forge desktop client"] --> Http["Arcanum HTTP API"]
     Forge --> Secrets
     Http --> Api
@@ -77,7 +78,7 @@ The projects have deliberately different responsibilities:
 | `RetroDownfall.Arcanum.Api` | Endpoint registration, authentication filters, inference orchestration, tool execution, streaming, OpenAI compatibility, and public error mapping. |
 | `RetroDownfall.Arcanum.Cli` | The shipping executable, command tree, API clients, terminal rendering, Command Center, and the `serve` host. |
 | `RetroDownfall.Arcanum.Api.DevHost` | A debug-only host that mirrors server wiring without shipping as the product entry point. |
-| `RetroDownfall.Compendium.Ux` | The Avalonia editor for the supported `arcanum.json` surface. |
+| `RetroDownfall.Compendium.Ux` | The Avalonia editor for the supported `arcanum.json` surface; it consumes Core preset contracts and the shared Infrastructure composition/persistence rather than duplicating them. |
 | `RetroDownfall.TheForge.Core` and `.Ux` | The HTTP-only desktop inference client and workbench. |
 | `tests/*` | Separate Arcanum, Compendium, and Forge verification graphs. |
 
@@ -291,6 +292,12 @@ The default full scope includes the database/KDF, configuration, encrypted attac
 file/batch artifacts, Codex/Spells, global MCP configuration, CLI/The Forge state, Compendium
 settings/certificates, and a filtered portable recovery-key document. It does not export the raw OS
 credential store, Data Protection key ring, environment secret values, or external workspaces.
+Configuration inventory also carries a committed preset provenance/rollback pair beside
+`arcanum.json`; it never carries the transient preset transaction journal. The pair is omitted
+unless both sidecars exist with matching fingerprints and no recovery journal is pending. An
+incomplete/mismatched pair fails the component; a pending journal prevents capture of a possibly
+mid-transaction configuration until preset recovery completes. Verification treats the retained
+paths as authenticated configuration state.
 Trusted MCP paths, audit/guardrail logs, and the master API key are explicit-only; global MCP
 configuration is normal authored state but is flagged because literal environment values may be
 present. A specific-Session archive is not a logical privacy export: it includes only matching
@@ -500,6 +507,79 @@ Bare `arcanum` remains the convenient automatic entry and respects
 requests and are not suppressed by that automatic-launch escape hatch; they retain the ordinary
 terminal/UI prerequisites.
 
+### Onboarding presets
+
+Onboarding presets are transparent local configuration helpers, not a second settings model. The
+shared `ConfigurationPresetCatalog` currently publishes six immutable version-1 definitions:
+
+| Preset | Intent and deliberate boundary |
+|---|---|
+| `general-assistant` v1 | Balanced conversation and attachments, with automatic long-term-memory extraction left off. |
+| `coding-workspace` v1 | Workspace checks and workspace-scoped writes, without silently enabling indexing, apprentices, or custom checks. |
+| `research` v1 | Native web research, only after its separately stored research credential is available. |
+| `private-offline` v1 | Loopback host/provider use with built-in research and telemetry off; authored third-party integrations remain visible for the operator to review. |
+| `automation` v1 | Unattended Ward auto-denial, only after the operator has already enabled a positive daily budget. The preset never invents or enlarges that budget. |
+| `advanced-custom` v1 | Inspection and guidance with no owned configuration values. |
+
+Each definition is a versioned **partial overlay**. It owns an explicit list of public dot-paths;
+everything else remains operator-owned and unchanged. Presets do not own credentials, provider
+endpoints, arbitrary retry/timeout/loop/concurrency tuning, budget amounts, forbidden-art bypasses,
+network allowlists, or unsandboxed child-process enablement. They also never silently enable a
+non-loopback host. This keeps the workflow useful without turning onboarding into a collection of
+new capability restrictions or high-risk defaults.
+
+`ConfigurationPresetService`, registered by `AddArcanumConfigurationPresets`, implements the one
+`IConfigurationPresetService` contract used by both frontends. The CLI exposes
+`arcanum preset list`, `show <name>`, `diff <name>`, `apply <name>`, and `reset`; names are exact
+preset IDs or display names. `list` and `show` explain the version, purpose, owned values, security
+and cost disclosure, prerequisites, recommendations, progressive-disclosure path, and shared
+plain-language glossary. `diff` is always available before mutation. It reports, for every owned
+path, the persisted value from `arcanum.json`, the current effective value, the proposed persisted
+value, the source, any effective environment-variable override, prerequisites, and restart/change
+flags. Applying a preset changes the persisted owned value; it does not edit or conceal an
+environment override, so the effective value can remain different until the operator changes that
+environment. Only an override that contradicts a preset-owned safety or privacy boundary blocks
+Apply. Benign feature masks remain authoritative, leave the plan applicable, and are reported as
+effective drift instead of becoming a new restriction.
+
+The planner builds a complete candidate, reports actionable prerequisites without hiding the
+proposed diff, and provides a completion summary covering the active preset, provider/model,
+Workspace/Campaign, enabled memory sources, tool policy, privacy state, and next command. Required
+provider/model, Workspace, research-credential, loopback-provider, positive-budget, and complete
+configuration validation checks block application when unsatisfied. Progressive disclosure keeps
+the first essential choice and an executable first-success command prominent while leaving advanced
+features as later, explicit choices. Coding Workspace recommends
+`arcanum run --workspace . "Inspect this workspace and summarize it."`, including the prompt that
+`arcanum run` requires. The secure research-credential store is probed only for a Research diff or
+apply; inspecting, resetting, and using other presets do not touch it.
+
+Compendium labels the latest successfully inspected state and completion summary as current. A
+selected preset's plan appears as a separate projection, so previewing Research cannot relabel an
+active General Assistant configuration as Custom. If state inspection fails, Compendium clears the
+cached inspection and displays Unavailable instead of keeping stale active or drifted provenance.
+
+Apply validates the entire candidate, including outbound-address policy, and binds the commit to an
+optimistic hash of the configuration that was previewed. Every canonical writer, including
+Compendium save and `ConfigurationWriter`, enters one current-user named cross-process transaction
+coordinator. `FileConfigurationPresetPersistence` holds that transaction across the atomic
+`arcanum.json` replacement and owner-only preset provenance, rollback, and journal sidecars. The
+journal contains only owned before/after values and hashes plus previous/next provenance—not a full
+configuration snapshot. Interrupted or failed finalization conditionally reverses only owned values
+that still match the interrupted write, preserving unrelated and later manual edits; startup/read
+recovery follows the same rule. Sidecar reads are bounded/no-follow, and provenance must exactly
+match catalog ownership, canonical values, hashes, and paired state before use. Reapplying the same
+version and owned values is an idempotent success.
+
+Effective state is **Custom** when no provenance is active, **Active** while the preset-owned
+persisted and effective values still match the recorded application, and **Drifted** when either
+view has changed. Reset consults the recorded baseline and applied values: it restores an owned
+persisted value only if that value still equals what the preset applied, preserves later user drift
+and every unowned edit, removes the active provenance after success, and reports restored versus
+preserved counts. Environment variables remain external operator input throughout.
+
+This is the focused preset flow for issue #44. The guided multi-step setup wizard remains separate
+issue #19. Presets add no HTTP API endpoints and no The Forge behavior.
+
 ### Compendium
 
 Compendium is the Avalonia editor for supported public configuration. It edits references to
@@ -518,6 +598,17 @@ key, default, bound, dynamic dictionary shape, and credential reference.
 Retention is a descriptor-driven section. It exposes the real policy choices—typed class rules,
 sweep bounds, accounting floor, and protected-session GUIDs—without inventing a second delete
 engine or additional capability restrictions.
+
+Presets are a dedicated polished section rather than descriptor-generated fields. It consumes the
+same catalog, glossary, plans, inspections, apply results, and reset results as the CLI, and displays
+the same Active/Drifted/Custom state, disclosures, exact persisted/effective/proposed diff,
+environment source, prerequisites, recommendations, progressive guidance, and completion summary.
+Selecting a card is preview-only. The explicit Apply and Reset buttons call the shared service
+without an additional confirmation gate; when another Compendium edit is unsaved, those mutations
+pause with save-or-cancel guidance so the editor never discards that work silently. After a
+successful mutation, Compendium clears its stale plan before reloading the canonical configuration
+and effective preset state. SHA-256 fingerprints suppress delayed watcher events only for the exact
+bytes Compendium read or wrote; different bytes remain visible as external edits.
 
 ### The Forge
 

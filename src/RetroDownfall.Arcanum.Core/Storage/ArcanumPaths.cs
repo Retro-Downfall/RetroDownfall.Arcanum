@@ -20,6 +20,17 @@ public static class ArcanumPaths
 
     public static string GrimoireDatabaseFile => Path.Combine(GrimoireDirectory, "arcanum.db");
 
+    public static string ConfigurationFile => Path.Combine(GrimoireDirectory, "arcanum.json");
+
+    public static string ConfigurationPresetStateFile =>
+        Path.Combine(GrimoireDirectory, "arcanum.preset.json");
+
+    public static string ConfigurationPresetRollbackFile =>
+        Path.Combine(GrimoireDirectory, "arcanum.preset.rollback.json");
+
+    public static string ConfigurationPresetJournalFile =>
+        Path.Combine(GrimoireDirectory, "arcanum.preset.journal.json");
+
     public static string GlobalMcpConfigFile => Path.Combine(GrimoireDirectory, "mcp.json");
 
     public static string LogDirectory => Path.Combine(SecretStoreDirectory, "logs");

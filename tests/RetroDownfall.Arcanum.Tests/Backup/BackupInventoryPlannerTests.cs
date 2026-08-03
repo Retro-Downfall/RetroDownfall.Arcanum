@@ -562,6 +562,166 @@ public sealed class BackupInventoryPlannerTests : IDisposable
     }
 
     [Fact]
+    public async Task Configuration_inventory_includes_committed_preset_state_and_rollback()
+    {
+
+        await WriteFileAsync("arcanum.json", "{}");
+
+        await WriteFileAsync("arcanum.preset.json", "{\"presetId\":\"research\"}");
+
+        await WriteFileAsync(
+            "arcanum.preset.rollback.json",
+            "{\"presetId\":\"research\"}");
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.Configuration],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Equal(
+            [
+                "configuration/arcanum.json",
+                "configuration/arcanum.preset.json",
+                "configuration/arcanum.preset.rollback.json",
+            ],
+            inventory.Files.Select(static file => file.ArchivePath));
+
+        Assert.All(
+            inventory.Files,
+            static file => Assert.Equal(BackupComponent.Configuration, file.Component));
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.Configuration
+                && component.Status == BackupComponentStatus.Complete
+                && component.Files == 3);
+
+    }
+
+    [Fact]
+    public async Task Configuration_inventory_never_includes_the_transient_preset_journal()
+    {
+
+        await WriteFileAsync("arcanum.json", "{}");
+
+        await WriteFileAsync(
+            "arcanum.preset.journal.json",
+            "{\"operation\":\"apply\"}");
+
+        await WriteFileAsync("arcanum.preset.json", "{\"presetId\":\"research\"}");
+
+        await WriteFileAsync(
+            "arcanum.preset.rollback.json",
+            "{\"presetId\":\"research\"}");
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.Configuration],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Empty(inventory.Files);
+
+        Assert.DoesNotContain(
+            inventory.Files,
+            static file => file.ArchivePath.Contains("journal", StringComparison.Ordinal));
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.Configuration
+                && component.Status == BackupComponentStatus.Failed
+                && component.Files == 0);
+
+    }
+
+    [Fact]
+    public async Task Configuration_inventory_rejects_mismatched_preset_state_and_rollback()
+    {
+
+        await WriteFileAsync("arcanum.json", "{}");
+
+        await WriteFileAsync("arcanum.preset.json", "{\"presetId\":\"research\"}");
+
+        await WriteFileAsync(
+            "arcanum.preset.rollback.json",
+            "{\"presetId\":\"general-assistant\"}");
+
+        BackupInventoryPlanner planner = new(Paths());
+
+        BackupInventory inventory = await planner.BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.Configuration],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        BackupInventoryFile configuration = Assert.Single(inventory.Files);
+
+        Assert.Equal("configuration/arcanum.json", configuration.ArchivePath);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.Configuration
+                && component.Status == BackupComponentStatus.Failed
+                && component.Files == 1);
+
+    }
+
+    [Fact]
+    public async Task Configuration_inventory_never_captures_sidecars_without_a_regular_config_file()
+    {
+
+        string target = Path.Combine(_root, "configuration-target.json");
+
+        await File.WriteAllTextAsync(target, "{}");
+
+        Assert.True(HardLinkTestSupport.TryCreate(
+            Path.Combine(_root, "arcanum.json"),
+            target));
+
+        await WriteFileAsync("arcanum.preset.json", "{\"presetId\":\"research\"}");
+
+        await WriteFileAsync(
+            "arcanum.preset.rollback.json",
+            "{\"presetId\":\"research\"}");
+
+        BackupInventory inventory = await new BackupInventoryPlanner(Paths()).BuildAsync(
+            new BackupPlanRequest(
+                BackupScope.MetadataOnly,
+                SessionId: null,
+                Include: [BackupComponent.Configuration],
+                Exclude: []),
+            _databasePath,
+            databasePassphrase: string.Empty,
+            CancellationToken.None);
+
+        Assert.Empty(inventory.Files);
+
+        Assert.Contains(
+            inventory.Plan.Components,
+            component => component.Component == BackupComponent.Configuration
+                && component.Status == BackupComponentStatus.Failed
+                && component.Files == 0);
+
+    }
+
+    [Fact]
     public async Task Dynamic_archive_paths_are_normalized_to_unicode_form_c()
     {
 
@@ -597,6 +757,12 @@ public sealed class BackupInventoryPlannerTests : IDisposable
 
         await WriteFileAsync("arcanum.json", "{}");
 
+        await WriteFileAsync("arcanum.preset.json", "{\"presetId\":\"research\"}");
+
+        await WriteFileAsync(
+            "arcanum.preset.rollback.json",
+            "{\"presetId\":\"research\"}");
+
         BackupInventoryPlanner planner = new(Paths());
 
         BackupInventory inventory = await planner.BuildAsync(
@@ -609,17 +775,23 @@ public sealed class BackupInventoryPlannerTests : IDisposable
             databasePassphrase: string.Empty,
             CancellationToken.None);
 
-        BackupInventoryFile settings = Assert.Single(inventory.Files);
+        Assert.Equal(
+            [
+                "configuration/arcanum.json",
+                "configuration/arcanum.preset.json",
+                "configuration/arcanum.preset.rollback.json",
+            ],
+            inventory.Files.Select(static file => file.ArchivePath));
 
-        Assert.Equal(BackupComponent.CompendiumSettings, settings.Component);
-
-        Assert.Equal("configuration/arcanum.json", settings.ArchivePath);
+        Assert.All(
+            inventory.Files,
+            static file => Assert.Equal(BackupComponent.CompendiumSettings, file.Component));
 
         Assert.Contains(
             inventory.Plan.Components,
             component => component.Component == BackupComponent.CompendiumSettings
                 && component.Status == BackupComponentStatus.Complete
-                && component.Files == 1);
+                && component.Files == 3);
 
         Assert.Contains(
             inventory.Plan.Components,

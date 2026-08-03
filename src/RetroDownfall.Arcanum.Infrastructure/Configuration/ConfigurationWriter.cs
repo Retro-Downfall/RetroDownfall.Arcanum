@@ -34,7 +34,14 @@ internal sealed class ConfigurationWriter
 
     internal ArcanumSettings? Latest => Volatile.Read(ref _latest);
 
-    public async Task<Result> WriteAsync(
+    public Task<Result> WriteAsync(
+        ArcanumSettings settings,
+        CancellationToken cancellationToken) =>
+        ArcanumConfigurationTransaction.RunAsync(
+            () => WriteUnderTransactionAsync(settings, cancellationToken),
+            cancellationToken);
+
+    private async Task<Result> WriteUnderTransactionAsync(
         ArcanumSettings settings,
         CancellationToken cancellationToken)
     {
@@ -92,7 +99,18 @@ internal sealed class ConfigurationWriter
     /// replacement. The updater and its validation run while the configuration writer lock is held,
     /// so another partial writer cannot commit between the current snapshot and replacement.
     /// </summary>
-    internal async Task<Result<ArcanumSettings>> UpdateAsync(
+    internal Task<Result<ArcanumSettings>> UpdateAsync(
+        ArcanumSettings fallback,
+        Func<ArcanumSettings, CancellationToken, Task<Result<ArcanumSettings>>> update,
+        CancellationToken cancellationToken) =>
+        ArcanumConfigurationTransaction.RunAsync(
+            () => UpdateUnderTransactionAsync(
+                fallback,
+                update,
+                cancellationToken),
+            cancellationToken);
+
+    private async Task<Result<ArcanumSettings>> UpdateUnderTransactionAsync(
         ArcanumSettings fallback,
         Func<ArcanumSettings, CancellationToken, Task<Result<ArcanumSettings>>> update,
         CancellationToken cancellationToken)
@@ -157,9 +175,47 @@ internal sealed class ConfigurationWriter
         cancellationToken.ThrowIfCancellationRequested();
 
         ArcanumSettings settings = ConfigurationBootstrapper
-            .LoadArcanumSettings(() => fallback);
+            .LoadPersistedArcanumSettings(() => RemoveEnvironmentOverrides(fallback));
 
         return Task.FromResult(settings);
+
+    }
+
+    private static ArcanumSettings RemoveEnvironmentOverrides(ArcanumSettings fallback)
+    {
+
+        ArcanumSettings raw = ConfigurationPathAccessor.Clone(fallback);
+
+        ArcanumSettings defaults = new();
+
+        ConfigurationEnvironmentSnapshot environment =
+            ConfigurationEnvironmentResolver.Resolve(fallback);
+
+        foreach (ConfigurationEnvironmentOverride item in environment.Overrides)
+        {
+
+            if (!item.IsEffective || !ConfigurationPathAccessor.Exists(defaults, item.Path))
+            {
+
+                continue;
+
+            }
+
+            ConfigurationPathUpdate update = ConfigurationPathAccessor.SetCanonicalValue(
+                raw,
+                item.Path,
+                ConfigurationPathAccessor.GetCanonicalValue(defaults, item.Path));
+
+            if (update.IsSuccess)
+            {
+
+                raw = update.Settings!;
+
+            }
+
+        }
+
+        return raw;
 
     }
 
@@ -192,17 +248,30 @@ internal sealed class ConfigurationWriter
             afterReplace: () =>
             {
 
-                SecureFilePermissions.ApplyOwnerOnlyFile(path);
+                try
+                {
 
-                return true;
+                    SecureFilePermissions.ApplyOwnerOnlyFile(path);
+
+                    return true;
+
+                }
+                catch (Exception exception) when (
+                    exception is IOException
+                        or UnauthorizedAccessException
+                        or PlatformNotSupportedException)
+                {
+
+                    return false;
+
+                }
 
             }).ConfigureAwait(false);
 
         if (replaceStatus != AtomicReplaceStatus.Succeeded)
         {
 
-            throw new IOException(
-                $"Atomic configuration replacement did not succeed ({replaceStatus}).");
+            throw new ConfigurationAtomicWriteException(replaceStatus);
 
         }
 
@@ -218,12 +287,30 @@ internal sealed class ConfigurationWriter
             "Failed to write configuration to {ConfigPath}",
             ConfigurationPath());
 
-        return Result.Failure(
-            new Error("Configuration.WriteFailed", exception.Message));
+        string code = exception is ConfigurationAtomicWriteException atomic
+            ? atomic.Status switch
+            {
+                AtomicReplaceStatus.Aborted => "Configuration.WriteAborted",
+                AtomicReplaceStatus.RolledBack => "Configuration.WriteFailed.RolledBack",
+                AtomicReplaceStatus.ReplacedButUnverified =>
+                    "Configuration.WriteFailed.Unverified",
+                _ => "Configuration.WriteFailed",
+            }
+            : "Configuration.WriteFailed";
+
+        return Result.Failure(new Error(code, exception.Message));
 
     }
 
     private static string ConfigurationPath() =>
         Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
+
+    private sealed class ConfigurationAtomicWriteException(AtomicReplaceStatus status)
+        : IOException($"Atomic configuration replacement did not succeed ({status}).")
+    {
+
+        public AtomicReplaceStatus Status { get; } = status;
+
+    }
 
 }

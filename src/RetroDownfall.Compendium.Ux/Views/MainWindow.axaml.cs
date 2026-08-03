@@ -115,6 +115,7 @@ public partial class MainWindow : Window
 
         return section switch
         {
+            ConfigSection.Presets => new PresetsPage(),
             ConfigSection.Host => new HostPage(),
             ConfigSection.Providers => new ProvidersPage(),
             ConfigSection.Daemon => new DaemonPage(),

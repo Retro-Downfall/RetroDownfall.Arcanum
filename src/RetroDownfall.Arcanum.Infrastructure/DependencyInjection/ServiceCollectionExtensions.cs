@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Chronosync;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Configuration.Presets;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Events;
@@ -78,6 +79,47 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IThemeDetector, ThemeDetector>();
 
         return services;
+    }
+
+    /// <summary>
+    /// Registers the shared preset catalog, planner orchestration, complete-candidate validation,
+    /// secure credential-readiness probe, and atomic file persistence used by the CLI and
+    /// Compendium.
+    /// </summary>
+    public static IServiceCollection AddArcanumConfigurationPresets(
+        this IServiceCollection services)
+    {
+
+        services.AddDataProtection()
+            .SetApplicationName("ArcanumCore")
+            .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
+
+        services.TryAddSingleton<IOsCredentialStore>(static _ => new OsCredentialStore());
+
+        services.TryAddSingleton<IWebResearchCredentialStore, WebResearchCredentialStore>();
+
+        services.TryAddSingleton(TimeProvider.System);
+
+        services.TryAddSingleton<ConfigurationValidator>();
+
+        services.TryAddSingleton<ConfigurationWriter>();
+
+        services.TryAddSingleton<ConfigurationPresetPersistenceHooks>();
+
+        services.TryAddSingleton<
+            IConfigurationPresetCandidateValidator,
+            ConfigurationPresetCandidateValidator>();
+
+        services.TryAddSingleton<
+            IConfigurationPresetPersistence,
+            FileConfigurationPresetPersistence>();
+
+        services.TryAddSingleton<
+            IConfigurationPresetService,
+            ConfigurationPresetService>();
+
+        return services;
+
     }
 
     /// <summary>

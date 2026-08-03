@@ -10,6 +10,8 @@ using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Configuration;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -169,27 +171,30 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
 
         }
 
-        AddOptionalFile(
-            BackupComponent.Configuration,
-            Path.Combine(paths.GrimoireDirectory, "arcanum.json"),
-            "configuration/arcanum.json",
-            selected,
-            files,
-            components,
-            cancellationToken);
+        BackupComponent? configurationOwner = selected.Contains(BackupComponent.Configuration)
+            ? BackupComponent.Configuration
+            : selected.Contains(BackupComponent.CompendiumSettings)
+                ? BackupComponent.CompendiumSettings
+                : null;
 
-        if (selected.Contains(BackupComponent.CompendiumSettings)
-            && !selected.Contains(BackupComponent.Configuration))
+        if (configurationOwner is BackupComponent owner)
         {
 
-            AddOptionalFile(
-                BackupComponent.CompendiumSettings,
-                Path.Combine(paths.GrimoireDirectory, "arcanum.json"),
-                "configuration/arcanum.json",
-                selected,
-                files,
-                components,
-                cancellationToken);
+            _ = await ArcanumConfigurationTransaction.RunAsync(
+                    () =>
+                    {
+
+                        AddConfigurationFiles(
+                            owner,
+                            files,
+                            components[owner],
+                            cancellationToken);
+
+                        return Task.FromResult(true);
+
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
 
         }
 
@@ -829,6 +834,138 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 "No state exists for this optional component.");
 
         }
+
+    }
+
+    private void AddConfigurationFiles(
+        BackupComponent component,
+        List<BackupInventoryFile> files,
+        ComponentAccumulator accumulator,
+        CancellationToken cancellationToken)
+    {
+
+        string configuration = Path.Combine(
+            paths.GrimoireDirectory,
+            "arcanum.json");
+
+        string state = Path.Combine(
+            paths.GrimoireDirectory,
+            "arcanum.preset.json");
+
+        string rollback = Path.Combine(
+            paths.GrimoireDirectory,
+            "arcanum.preset.rollback.json");
+
+        string journal = Path.Combine(
+            paths.GrimoireDirectory,
+            "arcanum.preset.journal.json");
+
+        if (File.Exists(journal))
+        {
+
+            accumulator.Set(
+                BackupComponentStatus.Failed,
+                "An interrupted preset transaction must be recovered before configuration backup.");
+
+            return;
+
+        }
+
+        if (!File.Exists(configuration))
+        {
+
+            accumulator.Set(
+                BackupComponentStatus.Unavailable,
+                "No state exists for this optional component.");
+
+            return;
+
+        }
+
+        int configurationStart = files.Count;
+
+        AddCandidate(
+            component,
+            configuration,
+            BackupArchivePaths.Configuration,
+            files,
+            accumulator,
+            cancellationToken);
+
+        if (files.Count != configurationStart + 1)
+        {
+
+            return;
+
+        }
+
+        bool stateExists = File.Exists(state);
+
+        bool rollbackExists = File.Exists(rollback);
+
+        if (!stateExists && !rollbackExists)
+        {
+
+            return;
+
+        }
+
+        if (!stateExists || !rollbackExists)
+        {
+
+            accumulator.Set(
+                BackupComponentStatus.Failed,
+                "Preset state and rollback must both exist before configuration backup.");
+
+            return;
+
+        }
+
+        int sidecarStart = files.Count;
+
+        AddCandidate(
+            component,
+            state,
+            BackupArchivePaths.ConfigurationPresetState,
+            files,
+            accumulator,
+            cancellationToken);
+
+        AddCandidate(
+            component,
+            rollback,
+            BackupArchivePaths.ConfigurationPresetRollback,
+            files,
+            accumulator,
+            cancellationToken);
+
+        bool pairCaptured = files.Count == sidecarStart + 2
+            && string.Equals(
+                files[sidecarStart].Sha256,
+                files[sidecarStart + 1].Sha256,
+                StringComparison.Ordinal);
+
+        if (pairCaptured)
+        {
+
+            return;
+
+        }
+
+        for (int index = files.Count - 1; index >= sidecarStart; index--)
+        {
+
+            BackupInventoryFile removed = files[index];
+
+            files.RemoveAt(index);
+
+            accumulator.Remove(removed.Size);
+
+        }
+
+        accumulator.Set(
+            BackupComponentStatus.Failed,
+            "Preset state and rollback were linked, changed, or did not describe the same committed generation.");
 
     }
 
@@ -1602,6 +1739,15 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
                 Detail = "Included through the typed component catalog.";
 
             }
+
+        }
+
+        public void Remove(long bytes)
+        {
+
+            Files = checked(Files - 1);
+
+            Bytes = checked(Bytes - bytes);
 
         }
 

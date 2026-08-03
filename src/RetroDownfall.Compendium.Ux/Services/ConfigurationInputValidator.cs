@@ -1,42 +1,12 @@
-using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
+using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Compendium.Ux.Services;
 
 /// <summary>
 /// Validates user input for configuration fields to prevent security issues.
 /// </summary>
-public static partial class ConfigurationInputValidator
+public static class ConfigurationInputValidator
 {
-    // Environment variable names must be portable (POSIX standard):
-    // - Start with letter or underscore
-    // - Contain only letters, digits, and underscores
-    // - Case-sensitive but we enforce uppercase for consistency
-    [GeneratedRegex(@"^[A-Z_][A-Z0-9_]*$", RegexOptions.Compiled)]
-    private static partial Regex EnvironmentVariableNameRegex();
-
-    // Common sensitive environment variables that should not be referenced
-    private static readonly HashSet<string> SensitiveEnvironmentVariables = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "PATH",
-        "HOME",
-        "USER",
-        "SHELL",
-        "PASSWORD",
-        "SECRET",
-        "TOKEN",
-        "API_KEY",
-        "PRIVATE_KEY",
-        "CREDENTIALS",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_ACCESS_KEY_ID",
-        "AZURE_CLIENT_SECRET",
-        "GITHUB_TOKEN",
-        "GITLAB_TOKEN",
-        "DATABASE_URL",
-        "CONNECTION_STRING"
-    };
-
     /// <summary>
     /// Validates an environment variable name for security and portability.
     /// </summary>
@@ -52,15 +22,10 @@ public static partial class ConfigurationInputValidator
             return true; // Empty is allowed (will use default)
         }
 
-        if (!EnvironmentVariableNameRegex().IsMatch(name))
+        if (!EnvironmentCredentialResolver.IsValidEnvironmentVariableName(name.Trim()))
         {
-            error = $"Environment variable name '{name}' is not portable. Use only uppercase letters, digits, and underscores. Must start with a letter or underscore.";
-            return false;
-        }
+            error = $"Environment variable name '{name}' is not portable. Use an ASCII letter or underscore first, followed by ASCII letters, digits, or underscores.";
 
-        if (SensitiveEnvironmentVariables.Contains(name))
-        {
-            error = $"Environment variable '{name}' is a sensitive system variable and should not be referenced directly.";
             return false;
         }
 
@@ -82,6 +47,13 @@ public static partial class ConfigurationInputValidator
             return true; // Empty is allowed
         }
 
+        if (string.Equals(origin.Trim(), "*", StringComparison.Ordinal))
+        {
+
+            return true;
+
+        }
+
         if (!Uri.TryCreate(origin, UriKind.Absolute, out Uri? uri))
         {
             error = $"CORS origin '{origin}' is not a valid absolute URL.";
@@ -91,13 +63,6 @@ public static partial class ConfigurationInputValidator
         if (uri.Scheme != "http" && uri.Scheme != "https")
         {
             error = $"CORS origin '{origin}' must use http or https scheme.";
-            return false;
-        }
-
-        // Reject wildcards and overly permissive origins
-        if (origin.Contains('*'))
-        {
-            error = $"CORS origin '{origin}' contains wildcards which are not allowed for security reasons.";
             return false;
         }
 
@@ -132,53 +97,4 @@ public static partial class ConfigurationInputValidator
         return errors.Count == 0;
     }
 
-    /// <summary>
-    /// Validates a file path for security issues.
-    /// </summary>
-    /// <param name="path">The file path to validate.</param>
-    /// <param name="error">Error message if validation fails.</param>
-    /// <returns>True if valid, false otherwise.</returns>
-    public static bool TryValidatePath(string? path, out string? error)
-    {
-        error = null;
-
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return true; // Empty is allowed
-        }
-
-        // Check for directory traversal attempts
-        if (path.Contains("..") || path.Contains("~"))
-        {
-            error = "Path contains invalid characters (.. or ~)";
-            return false;
-        }
-
-        // Check for null bytes
-        if (path.Contains('\0'))
-        {
-            error = "Path contains null bytes";
-            return false;
-        }
-
-        // Check for invalid characters on Windows
-        if (OperatingSystem.IsWindows())
-        {
-            char[] invalidChars = Path.GetInvalidPathChars();
-            if (path.IndexOfAny(invalidChars) >= 0)
-            {
-                error = "Path contains invalid characters";
-                return false;
-            }
-        }
-
-        // Check for overly long paths
-        if (path.Length > 1024)
-        {
-            error = "Path is too long (maximum 1024 characters)";
-            return false;
-        }
-
-        return true;
-    }
 }

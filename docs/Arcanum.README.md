@@ -142,7 +142,7 @@ architecture. See
 | **`Api.DevHost`** | Debug-only F5 host (not shipped) | Mirrors `serve` wiring without Spectre | `PublishAot` + `IsAotCompatible` (analysis signal; not shipped) |
 | **`tests/RetroDownfall.Arcanum.Tests`** | xUnit test suite (not shipped) | MCP, security, config, workspace policy, SQLCipher Grimoire, and API-host integration tests | — |
 | **`tests/RetroDownfall.Compendium.Tests`** (assembly `RetroDownfall.Compendium.Ux.Tests`) | Compendium smoke tests (not shipped) | Round-trip read/write of factual configuration and credential references | — |
-| **`Compendium.Ux`** | Desktop configuration editor (Avalonia) | Visual editor for the 12 retained configuration sections; polished Host/Providers/Daemon/CLI pages plus descriptor-driven pages that refresh after asynchronous loads without rebuild-time file I/O; reuses Core models and edits credential references, never secret values | — |
+| **`Compendium.Ux`** | Desktop configuration editor (Avalonia) | Visual editor for the 13 retained configuration sections; polished Host/Providers/Daemon/CLI/Presets pages plus descriptor-driven pages that refresh after asynchronous loads without rebuild-time file I/O; reuses Core models and edits credential references, never secret values | — |
 | **`TheForge.Core` / `TheForge.Ux`** | Desktop Inference IDE (Avalonia) | HTTP-only Arcanum client with bounded buffered/NDJSON/SSE reads and atomic downloads; Campaign/Spell/Prompt/Session workbench, Wards, MCP, Trials, diagnostics | — |
 | **`tests/RetroDownfall.TheForge.Tests`** | Forge desktop tests (not shipped) | Client contracts, settings, view models, and source-generated JSON | — |
 
@@ -380,6 +380,78 @@ binding; there are no compatibility aliases or silent ignores.
 | `Retention` | Opt-in sweep scheduling, bounded/checkpointed execution, typed per-class rules, accounting floor, and protected-session holds. |
 | `Daemon` | Unseen Servant schedules and concurrency. |
 | `Cli` | Theme and mana-bar preference. |
+
+### Safe onboarding presets
+
+`arcanum preset` offers six immutable, versioned **partial overlays**. A preset owns only the
+listed paths; every provider, secret reference, integration, budget, schedule, and other setting
+outside that list remains operator-owned. Presets are transparent configuration changes, not
+hidden runtime modes or a second configuration model.
+
+| v1 preset | Owned configuration |
+|-----------|---------------------|
+| **General Assistant** (`general-assistant`) | Attachments on; Saga, Saga extraction, and memory management off; Ward and unattended auto-deny on; unsandboxed tool children off. |
+| **Coding Workspace** (`coding-workspace`) | Workspace checks and workspace file writes on; Ward and unattended auto-deny on; unsandboxed tool children off. A default workspace root is a prerequisite; semantic indexing remains optional. |
+| **Research** (`research`) | Native web browsing on only when its credential prerequisite is satisfied; Ward and unattended auto-deny on; unsandboxed tool children off. |
+| **Private/Offline** (`private-offline`) | Loopback host binding; web browsing and enterprise telemetry off; Ward and unattended auto-deny on; unsandboxed tool children off. A loopback inference provider is required, and authored MCP/integration configuration is not silently erased. |
+| **Automation** (`automation`) | Ward, unattended mode, and unattended auto-deny on; unsandboxed tool children off. A configured provider/model and an already enabled positive daily budget are required; the preset never invents or enlarges a budget. |
+| **Advanced/Custom** (`advanced-custom`) | No owned paths and no automatic changes; hands control directly to `arcanum config` or Compendium. |
+
+Use the same catalog and planner from either CLI or Compendium:
+
+```bash
+arcanum preset list
+arcanum preset show coding-workspace
+arcanum preset diff coding-workspace
+arcanum preset apply coding-workspace
+arcanum preset reset
+```
+
+`show` explains the exact owned settings, security/network disclosures, prerequisites, first
+essential choice, deferred advanced features, and next command. Recommendations are executable;
+for example, Coding Workspace uses
+`arcanum run --workspace . "Inspect this workspace and summarize it."`, including the required
+prompt. `diff` is read-only and reports
+persisted, effective, and proposed persisted values separately, including the current source,
+environment-variable name (never its value), ownership, prerequisite status, and restart impact.
+An environment override can therefore make a persisted value change while leaving the effective
+value unchanged; the output says so instead of claiming the preset changed live behavior. Only an
+effective override that contradicts a preset-owned safety or privacy boundary blocks Apply. A
+benign feature mask remains authoritative, stays visible as effective drift, and does not make the
+plan inapplicable. The secure research-credential store is probed only while diffing or applying
+the Research preset; other preset plans, listing/state inspection, and reset do not touch it.
+
+Application first builds and validates one complete candidate, rejects missing required
+prerequisites, checks for a concurrent configuration change, and enters the same current-user
+cross-process transaction coordinator used by every canonical configuration write, including CLI
+and Compendium writers. It creates owner-only provenance and rollback sidecars and atomically replaces
+`arcanum.json`. Provenance records the preset ID/version, timestamp, owned-value hash, baseline, and
+applied values separately from effective configuration. Sidecar reads are bounded and no-follow;
+provenance must exactly match a catalog preset's version, owned paths, canonical values, hashes,
+and paired rollback state before it is trusted.
+
+No provenance means **Custom**; matching owned persisted and effective values mean **Active**; any
+later owned-value difference means **Drifted**. Reapplying the same version and owned values is
+idempotent. `reset` restores a baseline value only when it still equals the preset-applied value,
+preserves user drift and every unrelated setting, then reports both counts. The prepared journal
+contains only preset-owned before/after values and hashes plus previous/next provenance—not a full
+configuration copy. Recovery conditionally reverses only values that still match the interrupted
+write, so unrelated or later manual edits win instead of being overwritten.
+
+Every successful plan ends with provider/model, workspace/campaign, enabled memory sources, tool
+policy, privacy state, and the next recommended command. Compendium keeps that selected-preset
+projection separate from the latest inspected current summary; an inspection failure is
+`Unavailable`, never a stale active/drifted label. The five workflow presets explicitly retain
+Ward, unattended auto-deny, and the unsandboxed-child safe default; Advanced/Custom owns no
+paths and changes nothing. Sanctum continues to enforce the operator's configured workspace
+boundaries. No preset weakens these boundaries or silently enables `ListenAny`, unsandboxed tool
+children, untrusted workspace MCP, destructive memory operations, Forbidden Arts bypasses, or
+unlimited research/subagent behavior. Presets do not add retry, timeout, loop-count, or other
+arbitrary tuning knobs.
+
+This command family is the reusable preset service for guided onboarding. The interactive
+`arcanum setup` wizard remains separate work tracked by issue #19; it is not implemented or
+silently simulated by `preset apply`.
 
 Turn mechanics, retries/fallback, structured-output correction, MCP transport limits, filesystem and
 storage envelopes, session/fork limits, heartbeats, and other physical safeguards are code-owned
@@ -637,7 +709,13 @@ not an escape hatch for arbitrary host paths, and exclusion wins if a component 
 `compendium-settings` and `configuration` share `arcanum.json`: selecting only
 `compendium-settings` still captures it as Compendium-owned state even when `configuration` is
 excluded, while selecting both stores one configuration entry and records Compendium as a complete
-zero-entry alias.
+zero-entry alias. The same configuration inventory includes committed
+`arcanum.preset.json`/`arcanum.preset.rollback.json` sidecars only as an exact matching pair and only
+when no preset recovery journal is present. An incomplete/mismatched pair makes the component
+incomplete; a pending journal prevents capture of the possibly mid-transaction configuration until
+preset recovery completes. The transient `arcanum.preset.journal.json` is never backed up.
+Verification accepts the paired sidecars as authenticated configuration entries; a coordinated
+recovery installs them beside their matching `arcanum.json`, never by recreating the journal.
 `specific-session` requires `--session-id`; other scopes may record it as provenance without
 narrowing their inventory. `trusted-mcp-workspace-metadata`, `audit-logs`,
 `guardrail-logs`, and `master-api-key` are excluded by default and require explicit inclusion. A
@@ -1323,7 +1401,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `use clear [scope]`, `context current` | Clear saved context or show effective values, sources, warnings, and the state-file path. |
 | `context inspect [prompt]`, `context tools`, `context sources`, `mana [prompt]` | Read-only production context preview. All accept `--show-content`, `--no-retrieval`, `--campaign`, `--workspace`, `--model`, `--session`, recursive `--no-context`, and `--json`. |
 | `look` | Print the Eye of the World workspace snapshot (no HTTP). |
-| `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer / File Encryption panels) + API health probe, including key availability, encrypted/legacy/corrupt blob counts, and the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0 unless another check fails). Use `--fix-permissions` to apply owner-only permissions to the Grimoire database, `arcanum.json`, and secret store. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
+| `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer / File Encryption panels) + API health probe, including key availability, encrypted/legacy/corrupt blob counts, and the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0 unless another check fails). Use `--fix-permissions` to apply owner-only permissions to configuration, preset state and recovery sidecars, the Grimoire database, and secret stores. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
 | `watch session\|apprentice\|logs\|mcp\|daemons\|health` | Follow the six authenticated live sources with shared UTC/color/heartbeat/`[DONE]`/Ctrl+C/NDJSON behavior. Repeat free-form `--event-type` and `--tool` filters; `watch logs` adds `--level`/`--category`/`--search`; `watch session` adds `--since`; `watch health` adds `--interval` (default 5). `--reconnect` is opt-in, indefinitely retries unexpected SSE disconnects with capped backoff, and always warns of possible gaps/no replay guarantee. |
 | `backup create\|inspect\|verify\|list` | Plan/create an owner-only encrypted `.arcbackup`, read its safe outer header or authenticated manifest, verify every entry and included Grimoire snapshot, or list archive headers without decryption. Create uses typed scopes/components, online SQLite backup, hidden/environment-reference/inherited-descriptor passphrase input, dry-run, and explicit no-clobber/overwrite behavior. No restore command is added. |
 | `data status\|retention show\|retention set\|prune\|delete-session\|delete-attachment\|reset-memory\|factory-reset` | Inspect typed retained stores, configure per-class policy, preview the exact bounded dependency plan, or perform a confirmed server-owned deletion. `prune` requires exactly one of `--dry-run`/`--apply`; every mutation requires confirmation or `--yes`. Factory reset preserves external backups, configuration, security/key material, and data outside the selected root. |

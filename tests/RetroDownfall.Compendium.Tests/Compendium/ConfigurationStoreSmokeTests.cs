@@ -251,6 +251,204 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
 
     }
 
+    [Fact]
+
+    public async Task WriteAsync_does_not_mutate_until_the_shared_transaction_runs_operation()
+    {
+
+        string configPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.json");
+
+        _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        await File.WriteAllTextAsync(
+            configPath,
+            """
+            {
+              "Arcanum": {
+                "host": {
+                  "port": 5001
+                }
+              }
+            }
+            """);
+
+        int transactionCalls = 0;
+
+        using ArcanumConfigurationStore store = new(
+            enableWatcher: false,
+            transactionRunner: (_, _) =>
+            {
+
+                transactionCalls++;
+
+                return Task.FromResult(
+                    new ConfigurationWriteResult(false, [], "Transaction held."));
+
+            });
+
+        ConfigurationWriteResult result = await store.WriteAsync(
+            new ArcanumSettings
+            {
+
+                Host = new HostSettings { Port = 6124 },
+
+            },
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+
+        Assert.Equal("Transaction held.", result.ErrorMessage);
+
+        Assert.Equal(1, transactionCalls);
+
+        string unchanged = await File.ReadAllTextAsync(configPath);
+
+        Assert.Contains("5001", unchanged, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("6124", unchanged, StringComparison.Ordinal);
+
+        Assert.Empty(Directory.EnumerateFiles(
+            ArcanumPaths.GrimoireDirectory,
+            ".arcanum.*.tmp"));
+
+    }
+
+    [Fact]
+
+    public async Task WriteAsync_rejects_a_competing_change_after_the_last_read()
+    {
+
+        string configPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.json");
+
+        _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        await File.WriteAllTextAsync(
+            configPath,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        using ArcanumConfigurationStore store = new(
+            enableWatcher: false,
+            transactionRunner: async (operation, _) =>
+            {
+
+                await File.WriteAllTextAsync(
+                    configPath,
+                    """{"Arcanum":{"host":{"port":6124}}}""");
+
+                return await operation();
+
+            });
+
+        _ = await store.ReadAsync(CancellationToken.None);
+
+        ConfigurationWriteResult result = await store.WriteAsync(
+            new ArcanumSettings
+            {
+
+                Host = new HostSettings { Port = 7333 },
+
+            },
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+
+        Assert.Contains(
+            "changed on disk",
+            result.ErrorMessage,
+            StringComparison.OrdinalIgnoreCase);
+
+        string retained = await File.ReadAllTextAsync(configPath);
+
+        Assert.Contains("6124", retained, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("7333", retained, StringComparison.Ordinal);
+
+        Assert.Empty(Directory.EnumerateFiles(
+            ArcanumPaths.GrimoireDirectory,
+            ".arcanum.*.tmp"));
+
+    }
+
+    [Fact]
+
+    public async Task Mutation_reload_acknowledges_atomic_replacement_without_hiding_later_external_edit()
+    {
+
+        string configPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.json");
+
+        _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        await File.WriteAllTextAsync(
+            configPath,
+            """
+            {
+              "Arcanum": {
+                "host": {
+                  "port": 5001
+                }
+              }
+            }
+            """);
+
+        using ArcanumConfigurationStore store = new(enableWatcher: false);
+
+        int externalChanges = 0;
+
+        store.ExternalChange += (_, _) => externalChanges++;
+
+        _ = await store.ReadAsync(CancellationToken.None);
+
+        string replacementPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            ".preset-replacement.tmp");
+
+        await File.WriteAllTextAsync(
+            replacementPath,
+            """
+            {
+              "Arcanum": {
+                "host": {
+                  "port": 6124
+                }
+              }
+            }
+            """);
+
+        File.Move(replacementPath, configPath, overwrite: true);
+
+        ArcanumSettings reloadedAfterMutation = await store.ReadAsync(
+            CancellationToken.None);
+
+        Assert.Equal(6124, reloadedAfterMutation.Host.Port);
+
+        await store.ProcessObservedChangeAsync(CancellationToken.None);
+
+        Assert.Equal(0, externalChanges);
+
+        await File.WriteAllTextAsync(
+            configPath,
+            """
+            {
+              "Arcanum": {
+                "host": {
+                  "port": 7333
+                }
+              }
+            }
+            """);
+
+        await store.ProcessObservedChangeAsync(CancellationToken.None);
+
+        Assert.Equal(1, externalChanges);
+
+    }
+
     public void Dispose()
     {
 

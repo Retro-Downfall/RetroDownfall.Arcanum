@@ -24,18 +24,57 @@ public static class ConfigurationBootstrapper
 
         builder.AddJsonFile(jsonPath, optional: true, reloadOnChange: false);
 
+        ArcanumSettings persisted = LoadPersistedArcanumSettingsFile(jsonPath);
+
+        ConfigurationEnvironmentSnapshot environment =
+            ConfigurationEnvironmentResolver.Resolve(persisted);
+
+        Dictionary<string, string?> projected = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (ConfigurationEnvironmentOverride item in environment.Overrides)
+        {
+
+            if (!item.IsEffective)
+            {
+
+                continue;
+
+            }
+
+            string canonical = ConfigurationPathAccessor.GetCanonicalValue(
+                environment.EffectiveSettings,
+                item.Path);
+
+            projected[$"Arcanum:{item.Path.Replace('.', ':')}"] =
+                ConfigurationValue(canonical);
+
+        }
+
+        if (projected.Count > 0)
+        {
+
+            builder.AddInMemoryCollection(projected);
+
+        }
+
         return builder;
 
     }
 
     public static void ValidateArcanumConfigurationFile(string jsonPath)
     {
-        _ = LoadArcanumSettingsFile(jsonPath);
+        _ = LoadPersistedArcanumSettingsFile(jsonPath);
     }
 
     public static ArcanumSettings LoadArcanumSettings(
         Func<ArcanumSettings>? fallbackFactory = null) =>
         LoadArcanumSettingsFile(
+            Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json"),
+            fallbackFactory);
+
+    public static ArcanumSettings LoadPersistedArcanumSettings(
+        Func<ArcanumSettings>? fallbackFactory = null) =>
+        LoadPersistedArcanumSettingsFile(
             Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json"),
             fallbackFactory);
 
@@ -63,6 +102,19 @@ public static class ConfigurationBootstrapper
     }
 
     internal static ArcanumSettings LoadArcanumSettingsFile(
+        string jsonPath,
+        Func<ArcanumSettings>? fallbackFactory = null)
+    {
+
+        ArcanumSettings persisted = LoadPersistedArcanumSettingsFile(
+            jsonPath,
+            fallbackFactory);
+
+        return ConfigurationEnvironmentResolver.Resolve(persisted).EffectiveSettings;
+
+    }
+
+    internal static ArcanumSettings LoadPersistedArcanumSettingsFile(
         string jsonPath,
         Func<ArcanumSettings>? fallbackFactory = null)
     {
@@ -124,6 +176,20 @@ public static class ConfigurationBootstrapper
             throw new InvalidOperationException($"arcanum.json is invalid: {ex.Message} ({jsonPath})", ex);
 
         }
+
+    }
+
+    private static string? ConfigurationValue(string canonical)
+    {
+
+        using JsonDocument document = JsonDocument.Parse(canonical);
+
+        return document.RootElement.ValueKind switch
+        {
+            JsonValueKind.String => document.RootElement.GetString(),
+            JsonValueKind.Null => null,
+            _ => document.RootElement.GetRawText(),
+        };
 
     }
 

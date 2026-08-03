@@ -39,6 +39,12 @@
   </ItemGroup>
 
   <ItemGroup>
+
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Update="Microsoft.Bcl.Memory" Version="10.0.10" />
   </ItemGroup>
 

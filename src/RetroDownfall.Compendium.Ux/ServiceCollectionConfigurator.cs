@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Compendium.Ux.Services;
 using RetroDownfall.Compendium.Ux.ViewModels;
 using RetroDownfall.Compendium.Ux.Views;
@@ -15,6 +16,8 @@ internal static class ServiceCollectionConfigurator
         ServiceCollection services = new();
 
         services.AddLogging(builder => builder.AddDebug());
+
+        services.AddArcanumConfigurationPresets();
 
         services.AddSingleton<IArcanumConfigurationStore, ArcanumConfigurationStore>();
 

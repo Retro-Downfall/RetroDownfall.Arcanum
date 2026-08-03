@@ -26,6 +26,42 @@ public sealed class BackupManifestValidationTests
 
     }
 
+    [Fact]
+    public void ValidateManifest_AcceptsCommittedPresetSidecarsAsConfigurationEntries()
+    {
+
+        BackupManifestEntry[] entries =
+        [
+            Entry(
+                "configuration/arcanum.json",
+                size: 4,
+                BackupComponent.Configuration),
+            Entry(
+                "configuration/arcanum.preset.json",
+                size: 5,
+                BackupComponent.Configuration),
+            Entry(
+                "configuration/arcanum.preset.rollback.json",
+                size: 6,
+                BackupComponent.Configuration),
+        ];
+
+        BackupManifest manifest = Manifest() with
+        {
+
+            Components = ComponentsFor(entries),
+
+            Entries = entries,
+
+        };
+
+        BackupArchiveCodec.ValidateManifest(
+            manifest,
+            Header(),
+            Salt);
+
+    }
+
     [Theory]
     [InlineData(BackupScope.Full)]
     [InlineData(BackupScope.SpecificSession)]

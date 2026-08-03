@@ -78,6 +78,14 @@ internal static class BackupArchivePaths
 
     public const string GrimoireKdf = "grimoire/arcanum.db.kdf";
 
+    public const string Configuration = "configuration/arcanum.json";
+
+    public const string ConfigurationPresetState =
+        "configuration/arcanum.preset.json";
+
+    public const string ConfigurationPresetRollback =
+        "configuration/arcanum.preset.rollback.json";
+
     public const string PortableRecoveryKeys = "recovery/portable-keys.json";
 
     public const string MasterApiKey = "secrets/master-api-key.txt";

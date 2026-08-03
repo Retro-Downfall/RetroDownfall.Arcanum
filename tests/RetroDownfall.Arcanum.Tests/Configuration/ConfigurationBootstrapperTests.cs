@@ -1,12 +1,23 @@
+using Microsoft.Extensions.Configuration;
+
+using RetroDownfall.Arcanum.Cli.Commands;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
+
+[Collection("ProcessEnvironment")]
 
 public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 {
 
     private TempWorkspace _workspace = null!;
+
+    private string? _originalTestHome;
 
     public async Task InitializeAsync()
     {
@@ -15,10 +26,21 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
 
         await _workspace.InitializeAsync();
 
+        _originalTestHome = global::System.Environment.GetEnvironmentVariable(
+            "ARCANUM_TEST_HOME");
+
+        global::System.Environment.SetEnvironmentVariable(
+            "ARCANUM_TEST_HOME",
+            _workspace.Root);
+
     }
 
     public async Task DisposeAsync()
     {
+
+        global::System.Environment.SetEnvironmentVariable(
+            "ARCANUM_TEST_HOME",
+            _originalTestHome);
 
         await _workspace.DisposeAsync();
 
@@ -152,6 +174,79 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
             ConfigurationBootstrapper.LoadArcanumSettingsFile(path);
 
         Assert.Equal(6123, settings.Host.Port);
+    }
+
+    [Fact]
+
+    public void LoadArcanumSettingsFile_applies_documented_general_environment_overrides()
+    {
+
+        const string variable = "ARCANUM_Arcanum__Host__Port";
+
+        string? original = global::System.Environment.GetEnvironmentVariable(variable);
+
+        string path = Path.Combine(_workspace.Root, "environment-layered-arcanum.json");
+
+        File.WriteAllText(
+            path,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        try
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, "6124");
+
+            ArcanumSettings settings =
+                ConfigurationBootstrapper.LoadArcanumSettingsFile(path);
+
+            Assert.Equal(6124, settings.Host.Port);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, original);
+
+        }
+
+    }
+
+    [Fact]
+
+    public void AddArcanumConfiguration_projects_general_overrides_for_listener_configuration()
+    {
+
+        const string variable = "ARCANUM_Arcanum__Host__Port";
+
+        string? original = global::System.Environment.GetEnvironmentVariable(variable);
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(
+            ArcanumPaths.ConfigurationFile,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        try
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, "6124");
+
+            ConfigurationManager configuration = new();
+
+            configuration.AddArcanumConfiguration();
+
+            Assert.Equal("6124", configuration["Arcanum:Host:Port"]);
+
+            Assert.Equal(6124, ServeCommand.ReadConfiguredHostPort(configuration));
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(variable, original);
+
+        }
+
     }
 
     [Fact]

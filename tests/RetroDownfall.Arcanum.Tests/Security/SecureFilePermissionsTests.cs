@@ -10,10 +10,18 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
+[Collection("ProcessEnvironment")]
+
 public sealed class SecureFilePermissionsTests : IAsyncLifetime
 {
 
     private TempWorkspace _temp = null!;
+
+    private string? _originalDotnetEnvironment;
+
+    private string? _originalAspNetCoreEnvironment;
+
+    private string? _originalTestHome;
 
     public async Task InitializeAsync()
     {
@@ -22,12 +30,134 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
 
         await _temp.InitializeAsync();
 
+        _originalDotnetEnvironment =
+            global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+        _originalAspNetCoreEnvironment =
+            global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
+        _originalTestHome =
+            global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Testing");
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _temp.Root);
+
     }
 
     public async Task DisposeAsync()
     {
 
+        global::System.Environment.SetEnvironmentVariable(
+            "DOTNET_ENVIRONMENT",
+            _originalDotnetEnvironment);
+
+        global::System.Environment.SetEnvironmentVariable(
+            "ASPNETCORE_ENVIRONMENT",
+            _originalAspNetCoreEnvironment);
+
+        global::System.Environment.SetEnvironmentVariable(
+            "ARCANUM_TEST_HOME",
+            _originalTestHome);
+
         await _temp.DisposeAsync();
+
+    }
+
+    [Fact]
+    public void ApplyOwnerOnlyToSensitivePaths_restricts_configuration_preset_sidecars()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        string[] paths =
+        [
+            ArcanumPaths.ConfigurationPresetStateFile,
+            ArcanumPaths.ConfigurationPresetRollbackFile,
+            ArcanumPaths.ConfigurationPresetJournalFile,
+        ];
+
+        foreach (string path in paths)
+        {
+
+            File.WriteAllText(path, "{}");
+
+            File.SetUnixFileMode(
+                path,
+                UnixFileMode.UserRead
+                | UnixFileMode.UserWrite
+                | UnixFileMode.GroupRead
+                | UnixFileMode.OtherRead);
+
+        }
+
+        SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths();
+
+        foreach (string path in paths)
+        {
+
+            Assert.Equal(
+                UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                File.GetUnixFileMode(path));
+
+        }
+
+    }
+
+    [Fact]
+    public void RunStartupPermissionSelfCheck_warns_for_configuration_preset_sidecars()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        string[] paths =
+        [
+            ArcanumPaths.ConfigurationPresetStateFile,
+            ArcanumPaths.ConfigurationPresetRollbackFile,
+            ArcanumPaths.ConfigurationPresetJournalFile,
+        ];
+
+        foreach (string path in paths)
+        {
+
+            File.WriteAllText(path, "{}");
+
+            File.SetUnixFileMode(
+                path,
+                UnixFileMode.UserRead
+                | UnixFileMode.UserWrite
+                | UnixFileMode.GroupRead);
+
+        }
+
+        CapturingLogger logger = new();
+
+        SecureFilePermissions.RunStartupPermissionSelfCheck(logger, []);
+
+        foreach (string path in paths)
+        {
+
+            Assert.Contains(
+                logger.Warnings,
+                warning => warning.Message.Contains(path, StringComparison.Ordinal));
+
+        }
 
     }
 

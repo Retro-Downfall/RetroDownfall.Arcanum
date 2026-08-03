@@ -133,6 +133,22 @@ public sealed class BackupServiceTests : IDisposable
 
         await File.WriteAllTextAsync(configurationPath, "{}");
 
+        string presetStatePath = Path.Combine(
+            paths.GrimoireDirectory,
+            "arcanum.preset.json");
+
+        string presetRollbackPath = Path.Combine(
+            paths.GrimoireDirectory,
+            "arcanum.preset.rollback.json");
+
+        await File.WriteAllTextAsync(
+            presetStatePath,
+            "{\"presetId\":\"research\"}");
+
+        await File.WriteAllTextAsync(
+            presetRollbackPath,
+            "{\"presetId\":\"research\"}");
+
         List<string> payloadPaths = [];
 
         List<string> extractionPaths = [];
@@ -178,6 +194,14 @@ public sealed class BackupServiceTests : IDisposable
 
         Assert.Equal(BackupCreateStatus.Complete, result.Status);
 
+        Assert.Equal(
+            [
+                "configuration/arcanum.json",
+                "configuration/arcanum.preset.json",
+                "configuration/arcanum.preset.rollback.json",
+            ],
+            result.Manifest?.Entries.Select(static entry => entry.Path));
+
         string payloadPath = Path.GetFullPath(
             Assert.Single(payloadPaths));
 
@@ -207,6 +231,10 @@ public sealed class BackupServiceTests : IDisposable
         Assert.True(File.Exists(archive));
 
         Assert.True(File.Exists(configurationPath));
+
+        Assert.True(File.Exists(presetStatePath));
+
+        Assert.True(File.Exists(presetRollbackPath));
 
     }
 

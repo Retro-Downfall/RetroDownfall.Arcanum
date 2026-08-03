@@ -20,6 +20,8 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
     private string? _originalTestHome;
 
+    private string? _originalPortOverride;
+
     public async Task InitializeAsync()
     {
 
@@ -32,6 +34,9 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
         _originalAspNetCoreEnvironment = global::System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
 
         _originalTestHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        _originalPortOverride = global::System.Environment.GetEnvironmentVariable(
+            "ARCANUM_Arcanum__Host__Port");
 
         global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
 
@@ -54,6 +59,10 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
         global::System.Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", _originalAspNetCoreEnvironment);
 
         global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _originalTestHome);
+
+        global::System.Environment.SetEnvironmentVariable(
+            "ARCANUM_Arcanum__Host__Port",
+            _originalPortOverride);
 
         await _workspace.DisposeAsync();
 
@@ -213,6 +222,8 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
         Assert.True(result.IsFailure);
 
+        Assert.Equal("Configuration.WriteAborted", result.Error.Code);
+
         Assert.Equal(originalBytes, await File.ReadAllBytesAsync(configPath));
 
         Assert.Equal(originalBytes, await File.ReadAllBytesAsync(aliasPath));
@@ -289,6 +300,62 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
             StringComparison.OrdinalIgnoreCase);
 
         Assert.Equal(originalLength, new FileInfo(configPath).Length);
+
+    }
+
+    [Fact]
+
+    public async Task UpdateAsync_does_not_persist_environment_values_from_a_missing_file_fallback()
+    {
+
+        global::System.Environment.SetEnvironmentVariable(
+            "ARCANUM_Arcanum__Host__Port",
+            "6124");
+
+        ArcanumSettings configured = new()
+        {
+
+            Providers =
+            [
+                new ProviderSettings
+                {
+
+                    Name = "local",
+
+                    Models = ["local-model"],
+
+                },
+            ],
+
+        };
+
+        ArcanumSettings effectiveFallback = ConfigurationEnvironmentResolver
+            .Resolve(configured)
+            .EffectiveSettings;
+
+        Assert.Equal(6124, effectiveFallback.Host.Port);
+
+        Result<ArcanumSettings> result = await CreateWriter().UpdateAsync(
+            effectiveFallback,
+            static current => Result<ArcanumSettings>.Success(
+                current with
+                {
+
+                    Cli = current.Cli with { ShowManaBar = false },
+
+                }),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        ArcanumSettings persisted = ConfigurationBootstrapper
+            .LoadPersistedArcanumSettings();
+
+        Assert.Equal(5001, persisted.Host.Port);
+
+        Assert.False(persisted.Cli.ShowManaBar);
+
+        Assert.Equal("local", Assert.Single(persisted.Providers).Name);
 
     }
 

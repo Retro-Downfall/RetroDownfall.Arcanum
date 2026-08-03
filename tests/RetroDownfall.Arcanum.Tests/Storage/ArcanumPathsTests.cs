@@ -29,6 +29,29 @@ public sealed class ArcanumPathsTests
     }
 
     [Fact]
+
+    public void Configuration_and_preset_transaction_files_are_under_grimoire_directory()
+    {
+
+        Assert.Equal(
+            Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json"),
+            ArcanumPaths.ConfigurationFile);
+
+        Assert.Equal(
+            Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.preset.json"),
+            ArcanumPaths.ConfigurationPresetStateFile);
+
+        Assert.Equal(
+            Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.preset.rollback.json"),
+            ArcanumPaths.ConfigurationPresetRollbackFile);
+
+        Assert.Equal(
+            Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.preset.journal.json"),
+            ArcanumPaths.ConfigurationPresetJournalFile);
+
+    }
+
+    [Fact]
     public void GlobalSpellsDirectory_IsUnderGrimoireDirectory()
     {
 

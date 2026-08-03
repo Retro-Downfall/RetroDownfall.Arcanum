@@ -320,39 +320,15 @@ public static class SecureFilePermissions
 
         EnsureOwnerOnlyDirectoryExists(ArcanumPaths.GrimoireDirectory);
 
-        string configFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
-
-        if (File.Exists(configFile))
+        foreach (string sensitiveFile in DefaultSensitiveFilePaths())
         {
 
-            ApplyOwnerOnlyFile(configFile);
+            if (File.Exists(sensitiveFile))
+            {
 
-        }
+                ApplyOwnerOnlyFile(sensitiveFile);
 
-        string databaseFile = ArcanumPaths.GrimoireDatabaseFile;
-
-        if (File.Exists(databaseFile))
-        {
-
-            ApplyOwnerOnlyFile(databaseFile);
-
-        }
-
-        string sessionFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-session.txt");
-
-        string contextFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-context.json");
-
-        if (File.Exists(sessionFile))
-        {
-
-            ApplyOwnerOnlyFile(sessionFile);
-
-        }
-
-        if (File.Exists(contextFile))
-        {
-
-            ApplyOwnerOnlyFile(contextFile);
+            }
 
         }
 
@@ -413,25 +389,16 @@ public static class SecureFilePermissions
 
         string grimoireDir = ArcanumPaths.GrimoireDirectory;
 
-        string configFile = Path.Combine(grimoireDir, "arcanum.json");
-
-        string databaseFile = ArcanumPaths.GrimoireDatabaseFile;
-
-        string sessionFile = Path.Combine(grimoireDir, "cli-session.txt");
-
-        string contextFile = Path.Combine(grimoireDir, "cli-context.json");
-
         string logDirectory = ArcanumPaths.LogDirectory;
 
         CheckPath(logger, grimoireDir, isDirectory: true);
 
-        CheckPath(logger, configFile, isDirectory: false);
+        foreach (string sensitiveFile in DefaultSensitiveFilePaths())
+        {
 
-        CheckPath(logger, databaseFile, isDirectory: false);
+            CheckPath(logger, sensitiveFile, isDirectory: false);
 
-        CheckPath(logger, sessionFile, isDirectory: false);
-
-        CheckPath(logger, contextFile, isDirectory: false);
+        }
 
         foreach (string secretFile in secretFilePaths)
         {
@@ -466,6 +433,17 @@ public static class SecureFilePermissions
         }
 
     }
+
+    private static IReadOnlyList<string> DefaultSensitiveFilePaths() =>
+        [
+            ArcanumPaths.ConfigurationFile,
+            ArcanumPaths.GrimoireDatabaseFile,
+            Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-session.txt"),
+            Path.Combine(ArcanumPaths.GrimoireDirectory, "cli-context.json"),
+            ArcanumPaths.ConfigurationPresetStateFile,
+            ArcanumPaths.ConfigurationPresetRollbackFile,
+            ArcanumPaths.ConfigurationPresetJournalFile,
+        ];
 
     private static IReadOnlyList<string> DefaultSecretFilePaths() =>
         [
@@ -535,7 +513,7 @@ public static class SecureFilePermissions
             {
 
                 logger.LogWarning(
-                    "Permission self-check: {Path} is group/other accessible (mode {Mode:o}). Restrict to owner-only (600 for files, 700 for directories).",
+                    "Permission self-check: {Path} is group/other accessible (mode {Mode}). Restrict to owner-only (600 for files, 700 for directories).",
                     path,
                     mode);
 
