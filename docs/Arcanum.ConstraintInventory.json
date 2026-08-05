@@ -9512,6 +9512,240 @@
       ],
       "id": "boundary.backup-snapshot-slice-and-durable-cleanup",
       "subsystem": "Backup and recovery"
+    },
+    {
+      "id": "clamp.embeddings-tapestry-max-tree-depth",
+      "subsystem": "Embeddings and indexing",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumSettingClamps.cs#EmbeddingsTapestryMaxTreeDepth"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxTreeDepth"
+      ],
+      "symbolValues": {
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxTreeDepth": "public static int EmbeddingsTapestryMaxTreeDepth(int value) => Math.Clamp(value, 1, 16);"
+      },
+      "currentValue": "public static int EmbeddingsTapestryMaxTreeDepth(int value) => Math.Clamp(value, 1, 16);",
+      "owner": "physical-resource",
+      "enforcementPoint": "one Tapestry generation's summarization recursion",
+      "userVisibleBehavior": "Recursion stops at the depth bound and the terminal layer is published with its real root count; every leaf remains reachable and every source excerpt remains retrievable.",
+      "originalRationale": "Recursive summarization must terminate even when a layer cannot be reduced further.",
+      "threatOrFailureModel": "Unbounded recursion over a layer that never shrinks can spend model tokens and memory without converging.",
+      "classification": "Required physical resource protection",
+      "action": "retain",
+      "replacementOrContinuation": "A multi-root terminal layer is recorded explicitly rather than pretending a single root exists; retrieval searches every layer, so no material becomes unreachable.",
+      "tests": [
+        "ConstraintInventoryTests",
+        "UnrestrictedHarnessContractTests"
+      ]
+    },
+    {
+      "id": "clamp.embeddings-tapestry-target-children-per-summary",
+      "subsystem": "Embeddings and indexing",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumSettingClamps.cs#EmbeddingsTapestryTargetChildrenPerSummary"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettingClamps.EmbeddingsTapestryTargetChildrenPerSummary"
+      ],
+      "symbolValues": {
+        "ArcanumSettingClamps.EmbeddingsTapestryTargetChildrenPerSummary": "public static int EmbeddingsTapestryTargetChildrenPerSummary(int value) => Math.Clamp(value, 2, 64);"
+      },
+      "currentValue": "public static int EmbeddingsTapestryTargetChildrenPerSummary(int value) => Math.Clamp(value, 2, 64);",
+      "owner": "provider/model",
+      "enforcementPoint": "deterministic per-layer cluster-count derivation",
+      "userVisibleBehavior": "Each layer derives its cluster count from this target so one summary request covers a workable number of excerpts; the complete corpus is still covered by the layer as a whole.",
+      "originalRationale": "One summary request must fit the selected model's context with output and reasoning reserved.",
+      "threatOrFailureModel": "A cluster larger than one request cannot be summarized without truncating source text.",
+      "classification": "Provider/model constraint",
+      "action": "retain",
+      "replacementOrContinuation": "Oversized clusters are deterministically repartitioned into additional intermediate nodes rather than truncated.",
+      "tests": [
+        "ConstraintInventoryTests",
+        "UnrestrictedHarnessContractTests"
+      ]
+    },
+    {
+      "id": "clamp.embeddings-tapestry-max-children-per-summary",
+      "subsystem": "Embeddings and indexing",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumSettingClamps.cs#EmbeddingsTapestryMaxChildrenPerSummary"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxChildrenPerSummary"
+      ],
+      "symbolValues": {
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxChildrenPerSummary": "public static int EmbeddingsTapestryMaxChildrenPerSummary(int value) => Math.Clamp(value, 2, 256);"
+      },
+      "currentValue": "public static int EmbeddingsTapestryMaxChildrenPerSummary(int value) => Math.Clamp(value, 2, 256);",
+      "owner": "provider/model",
+      "enforcementPoint": "one Tapestry summary request's child fan-in",
+      "userVisibleBehavior": "A summary node covers at most this many children; larger clusters are split into more summary nodes, so no source excerpt is dropped.",
+      "originalRationale": "K-Means does not guarantee balanced clusters, so a hard child bound is needed alongside the token estimate.",
+      "threatOrFailureModel": "An unbalanced cluster can exceed one provider request even when the layer's average size is fine.",
+      "classification": "Provider/model constraint",
+      "action": "retain",
+      "replacementOrContinuation": "Deterministic repartitioning adds intermediate nodes; source text is never truncated to make a request fit.",
+      "tests": [
+        "ConstraintInventoryTests",
+        "UnrestrictedHarnessContractTests"
+      ]
+    },
+    {
+      "id": "clamp.embeddings-tapestry-max-clusters-per-layer",
+      "subsystem": "Embeddings and indexing",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumSettingClamps.cs#EmbeddingsTapestryMaxClustersPerLayer"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxClustersPerLayer"
+      ],
+      "symbolValues": {
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxClustersPerLayer": "public static int EmbeddingsTapestryMaxClustersPerLayer(int value) => Math.Clamp(value, 2, 4_096);"
+      },
+      "currentValue": "public static int EmbeddingsTapestryMaxClustersPerLayer(int value) => Math.Clamp(value, 2, 4_096);",
+      "owner": "physical-resource",
+      "enforcementPoint": "one spherical K-Means computation's centroid allocation",
+      "userVisibleBehavior": "The value bounds one clustering computation's centroid working set; the complete layer is still clustered and every node is assigned.",
+      "originalRationale": "A single clustering pass must not allocate an unbounded centroid matrix.",
+      "threatOrFailureModel": "An unbounded centroid count can exhaust process memory before cancellation is observed.",
+      "classification": "Required physical resource protection",
+      "action": "retain",
+      "replacementOrContinuation": "Layers larger than the bound simply produce larger clusters, which the child-count and token bounds then repartition.",
+      "tests": [
+        "ConstraintInventoryTests",
+        "UnrestrictedHarnessContractTests"
+      ]
+    },
+    {
+      "id": "clamp.embeddings-tapestry-max-summary-tokens",
+      "subsystem": "Embeddings and indexing",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumSettingClamps.cs#EmbeddingsTapestryMaxSummaryTokens"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens"
+      ],
+      "symbolValues": {
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens": "public static int EmbeddingsTapestryMaxSummaryTokens(int value) => Math.Clamp(value, 64, 8_192);"
+      },
+      "currentValue": "public static int EmbeddingsTapestryMaxSummaryTokens(int value) => Math.Clamp(value, 64, 8_192);",
+      "owner": "provider/model",
+      "enforcementPoint": "one Tapestry summary request's output and reasoning reservation",
+      "userVisibleBehavior": "Each cluster summary reserves a bounded output allowance from the selected model's context; the source excerpts it covers remain retrievable in full.",
+      "originalRationale": "Summary admission must reserve output and reasoning tokens or the request fails at the provider boundary.",
+      "threatOrFailureModel": "An unreserved response can overflow the model context after the prompt has already been accepted.",
+      "classification": "Provider/model constraint",
+      "action": "retain",
+      "replacementOrContinuation": "Choose a larger-context summary model, or let the deterministic repartitioner produce smaller clusters.",
+      "tests": [
+        "ConstraintInventoryTests",
+        "UnrestrictedHarnessContractTests"
+      ]
+    },
+    {
+      "id": "clamp.embeddings-tapestry-rebuild-interval-minutes",
+      "subsystem": "Embeddings and indexing",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumSettingClamps.cs#EmbeddingsTapestryRebuildIntervalMinutes"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettingClamps.EmbeddingsTapestryRebuildIntervalMinutes"
+      ],
+      "symbolValues": {
+        "ArcanumSettingClamps.EmbeddingsTapestryRebuildIntervalMinutes": "public static int EmbeddingsTapestryRebuildIntervalMinutes(int value) => Math.Clamp(value, 1, 1_440);"
+      },
+      "currentValue": "public static int EmbeddingsTapestryRebuildIntervalMinutes(int value) => Math.Clamp(value, 1, 1_440);",
+      "owner": "physical-resource",
+      "enforcementPoint": "ArcanumSettingClamps.EmbeddingsTapestryRebuildIntervalMinutes",
+      "userVisibleBehavior": "The value bounds how often one reconciliation sweep runs; it is not a total workflow ceiling and the sweep continues checkpointed work until every scope is current or cancelled.",
+      "originalRationale": "A background sweep must not busy-loop over every corpus.",
+      "threatOrFailureModel": "An unbounded sweep cadence can saturate CPU, the embedding provider, and the summary model.",
+      "classification": "Required physical resource protection",
+      "action": "retain",
+      "replacementOrContinuation": "Trees are derived data; the previous complete generation stays current until the next sweep publishes a new one.",
+      "tests": [
+        "ConstraintInventoryTests",
+        "UnrestrictedHarnessContractTests"
+      ]
+    },
+    {
+      "id": "clamp.embeddings-tapestry-max-retrieved-nodes",
+      "subsystem": "Embeddings and indexing",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumSettingClamps.cs#EmbeddingsTapestryMaxRetrievedNodes"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedNodes"
+      ],
+      "symbolValues": {
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedNodes": "public static int EmbeddingsTapestryMaxRetrievedNodes(int value) => Math.Clamp(value, 1, 50);"
+      },
+      "currentValue": "public static int EmbeddingsTapestryMaxRetrievedNodes(int value) => Math.Clamp(value, 1, 50);",
+      "owner": "provider/model",
+      "enforcementPoint": "one-turn Tapestry hierarchical retrieval selection",
+      "userVisibleBehavior": "One provider request receives a relevance-ranked hierarchical slice; the complete published tree remains searchable.",
+      "originalRationale": "Retrieved hierarchical context shares the selected model's finite request context with all other turn content.",
+      "threatOrFailureModel": "Unbounded node injection can exceed provider context or one request allocation.",
+      "classification": "Provider/model constraint",
+      "action": "retain",
+      "replacementOrContinuation": "Refine the query, read the underlying sources directly, choose a larger-context model, or continue retrieval in a later turn.",
+      "tests": [
+        "ConstraintInventoryTests",
+        "UnrestrictedHarnessContractTests"
+      ]
+    },
+    {
+      "id": "clamp.embeddings-tapestry-max-retrieved-bytes",
+      "subsystem": "Embeddings and indexing",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumSettingClamps.cs#EmbeddingsTapestryMaxRetrievedBytes"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedBytes"
+      ],
+      "symbolValues": {
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedBytes": "public static int EmbeddingsTapestryMaxRetrievedBytes(int value) => Math.Clamp(value, 1_024, 16 * 1024 * 1024);"
+      },
+      "currentValue": "public static int EmbeddingsTapestryMaxRetrievedBytes(int value) => Math.Clamp(value, 1_024, 16 * 1024 * 1024);",
+      "owner": "provider/model",
+      "enforcementPoint": "one-turn Tapestry retrieval byte selection",
+      "userVisibleBehavior": "One provider request receives a byte-bounded hierarchical slice; the complete published tree and its source corpora remain available for follow-up retrieval.",
+      "originalRationale": "Retrieved content must fit one request allocation and the selected model context.",
+      "threatOrFailureModel": "An unbounded content slice can exceed host request memory and the provider context window.",
+      "classification": "Provider/model constraint",
+      "action": "retain",
+      "replacementOrContinuation": "Retrieve a narrower slice or continue in a later turn; the byte bound does not truncate any durable tree or corpus.",
+      "tests": [
+        "ConstraintInventoryTests",
+        "UnrestrictedHarnessContractTests"
+      ]
+    },
+    {
+      "id": "clamp.embeddings-tapestry-max-retrieved-tokens",
+      "subsystem": "Embeddings and indexing",
+      "sourceLocations": [
+        "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumSettingClamps.cs#EmbeddingsTapestryMaxRetrievedTokens"
+      ],
+      "coveredSymbols": [
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedTokens"
+      ],
+      "symbolValues": {
+        "ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedTokens": "public static int EmbeddingsTapestryMaxRetrievedTokens(int value) => Math.Clamp(value, 128, 1024 * 1024);"
+      },
+      "currentValue": "public static int EmbeddingsTapestryMaxRetrievedTokens(int value) => Math.Clamp(value, 128, 1024 * 1024);",
+      "owner": "provider/model",
+      "enforcementPoint": "one-turn Tapestry retrieval token admission",
+      "userVisibleBehavior": "Retrieved hierarchical context is admitted within a token slice for one provider request; the published tree remains available.",
+      "originalRationale": "The selected model has a finite context window shared by every turn component.",
+      "threatOrFailureModel": "Unbounded retrieval tokens can crowd out the prompt, history, answer reserve, or exceed the provider request limit.",
+      "classification": "Provider/model constraint",
+      "action": "retain",
+      "replacementOrContinuation": "Compact or narrow one request, choose a larger-context model, or continue retrieval in a later turn.",
+      "tests": [
+        "ConstraintInventoryTests",
+        "UnrestrictedHarnessContractTests"
+      ]
     }
   ]
 }

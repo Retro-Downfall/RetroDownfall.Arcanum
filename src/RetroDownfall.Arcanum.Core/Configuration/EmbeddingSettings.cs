@@ -128,6 +128,19 @@ public sealed record EmbeddingSettings
     public SagaEmbeddingSettings Saga { get; set; } = new();
 
     /// <summary>
+    /// Runtime projection of <c>Arcanum:Features:Tapestry</c> — hierarchical (RAPTOR-style) memory
+    /// woven over The Weave. Enabling it derives <see cref="Enabled"/>.
+    /// </summary>
+    public bool TapestryEnabled { get; set; }
+
+    /// <summary>
+    /// The Tapestry's code-owned tree-shaping mechanics plus the two operator-policy fields projected
+    /// from <c>Arcanum:Integrations:Embeddings:Tapestry</c>. Only relevant when
+    /// <see cref="TapestryEnabled"/> is <c>true</c>.
+    /// </summary>
+    public TapestryEmbeddingSettings Tapestry { get; set; } = new();
+
+    /// <summary>
     /// Runtime projection of <c>Arcanum:Features:SemanticSpellRouting</c>. When <c>false</c>
     /// (default), the LLM-based <c>SemanticRouter</c> uses the full catalog. Enabling it derives
     /// <see cref="Enabled"/>.

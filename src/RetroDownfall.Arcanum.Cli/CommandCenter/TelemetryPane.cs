@@ -53,6 +53,8 @@ public sealed class TelemetryPane
 
             Row("Workspace RAG", breakdown.WorkspaceRagTokens),
 
+            Row("Tapestry", breakdown.TapestryRagTokens),
+
             $"Input {displayedInput:N0} {authority}",
         ];
 

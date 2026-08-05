@@ -163,6 +163,49 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         Assert.True(result.DeletedRowCounts.ContainsKey("session_attachment_index_state"));
 
+        Assert.True(result.DeletedRowCounts.ContainsKey("tapestry_generations"));
+
+        Assert.True(result.DeletedRowCounts.ContainsKey("tapestry_nodes"));
+
+        Assert.True(result.DeletedRowCounts.ContainsKey("tapestry_node_embeddings"));
+
+    }
+
+    [SkippableFact]
+    public async Task ResetAsync_TapestryScope_DropsTreeTablesAndNothingElse()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await _sagaStore!.InsertAsync(
+            "mem-3",
+            "c",
+            DateTimeOffset.UtcNow,
+            sessionId,
+            null,
+            "extraction",
+            Vec(3f),
+            CancellationToken.None);
+
+        EmbeddingsResetResult result = await _resetService!.ResetAsync(
+            EmbeddingsResetScope.Tapestry,
+            CancellationToken.None);
+
+        // Trees are derived data: dropping them must not touch the leaf corpora they were woven from,
+        // or any other feature's embeddings.
+        Assert.Equal(1, await _sagaStore.CountAsync(CancellationToken.None));
+
+        Assert.Equal(
+            [
+                "tapestry_generations",
+                "tapestry_node_embeddings",
+                "tapestry_node_embeddings_vec",
+                "tapestry_nodes",
+            ],
+            result.DeletedRowCounts.Keys.Order(StringComparer.Ordinal));
+
     }
 
 }

@@ -49,6 +49,8 @@ internal static class MemoryEndpoints
 
     private const string WorkspaceRetention = "Derived and rebuildable from registered workspace files; not session memory.";
 
+    private const string TapestryRetention = "Derived and fully rebuildable from the corpora it summarizes; dropped by the tapestry embeddings reset and rebuilt on the next sweep.";
+
     public static RouteGroupBuilder MapMemoryEndpoints(this RouteGroupBuilder apiGroup)
     {
 
@@ -243,6 +245,10 @@ internal static class MemoryEndpoints
                     stores["Workspace Index"],
                     stores["Workspace Index"].Enabled && stores["Workspace Index"].Count > 0,
                     "Workspace chunks are candidates when a bound workspace and the current prompt retrieve them; they are not copied into durable memory."),
+                Explain(
+                    stores["Tapestry"],
+                    stores["Tapestry"].Enabled && stores["Tapestry"].Count > 0,
+                    "Tapestry nodes are candidates when the current prompt retrieves them from a published generation; a summary that overlaps an exact excerpt already selected is suppressed."),
             ];
 
             result = Result<MemoryExplainDto>.Success(
@@ -608,6 +614,26 @@ internal static class MemoryEndpoints
             sessionId,
             cancellationToken).ConfigureAwait(false);
 
+        // Only published nodes are counted: a staging generation is invisible to retrieval, so
+        // reporting it here would overstate what a turn could actually draw on.
+        int tapestry = await CountAsync(
+            connection,
+            sessionId is null
+                ? """
+                  SELECT COUNT(*) FROM tapestry_nodes n
+                  INNER JOIN tapestry_generations g ON g.GenerationId = n.GenerationId
+                  WHERE g.Status = 'Complete'
+                  """
+                : """
+                  SELECT COUNT(*) FROM tapestry_nodes n
+                  INNER JOIN tapestry_generations g ON g.GenerationId = n.GenerationId
+                  WHERE g.Status = 'Complete'
+                    AND g.ScopeKind <> 'Workspace'
+                    AND g.ScopeId = @sessionId
+                  """,
+            sessionId,
+            cancellationToken).ConfigureAwait(false);
+
         string? workspacePath = session?.CampaignId is { } campaignId
             ? await db.Campaigns
                 .AsNoTracking()
@@ -636,6 +662,7 @@ internal static class MemoryEndpoints
             new("Lexicon", features.Lexicon, lexicon, "lexicon", LexiconRetention),
             new("Saga", features.Saga || features.SagaExtraction, saga, "saga", SagaRetention),
             new("Workspace Index", features.CodebaseRetrieval, workspace, "workspace", WorkspaceRetention),
+            new("Tapestry", features.Tapestry, tapestry, "tapestry", TapestryRetention),
         ];
 
         return Result<MemoryStatusDto>.Success(
@@ -659,6 +686,7 @@ internal static class MemoryEndpoints
         "Lexicon" => "Structured Lexicon entity name, type, facts, and any typed attachment fact provenance.",
         "Saga" => "Saga memory id, originating session when present, source label, and typed attachment provenance when present.",
         "Workspace Index" => "Derived workspace chunk id and relative file location; host absolute paths are not returned.",
+        "Tapestry" => "Derived hierarchical node id, layer, corpus scope kind, and content hash from the current published generation; host absolute paths are not returned.",
         _ => "Unknown memory source.",
     };
 

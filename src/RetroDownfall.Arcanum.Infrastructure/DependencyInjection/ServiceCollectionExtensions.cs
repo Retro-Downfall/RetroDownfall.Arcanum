@@ -29,6 +29,7 @@ using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
@@ -447,6 +448,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<WeaveIndexAvailability>();
         services.AddScoped<IDivinationService, DivinationService>();
         services.AddScoped<EmbeddingsResetService>();
+        services.AddScoped<ITapestryStore, TapestryStore>();
         services.AddScoped<SessionAttachmentIndexRepository>();
         services.AddScoped<ISessionAttachmentIndexMaintenance>(
             static sp => sp.GetRequiredService<SessionAttachmentIndexRepository>());
@@ -490,6 +492,13 @@ public static class ServiceCollectionExtensions
         // call EnqueueExtraction, mirroring WorkspaceIndexingService's singleton+hosted-factory pattern.
         services.AddSingleton<SagaExtractionService>();
         services.AddHostedService(static sp => sp.GetRequiredService<SagaExtractionService>());
+
+        // The Tapestry (§21.11) — idles unless Arcanum:Features:Tapestry is enabled, so registering it
+        // unconditionally is free on the hot path. Registered after GrimoireDatabaseHostedService so
+        // The Weave's schema is guaranteed ready before the first sweep.
+        services.AddScoped<ITapestrySummarizer, TapestrySummarizer>();
+        services.AddScoped<TapestryWeaver>();
+        services.AddHostedService<TapestryWeavingService>();
 
         services.AddHostedService<ArcanumSettingsClampStartupLogger>();
 

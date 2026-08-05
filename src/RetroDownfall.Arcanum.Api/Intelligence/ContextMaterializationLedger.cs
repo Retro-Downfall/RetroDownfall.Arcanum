@@ -25,6 +25,14 @@ public enum ContextMaterializationSourceKind
 
     SagaMemory = 7,
 
+    /// <summary>
+    /// The Tapestry's hierarchical nodes (DESIGN §21.11). Ranked last deliberately: the documented
+    /// source precedence is accepted explicit material &gt; exact raw leaf &gt; derived summary, so a
+    /// model-authored abstraction is the first semantic source evicted under context pressure and the
+    /// last admitted when it overlaps something exact.
+    /// </summary>
+    TapestryMemory = 8,
+
 }
 
 public enum ContextMaterializationOrigin
@@ -182,6 +190,10 @@ public sealed class ContextMaterializationLedger
 
     private int _droppedWorkspaceRagTokens;
 
+    private int _droppedTapestryNodes;
+
+    private int _droppedTapestryTokens;
+
     public ContextMaterializationLedger(
         Guid? sessionId,
         ContextMaterializationLimits limits)
@@ -210,6 +222,10 @@ public sealed class ContextMaterializationLedger
     public int DroppedWorkspaceRagChunks => _droppedWorkspaceRagChunks;
 
     public int DroppedWorkspaceRagTokens => _droppedWorkspaceRagTokens;
+
+    public int DroppedTapestryNodes => _droppedTapestryNodes;
+
+    public int DroppedTapestryTokens => _droppedTapestryTokens;
 
     public ContextMaterializationEntry Accept(
         ContextMaterializationCandidate candidate,
@@ -279,6 +295,24 @@ public sealed class ContextMaterializationLedger
             return Reject(
                 candidate,
                 ContextMaterializationRejection.ExplicitSourceAlreadyMaterialized);
+
+        }
+
+        // Source precedence: accepted explicit material > exact raw leaf > derived Tapestry node.
+        // The range-sensitive check above cannot enforce it, because a Tapestry node carries a whole
+        // range while a workspace chunk carries its chunk index — identical text under different
+        // ranges would slip through. A derived node is therefore rejected whenever its exact content
+        // is already present under any range.
+        if (candidate.SourceKind == ContextMaterializationSourceKind.TapestryMemory
+            && _entries.Any(
+                entry => entry.SourceKind != ContextMaterializationSourceKind.TapestryMemory
+                    && string.Equals(
+                        entry.ContentHash,
+                        candidate.ContentHash,
+                        StringComparison.OrdinalIgnoreCase)))
+        {
+
+            return Reject(candidate, ContextMaterializationRejection.DuplicateContentRange);
 
         }
 
@@ -438,6 +472,16 @@ public sealed class ContextMaterializationLedger
 
             _droppedWorkspaceRagTokens = SaturatingAdd(
                 _droppedWorkspaceRagTokens,
+                tokens);
+
+        }
+        else if (removed.SourceKind == ContextMaterializationSourceKind.TapestryMemory)
+        {
+
+            _droppedTapestryNodes = SaturatingIncrement(_droppedTapestryNodes);
+
+            _droppedTapestryTokens = SaturatingAdd(
+                _droppedTapestryTokens,
                 tokens);
 
         }

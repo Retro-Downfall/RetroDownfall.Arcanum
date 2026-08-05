@@ -46,7 +46,7 @@ internal static class EmbeddingsResetEndpoints
                             Result<EmbeddingsResetResult>.Failure(
                                 new Error(
                                     ErrorCodes.Validation.InvalidBody,
-                                    $"Unknown embeddings scope '{scope}'. Allowed: all, entry, workspace_file, saga, session_attachment.")),
+                                    $"Unknown embeddings scope '{scope}'. Allowed: all, entry, workspace_file, saga, session_attachment, tapestry.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseEmbeddingsResetResult,
                         statusCode: StatusCodes.Status400BadRequest);
@@ -87,6 +87,7 @@ internal static class EmbeddingsResetEndpoints
             "saga" => EmbeddingsResetScope.Saga,
             "sessionattachment" => EmbeddingsResetScope.SessionAttachment,
             "session_attachment" => EmbeddingsResetScope.SessionAttachment,
+            "tapestry" => EmbeddingsResetScope.Tapestry,
             _ => null,
 
         };

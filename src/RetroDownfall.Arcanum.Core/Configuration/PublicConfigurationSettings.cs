@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 
 namespace RetroDownfall.Arcanum.Core.Configuration;
 
@@ -38,6 +39,12 @@ public sealed record FeatureSettings
     public bool Saga { get; set; }
 
     public bool SagaExtraction { get; set; }
+
+    /// <summary>
+    /// The Tapestry — hierarchical (RAPTOR-style) summary trees woven over The Weave's existing
+    /// chunk corpora. Derives the embedding substrate; defaults off.
+    /// </summary>
+    public bool Tapestry { get; set; }
 
     public bool SemanticSpellRouting { get; set; }
 
@@ -131,6 +138,33 @@ public sealed record EmbeddingIntegrationSettings
     public string? Model { get; set; }
 
     public int Dimensions { get; set; } = 768;
+
+    /// <summary>
+    /// Operator policy for The Tapestry (<c>Arcanum:Features:Tapestry</c>). Tree-shaping bounds stay
+    /// code-owned mechanics — see <see cref="TapestryEmbeddingSettings"/>.
+    /// </summary>
+    public TapestryIntegrationSettings Tapestry { get; set; } = new();
+
+}
+
+/// <summary>
+/// The Tapestry's operator-facing policy: which retrieval shape to use, and which model pays for
+/// cluster summaries.
+/// </summary>
+public sealed record TapestryIntegrationSettings
+{
+
+    /// <summary>
+    /// <c>CollapsedTree</c> (default) searches leaf and summary nodes as one pool;
+    /// <c>TreeTraversal</c> descends level by level from the terminal layer.
+    /// </summary>
+    public TapestryRetrievalMode RetrievalMode { get; set; } = TapestryRetrievalMode.CollapsedTree;
+
+    /// <summary>
+    /// Model used for cluster summaries. Blank falls back to <c>Arcanum:FastModel</c>, then
+    /// <c>Arcanum:DefaultModel</c>.
+    /// </summary>
+    public string? SummaryModel { get; set; }
 
 }
 

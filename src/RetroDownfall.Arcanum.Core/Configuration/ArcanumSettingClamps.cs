@@ -387,6 +387,24 @@ public static class ArcanumSettingClamps
 
     public static int EmbeddingsSpellRoutingHybridTopK(int value) => Math.Clamp(value, 1, 20);
 
+    public static int EmbeddingsTapestryMaxTreeDepth(int value) => Math.Clamp(value, 1, 16);
+
+    public static int EmbeddingsTapestryTargetChildrenPerSummary(int value) => Math.Clamp(value, 2, 64);
+
+    public static int EmbeddingsTapestryMaxChildrenPerSummary(int value) => Math.Clamp(value, 2, 256);
+
+    public static int EmbeddingsTapestryMaxClustersPerLayer(int value) => Math.Clamp(value, 2, 4_096);
+
+    public static int EmbeddingsTapestryMaxSummaryTokens(int value) => Math.Clamp(value, 64, 8_192);
+
+    public static int EmbeddingsTapestryRebuildIntervalMinutes(int value) => Math.Clamp(value, 1, 1_440);
+
+    public static int EmbeddingsTapestryMaxRetrievedNodes(int value) => Math.Clamp(value, 1, 50);
+
+    public static int EmbeddingsTapestryMaxRetrievedBytes(int value) => Math.Clamp(value, 1_024, 16 * 1024 * 1024);
+
+    public static int EmbeddingsTapestryMaxRetrievedTokens(int value) => Math.Clamp(value, 128, 1024 * 1024);
+
     public static long ScryingMaxImageBytes(long value) => Math.Clamp(value, 1024L, 20L * 1024L * 1024L);
 
     public static int ScryingMaxImagesPerRequest(int value) => Math.Clamp(value, 1, 100);

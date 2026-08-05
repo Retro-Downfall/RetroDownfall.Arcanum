@@ -42,7 +42,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 internal static class WeaveSchemaInitializer
 {
 
-    internal const string CanonicalSchemaFingerprint = "attachment-index-generations-v5";
+    internal const string CanonicalSchemaFingerprint = "tapestry-generations-v7";
 
     public static async Task EnsureSchemaAsync(
         SqliteConnection connection,
@@ -63,6 +63,8 @@ internal static class WeaveSchemaInitializer
 
             await CreateSessionAttachmentTablesAsync(connection, cancellationToken).ConfigureAwait(false);
 
+            await CreateTapestryTablesAsync(connection, cancellationToken).ConfigureAwait(false);
+
             bool vecAvailable = SqliteVecExtensionLoader.TryLoad(connection, logger);
 
             availability.SetAvailable(vecAvailable);
@@ -80,6 +82,9 @@ internal static class WeaveSchemaInitializer
                     .ConfigureAwait(false);
 
                 await CreateSessionAttachmentEmbeddingsVecTableAsync(connection, configuredDimensions, cancellationToken)
+                    .ConfigureAwait(false);
+
+                await CreateTapestryNodeEmbeddingsVecTableAsync(connection, configuredDimensions, cancellationToken)
                     .ConfigureAwait(false);
 
             }
@@ -201,6 +206,138 @@ internal static class WeaveSchemaInitializer
             """;
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// The Tapestry (§21.11) — hierarchical RAPTOR-style summary trees over the corpora the other
+    /// Weave features already index. Three tables, always created:
+    /// <list type="bullet">
+    /// <item><c>tapestry_generations</c>: one immutable build per tree scope. Retrieval reads only the
+    /// single <c>Complete</c> row per scope, so a <c>Building</c> generation is invisible until the
+    /// atomic publish and a failed one never replaces the last good tree. Algorithm version, settings
+    /// fingerprint, summary recipe/model, dimension, and corpus fingerprint are stored here so any
+    /// change forces an explicit rebuild instead of silently mixing tree shapes.</item>
+    /// <item><c>tapestry_nodes</c>: leaf and summary nodes. Leaves carry <c>SourceKind</c>/<c>SourceId</c>
+    /// and a <c>NULL</c> <c>Content</c> — they reference the corpus row rather than duplicating its
+    /// bytes, so a chunk edit is detectable rather than silently forked. <c>ParentScopeKey</c>
+    /// (<c>"{GenerationId}#root"</c> until a summary claims the node, then
+    /// <c>"{GenerationId}#{ParentNodeId}"</c>) exists purely so tree-traversal retrieval can express
+    /// both "this generation's roots" and "this node's children" as
+    /// <c>IDivinationService.SearchScopedAsync</c>'s single-column equality filter.</item>
+    /// <item><c>tapestry_node_embeddings</c>: the BLOB durable store and managed-fallback search source
+    /// of truth, mirroring every other Weave feature; the <c>_vec</c> companion below is
+    /// performance-only.</item>
+    /// </list>
+    /// Trees are derived data: fully rebuildable, never a second source of truth.
+    /// </summary>
+    private static async Task CreateTapestryTablesAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand generations = connection.CreateCommand();
+
+        generations.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS tapestry_generations (
+                GenerationId TEXT PRIMARY KEY,
+                ScopeKind TEXT NOT NULL,
+                ScopeId TEXT NOT NULL,
+                Status TEXT NOT NULL,
+                AlgorithmVersion TEXT NOT NULL,
+                SettingsFingerprint TEXT NOT NULL,
+                SummaryModel TEXT,
+                SummaryRecipeVersion TEXT NOT NULL,
+                EmbeddingDimension INTEGER NOT NULL,
+                CorpusFingerprint TEXT NOT NULL,
+                LayerCount INTEGER NOT NULL DEFAULT 0,
+                NodeCount INTEGER NOT NULL DEFAULT 0,
+                RootNodeCount INTEGER NOT NULL DEFAULT 0,
+                TerminalReason TEXT,
+                StartedAt TEXT NOT NULL,
+                CompletedAt TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tapestry_generations_scope
+                ON tapestry_generations(ScopeKind, ScopeId, Status);
+            """;
+
+        _ = await generations.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteCommand nodes = connection.CreateCommand();
+
+        nodes.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS tapestry_nodes (
+                NodeId TEXT PRIMARY KEY,
+                GenerationId TEXT NOT NULL,
+                ScopeKind TEXT NOT NULL,
+                ScopeId TEXT NOT NULL,
+                Layer INTEGER NOT NULL,
+                ParentScopeKey TEXT NOT NULL,
+                NodeKind TEXT NOT NULL,
+                ParentNodeId TEXT,
+                SourceKind TEXT,
+                SourceId TEXT,
+                SourceLabel TEXT NOT NULL,
+                Content TEXT,
+                ContentHash TEXT NOT NULL,
+                ChildMembershipHash TEXT,
+                DescendantLeafCount INTEGER NOT NULL DEFAULT 1,
+                ClusterOrdinal INTEGER NOT NULL DEFAULT 0,
+                PartitionReason TEXT NOT NULL DEFAULT 'None',
+                EmbeddingDimension INTEGER NOT NULL,
+                CreatedAt TEXT NOT NULL,
+                FOREIGN KEY(GenerationId) REFERENCES tapestry_generations(GenerationId) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_tapestry_nodes_generation
+                ON tapestry_nodes(GenerationId, Layer);
+            CREATE INDEX IF NOT EXISTS idx_tapestry_nodes_parent_scope
+                ON tapestry_nodes(ParentScopeKey);
+            CREATE INDEX IF NOT EXISTS idx_tapestry_nodes_parent
+                ON tapestry_nodes(ParentNodeId);
+            CREATE INDEX IF NOT EXISTS idx_tapestry_nodes_membership
+                ON tapestry_nodes(GenerationId, ChildMembershipHash);
+            """;
+
+        _ = await nodes.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        await using SqliteCommand embeddings = connection.CreateCommand();
+
+        embeddings.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS tapestry_node_embeddings (
+                NodeId TEXT PRIMARY KEY,
+                Embedding BLOB NOT NULL,
+                Dim INTEGER NOT NULL,
+                FOREIGN KEY(NodeId) REFERENCES tapestry_nodes(NodeId) ON DELETE CASCADE
+            );
+            """;
+
+        _ = await embeddings.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// vec0 acceleration for <c>tapestry_node_embeddings</c>, created only when
+    /// <see cref="SqliteVecExtensionLoader"/> succeeds. Column names match the BLOB table exactly,
+    /// same convention as every other Weave feature.
+    /// </summary>
+    private static async Task CreateTapestryNodeEmbeddingsVecTableAsync(
+        SqliteConnection connection,
+        int dimensions,
+        CancellationToken cancellationToken)
+    {
+
+        await using SqliteCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            $"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS tapestry_node_embeddings_vec USING vec0(
+                NodeId TEXT PRIMARY KEY,
+                Embedding FLOAT[{dimensions}] distance_metric=cosine
+            );
+            """;
+
+        _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
     }
 

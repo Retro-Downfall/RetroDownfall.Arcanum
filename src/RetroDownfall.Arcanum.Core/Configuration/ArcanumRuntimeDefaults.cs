@@ -282,12 +282,14 @@ public static class ArcanumRuntimeSettings
         EmbeddingIntegrationSettings integration =
             settings.Integrations?.Embeddings ?? new EmbeddingIntegrationSettings();
         bool sagaEnabled = features.Saga || features.SagaExtraction;
+        TapestryIntegrationSettings tapestry = integration.Tapestry ?? new TapestryIntegrationSettings();
         bool enabled =
             features.Embeddings
             || features.SessionSearch
             || features.CodebaseRetrieval
             || features.AttachmentRetrieval
             || sagaEnabled
+            || features.Tapestry
             || features.SemanticSpellRouting;
 
         return defaults with
@@ -303,6 +305,14 @@ public static class ArcanumRuntimeSettings
             Saga = defaults.Saga with
             {
                 ExtractionEnabled = features.SagaExtraction,
+            },
+            TapestryEnabled = features.Tapestry,
+            Tapestry = defaults.Tapestry with
+            {
+                RetrievalMode = tapestry.RetrievalMode,
+                SummaryModel = string.IsNullOrWhiteSpace(tapestry.SummaryModel)
+                    ? null
+                    : tapestry.SummaryModel.Trim(),
             },
             SemanticSpellRoutingEnabled = features.SemanticSpellRouting,
         };
