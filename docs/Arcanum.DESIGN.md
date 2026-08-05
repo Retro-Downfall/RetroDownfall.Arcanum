@@ -371,7 +371,7 @@ credential APIs. It has no project reference back to Core, Infrastructure, Api, 
 Grimoire/`Chronosync`/`CampaignLoggerQueue`/`Loremaster`, `InMemoryEventBus`, Comm Link
 multiplex/webhook.
 
-**RAG ownership:** Weave/Divination schema + managed/vec0 search in Infrastructure (`DivinationService`, `WeaveSchemaInitializer`, `SqliteVecExtensionLoader`); `EmbeddingBlobCodec` in **Core**; `IWeaveService` implemented in **Api** (§21.1). Background: `EntryWeavingService`, `WorkspaceIndexingService`, `SagaExtractionService`/`SagaMemoryStore`. Semantic spell routing cache: `SpellWeaveCache`.
+**RAG ownership:** Weave/Divination schema + managed/vec0 search in Infrastructure (`DivinationService`, the `Data/Schema/` object files installed by `GrimoireSchemaInstaller`, `SqliteVecExtensionLoader`); `EmbeddingBlobCodec` in **Core**; `IWeaveService` implemented in **Api** (§21.1). Background: `EntryWeavingService`, `WorkspaceIndexingService`, `SagaExtractionService`/`SagaMemoryStore`. Semantic spell routing cache: `SpellWeaveCache`.
 
 **MSBuild:** `IsTrimmable`, `PublishAot` (analysis signal), `EnableConfigurationBindingGenerator`; `FrameworkReference` AspNetCore for hosting abstractions.
 
@@ -686,7 +686,7 @@ messages, paths, PII, API keys, or stack traces. JSON invocations receive a sour
 
 **Composition:**
 
-- **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and applies embedded SQL schema migrations via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSqlSchemaMigrator`** (raw SQLite + `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`. A key mismatch or unreadable dedicated secret throws the sanitized `GrimoireDatabaseUnavailableException`, so startup fails closed while host/test cleanup can unwind normally; it never terminates the embedding process with `Environment.FailFast`. Legacy databases are transparently re-encrypted to the new KDF on unlock. The same bootstrapper runs from the CLI (`run` / `ask` / `chat`) so host and CLI share one migration path (§10.5).
+- **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and installs the complete embedded schema via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSchemaInstaller`** (raw SQLite, one transaction, no migration chain and no `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`. A key mismatch or unreadable dedicated secret throws the sanitized `GrimoireDatabaseUnavailableException`, so startup fails closed while host/test cleanup can unwind normally; it never terminates the embedding process with `Environment.FailFast`. Legacy databases are transparently re-encrypted to the new KDF on unlock. The same bootstrapper runs from the CLI (`run` / `ask` / `chat`) so host and CLI share one schema-install path (§10.5).
 - **`CampaignLoggerQueue` / `Loremaster`** — bounded `Channel<Guid>` (capacity 100 **session IDs**, not Entry rows) with **non-blocking `TryQueue`**: duplicate session ids coalesce via a pending-marker map; a full channel rejects with a warning log and clears the marker so the session remains eligible for a later sweep (internal sweeps fail-open). Explicit `POST /api/sessions/{id}/rest` returns **202** when accepted/coalesced and **503** + `Session.RestQueueFull` when rejected. Background service `Loremaster` (formerly `CampaignLoggerBackgroundService`) runs hybrid sweeps using **`Session.UnsummarizedEntryCount`** (incremented on every entry append — both the inference path and The Forge `POST /api/sessions/{id}/entries` path, each serialized per-session via **`SessionEntryPersistence`** / **`SessionWriteLock`** + **`SqliteBusyRetry`** so concurrent appends never lose an increment; reset on summarize) instead of full-table `Entries` aggregation. The consume path loads session headers via **`GetSessionHeaderAsync`** (no entry hydration). Headless summarization uses a stateless `PingRequest` with `SkipSpellRouting`, `DisableMcpTools`, `UnattendedMode`, optional `Arcanum:FastModel` (else `DefaultModel`); on success, `UpdateSessionCampaignRollupAsync` atomically sets `Session.Summary`, `LastSummarizedMessageAt`, and the remaining unsummarized count. On inference failure, the watermark is **not** advanced.
 - **`ArcanumDbContext`** — compiled model; SQLCipher passphrase from hosted service.
 - **`SessionRepository`** — implements **`ISessionRepository`** for Forge session CRUD, entry append, export, and analytics. Entry writes delegate shared invariants (lock, retry, per-entry validation, counter, UpdatedAt) to internal **`SessionEntryPersistence`**. **`AddEntryAsync`** returns **`Result<Entry>`** for expected domain outcomes (not found, archived, invalid or oversized entry); there is no total persisted-entry ceiling. **`UpdateSessionAsync`** patches Title/Status only — Grimoire-owned counters and rollups are never clobbered from caller-supplied `Session` rows.
@@ -757,14 +757,15 @@ this inventory and §10.2.5.
 - `/v1/files` and session-attachment metadata are Grimoire rows, while their bytes are owner-only,
   versioned authenticated-encryption envelopes under `files/` and `attachments/` respectively.
   SQLCipher protects the metadata; `IEncryptedBlobStore` independently protects the external blobs.
-- Weave, Saga, workspace-imprint, Tapestry, and Lexicon tables are raw-SQL schemas initialized after
-  the embedded install scripts. Optional `vec0` tables are acceleration only; BLOB tables remain the
-  durable fallback (§21).
+- Weave, Saga, workspace-imprint, Tapestry, and Lexicon tables are declared in the same per-object
+  schema tree as every other Grimoire object and install with it in one transaction — there is no
+  separate runtime initializer. They remain outside the compiled EF model and are reached through raw
+  SQL. Optional `vec0` tables are acceleration only; BLOB tables remain the durable fallback (§21).
 
 | State | Durable authority | Persistence contract |
 |-------|-------------------|----------------------|
 | Sessions, Entries, Campaigns, Prompts, Apprentices, WorkspaceContexts, operator Lore | EF-tracked Grimoire tables | Compiled-model entities; `MageSettings` remains operator-only Lore. |
-| Lexicon entity memory | `lexicon_entries` + `lexicon_fts` + `lexicon_fact_attachment_provenance` | Raw SQL initialized idempotently by `LexiconSchemaInitializer`; attachment-derived facts retain typed per-fact provenance and dynamically report deleted sources as unavailable; no EF entity (§10.6). |
+| Lexicon entity memory | `lexicon_entries` + `lexicon_fts` + `lexicon_fact_attachment_provenance` | Declared in `Data/Schema/` and installed with everything else; attachment-derived facts retain typed per-fact provenance and dynamically report deleted sources as unavailable; no EF entity (§10.6). |
 | Unseen Servant schedule state | `UnseenServantWatermarks` | Raw SQL; only last-run time and effective interval persist (§5.5.5). |
 | Sanctum breach history | `SanctumBreaches` | Raw SQL, per-Campaign retention, durable across restart (§11.15). |
 | Idempotency claims | `IdempotencyClaims` | Raw-SQL lease/state machine; legacy `IdempotencyKeys` may remain for expiry compatibility (§11.17). |
@@ -774,8 +775,8 @@ this inventory and §10.2.5.
 | Session attachment metadata | `SessionAttachments` | Raw SQL through `ISessionAttachmentStore`; `EncryptionVersion`/`EncryptionKeyId`, encrypted bytes, and lifecycle are in §10.2.5. |
 | Session context pins | `SessionContextPins` | Raw SQL through `ISessionContextPinStore`; durable metadata only. Content is revalidated and materialized from its authoritative source on every turn (§10.2.6). |
 | OpenAI batch metadata | `Batches` | No request-count columns; `GET` derives counts from input/output/error files (§11.21). |
-| Embedding, attachment-retrieval, and Saga state | `entry_embeddings`[+`_vec`], workspace/attachment companions, `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks`, `saga_memory_attachment_provenance`, `attachment_memory_consultations` | Created idempotently from canonical definitions in `WeaveSchemaInitializer`. Attachment chunks and derived Saga memories retain typed session/attachment/key/version/hash/materialized-time/source provenance. Campaign consultations are metadata-only and link to the finalized assistant entry so timestamp-group summary windows remain exact. While Arcanum has no users, schema changes replace those definitions directly and local/test databases are recreated; no compatibility upgrade path is maintained. Reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
-| The Tapestry (hierarchical memory) | `tapestry_generations`, `tapestry_nodes`, `tapestry_node_embeddings`[+`_vec`] | Created idempotently in `WeaveSchemaInitializer`; no EF entity and no compiled-model regeneration. Trees are **derived data**, never a second source of truth: leaf nodes reference their corpus row by stable id rather than copying its bytes, and every generation stores the clustering algorithm version, settings fingerprint, summary recipe/model, embedding dimension, and corpus fingerprint that produced it. Exactly one `Complete` generation per scope is visible to retrieval; `Building` rows are invisible and `Superseded` rows exist only until reconciliation removes them. Reset with `POST /api/embeddings/reset?confirm=true&scope=tapestry` (§21.11). |
+| Embedding, attachment-retrieval, and Saga state | `entry_embeddings`[+`_vec`], workspace/attachment companions, `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks`, `saga_memory_attachment_provenance`, `attachment_memory_consultations` | Declared one object per file under `Data/Schema/Tables/` and installed with the rest of the schema. Attachment chunks and derived Saga memories retain typed session/attachment/key/version/hash/materialized-time/source provenance. Campaign consultations are metadata-only and link to the finalized assistant entry so timestamp-group summary windows remain exact. While Arcanum has no users, schema changes edit those object files directly and local/test databases are recreated; no compatibility upgrade path is maintained. Reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
+| The Tapestry (hierarchical memory) | `tapestry_generations`, `tapestry_nodes`, `tapestry_node_embeddings`[+`_vec`] | Declared under `Data/Schema/Tables/`; no EF entity and no compiled-model regeneration. Trees are **derived data**, never a second source of truth: leaf nodes reference their corpus row by stable id rather than copying its bytes, and every generation stores the clustering algorithm version, settings fingerprint, summary recipe/model, embedding dimension, and corpus fingerprint that produced it. Exactly one `Complete` generation per scope is visible to retrieval; `Building` rows are invisible and `Superseded` rows exist only until reconciliation removes them. Reset with `POST /api/embeddings/reset?confirm=true&scope=tapestry` (§21.11). |
 | Entry pinning | `Entries.IsPinned` | Pinned entries survive read-time compression and remain available to inference. |
 | Mandatory `apply_patch` receipt | deterministic `Entries` rows | Exact assistant `ToolCall` then system `ToolResult`; no receipt table (§10.7.4). |
 | Daemon execution history | process memory | `InMemoryDaemonExecutionRepository`; restart clears it. |
@@ -789,36 +790,76 @@ Accounting and audit surfaces may store reasoning token counts, never reasoning 
 
 #### 5.4.5 Schema installation, serialization, and crash consistency
 
-The AOT host does not call `Database.MigrateAsync`. Embedded files under
-`Infrastructure/Data/SqlMigrations/` use a 14-digit UTC prefix
-(`<yyyyMMddHHmmss>_<Name>.sql`) and are applied in `GrimoireSqlSchemaMigrator.MigrationOrder`.
-The migrator owns one `SqliteTransaction` per script and inserts the matching
-`__EFMigrationsHistory` row in that same transaction; scripts contain DDL only and never their own
-`BEGIN`, `COMMIT`, or history insert. The project file embeds the scripts by glob. Existing script
-ids remain in append order; do not reorder/remove them except as part of a verified full-baseline
-squash.
+**There is no migration chain.** The Grimoire schema is a declarative, SDK-style database project:
+one object per `.sql` file under `Infrastructure/Data/Schema/`, embedded by glob
+(`Data\Schema\**\*.sql`) and installed fresh. The AOT host does not call `Database.MigrateAsync`,
+there is no `__EFMigrationsHistory`, and no numbered script chain exists to replay.
 
-Arcanum has no supported user-data migration program. Schema history may be squashed into a verified
-`InitialCreate` baseline because there is no production installed base: replay the old chain against
-a scratch database and compare columns, indexes, triggers, and foreign keys before replacing it.
-When an already-recorded install script changes incompatibly, developers use a binary that can read
-the existing schema to create and verify a supported `.arcbackup` for anything that must be
-preserved. They then stop every host/daemon, delete `arcanum.db` plus `-wal`/`-shm`, and restart to
-reinstall. There is intentionally no incremental or data migration in either case below.
-Copy-pastable developer commands are in
+```
+Data/Schema/
+  Tables/            # one file per table — Sessions.sql, Entries.sql, lexicon_entries.sql, …
+  FullTextSearch/    # one file per FTS5 virtual table — Entries_fts.sql, lexicon_fts.sql
+  Triggers/          # one file per trigger — Entries_ai.sql, TR_BatchLineCheckpoints_*.sql, …
+  Views/             # one file per view (none exist yet)
+  Accelerators/      # one file per optional vec0 virtual table
+```
+
+Conventions, enforced by `GrimoireSchemaCatalogTests`:
+
+- **One object per file, named after the object.** **Indexes are co-located in their owning table's
+  file** rather than getting files of their own, so a table and everything that constrains it read as
+  a single definition. Nothing else shares a file.
+- **Every statement is `CREATE ... IF NOT EXISTS`**, so an install against an already-installed
+  database is a no-op rather than an error.
+- **The folder is the install tier and the install order:** `Tables` → `FullTextSearch` → `Triggers`
+  → `Views`, then the optional `Accelerators`. SQLite resolves foreign keys at DML time rather than
+  at `CREATE TABLE` time, so tables install in plain ordinal file-name order with no dependency sort;
+  triggers come last because they are the only objects that reference both a table and an FTS5
+  virtual table. An unrecognized folder throws instead of installing in an arbitrary tier.
+- **`{{EmbeddingDimensions}}`** is the one template token, resolved at install from the clamped
+  `Arcanum:Integrations:Embeddings:Dimensions`. Only the `vec0` accelerators use it; a statement that
+  still carries an unresolved placeholder after substitution throws rather than reaching SQLite.
+
+`GrimoireSchemaInstaller` installs the **durable schema — every tier except `Accelerators` — in one
+`SqliteTransaction`**, wrapped in `SqliteBusyRetry` so a concurrent CLI opening the same encrypted
+file waits instead of failing. A failure anywhere rolls the whole install back, so a half-built
+schema is never observable, and the durable schema is not optional: a failure fails startup. The
+`Accelerators` tier installs outside that transaction and only when `SqliteVecExtensionLoader` loads
+sqlite-vec; any failure there degrades to a logged warning and the managed cosine fallback over the
+BLOB companion tables, because `vec0` is performance and never correctness (§21.2). Two best-effort
+post-install steps — the Lexicon FTS rebuild and the embedding-dimension mismatch warning — likewise
+log and continue. Callers apply `SqliteConnectionPragmas` first, so the install runs under
+`journal_mode=WAL`, `busy_timeout=5000`, `foreign_keys=ON`, and `synchronous=NORMAL`.
+
+**Schema identity replaces the history table.** `GrimoireSchemaIdentity.ComputeAsync` hashes the
+installed `sqlite_master` (type, name, owning table, stored DDL) into a `sha256-…` value.
+`.arcbackup` records it for the consistent snapshot it captured and re-checks it during verification
+(§5.4.8) — a mismatch is `backup.database_schema_mismatch`. It is deliberately **not** enforced at
+startup: opening an older local database still works, and recreating an incompatible one stays the
+operator's call. `GrimoireSchemaCatalog.CanonicalSchemaFingerprint` is the companion hash of the
+*definitions*, used by the test fixture to rebuild its cached template when any object file changes.
+
+**Fresh install only.** Arcanum has no supported user-data migration program and no production
+installed base. Change an object file directly; the schema tree is the single source of truth, and
+the install is idempotent for an already-matching database. Because every statement is
+`IF NOT EXISTS`, an install against a database with an older shape adds what is missing and leaves
+incompatible objects untouched — it does **not** upgrade them. When a change is incompatible,
+developers use a binary that can still read the existing schema to create and verify a supported
+`.arcbackup` for anything that must be preserved, then stop every host/daemon, delete `arcanum.db`
+plus `-wal`/`-shm`, and restart to reinstall. There is intentionally no incremental or data
+migration. Copy-pastable developer commands are in
 [Arcanum.README, “Local Grimoire reinstall”](Arcanum.README.md#local-grimoire-reinstall).
 
 Unified retention is an orchestration layer over the existing canonical tables, encrypted blob
-trees, and JSONL files. Issue #43 added no schema or SQL install script, so existing local and test
-databases require neither migration nor recreation for this feature. If a future retention change
-alters a canonical schema, this pre-user-data reinstall policy applies at that time.
+trees, and JSONL files. Issue #43 added no schema object, so existing local and test databases
+require neither migration nor recreation for this feature. If a future retention change alters a
+canonical schema, this pre-user-data reinstall policy applies at that time.
 
-- `20260705171559_InitialCreate.sql` now declares `Entries.Sequence INTEGER NOT NULL` and the unique
-  `IX_Entries_SessionId_Sequence` index (§5.4.1). Existing rows have no sequence to backfill
-  meaningfully — their append order was never recorded — so a Grimoire created before this baseline
-  **must** be deleted and reinstalled. The compiled EF model was regenerated for the new property.
-- `20260721010000_AddInferenceAccountingAndIdempotencyClaims.sql`, whose original
-  `BillableOperations` definition now includes `ReasoningTokens INTEGER NOT NULL DEFAULT 0`.
+The declarative tree was proven equivalent to the retired stack (the numbered
+`Data/SqlMigrations/*.sql` chain plus `WeaveSchemaInitializer` plus `LexiconSchemaInitializer`)
+before that stack was deleted: a `sqlite_master` diff test asserted an identical object inventory,
+token-for-token identical stored DDL for every object, and identical `PRAGMA table_info` /
+`foreign_key_list` / `index_list` / `index_info` output for every table.
 
 Structured values must use a source-generated context:
 
@@ -832,19 +873,20 @@ Scalar raw-SQL tables need no JSON registration. Raw-SQL repositories reuse
 provider-neutral parameters through `DbCommand.CreateParameter()`, and wrap SQLITE_BUSY/LOCKED work
 in `SqliteBusyRetry`. They do not open an unrelated second connection to the encrypted database.
 
-The compiled model is canonical for EF-tracked entities, while raw-SQL schemas remain outside it.
-The historical EF `InitialCreate` C# migration and model snapshot are intentionally not a complete
-runtime-schema inventory: `SessionAttachments`, `SessionContextPins`, and inference-accounting tables have no EF entities,
-and additive SQL-backed surfaces do not imply compiled-model regeneration. Do not add a `DbSet` or
-regenerate the compiled model for `BillableOperations.ReasoningTokens`.
+**The declarative schema tree is the runtime schema of record.** The compiled model remains canonical
+for EF-tracked entities (Sessions, Entries, Campaigns, Prompts, Apprentices, WorkspaceContexts,
+MageSettings), and the two are never allowed to disagree: `GrimoireSchemaInstallerTests` asserts every
+table and column the compiled model maps exists in the installed schema. They differ only in breadth
+— most tables have no EF entity at all. `SessionAttachments`, `SessionContextPins`, `InferenceRuns`,
+`BillableOperations`, `BudgetReservations`, `CostAdjustments`, `LongRunningOperations`, and the
+Weave/Saga/Tapestry/Lexicon tables are intentionally absent from both EF tracking and the compiled
+model; adding a SQL-backed table or column does not imply compiled-model regeneration.
 
-More precisely, `Sessions.TotalCostUsd`, `Entries.IsPinned`, `Session.ForkedFromSessionId` and its
-index, plus additive tables such as `UnseenServantWatermarks`, `SanctumBreaches`,
-`IdempotencyKeys`, `UploadedFiles`, `Batches`, and `BudgetAlerts`, were installed through SQL-backed
-schema work rather than a newly generated EF migration. The snapshot was hand-aligned for
-`TotalCostUsd` and `ForkedFromSessionId` so design-time migration scaffolding does not invent those
-columns again. `SessionAttachments`, `SessionContextPins`, `InferenceRuns`, `BillableOperations`, `BudgetReservations`,
-and `CostAdjustments` remain intentionally absent from both EF tracking and the compiled model.
+`Data/Migrations/` holds **EF design-time scaffolding only** — one regenerated `InitialCreate`
+baseline plus `ArcanumDbContextModelSnapshot`, aligned with the compiled model and rewritten from
+scratch by `dotnet ef migrations add` when the EF model changes. It is never applied: no host, CLI,
+or test calls `Database.Migrate`/`MigrateAsync`, and it is deliberately **not** a runtime-schema
+inventory. Do not hand-edit it, and do not treat a missing table there as a missing table.
 
 `apply_patch` deliberately crosses the filesystem/Grimoire boundary without claiming distributed
 atomicity. It stages same-directory outputs/backups, mutates destinations sequentially, and while the
@@ -1196,9 +1238,10 @@ overall timeout. Cancellation finishes the native backup handle and identity-cle
 temporary database. It validates a completed snapshot with `PRAGMA quick_check` and
 `PRAGMA foreign_key_check` before no-clobber publication to backup staging. It does not use
 `File.Copy`, and uncommitted concurrent rows do not become part of the snapshot. The authenticated
-manifest records the latest `__EFMigrationsHistory` id; archive verification reopens the extracted
-snapshot with the portable Grimoire secret and KDF sidecar, runs `quick_check`, and compares that
-schema id.
+manifest records the snapshot's schema identity — the `sha256-…` hash of its `sqlite_master`
+(§5.4.5), not a migration id; archive verification reopens the extracted snapshot with the portable
+Grimoire secret and KDF sidecar, runs `quick_check`, recomputes that identity, and reports a
+mismatch as `backup.database_schema_mismatch`.
 
 `.arcbackup` format version 1 starts with a fixed 68-byte `ARCABACK` outer header containing only
 format/KDF/encryption identifiers and parameters, payload length, creation time, salt, and nonce
@@ -1917,7 +1960,7 @@ The sterile `[None]` (never an empty block, never chatty copy) prevents smaller 
 
 **Role:** structured, model-writable memory that replaces the legacy key-value Lore MCP tools for agent use. Entities are typed (Person, Project, API, DaemonState, …) with a fact array; the inference pipeline retrieves them by subject and injects them into the Master system prompt under DATA as `### Lexicon (Known Context)`. The legacy `MageSettings` Lore surface (`/api/lore`, `arcanum lore`) remains as an operator-only key-value store; it is no longer model-directed.
 
-**Persistence (raw SQL, no EF):** `lexicon_entries` (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt) + an FTS5 external-content virtual table `lexicon_fts` (Name, Type, FactsText; `content='lexicon_entries'`, `content_rowid='rowid'`) with `lexicon_entries_ai`/`_ad`/`_au` triggers syncing the index on insert/delete/update. Neither table is part of the compiled EF model — they are created by `LexiconSchemaInitializer.EnsureSchemaAsync` at Grimoire bootstrap (alongside `WeaveSchemaInitializer`) and accessed via `LexiconService` over the scoped `ArcanumDbContext` connection + `SqliteBusyRetry` + `DbCommand.CreateParameter()`, mirroring `SagaMemoryStore` / `SanctumBreachRepository`. No EF migration, no compiled-model regeneration.
+**Persistence (raw SQL, no EF):** `lexicon_entries` (Id, Name, NameNormalized, Type, FactsJson, FactsText, UpdatedAt) + an FTS5 external-content virtual table `lexicon_fts` (Name, Type, FactsText; `content='lexicon_entries'`, `content_rowid='rowid'`) with `lexicon_entries_ai`/`_ad`/`_au` triggers syncing the index on insert/delete/update. Neither table is part of the compiled EF model — they are declared in `Data/Schema/` (`Tables/lexicon_entries.sql`, `Tables/lexicon_fact_attachment_provenance.sql`, `FullTextSearch/lexicon_fts.sql`, and one file per sync trigger) and installed with the rest of the schema at Grimoire bootstrap, then accessed via `LexiconService` over the scoped `ArcanumDbContext` connection + `SqliteBusyRetry` + `DbCommand.CreateParameter()`, mirroring `SagaMemoryStore` / `SanctumBreachRepository`. No EF migration, no compiled-model regeneration.
 
 Initialization uses idempotent `CREATE ... IF NOT EXISTS`. Failure is logged and swallowed so this
 optional memory cannot prevent host startup; reads degrade to empty and writes to logged failures
@@ -2319,8 +2362,8 @@ It is independent of the inference stream.
 Long-running work may not treat an in-memory `Task`, enumerator, process handle,
 `CancellationToken`, live stream, Ward, or DI object as recovery state. The shared lifecycle is
 `ILongRunningOperationStore` plus the scoped `ILongRunningOperationCoordinator`, backed by the
-raw-SQL `LongRunningOperations` table in the SQLCipher-encrypted Grimoire. Migration
-`20260730020000_AddLongRunningOperations` is append-only in `GrimoireSqlSchemaMigrator`.
+raw-SQL `LongRunningOperations` table in the SQLCipher-encrypted Grimoire, declared in
+`Data/Schema/Tables/LongRunningOperations.sql` with its indexes co-located (§5.4.5).
 
 Each row contains operation kind and policy; `Pending`, `Running`, `Waiting`, `Cancelling`,
 `Completed`, `Failed`, `Abandoned`, or `ReconciliationRequired`; root/parent, Session, inference
@@ -3227,10 +3270,12 @@ increase counts:
   exact parity with the helper projection is not assumed. A real Master → TurnEngine → native
   projection → Apprentice test guards answer-only handoff.
 - **Accounting/persistence:** `CostCalculatorTests`, `BudgetReservationEstimateTests`,
-  `TurnAccountingHandleTests`, `InferenceAccountingStoreTests`,
-  `GrimoireSqlSchemaMigratorTests`, metrics tests, and audit tests cover cached/reasoning subset
-  pricing, nullable-vs-zero rates, reservation headroom, nested ambient restoration, reconciliation,
-  raw-SQL token columns, fresh install/idempotent script reapply, the no-EF-entity guard, and
+  `TurnAccountingHandleTests`, `InferenceAccountingStoreTests`, `GrimoireSchemaCatalogTests`,
+  `GrimoireSchemaInstallerTests`, `GrimoireSchemaIdentityTests`, metrics tests, and audit tests cover
+  cached/reasoning subset pricing, nullable-vs-zero rates, reservation headroom, nested ambient
+  restoration, reconciliation, raw-SQL token columns, the schema tree's one-object-per-file and
+  idempotency conventions, fresh install/transactional rollback/idempotent re-open, schema identity
+  and drift detection, the compiled-model/installed-schema agreement and no-EF-entity guards, and
   count-only telemetry.
 - **Clients:** CLI API/rendering/command tests, Command Center tests, The Forge NDJSON/Tome/trace
   tests, Compendium notifications, and `ApprenticeStreamFramePolicyTests` cover known/unknown/
@@ -3455,14 +3500,20 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 
 ### 16.2 Persistence
 
-- **Schema ownership:** EF design-time migrations live under `Data/Migrations/`; the AOT host applies
-  companion embedded SQL from `Data/SqlMigrations/` through `GrimoireSqlSchemaMigrator` and
-  `__EFMigrationsHistory`, never `Database.MigrateAsync`. Incompatible local schemas are recreated
-  under §5.4.5 rather than data-migrated.
-- **Installation atomicity:** `GrimoireSqlSchemaMigrator` wraps each embedded script and its matching
-  history-row insert in one `SqliteTransaction`. Scripts contain no `BEGIN`, `COMMIT`, or history
-  insert. FTS backfills are idempotent, baseline `CREATE TABLE` / `CREATE INDEX` statements are
-  guarded, and a failure rolls back both schema work and the history row so startup can retry.
+- **Schema ownership:** the runtime schema is the declarative one-object-per-file tree under
+  `Data/Schema/`, installed by `GrimoireSchemaInstaller`. There is no migration chain and no
+  `__EFMigrationsHistory`; nothing calls `Database.MigrateAsync`. `Data/Migrations/` is EF
+  design-time scaffolding only — a regenerated single baseline plus model snapshot, never applied and
+  never a runtime-schema inventory. Incompatible local schemas are recreated under §5.4.5 rather than
+  data-migrated.
+- **Installation atomicity:** the durable schema installs in one `SqliteTransaction` under
+  `SqliteBusyRetry`; every statement is `CREATE ... IF NOT EXISTS`, so a fresh install and a re-open
+  take the same path and a failure rolls the entire install back. Optional `vec0` accelerators, the
+  Lexicon FTS rebuild, and the embedding-dimension warning run outside that transaction and degrade
+  to logged warnings.
+- **Schema identity:** `GrimoireSchemaIdentity` hashes the installed `sqlite_master` into a
+  `sha256-…` value that `.arcbackup` records and re-verifies. It replaces the retired history row and
+  is not enforced at startup.
 - **SQLite pragmas** (applied on every connection via **`SqliteConnectionPragmas`**): `journal_mode=WAL`, `busy_timeout=5000`, `foreign_keys=ON`, `synchronous=NORMAL`. WAL provides automatic crash recovery; write contention is retried via **`SqliteBusyRetry`** with capped per-delay backoff on SQLITE_BUSY/locked until the transaction succeeds, a non-transient error occurs, or the caller cancels. Attempt count and total waiting time are observability, not arbitrary terminal ceilings.
 - **`Arcanum:Features:Conclave`** gates **The Conclave** cross-Apprentice delegation (the **`cast_sending`** tool and **`POST /api/apprentices/{id}/cast`**). Apprentice lineage (**`ParentApprenticeId`**) is persisted inside the existing **`CheckpointData`** JSON column — deliberately **no** EF migration or compiled-model regeneration, and no top-level SQL index.
 - **`cli-context.json`** is the owner-only, versioned local CLI preference document for active
@@ -3470,7 +3521,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   `cli-session.txt` remains a temporary compatibility mirror of the last Session id; neither file
   is multi-user or cloud-synchronized.
 - **`UnseenServantWatermarks`** (§5.5.5) is deliberately **not** part of the compiled EF model — it is accessed entirely via raw SQL through the scoped **`ArcanumDbContext`**'s connection (`GetDbConnection()`), following the FTS query pattern (**`ResolveFtsSessionIdsAsync`**/**`SearchArchivesAsync`**), so adding it required no `dotnet ef dbcontext optimize` regeneration.
-- **Schema-install safety and configuration impact:** `UnseenServantWatermarks` and `SanctumBreaches` are folded into the `InitialCreate.sql` baseline (no production databases in the wild); neither adds a public configuration element. Installation/reinstall policy is §5.4.5.
+- **Schema-install safety and configuration impact:** `UnseenServantWatermarks` and `SanctumBreaches` each own one object file under `Data/Schema/Tables/`; neither adds a public configuration element. Installation/reinstall policy is §5.4.5.
 - **`SanctumBreaches`** (§11.15): raw SQL via `SanctumBreachRepository` (not in the compiled EF model); FK to `Campaigns` (`ON DELETE CASCADE`); retention enforced on every insert (`SanctumConfig.MaxBreachCount`, clamp 100 – 100,000).
 - **`LongRunningOperations`** (§10.8): raw SQL via `LongRunningOperationStore`, encrypted by the
   same SQLCipher Grimoire, with self-referencing root/parent foreign keys and indexes on
@@ -3962,7 +4013,7 @@ All seven capabilities are implemented (§21.1–§21.2 foundation; §21.6–§2
 
 ### 21.1 Embedding infrastructure (shared foundation)
 
-**Layering:** `IWeaveService` / `WeaveService` (**Api** — depends on `IEmbeddingGeneratorFactory` / OpenAI SDK packages, mirroring `ChatClientFactory`). `IDivinationService` / `DivinationService` + `WeaveSchemaInitializer` + `SqliteVecExtensionLoader` + `WeaveIndexAvailability` (**Infrastructure**). `EmbeddingBlobCodec` (**Core**).
+**Layering:** `IWeaveService` / `WeaveService` (**Api** — depends on `IEmbeddingGeneratorFactory` / OpenAI SDK packages, mirroring `ChatClientFactory`). `IDivinationService` / `DivinationService` + the `Data/Schema/` object files + `SqliteVecExtensionLoader` + `WeaveIndexAvailability` (**Infrastructure**). `EmbeddingBlobCodec` (**Core**).
 
 **`IWeaveService`:** `IsAvailable` from live `IOptionsMonitor` (`Enabled` + Provider + Model). Disabled → `Embeddings.FeatureDisabled` (no HTTP). Provider failure → sanitized `Embeddings.ProviderUnavailable`. Embedding batches have no Arcanum whole-operation deadline: the caller cancellation token propagates directly through generator resolution and `GenerateAsync`. `EmbedBatchAsync` remains sequential by `BatchSize`, with provider request/chunk bounds and explicit reservation/usage reconciliation. General embedding inputs retain `ChunkAsync` sliding windows; workspace files use the deterministic line-preserving `WorkspaceCodeChunker` described in §21.7.
 
@@ -3972,7 +4023,7 @@ All seven capabilities are implemented (§21.1–§21.2 foundation; §21.6–§2
 
 ### 21.2 Vector storage — vec0 acceleration with a managed fallback (always safe)
 
-Per feature: durable **BLOB** table (always) + optional **`vec0`** virtual table (`distance_metric=cosine`) when extension loads. Schema created by `WeaveSchemaInitializer` after migrations (not a static embedded migration — dimensions come from `Arcanum:Integrations:Embeddings:Dimensions`). Extension load failure → managed-only; never fails startup.
+Per feature: durable **BLOB** table (always) + optional **`vec0`** virtual table (`distance_metric=cosine`) when extension loads. Both are declarative object files in the one schema tree (§5.4.5): the BLOB tables install with the durable schema, and the `vec0` files live under `Data/Schema/Accelerators/` where a `{{EmbeddingDimensions}}` token resolves at install from `Arcanum:Integrations:Embeddings:Dimensions`. Accelerators install outside the durable transaction and only when sqlite-vec loads; extension load failure → managed-only, never a startup failure.
 
 **Default: managed-only** (no sqlite-vec NuGet in-tree). vec0 is performance-only.
 

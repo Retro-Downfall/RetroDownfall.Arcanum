@@ -29,7 +29,10 @@
 
   <ItemGroup>
 
-    <EmbeddedResource Include="Data\SqlMigrations\*.sql" />
+    <!-- SDK-style schema project conventions: the declarative one-object-per-file tree is included
+         by glob, so adding a table/trigger/FTS/view object is adding a file. Never a hand-maintained
+         list, and never a filesystem read at install time. -->
+    <EmbeddedResource Include="Data\Schema\**\*.sql" />
 
   </ItemGroup>
 

@@ -167,8 +167,12 @@ src/
   RetroDownfall.Arcanum.Secrets/         # native OS credential-store implementations
   RetroDownfall.Arcanum.Infrastructure/  # Grimoire, MCP, perception, Comm Link, Serilog
     Generated/                           # EF Core compiled model (commit regenerations)
-    Data/Migrations/                     # EF Core migrations
-    Data/SqlMigrations/                  # SQL scripts run at startup
+    Data/Schema/                         # the schema: one object per .sql file, installed at startup
+      Tables/                            #   one file per table, its indexes co-located
+      FullTextSearch/                    #   one file per FTS5 virtual table
+      Triggers/                          #   one file per trigger
+      Accelerators/                      #   optional vec0 tables, templated on embedding dimensions
+    Data/Migrations/                     # EF design-time scaffolding only — never applied
   RetroDownfall.Arcanum.Api/             # endpoints, intelligence hub, /v1, security filter
     ProvingGrounds/                      # trial/inquisitor endpoint wiring
   RetroDownfall.Arcanum.Cli/             # the `arcanum` executable (Spectre commands)
@@ -218,9 +222,14 @@ These are the recurring shapes. Matching them is what makes a change "fit."
   recovery handler, store only minimum encrypted checkpoint state, and expose only a bounded safe
   summary. Never persist a live Task/token/enumerator/process/DI object. See
   [DESIGN §10.8](Arcanum.DESIGN.md#108-durable-operation-ledger-and-restart-reconciliation).
-- **Change pre-user raw-SQL schemas directly.** Arcanum has no users yet, so update canonical
-  initializer definitions and recreate local/test databases; do not add compatibility migrations
-  or in-place upgrade paths. Revisit this policy before durable user data exists.
+- **Change the schema by editing its object file.** The Grimoire schema is a declarative tree under
+  `Infrastructure/Data/Schema/`: one `.sql` file per table (with its indexes co-located), per FTS5
+  virtual table, per trigger, and per view, embedded by glob and installed fresh in one transaction.
+  Adding an object is adding a file — no list to update, no numbered script, no
+  `__EFMigrationsHistory`. Arcanum has no users yet, so edit the canonical definition in place and
+  recreate local/test databases; do not add compatibility migrations or in-place upgrade paths.
+  Revisit this policy before durable user data exists. See
+  [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency).
 
 ---
 
@@ -626,11 +635,14 @@ endpoints, or models use conservative estimated accounting and no prompt-cache d
 
 ### Local Grimoire reinstall
 
-Arcanum has no supported user-data migration path between incompatible local schemas. A developer
-database created before the current schema must be recreated. Before replacing the binary that can
-still read it, create and verify a supported `.arcbackup` for anything that must be preserved. Then
-stop every Arcanum host and daemon, delete the database and its WAL/SHM sidecars, and restart. A
-database created by the current schema needs no reinstall.
+Arcanum has no migration chain and no supported user-data migration path between incompatible local
+schemas — the declarative schema tree installs fresh and every statement is `CREATE ... IF NOT
+EXISTS`, so re-opening a database with an older shape adds what is missing and leaves incompatible
+objects exactly as they are. It does not upgrade them. A developer database created before the
+current schema must be recreated. Before replacing the binary that can still read it, create and
+verify a supported `.arcbackup` for anything that must be preserved. Then stop every Arcanum host and
+daemon, delete the database and its WAL/SHM sidecars, and restart. A database created by the current
+schema needs no reinstall.
 
 If the dedicated Grimoire secret is corrupt or cannot decrypt the current database, startup fails
 closed with a sanitized database-unavailable error and never falls back to the API key. The failure
@@ -666,8 +678,8 @@ Remove-Item -Force -ErrorAction SilentlyContinue `
   "$HOME\.config\arcanum\arcanum.db-shm"
 ```
 
-There is intentionally no data migration or EF-model regeneration for this raw-SQL accounting
-table. See [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)
+There is intentionally no data migration or EF-model regeneration for the raw-SQL accounting tables.
+See [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)
 and [§22.2](Arcanum.DESIGN.md#222-cost-tracking-and-budget-enforcement-arcanumcost).
 
 ### Encrypted blob key, backup, and recovery
@@ -895,7 +907,7 @@ roles. Apply holds an immediate database transaction and daemon-start gate acros
 conflict check and cleanup; interruption is restart-idempotent. Backups must be selected and
 destroyed separately by the operator.
 
-This feature uses the existing canonical tables and file layouts. It adds no SQL migration and
+This feature uses the existing canonical tables and file layouts. It adds no schema object and
 requires no local/test database recreation. If a later retention change alters a canonical schema,
 the pre-user-data reinstall policy in [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)
 applies at that time.

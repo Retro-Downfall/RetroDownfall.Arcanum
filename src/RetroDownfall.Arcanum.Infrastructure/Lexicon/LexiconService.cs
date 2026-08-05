@@ -18,7 +18,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Lexicon;
 /// <summary>
 /// Raw-SQL persistence for The Lexicon, reusing the scoped <see cref="ArcanumDbContext"/>'s
 /// connection. Neither <c>lexicon_entries</c> nor <c>lexicon_fts</c> is part of the compiled EF
-/// model (they are created by <see cref="LexiconSchemaInitializer"/>, not a migration), so all
+/// model (they are declared in <c>Data/Schema/</c> and installed with the rest of the schema), so all
 /// access goes through <see cref="DbCommand"/> rather than LINQ, mirroring <c>SagaMemoryStore</c>.
 /// Writes use <c>BEGIN IMMEDIATE</c> inside <see cref="SqliteBusyRetry"/> so concurrent
 /// <c>scribe_lexicon</c> appends serialize and cannot lose facts.

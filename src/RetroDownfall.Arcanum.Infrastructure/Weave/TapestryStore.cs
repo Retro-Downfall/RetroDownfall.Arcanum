@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// <summary>
 /// Raw-SQL persistence for The Tapestry, reusing the scoped <see cref="ArcanumDbContext"/>'s
 /// connection through <see cref="DbCommand"/> exactly like <c>SagaMemoryStore</c> — none of the
-/// <c>tapestry_*</c> tables is in the compiled EF model (see <see cref="WeaveSchemaInitializer"/>).
+/// <c>tapestry_*</c> tables is in the compiled EF model (they are declared in <c>Data/Schema/Tables/</c>).
 ///
 /// <para>The generation lifecycle is the correctness core: builds stage into a <c>Building</c> row,
 /// <see cref="PublishGenerationAsync"/> flips exactly one scope's current generation inside a single

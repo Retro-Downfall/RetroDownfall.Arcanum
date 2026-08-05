@@ -19,8 +19,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 // directly with vec0 KNN. When false (Phase 1's default — see WeaveIndexAvailability), the vec0 table
 // name is never even touched: the companion BLOB table name is derived by stripping the "_vec" suffix
 // (-> "entry_embeddings") and the search runs as a managed, brute-force cosine scan in C# via
-// EmbeddingBlobCodec. Column names are shared between both tables by convention (see
-// WeaveSchemaInitializer) so the same primaryKeyColumn/embeddingColumn pair works either way.
+// EmbeddingBlobCodec. Column names are shared between both tables by convention (the BLOB table and
+// its Data/Schema/Accelerators/ companion declare identical column names) so the same
+// primaryKeyColumn/embeddingColumn pair works either way.
 //
 // Managed-path mechanics: every matching row is scored, results are tracked in a streaming top-K
 // heap (no full scored list + OrderBy), and scoped searches join the scope table in SQL instead of an
@@ -221,8 +222,8 @@ internal sealed class DivinationService(
 
         // tableName/primaryKeyColumn/embeddingColumn are internal constants owned by the calling
         // feature's retrieval code (e.g. "entry_embeddings_vec", "EntryId", "Embedding") — never user
-        // input — interpolated the same way GrimoireSqlSchemaMigrator interpolates its own fixed
-        // migration identifiers into SQL. The query vector is a bound blob parameter.
+        // input — the same trust model the Data/Schema/ object files themselves rely on. The query
+        // vector is a bound blob parameter.
         cmd.CommandText =
             $"""
             SELECT "{primaryKeyColumn}", distance
@@ -247,8 +248,8 @@ internal sealed class DivinationService(
 
             double distance = reader.GetDouble(1);
 
-            // Guaranteed by the explicit `distance_metric=cosine` on the vec0 column declaration (see
-            // WeaveSchemaInitializer) — no version-specific distance-formula guessing.
+            // Guaranteed by the explicit `distance_metric=cosine` on the vec0 column declaration in
+            // Data/Schema/Accelerators/ — no version-specific distance-formula guessing.
             float similarity = (float)(1.0 - distance);
 
             if (similarity >= similarityThreshold)

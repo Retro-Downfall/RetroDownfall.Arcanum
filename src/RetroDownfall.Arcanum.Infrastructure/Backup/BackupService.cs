@@ -20,6 +20,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 public sealed class BackupService : IBackupService
@@ -1302,6 +1304,12 @@ public sealed class BackupService : IBackupService
             plan,
             [new BackupVerifyIssue(code, message)]);
 
+    /// <summary>
+    /// Records the identity of the schema actually present in the captured snapshot. With no
+    /// migration chain there is no history row to read, so the identity is a hash over
+    /// <c>sqlite_master</c> (see <see cref="GrimoireSchemaIdentity"/>); archive verification
+    /// recomputes it against the extracted snapshot.
+    /// </summary>
     private static async Task<string> ReadSchemaVersionAsync(
         string databasePath,
         string databasePassphrase,
@@ -1324,17 +1332,7 @@ public sealed class BackupService : IBackupService
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText = """
-            SELECT "MigrationId"
-            FROM "__EFMigrationsHistory"
-            ORDER BY "MigrationId" DESC
-            LIMIT 1;
-            """;
-
-        return (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) as string
-            ?? string.Empty;
+        return await GrimoireSchemaIdentity.ComputeAsync(connection, cancellationToken).ConfigureAwait(false);
 
     }
 

@@ -1,17 +1,13 @@
 using System.Collections.Concurrent;
-using System.Reflection;
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
-using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Security;
-using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Support;
 using SQLitePCL;
 
@@ -139,47 +135,12 @@ public sealed class GrimoireFixture : IDisposable
     }
 
     /// <summary>
-    /// Hashes every embedded Grimoire SQL migration script plus the canonical raw-SQL schema
-    /// fingerprint so the cached template database (which persists across test process invocations
-    /// under the OS temp directory) is rebuilt whenever either schema source changes.
+    /// Identity of the canonical schema source, so the cached template database (which persists
+    /// across test process invocations under the OS temp directory) is rebuilt whenever any object
+    /// file in <c>Data/Schema/</c> changes. One declarative tree means one fingerprint.
     /// </summary>
-    private static string ComputeSchemaFingerprint()
-    {
-
-        Assembly assembly = typeof(GrimoireSqlSchemaMigrator).Assembly;
-
-        StringBuilder combined = new();
-
-        combined.Append("WeaveSchemaInitializer:")
-            .Append(WeaveSchemaInitializer.CanonicalSchemaFingerprint)
-            .Append('\n');
-
-        combined.Append("LexiconSchemaInitializer:")
-            .Append(LexiconSchemaInitializer.CanonicalSchemaFingerprint)
-            .Append('\n');
-
-        combined.Append("GrimoireSqlSchemaMigrator:")
-            .Append(GrimoireSqlSchemaMigrator.CanonicalMigrationOrder)
-            .Append('\n');
-
-        foreach (string resourceName in assembly.GetManifestResourceNames()
-            .Where(name => name.EndsWith(".sql", StringComparison.Ordinal))
-            .OrderBy(name => name, StringComparer.Ordinal))
-        {
-
-            using Stream stream = assembly.GetManifestResourceStream(resourceName)!;
-
-            using StreamReader reader = new(stream, Encoding.UTF8);
-
-            combined.Append(resourceName).Append('\n').Append(reader.ReadToEnd()).Append("\n---\n");
-
-        }
-
-        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(combined.ToString()));
-
-        return Convert.ToHexString(hash);
-
-    }
+    private static string ComputeSchemaFingerprint() =>
+        GrimoireSchemaCatalog.CanonicalSchemaFingerprint;
 
     public string Passphrase => _passphrase;
 
@@ -296,24 +257,14 @@ public sealed class GrimoireFixture : IDisposable
 
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, cancellationToken).ConfigureAwait(false);
-
-        // RAG Phase 1 — The Weave: mirrors GrimoireDatabaseBootstrapper.EnsureInitializedAsync, which
-        // runs WeaveSchemaInitializer right after Grimoire's own migrations. Always creates
-        // entry_embeddings (the BLOB source of truth), independent of whether sqlite-vec is available,
-        // so DivinationServiceTests (managed-fallback path) and any future writer test have a real
-        // table to work against instead of each test standing up its own ad hoc schema.
-        await WeaveSchemaInitializer.EnsureSchemaAsync(
+        // Mirrors GrimoireDatabaseBootstrapper: one installer creates the complete schema — Grimoire
+        // core tables, FTS, triggers, The Weave/Saga/Tapestry BLOB stores, and The Lexicon — so every
+        // test works against the same schema the host installs instead of an ad hoc subset.
+        _ = await GrimoireSchemaInstaller.InstallAsync(
             connection,
-            configuredDimensions: new EmbeddingIntegrationSettings().Dimensions,
-            availability: new WeaveIndexAvailability(),
+            embeddingDimensions: new EmbeddingIntegrationSettings().Dimensions,
             logger: null,
             cancellationToken).ConfigureAwait(false);
-
-        // The Lexicon — mirrors GrimoireDatabaseBootstrapper.EnsureLexiconSchemaAsync, which runs
-        // LexiconSchemaInitializer right after The Weave's schema. Always creates lexicon_entries +
-        // lexicon_fts so LexiconServiceTests and downstream injection tests have real tables.
-        await LexiconSchemaInitializer.EnsureSchemaAsync(connection, logger: null, cancellationToken).ConfigureAwait(false);
 
         await using SqliteCommand checkpoint = connection.CreateCommand();
 

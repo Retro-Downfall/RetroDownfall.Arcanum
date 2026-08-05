@@ -3,7 +3,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// <summary>
 /// RAG Phase 1 — process-wide flag recording whether the sqlite-vec <c>vec0</c> acceleration extension
 /// loaded successfully into the Grimoire SQLite connection at bootstrap (see
-/// <see cref="WeaveSchemaInitializer"/> and <see cref="SqliteVecExtensionLoader"/>).
+/// <c>GrimoireSchemaInstaller</c> and <see cref="SqliteVecExtensionLoader"/>).
 ///
 /// Phase 1 ships managed-only by default: no sqlite-vec NuGet package is referenced anywhere in the
 /// solution, so <see cref="IsVecAvailable"/> is <c>false</c> out of the box and

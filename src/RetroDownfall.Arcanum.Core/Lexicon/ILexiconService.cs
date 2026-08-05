@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Core.Lexicon;
 /// <summary>
 /// Agent-directed Lexicon memory: a structured entity graph (Name + Type + Facts) persisted in the
 /// Grimoire via raw SQL over <c>lexicon_entries</c> with an FTS5 <c>lexicon_fts</c> index (see
-/// <c>LexiconSchemaInitializer</c>). Abstracted behind an interface so the same domain logic backs
+/// <c>Infrastructure/Data/Schema/</c>). Abstracted behind an interface so the same domain logic backs
 /// the in-process MCP tools and (later) Minimal API routes. Not used by the legacy operator
 /// key-value Lore surface (<c>/api/lore</c>, <c>arcanum lore</c>, <c>MageSettings</c>).
 /// </summary>

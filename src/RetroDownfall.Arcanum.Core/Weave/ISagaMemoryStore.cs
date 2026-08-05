@@ -5,7 +5,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 /// <summary>
 /// RAG Phase 4 — raw-SQL persistence for Saga memories (<c>saga_memories</c> +
 /// <c>saga_memory_embeddings</c> [+ <c>saga_memory_embeddings_vec</c> when available] +
-/// <c>saga_extraction_watermarks</c>; see <c>WeaveSchemaInitializer</c>). Shared by
+/// <c>saga_extraction_watermarks</c>; see <c>Infrastructure/Data/Schema/Tables/</c>). Shared by
 /// <c>SagaExtractionService</c> (writes), the <c>/api/saga</c> endpoints (reads/deletes), and the
 /// <c>read_saga</c> MCP tool (reads), so all three surfaces stay consistent without duplicating SQL.
 /// </summary>

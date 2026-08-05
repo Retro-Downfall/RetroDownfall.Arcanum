@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
-using RetroDownfall.Arcanum.Infrastructure.Lexicon;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using Serilog;
@@ -17,7 +17,8 @@ using System.Security.Cryptography;
 namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 /// <summary>
-/// Shared first-run Grimoire initialization: SQLCipher passphrase, key probe, and embedded SQL schema migrations (AOT-safe).
+/// Shared first-run Grimoire initialization: SQLCipher passphrase, key probe, and a fresh install of
+/// the declarative embedded schema (AOT-safe; no <c>Database.MigrateAsync</c>, no migration chain).
 /// </summary>
 public static class GrimoireDatabaseBootstrapper
 {
@@ -162,19 +163,15 @@ public static class GrimoireDatabaseBootstrapper
             }
         }
 
-        await using SqliteConnection migrationConnection = new(connectionString);
+        await using SqliteConnection installConnection = new(connectionString);
 
-        await migrationConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await installConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        await SqliteConnectionPragmas.ApplyAsync(migrationConnection, cancellationToken).ConfigureAwait(false);
+        await SqliteConnectionPragmas.ApplyAsync(installConnection, cancellationToken).ConfigureAwait(false);
 
-        await GrimoireSqlSchemaMigrator.ApplyPendingAsync(migrationConnection, cancellationToken).ConfigureAwait(false);
+        await InstallSchemaAsync(installConnection, scopeFactory, cancellationToken).ConfigureAwait(false);
 
-        await EnsureWeaveSchemaAsync(migrationConnection, scopeFactory, cancellationToken).ConfigureAwait(false);
-
-        await EnsureLexiconSchemaAsync(migrationConnection, scopeFactory, cancellationToken).ConfigureAwait(false);
-
-        await migrationConnection.CloseAsync().ConfigureAwait(false);
+        await installConnection.CloseAsync().ConfigureAwait(false);
 
         if (File.Exists(dbPath))
         {
@@ -192,87 +189,65 @@ public static class GrimoireDatabaseBootstrapper
     }
 
     /// <summary>
-    /// RAG Phase 1 — creates The Weave's embedding schema (see <see cref="WeaveSchemaInitializer"/>)
-    /// right after Grimoire's own SQL migrations, on the same connection, before it is closed. Never
-    /// fails startup: <see cref="WeaveSchemaInitializer.EnsureSchemaAsync"/> already swallows and logs
-    /// its own failures, and this wrapper adds a second belt-and-suspenders catch around resolving the
-    /// DI-scoped settings/logger/availability singleton themselves.
+    /// Installs the complete Grimoire schema from the declarative <c>Data/Schema/</c> tree — core
+    /// tables, FTS5 indexes, triggers, The Weave/Saga/Tapestry stores, and The Lexicon, all from one
+    /// source in one transaction (DESIGN §5.4.5). The durable schema is not optional, so a failure
+    /// here fails startup rather than leaving a half-built database behind.
+    ///
+    /// The optional <c>vec0</c> acceleration tier still degrades silently: the installer reports
+    /// whether sqlite-vec loaded and this method publishes that to
+    /// <see cref="WeaveIndexAvailability"/>, which is how Divination chooses vec0 KNN or its complete
+    /// managed cosine fallback (§21.2). If the DI scope itself cannot be resolved, availability stays
+    /// at its managed-only default.
     /// </summary>
-    private static async Task EnsureWeaveSchemaAsync(
-        SqliteConnection migrationConnection,
+    private static async Task InstallSchemaAsync(
+        SqliteConnection installConnection,
         IServiceScopeFactory scopeFactory,
         CancellationToken cancellationToken)
     {
 
+        int dimensions = new EmbeddingSettings().Dimensions;
+
+        WeaveIndexAvailability? availability = null;
+
+        Microsoft.Extensions.Logging.ILogger? logger = null;
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
         try
         {
-
-            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
             IOptionsMonitor<ArcanumSettings> optionsMonitor =
                 scope.ServiceProvider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
 
-            WeaveIndexAvailability availability = scope.ServiceProvider.GetRequiredService<WeaveIndexAvailability>();
+            availability = scope.ServiceProvider.GetRequiredService<WeaveIndexAvailability>();
 
-            // WeaveSchemaInitializer is a static class and cannot be an ILogger<T> category, so the
-            // logger is created by name (same effective category a typed ILogger<WeaveSchemaInitializer>
-            // would have produced).
-            Microsoft.Extensions.Logging.ILogger logger = scope.ServiceProvider
+            // GrimoireSchemaInstaller is a static class and cannot be an ILogger<T> category, so the
+            // logger is created by name (the same effective category a typed logger would produce).
+            logger = scope.ServiceProvider
                 .GetRequiredService<ILoggerFactory>()
-                .CreateLogger("RetroDownfall.Arcanum.Infrastructure.Weave.WeaveSchemaInitializer");
+                .CreateLogger("RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaInstaller");
 
-            EmbeddingSettings embeddings = optionsMonitor.CurrentValue.ResolveEmbeddings();
-
-            int dimensions = ArcanumSettingClamps.EmbeddingsDimensions(embeddings.Dimensions);
-
-            await WeaveSchemaInitializer.EnsureSchemaAsync(
-                migrationConnection,
-                dimensions,
-                availability,
-                logger,
-                cancellationToken).ConfigureAwait(false);
+            dimensions = ArcanumSettingClamps.EmbeddingsDimensions(
+                optionsMonitor.CurrentValue.ResolveEmbeddings().Dimensions);
 
         }
         catch (Exception ex)
         {
 
-            Log.Warning(ex, "The Weave schema bootstrap could not run; RAG features relying on it will report unavailable until this is resolved.");
+            Log.Warning(
+                ex,
+                "Embedding settings could not be resolved for schema installation; installing with the default dimension and the managed vector fallback.");
 
         }
 
-    }
+        GrimoireSchemaInstallResult result = await GrimoireSchemaInstaller.InstallAsync(
+            installConnection,
+            dimensions,
+            logger,
+            cancellationToken).ConfigureAwait(false);
 
-    /// <summary>
-    /// Creates The Lexicon's raw-SQL schema (<c>lexicon_entries</c> + <c>lexicon_fts</c> + sync
-    /// triggers; see <see cref="LexiconSchemaInitializer"/>) right after The Weave's schema, on the
-    /// same connection, before it is closed. Never fails startup: the initializer swallows and logs
-    /// its own failures, and this wrapper adds a second belt-and-suspenders catch around resolving
-    /// the DI-scoped logger.
-    /// </summary>
-    private static async Task EnsureLexiconSchemaAsync(
-        SqliteConnection migrationConnection,
-        IServiceScopeFactory scopeFactory,
-        CancellationToken cancellationToken)
-    {
-
-        try
-        {
-
-            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-
-            Microsoft.Extensions.Logging.ILogger logger = scope.ServiceProvider
-                .GetRequiredService<ILoggerFactory>()
-                .CreateLogger("RetroDownfall.Arcanum.Infrastructure.Lexicon.LexiconSchemaInitializer");
-
-            await LexiconSchemaInitializer.EnsureSchemaAsync(migrationConnection, logger, cancellationToken).ConfigureAwait(false);
-
-        }
-        catch (Exception ex)
-        {
-
-            Log.Warning(ex, "The Lexicon schema bootstrap could not run; Lexicon memory features will be unavailable until this is resolved.");
-
-        }
+        availability?.SetAvailable(result.VectorAccelerationAvailable);
 
     }
 

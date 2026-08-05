@@ -225,8 +225,12 @@ The exact continuation order is illustrated in
 
 ## 8. Persistence and recovery
 
-The Grimoire is a local SQLCipher database accessed through EF Core repositories and hand-authored,
-transactional SQL migrations. Important records include sessions and ordered entries, tool interactions, attachments, context pins, Campaign data, Spells and Prompts, Wards, MCP trust, memory, embeddings, operations, idempotency claims, inference runs, billable operations, budget reservations, and audit data.
+The Grimoire is a local SQLCipher database accessed through EF Core repositories and hand-authored
+SQL. Its shape is a declarative schema project rather than a migration history: one small `.sql` file
+per table, full-text index, and trigger, each holding that object's complete definition, all
+installed together in a single transaction the first time the database is created. There is no
+numbered chain to replay and no bookkeeping table recording which steps ran, so "what does this table
+look like?" is answered by opening one file. Important records include sessions and ordered entries, tool interactions, attachments, context pins, Campaign data, Spells and Prompts, Wards, MCP trust, memory, embeddings, operations, idempotency claims, inference runs, billable operations, budget reservations, and audit data.
 
 The persistence inventory in `Arcanum.DESIGN.md` is authoritative; there is no separate persistence
 document. Attachment metadata belongs to the Grimoire while its authenticated encrypted snapshots
@@ -242,8 +246,10 @@ Several rules make persistence reliable:
 - atomic files use owner-only staging, durable flush, replacement, and identity-owned cleanup;
 - security-sensitive reads use no-follow handles, size ceilings, and identity revalidation.
 
-Arcanum is still in the pre-user-data schema phase. Incompatible local schemas are recreated rather
-than upgraded through compatibility migrations. Follow the destructive recovery procedure in
+Arcanum is still in the pre-user-data schema phase, which is exactly why the schema has no migration
+machinery: there is nobody to migrate. A schema change edits the object file in place, and an
+incompatible local database is recreated rather than upgraded. Follow the destructive recovery
+procedure in
 [`Arcanum.README.md`](Arcanum.README.md#local-grimoire-reinstall) only after preserving anything
 needed.
 
@@ -329,7 +335,7 @@ candidate-local check, not a global orphan sweep.
 Factory reset is bounded to the configured Arcanum data root and explicitly preserves external
 backups, configuration, keys/security material, and data outside that root. Logical SQL deletion and
 file unlinking are not physical secure erasure: SSD wear leveling, copy-on-write snapshots, WAL/free
-pages, caches, replicas, and backups can retain copies. Issue #43 adds no schema migration and does
+pages, caches, replicas, and backups can retain copies. Issue #43 adds no schema object and does
 not require recreating a local/test database. The Forge-owned local histories are outside this
 implementation boundary and remain untouched; no coordinated cleanup integration is added. A
 successful reset clears prior terminal operation history but necessarily leaves its own completed
