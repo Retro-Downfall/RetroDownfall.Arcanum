@@ -22,8 +22,12 @@ public sealed class ArcanumHealthChecker(
     IProviderHealthTracker providerHealthTracker,
     IWorkspaceCheckCapabilityReporter? workspaceCheckCapabilityReporter = null,
     LongRunningOperationReconciliationStatus? operationReconciliationStatus = null,
-    IEncryptedBlobDiagnostics? encryptedBlobDiagnostics = null)
+    IEncryptedBlobDiagnostics? encryptedBlobDiagnostics = null,
+    IProviderApiKeyResolver? providerApiKeyResolver = null)
 {
+
+    private readonly IProviderApiKeyResolver _providerApiKeyResolver =
+        providerApiKeyResolver ?? EnvironmentOnlyProviderApiKeyResolver.Instance;
 
     public async Task<HealthReportDto> BuildReportAsync(CancellationToken cancellationToken)
     {
@@ -90,7 +94,13 @@ public sealed class ArcanumHealthChecker(
 
         components.Add(new HealthComponentDto("MCP", mcpStatus, mcpDetail));
 
-        components.Add(BuildProvidersComponent(settings.CurrentValue, providerHealthTracker));
+        components.Add(
+            await BuildProvidersComponentAsync(
+                    settings.CurrentValue,
+                    providerHealthTracker,
+                    _providerApiKeyResolver,
+                    cancellationToken)
+                .ConfigureAwait(false));
 
         bool escapeHatch = settings.CurrentValue.Security?.AllowUnsandboxedToolChildren ?? false;
 
@@ -208,9 +218,15 @@ public sealed class ArcanumHealthChecker(
         }
     }
 
-    internal static HealthComponentDto BuildProvidersComponent(
+    /// <summary>
+    /// Reports provider readiness and credential <em>presence</em> only. The resolved credential is
+    /// never retained, logged, or echoed into the component detail (§8.1).
+    /// </summary>
+    internal static async Task<HealthComponentDto> BuildProvidersComponentAsync(
         ArcanumSettings arcanumSettings,
-        IProviderHealthTracker tracker)
+        IProviderHealthTracker tracker,
+        IProviderApiKeyResolver apiKeyResolver,
+        CancellationToken cancellationToken)
     {
         ProviderSettings[] providers = arcanumSettings.Providers ?? [];
         int providerCount = providers.Length;
@@ -233,7 +249,9 @@ public sealed class ArcanumHealthChecker(
                 continue;
             }
 
-            if (EnvironmentCredentialResolver.ResolveProviderApiKey(provider) is not null)
+            if (await apiKeyResolver
+                    .ResolveAsync(provider, cancellationToken)
+                    .ConfigureAwait(false) is not null)
             {
                 credentialBacked++;
             }
@@ -268,7 +286,8 @@ public sealed class ArcanumHealthChecker(
             "Providers",
             status,
             $"{healthy}/{observed} providers healthy (resilience probes); "
-            + $"{credentialBacked}/{observed} provider credentials available from environment.");
+            + $"{credentialBacked}/{observed} provider credentials available from the environment "
+            + "reference or the secure store.");
     }
 
     /// <summary>

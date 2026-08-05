@@ -26,6 +26,8 @@ public sealed class DoctorCommand(
     IOptions<ArcanumSettings> options,
     IHttpClientFactory httpClientFactory,
     ISecretStore secretStore,
+    IProviderCredentialStore providerCredentialStore,
+    IWebResearchCredentialStore webResearchCredentialStore,
     IEncryptedBlobDiagnostics encryptedBlobDiagnostics,
     IThemePalette themePalette,
     ICliEnvironment cliEnvironment,
@@ -82,7 +84,7 @@ public sealed class DoctorCommand(
 
         AnsiConsole.WriteLine();
 
-        WriteProviderCredentialsPanel();
+        await WriteProviderCredentialsPanelAsync(cancellationToken).ConfigureAwait(false);
 
         AnsiConsole.WriteLine();
 
@@ -136,7 +138,8 @@ public sealed class DoctorCommand(
         healthy &= configHealthy;
         checks.Add(configCheck);
 
-        checks.Add(BuildProviderCredentialsCheck());
+        checks.Add(
+            await BuildProviderCredentialsCheckAsync(cancellationToken).ConfigureAwait(false));
 
         (bool mcpHealthy, DoctorCheck mcpCheck) = BuildMcpConfigCheck();
 
@@ -397,10 +400,10 @@ public sealed class DoctorCommand(
 
     }
 
-    private void WriteProviderCredentialsPanel()
+    private async Task WriteProviderCredentialsPanelAsync(CancellationToken cancellationToken)
     {
         IReadOnlyList<CredentialReferenceStatus> references =
-            BuildCredentialReferenceStatuses();
+            await BuildCredentialReferenceStatusesAsync(cancellationToken).ConfigureAwait(false);
         Table table = new();
         table.Border(TableBorder.None);
         table.HideHeaders();
@@ -413,7 +416,7 @@ public sealed class DoctorCommand(
             table.AddRow(
                 themePalette.MutedMarkup(Markup.Escape(" ")),
                 themePalette.MutedMarkup(Markup.Escape("References:")),
-                themePalette.MutedMarkup(Markup.Escape("No provider or PFX credential references are active.")));
+                themePalette.MutedMarkup(Markup.Escape("No provider or PFX credential is configured.")));
         }
         else
         {
@@ -425,30 +428,38 @@ public sealed class DoctorCommand(
                         : themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
                     themePalette.MutedMarkup(Markup.Escape(reference.Label + ":")),
                     themePalette.TextMarkup(Markup.Escape(
-                        $"{reference.EnvironmentVariable} — "
-                        + (reference.IsPresent ? "set (value not shown)" : "not set"))));
+                        $"{reference.EnvironmentVariable} — {reference.Detail}")));
             }
         }
 
         WritePanel("Provider / HTTPS Credentials", table);
     }
 
-    private DoctorCheck BuildProviderCredentialsCheck()
+    private async Task<DoctorCheck> BuildProviderCredentialsCheckAsync(
+        CancellationToken cancellationToken)
     {
         IReadOnlyList<CredentialReferenceStatus> references =
-            BuildCredentialReferenceStatuses();
+            await BuildCredentialReferenceStatusesAsync(cancellationToken).ConfigureAwait(false);
         int present = references.Count(static reference => reference.IsPresent);
+        int corrupt = references.Count(static reference => reference.IsCorrupt);
         int missingExplicit = references.Count(
             static reference => reference.IsExplicit && !reference.IsPresent);
 
         return new DoctorCheck(
             "ProviderCredentials",
-            missingExplicit == 0 ? "ok" : "warn",
-            $"{present}/{references.Count} referenced environment credential(s) are set; "
-            + $"{missingExplicit} explicit reference(s) are missing; values are never shown.");
+            missingExplicit == 0 && corrupt == 0 ? "ok" : "warn",
+            $"{present}/{references.Count} credential(s) resolve from an environment reference or "
+            + $"the secure store; {missingExplicit} explicit reference(s) are missing; "
+            + $"{corrupt} stored credential(s) are corrupt; values are never shown.");
     }
 
-    private IReadOnlyList<CredentialReferenceStatus> BuildCredentialReferenceStatuses()
+    /// <summary>
+    /// Reports presence and source for every credential identity this installation actually uses.
+    /// Resolution order matches the run time (<see cref="IProviderApiKeyResolver"/>): the environment
+    /// reference first, then the OS-backed secure store. Values are never read into the report.
+    /// </summary>
+    private async Task<IReadOnlyList<CredentialReferenceStatus>> BuildCredentialReferenceStatusesAsync(
+        CancellationToken cancellationToken)
     {
         List<CredentialReferenceStatus> references = [];
 
@@ -457,13 +468,86 @@ public sealed class DoctorCommand(
             string environmentVariable =
                 EnvironmentCredentialResolver
                     .GetProviderApiKeyEnvironmentVariableName(provider);
+            string label = string.IsNullOrWhiteSpace(provider.Name)
+                ? "Unnamed provider"
+                : provider.Name;
+            bool explicitReference =
+                !string.IsNullOrWhiteSpace(provider.CredentialEnvironmentVariable);
+
+            if (EnvironmentCredentialResolver.ResolveProviderApiKey(provider) is not null)
+            {
+                references.Add(new CredentialReferenceStatus(
+                    label,
+                    environmentVariable,
+                    IsPresent: true,
+                    explicitReference,
+                    IsCorrupt: false,
+                    "set from the environment reference (value not shown)"));
+
+                continue;
+            }
+
+            SecretStoreReadResult stored = string.IsNullOrWhiteSpace(provider.Name)
+                ? SecretStoreReadResult.Missing()
+                : await providerCredentialStore
+                    .GetApiKeyReadResultAsync(provider.Name, cancellationToken)
+                    .ConfigureAwait(false);
+
             references.Add(new CredentialReferenceStatus(
-                string.IsNullOrWhiteSpace(provider.Name)
-                    ? "Unnamed provider"
-                    : provider.Name,
+                label,
                 environmentVariable,
-                EnvironmentCredentialResolver.ResolveProviderApiKey(provider) is not null,
-                !string.IsNullOrWhiteSpace(provider.CredentialEnvironmentVariable)));
+                stored.Status == SecretStoreReadStatus.Ok,
+                explicitReference,
+                stored.Status == SecretStoreReadStatus.Corrupted,
+                stored.Status switch
+                {
+                    SecretStoreReadStatus.Ok => "set in the secure store (value not shown)",
+                    SecretStoreReadStatus.Corrupted =>
+                        "stored but undecryptable; re-run 'arcanum setup' or "
+                        + $"'arcanum key provider set {label}'",
+                    _ => "not set",
+                }));
+        }
+
+        WebBrowsingSettings webResearch = options.Value.ResolveWebBrowsing();
+
+        if (webResearch.Enabled)
+        {
+            string environmentVariable =
+                EnvironmentCredentialResolver
+                    .GetWebResearchApiKeyEnvironmentVariableName(webResearch);
+
+            if (EnvironmentCredentialResolver.ResolveWebResearchApiKey(webResearch) is not null)
+            {
+                references.Add(new CredentialReferenceStatus(
+                    "Web research",
+                    environmentVariable,
+                    IsPresent: true,
+                    !string.IsNullOrWhiteSpace(webResearch.CredentialEnvironmentVariable),
+                    IsCorrupt: false,
+                    "set from the environment reference (value not shown)"));
+            }
+            else
+            {
+                SecretStoreReadResult stored = await webResearchCredentialStore
+                    .GetPerplexityApiKeyReadResultAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                references.Add(new CredentialReferenceStatus(
+                    "Web research",
+                    environmentVariable,
+                    stored.Status == SecretStoreReadStatus.Ok,
+                    !string.IsNullOrWhiteSpace(webResearch.CredentialEnvironmentVariable),
+                    stored.Status == SecretStoreReadStatus.Corrupted,
+                    stored.Status switch
+                    {
+                        SecretStoreReadStatus.Ok => "set in the secure store (value not shown)",
+                        SecretStoreReadStatus.Corrupted =>
+                            "stored but undecryptable; re-run 'arcanum setup' or "
+                            + "'arcanum key provider set perplexity'",
+                        _ => "not set",
+                    }));
+            }
         }
 
         HttpsSettings https = options.Value.Host?.Https ?? new HttpsSettings();
@@ -473,12 +557,19 @@ public sealed class DoctorCommand(
             string environmentVariable =
                 EnvironmentCredentialResolver
                     .GetHttpsCertificatePasswordEnvironmentVariableName(https);
+            bool httpsPresent =
+                EnvironmentCredentialResolver.ResolveHttpsCertificatePassword(https) is not null;
+
             references.Add(new CredentialReferenceStatus(
                 "HTTPS PFX",
                 environmentVariable,
-                EnvironmentCredentialResolver.ResolveHttpsCertificatePassword(https) is not null,
+                httpsPresent,
                 !string.IsNullOrWhiteSpace(
-                    https.CertificatePasswordEnvironmentVariable)));
+                    https.CertificatePasswordEnvironmentVariable),
+                IsCorrupt: false,
+                httpsPresent
+                    ? "set from the environment reference (value not shown)"
+                    : "not set (environment reference only)"));
         }
 
         return references;
@@ -1299,7 +1390,9 @@ public sealed class DoctorCommand(
         string Label,
         string EnvironmentVariable,
         bool IsPresent,
-        bool IsExplicit);
+        bool IsExplicit,
+        bool IsCorrupt,
+        string Detail);
 
     private enum DoctorProbeKind
     {

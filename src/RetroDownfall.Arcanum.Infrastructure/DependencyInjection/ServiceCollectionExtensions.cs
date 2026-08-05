@@ -100,6 +100,10 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton<IWebResearchCredentialStore, WebResearchCredentialStore>();
 
+        services.TryAddSingleton<IProviderCredentialStore, ProviderCredentialStore>();
+
+        services.TryAddSingleton<IProviderApiKeyResolver, ProviderApiKeyResolver>();
+
         services.TryAddSingleton(TimeProvider.System);
 
         services.TryAddSingleton<ConfigurationValidator>();
@@ -203,6 +207,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<DataProtectionSecretStore>();
 
         services.AddSingleton<IWebResearchCredentialStore, WebResearchCredentialStore>();
+
+        services.AddSingleton<IProviderCredentialStore, ProviderCredentialStore>();
+
+        services.AddSingleton<IProviderApiKeyResolver, ProviderApiKeyResolver>();
 
         services.AddSingleton<ISecretStore>(static sp => new OsKeychainSecretStore(
             sp.GetRequiredService<IOsCredentialStore>(),

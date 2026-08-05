@@ -83,6 +83,19 @@ public static class ArcanumPaths
         Path.Combine(SecretStoreDirectory, "perplexity-key.dat");
 
     /// <summary>
+    /// Data Protection-encrypted fallback for one inference provider's API key. The OS credential
+    /// store remains the primary store when it is available. The provider name is normalized to the
+    /// same stable ASCII segment used by <c>ARCANUM_PROVIDER_{NAME}_API_KEY</c>, so the file name is
+    /// deterministic and can never escape <see cref="SecretStoreDirectory"/>.
+    /// </summary>
+    public static string InferenceProviderApiKeyStoreFile(string? providerName) =>
+        Path.Combine(
+            SecretStoreDirectory,
+            "provider-"
+            + Configuration.EnvironmentCredentialResolver.NormalizeProviderName(providerName)
+            + "-key.dat");
+
+    /// <summary>
     /// Built-in (global) spell catalog root: <c>~/.config/arcanum/spells/</c>.
     /// Distinct from <see cref="GrimoireDirectory"/> (config/DB) and from per-project workspace roots.
     /// </summary>

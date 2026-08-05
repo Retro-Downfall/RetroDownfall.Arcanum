@@ -496,7 +496,19 @@ Apply validates the entire candidate, including outbound-address policy, and bin
 
 Effective state is **Custom** when no provenance is active, **Active** while the preset-owned persisted and effective values still match the recorded application, and **Drifted** when either view has changed. Reset consults the recorded baseline and applied values: it restores an owned persisted value only if that value still equals what the preset applied, preserves later user drift and every unowned edit, removes the active provenance after success, and reports restored versus preserved counts. Environment variables remain external operator input throughout.
 
-This is the focused preset flow for issue #44. The guided multi-step setup wizard remains separate issue #19. Presets add no HTTP API endpoints and no The Forge behavior.
+This is the focused preset flow. The guided multi-step wizard is `arcanum setup` (below); it consumes this same service as its preset step rather than reimplementing preset semantics. Presets add no HTTP API endpoints and no The Forge behavior.
+
+### Guided setup
+
+`arcanum setup` is the guided first run. It walks eight explicit steps — runtime edition and privacy posture, provider endpoint and model, provider credential, optional Perplexity web-research credential, live provider validation, Workspace and Campaign, onboarding preset, and the final diff — and then commits in dependency order. Every answer lives in an in-memory draft until the operator accepts the plan, so Ctrl+C, end of input, a validation failure, or a failed dependency check leaves configuration, credentials, CLI context, and the workspace registry unchanged. The draft can hold credential values, so it is never serialized, never persisted, and never logged, and its `ToString()` redacts credentials rather than printing them.
+
+The wizard is a composition of existing authorities: the canonical configuration reader, validator, outbound guard, and atomic writer; the OS-backed credential stores; the preset engine; and the CLI context store. It therefore produces the same validated configuration shape as `arcanum config`, and it owns only `edition`, `host.listenAny`, `defaultModel`, `workspaces.defaultRoot`, the selected provider entry, and — when an environment reference is chosen — that entry's credential reference. Everything else is carried through, so re-running setup and accepting the current values is a no-op rather than a reset.
+
+Provider validation is one guarded `GET {endpoint}/models` with a strict five-second timeout, run in-process so it works before `arcanum serve` has ever started. It requests no completion, so validation never spends inference tokens, and it names which dependency failed: endpoint rejected by the outbound guard, TLS or certificate failure, authentication failure, model absence, malformed response, timeout, or unreachable host. A failure blocks the commit unless the operator explicitly accepts it, which is the honest answer for an air-gapped host or a local model server that has not been started yet. Provider endpoints are sensitive configuration values, so the diff masks them and the summary reports only the endpoint class: loopback, private network, public, or unknown.
+
+The commit writes credentials first, because the preset engine reads them when evaluating prerequisites, then the validated configuration, then the preset, then the CLI context selection. A failure restores the previous configuration and deletes any credential the run created. A credential that replaced an existing one cannot be restored — the wizard never reads a prior credential value — so that case is reported as an actionable partial-commit state naming the exact recovery command, without exposing either value.
+
+For automation, `--plan` prints the plan and writes nothing, and `--apply` commits without prompting. Secrets are never accepted as arguments: a credential may arrive only on redirected stdin or as an environment-variable reference, so nothing secret reaches argv, the process table, or shell history.
 
 ### Compendium
 

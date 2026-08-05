@@ -497,7 +497,40 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
     After success, confirm the old plan is cleared before reload and that only a watcher event whose
     bytes match the acknowledged SHA-256 fingerprint is suppressed. Different bytes must still
     surface as an external change. Verify no HTTP request or The Forge navigation occurs. The
-    broader guided setup wizard remains separate issue #19.
+    guided wizard that consumes this same service is covered by recipe 27a.
+
+27a. **Debug the guided setup wizard without touching a real installation:** substitute the
+    authorities it composes — configuration command service, preset service and persistence,
+    provider and web-research credential stores, CLI context store, and provider probe — and drive
+    the state machine with a scripted prompt. Run `arcanum setup --plan` first: it must print the
+    diff, credential actions, blockers, and completion summary while performing zero writes, and it
+    must mask the provider endpoint, which is a sensitive configuration value.
+
+    For abort safety, end input at every step index in turn and assert exit 130 plus zero
+    configuration writes, zero preset applies, no stored credential, and no CLI context save. Do the
+    same for declining the final plan. A run that reaches the commit must write exactly once in the
+    order credential, configuration, preset, context.
+
+    For rollback, fail the preset apply and assert the previous configuration is restored and the
+    credential this run created is deleted; then pre-seed an existing credential for the same
+    provider and assert the wizard reports an actionable partial-commit state naming
+    `arcanum key provider set <provider>` instead of pretending it restored a value it never read.
+    Fail the configuration write instead and assert the preset is never applied and no context is
+    saved.
+
+    For validation classification, return each `SetupConnectivityStatus` from the probe in turn and
+    confirm the blocker names the specific dependency. Confirm the commit is blocked unless
+    `--allow-unreachable-provider` is passed. Assert the probe requests only `{endpoint}/models` with
+    `GET`, so validation never spends inference tokens.
+
+    For disclosure, pipe credentials through `--provider-key-stdin` and `--research-key-stdin` and
+    assert the secret appears in neither stdout, stderr, nor the `--json` document, and that no
+    option accepts a secret value in argv. `SetupDraft.ToString()` must redact credentials.
+
+    For idempotency, seed the fake configuration with the values the wizard would write and assert
+    `--plan` reports an applicable plan with an empty configuration diff, and that unrelated
+    settings such as `cli.showManaBar` and `retention.automaticSweepsEnabled` survive a commit
+    unchanged.
 
 28. **Debug progress-driven work and cancellation without wall-clock sleeps:** use fake transports,
     completion gates, and injected delay/time providers. For the model/tool loop, feed more changing

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Embeddings;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -35,12 +36,16 @@ public interface IEmbeddingGeneratorFactory
 /// </summary>
 public sealed class EmbeddingGeneratorFactory(
     IHttpClientFactory httpClientFactory,
-    IOptionsMonitor<ArcanumSettings> optionsMonitor) : IEmbeddingGeneratorFactory
+    IOptionsMonitor<ArcanumSettings> optionsMonitor,
+    IProviderApiKeyResolver? apiKeyResolver = null) : IEmbeddingGeneratorFactory
 {
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
 
     private const string KeylessOpenAiPlaceholder = "no-key";
+
+    private readonly IProviderApiKeyResolver _apiKeyResolver =
+        apiKeyResolver ?? EnvironmentOnlyProviderApiKeyResolver.Instance;
 
     // OpenAICompatible generators are process-lifetime cached, keyed by provider/model/endpoint/credential
     // fingerprint — constructing the thin IEmbeddingGenerator wrapper has no per-call cost worth avoiding
@@ -48,10 +53,8 @@ public sealed class EmbeddingGeneratorFactory(
     private readonly ConcurrentDictionary<string, IEmbeddingGenerator<string, Embedding<float>>> _generators =
         new(StringComparer.Ordinal);
 
-    public Task<EmbeddingGeneratorLease> ResolveGeneratorAsync(CancellationToken cancellationToken)
+    public async Task<EmbeddingGeneratorLease> ResolveGeneratorAsync(CancellationToken cancellationToken)
     {
-
-        _ = cancellationToken;
 
         ArcanumSettings arc = optionsMonitor.CurrentValue;
 
@@ -86,14 +89,21 @@ public sealed class EmbeddingGeneratorFactory(
 
         }
 
-        return Task.FromResult(CreateOpenAiCompatibleLease(provider, embeddings.Model));
+        string? providerApiKey = await _apiKeyResolver
+            .ResolveAsync(provider, cancellationToken)
+            .ConfigureAwait(false);
+
+        return CreateOpenAiCompatibleLease(provider, embeddings.Model, providerApiKey);
 
     }
 
-    private EmbeddingGeneratorLease CreateOpenAiCompatibleLease(ProviderSettings provider, string model)
+    private EmbeddingGeneratorLease CreateOpenAiCompatibleLease(
+        ProviderSettings provider,
+        string model,
+        string? providerApiKey)
     {
 
-        string resolvedApiKey = ResolveApiKeyValue(provider);
+        string resolvedApiKey = providerApiKey ?? KeylessOpenAiPlaceholder;
 
         // Includes the endpoint and a credential fingerprint (not the raw secret — see
         // ComputeCredentialFingerprint) so an operator hot-reloading Arcanum:Providers[].Endpoint or
@@ -135,10 +145,6 @@ public sealed class EmbeddingGeneratorFactory(
         return embeddingClient.AsIEmbeddingGenerator();
 
     }
-
-    private static string ResolveApiKeyValue(ProviderSettings provider) =>
-        EnvironmentCredentialResolver.ResolveProviderApiKey(provider)
-        ?? KeylessOpenAiPlaceholder;
 
     private static string CacheKey(ProviderSettings provider, string model, string resolvedApiKey) =>
         $"{provider.Name}::{model}::{provider.Endpoint}::{ComputeCredentialFingerprint(resolvedApiKey)}";

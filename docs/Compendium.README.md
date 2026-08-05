@@ -146,8 +146,8 @@ ownership/value/hash/state validation reject untrusted provenance before reset o
 No preset silently enables `ListenAny`, unsandboxed tool children, untrusted workspace MCP,
 destructive memory operations, Forbidden Arts bypasses, or changes to explicit token/cost/security policy.
 Presets do not add retry, timeout, loop-count, or other arbitrary tuning knobs. The guided
-`arcanum setup` wizard remains separate work tracked by issue #19; this page exposes the reusable
-preset service and does not implement that wizard.
+`arcanum setup` wizard consumes the same preset service for its preset step; this page exposes that
+service directly and does not implement the wizard's other steps.
 
 ## Complete configuration reference
 
@@ -499,7 +499,10 @@ Secret values are not configuration fields:
 
 - `providers.credentialEnvironmentVariable` names the provider API-key
   variable. Omission derives
-  `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY`.
+  `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY`. When the referenced variable
+  is unset, Arcanum falls back to the OS-backed secure store written by
+  `arcanum setup` or `arcanum key provider set <provider>`; Compendium never
+  reads or writes the credential itself.
 - `host.https.certificatePasswordEnvironmentVariable` names the PFX-password
   variable. Omission uses `ARCANUM_HTTPS_CERTIFICATE_PASSWORD`; PEM ignores
   this reference.

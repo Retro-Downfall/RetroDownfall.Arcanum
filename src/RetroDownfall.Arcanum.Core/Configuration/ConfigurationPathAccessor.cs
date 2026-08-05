@@ -251,6 +251,138 @@ public static class ConfigurationPathAccessor
 
     }
 
+    /// <summary>
+    /// Compares two configuration snapshots and returns one row per differing leaf, addressed by the
+    /// same dotted descriptor path <see cref="Set"/> accepts. Sensitive leaves are reported as
+    /// changed but their values are masked, so a caller can print a precise diff without disclosing
+    /// a provider endpoint or any other sensitive value.
+    /// </summary>
+    public static IReadOnlyList<ConfigurationPathDifference> Diff(
+        ArcanumSettings before,
+        ArcanumSettings after)
+    {
+
+        ArgumentNullException.ThrowIfNull(before);
+
+        ArgumentNullException.ThrowIfNull(after);
+
+        List<ConfigurationPathDifference> differences = [];
+
+        CollectDifferences(
+            JsonSerializer.SerializeToNode(before, ConfigurationJsonContext.Default.ArcanumSettings),
+            JsonSerializer.SerializeToNode(after, ConfigurationJsonContext.Default.ArcanumSettings),
+            path: string.Empty,
+            differences);
+
+        return differences;
+
+    }
+
+    private static void CollectDifferences(
+        JsonNode? before,
+        JsonNode? after,
+        string path,
+        List<ConfigurationPathDifference> differences)
+    {
+
+        // A newly added (or removed) object/array must still be reported leaf by leaf: reporting the
+        // whole node would print a sensitive leaf such as a provider endpoint verbatim, because
+        // sensitivity is decided by the leaf's own path.
+        if (before is null && after is JsonObject)
+        {
+
+            before = new JsonObject();
+
+        }
+        else if (after is null && before is JsonObject)
+        {
+
+            after = new JsonObject();
+
+        }
+        else if (before is null && after is JsonArray)
+        {
+
+            before = new JsonArray();
+
+        }
+        else if (after is null && before is JsonArray)
+        {
+
+            after = new JsonArray();
+
+        }
+
+        if (before is JsonObject beforeObject && after is JsonObject afterObject)
+        {
+
+            foreach (string name in beforeObject
+                .Select(static property => property.Key)
+                .Concat(afterObject.Select(static property => property.Key))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(static name => name, StringComparer.Ordinal))
+            {
+
+                CollectDifferences(
+                    beforeObject[name],
+                    afterObject[name],
+                    Combine(path, name),
+                    differences);
+
+            }
+
+            return;
+
+        }
+
+        if (before is JsonArray beforeArray && after is JsonArray afterArray)
+        {
+
+            for (int index = 0; index < Math.Max(beforeArray.Count, afterArray.Count); index++)
+            {
+
+                CollectDifferences(
+                    index < beforeArray.Count ? beforeArray[index] : null,
+                    index < afterArray.Count ? afterArray[index] : null,
+                    Combine(path, index.ToString(CultureInfo.InvariantCulture)),
+                    differences);
+
+            }
+
+            return;
+
+        }
+
+        string beforeJson = before?.ToJsonString(CanonicalJsonOptions) ?? "null";
+
+        string afterJson = after?.ToJsonString(CanonicalJsonOptions) ?? "null";
+
+        if (string.Equals(beforeJson, afterJson, StringComparison.Ordinal))
+        {
+
+            return;
+
+        }
+
+        bool sensitive = IsSensitive(path);
+
+        differences.Add(
+            new ConfigurationPathDifference(
+                path,
+                sensitive ? Mask(beforeJson) : beforeJson,
+                sensitive ? Mask(afterJson) : afterJson,
+                sensitive));
+
+    }
+
+    private static string Mask(string canonicalJson) =>
+        string.Equals(canonicalJson, "null", StringComparison.Ordinal)
+            ? "null"
+            : RedactionMask;
+
+    private static string Combine(string path, string segment) =>
+        path.Length == 0 ? segment : path + "." + segment;
+
     public static bool IsSensitive(string key)
     {
 
@@ -720,6 +852,17 @@ public static class ConfigurationPathAccessor
     }
 
 }
+
+/// <summary>
+/// One differing configuration leaf. <see cref="Before"/> and <see cref="After"/> are canonical JSON
+/// except where <see cref="IsSensitive"/> is <see langword="true"/>, in which case a present value is
+/// masked and only its presence is disclosed.
+/// </summary>
+public sealed record ConfigurationPathDifference(
+    string Path,
+    string Before,
+    string After,
+    bool IsSensitive);
 
 public sealed record ConfigurationPathUpdate(
     bool IsSuccess,

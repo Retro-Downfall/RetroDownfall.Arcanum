@@ -308,10 +308,75 @@ operator's configured workspace boundaries. No preset weakens these boundaries o
 `ListenAny`, unsandboxed child processes, untrusted workspace MCP, destructive memory operations,
 Forbidden Arts bypasses, or unlimited
 research/subagent behavior. Presets never introduce retry, timeout, loop-count, workflow-count, or
-similar arbitrary tuning knobs. The guided `arcanum setup` wizard remains separate follow-up work
-tracked by issue #19; this service is the independently usable foundation, not a hidden wizard.
+similar arbitrary tuning knobs. This service is the independently usable foundation for the guided
+`arcanum setup` wizard (§3.4.2); the wizard consumes it as its preset step rather than reimplementing
+preset semantics, so a preset can never mean one thing under `arcanum preset apply` and another under
+`arcanum setup`.
 
-#### 3.4.2 Degraded-mode fallback matrix
+#### 3.4.2 Guided setup (`arcanum setup`)
+
+`arcanum setup` is an explicit, resumable CLI state machine over eight steps: runtime edition and
+privacy posture, provider endpoint and model, provider credential, optional web-research credential,
+live provider validation, workspace and Campaign, onboarding preset, and the final diff, followed by
+an ordered commit. `SetupStateMachine` owns traversal alone — advance, back, re-enter — so ordering
+and resume behavior are directly testable and separate from prompting and I/O.
+
+The wizard is a composition, not a second configuration model. It reads and writes configuration
+through the canonical `IConfigurationCommandService` (host API when reachable, local bootstrap
+otherwise, always through `ConfigurationValidator`, `OutboundUrlGuard`, and the atomic
+`ConfigurationWriter`), stores credentials through `ISecretStore`, `IProviderCredentialStore`, and
+`IWebResearchCredentialStore`, applies presets through `IConfigurationPresetService`, selects context
+through `ICliContextStore`, and writes every payload through `IConsoleDispatcher` and the
+source-generated `CliJsonContext`. Consequently the wizard and `arcanum config` always produce the
+same validated configuration shape.
+
+Every answer accumulates in an in-memory `SetupDraft`. The draft can hold credential values between
+the credential step and the commit step, so it is never serialized, never persisted, and never
+logged; its `ToString()` is overridden to redact credentials rather than emitting the compiler's
+member listing. Ctrl+C, end of input, a validation failure, or a failed dependency check ends the run
+before the commit step and therefore leaves configuration, credentials, CLI context, and the
+workspace registry byte-for-byte unchanged.
+
+`SetupPlanner` builds the candidate configuration by cloning the persisted snapshot and applying only
+the paths the wizard declares ownership of — `edition`, `host.listenAny`, `defaultModel`,
+`workspaces.defaultRoot`, the selected `providers[]` entry, and, only when an environment reference is
+chosen, that entry's `credentialEnvironmentVariable` plus
+`integrations.webResearch.credentialEnvironmentVariable`. Everything else is carried through, so
+re-running setup on an existing installation is idempotent and preserves unrelated customization. The
+diff comes from `ConfigurationPathAccessor.Diff`, which walks both snapshots leaf by leaf — including
+leaves of a newly added object or array, so an added provider still masks its own sensitive
+endpoint — and masks any leaf `ConfigurationPathAccessor.IsSensitive` claims. The preset step is
+planned against the *candidate* configuration through `ConfigurationPresetPlanner`, so prerequisites,
+applicability, and the completion summary describe what the operator will actually have after the
+commit rather than what they have now.
+
+Provider validation is one guarded `GET {endpoint}/models` under a five-second timeout, executed
+in-process so it works before `arcanum serve` has ever started. It is non-billable — no completion is
+requested — and it classifies outcomes distinctly: endpoint rejected by the outbound guard,
+TLS/certificate failure, authentication failure, model absence, malformed response, timeout, and
+unreachable host. A failed probe blocks the commit; an operator can accept it explicitly with
+`--allow-unreachable-provider` for an air-gapped host or a local server that is not running yet.
+The endpoint itself is a sensitive configuration value, so the completion summary reports only its
+class (`Loopback`, `PrivateNetwork`, `Public`, `Unknown`), derived from the host literal without a
+DNS lookup.
+
+`SetupCommitter` applies an accepted plan in dependency order: credentials first, because the preset
+engine's prerequisites read them; then the validated configuration; then the preset; then the CLI
+context selection. On failure it restores the previous configuration and deletes every credential
+*this run created*. A credential that replaced an existing one cannot be restored — the wizard never
+reads a prior credential value — so that case is reported as an actionable partial-commit state
+naming the exact `arcanum key provider set <provider>` recovery command, without exposing either
+value. The CLI context selection is a convenience, not part of the configuration contract, so a
+failure there is reported rather than rolled back.
+
+The non-interactive form is `--plan` (compute and print, write nothing) and `--apply` (commit without
+prompting); they are mutually exclusive. Secrets never appear in argv: a credential may only arrive on
+redirected stdin (`--provider-key-stdin`, then `--research-key-stdin`) or as an environment-variable
+reference (`--provider-key-env`, `--research-key-env`). Arcanum supports OpenAI-compatible providers
+only, so the wizard presents OpenAI, Local/Ollama, and custom endpoint templates and does not offer a
+provider kind the inference engine cannot serve.
+
+#### 3.4.3 Degraded-mode fallback matrix
 
 Single-host failure behavior:
 
@@ -540,7 +605,7 @@ uses a Session Entry cursor when available without claiming replay guarantees, a
 authentication, validation, not-found, and connection-cap denials terminal. Invocation syntax
 and per-command filters are documented in the command reference.
 
-**Composition:** `ArcanumApiClient`, CAF command tree (`CliApplicationFactory`), theme/Spectre UX, Command Center (`Cli/CommandCenter/`), `IArcanumServeLauncher`. Discover verbs in `Cli/Commands/`.
+**Composition:** `ArcanumApiClient`, CAF command tree (`CliApplicationFactory`), theme/Spectre UX, Command Center (`Cli/CommandCenter/`), `IArcanumServeLauncher`. Discover verbs in `Cli/Commands/`. Guided setup (§3.4.2) lives in `Cli/Services/Setup/` — `SetupStateMachine`, `SetupPlanner`, `SetupCommitter`, `SetupProviderProbe`, and `ISetupPrompt` — with `SetupCommand` as the thin driver over them.
 
 **Application launch and deep links:** `center` and `open center` enter the existing
 `ICommandCenterHost` in-process; they do not spawn a second CLI. `open theforge`, `open compendium`,
@@ -1542,7 +1607,16 @@ Zero runtime prerequisite for the shipping CLI; fast cold start for short verbs;
 - MCP wire types use `McpJsonSerializerContext` exclusively — no reflection-based `JsonSerializer` overloads.
 - Outbound Comm Link webhook bodies use `CommLinkInfrastructureJsonContext` / `WebhookPayloadDto` exclusively (`title`, `body`, `severity`, `source`, `timestampUtc`) — no `PostAsJsonAsync` with anonymous DTOs.
 - CLI process envelopes use `CliJsonContext` with explicit `JsonTypeInfo`; typed command payloads may
-  use another source-generated context already authoritative for that DTO.
+  use another source-generated context already authoritative for that DTO. `IConsoleDispatcher`
+  accepts only an explicit `JsonTypeInfo<T>` or a `JsonElement`, so there is no reflection-serialization
+  entry point to fall back to. Serialization completes in memory before a single line is written; a
+  serialization failure degrades to the fixed `CliErrorPayload` envelope rather than emitting a
+  partial document. `CliJsonContextCoverageTests` discovers every `*Payload` type in the CLI assembly
+  by convention and fails when one is not reachable from `CliJsonContext`, so a new command that adds
+  a structured output but forgets to register it cannot ship. The same tests pin the wire policy:
+  camelCase property names, one compact document per non-streaming invocation, optional members
+  present as explicit `null` rather than omitted, and enums written as stable names rather than
+  ordinals.
 - Minimal API handlers must not return anonymous DTOs or use unbounded reflection-based model binding.
 - New `AIFunction` tools must use hand-authored `JsonDocument` schemas, not `AIFunctionFactory.Create`.
 - Runtime model-supplied regex must not use `RegexOptions.Compiled` or an input-derived cache. `search_workspace` tries the culture-invariant `NonBacktracking` engine first and falls back to the bounded interpreted engine only for otherwise-valid syntax that `NonBacktracking` does not support; fixed application patterns continue to use `[GeneratedRegex]`.
@@ -2443,6 +2517,52 @@ If the master-key store is corrupt while a Grimoire database exists, bootstrap l
 recovery guidance and throws `MasterApiKeyUnavailableException`. It does not expose the underlying
 Data Protection message, generate a replacement key, or terminate the embedding process. With no
 Grimoire database, the existing safe-regeneration behavior remains available.
+
+### 11.2.1 Credential inventory
+
+Arcanum owns a closed catalog of credential identities. Bulk and inventory operations iterate this
+catalog only; they never enumerate or delete unrelated OS credentials.
+
+| Credential | OS account (`service=arcanum`) | Encrypted mirror | Environment reference | Owner |
+|---|---|---|---|---|
+| Master API key | `master-api-key` | `security.dat` | none | `OsKeychainSecretStore` |
+| Grimoire encryption secret | none (Data Protection only) | `grimoire-key.dat` | none | `DataProtectionSecretStore` |
+| File-encryption master key | `file-encryption-master-key` | `file-encryption-key.dat` | none | `FileEncryptionKeyProvider` |
+| Web research (Perplexity) | `provider-perplexity-api-key` | `perplexity-key.dat` | `ARCANUM_PERPLEXITY_API_KEY` or the configured reference | `WebResearchCredentialStore` |
+| Inference provider API key | `inference-provider-{NORMALIZED_NAME}-api-key` | `provider-{NORMALIZED_NAME}-key.dat` | `ARCANUM_PROVIDER_{NORMALIZED_NAME}_API_KEY` or the configured reference | `ProviderCredentialStore` |
+| HTTPS certificate password | none | none | `ARCANUM_HTTPS_CERTIFICATE_PASSWORD` or the configured reference | environment-reference-only |
+| Comm Link webhook URL | none | none | `ARCANUM_COMMLINK_WEBHOOK_URL` or the configured reference | environment-reference-only |
+
+The inference-provider account and the environment-variable reference derive their provider segment
+from the same normalization rule (ASCII letters upper-cased, digits retained, every other run
+collapsed to one underscore, empty becoming `UNNAMED`). `Secrets` cannot reference `Core`, so the
+rule is duplicated in `ArcanumCredentialIdentity.NormalizeProviderName` and
+`EnvironmentCredentialResolver.NormalizeProviderName` and pinned by
+`ProviderCredentialIdentityParityTests`. The dedicated `inference-provider-` prefix keeps an
+inference provider literally named `perplexity` from colliding with the web-research credential.
+
+`IProviderApiKeyResolver` composes the two provider sources in a fixed order: the configured or
+derived environment reference first, then the OS-backed store. That order preserves the historical
+per-process override, and lets `arcanum setup` leave an installation runnable without exporting
+anything. `ChatClientFactory`, `EmbeddingGeneratorFactory`, `ProviderHealthProbe`, and
+`ArcanumHealthChecker` all resolve through it, so a stored credential reaches inference, embeddings,
+resilience probes, and health reporting identically. A missing credential is a supported keyless
+local configuration, not an error; a corrupt one resolves as absent for run-time purposes while
+`arcanum key list` and `arcanum doctor` still report `corrupt` with fixed recovery guidance.
+
+Every mirror is written owner-only through `SecureFilePermissions` with atomic temp-plus-rename and
+read back through `SecureFileReader` as a no-follow single-link regular file under a 64 KiB ceiling.
+Reads prefer the OS store; a mirror that decrypts while the OS store is merely empty is promoted into
+the OS store once, and that promotion is idempotent. Repeated saves replace the prior value without
+accumulating state. A present-but-undecryptable mirror is `Corrupted` and never triggers silent
+regeneration while encrypted data exists.
+
+.NET cannot reliably zero an immutable managed `string`: the value is a GC-managed allocation that
+compaction may copy before any explicit clear. Arcanum therefore does not claim to erase the
+credential strings crossing a store boundary. It minimizes their lifetime and copy count, keeps
+credential material in `byte[]` where the API permits, and zeroes every buffer it owns in a
+`finally`. Logs, metrics, exceptions, `arcanum doctor`, `arcanum config`, `--json` payloads, and
+completion summaries expose presence/status and fixed recovery guidance only.
 
 ### 11.3 Request authentication
 
@@ -3383,6 +3503,9 @@ reinstall.
 | Lexicon internal-tool tests | Enabled tools-list advertisement, disabled omission of Lexicon and legacy Lore tools, service-backed create/delete, and disabled tool error. |
 | `SemanticRouterTests` / `LexiconEntityExtractor` cases | Spell+entities result, every distinct parsed entity preserved beyond the former eight total, entities surviving `NONE`, missing→empty, fenced/malformed JSON, no-call empty prompt, and case-insensitive deduplication. |
 | `CliContractTests` / `DoctorCommandJsonTests` | Recursive global flag placement; stdout/stderr separation; ANSI stripping; one-document JSON wrapping; fail-closed redirected confirmation and `--yes`; closed exit codes; redacted network/unhandled failures; typed doctor JSON. |
+| `CliJsonContextCoverageTests` | Convention-discovered `*Payload` types are all reachable from a source-generated context; property metadata resolves without reflection; camelCase casing; one compact document; optional members present as explicit `null`; enums as stable names, not ordinals; fixed two-field error envelope; a serialization failure emits that envelope instead of a partial document; the dispatcher exposes no reflection-serialization entry point. |
+| `ProviderCredentialStoreTests` / `ProviderCredentialIdentityParityTests` / `ProviderApiKeyResolutionTests` / `KeyCommandTests` | Per-provider OS-store plus encrypted-mirror round trips with no plaintext at rest; provider isolation; unavailable-store mirror fallback and one-time OS promotion; fail-closed corrupt mirror with no silent regeneration; idempotent repeated saves and safe delete; presence/status without disclosure; empty-credential rejection; account/environment normalization parity and mirror paths confined to the secret-store directory; environment-reference-before-secure-store resolution reaching chat, embeddings, the health probe, and health reporting; credential-inventory kinds, statuses, and recovery guidance with no value in `--json`. |
+| `SetupStateMachineTests` / `SetupProviderProbeTests` / `SetupPlannerTests` (via `SetupCommandTests`) / `SetupCommandTests` / `SetupInteractiveTests` | Documented step order, back/re-enter, and rejection of an unknown step; probe classification for reachable, model-absent, empty-model-list, authentication-failed, other-status, malformed, TLS, DNS/connection, timeout, and guard-rejected endpoints, non-billable `/models`-only request, bearer-token handling, five-second budget, and endpoint-class derivation; plan-writes-nothing with a precise masked diff and full completion summary; ordered commit of credential → configuration → preset → context; blocked commit on failed validation and explicit override; configuration restore plus new-credential deletion on preset failure; actionable partial-commit report when an existing credential was replaced; idempotent re-run and preservation of unowned settings; no secret in argv, stdout, stderr, or JSON, including `SetupDraft.ToString()`; abort at every step index and on declining the final plan leaves configuration, credentials, and context untouched. |
 | `SystemPromptBuilderTests` / untrusted-fence tests | Lexicon DATA inclusion/omission, control/newline hardening, byte truncation, adaptive fences for Codex/Spell/instructions/Chronosync/summary/attachments, and sanitized Data Stream ids. |
 | `UnseenServantDaemonJobTests` | Deterministic bounded daemon-state name, enabled Lexicon state/instruction, disabled omission, and missing-state fail-open kickoff. |
 
@@ -3415,6 +3538,8 @@ retain their normal skip behavior when the native asset is absent.
 5. **Domain logic:** Place in `Core`; keep `Api` free of business orchestration.
 6. **Breaking JSON contracts:** Treat all wire types as versioned contracts. Property casing is fixed at the context level.
 7. **Situational perception:** Keep `Core.Pattern` free of filesystem references. Put implementations in `Infrastructure.Pattern`.
+8. **New credentials:** Add the identity to `ArcanumCredentialIdentity` and the §11.2.1 inventory, store it through an OS-backed store with an owner-only Data Protection mirror, and expose only presence/status plus fixed recovery guidance. Never add a credential value to `ArcanumSettings`, to an argv option, or to any log, metric, exception, or `--json` payload.
+9. **New guided-setup steps:** Add the step to `SetupStep` and `SetupStateMachine`, collect it into `SetupDraft`, project it in `SetupPlanner`, and apply it in `SetupCommitter` — in that order. A step must mutate only the draft; anything that writes belongs in the committer, behind the operator's acceptance of the final plan, with a rollback or an actionable partial-commit report.
 
 ---
 

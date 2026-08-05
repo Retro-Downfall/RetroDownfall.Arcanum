@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Resilience;
+using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 
@@ -9,10 +10,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 /// providers are probed via a short-lived, non-pooled HTTP call to <c>{endpoint}/models</c>.
 /// </summary>
 internal sealed class ProviderHealthProbe(
-    IHttpClientFactory httpFactory) : IProviderHealthProbe
+    IHttpClientFactory httpFactory,
+    IProviderApiKeyResolver? apiKeyResolver = null) : IProviderHealthProbe
 {
 
     public const string HttpClientName = "ProviderHealthProbe";
+
+    private readonly IProviderApiKeyResolver _apiKeyResolver =
+        apiKeyResolver ?? EnvironmentOnlyProviderApiKeyResolver.Instance;
 
     public async Task<bool> ProbeAsync(ProviderSettings provider, CancellationToken cancellationToken)
     {
@@ -45,8 +50,9 @@ internal sealed class ProviderHealthProbe(
             // though this named client is shared across concurrent probes for different providers.
             HttpClient client = httpFactory.CreateClient(HttpClientName);
 
-            string? resolvedApiKey =
-                EnvironmentCredentialResolver.ResolveProviderApiKey(provider);
+            string? resolvedApiKey = await _apiKeyResolver
+                .ResolveAsync(provider, timeoutCts.Token)
+                .ConfigureAwait(false);
 
             if (!string.IsNullOrEmpty(resolvedApiKey))
             {
