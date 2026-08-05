@@ -12,6 +12,8 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 using SQLitePCL;
@@ -2038,17 +2040,9 @@ public sealed class BackupArchiveCodec
 
             }
 
-            await using SqliteCommand schema = connection.CreateCommand();
-
-            schema.CommandText = """
-                SELECT "MigrationId"
-                FROM "__EFMigrationsHistory"
-                ORDER BY "MigrationId" DESC
-                LIMIT 1;
-                """;
-
-            string actualSchema = (await schema.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) as string
-                ?? string.Empty;
+            string actualSchema = await GrimoireSchemaIdentity
+                .ComputeAsync(connection, cancellationToken)
+                .ConfigureAwait(false);
 
             if (!string.Equals(
                     actualSchema,

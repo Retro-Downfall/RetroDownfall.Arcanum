@@ -1,12 +1,12 @@
 using Microsoft.Data.Sqlite;
-using RetroDownfall.Arcanum.Infrastructure.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 
 /// <summary>
-/// The Tapestry's durable tables are raw-SQL-owned and created idempotently by
-/// <see cref="WeaveSchemaInitializer"/> beside every other Weave feature — no EF entity, no compiled
-/// model regeneration (DESIGN §5.4.4, §21.11).
+/// The Tapestry's durable tables are declared in the same <c>Data/Schema/</c> tree as every other
+/// object and installed by <see cref="GrimoireSchemaInstaller"/> — no EF entity, no compiled model
+/// regeneration (DESIGN §5.4.4, §21.11).
 /// </summary>
 public sealed class TapestrySchemaTests
 {
@@ -18,10 +18,9 @@ public sealed class TapestrySchemaTests
 
         await connection.OpenAsync();
 
-        await WeaveSchemaInitializer.EnsureSchemaAsync(
+        _ = await GrimoireSchemaInstaller.InstallAsync(
             connection,
             dimensions,
-            new WeaveIndexAvailability(),
             logger: null,
             CancellationToken.None);
 
@@ -171,10 +170,9 @@ public sealed class TapestrySchemaTests
 
         await using SqliteConnection connection = await OpenInitializedAsync();
 
-        await WeaveSchemaInitializer.EnsureSchemaAsync(
+        _ = await GrimoireSchemaInstaller.InstallAsync(
             connection,
             64,
-            new WeaveIndexAvailability(),
             logger: null,
             CancellationToken.None);
 

@@ -744,11 +744,6 @@ public sealed class BackupServiceTests : IDisposable
                 OutputFileId TEXT NULL,
                 ErrorFileId TEXT NULL
             );
-            CREATE TABLE __EFMigrationsHistory (
-                MigrationId TEXT PRIMARY KEY,
-                ProductVersion TEXT NOT NULL
-            );
-            INSERT INTO __EFMigrationsHistory VALUES ('test-schema', '10.0.10');
             INSERT INTO SessionAttachments VALUES (
                 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
                 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',

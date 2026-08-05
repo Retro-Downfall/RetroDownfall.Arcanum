@@ -468,7 +468,7 @@
       "sourceLocations": [
         "src/RetroDownfall.Arcanum.Api/Intelligence/BatchRequestCounter.cs (removed)",
         "src/RetroDownfall.Arcanum.Infrastructure/Data/BatchRepository.cs#TryBeginLineAsync+CompleteLineAsync",
-        "src/RetroDownfall.Arcanum.Infrastructure/Data/SqlMigrations/20260705171559_InitialCreate.sql#TR_BatchLineCheckpoints_IncrementTotal+TR_BatchLineCheckpoints_IncrementOutcome"
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/TR_BatchLineCheckpoints_IncrementTotal.sql+TR_BatchLineCheckpoints_IncrementOutcome.sql"
       ],
       "coveredSymbols": [
         "BatchRequestCounter.ComputeAsync (former)",

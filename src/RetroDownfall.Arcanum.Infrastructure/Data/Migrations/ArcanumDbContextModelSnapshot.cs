@@ -15,7 +15,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "10.0.8");
+            modelBuilder.HasAnnotation("ProductVersion", "10.0.10");
 
             modelBuilder.Entity("RetroDownfall.Arcanum.Core.Storage.Entities.Entry", b =>
                 {
@@ -30,12 +30,20 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("IsPinned")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER")
+                        .HasDefaultValue(false);
+
                     b.Property<string>("ModelUsed")
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
                     b.Property<int>("Role")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("Sequence")
                         .HasColumnType("INTEGER");
 
                     b.Property<Guid>("SessionId")
@@ -52,11 +60,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<bool>("IsPinned")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasDefaultValue(false);
-
                     b.HasKey("Id");
 
                     b.HasIndex("Role");
@@ -64,6 +67,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Migrations
                     b.HasIndex("SessionId", "CreatedAt");
 
                     b.HasIndex("SessionId", "IsPinned");
+
+                    b.HasIndex("SessionId", "Sequence")
+                        .IsUnique();
 
                     b.ToTable("Entries", (string)null);
                 });

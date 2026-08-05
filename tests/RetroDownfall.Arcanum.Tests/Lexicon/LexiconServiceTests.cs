@@ -10,7 +10,7 @@ namespace RetroDownfall.Arcanum.Tests.Lexicon;
 
 /// <summary>
 /// <see cref="LexiconService"/> round-trip persistence against the real Grimoire schema (raw-SQL
-/// <c>lexicon_entries</c> + FTS5 <c>lexicon_fts</c> created by <see cref="LexiconSchemaInitializer"/>).
+/// <c>lexicon_entries</c> + FTS5 <c>lexicon_fts</c> declared in <c>Data/Schema/</c>).
 /// </summary>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]

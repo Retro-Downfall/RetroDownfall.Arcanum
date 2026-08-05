@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -223,7 +224,11 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         await connection.OpenAsync();
 
-        await GrimoireSqlSchemaMigrator.ApplyPendingAsync(connection, CancellationToken.None);
+        _ = await GrimoireSchemaInstaller.InstallAsync(
+            connection,
+            embeddingDimensions: 1536,
+            logger: null,
+            CancellationToken.None);
 
         await connection.CloseAsync();
 

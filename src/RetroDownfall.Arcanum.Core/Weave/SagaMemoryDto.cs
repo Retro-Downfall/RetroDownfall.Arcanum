@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 
 /// <summary>
 /// RAG Phase 4 — a Saga memory as surfaced over <c>/api/saga</c> and <c>arcanum saga</c>. Mirrors the
-/// <c>saga_memories</c> table (see <c>WeaveSchemaInitializer</c>) one-to-one.
+/// <c>saga_memories</c> table (see <c>Infrastructure/Data/Schema/Tables/saga_memories.sql</c>) one-to-one.
 /// </summary>
 public sealed record SagaMemoryDto(
     string Id,

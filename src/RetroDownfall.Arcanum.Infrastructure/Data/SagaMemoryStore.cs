@@ -16,7 +16,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// Raw-SQL persistence for Saga memories, reusing the scoped <see cref="ArcanumDbContext"/>'s
 /// connection. None of <c>saga_memories</c>, <c>saga_memory_embeddings</c>,
 /// <c>saga_memory_embeddings_vec</c>, or <c>saga_extraction_watermarks</c> is part of the compiled EF
-/// model (they are created by <see cref="WeaveSchemaInitializer"/>, not a migration — see its remarks),
+/// model (they are declared in <c>Data/Schema/Tables/</c> and installed with the rest of the schema),
 /// so all access goes through <see cref="DbCommand"/> rather than LINQ, mirroring
 /// <see cref="UnseenServantWatermarkStore"/> and <see cref="SanctumBreachRepository"/>.
 /// </summary>

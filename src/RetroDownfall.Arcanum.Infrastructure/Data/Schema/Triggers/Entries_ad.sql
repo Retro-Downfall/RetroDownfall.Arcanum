@@ -1,0 +1,3 @@
+CREATE TRIGGER IF NOT EXISTS Entries_ad AFTER DELETE ON Entries BEGIN
+    DELETE FROM Entries_fts WHERE Id = old.Id;
+END;

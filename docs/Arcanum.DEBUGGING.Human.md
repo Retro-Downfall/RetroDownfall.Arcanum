@@ -158,7 +158,7 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
    the captured host must finish stopping before `DisposeIsolatedResources()` restores
    `ARCANUM_TEST_HOME`. For an empty pre-checkpoint WAL, verify the test's pooling-disabled owner is
    still open, `wal_autocheckpoint` is zero, and no read transaction is active; do not infer WAL
-   population from migrations or connection close behavior. If this fails only in a larger run,
+   population from schema installation or connection close behavior. If this fails only in a larger run,
    rerun the exact failing test in isolation before classifying it as a product regression.
 11. **Compare preview with a real turn:** start with `arcanum context inspect "probe"
     --no-retrieval --json`, then repeat through `arcanum run --dry-run "probe" --json` with the

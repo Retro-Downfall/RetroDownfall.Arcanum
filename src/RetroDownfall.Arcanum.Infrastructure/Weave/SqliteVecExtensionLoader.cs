@@ -7,10 +7,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
 /// Attempts to enable SQLite extension loading and load the sqlite-vec native library
-/// into a connection, verifying success with <c>SELECT vec_version()</c>. Uses the same low-level
-/// <c>SQLitePCL.raw</c> API that <c>GrimoireSqlSchemaMigrator</c> already uses for its
-/// <c>sqlite3_exec</c> migration runner (see <c>GrimoireSqlSchemaMigrator.cs</c>), so this stays
-/// consistent with how the codebase talks to the native SQLite handle.
+/// into a connection, verifying success with <c>SELECT vec_version()</c>. Loading an extension has no
+/// ADO.NET surface, so this drops to the low-level <c>SQLitePCL.raw</c> handle — the only place in
+/// the codebase that needs to. <c>GrimoireSchemaInstaller</c> calls it before installing the optional
+/// <c>Data/Schema/Accelerators/</c> objects; a <c>false</c> result simply skips that tier.
 ///
 /// Risk (documented, not a defect): <c>SQLitePCLRaw.bundle_e_sqlcipher</c> — the SQLCipher provider
 /// this database uses — may have <c>sqlite3_enable_load_extension</c> compiled out for security. If it
