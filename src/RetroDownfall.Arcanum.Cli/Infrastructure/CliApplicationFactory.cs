@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Cli.Commands.ProvingGrounds;
 using RetroDownfall.Arcanum.Cli.Commands.TheForge;
 using RetroDownfall.Arcanum.Cli.Commands.Wards;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.Services.Setup;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Desktop;
@@ -178,6 +179,18 @@ internal static class CliApplicationFactory
         services.AddArcanumEyeOfTheWorld();
 
         services.AddArcanumDaemonManagement();
+
+        services.AddSingleton<ISetupProbeHandlerFactory, SetupProbeHandlerFactory>();
+
+        services.AddSingleton<ISetupProviderProbe, SetupProviderProbe>();
+
+        services.AddSingleton<ISetupPrompt, ConsoleSetupPrompt>();
+
+        services.AddTransient<ISetupPlanner, SetupPlanner>();
+
+        services.AddTransient<ISetupCommitter, SetupCommitter>();
+
+        services.AddTransient<SetupCommand>();
 
         services.AddTransient<ServeCommand>();
 

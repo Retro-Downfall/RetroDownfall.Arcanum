@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.Services.Setup;
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
 
@@ -123,6 +124,23 @@ public sealed record ConfigurationPresetShowPayload(
     string EffectiveState,
     bool IsActive,
     ConfigurationPresetGlossaryEntry[] Glossary);
+
+/// <summary>
+/// One Arcanum-owned credential identity. Carries presence/status and fixed recovery guidance only —
+/// never the credential value, and never a value-derived hint (§8.1, issue #47).
+/// </summary>
+public sealed record CredentialInventoryEntryPayload(
+    string Id,
+    string Kind,
+    string DisplayName,
+    string Storage,
+    string Status,
+    string Source,
+    string? EnvironmentVariable,
+    string Recovery);
+
+public sealed record CredentialInventoryPayload(
+    CredentialInventoryEntryPayload[] Credentials);
 
 internal sealed class CliInvocationContext : ICliInvocationContext
 {
@@ -268,10 +286,32 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
     public void WriteDiagnostic(string value) =>
         WriteLine(StandardError, value);
 
+    /// <summary>
+    /// Serializes through explicit source-generated metadata only. Serialization runs to completion
+    /// in memory before a single line is written, so a failure can never emit a partial document; a
+    /// failure degrades to the fixed <see cref="CliErrorPayload"/> envelope rather than falling back
+    /// to reflection-based serialization, which would not survive Native AOT (issue #49).
+    /// </summary>
     public void WriteJson<T>(T value, JsonTypeInfo<T> typeInfo)
     {
 
-        string json = JsonSerializer.Serialize(value, typeInfo);
+        string json;
+
+        try
+        {
+
+            json = JsonSerializer.Serialize(value, typeInfo);
+
+        }
+        catch (Exception exception) when (
+            exception is JsonException or NotSupportedException or InvalidOperationException)
+        {
+
+            WriteSerializationFailure();
+
+            return;
+
+        }
 
         WriteLine(StandardOutput, json);
 
@@ -282,11 +322,42 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
     public void WriteJson(JsonElement value)
     {
 
-        string json = JsonSerializer.Serialize(
-            value,
-            CliJsonContext.Default.JsonElement);
+        string json;
+
+        try
+        {
+
+            json = JsonSerializer.Serialize(value, CliJsonContext.Default.JsonElement);
+
+        }
+        catch (Exception exception) when (
+            exception is JsonException or NotSupportedException or InvalidOperationException)
+        {
+
+            WriteSerializationFailure();
+
+            return;
+
+        }
 
         WriteLine(StandardOutput, json);
+
+        CliInvocationContext.MarkStructuredPayloadWritten();
+
+    }
+
+    private void WriteSerializationFailure()
+    {
+
+        WriteLine(
+            StandardOutput,
+            JsonSerializer.Serialize(
+                new CliErrorPayload(
+                    "The command result could not be serialized.",
+                    (int)CliExitCode.GenericError),
+                CliJsonContext.Default.CliErrorPayload));
+
+        WriteLine(StandardError, "The command result could not be serialized.");
 
         CliInvocationContext.MarkStructuredPayloadWritten();
 
@@ -736,6 +807,14 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(ConfigurationPresetApplyResult))]
 
 [JsonSerializable(typeof(ConfigurationPresetResetResult))]
+
+[JsonSerializable(typeof(CredentialInventoryEntryPayload))]
+
+[JsonSerializable(typeof(CredentialInventoryPayload))]
+
+[JsonSerializable(typeof(SetupPlanPayload))]
+
+[JsonSerializable(typeof(SetupResultPayload))]
 
 [JsonSerializable(typeof(JsonElement))]
 internal sealed partial class CliJsonContext : JsonSerializerContext;

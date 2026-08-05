@@ -91,46 +91,72 @@ internal static partial class CliCommandTree
         show.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Show(ct).ConfigureAwait(false));
         set.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Set(ct, pr.GetValue(apiKey)).ConfigureAwait(false));
 
+        Command list = new(
+            "list",
+            "Report every Arcanum-owned credential identity with presence, status, and recovery guidance.");
+
+        list.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Inventory(ct).ConfigureAwait(false));
+
         Command provider = new(
             "provider",
-            "Manage native provider credentials. Stored values are never displayed.");
+            "Manage inference-provider and web-research credentials. Stored values are never displayed.");
         Command providerSet = new(
             "set",
-            "Store a native provider credential from redirected stdin or a secure prompt.");
-        Command providerStatus = new("status", "Report whether a native provider credential is configured.");
-        Command providerDelete = new("delete", "Delete a native provider credential from local secure stores.");
-        Argument<string> providerForSet = new("provider")
-        {
-            Description = "Native provider name (currently: perplexity).",
-        };
-        Argument<string> providerForStatus = new("provider")
-        {
-            Description = "Native provider name (currently: perplexity).",
-        };
-        Argument<string> providerForDelete = new("provider")
-        {
-            Description = "Native provider name (currently: perplexity).",
-        };
+            "Store a provider credential from redirected stdin or a secure prompt.");
+        Command providerStatus = new("status", "Report whether a provider credential is configured.");
+        Command providerDelete = new("delete", "Delete a provider credential from local secure stores.");
+        Argument<string> providerForSet = ProviderCredentialArgument();
+        Argument<string> providerForStatus = ProviderCredentialArgument();
+        Argument<string> providerForDelete = ProviderCredentialArgument();
+        Option<string?> kindForSet = ProviderCredentialKindOption();
+        Option<string?> kindForStatus = ProviderCredentialKindOption();
+        Option<string?> kindForDelete = ProviderCredentialKindOption();
         providerSet.Add(providerForSet);
+        providerSet.Add(kindForSet);
         providerStatus.Add(providerForStatus);
+        providerStatus.Add(kindForStatus);
         providerDelete.Add(providerForDelete);
+        providerDelete.Add(kindForDelete);
 
         providerSet.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.SetProvider(
                 pr.GetValue(providerForSet)!,
-                ct).ConfigureAwait(false));
+                ct,
+                pr.GetValue(kindForSet)).ConfigureAwait(false));
         providerStatus.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.ProviderStatus(pr.GetValue(providerForStatus)!, ct).ConfigureAwait(false));
+            await handler.ProviderStatus(
+                pr.GetValue(providerForStatus)!,
+                ct,
+                pr.GetValue(kindForStatus)).ConfigureAwait(false));
         providerDelete.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.DeleteProvider(pr.GetValue(providerForDelete)!, ct).ConfigureAwait(false));
+            await handler.DeleteProvider(
+                pr.GetValue(providerForDelete)!,
+                ct,
+                pr.GetValue(kindForDelete)).ConfigureAwait(false));
 
         provider.Add(providerSet);
         provider.Add(providerStatus);
         provider.Add(providerDelete);
 
-        key.Add(show); key.Add(set); key.Add(provider);
+        key.Add(show); key.Add(set); key.Add(list); key.Add(provider);
         return key;
     }
+
+    private static Argument<string> ProviderCredentialArgument() =>
+        new("provider")
+        {
+            Description =
+                "Configured inference provider name, or 'perplexity' for the native web-research credential.",
+        };
+
+    private static Option<string?> ProviderCredentialKindOption() =>
+        new("--kind")
+        {
+            Description =
+                "Credential kind: 'inference' or 'web-research'. Defaults to web-research only for "
+                + "the reserved name 'perplexity'.",
+        };
 
     private static Command BuildLook(IServiceProvider sp)
     {

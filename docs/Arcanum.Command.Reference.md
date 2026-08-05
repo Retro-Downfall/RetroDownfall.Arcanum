@@ -206,6 +206,79 @@ the current transcript page.
 
 ## CLI command tree
 
+### `arcanum setup`
+
+Guided, resumable first-run setup: provider, credentials, workspace, and preset.
+
+Runs an explicit state machine over eight steps — runtime edition and privacy posture, provider
+endpoint and model, provider credential, optional web-research credential, live provider validation,
+workspace and Campaign, onboarding preset, and the final diff — then commits. Every answer stays in
+an in-memory draft until the final plan is accepted, so Ctrl+C, end of input, a validation failure,
+or a failed dependency check leaves the prior configuration, credentials, CLI context, and workspace
+registry unchanged. The wizard composes the existing authorities (canonical configuration
+reader/validator/atomic writer, outbound endpoint guard, OS-backed credential stores, preset engine,
+CLI context store); it does not introduce a second configuration model.
+
+Arcanum supports OpenAI-compatible provider endpoints only, including Ollama and other local model
+servers through their own `/v1` endpoint. The provider templates are OpenAI, Local/Ollama, and a
+custom endpoint you supply.
+
+Live validation performs one guarded `GET {endpoint}/models` with a strict five-second timeout. It is
+non-billable — no completion is requested, so validation never spends inference tokens — and it runs
+in-process, so it works before `arcanum serve` has ever started. Results distinguish endpoint
+rejection by the outbound guard, TLS/certificate failure, authentication failure, model absence,
+malformed response, timeout, and unreachable host.
+
+**Syntax:** `arcanum setup [options]`
+
+| Option | Meaning |
+|---|---|
+| `--plan` | Compute and print the plan without writing anything. Exits `2` when the plan is not applicable. |
+| `--apply` | Apply the plan without prompting. Mutually exclusive with `--plan`. |
+| `--preset <preset>` | Onboarding preset ID to apply (see `arcanum preset list`). |
+| `--provider <name>` | Provider name to create or update. |
+| `--endpoint <url>` | OpenAI-compatible provider endpoint, including the `/v1` suffix. |
+| `--model <model>` | Default model advertised by the provider. |
+| `--provider-key-env <variable>` | Environment variable holding the provider API key. No secret is read or stored. |
+| `--provider-key-stdin` | Read the provider API key as the first line of redirected stdin and store it securely. |
+| `--no-provider-key` | Delete any stored provider credential, for keyless local model servers. |
+| `--research` | Enable (`true`) or skip (`false`) the Perplexity web-research credential step. |
+| `--research-key-env <variable>` | Environment variable holding the web-research API key. No secret is read or stored. |
+| `--research-key-stdin` | Read the web-research API key from redirected stdin, after the provider key when both are supplied. |
+| `--workspace <path>` | Default workspace root to record in configuration. |
+| `--campaign <name>` | Campaign name recorded in the completion summary and CLI context. |
+| `--edition <edition>` | Runtime edition: `local` or `development`. |
+| `--listen-any` | Privacy posture: bind all network interfaces (requires HTTPS) instead of loopback. |
+| `--allow-unreachable-provider` | Commit even when live validation fails, for air-gapped hosts or a local server that is not running yet. |
+
+Secrets are never accepted as arguments. A credential may only arrive on redirected stdin
+(`--provider-key-stdin`, `--research-key-stdin`) or as an environment-variable reference
+(`--provider-key-env`, `--research-key-env`); nothing that carries a secret appears in argv, the
+process table, or shell history.
+
+The wizard owns exactly these configuration paths: `edition`, `host.listenAny`, `defaultModel`,
+`workspaces.defaultRoot`, the selected `providers[]` entry, and — only when an environment reference
+is chosen — that entry's `credentialEnvironmentVariable` plus
+`integrations.webResearch.credentialEnvironmentVariable`. Every other persisted value is carried
+through untouched, so re-running setup and accepting the current values is a no-op rather than a
+reset. Provider endpoints are sensitive configuration values: the diff masks them and the completion
+summary reports only the endpoint class (`Loopback`, `PrivateNetwork`, `Public`, or `Unknown`).
+
+The commit is ordered by dependency: credentials first (the preset engine reads them when evaluating
+prerequisites), then the validated configuration, then the preset, then the CLI context selection. On
+failure the wizard restores the previous configuration and deletes any credential this run created.
+A credential that *replaced* an existing one cannot be restored — the wizard never reads a prior
+credential value — so that case is reported as an actionable partial-commit state naming the exact
+`arcanum key provider set <provider>` command to run.
+
+The completion summary reports the active preset, provider and model, endpoint class, workspace and
+Campaign, enabled network and memory capabilities, tool security posture, privacy state, and the
+exact next command to run.
+
+Exit codes follow the standard table: `0` when the plan is applicable (`--plan`) or committed
+(`--apply`), `2` for an inapplicable plan, invalid input, or a failed commit, and `130` when the
+interactive wizard is cancelled.
+
 ### `arcanum open`
 
 Launch Command Center, The Forge, or Compendium, optionally at one server-owned resource. Resource
@@ -404,6 +477,11 @@ Run environment diagnostics (version, paths, API health).
 
 Runs System, Paths, Configuration, MCP, Tokenizer, File Encryption, durable-operation, and authenticated API-health diagnostics. Embedding status distinguishes sqlite-vec from the complete streamed managed SIMD fallback; managed compatibility budget `0` means no total row budget. The health probe has a code-owned two-second timeout: an unreachable API is a warning, while hard local checks return a nonzero exit. `--json` emits the typed doctor report rather than decorated panels.
 
+The `ProviderCredentials` check resolves each credential the same way the run time does — the
+environment reference first, then the OS-backed secure store — and reports which source satisfied it.
+A missing explicit reference or a stored-but-undecryptable credential is a warning naming the exact
+recovery command. Credential values are never shown.
+
 **Syntax:** `arcanum doctor`
 
 | Option | Meaning |
@@ -412,18 +490,50 @@ Runs System, Paths, Configuration, MCP, Tokenizer, File Encryption, durable-oper
 
 ### `arcanum key`
 
-Master and native-provider API key utilities (secure local stores; no HTTP).
+Master, inference-provider, and web-research credential utilities (secure local stores; no HTTP).
 
-Reads and writes secure local credentials without an HTTP request. Master-key output is deliberately written to stderr. `key set` accepts its value as an argument, redirected stdin, or a hidden prompt; `key provider set` accepts only redirected stdin or a hidden prompt. Native-provider secret values are never displayed.
+Reads and writes secure local credentials without an HTTP request. Master-key output is deliberately written to stderr. `key set` accepts its value as an argument, redirected stdin, or a hidden prompt; `key provider set` accepts only redirected stdin or a hidden prompt. Provider secret values are never displayed, including under `--json` and in debug output.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum key show` | Print the stored master API key to stderr (stdout piping does not capture the secret). | None beyond global or inherited family options. |
 | `arcanum key set [<api-key>]` | Store a master API key in the OS credential store (mirrors to security.dat when possible). | None beyond global or inherited family options. |
-| `arcanum key provider [command]` | Manage native provider credentials. Stored values are never displayed. | None beyond global or inherited family options. |
-| `arcanum key provider set <provider>` | Store a native provider credential from redirected stdin or a secure prompt. | None beyond global or inherited family options. |
-| `arcanum key provider status <provider>` | Report whether a native provider credential is configured. | None beyond global or inherited family options. |
-| `arcanum key provider delete <provider>` | Delete a native provider credential from local secure stores. | None beyond global or inherited family options. |
+| `arcanum key list` | Report every Arcanum-owned credential identity with presence, status, storage class, resolved source, environment reference, and fixed recovery guidance. | None beyond global or inherited family options. |
+| `arcanum key provider [command]` | Manage inference-provider and web-research credentials. Stored values are never displayed. | None beyond global or inherited family options. |
+| `arcanum key provider set <provider>` | Store a provider credential from redirected stdin or a secure prompt. | `--kind <kind>` — `inference` or `web-research`. |
+| `arcanum key provider status <provider>` | Report whether a provider credential is configured. | `--kind <kind>` — `inference` or `web-research`. |
+| `arcanum key provider delete <provider>` | Delete a provider credential from local secure stores. | `--kind <kind>` — `inference` or `web-research`. |
+
+`<provider>` is a configured inference provider name. The single reserved name `perplexity` routes to
+the native web-research credential by default; `--kind` overrides that routing in either direction, so
+an inference provider actually named `perplexity` remains addressable.
+
+#### Credential inventory
+
+`arcanum key list` reports Arcanum's closed credential catalog. It never enumerates unrelated OS
+credentials, and it reports presence and status only — never a value, and never a value-derived hint.
+
+| Credential | Storage | Notes |
+|---|---|---|
+| Master API key | OS credential store with an owner-only Data Protection mirror (`security.dat`) | Generated on first `arcanum serve`; readable with `arcanum key show`. |
+| Grimoire encryption secret | OS credential store with an owner-only Data Protection mirror | A corrupt secret fails closed and is never replaced while encrypted data exists. |
+| File-encryption master key | OS credential store with an owner-only Data Protection mirror | Recover from the OS store, the mirror plus key ring, or one verified `.arcbackup` generation. |
+| Web research (Perplexity) | `ARCANUM_PERPLEXITY_API_KEY` (or the configured reference), otherwise the OS credential store with an encrypted mirror | The environment reference wins when both are present. |
+| Inference provider API key | `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY` (or the configured reference), otherwise the OS credential store with an encrypted mirror | One credential per provider name; the environment reference wins when both are present. |
+
+Status values are `configured`, `missing`, and `corrupt`. A `corrupt` credential means the encrypted
+mirror is present but could not be decrypted with the current Data Protection key ring; Arcanum fails
+closed and never generates a replacement. Store the credential again with `arcanum setup` or
+`arcanum key provider set <provider>`.
+
+Provider credentials are resolved in a fixed order at run time: the configured (or derived)
+environment reference first, then the OS-backed secure store. That order lets an operator override a
+stored credential for one process without editing stored state, and lets `arcanum setup` leave a new
+installation ready to run without exporting anything.
+
+.NET cannot reliably zero an immutable managed `string`, so Arcanum does not claim to erase the
+credential strings crossing a store boundary. It minimizes their lifetime and number of copies, and
+zeroes every `byte[]` buffer it owns in a `finally`.
 
 ### `arcanum lore`
 
@@ -1042,8 +1152,9 @@ Coding Workspace uses
 `arcanum run --workspace . "Inspect this workspace and summarize it."`, including the required
 prompt.
 
-The future guided `arcanum setup` wizard is tracked separately by issue #19. These commands expose
-the reusable preset service directly; they do not simulate or add that wizard.
+These commands expose the reusable preset service directly. [`arcanum setup`](#arcanum-setup)
+composes the same service as its preset step and applies exactly the same overlay, so the two
+surfaces can never disagree about what a preset owns.
 
 ### `arcanum config`
 

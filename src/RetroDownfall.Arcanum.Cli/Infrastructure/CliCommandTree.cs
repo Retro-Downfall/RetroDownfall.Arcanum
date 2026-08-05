@@ -42,6 +42,8 @@ internal static partial class CliCommandTree
 
         Command open = BuildOpen(serviceProvider);
 
+        Command setup = BuildSetup(serviceProvider);
+
         Command serve = BuildServe(serviceProvider);
         Command ask = BuildAsk(serviceProvider);
         Command run = BuildRun(serviceProvider);
@@ -91,6 +93,8 @@ internal static partial class CliCommandTree
         root.Add(center);
 
         root.Add(open);
+
+        root.Add(setup);
 
         root.Add(serve);
         root.Add(ask);

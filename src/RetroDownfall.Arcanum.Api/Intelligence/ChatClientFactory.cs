@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Chat;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -30,12 +31,16 @@ public interface IChatClientFactory
 /// </summary>
 public sealed class ChatClientFactory(
     IHttpClientFactory httpClientFactory,
-    IOptionsMonitor<ArcanumSettings> optionsMonitor) : IChatClientFactory
+    IOptionsMonitor<ArcanumSettings> optionsMonitor,
+    IProviderApiKeyResolver? apiKeyResolver = null) : IChatClientFactory
 {
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
 
     private const string KeylessOpenAiPlaceholder = "no-key";
+
+    private readonly IProviderApiKeyResolver _apiKeyResolver =
+        apiKeyResolver ?? EnvironmentOnlyProviderApiKeyResolver.Instance;
 
     public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
     {
@@ -55,10 +60,8 @@ public sealed class ChatClientFactory(
 
     }
 
-    public Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken)
+    public async Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken)
     {
-
-        _ = cancellationToken;
 
         if (provider.Type != AiProviderKind.OpenAICompatible)
         {
@@ -67,16 +70,21 @@ public sealed class ChatClientFactory(
 
         }
 
-        return Task.FromResult(CreateOpenAiCompatibleLease(provider, resolvedModel));
+        string? resolvedApiKey = await _apiKeyResolver
+            .ResolveAsync(provider, cancellationToken)
+            .ConfigureAwait(false);
+
+        return CreateOpenAiCompatibleLease(provider, resolvedModel, resolvedApiKey);
 
     }
 
-    private ChatClientLease CreateOpenAiCompatibleLease(ProviderSettings provider, string resolvedModel)
+    private ChatClientLease CreateOpenAiCompatibleLease(
+        ProviderSettings provider,
+        string resolvedModel,
+        string? resolvedApiKey)
     {
 
-        string key =
-            EnvironmentCredentialResolver.ResolveProviderApiKey(provider)
-            ?? KeylessOpenAiPlaceholder;
+        string key = resolvedApiKey ?? KeylessOpenAiPlaceholder;
 
         var credential = new ApiKeyCredential(key);
 

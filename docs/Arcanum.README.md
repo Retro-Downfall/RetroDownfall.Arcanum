@@ -176,6 +176,7 @@ src/
   RetroDownfall.Arcanum.Api/             # endpoints, intelligence hub, /v1, security filter
     ProvingGrounds/                      # trial/inquisitor endpoint wiring
   RetroDownfall.Arcanum.Cli/             # the `arcanum` executable (Spectre commands)
+    Services/Setup/                      # guided-setup state machine, planner, committer, probe
   RetroDownfall.Compendium.Ux/           # desktop `arcanum.json` editor (Avalonia)
   RetroDownfall.TheForge.Core/           # portable Forge client contracts/services
   RetroDownfall.TheForge.Ux/             # desktop Inference IDE (Avalonia)
@@ -470,8 +471,8 @@ changes to explicit token/cost/security policy. Presets do not add retry, timeou
 other arbitrary tuning knobs.
 
 This command family is the reusable preset service for guided onboarding. The interactive
-`arcanum setup` wizard remains separate work tracked by issue #19; it is not implemented or
-silently simulated by `preset apply`.
+`arcanum setup` wizard composes the same service for its preset step, so the two surfaces apply
+exactly the same overlay; `preset apply` never simulates the wizard's other steps.
 
 Progress/no-progress mechanics, retries/fallback, structured-output correction, transport
 connection/idle behavior, filesystem and storage envelopes, heartbeats, and other implementation
@@ -531,7 +532,8 @@ Ollama, when used, must use its `/v1` endpoint. A reasoning-capable model entry 
 
 `standard` uses typed Microsoft.Extensions.AI/OpenAI controls and does not accept a numeric budget. Numeric budgets require exactly one explicit nonstandard shape: `openRouter` → `reasoning.max_tokens`, `topLevelReasoningBudget` → top-level `reasoning_budget`, or `anthropicThinking` → `thinking.budget_tokens`.
 
-Provider credentials are environment-backed. An explicit
+Provider credentials never live in `arcanum.json`. They resolve in a fixed order: the
+environment reference first, then the OS-backed secure store. An explicit
 `credentialEnvironmentVariable` is the exact reference and replaces the default. When omitted,
 Arcanum derives `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY`: ASCII letters/digits are retained,
 letters are upper-cased, runs of other characters become one underscore, and an empty result becomes
@@ -543,6 +545,19 @@ export OPENAI_API_KEY='your-key-here'
 ```
 
 PowerShell: `$env:OPENAI_API_KEY = "your-key-here"`.
+
+To skip environment variables entirely, store the credential in the OS credential manager — macOS
+Keychain, Windows Credential Manager, or Linux Secret Service, each with an owner-only Data
+Protection mirror for headless hosts:
+
+```bash
+arcanum key provider set openai   # reads redirected stdin or a hidden prompt; never echoed back
+```
+
+`arcanum setup` does the same thing as part of guided onboarding. Because the environment reference
+is checked first, exporting the variable still overrides the stored credential for that process
+without changing stored state. `arcanum key list` reports every credential identity Arcanum owns with
+presence and status only; a credential value is never printed back, including under `--json`.
 
 ### Native web research
 
@@ -931,6 +946,7 @@ Linux:
 ```bash
 tar -xzf arcanum-linux-x64.tar.gz
 chmod +x arcanum-linux-x64/arcanum
+./arcanum-linux-x64/arcanum setup
 ./arcanum-linux-x64/arcanum serve
 ./arcanum-linux-x64/arcanum key show
 ```
@@ -939,9 +955,45 @@ Windows:
 
 ```powershell
 Expand-Archive .\arcanum-win-x64.zip -DestinationPath .
+.\arcanum-win-x64\arcanum.exe setup
 .\arcanum-win-x64\arcanum.exe serve
 .\arcanum-win-x64\arcanum.exe key show
 ```
+
+### Guided setup
+
+`arcanum setup` is the guided first run. It walks eight explicit steps — runtime edition and privacy
+posture, provider endpoint and model, provider credential, optional Perplexity web-research
+credential, live provider validation, workspace and Campaign, onboarding preset, and the final diff —
+and then commits. Nothing is written until you accept the plan, so Ctrl+C or end of input at any step
+leaves configuration, credentials, CLI context, and the workspace registry unchanged. Re-running it
+and accepting the current values is a no-op, not a reset: the wizard owns only `edition`,
+`host.listenAny`, `defaultModel`, `workspaces.defaultRoot`, and the selected provider entry.
+
+Arcanum speaks to OpenAI-compatible endpoints only, including Ollama and other local model servers
+through their own `/v1` endpoint. Validation is one guarded `GET {endpoint}/models` with a strict
+five-second timeout: non-billable, in-process, and usable before `arcanum serve` has ever started. It
+tells you which dependency failed — endpoint rejected, TLS failure, authentication failure, model
+absent, malformed response, timeout, or unreachable.
+
+Credentials go into the OS credential manager (macOS Keychain, Windows Credential Manager, Linux
+Secret Service) with an owner-only Data Protection mirror for headless hosts, so a finished run is
+ready for `arcanum run` without exporting anything. Provider credentials still resolve from
+`ARCANUM_PROVIDER_<NAME>_API_KEY` first when it is set, so a per-process override always wins.
+
+For automation, `--plan` prints the plan and writes nothing, and `--apply` commits without prompting:
+
+```bash
+printf '%s\n' "$OPENAI_KEY" | arcanum setup --apply \
+  --provider openai --endpoint https://api.openai.com/v1 --model gpt-4o-mini \
+  --preset general-assistant --workspace . --provider-key-stdin
+```
+
+Secrets are never accepted as arguments. A credential may only arrive on redirected stdin
+(`--provider-key-stdin`, `--research-key-stdin`) or as an environment reference
+(`--provider-key-env`, `--research-key-env`), so nothing secret reaches argv, the process table, or
+shell history. Use `arcanum key list` afterwards to see every credential identity Arcanum owns with
+presence and status only.
 
 Run as a normal user; elevation is not required. Extract the Arcanum, The Forge, and Compendium
 archives beneath the same parent directory. `arcanum open ...` discovers the shipped sibling
@@ -1026,6 +1078,15 @@ Reliable-editing-loop focused filters and platform notes are in [DESIGN §13.6](
 This section is intentionally condensed. See
 [`Arcanum.Command.Reference.md`](Arcanum.Command.Reference.md) for the complete command tree and
 option-by-option behavior.
+
+### First run
+
+```bash
+arcanum setup                       # guided wizard; nothing is written until you accept the plan
+arcanum setup --plan --json         # machine-readable plan, writes nothing
+arcanum key list                    # credential inventory: presence and status only
+arcanum run "Hello"                 # the wizard prints the exact next command for your preset
+```
 
 ### Safe resource selection
 
