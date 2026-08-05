@@ -19,6 +19,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
@@ -61,6 +62,8 @@ internal sealed record ContextCompressionRequest
     public SagaMemory[]? SagaMemories { get; init; }
 
     public SessionAttachmentRetrievedChunk[]? SessionAttachmentContext { get; init; }
+
+    public TapestryContextNode[]? TapestryContext { get; init; }
 
     public IReadOnlyList<LexiconEntryDto>? LexiconEntries { get; init; }
 
@@ -274,7 +277,8 @@ public sealed class InferenceContextBuilder(
             sessionAttachmentsIndex: context.SessionAttachmentsIndex,
             maxIndexItems: context.MaxIndexItems,
             maxIndexBytes: context.MaxIndexBytes,
-            sessionAttachmentContext: context.SessionAttachmentContext);
+            sessionAttachmentContext: context.SessionAttachmentContext,
+            tapestryContext: context.TapestryContext);
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
 

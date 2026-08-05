@@ -535,7 +535,7 @@ Provides read-only cross-store inspection plus explicit Lexicon deletion. Search
 
 | Command | Explanation | Additional command options |
 |---|---|---|
-| `arcanum memory status [<session>]` | Show feature gates and counts by memory store. | None beyond global or inherited family options. |
+| `arcanum memory status [<session>]` | Show feature gates and counts by memory store, including the `Tapestry` row (published hierarchical nodes only; gated by `Arcanum:Features:Tapestry`). | None beyond global or inherited family options. |
 | `arcanum memory sources [<session>]` | Describe provenance and retention for every memory source. | None beyond global or inherited family options. |
 | `arcanum memory search <query>` | Search persisted memory with an explicit or displayed scope. | `--scope <scope>` — session, attachments, workspace, saga, lexicon, or all (default).<br>`--session <session>` — Optional session GUID, exact title, or unique title prefix.<br>`--workspace <workspace>` — Optional workspace ID; omit to search every indexed workspace. |
 | `arcanum memory explain [<session>]` | Explain what can be eligible for the next turn and why. | None beyond global or inherited family options. |

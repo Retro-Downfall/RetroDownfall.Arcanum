@@ -421,6 +421,7 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
             ContextTokenSource[] reductionOrder =
             [
                 ContextTokenSource.SystemCodexSpell,
+                ContextTokenSource.TapestryRag,
                 ContextTokenSource.LexiconSaga,
                 ContextTokenSource.WorkspaceRag,
                 ContextTokenSource.AttachmentRag,
@@ -483,6 +484,11 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
         if (heading.StartsWith("### Semantic Context", StringComparison.OrdinalIgnoreCase))
         {
             return ContextTokenSource.WorkspaceRag;
+        }
+
+        if (heading.StartsWith("### Hierarchical Context", StringComparison.OrdinalIgnoreCase))
+        {
+            return ContextTokenSource.TapestryRag;
         }
 
         if (heading.StartsWith("### Session Attachments Index", StringComparison.OrdinalIgnoreCase))

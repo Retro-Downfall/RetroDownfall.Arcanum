@@ -12,7 +12,7 @@ commands resolve the same saved/explicit Campaign, Workspace, Model, and Session
 
 The preview resolves a production model lease, loads Session history and explicit context pins,
 reads CODEX, applies production Spell routing and resonant dependencies, optionally retrieves
-Workspace/attachment RAG plus Saga/Lexicon context, builds and filters the production tool set,
+Workspace/attachment RAG plus Saga/Lexicon/Tapestry context, builds and filters the production tool set,
 calls `SystemPromptBuilder.BuildDocument`, evaluates the production compression rule, and runs the
 model-aware token estimator. A `run` preview can additionally carry a forced Spell, preview-only
 `AttachedFiles` / `ScryingFoci`, research synthesis policy, output reserve, and sampling options.
@@ -154,16 +154,22 @@ paths use the same instance and the same model/tool loop. Its stable key combine
 opaque source id, version/content hash, and whole/chunk range. It records origin, label, hash,
 estimated tokens, bytes, trust, injected state, and provider round for current attachments,
 attachment references, context pins, `attach_session_file`, `refresh_session_file`, attachment RAG,
-workspace RAG, and Saga.
+workspace RAG, Saga, and The Tapestry.
 
 Post-turn Saga extraction is a separate durable flow: a deduplicated queue reviews Session history
 oldest-first in timestamp-group-safe checkpoint pages, advances its watermark only after successful
 persistence, and retries failures. The checkpoint size is not a tail-window or total-memory ceiling.
 
 Admission order is explicit-first: current attachment → attachment reference → context pin → model
-attach → model refresh → attachment RAG → workspace RAG → Saga. Attachment semantic limits are
-chunks, represented attachments, UTF-8 bytes, estimated tokens, and similarity. Identical
-content/ranges are injected once. A whole explicit version removes same-version semantic chunks; a
+attach → model refresh → attachment RAG → workspace RAG → Saga → Tapestry. The Tapestry is admitted
+last because the documented source precedence is accepted explicit material, then exact raw leaf, then
+derived summary: a hierarchical node whose text exactly matches a leaf already in the ledger is
+rejected as a duplicate. Because a summary and its descendant have different text and different
+hashes, exact dedupe cannot see semantic overlap between tree levels — Tapestry retrieval therefore
+applies lineage-aware suppression before admission, keeping the higher-utility candidate and dropping
+the ancestor or descendant it would duplicate (DESIGN §21.11). Attachment semantic limits are
+chunks, represented attachments, UTF-8 bytes, estimated tokens, and similarity; Tapestry limits are
+nodes, UTF-8 bytes, and estimated tokens. Identical content/ranges are injected once. A whole explicit version removes same-version semantic chunks; a
 refresh also removes older versions before the next provider call. Failed materialization does not
 enter the ledger, and turn finalization clears it.
 
@@ -239,8 +245,8 @@ Expected unsafe/unavailable cases return a structured tool result and no content
 post-processing exceptions follow the shared mode policy: streaming invocation failures are
 tolerated with `toolError` plus a synthetic result, while buffered behavior follows
 `TolerateToolFailures`. Before every provider call, including structured-output correction, context
-admission drops Saga, workspace RAG, then attachment RAG before complete tool exchanges; explicit
-accepted files are never dropped and overflow returns `Hub.ContextBudgetExceeded`. A successful refresh emits native `attachmentRefreshed` observability after
+admission drops Tapestry, Saga, workspace RAG, then attachment RAG before complete tool exchanges;
+explicit accepted files are never dropped and overflow returns `Hub.ContextBudgetExceeded`. A successful refresh emits native `attachmentRefreshed` observability after
 its `toolResult`; OpenAI projections ignore that native-only event.
 
 ## 6. Command Center context UI rendering
@@ -264,7 +270,7 @@ Native `context` frames update a non-focusable left-rail Context pane with chat 
 attachments, refreshed files, attachment RAG, and workspace RAG. The displayed input total uses the
 local estimate before provider usage arrives and valid provider-reported input afterward. The
 materialization ledger accumulates only context-pressure evictions for attachment/workspace semantic
-chunks, and those counts produce the pane warning. Metadata from `### Session Attachments Index` is
+chunks and Tapestry nodes, and those counts produce the pane warning. Metadata from `### Session Attachments Index` is
 system context rather than retrieved attachment RAG. Rendering is aggregate-only and never exposes
 chunk text, vectors, source hashes, or raw ledger entries.
 

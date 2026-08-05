@@ -32,6 +32,7 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
@@ -88,7 +89,8 @@ public sealed partial class WizardIntelligenceProvider(
     SessionContextPinMaterializer? sessionContextPinMaterializer = null,
     ISubagentRunner? subagentRunner = null,
     ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
-    IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
+    IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null,
+    ITapestryStore? tapestryStore = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
 {
     private readonly TokenAccountingDependencies _tokenAccounting =
         TokenAccountingDependencies.Create(
@@ -1913,6 +1915,16 @@ public sealed partial class WizardIntelligenceProvider(
             lease.ResolvedModel,
             grimoireTurn.SessionId ?? request.SessionId);
 
+        // Admitted last of the semantic sources so an exact raw leaf already in the ledger wins the
+        // duplicate-content check against a Tapestry node covering the same text (DESIGN §21.11).
+        TapestryContextNode[]? streamTapestryContext = AcceptTapestryMaterializations(
+            streamMaterializationLedger,
+            await RetrieveTapestryContextAsync(request, streamQueryEmbedding, inferenceToken)
+                .ConfigureAwait(false),
+            lease.Provider,
+            lease.ResolvedModel,
+            grimoireTurn.SessionId ?? request.SessionId);
+
         IReadOnlyList<LexiconEntryDto>? streamLexiconEntries = await RetrieveLexiconEntriesAsync(
             request,
             streamResolvedSpell?.Entities ?? Array.Empty<string>(),
@@ -1943,7 +1955,8 @@ public sealed partial class WizardIntelligenceProvider(
             sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
             maxIndexItems: streamMaxIndexItems,
             maxIndexBytes: streamMaxIndexBytes,
-            sessionAttachmentContext: streamAttachmentContext);
+            sessionAttachmentContext: streamAttachmentContext,
+            tapestryContext: streamTapestryContext);
         SystemPromptDocument streamSystemPromptDocument = baseSystemPromptDocument;
         string streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
 
@@ -1971,7 +1984,8 @@ public sealed partial class WizardIntelligenceProvider(
                 sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
                 maxIndexItems: streamMaxIndexItems,
                 maxIndexBytes: streamMaxIndexBytes,
-                sessionAttachmentContext: streamAttachmentContext);
+                sessionAttachmentContext: streamAttachmentContext,
+                tapestryContext: streamTapestryContext);
 
             streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
 
@@ -2005,6 +2019,9 @@ public sealed partial class WizardIntelligenceProvider(
 
                 ContextMaterializationSourceKind.SagaMemory =>
                     RemoveSagaMemory(ref streamSagaMemories, removed),
+
+                ContextMaterializationSourceKind.TapestryMemory =>
+                    RemoveTapestryNode(ref streamTapestryContext, removed),
 
                 _ => false,
 
@@ -2264,6 +2281,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                             SessionAttachmentContext = streamAttachmentContext,
 
+                            TapestryContext = streamTapestryContext,
+
                             LexiconEntries = streamLexiconEntries,
 
                             SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
@@ -2303,7 +2322,8 @@ public sealed partial class WizardIntelligenceProvider(
                         sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
                         maxIndexItems: streamMaxIndexItems,
                         maxIndexBytes: streamMaxIndexBytes,
-                        sessionAttachmentContext: streamAttachmentContext);
+                        sessionAttachmentContext: streamAttachmentContext,
+                        tapestryContext: streamTapestryContext);
 
                     if (preparedAdmissionMessages.Count > 0
                         && preparedAdmissionMessages[0].Role == ChatRole.System)
@@ -2489,6 +2509,7 @@ public sealed partial class WizardIntelligenceProvider(
                             SemanticContext = streamSemanticContext,
                             SagaMemories = streamSagaMemories,
                             SessionAttachmentContext = streamAttachmentContext,
+                            TapestryContext = streamTapestryContext,
                             LexiconEntries = streamLexiconEntries,
                             SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
                             MaxIndexItems = streamMaxIndexItems,
@@ -2518,7 +2539,8 @@ public sealed partial class WizardIntelligenceProvider(
                         sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
                         maxIndexItems: streamMaxIndexItems,
                         maxIndexBytes: streamMaxIndexBytes,
-                        sessionAttachmentContext: streamAttachmentContext);
+                        sessionAttachmentContext: streamAttachmentContext,
+                        tapestryContext: streamTapestryContext);
 
                     if (streaming)
                     {
@@ -4468,7 +4490,14 @@ public sealed partial class WizardIntelligenceProvider(
             && embeddings.AttachmentRetrievalEnabled
             && request.SessionId is not null;
 
-        if (!needsCodebaseEmbedding && !needsSagaEmbedding && !needsAttachmentEmbedding)
+        bool needsTapestryEmbedding = embeddings.Enabled
+            && embeddings.TapestryEnabled
+            && (!string.IsNullOrWhiteSpace(request.WorkingDirectory) || request.SessionId is not null);
+
+        if (!needsCodebaseEmbedding
+            && !needsSagaEmbedding
+            && !needsAttachmentEmbedding
+            && !needsTapestryEmbedding)
         {
             return null;
         }
@@ -4802,6 +4831,418 @@ public sealed partial class WizardIntelligenceProvider(
             record.Source?.Kind.ToString() ?? AttachmentSourceKind.SnapshotOnly.ToString(),
             AttachmentSourceAvailability.Available);
 
+    /// <summary>
+    /// Retrieves hierarchical context from The Tapestry (DESIGN §21.11) for injection under
+    /// <c>### Hierarchical Context (The Tapestry)</c>. Reuses the turn's single query embedding
+    /// (see <see cref="ResolveRagQueryEmbeddingAsync"/>) and reads <b>only</b> each scope's current
+    /// complete generation — nodes from an incomplete or superseded generation are never mixed in.
+    ///
+    /// Every scope the turn can see is queried: the working directory's workspace tree, and the
+    /// session's attachment and history trees. Results are ranked together, redundant
+    /// ancestor/descendant coverage is suppressed, and the remainder is bounded by the Tapestry's own
+    /// node/byte/token limits.
+    ///
+    /// Graceful degradation: returns <c>null</c> (never throws for expected failure modes) when the
+    /// feature is disabled, no generation is published, the query embedding is unavailable, or
+    /// Divination fails — the turn proceeds with an unchanged system prompt (§21.4).
+    /// </summary>
+    private async Task<TapestryRetrievedNode[]?> RetrieveTapestryContextAsync(
+        PingRequest request,
+        Embedding<float>? queryEmbedding,
+        CancellationToken cancellationToken)
+    {
+        EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
+
+        if (!embeddings.Enabled
+            || !embeddings.TapestryEnabled
+            || tapestryStore is null
+            || queryEmbedding is not { } embedding)
+        {
+            return null;
+        }
+
+        try
+        {
+            TapestryEmbeddingSettings tapestry = embeddings.Tapestry ?? new TapestryEmbeddingSettings();
+
+            List<TapestryScope> scopes = [];
+
+            if (tapestry.WorkspaceTreesEnabled && !string.IsNullOrWhiteSpace(request.WorkingDirectory))
+            {
+                scopes.Add(new TapestryScope(
+                    TapestryScopeKind.Workspace,
+                    Path.GetFullPath(request.WorkingDirectory.Trim())));
+            }
+
+            if (request.SessionId is { } sessionId)
+            {
+                if (tapestry.SessionAttachmentTreesEnabled)
+                {
+                    scopes.Add(new TapestryScope(TapestryScopeKind.SessionAttachment, sessionId.ToString()));
+                }
+
+                if (tapestry.SessionTreesEnabled)
+                {
+                    scopes.Add(new TapestryScope(TapestryScopeKind.Session, sessionId.ToString()));
+                }
+            }
+
+            if (scopes.Count == 0)
+            {
+                return null;
+            }
+
+            int maxNodes = ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedNodes(tapestry.MaxRetrievedNodes);
+
+            float similarityThreshold = ArcanumSettingClamps.EmbeddingsSimilarityThreshold(
+                embeddings.SimilarityThreshold);
+
+            List<TapestryRetrievedNode> candidates = [];
+
+            foreach (TapestryScope scope in scopes)
+            {
+                TapestryGeneration? generation = await tapestryStore
+                    .GetCurrentGenerationAsync(scope, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (generation is null)
+                {
+                    continue;
+                }
+
+                IReadOnlyList<(string NodeId, float Similarity)> hits =
+                    tapestry.RetrievalMode == TapestryRetrievalMode.TreeTraversal
+                        ? await TraverseTapestryAsync(
+                            generation,
+                            embedding,
+                            maxNodes,
+                            similarityThreshold,
+                            cancellationToken).ConfigureAwait(false)
+                        : await SearchCollapsedTapestryAsync(
+                            generation,
+                            embedding,
+                            maxNodes,
+                            similarityThreshold,
+                            cancellationToken).ConfigureAwait(false);
+
+                if (hits.Count == 0)
+                {
+                    continue;
+                }
+
+                candidates.AddRange(
+                    await tapestryStore.HydrateRetrievedNodesAsync(
+                        generation,
+                        hits,
+                        tapestry.RetrievalMode,
+                        cancellationToken).ConfigureAwait(false));
+            }
+
+            TapestryRetrievedNode[] selected = SelectTapestryNodes(candidates, tapestry, maxNodes);
+
+            return selected.Length == 0 ? null : selected;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(
+                "Tapestry retrieval failed; continuing without it (exception type {ExceptionType}).",
+                ex.GetType().FullName);
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Collapsed-tree retrieval: leaf and summary nodes are one flat pool, scoped to the current
+    /// generation so a superseded tree can never leak in.
+    /// </summary>
+    private async Task<IReadOnlyList<(string NodeId, float Similarity)>> SearchCollapsedTapestryAsync(
+        TapestryGeneration generation,
+        Embedding<float> embedding,
+        int maxNodes,
+        float similarityThreshold,
+        CancellationToken cancellationToken)
+    {
+        Result<DivinationResult[]> search = await divinationService
+            .SearchScopedAsync(
+                TapestryStorageKeys.VectorTable,
+                TapestryStorageKeys.KeyColumn,
+                TapestryStorageKeys.EmbeddingColumn,
+                TapestryStorageKeys.NodeTable,
+                TapestryStorageKeys.KeyColumn,
+                TapestryStorageKeys.GenerationColumn,
+                generation.GenerationId,
+                embedding,
+                maxNodes,
+                similarityThreshold,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return search.IsFailure
+            ? []
+            : [.. search.Value.Select(static hit => (hit.Id, hit.Similarity))];
+    }
+
+    /// <summary>
+    /// Tree-traversal retrieval: start at the generation's roots, then expand only the selected
+    /// nodes' children, level by level. Each step is one scoped search on <c>ParentScopeKey</c>, and
+    /// the walk stops when a level yields no children or the node budget is met.
+    /// </summary>
+    private async Task<IReadOnlyList<(string NodeId, float Similarity)>> TraverseTapestryAsync(
+        TapestryGeneration generation,
+        Embedding<float> embedding,
+        int maxNodes,
+        float similarityThreshold,
+        CancellationToken cancellationToken)
+    {
+        List<(string NodeId, float Similarity)> selected = [];
+
+        List<string> frontier = [TapestryStorageKeys.RootParentMarker];
+
+        int terminalLayer = await tapestryStore!
+            .GetTerminalLayerAsync(generation.GenerationId, cancellationToken)
+            .ConfigureAwait(false);
+
+        for (int depth = 0; depth <= terminalLayer && frontier.Count > 0; depth++)
+        {
+            List<(string NodeId, float Similarity)> level = [];
+
+            foreach (string parent in frontier)
+            {
+                Result<DivinationResult[]> search = await divinationService
+                    .SearchScopedAsync(
+                        TapestryStorageKeys.VectorTable,
+                        TapestryStorageKeys.KeyColumn,
+                        TapestryStorageKeys.EmbeddingColumn,
+                        TapestryStorageKeys.NodeTable,
+                        TapestryStorageKeys.KeyColumn,
+                        TapestryStorageKeys.ParentScopeColumn,
+                        TapestryStorageKeys.ParentScopeKey(generation.GenerationId, parent),
+                        embedding,
+                        maxNodes,
+                        similarityThreshold,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (search.IsSuccess)
+                {
+                    level.AddRange(search.Value.Select(static hit => (hit.Id, hit.Similarity)));
+                }
+            }
+
+            if (level.Count == 0)
+            {
+                break;
+            }
+
+            // Stable ordering: strongest similarity first, ties broken by node id, so a traversal is
+            // reproducible for the same generation and query embedding.
+            level.Sort(static (left, right) =>
+                right.Similarity.CompareTo(left.Similarity) is var byScore && byScore != 0
+                    ? byScore
+                    : string.CompareOrdinal(left.NodeId, right.NodeId));
+
+            List<(string NodeId, float Similarity)> keep = [.. level.Take(maxNodes)];
+
+            selected.AddRange(keep);
+
+            frontier = [.. keep.Select(static hit => hit.NodeId)];
+        }
+
+        return selected;
+    }
+
+    /// <summary>
+    /// Lineage-aware redundancy control. A summary and one of its descendants carry different text
+    /// and different hashes, so the shared ledger's exact content/range dedupe cannot see that they
+    /// cover the same material — this does. Candidates are ranked by similarity, then by cheaper
+    /// token cost, then by stable node id, and a candidate is suppressed when an already-selected
+    /// node is its ancestor or its descendant. The Tapestry's own node/byte/token bounds are applied
+    /// on the way through.
+    /// </summary>
+    internal static TapestryRetrievedNode[] SelectTapestryNodes(
+        List<TapestryRetrievedNode> candidates,
+        TapestryEmbeddingSettings tapestry,
+        int maxNodes)
+    {
+        if (candidates.Count == 0)
+        {
+            return [];
+        }
+
+        int maxBytes = ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedBytes(tapestry.MaxRetrievedBytes);
+
+        int maxTokens = ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedTokens(tapestry.MaxRetrievedTokens);
+
+        candidates.Sort((left, right) =>
+        {
+            int byScore = right.Similarity.CompareTo(left.Similarity);
+
+            if (byScore != 0)
+            {
+                return byScore;
+            }
+
+            int byCost = Encoding.UTF8.GetByteCount(left.Content)
+                .CompareTo(Encoding.UTF8.GetByteCount(right.Content));
+
+            return byCost != 0 ? byCost : string.CompareOrdinal(left.NodeId, right.NodeId);
+        });
+
+        List<TapestryRetrievedNode> accepted = [];
+
+        HashSet<string> acceptedIds = new(StringComparer.Ordinal);
+
+        long bytes = 0;
+
+        long estimatedTokens = 0;
+
+        foreach (TapestryRetrievedNode candidate in candidates)
+        {
+            if (accepted.Count >= maxNodes)
+            {
+                break;
+            }
+
+            if (!acceptedIds.Add(candidate.NodeId))
+            {
+                continue;
+            }
+
+            bool overlapsLineage = accepted.Any(
+                existing =>
+                    candidate.AncestorNodeIds.Contains(existing.NodeId, StringComparer.Ordinal)
+                    || existing.AncestorNodeIds.Contains(candidate.NodeId, StringComparer.Ordinal));
+
+            if (overlapsLineage)
+            {
+                continue;
+            }
+
+            int candidateBytes = Encoding.UTF8.GetByteCount(candidate.Content);
+
+            int candidateTokens = Math.Max(1, candidate.Content.Length / 4);
+
+            if (bytes + candidateBytes > maxBytes || estimatedTokens + candidateTokens > maxTokens)
+            {
+                continue;
+            }
+
+            bytes += candidateBytes;
+
+            estimatedTokens += candidateTokens;
+
+            accepted.Add(candidate);
+        }
+
+        return [.. accepted];
+    }
+
+    /// <summary>
+    /// Admits retrieved Tapestry nodes through the per-turn ledger as a distinct source kind, so they
+    /// share dedupe, inject-once, and the documented eviction priority with every other context
+    /// source. Identity is generation-scoped node identity plus content hash, so the same node can
+    /// never be injected twice and an exact-content match with a raw leaf already in the ledger is
+    /// rejected as a duplicate.
+    /// </summary>
+    private TapestryContextNode[]? AcceptTapestryMaterializations(
+        ContextMaterializationLedger ledger,
+        TapestryRetrievedNode[]? nodes,
+        ProviderSettings provider,
+        string model,
+        Guid? sessionId)
+    {
+
+        if (nodes is not { Length: > 0 })
+        {
+
+            return null;
+
+        }
+
+        List<TapestryContextNode> accepted = [];
+
+        foreach (TapestryRetrievedNode node in nodes)
+        {
+
+            ContextMaterializationEntry entry = ledger.Accept(
+                new ContextMaterializationCandidate(
+                    // A workspace tree is installation-scoped rather than session-scoped, so only
+                    // session-scoped trees carry a session id into the ledger's session gate.
+                    node.ScopeKind == TapestryScopeKind.Workspace ? null : sessionId,
+                    ContextMaterializationSourceKind.TapestryMemory,
+                    $"{node.GenerationId}\u001f{node.NodeId}",
+                    node.ContentHash,
+                    VersionOrdinal: null,
+                    ContextMaterializationRange.Whole,
+                    ContextMaterializationOrigin.Semantic,
+                    node.SourceLabel,
+                    node.ContentHash,
+                    ModelTokenEstimator.EstimateText(provider, model, node.Content).TokenCount,
+                    Encoding.UTF8.GetByteCount(node.Content),
+                    ContextMaterializationTrust.UntrustedData),
+                materialized: true);
+
+            if (entry.Accepted)
+            {
+
+                _ = ledger.TryMarkInjected(entry.Identity, providerRound: 0);
+
+                accepted.Add(new TapestryContextNode(
+                    DescribeTapestryScope(node),
+                    node.SourceLabel,
+                    node.Layer,
+                    node.NodeKind == TapestryNodeKind.Summary,
+                    node.DescendantLeafCount,
+                    node.ContentHash,
+                    node.Similarity,
+                    node.Content));
+
+            }
+
+        }
+
+        return accepted.Count == 0 ? null : [.. accepted];
+
+    }
+
+    /// <summary>
+    /// A short, non-sensitive scope label for the prompt. A workspace tree reports only its leaf
+    /// directory name, and session-scoped trees report their kind — neither leaks a host path or a
+    /// session identifier into the model's context.
+    /// </summary>
+    private static string DescribeTapestryScope(TapestryRetrievedNode node) => node.ScopeKind switch
+    {
+        TapestryScopeKind.Workspace =>
+            $"workspace {Path.GetFileName(node.ScopeId.TrimEnd(Path.DirectorySeparatorChar, '/'))}",
+
+        TapestryScopeKind.SessionAttachment => "session attachments",
+
+        _ => "session history",
+    };
+
+    /// <summary>
+    /// Projects retrieved Tapestry nodes for the read-only context preview, which has no turn ledger
+    /// to admit them through. Uses the same projection the ledger path produces so
+    /// <c>mana</c> / <c>context inspect</c> shows the operator exactly what a real turn would inject.
+    /// </summary>
+    private static TapestryContextNode[]? ProjectTapestryPreview(TapestryRetrievedNode[]? nodes) =>
+        nodes is not { Length: > 0 }
+            ? null
+            : [.. nodes.Select(static node => new TapestryContextNode(
+                DescribeTapestryScope(node),
+                node.SourceLabel,
+                node.Layer,
+                node.NodeKind == TapestryNodeKind.Summary,
+                node.DescendantLeafCount,
+                node.ContentHash,
+                node.Similarity,
+                node.Content))];
+
     private SemanticContextChunk[]? AcceptWorkspaceRagMaterializations(
         ContextMaterializationLedger ledger,
         SemanticContextChunk[]? chunks,
@@ -5061,6 +5502,41 @@ public sealed partial class WizardIntelligenceProvider(
         }
 
         return chunks?.Length != originalCount;
+
+    }
+
+    /// <summary>
+    /// Drops an evicted Tapestry node from the rendered prompt. Matching is by content hash, which is
+    /// exactly the ledger identity's hash component, so an eviction can never leave the node visible
+    /// in the prompt while the ledger believes it was removed.
+    /// </summary>
+    private static bool RemoveTapestryNode(
+        ref TapestryContextNode[]? nodes,
+        ContextMaterializationEntry removed)
+    {
+
+        if (nodes is not { Length: > 0 })
+        {
+
+            return false;
+
+        }
+
+        int originalCount = nodes.Length;
+
+        nodes = [.. nodes.Where(node => !string.Equals(
+            node.ContentHash,
+            removed.ContentHash,
+            StringComparison.OrdinalIgnoreCase))];
+
+        if (nodes.Length == 0)
+        {
+
+            nodes = null;
+
+        }
+
+        return nodes?.Length != originalCount;
 
     }
 
@@ -5975,6 +6451,10 @@ public sealed partial class WizardIntelligenceProvider(
                 DroppedWorkspaceRagChunks = ledger.DroppedWorkspaceRagChunks,
 
                 DroppedWorkspaceRagTokens = ledger.DroppedWorkspaceRagTokens,
+
+                DroppedTapestryNodes = ledger.DroppedTapestryNodes,
+
+                DroppedTapestryTokens = ledger.DroppedTapestryTokens,
             };
         }
 

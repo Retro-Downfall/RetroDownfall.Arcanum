@@ -47,6 +47,10 @@ public enum ContextTokenSource
     [JsonStringEnumMemberName("attachmentRag")]
     AttachmentRag,
 
+    /// <summary>Hierarchical context retrieved from The Tapestry's summary trees (DESIGN §21.11).</summary>
+    [JsonStringEnumMemberName("tapestryRag")]
+    TapestryRag,
+
     [JsonStringEnumMemberName("explicitAttachments")]
     ExplicitAttachments,
 
@@ -161,13 +165,19 @@ public sealed record ContextTokenBreakdown
     /// <summary>Estimated workspace-retrieval tokens evicted by context-window pressure.</summary>
     public int DroppedWorkspaceRagTokens { get; init; }
 
+    /// <summary>Tapestry hierarchical nodes evicted by context-window pressure this turn.</summary>
+    public int DroppedTapestryNodes { get; init; }
+
+    /// <summary>Estimated Tapestry tokens evicted by context-window pressure.</summary>
+    public int DroppedTapestryTokens { get; init; }
+
     [JsonIgnore]
     public int DroppedSemanticRagChunks =>
-        SaturatingInt((long)DroppedAttachmentRagChunks + DroppedWorkspaceRagChunks);
+        SaturatingInt((long)DroppedAttachmentRagChunks + DroppedWorkspaceRagChunks + DroppedTapestryNodes);
 
     [JsonIgnore]
     public int DroppedSemanticRagTokens =>
-        SaturatingInt((long)DroppedAttachmentRagTokens + DroppedWorkspaceRagTokens);
+        SaturatingInt((long)DroppedAttachmentRagTokens + DroppedWorkspaceRagTokens + DroppedTapestryTokens);
 
     [JsonIgnore]
     public bool HasSemanticRagPressure => DroppedSemanticRagChunks > 0;
@@ -182,6 +192,8 @@ public sealed record ContextTokenBreakdown
     public int AttachmentRagTokens => Source(ContextTokenSource.AttachmentRag).TokenCount;
 
     public int WorkspaceRagTokens => Source(ContextTokenSource.WorkspaceRag).TokenCount;
+
+    public int TapestryRagTokens => Source(ContextTokenSource.TapestryRag).TokenCount;
 
     public TokenEstimate Source(ContextTokenSource source)
     {

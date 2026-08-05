@@ -56,6 +56,7 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(A2AIntegrationSettings))]
 [JsonSerializable(typeof(CommLinkIntegrationSettings))]
 [JsonSerializable(typeof(EmbeddingIntegrationSettings))]
+[JsonSerializable(typeof(TapestryIntegrationSettings))]
 [JsonSerializable(typeof(McpIntegrationSettings))]
 [JsonSerializable(typeof(WebResearchIntegrationSettings))]
 [JsonSerializable(typeof(WorkspaceCheckIntegrationSettings))]

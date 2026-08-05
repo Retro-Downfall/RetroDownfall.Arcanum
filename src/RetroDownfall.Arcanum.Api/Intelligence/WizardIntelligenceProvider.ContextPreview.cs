@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
@@ -296,6 +297,8 @@ public sealed partial class WizardIntelligenceProvider
 
         SessionAttachmentRetrievedChunk[]? attachmentContext = null;
 
+        TapestryContextNode[]? tapestryContext = null;
+
         IReadOnlyList<LexiconEntryDto>? lexiconEntries = null;
 
         if (!previewRequest.NoRetrieval)
@@ -315,6 +318,14 @@ public sealed partial class WizardIntelligenceProvider
                 queryEmbedding,
 
                 cancellationToken).ConfigureAwait(false);
+
+            // The preview renders the same hierarchical context the real turn would, minus the ledger:
+            // this path never mutates a turn ledger, so nodes are projected directly.
+            tapestryContext = ProjectTapestryPreview(
+
+                await RetrieveTapestryContextAsync(turn, queryEmbedding, cancellationToken)
+
+                    .ConfigureAwait(false));
 
             lexiconEntries = await RetrieveLexiconEntriesAsync(
 
@@ -384,7 +395,9 @@ public sealed partial class WizardIntelligenceProvider
 
             maxIndexBytes: maxIndexBytes,
 
-            sessionAttachmentContext: attachmentContext);
+            sessionAttachmentContext: attachmentContext,
+
+            tapestryContext: tapestryContext);
 
         InferenceContextBuilder.PrependDynamicSystemMessage(messages, document.Render());
 
@@ -495,6 +508,8 @@ public sealed partial class WizardIntelligenceProvider
                     SagaMemories = sagaMemories,
 
                     SessionAttachmentContext = attachmentContext,
+
+                    TapestryContext = tapestryContext,
 
                     LexiconEntries = lexiconEntries,
 
@@ -785,6 +800,8 @@ public sealed partial class WizardIntelligenceProvider
                 ContextTokenSource.WorkspaceRag
 
                 or ContextTokenSource.AttachmentRag
+
+                or ContextTokenSource.TapestryRag
 
                 or ContextTokenSource.LexiconSaga;
 

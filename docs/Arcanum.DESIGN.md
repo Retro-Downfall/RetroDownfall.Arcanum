@@ -757,8 +757,8 @@ this inventory and §10.2.5.
 - `/v1/files` and session-attachment metadata are Grimoire rows, while their bytes are owner-only,
   versioned authenticated-encryption envelopes under `files/` and `attachments/` respectively.
   SQLCipher protects the metadata; `IEncryptedBlobStore` independently protects the external blobs.
-- Weave, Saga, workspace-imprint, and Lexicon tables are raw-SQL schemas initialized after the
-  embedded install scripts. Optional `vec0` tables are acceleration only; BLOB tables remain the
+- Weave, Saga, workspace-imprint, Tapestry, and Lexicon tables are raw-SQL schemas initialized after
+  the embedded install scripts. Optional `vec0` tables are acceleration only; BLOB tables remain the
   durable fallback (§21).
 
 | State | Durable authority | Persistence contract |
@@ -775,6 +775,7 @@ this inventory and §10.2.5.
 | Session context pins | `SessionContextPins` | Raw SQL through `ISessionContextPinStore`; durable metadata only. Content is revalidated and materialized from its authoritative source on every turn (§10.2.6). |
 | OpenAI batch metadata | `Batches` | No request-count columns; `GET` derives counts from input/output/error files (§11.21). |
 | Embedding, attachment-retrieval, and Saga state | `entry_embeddings`[+`_vec`], workspace/attachment companions, `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks`, `saga_memory_attachment_provenance`, `attachment_memory_consultations` | Created idempotently from canonical definitions in `WeaveSchemaInitializer`. Attachment chunks and derived Saga memories retain typed session/attachment/key/version/hash/materialized-time/source provenance. Campaign consultations are metadata-only and link to the finalized assistant entry so timestamp-group summary windows remain exact. While Arcanum has no users, schema changes replace those definitions directly and local/test databases are recreated; no compatibility upgrade path is maintained. Reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
+| The Tapestry (hierarchical memory) | `tapestry_generations`, `tapestry_nodes`, `tapestry_node_embeddings`[+`_vec`] | Created idempotently in `WeaveSchemaInitializer`; no EF entity and no compiled-model regeneration. Trees are **derived data**, never a second source of truth: leaf nodes reference their corpus row by stable id rather than copying its bytes, and every generation stores the clustering algorithm version, settings fingerprint, summary recipe/model, embedding dimension, and corpus fingerprint that produced it. Exactly one `Complete` generation per scope is visible to retrieval; `Building` rows are invisible and `Superseded` rows exist only until reconciliation removes them. Reset with `POST /api/embeddings/reset?confirm=true&scope=tapestry` (§21.11). |
 | Entry pinning | `Entries.IsPinned` | Pinned entries survive read-time compression and remain available to inference. |
 | Mandatory `apply_patch` receipt | deterministic `Entries` rows | Exact assistant `ToolCall` then system `ToolResult`; no receipt table (§10.7.4). |
 | Daemon execution history | process memory | `InMemoryDaemonExecutionRepository`; restart clears it. |
@@ -1615,7 +1616,7 @@ After the dynamic system prompt, rehydrated attachments, and final tool set have
 - **Complete accounting:** the same `ContextTokenBreakdown` shape counts system/Codex/Spell, session history and pins, current input, every text/content part, tool-call/result framing, full tool names/descriptions/JSON schemas, Lexicon/Saga, workspace and attachment RAG, explicit/refreshed attachments, structured-output schema, provider framing/stop overhead, answer reserve, and reasoning reserve. Images without a usable provider formula consume a configurable conservative reserve and carry explicit `unknown` quality; generic byte length is never labeled exact.
 - **Threshold:** the complete materialized total is compared to `ContextWindowLimit(provider) * ContextWindowCompressionThreshold / 100` (both clamped). Live calls no longer skip this decision merely because a thread is short; `CompressionPreflightMinMessages` remains only for the manual compact operation.
 - **Swap:** when over threshold, **`Session.Summary`** and **`Session.LastSummarizedMessageAt`** must both be present; otherwise a **warning** is logged and history is left unfiltered. When present, Grimoire entries with `CreatedAt <= LastSummarizedMessageAt` are omitted from the inference transcript and the summary is injected via **`SystemPromptBuilder.Build(..., campaignSummary: ...)`** as `### Campaign Summary (compressed context)` (see §10.5). **No `Entry` rows are deleted.** The rebuilt payload is measured again with the same profile and tool/options payload.
-- **Per-call admission:** immediately before every provider call, including structured-output retries, `EnsureContextBudget` first removes the lowest-priority semantic materializations (Saga → workspace RAG → attachment RAG), then may remove oldest complete in-memory tool exchanges. It never removes accepted explicit attachments or half of a tool exchange. It finalizes one breakdown, adjusts the reservation, and passes that same object to `IModelCallExecutor` for identity validation and enforcement. This repeats after each tool result and structured-output correction, so a continuation cannot reuse an obsolete initial count; explicit content that still cannot fit returns `Hub.ContextBudgetExceeded` instead of being silently discarded.
+- **Per-call admission:** immediately before every provider call, including structured-output retries, `EnsureContextBudget` first removes the lowest-priority semantic materializations (Tapestry → Saga → workspace RAG → attachment RAG — derived summaries before auto-extracted memory, before exact raw leaves), then may remove oldest complete in-memory tool exchanges. It never removes accepted explicit attachments or half of a tool exchange. It finalizes one breakdown, adjusts the reservation, and passes that same object to `IModelCallExecutor` for identity validation and enforcement. This repeats after each tool result and structured-output correction, so a continuation cannot reuse an obsolete initial count; explicit content that still cannot fit returns `Hub.ContextBudgetExceeded` instead of being silently discarded.
 - **Diagnostics and authority:** native streams emit `context` frames; `/api/intelligence/mana`, audit/session telemetry, Command Center `/mana`, and the non-focusable Command Center Context pane expose profile, classification, margin, and source rows. The pane renders chat history, explicit attachments, refreshed files, attachment RAG, and workspace RAG from the latest immutable call breakdown. It initially labels the total `estimated`, then replaces only the displayed total with valid provider-reported input labeled `billed` when the post-usage frame arrives. Provider-reported usage remains authoritative after a call and is attached separately with signed variance; historical reported values are never rewritten. If the per-turn materialization ledger evicts attachment/workspace semantic chunks for context pressure, the same breakdown carries aggregate dropped chunk/token counters and the pane shows a warning.
 - **Pre-inference preview:** `POST /api/intelligence/context/inspect`, `arcanum run --dry-run`, and
   the `context inspect|tools|sources` / `mana` CLI family reuse the production model lease, Spell
@@ -1902,11 +1903,11 @@ The provider persists through `IGrimoireRepository`. When `sessionId` is set, pr
 | Position | Block | Produced by |
 |---|---|---|
 | 0 | **Preamble** (base persona + the "INSTRUCTIONS override conflicting DATA" rule) | static content |
-| 1 | **DATA** (`[None]` when empty): `### Lexicon (Known Context)` → `### Chronosync Report (Temporal Delta)` → `### Attached Files for this Turn` → `### Retrieved Session Attachment Context` → `### Session Attachments Index` → `### Semantic Context (Retrieved Codebase)` → `### Saga (Associative Memory)` → `### Data Stream: {StreamId}` | Lexicon retrieval (§10.6), `ChronosyncDelta`, explicit attachments, ledger-filtered attachment/workspace RAG, Saga retrieval (§10.4 §21.4 §21.8) |
+| 1 | **DATA** (`[None]` when empty): `### Lexicon (Known Context)` → `### Chronosync Report (Temporal Delta)` → `### Attached Files for this Turn` → `### Retrieved Session Attachment Context` → `### Session Attachments Index` → `### Semantic Context (Retrieved Codebase)` → `### Saga (Associative Memory)` → `### Hierarchical Context (The Tapestry)` → `### Data Stream: {StreamId}` | Lexicon retrieval (§10.6), `ChronosyncDelta`, explicit attachments, ledger-filtered attachment/workspace RAG, Saga retrieval, Tapestry retrieval (§10.4 §21.4 §21.8 §21.11) |
 | 2 | **CONTEXT**: `### Workspace Context` / `### Table of Contents` → `### Master Codex (CODEX.md)` → `### Campaign Summary (compressed context)` (only on compression) | `ContextSnapshot`, `CodexReader`, read-time compression (§10.2.3) |
 | 3 | **INSTRUCTIONS**: `### Active Operational Spell ({Name})` (omitted when `SkipSpellRouting`) → `### Available Spell Scripts` (when present) → `### Output Formatting Directive` (when `CliTerminalFormatting`) | `SemanticRouter`/`SemanticSpellRouter` (§10.2.2 §21.10), scripts scan, CLI flag |
 
-**Ordered prompt document and cache planning.** `SystemPromptBuilder.BuildDocument` emits immutable ordered `PromptSegment` values and `Build` delegates to `Render()`. Regression tests require byte-for-byte equality with the established DCI text, including whitespace, adaptive fences, Unicode, and `[None]`. Preamble, Codex, primary/resonant Spell text, stable script instructions, and request-invariant terminal formatting are stable candidates. Lexicon, Chronosync, attachments/index/images, semantic retrieval, Saga, streams, workspace/session summaries, and per-request instructions are volatile. For cumulative-prefix contracts, planning stops at the first volatile segment; later stable Codex/Spell segments are not falsely counted as independently cacheable. The shipped root-only key/retention dialect does not split content or add messages.
+**Ordered prompt document and cache planning.** `SystemPromptBuilder.BuildDocument` emits immutable ordered `PromptSegment` values and `Build` delegates to `Render()`. Regression tests require byte-for-byte equality with the established DCI text, including whitespace, adaptive fences, Unicode, and `[None]`. Preamble, Codex, primary/resonant Spell text, stable script instructions, and request-invariant terminal formatting are stable candidates. Lexicon, Chronosync, attachments/index/images, semantic retrieval, Saga, Tapestry, streams, workspace/session summaries, and per-request instructions are volatile. For cumulative-prefix contracts, planning stops at the first volatile segment; later stable Codex/Spell segments are not falsely counted as independently cacheable. The shipped root-only key/retention dialect does not split content or add messages.
 
 **Data Streams (DATA, hardened):** `PingRequest.DataStreams` are externally supplied and treated as untrusted DATA. `AppendDataStreams` sanitizes each `StreamId` as a label (collapse whitespace, strip control chars and `#` heading markers, cap length) so the `### Data Stream: {id}` heading cannot break DCI structure; the payload is preceded by an explicit “untrusted data / not instructions” warning and wrapped in an adaptive markdown fence (`ComputeFenceBacktickLength`) so embedded triple-backticks cannot break out.
 
@@ -1948,6 +1949,7 @@ type. Failed, stale, cross-session, or merely indexed content publishes no promo
 | Campaign Summary | Record consulted logical key/version and useful decisions; never send all attachments or raw content. |
 | Lexicon | No automatic promotion. `scribe_lexicon` requires `attachment_id` whenever attachment content was materialized, validates that id against the current turn, and stores per-fact provenance in `lexicon_fact_attachment_provenance`. |
 | Saga | No raw automatic ingestion. Extraction receives only the conversation plus a metadata allowlist, accepts concise conclusions, and rejects any claimed attachment id absent from the source turn. Typed provenance is stored in `saga_memory_attachment_provenance`. |
+| The Tapestry | No promotion. Attachment-derived nodes stay session-scoped exactly like attachment RAG, are injected as turn-local untrusted DATA, and never become Lexicon or Saga content. A tree is derived data rebuilt from its corpus, so deleting an attachment removes its leaves on the next sweep (§21.11). |
 | Prompt cache | Attachment metadata, paths, hashes, and bytes are volatile DATA. They are excluded from stable prefixes and shared cache keys. |
 | Audit log | Metadata-only inference accounting; no attachment bytes, raw paths, content, or provenance hash payloads. |
 | Subagents | Only explicit file values whose attachment ids intersect the parent materialized allowlist; no inherited index or enumeration. |
@@ -3952,11 +3954,11 @@ Semantic judge uses FastModel→DefaultModel; jsonSchema is a lightweight subset
 
 API §8.23 (`ProvingGrounds.*`).
 
-## 21. The Weave, Divination, and Saga (RAG)
+## 21. The Weave, Divination, Saga, and The Tapestry (RAG)
 
-**Purpose:** Six independently feature-flagged, gracefully-degrading RAG capabilities. **The Weave** imprints text as vectors; **Divination** is cosine semantic search; **Saga** is auto-extracted long-term associative memory (distinct from operator Lore / Lexicon).
+**Purpose:** Seven independently feature-flagged, gracefully-degrading RAG capabilities. **The Weave** imprints text as vectors; **Divination** is cosine semantic search; **Saga** is auto-extracted long-term associative memory (distinct from operator Lore / Lexicon); **The Tapestry** is a hierarchical summary tree woven over the corpora the other features already index.
 
-All six capabilities are implemented (§21.1–§21.2 foundation; §21.6–§21.10 features). The durable table inventory and raw-SQL initialization boundary are in §5.4.4; behavioral and reset invariants stay here.
+All seven capabilities are implemented (§21.1–§21.2 foundation; §21.6–§21.11 features). The durable table inventory and raw-SQL initialization boundary are in §5.4.4; behavioral and reset invariants stay here.
 
 ### 21.1 Embedding infrastructure (shared foundation)
 
@@ -3980,10 +3982,14 @@ Per feature: durable **BLOB** table (always) + optional **`vec0`** virtual table
 
 Public opt-ins are `Arcanum:Features:Embeddings`, `Arcanum:Features:SessionSearch`,
 `Arcanum:Features:CodebaseRetrieval`, `Arcanum:Features:AttachmentRetrieval`, `Arcanum:Features:Saga`,
-`Arcanum:Features:SagaExtraction`, and `Arcanum:Features:SemanticSpellRouting`; provider/model/dimensions are under
-`Arcanum:Integrations:Embeddings` (§3.4). Watcher debounce/count/reconciliation, attachment
-extraction/chunking/queue/retry timing, indexing page/checkpoint sizes, and retrieval slice sizes are
-implementation mechanics, not public user restrictions. Internal bounds protect one allocation,
+`Arcanum:Features:SagaExtraction`, `Arcanum:Features:Tapestry`, and `Arcanum:Features:SemanticSpellRouting`;
+provider/model/dimensions are under `Arcanum:Integrations:Embeddings` (§3.4). The Tapestry adds exactly
+two operator-policy facts there — `Arcanum:Integrations:Embeddings:Tapestry:RetrievalMode`
+(`CollapsedTree` default, or `TreeTraversal`) and `Arcanum:Integrations:Embeddings:Tapestry:SummaryModel`
+(blank → `FastModel` → `DefaultModel`). Watcher debounce/count/reconciliation, attachment
+extraction/chunking/queue/retry timing, indexing page/checkpoint sizes, retrieval slice sizes, and every
+Tapestry tree-shaping bound (depth, children per summary, clusters per layer, summary tokens, rebuild
+cadence) are implementation mechanics, not public user restrictions. Internal bounds protect one allocation,
 queue, provider request, or checkpoint and continue through reconciliation or a later slice. Public
 validation requires provider/model facts whenever an embedding-backed feature is enabled.
 
@@ -4008,6 +4014,11 @@ validation requires provider/model facts whenever an embedding-backed feature is
 | `Arcanum:Features:SagaExtraction` = `false` | Extraction drops; retrieval/API reads are unaffected |
 | Extraction LLM/embedding failure or malformed JSON | Watermark **not** advanced; the deduplicated queue retries the same checkpoint after a short code-owned delay |
 | Valid empty extraction JSON | Watermark advances through the reviewed timestamp-group checkpoint (“nothing durable in this page”) |
+| `Arcanum:Features:Tapestry` = `false` | `TapestryWeavingService` idles; no tree is built and no hierarchical context is injected |
+| Tapestry summary model unresolvable | No generation above a single leaf is published; the scope contributes no context and flat retrieval is unchanged |
+| Tapestry build fails, is cancelled, or is interrupted | The staging generation is dropped; the last complete generation stays current and the next sweep retries |
+| Tapestry scope has no complete generation | That scope contributes no hierarchical context; other scopes and other retrieval sources are unaffected |
+| Tapestry leaf's source row changed after publication | That leaf is dropped at hydration rather than injected under a stale hash; the corpus fingerprint change rebuilds the tree |
 | `Arcanum:Features:SemanticSpellRouting` = `false` | `FullGrimoire` → existing LLM `SemanticRouter` unchanged |
 | Spell Weave cache / prompt embed failure | Fall back to `FullGrimoire` (Debug log; no regression) |
 
@@ -4020,7 +4031,7 @@ remains required; workspace and attachment index work are sequential per service
 extraction is a bounded visible-text projection rather than a browser DOM; PDF/Office/OCR remain
 disabled; Saga extraction is naive (no dedupe); pure spell-routing ties break by stable sort only.
 
-**Reset scopes:** `POST /api/embeddings/reset?confirm=true` with optional `scope=all|entry|workspaceFile|saga|sessionAttachment` (snake-case aliases accepted; default `all`); unknown scope → **400** `Validation.InvalidBody`.
+**Reset scopes:** `POST /api/embeddings/reset?confirm=true` with optional `scope=all|entry|workspaceFile|saga|sessionAttachment|tapestry` (snake-case aliases accepted; default `all`); unknown scope → **400** `Validation.InvalidBody`. The `tapestry` scope drops exactly the three `tapestry_*` tables and nothing else — the leaf corpora the trees were woven from stay indexed, and the next sweep rebuilds every tree from them.
 
 ### 21.6 Session Divination
 
@@ -4077,6 +4088,194 @@ before embedding, and ephemeral attachment content without durable provenance fa
 **Modes:** `Arcanum:Features:SemanticSpellRouting` disabled → `FullGrimoire` (LLM full catalog); enabled uses the code-owned pure/hybrid routing policy (`DirectResonance` or `FilteredDivination`). Failures → `FullGrimoire`.
 
 **`SpellWeaveCache`:** singleton description imprints; re-embed catalog on change under lock. **`SemanticSpellRouter`** is the sole hub entry (`ResolveRoutedSpellAsync`). `SemanticRouter` optional `candidates` param; name resolve still searches full catalog. `SkipSpellRouting` skips scanner + router (no embed cost).
+
+### 21.11 The Tapestry (hierarchical memory)
+
+**What it is.** A RAPTOR-style hierarchical summary tree (Sarthi et al., arXiv 2401.18059) woven over
+the chunk corpora §21.7–§21.9 already index: leaf chunks are **embedded**, semantically **clustered**,
+each cluster is **summarized** by a model, and the summaries become the next layer — recursively, until
+one root or the depth bound. Retrieval then draws from leaves *and* summaries, which is what gives
+corpus-level, multi-document, and multi-hop answers that flat top-K chunk retrieval cannot reach.
+The Tapestry is **additive**: it never replaces §21.6–§21.9, and every one of them behaves identically
+when it is off.
+
+**Contrast with Saga (§21.9).** Saga is auto-extracted *associative* memory — individual conclusions
+drawn from finished turns. The Tapestry is a *structural* index over a corpus: it summarizes what is
+there, not what was concluded. Both are complementary retrieval sources admitted through the same
+per-turn ledger.
+
+**Scopes.** One independent tree per corpus, each published and rebuilt on its own so a failure in one
+never affects another:
+
+| Scope kind | Corpus | Leaf identity |
+|---|---|---|
+| `Workspace` | `workspace_file_chunks` for one registered workspace path | `ChunkId` |
+| `SessionAttachment` | `session_attachment_chunks` for one session's latest retrieval scopes | `ChunkId` |
+| `Session` | that session's non-empty `Entries` | `Entry.Id` |
+
+A corpus with no indexed rows yields no scope, so the Tapestry degrades naturally when (say) codebase
+retrieval is off — no extra gate is needed. Session-scoped trees stay session-scoped exactly like
+§21.8, and attachment-derived nodes remain bound by the §10.6.1 memory-promotion gate: a Tapestry
+summary is turn-local injected context and never silently promotes into Lexicon or Saga.
+
+#### Clustering — deterministic spherical K-Means (`SphericalKMeans`, Core)
+
+**This is an intentional RAPTOR variant, not the paper's algorithm.** The paper reduces dimensionality
+with UMAP and soft-clusters with a Gaussian Mixture Model; both are Python/native with no
+Native-AOT-safe managed equivalent, and GMM's soft membership would let one leaf influence several
+branches, which makes provenance and deletion intractable. Arcanum implements pure-managed **spherical
+K-Means with hard assignment**. Nothing here claims algorithmic equivalence with the paper.
+
+- **Metric.** Every usable vector is L2-normalized and compared by cosine; centroids are re-normalized
+  after each update. Consistent with Divination's cosine metric (§21.2). Unnormalized Euclidean
+  K-Means is deliberately not used.
+- **Vector hygiene.** One validated dimension per layer. Non-finite, zero-norm, and
+  dimension-mismatched vectors are **quarantined** with sanitized diagnostics — never truncated,
+  padded, or allowed to poison a layer. An existing complete generation stays current regardless.
+- **Determinism.** Stable node ordering, a documented fixed PRNG (SplitMix64), and **seeded K-Means++**
+  initialization whose seed is derived from the versioned algorithm id plus tree scope and layer —
+  never process-random state. Distance ties, weighted-selection boundary cases, assignments,
+  empty-cluster repair, and final cluster ordering all break ties on stable id. Centroid components
+  accumulate single-threaded in stable member order; there is no nondeterministic parallel
+  floating-point reduction.
+- **Reproducibility contract (scoped honestly).** The same persisted vector bytes, algorithm version,
+  settings, and runtime numeric contract produce the same **memberships, cluster ordering, and stable
+  ids**. Bit-for-bit identical centroid components across every CPU and architecture are **not**
+  promised, because no test establishes that.
+- **Termination.** Stops on unchanged assignments, on a centroid movement below tolerance, or at the
+  code-owned iteration cap — recording which. Empty clusters are repaired by reseeding from the point
+  furthest from its assigned centroid (stable-id tie-break), never by emptying a donor. `k` is capped
+  by node count and by the number of **exactly** distinct directions, so an identical-vector corpus
+  terminates rather than looping on duplicate centroids. Near-identical vectors are *not* collapsed —
+  a codebase full of similar boilerplate still gets the cluster count it asked for.
+- **Weighting.** Unweighted nodes in v1. Descendant count is provenance and diagnostics only; it does
+  not multiply a summary node's clustering weight, which would let one large branch dominate a higher
+  layer. Weighted clustering would be a separate algorithm version.
+- **Membership.** **Hard assignment in v1** — each child has exactly one parent per generation. This
+  intentionally gives up GMM's soft membership in exchange for tractable provenance and deletion and
+  no tree blow-up. Top-N/fuzzy membership would be a future algorithm version, not hidden behavior.
+
+#### Choosing `k`, bounding summaries, and stopping
+
+`k` is never an arbitrary constant. For a layer of `n` nodes it is `ceil(n / TargetChildrenPerSummary)`,
+clamped to `2..min(n, distinctVectors, MaxClustersPerLayer)`, collapsing to `1` on a degenerate layer.
+If the entire remaining layer is within `MaxChildrenPerSummary` **and** fits **one** summary request
+against the selected model's real context estimate (with output and reasoning reserved), the root is
+written and recursion stops. The child-count check comes first: a root is still a summary node subject
+to the same bound, and checking it first avoids assembling a whole-layer prompt only to estimate a fit
+that the fan-out already rules out.
+
+K-Means does not guarantee balanced clusters, so before summarization both the child-count bound and
+the real token estimate are enforced by **deterministic repartitioning, never truncation**: an oversized
+cluster is re-clustered; when identical vectors make semantic splitting impossible, a stable-id
+partition takes over and is recorded as `IdenticalVectorPartition`. An undersized cluster is merged
+into its most similar sibling with room (stable-id tie-break); a singleton with nowhere to go becomes
+its own one-child summary recorded as `SingletonCarry` — it is never dropped and never skips a layer.
+
+One case cannot be repartitioned at all: a **single node whose own text exceeds one summary request**.
+Arcanum does not re-chunk source material to make a model call fit, so that node is carried into the
+next layer unsummarized rather than failing the build — one oversized excerpt must not be able to block
+a whole scope's tree forever. A carried node keeps its own layer and still reaches retrieval: either a
+later layer claims it, or it remains a root, which is exactly where tree-traversal starts. Recursion
+also stops at `MaxTreeDepth`, and when no layer can make progress (every cluster is a singleton even
+after merging), which publishes an explicit multi-root terminal layer (`TerminalReason = MaxDepth`)
+rather than pretending a single root exists.
+
+#### Generations — staging, atomic publication, and honest invalidation
+
+Trees are derived data with an immutable **generation** per build:
+
+- A build stages into a `Building` generation that retrieval never sees. `PublishGenerationAsync`
+  supersedes the prior complete generation and marks the new one complete **in one transaction** — a
+  reader sees the old tree or the new one, never both and never neither.
+- An incomplete, cancelled, or failed generation is abandoned; the last complete generation stays
+  current. A corpus with no complete generation simply contributes no context.
+- Each generation stores its clustering algorithm version, settings fingerprint, summary
+  recipe/model identity, embedding dimension, and **corpus fingerprint**. A change in any of them
+  forces an explicit rebuild instead of silently mixing tree shapes.
+- **No false subtree invalidation.** K-Means centroids and assignments are relative to the complete
+  layer: one added, removed, or edited leaf can move centroids and reassign nodes that did not
+  themselves change. So a corpus-fingerprint change re-enumerates and **re-clusters the entire scope**.
+  What that still avoids is unnecessary *work* — existing leaf embeddings are reused, and a summary is
+  reused only when its exact sorted child-membership hash, summarization recipe version, model
+  identity, and input hashes all match a prior generation's. Deterministic clustering does not make
+  model prose reproducible, so identity is the only safe basis for skipping a call.
+- **Restart reconciliation, not a durable operation kind.** The staging + atomic-switch design already
+  provides the restart guarantee, so tree builds are deliberately *not* registered as a §10.8 durable
+  operation. The first sweep after startup calls `ReconcileGenerationsAsync` to drop whatever a killed
+  process left behind, and the corpus fingerprint drives a clean rebuild. There is no whole-build
+  deadline: the sweep checkpoints between scopes and layers and stays cancellable throughout.
+
+#### Summarization
+
+`TapestrySummarizer` goes through the normal provider path, so every cluster summary is priced,
+reserved, and audited like any other model call (§22.2) — tree-build token spend is attributed and
+visible, never hidden. It uses the same headless pattern as Saga extraction and the Campaign Logger
+(`SkipSpellRouting`, `DisableMcpTools`, `UnattendedMode`), with the model resolved as
+`Tapestry:SummaryModel` → `FastModel` → `DefaultModel`. Child text is adaptively fenced and explicitly
+labelled UNTRUSTED DATA; a cluster that does not fit is repartitioned rather than truncated.
+
+#### Retrieval
+
+`RetrieveTapestryContextAsync` reuses the turn's **single** query embedding (§21.7/§21.9) and reads only
+each scope's **current complete** generation.
+
+- **Collapsed-tree (default).** Leaf and summary nodes are one flat pool, scoped by `GenerationId`, ranked
+  top-K by cosine through `IDivinationService` — vec0 when available, managed cosine over the BLOB table
+  otherwise, exactly like every other Weave feature.
+- **Tree-traversal (`RetrievalMode = TreeTraversal`).** Starts at the generation's roots and expands only
+  the selected nodes' children, level by level. Both steps are one equality filter on `ParentScopeKey`
+  (`"{generationId}#root"` for roots, `"{generationId}#{parentNodeId}"` for children), so traversal reuses
+  the same scoped-search primitive.
+- **Lineage-aware redundancy control.** A summary and one of its descendants carry different text and
+  different hashes, so the shared ledger's exact content/range dedupe cannot see that they cover the same
+  material. Candidates are ranked by similarity, then by cheaper token cost, then by stable node id, and a
+  candidate is suppressed when an already-selected node is its ancestor or its descendant. Explicit user
+  material always wins.
+- **Stale-leaf safety.** A leaf references a live corpus row rather than copying its bytes. If that row
+  changed after publication, the leaf is dropped at hydration rather than injected under a hash that no
+  longer describes it; the corpus fingerprint change rebuilds the tree shortly after.
+- **Failure is empty, never fatal.** Feature off, no published generation, embedding unavailable, or a
+  Divination failure all return no context and the turn proceeds unchanged.
+
+#### Ledger, DCI ordering, and diagnostics
+
+The Tapestry is a distinct materialization-ledger source, `ContextMaterializationSourceKind.TapestryMemory`,
+with its own generation-scoped node identity. The documented source precedence is **accepted explicit
+material > exact raw leaf > derived summary**, so `TapestryMemory` ranks last: it is the first semantic
+source evicted under context pressure (before Saga, then workspace RAG, then attachment RAG) and the last
+admitted when it overlaps something exact — an exact content match with a raw leaf already in the ledger is
+rejected as `DuplicateContentRange`. Injection is once-only through the same `TryMarkInjected` path.
+
+Retrieved nodes render under `### Hierarchical Context (The Tapestry)` as adaptively fenced untrusted DATA,
+positioned after Saga and before Data Streams in the DCI ordering (§10.5) — the same last-place ranking as
+the eviction priority. `ModelTokenEstimator` attributes that heading to its own `tapestryRag` token source,
+so `mana` / `context inspect` shows hierarchical-context spend as a separate row, and the ledger reports
+`DroppedTapestryNodes` / `DroppedTapestryTokens` under context pressure.
+
+Read-only status (layers, nodes, leaves, summaries, roots, terminal reason, algorithm version, last build)
+is exposed through the existing memory-inspection surfaces (`GET /api/memory/status`,
+`arcanum memory status`) and counts only **published** generations — a staging generation is invisible
+there for the same reason it is invisible to retrieval.
+
+#### Security
+
+Summaries are derived from potentially untrusted source content, so injected nodes are untrusted DATA with
+adaptive fences and the standard warning, never trusted instructions. Attachment-derived nodes obey the
+§10.6.1 promotion gate and stay session-scoped; historical attachment versions remain explicit-only.
+Workspace scope labels report only the leaf directory name, so no host path reaches the model. Builds read
+only through the existing secure-read/handle-identity/`WorkspacePathPolicy` boundaries, and nothing here
+bypasses Sanctum or provider-context admission.
+
+#### Known limitations
+
+Hard one-parent membership, unweighted nodes, and spherical K-Means are v1 choices, not the paper's
+GMM soft clustering. A corpus change re-clusters the whole scope rather than a subtree. Summary prose is
+not reproducible, only summary *identity* is. Cross-architecture floating-point equality of centroid
+components is not claimed. A node too large to summarize is carried unsummarized rather than
+re-chunked, so it contributes no abstraction above itself. Every session with more than one entry gets
+its own tree when session trees are enabled, so enabling the feature on an installation with many
+sessions costs proportionally many summary calls.
 
 ## 22. Structured output, cost tracking, and prompt caching
 

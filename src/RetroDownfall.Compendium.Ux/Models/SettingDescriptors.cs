@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Logging;
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 
 namespace RetroDownfall.Compendium.Ux.Models;
 
@@ -81,6 +82,7 @@ public static class SettingDescriptors
         new("features.attachmentRetrieval", ConfigSection.Features, "Attachment search", "Index supported text attachments and retrieve relevant excerpts within their owning conversation.", SettingKind.Bool),
         new("features.saga", ConfigSection.Features, "Long-term memory", "Enable persistent memory that grows over time.", SettingKind.Bool),
         new("features.sagaExtraction", ConfigSection.Features, "Automatic memory building", "Automatically extract and store important information from conversations.", SettingKind.Bool),
+        new("features.tapestry", ConfigSection.Features, "Layered memory (The Tapestry)", "Build layered summaries of your code, attachments, and conversations so the AI can answer big-picture questions, not just find matching snippets. Uses the summary model, so it costs tokens.", SettingKind.Bool),
         new("features.semanticSpellRouting", ConfigSection.Features, "Smart command routing", "Use semantic search to find the right command for each task.", SettingKind.Bool),
         new("features.scrying", ConfigSection.Features, "Image analysis", "Allow the AI to analyze and describe images.", SettingKind.Bool),
         new("features.attachments", ConfigSection.Features, "File attachments", "Allow attaching files to conversations.", SettingKind.Bool),
@@ -104,6 +106,8 @@ public static class SettingDescriptors
         new("integrations.embeddings.provider", ConfigSection.Integrations, "Embedding service", "AI service used for semantic search.", SettingKind.String, Group: "Semantic search", Placeholder: "OpenAI"),
         new("integrations.embeddings.model", ConfigSection.Integrations, "Embedding model", "Specific model used for semantic search.", SettingKind.String, Group: "Semantic search", Placeholder: "text-embedding-3-small"),
         new("integrations.embeddings.dimensions", ConfigSection.Integrations, "Search vector size", "Size of search vectors. Changing this requires rebuilding the search index.", SettingKind.Int, 64, 4_096, 8, ClampName: nameof(ArcanumSettingClamps.EmbeddingsDimensions), Group: "Semantic search", Placeholder: "1536"),
+        new("integrations.embeddings.tapestry.retrievalMode", ConfigSection.Integrations, "Layered memory search style", "How the AI reads its layered summary memory: search every level at once, or start from the broadest summary and drill down.", SettingKind.Enum, EnumType: typeof(TapestryRetrievalMode), Group: "Semantic search"),
+        new("integrations.embeddings.tapestry.summaryModel", ConfigSection.Integrations, "Layered memory summary model", "AI model used to write the layered memory summaries. Leave blank to use the fast model.", SettingKind.String, Group: "Semantic search", Placeholder: "gpt-4o-mini"),
         new("integrations.mcp.allowedHttpHosts", ConfigSection.Integrations, "Allowed HTTP hosts", "Hosts allowed to use unencrypted HTTP (not recommended).", SettingKind.StringArray, Group: "Security", Placeholder: "localhost, 127.0.0.1"),
         new("integrations.webResearch.searchProvider", ConfigSection.Integrations, "Web search provider", "Native provider used by web_search.", SettingKind.String, Group: "Web research", Placeholder: "perplexity"),
         new("integrations.webResearch.perplexityModel", ConfigSection.Integrations, "Perplexity model", "Sonar model used for synthesized web search: sonar or sonar-pro.", SettingKind.String, Group: "Web research", Placeholder: "sonar"),

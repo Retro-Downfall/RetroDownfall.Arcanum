@@ -47,6 +47,19 @@ public sealed class EmbeddingsResetService(
         "session_attachment_index_state",
     ];
 
+    /// <summary>
+    /// The Tapestry's trees are derived data, so this scope drops exactly the <c>tapestry_*</c> tables
+    /// and nothing else — the leaf corpora it was woven from stay indexed and the next background
+    /// sweep rebuilds every tree from them.
+    /// </summary>
+    private static readonly IReadOnlyList<string> TapestryTables =
+    [
+        "tapestry_node_embeddings_vec",
+        "tapestry_node_embeddings",
+        "tapestry_nodes",
+        "tapestry_generations",
+    ];
+
     public async Task<EmbeddingsResetResult> ResetAsync(
         EmbeddingsResetScope scope,
         CancellationToken cancellationToken = default)
@@ -72,6 +85,11 @@ public sealed class EmbeddingsResetService(
         if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.SessionAttachment)
         {
             targets.AddRange(SessionAttachmentTables);
+        }
+
+        if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Tapestry)
+        {
+            targets.AddRange(TapestryTables);
         }
 
         Dictionary<string, int> deleted = [];
@@ -170,6 +188,8 @@ public enum EmbeddingsResetScope
     Saga,
 
     SessionAttachment,
+
+    Tapestry,
 
 }
 
