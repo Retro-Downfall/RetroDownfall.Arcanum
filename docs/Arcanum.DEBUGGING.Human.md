@@ -458,6 +458,33 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
     open, `quick_check`, schema-id comparison, and cleanup. The archive must be owner-only and no
     plaintext state, key, or passphrase may appear in the file header, terminal JSON, diagnostics,
     logs, or leftover temporary paths.
+    **Then trace the restore that must commit everything or nothing:** create
+    a full archive from a seeded installation, then run `arcanum backup restore <archive> --dry-run`.
+    Break in `BackupRestoreService.BuildPlanAsync()` and confirm the plan authenticates, classifies
+    the format against `BackupRestoreFormatCatalog`, measures required bytes as restored + displaced
+    + headroom, and mutates nothing; the installation must be byte-identical afterwards. Flip byte 11
+    of a copy to declare a newer format and confirm the refusal is `backup.restore_format_newer` with
+    upgrade guidance rather than a corruption message, before any staging directory exists. Hold
+    `ArcanumMaintenanceLock` from a second process and confirm restore refuses; note the lock file
+    lives in the *parent* of the Grimoire root so the commit rename cannot be blocked by an open
+    handle. Wipe the installation, restore onto the empty root with a fake secret store, and confirm
+    the Grimoire secret came from the archive's portable material and not from any credential store.
+    Drop a table from the snapshot before backing up and confirm restore reports
+    `SchemaMigrationRequired` and reinstates the object through `GrimoireSchemaInstaller` — never by
+    touching migration history. Supply `--map campaign-root=C:\...=/srv/...` and confirm
+    `Campaigns.Path`, `WorkspaceContexts.RootPath`, attachment provenance, and Sanctum allow-lists
+    are rewritten with converted separators, that Windows sources match case-insensitively while Unix
+    sources do not, and that unmapped absolute paths are reported rather than guessed. Confirm every
+    `WorkspaceFile` attachment ends at `WorkspaceUnavailable` while its snapshot bytes remain
+    readable, that trusted MCP metadata is withheld with a reason, and that `Host:ListenAny` is
+    `false` in the restored configuration. Inject a fault at the `Reconcile` phase and confirm the
+    result is `RolledBack`, the original tree is back with its original bytes, and no staging root
+    survives; inject one at `Validate` and confirm `Rejected` with the installation untouched. Then
+    reproduce each commit boundary by hand — journal phase before `Commit`; live and staged present;
+    live missing with `previous/` present; staged gone with live and `previous/` both present — and
+    confirm `BackupRestoreRecovery.Resolve()` maps each to discard, rollback, rollback, and
+    reconciliation-required respectively. Finally run `arcanum backup migrate <archive> -o <new>` and
+    confirm the source bytes are unchanged and the output verifies.
 27. **Trace a preset without hiding effective configuration:** isolate `ARCANUM_TEST_HOME`, write a
     valid configuration, and run `arcanum preset list`, `arcanum preset show research`, then
     `arcanum preset diff research --json`. With

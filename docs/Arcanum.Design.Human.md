@@ -295,11 +295,41 @@ nothing.
 
 Outer inspection and listing need no passphrase. Passphrase-backed inspection authenticates the
 manifest without exposing file content; verification authenticates every chunk, compares every
-size/hash, and opens the extracted SQLCipher snapshot in an owner-only temporary root. Issue #37
-does not add an automated restore command, so a verified archive is deliberate recovery input, not
-a one-click migration promise. The target still needs any referenced environment secrets and
-external workspace content, and the database, blobs, configuration, and portable keys must be
-restored as one generation.
+size/hash, and opens the extracted SQLCipher snapshot in an owner-only temporary root.
+
+### Restore commits everything or nothing
+
+`arcanum backup restore` consumes exactly that artifact, and it never restores half a generation.
+Every refusal it can make — unsupported newer format, wrong passphrase, failed checksum, absent
+recovery material, invalid path mapping, not enough disk, a running host holding the maintenance
+lock — happens before the first destructive step, so a rejected restore leaves the installation
+byte-identical. `--dry-run` runs all of that and reports the exact plan without touching anything.
+
+Committing is two directory renames guarded by a journal that lives on the filesystem rather than in
+the database being replaced. That is the whole point: an interrupted restore resolves at the next
+start to a complete commit, a complete rollback, or an explicit reconciliation request. There is no
+arrangement of failures that produces a mixture of old and new trees. The destination's Data
+Protection key ring and its existing archives ride across the swap, because those belong to this
+machine, not to the backup.
+
+A clean machine is the interesting case. The archive carries its Grimoire secret and the referenced
+file-encryption keys in portable wrapped form, and restore re-wraps them with the destination's own
+platform protection — the source machine's credential store is never consulted. Older supported
+snapshots converge through the same declarative schema installer the host uses at startup, so there
+is no migration history to hand-edit and no separate upgrade path to keep honest.
+
+Paths recorded elsewhere are rewritten through typed mappings for campaign, workspace, Codex, Spell,
+and attachment-provenance roots, and Windows and Unix roots interoperate properly rather than
+approximately. Anything no mapping claims is reported, not guessed. Restored attachment snapshots
+stay readable even when their workspace does not exist here, but their live source is marked
+unrefreshable until that workspace is rebound and revalidated — a path that now points at unrelated
+content must not silently become a refresh source. For the same reason, trusted MCP workspace
+metadata is withheld rather than installed, `Host:ListenAny` is reset to false, and the archived
+master API key is adopted only when asked for. Those are authorizations granted on another machine.
+
+Beyond wholesale replacement there is a new-profile mode that installs data beside an untouched
+installation, and a selective Session import that merges chosen Sessions into a live installation,
+remapping colliding ids and deduplicating attachment payloads it already has.
 
 ### Retention is plan-first
 

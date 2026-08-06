@@ -12,7 +12,9 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 
 internal sealed class BackupCommands(
     IBackupService backupService,
+    IBackupRestoreService restoreService,
     IBackupPassphraseReader passphraseReader,
+    IConfirmationPrompt confirmationPrompt,
     IConsoleDispatcher dispatcher,
     ICliInvocationContext invocationContext)
 {
@@ -199,6 +201,355 @@ internal sealed class BackupCommands(
             WriteList);
 
         return (int)CliExitCode.Success;
+
+    }
+
+    public async Task<int> Restore(
+        string archivePath,
+        string? conflictMode,
+        string? destinationRoot,
+        Guid[] sessionIds,
+        string[] mappings,
+        bool restoreMasterApiKey,
+        bool dryRun,
+        bool skipSafetyBackup,
+        string? passphraseEnvironmentVariable,
+        int? passphraseFileDescriptor,
+        CancellationToken cancellationToken)
+    {
+
+        if (!ValidatePassphraseSources(
+                passphraseEnvironmentVariable,
+                passphraseFileDescriptor))
+        {
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        if (!BackupCliCatalog.TryParseConflictMode(
+                conflictMode ?? "replace-installation",
+                out BackupRestoreConflictMode mode))
+        {
+
+            dispatcher.WriteDiagnostic(
+                "--conflict-mode must name a supported mode: "
+                + BackupCliCatalog.ConflictModeHelp + ".");
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        if (!TryParseMappings(mappings, out BackupPathMapping[] pathMappings))
+        {
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        using SensitiveBackupPassphrase passphrase = await ReadRequiredPassphraseAsync(
+                passphraseEnvironmentVariable,
+                passphraseFileDescriptor,
+                BackupPassphraseReadPurpose.OpenArchive,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        BackupRestoreRequest request = new(
+            archivePath,
+            mode,
+            destinationRoot,
+            sessionIds,
+            pathMappings,
+            restoreMasterApiKey,
+            dryRun,
+            Confirmed: false,
+            CreateSafetyBackup: !skipSafetyBackup);
+
+        if (dryRun)
+        {
+
+            BackupRestorePlan plan = await restoreService
+                .PlanAsync(request, passphrase.Value, cancellationToken)
+                .ConfigureAwait(false);
+
+            Write(plan, CliJsonContext.Default.BackupRestorePlan, WriteRestorePlan);
+
+            return plan.Blockers.Length == 0
+                ? (int)CliExitCode.Success
+                : (int)CliExitCode.GenericError;
+
+        }
+
+        // Replacing an installation is the only destructive mode. The shared prompt already
+        // short-circuits on the global `--yes`, so there is no second opt-out flag to learn.
+        if (mode == BackupRestoreConflictMode.ReplaceInstallation)
+        {
+
+            bool confirmed = await confirmationPrompt
+                .PromptForConfirmationAsync(
+                    "Replace the current Arcanum installation with this archive? The displaced "
+                    + "installation is retained until cleanup"
+                    + (skipSafetyBackup
+                        ? " and no pre-restore safety backup will be written."
+                        : ", and a pre-restore safety backup is written first."),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!confirmed)
+            {
+
+                dispatcher.WriteDiagnostic("Restore cancelled.");
+
+                return (int)CliExitCode.Success;
+
+            }
+
+            request = request with { Confirmed = true };
+
+        }
+
+        BackupRestoreResult result = await restoreService
+            .RestoreAsync(request, passphrase.Value, cancellationToken)
+            .ConfigureAwait(false);
+
+        Write(result, CliJsonContext.Default.BackupRestoreResult, WriteRestoreResult);
+
+        return result.Status is BackupRestoreStatus.Completed or BackupRestoreStatus.DryRunCompleted
+            ? (int)CliExitCode.Success
+            : (int)CliExitCode.GenericError;
+
+    }
+
+    public async Task<int> Migrate(
+        string archivePath,
+        string? outputPath,
+        bool overwrite,
+        string? passphraseEnvironmentVariable,
+        int? passphraseFileDescriptor,
+        CancellationToken cancellationToken)
+    {
+
+        if (!ValidatePassphraseSources(
+                passphraseEnvironmentVariable,
+                passphraseFileDescriptor))
+        {
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        if (string.IsNullOrWhiteSpace(outputPath))
+        {
+
+            dispatcher.WriteDiagnostic(
+                "--output is required: migration always writes a new archive and never rewrites the source.");
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        using SensitiveBackupPassphrase passphrase = await ReadRequiredPassphraseAsync(
+                passphraseEnvironmentVariable,
+                passphraseFileDescriptor,
+                BackupPassphraseReadPurpose.OpenArchive,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        BackupMigrateResult result = await restoreService
+            .MigrateAsync(
+                new BackupMigrateRequest(archivePath, outputPath, overwrite),
+                passphrase.Value,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        Write(result, CliJsonContext.Default.BackupMigrateResult, WriteMigrateResult);
+
+        return result.Migrated
+            ? (int)CliExitCode.Success
+            : (int)CliExitCode.GenericError;
+
+    }
+
+    private bool TryParseMappings(
+        IReadOnlyList<string> values,
+        out BackupPathMapping[] mappings)
+    {
+
+        List<BackupPathMapping> parsed = [];
+
+        foreach (string value in values)
+        {
+
+            string[] parts = value.Split('=', 3);
+
+            if (parts.Length != 3
+                || !BackupCliCatalog.TryParseMappingKind(parts[0], out BackupPathMappingKind kind))
+            {
+
+                dispatcher.WriteDiagnostic(
+                    "--map must use <kind>=<from>=<to> with a supported kind: "
+                    + BackupCliCatalog.MappingKindHelp + ".");
+
+                mappings = [];
+
+                return false;
+
+            }
+
+            parsed.Add(new BackupPathMapping(kind, parts[1], parts[2]));
+
+        }
+
+        mappings = [.. parsed];
+
+        return true;
+
+    }
+
+    private void WriteRestorePlan(BackupRestorePlan plan)
+    {
+
+        dispatcher.WritePayload("Restore plan");
+
+        dispatcher.WritePayload($"Generated: {plan.GeneratedAt:O}");
+
+        dispatcher.WritePayload($"Archive: {plan.ArchivePath} (format {plan.FormatVersion})");
+
+        dispatcher.WritePayload(
+            $"Mode: {BackupCliCatalog.Format(plan.ConflictMode)}; destination: {plan.DestinationRoot}");
+
+        dispatcher.WritePayload(
+            $"Restores: {FormatCount(plan.Entries)} entries, {FormatCount(plan.RestoredBytes)} bytes");
+
+        dispatcher.WritePayload(
+            $"Capacity: {FormatCount(plan.RequiredBytes)} bytes required, "
+            + $"{FormatCount(plan.AvailableBytes)} bytes available");
+
+        dispatcher.WritePayload(
+            $"Schema: {plan.SourceSchemaIdentity} -> {plan.DestinationSchemaIdentity} "
+            + $"(migration {(plan.SchemaMigrationRequired ? "required" : "not required")})");
+
+        dispatcher.WritePayload(
+            $"Confirmation required: {(plan.RequiresConfirmation ? "yes" : "no")}; "
+            + $"safety backup planned: {(plan.SafetyBackupPlanned ? "yes" : "no")}");
+
+        foreach (BackupComponent component in plan.Components)
+        {
+
+            dispatcher.WritePayload($"  Component: {BackupCliCatalog.Format(component)}");
+
+        }
+
+        foreach (Guid sessionId in plan.SelectedSessionIds)
+        {
+
+            dispatcher.WritePayload($"  Session: {sessionId:D}");
+
+        }
+
+        foreach (BackupRestoreMappingPlan mapping in plan.PathMappings)
+        {
+
+            dispatcher.WritePayload(
+                $"  Map {BackupCliCatalog.Format(mapping.Kind)}: {mapping.From} -> {mapping.To} "
+                + $"({FormatCount(mapping.MatchedTargets)} matched)");
+
+        }
+
+        foreach (string path in plan.UnmappedNonportablePaths)
+        {
+
+            dispatcher.WritePayload($"  Unmapped: {path}");
+
+        }
+
+        foreach (string warning in plan.Warnings)
+        {
+
+            dispatcher.WritePayload($"Warning: {warning}");
+
+        }
+
+        WriteIssues(plan.Blockers);
+
+    }
+
+    private void WriteRestoreResult(BackupRestoreResult result)
+    {
+
+        dispatcher.WritePayload($"Restore: {BackupCliCatalog.Format(result.Status)}");
+
+        dispatcher.WritePayload($"Operation: {result.OperationId:D}");
+
+        dispatcher.WritePayload($"Archive: {result.ArchivePath}");
+
+        dispatcher.WritePayload($"Destination: {result.DestinationRoot}");
+
+        if (result.SafetyBackupPath is not null)
+        {
+
+            dispatcher.WritePayload($"Pre-restore safety backup: {result.SafetyBackupPath}");
+
+        }
+
+        foreach (BackupRestorePhaseRecord phase in result.Phases)
+        {
+
+            dispatcher.WritePayload($"  {phase.Phase}: {phase.Detail}");
+
+        }
+
+        if (result.Reconciliation is BackupRestoreReconciliation reconciliation)
+        {
+
+            dispatcher.WritePayload(
+                $"Reconciled: {FormatCount(reconciliation.Attachments)} attachments "
+                + $"({FormatCount(reconciliation.StaleAttachmentSources)} stale sources), "
+                + $"{FormatCount(reconciliation.UploadedFiles)} uploaded files, "
+                + $"{FormatCount(reconciliation.BatchFiles)} batches, "
+                + $"{FormatCount(reconciliation.EmbeddingsRebuilt)} embeddings to rebuild, "
+                + $"{FormatCount(reconciliation.PendingOperationsCleared)} pending operations cleared");
+
+            foreach (string issue in reconciliation.Issues)
+            {
+
+                dispatcher.WritePayload($"Reconciliation: {issue}");
+
+            }
+
+        }
+
+        foreach (string warning in result.Plan.Warnings)
+        {
+
+            dispatcher.WritePayload($"Warning: {warning}");
+
+        }
+
+        WriteIssues(result.Issues);
+
+    }
+
+    private void WriteMigrateResult(BackupMigrateResult result)
+    {
+
+        dispatcher.WritePayload(
+            result.Migrated
+                ? "Archive migration: complete"
+                : "Archive migration: refused");
+
+        dispatcher.WritePayload($"Source: {result.ArchivePath} (format {result.SourceFormatVersion})");
+
+        if (result.OutputPath is not null)
+        {
+
+            dispatcher.WritePayload(
+                $"Output: {result.OutputPath} (format {result.OutputFormatVersion}, "
+                + $"{FormatCount(result.OutputBytes)} bytes)");
+
+        }
+
+        WriteIssues(result.Issues);
 
     }
 
@@ -611,9 +962,64 @@ internal static class BackupCliCatalog
 
         };
 
+    private static readonly IReadOnlyDictionary<string, BackupRestoreConflictMode> ConflictModes =
+        new Dictionary<string, BackupRestoreConflictMode>(StringComparer.OrdinalIgnoreCase)
+        {
+
+            ["replace-installation"] = BackupRestoreConflictMode.ReplaceInstallation,
+
+            ["new-profile-root"] = BackupRestoreConflictMode.NewProfileRoot,
+
+            ["import-selected-sessions"] = BackupRestoreConflictMode.ImportSelectedSessions,
+
+        };
+
+    private static readonly IReadOnlyDictionary<string, BackupPathMappingKind> MappingKinds =
+        new Dictionary<string, BackupPathMappingKind>(StringComparer.OrdinalIgnoreCase)
+        {
+
+            ["campaign-root"] = BackupPathMappingKind.CampaignRoot,
+
+            ["workspace-root"] = BackupPathMappingKind.WorkspaceRoot,
+
+            ["codex-root"] = BackupPathMappingKind.CodexRoot,
+
+            ["spell-root"] = BackupPathMappingKind.SpellRoot,
+
+            ["attachment-source"] = BackupPathMappingKind.AttachmentSourceProvenance,
+
+        };
+
     public static string ScopeHelp => string.Join(", ", Scopes.Keys);
 
     public static string ComponentHelp => string.Join(", ", Components.Keys);
+
+    public static string ConflictModeHelp => string.Join(", ", ConflictModes.Keys);
+
+    public static string MappingKindHelp => string.Join(", ", MappingKinds.Keys);
+
+    public static bool TryParseConflictMode(string value, out BackupRestoreConflictMode mode) =>
+        ConflictModes.TryGetValue(value, out mode);
+
+    public static bool TryParseMappingKind(string value, out BackupPathMappingKind kind) =>
+        MappingKinds.TryGetValue(value, out kind);
+
+    public static string Format(BackupRestoreConflictMode mode) =>
+        ConflictModes.FirstOrDefault(pair => pair.Value == mode).Key ?? mode.ToString();
+
+    public static string Format(BackupPathMappingKind kind) =>
+        MappingKinds.FirstOrDefault(pair => pair.Value == kind).Key ?? kind.ToString();
+
+    public static string Format(BackupRestoreStatus status) =>
+        status switch
+        {
+            BackupRestoreStatus.Completed => "completed",
+            BackupRestoreStatus.DryRunCompleted => "dry-run completed",
+            BackupRestoreStatus.Rejected => "REJECTED",
+            BackupRestoreStatus.RolledBack => "ROLLED BACK",
+            BackupRestoreStatus.ReconciliationRequired => "RECONCILIATION REQUIRED",
+            _ => status.ToString(),
+        };
 
     public static bool TryParseScope(string value, out BackupScope scope) =>
         Scopes.TryGetValue(value, out scope);

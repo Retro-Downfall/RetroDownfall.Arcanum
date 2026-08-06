@@ -292,6 +292,24 @@ public static class ServiceCollectionExtensions
                 ILongRunningOperationRecoveryHandler,
                 BackupCreateRecoveryHandler>());
 
+        services.TryAddScoped<IBackupRestoreService>(serviceProvider =>
+            new BackupRestoreService(
+                serviceProvider.GetRequiredService<BackupStatePaths>(),
+                serviceProvider.GetRequiredService<BackupArchiveCodec>(),
+                serviceProvider.GetRequiredService<ISecretStore>(),
+                serviceProvider.GetRequiredService<IBackupService>,
+                serviceProvider.GetRequiredService<TimeProvider>(),
+                new BackupRestoreServiceOptions
+                {
+
+                    EmbeddingDimensions = ArcanumSettingClamps.EmbeddingsDimensions(
+                        serviceProvider
+                            .GetService<IOptionsMonitor<ArcanumSettings>>()?
+                            .CurrentValue.ResolveEmbeddings().Dimensions
+                        ?? new EmbeddingSettings().Dimensions),
+
+                }));
+
         return services;
 
     }

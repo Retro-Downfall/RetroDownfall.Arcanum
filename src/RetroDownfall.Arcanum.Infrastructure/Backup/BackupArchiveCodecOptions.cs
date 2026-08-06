@@ -1,4 +1,33 @@
+using RetroDownfall.Arcanum.Core.Backup;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
+
+/// <summary>
+/// The authenticated result of materializing an archive beneath a protected staging root.
+/// <see cref="Manifest"/> is present only when every structural, checksum, and database check
+/// passed; otherwise <see cref="Issues"/> names the first refusal and the destination is empty.
+/// </summary>
+internal sealed record BackupArchiveExtraction(
+    BackupManifest? Manifest,
+    int FormatVersion,
+    long Entries,
+    long Bytes,
+    bool DatabaseReadable,
+    BackupVerifyIssue[] Issues)
+{
+
+    public static BackupArchiveExtraction Failed(
+        int formatVersion,
+        BackupVerifyIssue issue) =>
+        new(
+            Manifest: null,
+            formatVersion,
+            Entries: 0,
+            Bytes: 0,
+            DatabaseReadable: false,
+            [issue]);
+
+}
 
 public sealed class BackupArchiveCodecOptions
 {

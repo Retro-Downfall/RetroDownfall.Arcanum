@@ -1402,13 +1402,137 @@ supplied through `--passphrase-env`, or an inherited descriptor supplied through
 and compares without early exit; nonempty mutable buffers are cleared on disposal where practical.
 Outer-only inspection and listing require no passphrase.
 
-This version intentionally has no automated `backup restore` command. A verified archive is a
-portable recovery artifact, but restoration must still coordinate the SQLCipher snapshot/KDF,
-encrypted blobs, configuration/assets, and filtered portable keys as one generation. Restoring a
-subset can leave file pointers/key ids inconsistent; configuration may still reference environment
-secrets or external workspaces that do not exist on the target; trusted MCP paths are nonportable;
-and certificates may not be valid or trusted on another host. Keep the source installation until
-verification succeeds and separately protect archive media and the recovery passphrase.
+#### 5.4.9 Transactional restore, migration, and cross-machine portability
+
+`IBackupRestoreService` is the supported restore boundary and the consumer of §5.4.8's archives.
+`BackupRestoreService` orchestrates; `BackupArchiveCodec.ExtractAsync`, `BackupRestoreLayout`,
+`BackupRestoreDatabaseWorker`, `BackupRestoreConfigurationWriter`, `BackupPathRemapper`,
+`BackupSecretRewrapper`, `BackupSessionImporter`, `BackupRestoreCapacityPlanner`,
+`BackupRestoreJournal`, and `BackupRestoreRecovery` own the separable concerns. The CLI calls that
+boundary; it never moves installation files itself.
+
+The ordering is the safety property. Everything that can refuse — format classification,
+authentication, structural and checksum verification, Grimoire readability, mapping validity,
+capacity — runs before the first destructive step, so a refusal always leaves the current
+installation byte-identical. The phases are `Authenticate`, `Inventory`, `Capacity`, `Stage`,
+`Migrate`, `RemapPaths`, `RewrapSecrets`, `Validate`, `SafetyPoint`, `Commit`, `Reconcile`, and
+`Cleanup`; each is reported in the typed result.
+
+`BackupRestoreFormatCatalog` is the supported-format matrix. Each accepted entry names its format
+version, minimum Arcanum version, and schema authority. A declared version above the newest accepted
+entry fails as `backup.restore_format_newer` with upgrade guidance rather than as corruption; a
+version below the matrix fails as `backup.restore_format_unsupported`. Both refuse before staging.
+Classification reads only the magic and the declared version, so an unknown container never reaches
+the strict header parser.
+
+An archive must carry portable recovery material to be restorable at all, and a
+`replace-installation` restore additionally requires a Grimoire snapshot. Capacity planning reserves
+the restored bytes **plus** the measured current installation **plus** working headroom, because a
+restore deliberately keeps both trees on disk until commit.
+
+Restore is an exclusive maintenance operation. `ArcanumMaintenanceLock` is one owner-only lock file
+per Grimoire root, opened without sharing, and deliberately placed in the *parent* directory: commit
+renames the Grimoire directory wholesale, and Windows refuses to rename a directory containing an
+open handle. `GrimoireDatabaseHostedService` takes it best-effort for the host's lifetime, which is
+how a restore detects a running host without a heartbeat or pid registry; the host never fails to
+start because of it. A restore that cannot take the lock refuses with
+`backup.restore_maintenance_unavailable`. A lock file left by a killed process is not a lock —
+nothing holds the handle — so a stale file can never wedge recovery.
+
+Staging is an identity-owned, owner-only root beside the destination containing `staged/`,
+`previous/`, `work/`, and the journal. Entries are extracted under `work/extract` and then placed by
+`BackupRestoreLayout`, a closed table mapping the archive's component-oriented layout back to the
+installation layout (`grimoire/…` → root, `authored/spells/…` → `spells/…`,
+`compendium/certificates/…` → `certs/…`, and so on). An entry the table does not recognize aborts
+staging: a full restore that quietly skips a file is a corrupt restore reporting success.
+
+Schema convergence runs `GrimoireSchemaInstaller` against the staged snapshot — the same declarative
+authority the host uses at startup (§5.4.5). Older supported snapshots gain the objects they lack;
+an already-current snapshot is unchanged. Nothing edits migration history, and there is no migration
+chain to edit. The manifest's `sha256-…` schema identity is recorded before and after so the plan can
+report whether migration was required.
+
+`BackupPathRemapper` rewrites typed machine-specific roots: `CampaignRoot` (`Campaigns.Path` and
+Sanctum allow-list entries), `WorkspaceRoot` (`WorkspaceContexts.RootPath`, attachment provenance,
+Sanctum allow-lists, and configuration `Arcanum:Workspace:DefaultRoot`), `CodexRoot` and `SpellRoot`
+(Sanctum allow-list entries naming those trees), and `AttachmentSourceProvenance`
+(`SessionAttachments.SourceCanonicalPath`). Arbitrary paths are never rewritten. `PortablePath`
+parses roots without reference to the running platform — `Path.GetFullPath` resolves against the
+current process, which is wrong when a Windows drive path is read on Unix — so Unix roots, drive
+roots, and UNC roots each keep their own separator and case semantics. Windows-flavoured roots match
+case-insensitively; Unix roots do not. Validation rejects non-absolute sides, traversal segments,
+either side nested inside the other, overlapping or case-folded-duplicate sources of one kind, two
+sources resolving to one destination, and destination names invalid on a Windows target (reserved
+device names, `<>:"|?*`, control characters, trailing dot or space). Every absolute path no mapping
+claimed is reported as unmapped rather than silently kept or guessed at.
+
+Restored live provenance is demoted: every `WorkspaceFile` attachment becomes
+`WorkspaceUnavailable` with a diagnostic reason, so `IsRefreshable` is false until the workspace is
+explicitly rebound and repeats the normal containment, identity, Sanctum, and MCP trust checks.
+Snapshot bytes stay readable throughout — a restored attachment is usable even when its originating
+workspace does not exist on this machine. Durable operations captured mid-flight are cleared
+(children are marked abandoned) because their leases, in-process state, and peer connections died
+with the source machine. Derived vectors whose `Dim` disagrees with this installation's configured
+embedding width are dropped and rebuilt on demand rather than transported.
+
+Two things are deliberately never inherited. Trusted MCP workspace metadata is *withheld* with a
+recorded reason instead of installed, and `Arcanum:Host:ListenAny` is reset to `false`. Both are
+authorization the source operator granted for that machine and that network.
+
+Local secret protection is rebuilt from the portable payload, never from the source machine's
+credential store: `BackupSecretRewrapper` decrypts the wrapped material and writes fresh
+destination-platform Data Protection/keychain wrapping, re-deriving each file-encryption key id from
+its own bytes so a tampered payload cannot install a key under a trusted name. The master API key is
+separate and off by default; `--restore-master-api-key` adopts it, and requesting it when the archive
+carries none is reported rather than skipped. Because the Data Protection key ring lives inside the
+Grimoire tree on Unix, re-wrapping runs *after* commit; the destination's prior secrets are captured
+first and reinstated if the restore rolls back, which matters on Windows where the secret store lives
+outside the replaced tree.
+
+Commit is two directory renames — live → `previous/`, `staged/` → live — followed by moving the
+destination's own non-portable state (`keys/`, `backups/`) across. `backups/` is preserved
+deliberately: it holds the archive being restored from and every other recovery point. Any failure
+after commit reverses all three moves and reinstates the captured secrets, returning
+`RolledBack`. Any failure before commit returns `Rejected` with the installation untouched.
+
+`BackupRestoreJournal` makes an interrupted commit deterministic. The journal file records the
+journal version, operation id, conflict mode, phase, live/staged/displaced roots, safety-backup path,
+archive path, and the staging root's volume/file identity. It is deliberately *not* stored in
+`LongRunningOperations`: a restore replaces that database, so a durable record inside it would vanish
+exactly when it matters. `BackupRestoreRecovery` runs at host startup, before the database is opened,
+and resolves each staging root from the journal phase plus the filesystem's own evidence: a phase
+before `Commit` discards staging; both roots present with `staged/` intact rolls back; live missing
+with `previous/` present moves it back; `staged/` gone with both live and `previous/` present is
+committed-but-unverified and reports `ReconciliationRequired`; a phase after `Commit` needs only
+cleanup. A journal naming a different installation root is left untouched. Staging without a journal
+is never touched.
+
+The conflict modes are distinct plans, not flags on one plan:
+
+| Mode | Behavior |
+|------|----------|
+| `replace-installation` | Displaces the current installation and commits the archive in its place, rebuilding local secret protection. Requires confirmation and offers a pre-restore safety backup. |
+| `new-profile-root` | Materializes the archive into an empty or absent root. The current installation and its secrets are untouched, and no secret protection is written for another root — the plan says so. |
+| `import-selected-sessions` | Merges named Sessions into the live installation in one destination transaction. Colliding primary keys are remapped and foreign keys follow; attachment payloads already present byte-for-byte are deduplicated; the archive's file-encryption keys are merged additively without changing the destination's active key. A requested Session the archive lacks is refused before anything is written. |
+
+Before a destructive replacement the CLI confirms interactively (or accepts `--yes`) and a
+pre-restore safety backup is written through §5.4.8's `IBackupService`. `--no-safety-backup` records
+that the operator declined; the displaced tree remains the only recovery point until cleanup, and the
+plan warns accordingly.
+
+`--dry-run` performs every read, authentication, verification, mapping validation, schema comparison,
+and capacity calculation possible without mutating the destination, and returns the same
+`BackupRestorePlan` a real restore executes.
+
+`arcanum backup migrate <archive> --output <new-archive>` rewrites a supported archive at the
+current container format through the authoritative codec. It is a container migration, not a schema
+migration: entry bytes carry across verbatim and schema convergence stays with the restore-time
+installer. The source archive is never modified, the output may not be the source, and an existing
+output requires `--overwrite`.
+
+No plaintext recovery key or restored content survives outside protected staging: the decrypted
+payload, extraction root, and staged tree all live under the identity-owned staging root, which is
+removed on success and on every failure path.
 
 ### 5.5 Unseen Servant
 
@@ -2011,9 +2135,10 @@ content.
 | Full conversation continuity | Create and verify one encrypted `.arcbackup` containing the database, attachment ciphertext, and filtered portable recovery keys from one generation (§5.4.8) |
 
 Deleting or reinstalling only `arcanum.db` leaves orphan encrypted attachment bytes. A portable
-backup uses §5.4.8 rather than manually copying a live database and blob tree; a restore, reset, or
-uninstall must still treat `~/.config/arcanum/attachments`, the database, and matching recovery
-keys as one ownership set. This tree is distinct from `/v1/files`, whose encrypted envelopes use
+backup uses §5.4.8 rather than manually copying a live database and blob tree, and `arcanum backup
+restore` (§5.4.9) moves that whole ownership set — `~/.config/arcanum/attachments`, the database, and
+matching recovery keys — as one generation or not at all; a reset or uninstall must respect the same
+set. This tree is distinct from `/v1/files`, whose encrypted envelopes use
 `files/{guid}`. Configuration authority remains the Compendium reference linked from §3.4.
 
 ### 10.2.6 Structured mentions and durable context pins
@@ -3562,6 +3687,7 @@ reinstall.
 | `EncryptedBlobStoreTests` / `FileEncryptionKeyProviderTests` / attachment-file-batch tests | Empty/boundary/large streaming round trips; random nonces; purpose/key separation; bit flips, truncation, trailing data, cancellation cleanup, and concurrent readers; OS/DP key persistence and missing/corrupt fail-closed behavior; no plaintext attachment/upload/batch artifact at rest. |
 | `EncryptedBlobCompatibilityTests` / `BlobEncryptionFileProcessorTests` / `BlobEncryptionOperationPolicyTests` | Metadata-led legacy reads; no encrypted-to-plaintext downgrade; crash retry after atomic replace but before metadata commit; reconciliation classifications; retained-key rotation; durable migration/rotation policy registration. |
 | `BackupInventoryPlannerTests` / `BackupDatabaseSnapshotterTests` / `BackupFileEncryptionKeyExporterTests` / `BackupArchiveCodecTests` / `BackupManifestValidationTests` / `BackupServiceTests` / `BackupCreateRecoveryHandlerTests` / `BackupCommandTests` / `BackupPassphraseReaderTests` | Typed scope/include/exclude inventory and explicit sensitive defaults; missing required blob failure; live WAL snapshot consistency and deterministic mid-copy cancellation/cleanup; portable filtered keys; deterministic empty/minimal/full/corrupt format vectors and bounded encrypted round trips including large files; wrong-passphrase, single-byte-corruption, and header/manifest disagreement detection; bounded-memory manifest inspection without plaintext staging; direct-child protected self-verification staging; no-clobber/cancellation cleanup; identity-bound crash recovery; owner-only publication; secret-free metadata-only create/inspect/verify/list; exact CLI help/output/exit behavior; hidden/environment/descriptor passphrase handling with mutable-buffer clearing. |
+| `BackupRestoreFormatCatalogTests` / `BackupArchiveExtractionTests` / `BackupRestoreJournalTests` / `ArcanumMaintenanceLockTests` / `BackupPathRemapperTests` / `BackupRestoreCapacityPlannerTests` / `BackupSecretRewrapperTests` / `BackupRestoreServiceTests` / `BackupRestoreRecoveryTests` / `BackupRestoreCommandTests` | Supported-format matrix and newer/older refusal; protected extraction that materializes every authenticated entry and leaves destination and scratch empty on any refusal; journal round trip, atomic phase advance, corrupt/unsupported-version tolerance, and canonical staging discovery; exclusive maintenance lock held outside the tree it guards, stale-file tolerance, and sibling independence; Unix↔Windows mapping with separator conversion and flavour-correct case sensitivity, plus ambiguity, traversal, nesting, target-collision, case-fold, and invalid-target-name refusal; peak-capacity planning including displaced bytes; portable re-wrap without the source credential store, key-id verification, and explicit-only master-API-key adoption; end-to-end same-machine restore, cross-platform remap, dry-run immutability, missing confirmation, wrong passphrase, absent recovery material, newer format, insufficient disk, pre- and post-commit fault rollback, key-ring/backups preservation, new-profile isolation, selective session import with id remap and blob dedup, withheld MCP trust, reset `ListenAny`, safety-backup ordering, and container migration; fault injection at every commit boundary resolving to exactly one complete tree; CLI typed options, confirmation, and non-success exit codes. |
 | `RetentionSettingsTests` / `DataRetentionServiceTests` / `DataRetentionSweepHostedServiceTests` / `DataRetentionEndpointTests` / `DataRetentionCommandTests` | Safe defaults and clamps; opt-in scheduled sweeps; dry-run/apply plan parity; bounded candidates/checkpoints and restart convergence; pins/holds/active-work/accounting/batch blockers; dependency deletion and candidate-local post-delete reconciliation; provenance preservation; authenticated API-only CLI mutations and confirmations; factory-reset boundaries. |
 | `SessionEndpointTests` | Entry-GUID `since` replays only later Entries; missing and foreign cursors return 404 with no leaked SSE headers; stable `Session.EntryNotFound` / `Session.InvalidStatus` constants. |
 | `CostCalculatorTests` | Cached tokens clamp to the prompt subset and use `CachedPer1M` (zero or nonzero); potential/actual savings use the nonnegative input-minus-cached rate delta. |
@@ -3741,7 +3867,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 
 - No user identity, sessions, or OAuth. Loopback + API key only.
 - **Grimoire KDF:** New databases derive the SQLCipher passphrase via `GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret` using **PBKDF2-HMAC-SHA256** with **600,000 iterations** and a unique 16-byte salt stored in `{grimoire.db}.kdf`. The sidecar is accepted only from a no-follow single-link regular-file handle under a 4 KiB ceiling; writes use owner-only staging, a durable flush, and atomic replacement. Legacy databases (created before this change) are opened with the prior HKDF path and transparently re-encrypted to PBKDF2 on unlock. The dedicated encryption secret is stored alongside the master API key; rotating the API key alone does not break the Grimoire.
-- **API key rotation:** For **legacy** databases that were still encrypted with the master API key, rotating the key was destructive. For **new** databases, the Grimoire is independent of the API key, so rotating the key only invalidates API authentication. To rotate the key on a new database, run `arcanum key set` (or replace the OS credential + `security.dat` mirror) and restart; the Grimoire `.db` and `.kdf` files can stay in place. If the Grimoire encryption secret itself is lost, the database is unrecoverable — there is no automatic key recovery or backdoor. When `grimoire-key.dat` exists but Data Protection cannot decrypt it (missing `key-*.xml` under `~/.config/arcanum/keys/`), bootstrap throws a sanitized `GrimoireDatabaseUnavailableException` and does **not** fall back to the API key (that path previously produced a misleading “key verification failed”). The controlled startup failure stops the host/CLI operation while allowing `finally`/disposal paths to run. Same-machine protected-mirror recovery restores its matching Data Protection key; portable recovery instead uses one verified `.arcbackup` generation as described in §5.4.8. Without either, delete `arcanum.db` + `arcanum.db.kdf` + `grimoire-key.dat` and start fresh.
+- **API key rotation:** For **legacy** databases that were still encrypted with the master API key, rotating the key was destructive. For **new** databases, the Grimoire is independent of the API key, so rotating the key only invalidates API authentication. To rotate the key on a new database, run `arcanum key set` (or replace the OS credential + `security.dat` mirror) and restart; the Grimoire `.db` and `.kdf` files can stay in place. If the Grimoire encryption secret itself is lost, the database is unrecoverable — there is no automatic key recovery or backdoor. When `grimoire-key.dat` exists but Data Protection cannot decrypt it (missing `key-*.xml` under `~/.config/arcanum/keys/`), bootstrap throws a sanitized `GrimoireDatabaseUnavailableException` and does **not** fall back to the API key (that path previously produced a misleading “key verification failed”). The controlled startup failure stops the host/CLI operation while allowing `finally`/disposal paths to run. Same-machine protected-mirror recovery restores its matching Data Protection key; portable recovery instead runs `arcanum backup restore` against one verified `.arcbackup` generation (§5.4.9), which rebuilds local Data Protection wrapping from the archive's portable recovery material without needing the source machine's credential store. Without either, delete `arcanum.db` + `arcanum.db.kdf` + `grimoire-key.dat` and start fresh.
 - **`arcanum key show`** / **`arcanum key set`** read/write the master key via CLI DI (`ISecretStore` → OS keychain with `security.dat` fallback); no HTTP endpoint. Shared identity: `arcanum` / `master-api-key`. Linux requires `libsecret` and a running Secret Service for the primary path.
 - **Attachment/upload/batch key:** a separate random 256-bit master key lives primarily in OS key
   storage at `arcanum` / `file-encryption-master-key`; it is never derived from, displayed by, or

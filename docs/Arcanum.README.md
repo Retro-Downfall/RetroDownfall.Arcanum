@@ -746,6 +746,9 @@ arcanum backup inspect <archive.arcbackup>
 arcanum backup inspect <archive.arcbackup> --decrypt
 arcanum backup verify <archive.arcbackup>
 arcanum backup list
+arcanum backup restore <archive.arcbackup> --dry-run
+arcanum backup restore <archive.arcbackup>
+arcanum backup migrate <archive.arcbackup> --output <new-archive.arcbackup>
 ```
 
 Creation uses the same typed inventory planner for dry-run and execution. Dry-run reports selected
@@ -828,12 +831,56 @@ database and schema in an owner-only temporary root before removing it. Wrong pa
 modified authenticated bytes share a sanitized authentication failure. `backup list` reads outer
 headers in the selected backup directory and does not decrypt archives.
 
-Issue #37 defines creation, inspection, listing, and verification; it does not add an automated
-`backup restore` command. Treat a verified archive as recovery input, keep the original state until
-the archive has been verified and copied to its intended media, and use a deliberately coordinated
-restore procedure that installs the database, encrypted blobs, configuration/assets, and the
-archive's portable recovery material together. Restoring only one half remains unsupported. If
-encrypted blobs exist but the restored key set is missing, corrupt, or lacks a referenced key id,
+#### Restoring a backup
+
+`backup restore` is the supported recovery path. It never restores half a generation: the database,
+encrypted blobs, configuration and authored assets, and the archive's portable recovery material
+move together, or nothing moves at all.
+
+Run `--dry-run` first. It authenticates the archive, validates every checksum and the Grimoire
+snapshot, validates your path mappings, and reports how much free space the restore needs — all
+without touching the destination. The plan it prints is exactly what a real restore would execute.
+
+A real restore refuses before staging when the archive's format is newer than this build supports
+(with upgrade guidance), when the archive carries no portable recovery material, when the
+destination volume cannot hold the restored generation alongside the current installation, or when a
+running host or another restore holds the maintenance lock. Stop the host and try again.
+
+Replacing an installation is destructive, so it asks for confirmation and writes a pre-restore
+safety backup first; `--no-safety-backup` records that you declined rather than skipping silently.
+The commit itself is two directory renames guarded by a journal, so an interrupted restore resolves
+on the next start to a complete commit, a complete rollback, or an explicit reconciliation request —
+never a half-swapped tree. Your Data Protection key ring and existing archives are carried across
+the swap; they belong to this machine, not to the archive.
+
+Three conflict modes:
+
+| Mode | What it does |
+|------|--------------|
+| `replace-installation` (default) | Displaces the current installation and commits the archive in its place, rebuilding local secret protection from the portable recovery material. This is the clean-machine recovery path and needs no access to the source machine's credential store. |
+| `new-profile-root` | Materializes the archive into an empty directory and leaves the current installation and its secrets untouched. Data only: adopt it with a `replace-installation` restore before using it. |
+| `import-selected-sessions` | Merges named Sessions into the live installation. Colliding ids are remapped, attachment payloads that already match are deduplicated, and the archive's file-encryption keys are added to your ring without changing its active key. |
+
+Paths recorded on the source machine are rewritten with typed `--map <kind>=<from>=<to>` mappings
+covering campaign roots, workspace roots, Codex and Spell roots, and attachment source provenance.
+Windows and Unix roots interoperate: separators are converted, drive and UNC roots match
+case-insensitively while Unix roots do not, and mappings that are ambiguous, that escape
+containment, that collide on one destination, or that name something invalid on the target platform
+are rejected before anything is staged. Anything no mapping claims is reported rather than guessed
+at.
+
+Restored attachment snapshots remain readable even when the originating workspace does not exist
+here — but their live source is marked `WorkspaceUnavailable` and stays unrefreshable until you
+rebind that workspace and it passes the normal containment, identity, Sanctum, and MCP trust checks.
+Two things are deliberately not inherited: trusted MCP workspace metadata is withheld rather than
+installed, and `Host:ListenAny` is reset to `false`. Both are authorization decisions made on the
+source machine, and neither transfers. The archived master API key is likewise left alone unless you
+pass `--restore-master-api-key`.
+
+`backup migrate` rewrites a supported archive at the current container format through the
+authoritative codec, writing a new file and never modifying the source.
+
+If encrypted blobs exist but the restored key set is missing, corrupt, or lacks a referenced key id,
 Arcanum fails closed and never generates a replacement. `/api/health` and `arcanum doctor` expose a
 `FileEncryption` check with key availability plus bounded encrypted/legacy-plaintext/corrupt counts,
 but never key or content data. Legacy plaintext blobs are never silently served; migrate and verify
@@ -1123,6 +1170,9 @@ arcanum backup inspect ~/.config/arcanum/backups/example.arcbackup
 arcanum backup inspect ~/.config/arcanum/backups/example.arcbackup --decrypt
 arcanum backup verify ~/.config/arcanum/backups/example.arcbackup
 arcanum backup list
+arcanum backup restore ~/.config/arcanum/backups/example.arcbackup --dry-run
+arcanum backup restore ~/.config/arcanum/backups/example.arcbackup --yes   # global --yes
+arcanum backup migrate ~/.config/arcanum/backups/example.arcbackup -o ~/migrated.arcbackup
 ```
 
 Create and verify prompt securely when no automation source is supplied; interactive create asks
@@ -1546,7 +1596,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `look` | Print the Eye of the World workspace snapshot (no HTTP). |
 | `doctor` | Environment diagnostics (System / Paths / Configuration / MCP / Tokenizer / File Encryption panels) + API health probe, including key availability, complete cancellable encrypted/legacy/corrupt blob counts with no 512-file scan cutoff, and the safe `DurableOperations` reconciliation detail. The probe uses a code-owned short timeout; an unreachable API is a non-fatal warning (still exits 0 unless another check fails). Use `--fix-permissions` to apply owner-only permissions to configuration, preset state and recovery sidecars, the Grimoire database, and secret stores. Use `--json` to emit a structured `DoctorReport` to stdout for programmatic consumption (exit code 0 if healthy, 1 otherwise). |
 | `watch session\|apprentice\|logs\|mcp\|daemons\|health` | Follow the six authenticated live sources with shared UTC/color/heartbeat/`[DONE]`/Ctrl+C/NDJSON behavior. Repeat free-form `--event-type` and `--tool` filters; `watch logs` adds `--level`/`--category`/`--search`; `watch session` adds `--since`; `watch health` adds `--interval` (default 5). `--reconnect` is opt-in, indefinitely retries unexpected SSE disconnects with capped backoff, and always warns of possible gaps/no replay guarantee. |
-| `backup create\|inspect\|verify\|list` | Plan/create an owner-only encrypted `.arcbackup`, read its safe outer header or authenticated manifest, verify every entry and included Grimoire snapshot, or list archive headers without decryption. Create uses typed scopes/components, online SQLite backup, hidden/environment-reference/inherited-descriptor passphrase input, dry-run, and explicit no-clobber/overwrite behavior. No restore command is added. |
+| `backup create\|inspect\|verify\|list\|restore\|migrate` | Plan/create an owner-only encrypted `.arcbackup`, read its safe outer header or authenticated manifest, verify every entry and included Grimoire snapshot, or list archive headers without decryption. Create uses typed scopes/components, online SQLite backup, hidden/environment-reference/inherited-descriptor passphrase input, dry-run, and explicit no-clobber/overwrite behavior. `restore` verifies completely, stages a whole generation, migrates schema through the authoritative installer, remaps typed machine-specific roots, rebuilds local secret protection, and commits atomically or rolls the prior installation back; `--dry-run`, three conflict modes, confirmation, and a pre-restore safety backup are part of the contract. `migrate` rewrites a supported archive at the current format into a new file. |
 | `data status\|retention show\|retention set\|prune\|delete-session\|delete-attachment\|reset-memory\|factory-reset` | Inspect typed retained stores, configure per-class policy, preview the exact complete dependency plan, or perform a confirmed server-owned deletion through durable internal checkpoints. `prune` requires exactly one of `--dry-run`/`--apply`; every mutation requires confirmation or `--yes`. Factory reset preserves external backups, configuration, security/key material, and data outside the selected root. |
 | `data encryption status\|migrate\|verify\|rotate-key` | Inspect mixed-mode state; resumably encrypt legacy blobs; authenticate/decrypt/hash-check every blob; or create a new key and incrementally rotate before retiring unreferenced old keys. Worker commands accept `--max-concurrency` and `--max-bytes-per-second`; output contains aggregate files/bytes and issue categories, never names or paths. |
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
