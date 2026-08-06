@@ -113,6 +113,18 @@ public sealed record A2AIntegrationSettings
 
     public string DefaultWorkspace { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Optional environment-variable name holding the credential the Archmage Client presents to remote
+    /// agents. Empty (default) sends no credential. The value itself never appears in configuration.
+    /// </summary>
+    public string OutboundCredentialEnvironmentVariable { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Header the outbound credential is sent in. Defaults to Arcanum's own API-key header so one Arcanum
+    /// can reach another; set it to <c>Authorization</c> (with a <c>Bearer …</c> value) for other agents.
+    /// </summary>
+    public string OutboundCredentialHeader { get; set; } = "X-Arcanum-Key";
+
 }
 
 public sealed record CommLinkIntegrationSettings

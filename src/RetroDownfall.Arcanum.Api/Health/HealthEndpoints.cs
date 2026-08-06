@@ -113,6 +113,8 @@ internal static class HealthEndpoints
                     settings.Value.ResolveEmbeddings(),
                     weaveIndexAvailability);
 
+            ConclaveA2AStatus conclave = ConclaveA2AStatus.Resolve(settings.Value);
+
             InstanceMetadataDto metadata = new(
                 Version: GetInformationalVersion(),
                 OsDescription: RuntimeInformation.OSDescription,
@@ -139,7 +141,14 @@ internal static class HealthEndpoints
                 EmbeddingsManagedSearchRowBudget: managedBudget,
                 Edition: ArcanumEnvironment.ResolveEdition(settings.Value.Edition).ToString().ToLowerInvariant(),
                 HostProcessToolsAllowed: HostProcessToolPolicy.AreAllowed(
-                    ArcanumEnvironment.ResolveEdition(settings.Value.Edition)));
+                    ArcanumEnvironment.ResolveEdition(settings.Value.Edition)),
+                ConclaveEnabled: conclave.ConclaveEnabled,
+                A2AServerEnabled: conclave.ServerEnabled,
+                A2AClientEnabled: conclave.ClientEnabled,
+                ConclaveA2AState: conclave.StateName,
+                A2AServerPath: conclave.ServerPath,
+                A2AAgentCardPath: conclave.AgentCardPath,
+                A2AAllowedRemoteAgentCount: conclave.AllowedRemoteAgentCount);
 
             Result<InstanceMetadataDto> metadataResult = metadata;
 

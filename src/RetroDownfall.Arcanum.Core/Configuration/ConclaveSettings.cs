@@ -95,4 +95,18 @@ public sealed record ConclaveA2ASettings
     /// </summary>
     public string DefaultWorkspace { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Optional environment-variable name holding the credential <c>dispatch_sending</c> presents to remote
+    /// agents. Empty (default) sends no credential, which means only unauthenticated peers are reachable —
+    /// notably <em>not</em> another Arcanum, whose A2A routes all require an API key.
+    /// </summary>
+    public string OutboundCredentialEnvironmentVariable { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Header carrying the outbound credential. Defaults to Arcanum's own API-key header
+    /// (<c>X-Arcanum-Key</c>); set it to <c>Authorization</c> with a <c>Bearer …</c> value for agents that
+    /// expect standard bearer auth.
+    /// </summary>
+    public string OutboundCredentialHeader { get; set; } = "X-Arcanum-Key";
+
 }

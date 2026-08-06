@@ -639,6 +639,8 @@ public static class ApiBootstrapper
 
         ArcanumSettings startupSettings = app.Services.GetRequiredService<IOptionsMonitor<ArcanumSettings>>().CurrentValue;
 
+        apiGroup.MapConclaveEndpoints();
+
         apiGroup.MapA2AServer(startupSettings);
 
         apiGroup.MapCodexEndpoints();

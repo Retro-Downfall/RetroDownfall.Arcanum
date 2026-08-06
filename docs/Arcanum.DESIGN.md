@@ -59,9 +59,11 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
   `workspace_check` is separate and is advertised only on an eligible macOS host with active
   Seatbelt plus a trusted `dotnet`, SDK/runtime, and launch chain. Linux and Windows are unavailable,
   and `AllowUnsandboxedToolChildren` never enables it.
-- A2A server routes, Conclave/A2A client tools, and diagnostic MCP invocation require Development
-  in addition to their feature and policy gates. The diagnostic MCP route returns 404 outside
-  Development.
+- A2A server routes and Conclave/A2A client tools are gated **only** by their feature flags
+  (`Arcanum:Features:Conclave`, `A2AServer`, `A2AClient`) and the outbound allowlist/SSRF policy — the
+  former Development-edition requirement was removed in issue #12 because it silently disabled the
+  whole surface on the default Local edition even when the operator explicitly enabled it. Diagnostic
+  MCP invocation still requires Development and returns 404 outside it.
 - The API key remains operator-equivalent for authenticated file, network, MCP, and inference
   surfaces. Local removes arbitrary command selection by default; it does not claim that no
   repository code can execute because an eligible, Ward-approved `workspace_check` runs
@@ -90,7 +92,10 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
 | macOS child network | Seatbelt is a filesystem jail only; child network remains available. |
 | Child environment | Secret/config and loader-hijack variables are scrubbed; there is no full per-binary environment allowlist. |
 | External MCP stdio | Operator-configured external processes are trusted and do not receive Arcanum's filesystem jail. |
-| A2A remote allowlist | An empty `AllowedRemoteAgents` list still permits SSRF-guarded public HTTPS targets. |
+| A2A remote allowlist | An empty `AllowedRemoteAgents` list still permits SSRF-guarded public targets. Every interface the remote Agent Card advertises is re-checked against the allowlist and the outbound guard, not just the first. |
+| A2A peer credentials | Outbound Sendings present a credential only when `Arcanum:Integrations:A2A:OutboundCredentialEnvironmentVariable` names a set environment variable; without it only unauthenticated peers are reachable. The credential is scoped to the operator-supplied origin or an allowlisted target and withheld from card-chosen third-party hosts. Inbound A2A routes always require Arcanum's own API key. |
+| A2A delegation cycles | Broken by node-id cycle detection in A2A message metadata, not by a hop ceiling. A peer that drops the metadata declines the protection for itself; it cannot bypass Arcanum's own refusal. |
+| In-flight A2A tasks | The task ↔ Apprentice mapping is process-local (§5.7.1.2). Apprentices survive restart; the A2A correspondence does not. |
 | Comm Link authenticity | Webhooks are not HMAC-signed. |
 | Human-input ownership | `PromptId` is the single-user ownership capability. |
 | First-run key output | Interactive `serve` prints the generated key; auto-launched serve suppresses it. |
@@ -846,7 +851,8 @@ this inventory and §10.2.5.
 | Mandatory `apply_patch` receipt | deterministic `Entries` rows | Exact assistant `ToolCall` then system `ToolResult`; no receipt table (§10.7.4). |
 | Daemon execution history | process memory | `InMemoryDaemonExecutionRepository`; restart clears it. |
 | Apprentice Chronicle | process memory | Bounded `ChronicleHub`; persisted Apprentice/plan/checkpoint state is replay authority (§5.7). |
-| Active Wards and A2A task mappings | process memory by design | Nothing is resumed after restart; Apprentices/Sessions/Entries remain durable. |
+| Active Wards and A2A task mappings | process memory by design | Nothing is resumed after restart; Apprentices/Sessions/Entries remain durable. See §5.7.1.2 for exactly what an inbound Sending loses across a restart. |
+| A2A delegation chain | `Apprentices.CheckpointData` JSON | Cycle-protection hops that led to an inbound Sending; survives restart alongside `ParentApprenticeId`, with no schema change. |
 
 Reasoning is an ephemeral boundary. Client-safe reasoning can be projected in buffered, NDJSON, or
 OpenAI responses, but Grimoire Entries, exports, Apprentice state, and local history remain
@@ -1505,7 +1511,7 @@ never enter step results, plans, prompts, checkpoints, or Chronicle replay.
 
 **Divine Intervention (DM escalation):** When recovery repeats the same state (if **`EnableDivineIntervention`**) or the Apprentice calls in-process MCP **`petition_dungeon_master`**, the stream consumer correlates by tool **`CallId`**: records a pending petition on ToolCall, continues pumping so the tool runs, then parses ToolResult `notificationStatus` (`delivered` / `suppressed` / `failed`). Only **`delivered`** counts as already alerted; otherwise a fallback Critical Comm Link may fire. Status becomes **`Escalated`**, **`apprenticeEscalated`** is emitted. The DM resolves via **`POST /api/apprentices/{id}/intervene`** (slot acquired **before** any state mutation; capacity failure returns **`Apprentice.MaxReached`** with no persistence); guidance is injected into the next step prompt and **`apprenticeIntervened`** is emitted.
 
-**The Conclave & Cast Sending (cross-Apprentice delegation):** Gated by **`Arcanum:Features:Conclave`**. The Conclave is the overarching network in which the Master coordinates multiple Apprentices. When enabled, an Apprentice may call the in-process MCP tool **`cast_sending`** (`goal`, optional `name`) to delegate a sub-task outside its immediate spell: the shared **`ConclaveArchmage`** service (also backing **`POST /api/apprentices/{id}/cast`**) mints a child Apprentice in the caller's workspace and returns its id, subject to code-owned lineage depth and breadth limits (`ConclaveLineage`). The orchestrator detects the `cast_sending` tool result, stamps the child's **`ParentApprenticeId`** into the child's `CheckpointData` JSON (no schema change), emits **`castSent`**, and best-effort **`StartAsync`** the child through the atomic concurrency gate. Lineage surfaces on **`ApprenticeDetailDto.ParentApprenticeId`** (a `[NotMapped]` entity convenience property hydrated from the checkpoint).
+**The Conclave & Cast Sending (cross-Apprentice delegation):** Gated by **`Arcanum:Features:Conclave`**. The Conclave is the overarching network in which the Master coordinates multiple Apprentices. When enabled, an Apprentice may call the in-process MCP tool **`cast_sending`** (`goal`, optional `name`) to delegate a sub-task outside its immediate spell: the shared **`ConclaveArchmage`** service (also backing **`POST /api/apprentices/{id}/cast`**) mints a child Apprentice in the caller's workspace and returns its id. There is **no fixed depth or breadth ceiling** on delegation — per issue #55, delegation continues while progress and an explicit budget remain, and loops are caught by cycle detection rather than by an arbitrary hop count (see §5.7.1). The orchestrator detects the `cast_sending` tool result, stamps the child's **`ParentApprenticeId`** into the child's `CheckpointData` JSON (no schema change), emits **`castSent`**, and best-effort **`StartAsync`** the child through the atomic concurrency gate. Lineage surfaces on **`ApprenticeDetailDto.ParentApprenticeId`** (a `[NotMapped]` entity convenience property hydrated from the checkpoint).
 
 **Simulacrum (parallel steps):** A **`PlanStep`** may set **`isParallel: true`**. Contiguous parallel steps form a Simulacrum group executed concurrently via **`Task.WhenAll`**, bounded by the code-owned per-Apprentice parallelism limit using a `SemaphoreSlim`. Each branch runs in its **own** `AsyncServiceScope` — its own `IArcanumIntelligenceProvider` and pooled `ArcanumDbContext` — so no EF Core `DbContext` is shared across threads; branch inference is **stateless** (no shared `SessionId` writes). All branches complete before the orchestrator persists every step result and advances **`CurrentStep`** past the group on its single context (single-writer), then runs one **Shifting Fate** evaluation for the group. Emits **`simulacrumStarted`** / **`simulacrumCompleted`**. Note: the shared in-process MCP server serializes tool I/O across branches, so parallelism primarily reduces inference latency.
 
@@ -1524,11 +1530,49 @@ is a route-table stub.
 
 ### 5.7.1 A2A and The Conclave
 
-External door into The Conclave: A2A **server** (inbound → Apprentices) and **client** (`dispatch_sending`). Layered gates are `Arcanum:Features:Conclave` plus `A2AServer` and/or `A2AClient`; per-call `IOptionsMonitor` observes live settings while routes remain mapped at boot. Packages are AOT-clean (`verify-aot-il-warnings.sh`).
+External door into The Conclave: A2A **server** (inbound → Apprentices) and **client** (`dispatch_sending`). The **only** gates are `Arcanum:Features:Conclave` plus `A2AServer` and/or `A2AClient` — there is deliberately **no edition gate**, so an operator who enables A2A gets a working surface on any edition instead of a silently dead one. Per-call `IOptionsMonitor` observes live settings while routes remain mapped at boot. Packages are AOT-clean (`verify-aot-il-warnings.sh`).
 
-**Server:** mapped under `Arcanum:Integrations:A2A:ServerPath` on `/api` (API key required) — **no** unauthenticated `/.well-known/agent-card.json`. Handler mints an Apprentice via `ConclaveArchmage` and relays Chronicle to A2A task states. Workspace fallback is `Arcanum:Integrations:A2A:DefaultWorkspace` → `Arcanum:Workspaces:DefaultRoot` → CWD; an empty `Arcanum:Security:CampaignRoots` still denies registration.
+**Server:** mapped under `Arcanum:Integrations:A2A:ServerPath` on `/api` (API key required) — **no** unauthenticated `/.well-known/agent-card.json`. A configured path outside `/api` is **mounted under it** (`/conclave/a2a` → `/api/conclave/a2a`) rather than refused, so the security boundary holds without silently discarding the operator's configuration; the effective path is reported by `GET /api/conclave/status`, `GET /api/meta`, and `GET /api/health`. Handler mints an Apprentice via `ConclaveArchmage` and relays Chronicle to A2A task states. The Chronicle subscription is opened **before** `StartAsync` — the hub is live-only with no replay, so subscribing afterwards could lose a fast terminal event and strand the task in `Working`. Workspace fallback is `Arcanum:Integrations:A2A:DefaultWorkspace` → `Arcanum:Workspaces:DefaultRoot` → CWD; an empty `Arcanum:Security:CampaignRoots` still denies registration.
 
-**Client:** `dispatch_sending` validates URL via allowlist (if non-empty) **and** `OutboundUrlGuard`; the `MaxConcurrentA2ATasks` semaphore bounds simultaneous outbound calls while excess work waits cancellably for a slot instead of returning `Sending.MaxTasksReached`. Depth is not enforced at the MCP layer (same limitation as `cast_sending`). Chronicle: `sendingDispatched`/`Completed`/`Failed` on caller stream. Agent Card ("Heraldry") is built per request from settings.
+**Client:** `dispatch_sending` validates the discovery URL **and every interface the returned Agent Card advertises** against the allowlist (if non-empty) and `OutboundUrlGuard` — the SDK selects an interface by protocol-binding preference, not position, so checking only the first entry would let a hostile card steer the connection. Discovery accepts an explicit Agent Card URL (`https://peer/api/conclave/a2a/agent-card`) and falls back for a bare origin to the SDK well-known path and then Arcanum's own card path, because Arcanum serves no unauthenticated well-known card. `Arcanum:Integrations:A2A:OutboundCredentialEnvironmentVariable` / `OutboundCredentialHeader` name the environment variable and header carrying the peer credential (default header `X-Arcanum-Key`), which is what makes one Arcanum reachable from another; the value never lives in configuration. The credential is **scoped**: it travels to the origin the operator typed, or to an explicitly allowlisted target, and is withheld when a remote card advertises an interface on some other host — otherwise a hostile card could simply ask for the operator's key. The `MaxConcurrentA2ATasks` semaphore bounds simultaneous outbound calls while excess work waits cancellably for a slot instead of returning `Sending.MaxTasksReached`. Chronicle: `sendingDispatched`/`Completed`/`Failed` on caller stream. Agent Card ("Heraldry") is built per request from settings.
+
+**Sending lifecycle:** the send uses `ReturnImmediately` so the remote task id is known before the work finishes, then polls with backoff (100 ms → 2 s) until the task **settles**. Settled means an A2A terminal state, or `input-required`/`auth-required` — neither is terminal in A2A, but a blocking Sending cannot supply the follow-up, so waiting would be an infinite poll that also pins a concurrency slot; both end the Sending with an actionable reason and cancel the remote task (continuing such a Sending instead of ending it is #64). Local cancellation issues `tasks/cancel` to the peer on a short cleanup deadline, so an abandoned Sending stops costing money on the far side. A transport failure after the task was accepted returns `Sending.AgentUnreachable` naming the remote task id rather than escaping as an exception. There is **no whole-operation deadline**: the outbound `HttpClient` runs with `Timeout.InfiniteTimeSpan` and bounds only connection establishment (30 s), per §2.1 and issue #55.
+
+**Delegation cycle protection:** every hop appends an opaque per-process node id to a chain carried in A2A message metadata (`arcanum.conclave.delegationChain`). An instance that receives a Sending whose chain already contains its own node id refuses it, breaking the loop at the first repeat. This is cycle detection, **not** a hop ceiling — a chain that never revisits a node is legitimate delegation however long it runs. Inbound chains are remote-controlled, so malformed values degrade to "no chain known" rather than throwing. The chain is persisted on the spawned Apprentice's `CheckpointData`; propagating it into that Apprentice's *own* `dispatch_sending` calls needs Apprentice-scoped tool context and is tracked in #59.
+
+**Observability:** `GET /api/health` carries a **`Conclave`** component and `GET /api/meta` carries `conclaveEnabled`, `a2AServerEnabled`, `a2AClientEnabled`, `conclaveA2AState`, `a2AServerPath`, `a2AAgentCardPath`, and `a2AAllowedRemoteAgentCount`. The state is one of four:
+
+| State | Meaning | Health |
+|-------|---------|--------|
+| `disabled` | No Conclave/A2A opt-in and no A2A configuration present. | Healthy |
+| `configured` | A2A identity, allowlist, or endpoint settings exist but no feature gate turns them on. | Healthy |
+| `degraded` | A surface is enabled but a prerequisite is missing (e.g. inbound enabled with no usable workspace under `Arcanum:Security:CampaignRoots`). | Degraded |
+| `healthy` | Every enabled surface has what it needs to serve traffic. | Healthy |
+
+Only `degraded` contributes to readiness; off and merely-configured are deliberate operator states, not standing health noise. Allowed remote agents are reported as a **count**, never as entries — allowlist values can name private partner endpoints.
+
+#### 5.7.1.1 End-to-end A2A workflow
+
+1. **Enable.** Set `Arcanum:Features:A2AServer` (accept inbound Sendings), `Arcanum:Features:A2AClient` (dispatch outbound), or both. Either derives `Arcanum:Features:Conclave`. Configure `Arcanum:Security:CampaignRoots` (and optionally `Arcanum:Integrations:A2A:DefaultWorkspace`) or inbound Sendings have no workspace and the state reports `degraded`.
+2. **Identify.** Set `Arcanum:Integrations:A2A:AgentCardName` / `AgentCardDescription` (the Heraldry), `ServerPath`, and `AllowedRemoteAgents` for outbound targets. All are exposed in Compendium under **Integrations → AI collaboration**.
+3. **Verify.** `arcanum conclave status` reports the state, the effective server and Agent Card paths, and the next action when something is missing. `GET {AgentCardPath}` returns the Heraldry (API key required).
+4. **Dispatch.** `arcanum conclave dispatch --agent-url <url> --goal "<goal>"` (or `POST /api/conclave/sendings`) delegates to a remote agent and blocks until it settles. To reach another Arcanum, point `--agent-url` at its Agent Card path and set `OutboundCredentialEnvironmentVariable` to an environment variable holding that instance's API key.
+5. **Observe.** An Apprentice's own `dispatch_sending` emits `sendingDispatched` → `sendingCompleted` / `sendingFailed` on its Chronicle; follow with `arcanum watch apprentice`. Per-poll `sendingProgress` frames and remote cost attribution are follow-up work (#61, #60).
+6. **Accept.** An inbound Sending **is** an Apprentice, so `arcanum apprentice list/get`, `arcanum watch apprentice`, and `arcanum apprentice cancel` are the observe-and-cancel surfaces; Apprentice progress is relayed back to the peer as A2A task states.
+
+#### 5.7.1.2 In-flight Sendings across a restart
+
+The A2A task id ↔ Apprentice id map is **process memory by design** (§5.4.4). What that means concretely, and what is reconciled versus abandoned:
+
+| Concern | Behavior across a host restart |
+|---------|-------------------------------|
+| The Apprentice itself | **Durable.** Lifecycle state, plan, session, checkpoint, `ParentApprenticeId`, and the A2A delegation chain are rows in the Grimoire; `GetResumableAsync()` re-spawns whatever durable state requires recovery (§5.7). |
+| The A2A task ↔ Apprentice mapping | **Lost.** Nothing re-registers it, so the resumed Apprentice has no A2A correspondent. |
+| Inbound task state relay | **Abandoned.** The peer's task keeps whatever state it last observed; Arcanum emits no further transitions for it. |
+| Peer `tasks/cancel` after a restart | **Answered, but nothing is stopped.** The handler has no mapping, logs that fact, and still returns a terminal `Canceled` so the peer is not left waiting — it does not cancel the resumed Apprentice, which remains cancellable through `arcanum apprentice cancel`. |
+| Outbound Sendings in flight | **Abandoned.** The blocking call dies with the process; the remote task is not cancelled (there is no durable record of it) and may still be running. |
+
+This is the deliberate boundary today: durable Apprentice work survives, the A2A *correspondence* does not. Making inbound Sendings resumable end to end requires durable task mappings (#62), coordinated with the crash/restart recovery framework in #40 rather than duplicated here.
 
 
 ## 6. `WebApplication.CreateSlimBuilder` vs `CreateBuilder`
@@ -3762,8 +3806,9 @@ surrogate-safe; SQLCipher contention uses `SqliteBusyRetry`; and
 | **Chronosync** | Temporal workspace delta vs last `WorkspaceContext` baseline. |
 | **MCP** | Model Context Protocol — tool servers over stdio / HTTP / in-process (§4.2). |
 | **Heraldry** | A2A Agent Card (§5.7.1). |
-| **Sending** | A2A task (inbound or outward via `dispatch_sending`). |
-| **Archmage Client** | Outward A2A delegate (`dispatch_sending`). |
+| **Sending** | A2A task (inbound or outward via `dispatch_sending` / `POST /api/conclave/sendings`). |
+| **Archmage Client** | Outward A2A delegate (`dispatch_sending`, `arcanum conclave dispatch`). |
+| **Delegation chain** | Opaque per-process node ids carried in A2A message metadata for cycle detection (§5.7.1). |
 | **The Proving Grounds / Trial / Inquisitor** | Ephemeral LLM validation runner (§20). |
 | **Resilience** | Provider health + fallback retry (§10.1); default off. |
 | **The Weave / Divination / Imprint** | Embedding substrate / cosine search / stored vector (§21). |

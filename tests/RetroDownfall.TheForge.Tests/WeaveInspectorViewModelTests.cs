@@ -470,7 +470,14 @@ public class WeaveInspectorViewModelTests
             EmbeddingsVectorDiagnostic: "diag",
             EmbeddingsManagedSearchRowBudget: 50000,
             Edition: "local",
-            HostProcessToolsAllowed: false);
+            HostProcessToolsAllowed: false,
+            ConclaveEnabled: false,
+            A2AServerEnabled: false,
+            A2AClientEnabled: false,
+            ConclaveA2AState: "disabled",
+            A2AServerPath: null,
+            A2AAgentCardPath: null,
+            A2AAllowedRemoteAgentCount: 0);
 
     private sealed class FakeWeaveInspectorDataSource : IWeaveInspectorDataSource
     {

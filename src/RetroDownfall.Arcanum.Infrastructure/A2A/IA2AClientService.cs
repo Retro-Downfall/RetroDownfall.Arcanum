@@ -23,12 +23,18 @@ public interface IA2AClientService
     /// <summary>
     /// Discovers <paramref name="agentUrl"/>'s Agent Card, sends <paramref name="goal"/> as a new A2A message,
     /// and blocks until the remote agent responds, the task reaches a terminal state, or the caller/host
-    /// cancels the operation.
+    /// cancels the operation. Local cancellation also cancels the remote task.
     /// </summary>
+    /// <param name="delegationChain">
+    /// A2A delegation hops that led here, oldest first. This node is appended and the result travels with
+    /// the Sending so a downstream agent can detect a loop back to an earlier hop. Omit (or pass empty) for
+    /// a Sending that originates locally.
+    /// </param>
     Task<Result<A2ADispatchResult>> DispatchSendingAsync(
         string goal,
         string? name,
         string agentUrl,
+        IReadOnlyList<string>? delegationChain = null,
         CancellationToken cancellationToken = default);
 
 }

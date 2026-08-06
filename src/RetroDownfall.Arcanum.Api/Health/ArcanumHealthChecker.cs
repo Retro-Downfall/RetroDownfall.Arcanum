@@ -160,6 +160,8 @@ public sealed class ArcanumHealthChecker(
 
         components.Add(new HealthComponentDto("Embeddings", embeddingsHealth, embeddingsDetail));
 
+        components.Add(ConclaveA2AStatus.BuildHealthComponent(settings.CurrentValue));
+
         LongRunningOperationReconciliationSnapshot operationSnapshot =
             operationReconciliationStatus?.Snapshot
             ?? new LongRunningOperationReconciliationSnapshot(

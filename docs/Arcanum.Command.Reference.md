@@ -747,6 +747,17 @@ Manages durable Apprentice orchestration, intervention, replanning, child delega
 | `arcanum apprentice cast [<id>]` | Delegate a child Apprentice via The Conclave. | `--goal <goal>` — Child Apprentice goal text.<br>`--name <name>` — Display name for the child Apprentice. |
 | `arcanum apprentice chronicle [<id>]` | Stream live Apprentice events (SSE). | None beyond global or inherited family options. |
 
+### `arcanum conclave`
+
+The Conclave and its A2A surface (requires arcanum serve). See DESIGN §5.7.1 for the end-to-end workflow.
+
+| Command | Purpose | Options |
+|---|---|---|
+| `arcanum conclave status` | Show whether A2A is disabled, configured, degraded, or healthy, with the effective server and Agent Card paths and the next action when something is missing. | None beyond global or inherited family options. |
+| `arcanum conclave dispatch` | Dispatch a Sending to a remote A2A agent and wait for its terminal result. Cancelling also cancels the remote task. | `--agent-url <url>` — Remote agent base URL or Agent Card URL.<br>`--goal <goal>` — Goal text delegated to the remote agent.<br>`--name <name>` — Optional display name for the Sending. |
+
+An inbound Sending *is* an Apprentice, so `arcanum apprentice list/get/cancel` and `arcanum watch apprentice` are the surfaces for observing and cancelling work other agents send here.
+
 ### `arcanum model`
 
 Native model listing across configured providers (requires arcanum serve).

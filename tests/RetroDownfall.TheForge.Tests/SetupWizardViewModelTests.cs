@@ -200,7 +200,14 @@ public class SetupWizardViewModelTests
             "ok",
             100,
             "local",
-            false);
+            false,
+            false,
+            false,
+            false,
+            "disabled",
+            null,
+            null,
+            0);
 
     private sealed class FakeSetupWizardDataSource : ISetupWizardDataSource
     {

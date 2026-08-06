@@ -584,8 +584,14 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IPromptRepository, PromptRepository>();
         services.AddScoped<IApprenticeRepository, ApprenticeRepository>();
         services.AddScoped<IConclaveArchmage, ConclaveArchmage>();
-        services.AddHttpClient(A2AClientService.OutboundHttpClientName)
-            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateUntrustedEgressHandler());
+        // A Sending blocks until the remote agent reaches a terminal state, and remote work can run far
+        // longer than HttpClient's 100-second default. Per issue #55 the bound is on establishing the
+        // connection, not on the operation as a whole; caller/host cancellation ends the work.
+        services.AddHttpClient(
+                A2AClientService.OutboundHttpClientName,
+                static client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(static () =>
+                OutboundUrlGuard.CreateUntrustedEgressHandler(A2AClientService.OutboundConnectTimeout));
         services.AddSingleton<IA2AClientService, A2AClientService>();
         services.AddSingleton<ArcanumA2AAgentHandler>();
         services.AddSingleton(static sp => new A2AServer(

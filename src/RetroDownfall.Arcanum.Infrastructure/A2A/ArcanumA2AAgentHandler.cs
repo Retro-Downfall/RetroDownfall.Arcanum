@@ -63,6 +63,24 @@ public sealed class ArcanumA2AAgentHandler(
 
         }
 
+        string[] inboundChain = ConclaveDelegationChain.Read(context.Message?.Metadata);
+
+        if (ConclaveDelegationChain.ContainsSelf(inboundChain))
+        {
+
+            logger.LogWarning(
+                "A2A: refusing task {TaskId} because its delegation chain already passed through this instance.",
+                context.TaskId);
+
+            await RejectAsync(
+                updater,
+                "This Sending has already been handled by this Arcanum instance; accepting it would create a delegation cycle.",
+                cancellationToken).ConfigureAwait(false);
+
+            return;
+
+        }
+
         Result<string> workspaceResult = ResolveWorkspace(settings, a2a);
 
         if (workspaceResult.IsFailure)
@@ -79,7 +97,12 @@ public sealed class ArcanumA2AAgentHandler(
         IConclaveArchmage archmage = scope.ServiceProvider.GetRequiredService<IConclaveArchmage>();
 
         Result<Apprentice> castResult = await archmage
-            .CastAsync(new ConclaveCastRequest(goal, WorkspacePath: workspaceResult.Value), cancellationToken)
+            .CastAsync(
+                new ConclaveCastRequest(
+                    goal,
+                    WorkspacePath: workspaceResult.Value,
+                    DelegationChain: ConclaveDelegationChain.Extend(inboundChain)),
+                cancellationToken)
             .ConfigureAwait(false);
 
         if (castResult.IsFailure)
@@ -99,32 +122,42 @@ public sealed class ArcanumA2AAgentHandler(
 
         IApprenticeRuntime runtime = scope.ServiceProvider.GetRequiredService<IApprenticeRuntime>();
 
-        Result<string> startResult = await runtime.StartAsync(apprentice.Id, cancellationToken).ConfigureAwait(false);
+        // The Chronicle is a live-only hub with no replay: an Apprentice that reaches a terminal state
+        // before this subscription exists would strand the A2A task in Working forever. Begin enumerating
+        // first — the first MoveNextAsync registers the subscriber — and only then start the Apprentice.
+        IAsyncEnumerator<ApprenticeEvent> chronicle = runtime
+            .SubscribeChronicleAsync(apprentice.Id, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
 
-        if (startResult.IsFailure)
-        {
-
-            await FailAsync(updater, $"Apprentice '{apprentice.Id}' was created but could not be started: {startResult.Error.Message}", cancellationToken)
-                .ConfigureAwait(false);
-
-            _taskToApprentice.TryRemove(context.TaskId, out _);
-
-            return;
-
-        }
-
-        await updater.StartWorkAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        ValueTask<bool> firstEvent = chronicle.MoveNextAsync();
 
         try
         {
 
-            await ForwardChronicleToTaskAsync(apprentice.Id, updater, cancellationToken).ConfigureAwait(false);
+            Result<string> startResult = await runtime.StartAsync(apprentice.Id, cancellationToken).ConfigureAwait(false);
+
+            if (startResult.IsFailure)
+            {
+
+                await FailAsync(updater, $"Apprentice '{apprentice.Id}' was created but could not be started: {startResult.Error.Message}", cancellationToken)
+                    .ConfigureAwait(false);
+
+                return;
+
+            }
+
+            await updater.StartWorkAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            await ForwardChronicleToTaskAsync(apprentice.Id, chronicle, firstEvent, updater, cancellationToken)
+                .ConfigureAwait(false);
 
         }
         finally
         {
 
             _taskToApprentice.TryRemove(context.TaskId, out _);
+
+            await chronicle.DisposeAsync().ConfigureAwait(false);
 
         }
 
@@ -135,6 +168,18 @@ public sealed class ArcanumA2AAgentHandler(
 
         if (!_taskToApprentice.TryGetValue(context.TaskId, out Guid apprenticeId))
         {
+
+            // Overriding IAgentHandler.CancelAsync replaces the SDK's own Canceled transition, so returning
+            // silently would leave the peer's task with no terminal state at all. There is no Apprentice to
+            // stop — a restart drops the in-memory mapping (docs/Arcanum.DESIGN.md §5.4.4) — but the peer is
+            // still owed an answer.
+            logger.LogInformation(
+                "A2A CancelAsync: task {TaskId} has no live Apprentice mapping; answering Canceled.",
+                context.TaskId);
+
+            await RunTerminalTransitionAsync(
+                ct => new TaskUpdater(eventQueue, context.TaskId, context.ContextId).CancelAsync(ct).AsTask(),
+                cancellationToken).ConfigureAwait(false);
 
             return;
 
@@ -164,15 +209,20 @@ public sealed class ArcanumA2AAgentHandler(
 
     }
 
-    private async Task ForwardChronicleToTaskAsync(Guid apprenticeId, TaskUpdater updater, CancellationToken cancellationToken)
+    private async Task ForwardChronicleToTaskAsync(
+        Guid apprenticeId,
+        IAsyncEnumerator<ApprenticeEvent> chronicle,
+        ValueTask<bool> firstEvent,
+        TaskUpdater updater,
+        CancellationToken cancellationToken)
     {
 
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+        bool hasEvent = await firstEvent.ConfigureAwait(false);
 
-        IApprenticeRuntime runtime = scope.ServiceProvider.GetRequiredService<IApprenticeRuntime>();
-
-        await foreach (ApprenticeEvent @event in runtime.SubscribeChronicleAsync(apprenticeId, cancellationToken).ConfigureAwait(false))
+        while (hasEvent)
         {
+
+            ApprenticeEvent @event = chronicle.Current;
 
             switch (@event.Type)
             {
@@ -213,11 +263,20 @@ public sealed class ArcanumA2AAgentHandler(
                     // Step-level events (planGenerated, stepStarted/Completed, toolCall/Result, ...) have
                     // no A2A TaskState equivalent beyond "Working" (already emitted); only the terminal
                     // transitions above matter for the A2A task lifecycle in this pass.
-                    continue;
+                    break;
 
             }
 
+            hasEvent = await chronicle.MoveNextAsync().ConfigureAwait(false);
+
         }
+
+        // The Chronicle ended without a terminal Apprentice event — the peer is owed a definite answer
+        // rather than a task left in Working until the process dies.
+        await FailAsync(
+            updater,
+            "The Apprentice's Chronicle ended without a terminal result; the Sending cannot be completed.",
+            cancellationToken).ConfigureAwait(false);
 
     }
 
@@ -247,7 +306,16 @@ public sealed class ArcanumA2AAgentHandler(
 
     }
 
-    private static Result<string> ResolveWorkspace(ArcanumSettings settings, ConclaveA2ASettings a2a)
+    /// <summary>
+    /// Resolves the workspace an inbound A2A task will run in: <c>Arcanum:Integrations:A2A:DefaultWorkspace</c>
+    /// → <c>Arcanum:Workspaces:DefaultRoot</c> → the process's current directory, each validated against
+    /// <c>Arcanum:Security:CampaignRoots</c>.
+    /// </summary>
+    /// <remarks>
+    /// Public so the health/meta Conclave projection reports exactly what an inbound task would get, instead
+    /// of a second, drift-prone copy of this fallback chain (issue #12).
+    /// </remarks>
+    public static Result<string> ResolveWorkspace(ArcanumSettings settings, ConclaveA2ASettings a2a)
     {
 
         if (!string.IsNullOrWhiteSpace(a2a.DefaultWorkspace))

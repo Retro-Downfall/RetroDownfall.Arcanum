@@ -66,4 +66,35 @@ public sealed class MetaEndpointTests
 
     }
 
+    [SkippableFact]
+    public async Task GetMeta_ReportsConclaveA2AStateAndSurfaces()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/meta");
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<InstanceMetadataDto>? body = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.ApiResponseInstanceMetadataDto);
+
+        Assert.NotNull(body?.Data);
+
+        // A2A is off by default, so meta must say so explicitly rather than omit the subsystem.
+        Assert.Equal("disabled", body.Data.ConclaveA2AState);
+
+        Assert.False(body.Data.ConclaveEnabled);
+
+        Assert.False(body.Data.A2AServerEnabled);
+
+        Assert.False(body.Data.A2AClientEnabled);
+
+        Assert.Null(body.Data.A2AServerPath);
+
+    }
+
 }

@@ -1081,6 +1081,21 @@ public sealed class ConfigurationValidator(
             EnvironmentCredentialResolver.GetWebResearchApiKeyEnvironmentVariableName(webBrowsing),
             "integrations.webResearch.credentialEnvironmentVariable",
             environmentReferences);
+        ConclaveA2ASettings a2a = settings.ResolveA2A();
+        ValidateOptionalEnvironmentVariableName(
+            a2a.OutboundCredentialEnvironmentVariable,
+            "integrations.a2A.outboundCredentialEnvironmentVariable",
+            errors);
+        if (!string.IsNullOrWhiteSpace(a2a.OutboundCredentialEnvironmentVariable))
+        {
+
+            AddEnvironmentVariableReference(
+                a2a.OutboundCredentialEnvironmentVariable.Trim(),
+                "integrations.a2A.outboundCredentialEnvironmentVariable",
+                environmentReferences);
+
+        }
+        ValidateA2A(a2a, errors);
         ValidateWebResearch(webResearch, errors);
         ValidateUniqueEnvironmentVariableReferences(environmentReferences, errors);
 
@@ -1777,6 +1792,67 @@ public sealed class ConfigurationValidator(
             pointer,
             "Environment-variable references must use portable names: an ASCII letter or '_' followed by ASCII letters, digits, or '_' only."));
     }
+
+    /// <summary>
+    /// Validates the A2A protocol facts an operator can set. These are shapes, not policy: a bad remote
+    /// allowlist entry or a header name the HTTP stack will refuse should surface as a startup error rather
+    /// than as a runtime failure on the first Sending.
+    /// </summary>
+    private static void ValidateA2A(
+        ConclaveA2ASettings settings,
+        List<ConfigurationValidationError> errors)
+    {
+
+        if (!string.IsNullOrWhiteSpace(settings.ServerPath)
+            && settings.ServerPath.Contains("://", StringComparison.Ordinal))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "integrations.a2A.serverPath",
+                "A2A ServerPath must be a path, not an absolute URL. A path outside /api is mounted under it."));
+
+        }
+
+        string[] allowedRemoteAgents = settings.AllowedRemoteAgents ?? [];
+
+        for (int index = 0; index < allowedRemoteAgents.Length; index++)
+        {
+
+            string entry = allowedRemoteAgents[index];
+
+            if (string.IsNullOrWhiteSpace(entry))
+            {
+
+                continue;
+
+            }
+
+            if (!Uri.TryCreate(entry.Trim(), UriKind.Absolute, out Uri? allowed)
+                || (allowed.Scheme != Uri.UriSchemeHttp && allowed.Scheme != Uri.UriSchemeHttps))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    $"integrations.a2A.allowedRemoteAgents[{index}]",
+                    $"'{entry}' must be an absolute http or https URL or origin; it can never match a remote agent as written."));
+
+            }
+
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.OutboundCredentialHeader)
+            && settings.OutboundCredentialHeader.AsSpan().ContainsAny(InvalidHeaderNameCharacters))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "integrations.a2A.outboundCredentialHeader",
+                "The outbound credential header name must be a single HTTP token (no whitespace, colons, or separators)."));
+
+        }
+
+    }
+
+    private static readonly System.Buffers.SearchValues<char> InvalidHeaderNameCharacters =
+        System.Buffers.SearchValues.Create(" \t:()<>@,;\\\"/[]?={}");
 
     private static void ValidateWebResearch(
         WebResearchIntegrationSettings settings,
