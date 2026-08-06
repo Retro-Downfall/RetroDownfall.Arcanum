@@ -43,6 +43,28 @@ public sealed record ApprenticeEvent
 
     public long? BackoffMs { get; init; }
 
+    /// <summary>
+    /// Remote A2A task state on a Sending frame, in its protocol spelling (<c>working</c>,
+    /// <c>input-required</c>, …). Only set on <c>sendingDispatched</c>/<c>sendingProgress</c> and the
+    /// terminal Sending frames (issue #61).
+    /// </summary>
+    public string? SendingState { get; init; }
+
+    /// <summary>Which side of the Conclave door a Sending frame describes: <c>outbound</c> or <c>inbound</c>.</summary>
+    public string? SendingDirection { get; init; }
+
+    /// <summary>
+    /// Whether the peer reported what a delegated Sending cost. <c>false</c> means unknown, never free
+    /// (issue #60).
+    /// </summary>
+    public bool? RemoteCostKnown { get; init; }
+
+    /// <summary>Peer-reported total tokens for a delegated Sending, when known.</summary>
+    public long? RemoteTotalTokens { get; init; }
+
+    /// <summary>Peer-reported cost in USD for a delegated Sending, when known.</summary>
+    public decimal? RemoteCostUsd { get; init; }
+
     public IntelligenceEvent? WizardEvent { get; init; }
 
 }

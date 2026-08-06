@@ -125,6 +125,48 @@ public sealed record A2AIntegrationSettings
     /// </summary>
     public string OutboundCredentialHeader { get; set; } = "X-Arcanum-Key";
 
+    /// <summary>
+    /// Skills advertised on the Agent Card ("Heraldry"). Empty (default) advertises the single
+    /// <c>apprentice-goal-execution</c> skill, so an operator who declares nothing serves exactly the
+    /// card Arcanum served before this setting existed.
+    /// </summary>
+    public A2ASkillSettings[] Skills { get; set; } = [];
+
+    /// <summary>
+    /// Media types inbound Sendings may carry. Empty (default) advertises <c>text/plain</c>.
+    /// </summary>
+    public string[] InputModes { get; set; } = [];
+
+    /// <summary>
+    /// Media types this instance can answer with. Empty (default) advertises <c>text/plain</c>. A peer
+    /// that accepts none of these is refused by name rather than silently answered as text.
+    /// </summary>
+    public string[] OutputModes { get; set; } = [];
+
+}
+
+/// <summary>
+/// One operator-declared A2A skill on the Agent Card.
+/// </summary>
+/// <remarks>
+/// Advertised capability only: declaring a skill describes what this Arcanum is for, it does not create
+/// or restrict behavior. Modalities left empty inherit the card-level
+/// <see cref="A2AIntegrationSettings.InputModes"/> / <see cref="A2AIntegrationSettings.OutputModes"/>.
+/// </remarks>
+public sealed record A2ASkillSettings
+{
+
+    /// <summary>Stable identifier peers match on. Required; a skill without one is ignored.</summary>
+    public string? Id { get; set; }
+
+    public string? Name { get; set; }
+
+    public string? Description { get; set; }
+
+    public string[] InputModes { get; set; } = [];
+
+    public string[] OutputModes { get; set; } = [];
+
 }
 
 public sealed record CommLinkIntegrationSettings

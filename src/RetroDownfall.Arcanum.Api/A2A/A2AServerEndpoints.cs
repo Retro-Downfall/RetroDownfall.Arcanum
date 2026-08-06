@@ -13,6 +13,7 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.A2A;
 
 namespace RetroDownfall.Arcanum.Api.A2A;
 
@@ -155,20 +156,12 @@ internal static class A2AServerEndpoints
                 Streaming = true,
                 PushNotifications = false,
             },
-            Skills =
-            [
-                new AgentSkill
-                {
-                    Id = "apprentice-goal-execution",
-                    Name = "Autonomous goal execution",
-                    Description =
-                        "Delegates a natural-language goal to an Arcanum Apprentice: an autonomous sub-agent with file, command, and tool access inside a sandboxed workspace.",
-                    InputModes = ["text/plain"],
-                    OutputModes = ["text/plain"],
-                },
-            ],
-            DefaultInputModes = ["text/plain"],
-            DefaultOutputModes = ["text/plain"],
+            // Operator-declared when configured, otherwise the single historical skill and text/plain in
+            // and out — so a default card stays byte-identical to the pre-#63 one and existing peers are
+            // unaffected.
+            Skills = [.. A2AAgentCardPolicy.ResolveSkills(a2a)],
+            DefaultInputModes = [.. A2AAgentCardPolicy.ResolveInputModes(a2a)],
+            DefaultOutputModes = [.. A2AAgentCardPolicy.ResolveOutputModes(a2a)],
             SecuritySchemes = new Dictionary<string, SecurityScheme>
             {
                 ["arcanumApiKey"] = new SecurityScheme

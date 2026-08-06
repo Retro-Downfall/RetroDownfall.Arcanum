@@ -12,6 +12,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -2455,67 +2456,10 @@ internal sealed class ApprenticeService(
     private void PublishDispatchSendingEvents(Guid apprenticeId, string resultText)
     {
 
-        DispatchSendingResultWire? payload;
-
-        try
+        foreach (ApprenticeEvent @event in SendingChronicleFrames.Build(apprenticeId, resultText, DateTimeOffset.UtcNow))
         {
 
-            payload = System.Text.Json.JsonSerializer.Deserialize(
-                resultText.Trim(),
-                McpJsonSerializerContext.Default.DispatchSendingResultWire);
-
-        }
-        catch (System.Text.Json.JsonException)
-        {
-
-            return;
-
-        }
-
-        if (payload is null)
-        {
-
-            return;
-
-        }
-
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-
-        Publish(apprenticeId, new ApprenticeEvent
-        {
-            Type = ApprenticeEventType.SendingDispatched,
-            ApprenticeId = apprenticeId,
-            Timestamp = now,
-            Description = payload.AgentUrl,
-            Summary = payload.TaskId,
-        });
-
-        if (payload.Succeeded)
-        {
-
-            Publish(apprenticeId, new ApprenticeEvent
-            {
-                Type = ApprenticeEventType.SendingCompleted,
-                ApprenticeId = apprenticeId,
-                Timestamp = now,
-                Description = payload.AgentUrl,
-                Summary = payload.TaskId,
-                Result = payload.Response,
-            });
-
-        }
-        else
-        {
-
-            Publish(apprenticeId, new ApprenticeEvent
-            {
-                Type = ApprenticeEventType.SendingFailed,
-                ApprenticeId = apprenticeId,
-                Timestamp = now,
-                Description = payload.AgentUrl,
-                Summary = payload.TaskId,
-                Error = payload.Error,
-            });
+            Publish(apprenticeId, @event);
 
         }
 
@@ -2616,6 +2560,14 @@ internal sealed class ApprenticeService(
         HashSet<string> pendingPetitionCallIds = new(StringComparer.Ordinal);
 
         List<Guid> spawnedChildIds = [];
+
+        // Names the Apprentice behind every internal MCP tool call this step makes. dispatch_sending
+        // needs it to extend the inherited A2A delegation chain rather than restarting it (issue #59)
+        // and to publish live sendingProgress frames onto this Apprentice's Chronicle (issue #61).
+        using IDisposable apprenticeToolScope = ApprenticeToolInvocationAmbient.Begin(
+            new ApprenticeToolInvocationContext(
+                apprenticeId,
+                ApprenticeRepository.DeserializeCheckpoint(apprentice.CheckpointData)?.DelegationChain ?? []));
 
         try
         {

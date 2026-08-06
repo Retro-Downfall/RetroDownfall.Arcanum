@@ -851,6 +851,13 @@ internal sealed partial class ArcanumInternalToolServer
                 "name",
                 "Optional display name for this Sending, used in Chronicle events.");
 
+            WriteBooleanProperty(
+                w,
+                "continuable",
+                "When true, a remote agent that asks for more input or authentication returns a continuation "
+                + "task id instead of ending the Sending, so the request can be answered. Defaults to false "
+                + "(the Sending ends with an actionable reason and the remote task is cancelled).");
+
             w.WriteEndObject();
 
             w.WriteStartArray("required");
@@ -858,6 +865,50 @@ internal sealed partial class ArcanumInternalToolServer
             w.WriteStringValue("goal");
 
             w.WriteStringValue("agent_url");
+
+            w.WriteEndArray();
+
+            w.WriteBoolean("additionalProperties", false);
+        });
+    }
+
+    private static JsonElement BuildContinueSendingSchema()
+    {
+        return BuildSchema(static w =>
+        {
+            w.WriteString("type", "object");
+
+            w.WriteStartObject("properties");
+
+            WriteStringProperty(
+                w,
+                "task_id",
+                "Remote A2A task id returned by a continuable dispatch_sending that stopped at input-required or auth-required.");
+
+            WriteStringProperty(
+                w,
+                "agent_url",
+                "The same remote agent URL the Sending was dispatched to.");
+
+            WriteStringProperty(
+                w,
+                "message",
+                "The input or credential the remote agent asked for.");
+
+            WriteBooleanProperty(
+                w,
+                "continuable",
+                "When true, keep returning a continuation task id if the remote agent asks for something again.");
+
+            w.WriteEndObject();
+
+            w.WriteStartArray("required");
+
+            w.WriteStringValue("task_id");
+
+            w.WriteStringValue("agent_url");
+
+            w.WriteStringValue("message");
 
             w.WriteEndArray();
 

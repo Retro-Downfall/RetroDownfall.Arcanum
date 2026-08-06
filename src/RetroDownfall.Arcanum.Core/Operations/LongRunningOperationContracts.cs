@@ -47,6 +47,12 @@ public static class LongRunningOperationKinds
     public const string DataRetentionMutation = "data-retention-mutation";
 
     public const string DataRetentionFactoryReset = "data-retention-factory-reset";
+
+    /// <summary>An inbound A2A Sending: a peer's task id bound to the Apprentice serving it (#62).</summary>
+    public const string A2AInboundSending = "a2a-inbound-sending";
+
+    /// <summary>An outbound A2A Sending: a remote task id this instance is waiting on (#62).</summary>
+    public const string A2AOutboundSending = "a2a-outbound-sending";
 }
 
 public static class LongRunningOperationErrorCodes
@@ -80,6 +86,13 @@ public static class LongRunningOperationPolicyCatalog
             [LongRunningOperationKinds.DataRetentionPrune] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
             [LongRunningOperationKinds.DataRetentionMutation] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
             [LongRunningOperationKinds.DataRetentionFactoryReset] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
+
+            // Both A2A directions reconcile rather than resume: the peer's HTTP connection and the SDK's
+            // task store died with the process, so the correspondence cannot be re-established — but the
+            // durable record still lets a restart cancel the remote task and answer a peer's tasks/cancel
+            // against the real Apprentice (#62).
+            [LongRunningOperationKinds.A2AInboundSending] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            [LongRunningOperationKinds.A2AOutboundSending] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
         };
 
     public static IReadOnlyDictionary<string, LongRunningOperationRecoveryPolicy> Registered => Policies;

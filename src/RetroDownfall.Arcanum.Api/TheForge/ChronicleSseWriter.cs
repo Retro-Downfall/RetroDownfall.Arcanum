@@ -179,6 +179,31 @@ internal static class ChronicleSseWriter
             writer.WriteNumber("backoffMs", backoffMs);
         }
 
+        if (@event.SendingState is not null)
+        {
+            writer.WriteString("sendingState", @event.SendingState);
+        }
+
+        if (@event.SendingDirection is not null)
+        {
+            writer.WriteString("sendingDirection", @event.SendingDirection);
+        }
+
+        if (@event.RemoteCostKnown is { } remoteCostKnown)
+        {
+            writer.WriteBoolean("remoteCostKnown", remoteCostKnown);
+        }
+
+        if (@event.RemoteTotalTokens is { } remoteTotalTokens)
+        {
+            writer.WriteNumber("remoteTotalTokens", remoteTotalTokens);
+        }
+
+        if (@event.RemoteCostUsd is { } remoteCostUsd)
+        {
+            writer.WriteNumber("remoteCostUsd", remoteCostUsd);
+        }
+
         writer.WriteEndObject();
     }
 

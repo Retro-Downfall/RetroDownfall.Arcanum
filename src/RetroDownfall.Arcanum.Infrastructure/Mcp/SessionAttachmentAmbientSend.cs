@@ -173,6 +173,15 @@ internal static class SessionAttachmentAmbientSend
                 requestId,
                 persistedContext);
         }
+
+        if (ApprenticeToolInvocationAmbient.Current
+            is ApprenticeToolInvocationContext { IsValid: true } apprenticeContext)
+        {
+            ApprenticeToolInvocationBinding.BindRequest(
+                connectionKey,
+                requestId,
+                apprenticeContext);
+        }
     }
 
     private static void UnbindRequestContexts(
@@ -186,6 +195,9 @@ internal static class SessionAttachmentAmbientSend
             connectionKey,
             requestId);
         PersistedToolInvocationBinding.UnbindRequest(
+            connectionKey,
+            requestId);
+        ApprenticeToolInvocationBinding.UnbindRequest(
             connectionKey,
             requestId);
     }

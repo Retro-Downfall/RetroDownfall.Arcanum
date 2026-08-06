@@ -2428,6 +2428,142 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task ToolsList_AdvertisesContinueSendingAlongsideDispatchSending()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: true);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        // A continuable dispatch that an Apprentice cannot answer would park a remote task alive and
+        // billing with no way back — the two ship together (issue #64).
+        Assert.Contains(tools.Tools, static t => t.Name == "continue_sending");
+
+    }
+
+    [Fact]
+    public async Task ToolsList_HidesContinueSendingWhenA2AIsDisabled()
+    {
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: false);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        Assert.DoesNotContain(tools.Tools, static t => t.Name == "continue_sending");
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_ContinueSending_ResumesTheNamedRemoteTask()
+    {
+
+        ContinuationRecordingA2AClientService fake = new();
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: true, a2aClientService: fake);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ContinueSendingParams
+            {
+                TaskId = "remote-task-1",
+                AgentUrl = "https://agent.example.test/",
+                Message = "staging",
+            },
+            McpJsonSerializerContext.Default.ContinueSendingParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("continue_sending", arguments);
+
+        Assert.False(result.IsError);
+
+        Assert.Equal(("https://agent.example.test/", "remote-task-1", "staging"), fake.Observed);
+
+        DispatchSendingResultWire payload = JsonSerializer.Deserialize(
+            result.Content![0].Text!,
+            McpJsonSerializerContext.Default.DispatchSendingResultWire)!;
+
+        Assert.True(payload.Succeeded);
+
+        // The remote's reply is still remote-authored text arriving in the model's context.
+        Assert.Contains("untrusted content", payload.Response, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_ContinueSending_RequiresTaskIdAgentUrlAndMessage()
+    {
+
+        ContinuationRecordingA2AClientService fake = new();
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: true, a2aClientService: fake);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ContinueSendingParams { TaskId = "  ", AgentUrl = "https://agent.example.test/", Message = "x" },
+            McpJsonSerializerContext.Default.ContinueSendingParams);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("continue_sending", arguments);
+
+        Assert.True(result.IsError);
+
+        Assert.Null(fake.Observed);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_DispatchSending_ExtendsTheCallingApprenticesDelegationChain()
+    {
+
+        ChainCapturingA2AClientService fake = new();
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: true, a2aClientService: fake);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new DispatchSendingParams { Goal = "do the thing", AgentUrl = "https://agent.example.test/" },
+            McpJsonSerializerContext.Default.DispatchSendingParams);
+
+        using (ApprenticeToolInvocationAmbient.Begin(
+            new ApprenticeToolInvocationContext(Guid.NewGuid(), ["node-a", "node-b"])))
+        {
+
+            await session.CallToolAsync("dispatch_sending", arguments);
+
+        }
+
+        // The in-process MCP server is workspace-scoped, so without the request-id binding this tool sees
+        // no chain at all and every hop restarts from empty — which is exactly why a three-hop cycle used
+        // to be invisible (issue #59).
+        Assert.Equal(["node-a", "node-b"], fake.ObservedChain);
+
+    }
+
+    [Fact]
+    public async Task ToolsCall_DispatchSending_WithoutAnApprenticeCaller_PassesNoInheritedChain()
+    {
+
+        ChainCapturingA2AClientService fake = new();
+
+        await using TestMcpSession session = await CreateSessionAsync(a2aClientEnabled: true, a2aClientService: fake);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new DispatchSendingParams { Goal = "do the thing", AgentUrl = "https://agent.example.test/" },
+            McpJsonSerializerContext.Default.DispatchSendingParams);
+
+        await session.CallToolAsync("dispatch_sending", arguments);
+
+        // An operator-initiated Sending has no upstream hops; the client still stamps this node itself.
+        Assert.True(fake.Called);
+
+        Assert.Null(fake.ObservedChain);
+
+    }
+
     private sealed class FakeA2AClientService(Func<string, string?, string, Result<A2ADispatchResult>> respond) : IA2AClientService
     {
 
@@ -2436,8 +2572,112 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             string? name,
             string agentUrl,
             IReadOnlyList<string>? delegationChain = null,
-            CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default,
+            IProgress<A2ASendingProgress>? progress = null,
+            A2ADispatchMode mode = A2ADispatchMode.Blocking) =>
             Task.FromResult(respond(goal, name, agentUrl));
+
+        public Task<Result<A2ADispatchResult>> ContinueSendingAsync(
+            string agentUrl,
+            string taskId,
+            string message,
+            IReadOnlyList<string>? delegationChain = null,
+            CancellationToken cancellationToken = default,
+            IProgress<A2ASendingProgress>? progress = null,
+            A2ADispatchMode mode = A2ADispatchMode.Blocking) =>
+            Task.FromResult(respond(message, null, agentUrl));
+
+        public Task<Result> CancelRemoteTaskAsync(
+            string agentUrl,
+            string taskId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result.Success());
+
+
+    }
+
+    /// <summary>Records the arguments the continuation tool handed to the Archmage Client.</summary>
+    private sealed class ContinuationRecordingA2AClientService : IA2AClientService
+    {
+
+        public (string AgentUrl, string TaskId, string Message)? Observed { get; private set; }
+
+        public Task<Result<A2ADispatchResult>> DispatchSendingAsync(
+            string goal,
+            string? name,
+            string agentUrl,
+            IReadOnlyList<string>? delegationChain = null,
+            CancellationToken cancellationToken = default,
+            IProgress<A2ASendingProgress>? progress = null,
+            A2ADispatchMode mode = A2ADispatchMode.Blocking) => throw new NotSupportedException();
+
+        public Task<Result<A2ADispatchResult>> ContinueSendingAsync(
+            string agentUrl,
+            string taskId,
+            string message,
+            IReadOnlyList<string>? delegationChain = null,
+            CancellationToken cancellationToken = default,
+            IProgress<A2ASendingProgress>? progress = null,
+            A2ADispatchMode mode = A2ADispatchMode.Blocking)
+        {
+
+            Observed = (agentUrl, taskId, message);
+
+            return Task.FromResult(
+                Result<A2ADispatchResult>.Success(new A2ADispatchResult("remote-task-1", "deployed to staging")));
+
+        }
+
+        public Task<Result> CancelRemoteTaskAsync(
+            string agentUrl,
+            string taskId,
+            CancellationToken cancellationToken = default) => Task.FromResult(Result.Success());
+
+    }
+
+    /// <summary>Records the delegation chain the tool handed to the Archmage Client.</summary>
+    private sealed class ChainCapturingA2AClientService : IA2AClientService
+    {
+
+        public IReadOnlyList<string>? ObservedChain { get; private set; }
+
+        public bool Called { get; private set; }
+
+        public Task<Result<A2ADispatchResult>> DispatchSendingAsync(
+            string goal,
+            string? name,
+            string agentUrl,
+            IReadOnlyList<string>? delegationChain = null,
+            CancellationToken cancellationToken = default,
+            IProgress<A2ASendingProgress>? progress = null,
+            A2ADispatchMode mode = A2ADispatchMode.Blocking)
+        {
+
+            Called = true;
+
+            ObservedChain = delegationChain;
+
+            return Task.FromResult(
+                Result<A2ADispatchResult>.Success(new A2ADispatchResult("remote-task-1", "done")));
+
+        }
+
+        public Task<Result<A2ADispatchResult>> ContinueSendingAsync(
+            string agentUrl,
+            string taskId,
+            string message,
+            IReadOnlyList<string>? delegationChain = null,
+            CancellationToken cancellationToken = default,
+            IProgress<A2ASendingProgress>? progress = null,
+            A2ADispatchMode mode = A2ADispatchMode.Blocking) =>
+            throw new NotSupportedException();
+
+        public Task<Result> CancelRemoteTaskAsync(
+            string agentUrl,
+            string taskId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result.Success());
+
 
     }
 

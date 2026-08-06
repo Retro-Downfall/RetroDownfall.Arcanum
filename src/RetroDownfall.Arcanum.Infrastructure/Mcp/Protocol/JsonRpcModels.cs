@@ -121,6 +121,7 @@ public sealed record JsonRpcNotification
 [JsonSerializable(typeof(CastSendingParams))]
 [JsonSerializable(typeof(CastSendingResultWire))]
 [JsonSerializable(typeof(DispatchSendingParams))]
+[JsonSerializable(typeof(ContinueSendingParams))]
 [JsonSerializable(typeof(DispatchSendingResultWire))]
 [JsonSerializable(typeof(MinimalStructuredToolResultEnvelope))]
 [JsonSerializable(typeof(WorkspaceSearchToolResultItem))]

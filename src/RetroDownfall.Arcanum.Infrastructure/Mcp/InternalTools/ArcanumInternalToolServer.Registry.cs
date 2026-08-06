@@ -52,6 +52,7 @@ internal sealed partial class ArcanumInternalToolServer
             ["cast_sending"] = ExecuteCastSendingAsync,
 
             ["dispatch_sending"] = ExecuteDispatchSendingAsync,
+            ["continue_sending"] = ExecuteContinueSendingAsync,
 
             ["ask_human"] = ExecuteAskHumanAsync,
 

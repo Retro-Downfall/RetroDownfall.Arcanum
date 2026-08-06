@@ -89,6 +89,8 @@ internal sealed partial class ArcanumInternalToolServer
 
     private readonly JsonElement _dispatchSendingSchema;
 
+    private readonly JsonElement _continueSendingSchema;
+
     private readonly IntelligenceSettings _settings;
 
     private readonly WorkspaceSearchSettings _workspaceSearchSettings;
@@ -315,6 +317,8 @@ internal sealed partial class ArcanumInternalToolServer
         _castSendingSchema = BuildCastSendingSchema();
 
         _dispatchSendingSchema = BuildDispatchSendingSchema();
+
+        _continueSendingSchema = BuildContinueSendingSchema();
 
         _executeCommandToolDescription =
             "Runs a command without a shell (stdout/stderr previewed in memory; complete larger streams remain retrievable through read_command_output until this connection closes). Runs until completion or cooperative caller cancellation, which kills the process tree. Optional workingDirectory is relative to the workspace root.";
@@ -825,6 +829,15 @@ internal sealed partial class ArcanumInternalToolServer
                         "Archmage Client: dispatch a Sending to an external A2A-compatible agent at agent_url and block until it responds. Returns the remote agent's response text.",
                     InputSchema = _dispatchSendingSchema,
                 });
+
+            tools.Add(
+                new McpToolDefinitionWire
+                {
+                    Name = "continue_sending",
+                    Description =
+                        "Answer a Sending that a remote agent parked because it needed more input or authentication, resuming the same remote task instead of re-running the goal. Use the task_id a continuable dispatch_sending returned.",
+                    InputSchema = _continueSendingSchema,
+                });
         }
 
         if (_settings.EnableLexiconSystem)
@@ -952,9 +965,9 @@ internal sealed partial class ArcanumInternalToolServer
             return BuildToolsCallResponse(rpcId, ToolError("The Conclave is disabled; cross-Apprentice delegation is not available."));
         }
 
-        if (call.Name == "dispatch_sending" && !_a2aClientEnabled)
+        if (call.Name is "dispatch_sending" or "continue_sending" && !_a2aClientEnabled)
         {
-            return BuildToolsCallResponse(rpcId, ToolError("A2A is disabled; dispatch_sending is not available."));
+            return BuildToolsCallResponse(rpcId, ToolError($"A2A is disabled; {call.Name} is not available."));
         }
 
         string requestKey = NormalizeRequestId(rpcId);
@@ -969,6 +982,9 @@ internal sealed partial class ArcanumInternalToolServer
                 _ambientConnectionKey,
                 requestKey);
             PersistedToolInvocationBinding.UnbindRequest(
+                _ambientConnectionKey,
+                requestKey);
+            ApprenticeToolInvocationBinding.UnbindRequest(
                 _ambientConnectionKey,
                 requestKey);
 
@@ -990,6 +1006,8 @@ internal sealed partial class ArcanumInternalToolServer
             ApplyPatchInvocationAmbient.Current;
         PersistedToolInvocationContext? previousPersistedAmbient =
             PersistedToolInvocationAmbient.Current;
+        ApprenticeToolInvocationContext? previousApprenticeAmbient =
+            ApprenticeToolInvocationAmbient.Current;
         try
         {
             JsonElement toolArguments = call.Arguments;
@@ -1013,6 +1031,17 @@ internal sealed partial class ArcanumInternalToolServer
                     out PersistedToolInvocationContext?
                         persistedContext)
                     ? persistedContext
+                    : null;
+
+            // Tells Apprentice-scoped tools (dispatch_sending) which Apprentice is calling and which
+            // A2A delegation chain it inherited, so a Sending it makes extends that chain instead of
+            // restarting it (issue #59).
+            ApprenticeToolInvocationAmbient.Current =
+                ApprenticeToolInvocationBinding.TryResolveRequest(
+                    _ambientConnectionKey,
+                    requestKey,
+                    out ApprenticeToolInvocationContext? apprenticeContext)
+                    ? apprenticeContext
                     : null;
 
             if (!_toolHandlers.TryGetValue(call.Name, out InternalToolHandler? handler))
@@ -1041,12 +1070,17 @@ internal sealed partial class ArcanumInternalToolServer
             ApplyPatchInvocationAmbient.Current = previousPatchAmbient;
             PersistedToolInvocationAmbient.Current =
                 previousPersistedAmbient;
+            ApprenticeToolInvocationAmbient.Current =
+                previousApprenticeAmbient;
 
             SessionAttachmentToolAmbient.UnbindRequest(_ambientConnectionKey, requestKey);
             ApplyPatchInvocationBinding.UnbindRequest(
                 _ambientConnectionKey,
                 requestKey);
             PersistedToolInvocationBinding.UnbindRequest(
+                _ambientConnectionKey,
+                requestKey);
+            ApprenticeToolInvocationBinding.UnbindRequest(
                 _ambientConnectionKey,
                 requestKey);
 

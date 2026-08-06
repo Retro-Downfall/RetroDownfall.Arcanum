@@ -150,6 +150,13 @@ internal sealed record WatchEventView(
 
         }
 
+        if (SendingMessage(payload, eventType) is { } sending)
+        {
+
+            return sending;
+
+        }
+
         return String(payload, "message")
             ?? String(payload, "description")
             ?? String(payload, "result")
@@ -158,6 +165,93 @@ internal sealed record WatchEventView(
             ?? eventType;
 
     }
+
+    /// <summary>
+    /// Renders the four A2A Sending frames distinguishably.
+    /// </summary>
+    /// <remarks>
+    /// The generic fallback above reads <c>description</c> before <c>result</c>/<c>error</c>, and every
+    /// Sending frame carries the agent URL in <c>description</c> — so dispatched, progress, completed, and
+    /// failed all rendered as the same line and neither the response nor the failure reason was ever
+    /// visible (issue #61).
+    /// </remarks>
+    private static string? SendingMessage(JsonElement payload, string eventType)
+    {
+
+        string agent = String(payload, "description") ?? "(unknown agent)";
+
+        string task = String(payload, "summary") is { Length: > 0 } id ? $" task {id}" : string.Empty;
+
+        switch (eventType)
+        {
+
+            case "sendingDispatched":
+
+                return $"→ {agent}{task}: dispatched";
+
+            case "sendingProgress":
+
+                string state = String(payload, "sendingState") ?? "working";
+
+                return $"… {agent}{task}: {state}";
+
+            case "sendingCompleted":
+
+                string response = String(payload, "result") ?? "(no response text)";
+
+                return $"✓ {agent}{task}: completed [{SendingCost(payload)}]{Elapsed(payload)} — {response}";
+
+            case "sendingFailed":
+
+                string reason = String(payload, "error") ?? "(no reason reported)";
+
+                return $"✗ {agent}{task}: failed [{SendingCost(payload)}]{Elapsed(payload)} — {reason}";
+
+            default:
+
+                return null;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Keeps "the peer reported nothing" visibly distinct from "the peer reported zero" (issue #60).
+    /// </summary>
+    private static string SendingCost(JsonElement payload)
+    {
+
+        if (payload.ValueKind != JsonValueKind.Object
+            || !payload.TryGetProperty("remoteCostKnown", out JsonElement known)
+            || known.ValueKind != JsonValueKind.True)
+        {
+
+            return "cost unknown";
+
+        }
+
+        string tokens = Number(payload, "remoteTotalTokens") is { } t
+            ? $"{t:N0} tokens"
+            : "tokens unknown";
+
+        string cost = Number(payload, "remoteCostUsd") is { } c
+            ? $", ${c:0.######}"
+            : string.Empty;
+
+        return $"external {tokens}{cost}";
+
+    }
+
+    private static string Elapsed(JsonElement payload) =>
+        Number(payload, "durationMs") is { } ms ? $" in {ms / 1000m:0.###} s" : string.Empty;
+
+    private static decimal? Number(JsonElement payload, string property) =>
+        payload.ValueKind == JsonValueKind.Object
+        && payload.TryGetProperty(property, out JsonElement value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetDecimal(out decimal parsed)
+            ? parsed
+            : null;
 
     private static string[] ExtractToolNames(JsonElement payload)
     {
