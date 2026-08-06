@@ -569,7 +569,18 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<DataRetentionSweepHostedService>();
 
         services.AddScoped<LongRunningOperationReconciler>();
+        services.AddScoped<IDurableOperationDiagnostics, DurableOperationDiagnostics>();
         services.AddScoped<ILongRunningOperationRecoveryHandler, BudgetReservationRecoveryHandler>();
+
+        // Issue #40: every kind in LongRunningOperationRecoveryRegistry owns a handler, so a stranded
+        // operation reaches explicit recovery instead of falling through to "handler missing".
+        services.AddScoped<ILongRunningOperationRecoveryHandler, InferenceRunRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, SubagentRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, IdempotencyClaimRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, ApprenticeRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, AttachmentPromotionRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, WorkspaceIndexRecoveryHandler>();
+
         services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();
         services.AddScoped<BlobEncryptionFileProcessor>();
         services.AddScoped<BlobEncryptionLifecycleService>();

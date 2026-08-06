@@ -2655,6 +2655,22 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
         private readonly List<(int ExpectedCount, TaskCompletionSource Completion)> _heartbeatWaiters = [];
 
+        public Task<IdempotencyClaim?> GetByIdAsync(
+            Guid claimId,
+            CancellationToken cancellationToken = default)
+        {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            lock (_gate)
+            {
+
+                return Task.FromResult(_claim?.Id == claimId ? _claim : null);
+
+            }
+
+        }
+
         public Task<IdempotencyClaim?> TryGetAsync(
             string claimKeyHash,
             CancellationToken cancellationToken = default)

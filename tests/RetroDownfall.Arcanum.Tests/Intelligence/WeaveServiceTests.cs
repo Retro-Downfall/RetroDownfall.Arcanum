@@ -437,6 +437,9 @@ public sealed class WeaveServiceTests
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
+        public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
         public Task<Guid> RecordBillableOperationAsync(
             BillableOperationRecord operation,
             CancellationToken cancellationToken = default)

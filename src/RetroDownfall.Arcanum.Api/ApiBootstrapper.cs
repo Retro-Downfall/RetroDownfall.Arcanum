@@ -35,6 +35,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.Telemetry;
@@ -400,6 +401,10 @@ public static class ApiBootstrapper
         services.AddSingleton<BatchProcessingService>();
 
         services.AddSingleton<IBatchRecoveryService, BatchRecoveryService>();
+
+        // The batch kind's recovery handler lives here rather than in Infrastructure because the
+        // reconciliation it delegates to is owned by Api (#40).
+        services.AddScoped<ILongRunningOperationRecoveryHandler, BatchOperationRecoveryHandler>();
 
         services.AddHostedService(static sp => sp.GetRequiredService<BatchProcessingService>());
 

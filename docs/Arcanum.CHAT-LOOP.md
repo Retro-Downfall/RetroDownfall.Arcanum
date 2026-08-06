@@ -98,6 +98,27 @@ The direct chat projection applies that rule to rendering: it lazily parses comp
 Markdown in at-most-256-Ki-character Markdig chunks, retaining one-allocation protection without a
 total display cutoff.
 
+### Host crash mid-turn
+
+A crash is not one of those outcomes: nothing runs, so nothing classifies the turn. The loop's own
+guarantees end at the process boundary, and what survives is only what reached the Grimoire. On the
+next start, durable-operation recovery (DESIGN §10.8) resolves the turn from that durable state
+rather than from anything the loop remembered.
+
+| Turn state at the crash | What the next start does |
+|---|---|
+| Provider call in flight | The `InferenceRuns` row moves `Running → Abandoned` through a compare-and-set, so a turn that actually finished first keeps its real status. The stream is never replayed. |
+| Usage already ledgered | Kept exactly as written. `BillableOperations` rows are the only evidence of real cost, and recovery neither re-bills nor adds an estimate. |
+| Budget reservation outstanding | Released idempotently, so a dead process cannot consume the daily limit forever. Release is unconditional: a recovery pass that itself died between abandoning the run and releasing must still converge. |
+| Idempotency claim held | Replayable only if its terminal bytes were fully captured. Anything else is abandoned, and the caller re-sends with the same `Idempotency-Key` rather than receiving a truncated body forever. |
+| Tool child process running | Gone with the host. Recovery never claims a prior process is still controllable, and never re-attaches to one. |
+| Delegated child (subagent) in flight | Abandoned, not restarted. The child's context was entirely in process, and restarting it from a ledger row — while the parent also recovers — is how a recursion storm begins. |
+| Apprentice executing | Untouched here. An Apprentice is durable and resumes from its own checkpoint (§5.7); recovery only closes the ledger row so the work stays visible without being driven twice. |
+
+Every one of these is safe to repeat, because a restart that crashes during recovery is just another
+crash. `arcanum operation list --state ReconciliationRequired` shows anything that could not be
+resolved automatically, with the guidance for repairing it.
+
 ## 1. One logical turn, multiple provider requests
 
 A tool response cannot change the provider request that produced the tool call. “Refresh in the

@@ -967,6 +967,23 @@ Inspects and repairs durable long-running operations. Safe detail omits checkpoi
 | `arcanum operation retry <id>` | Reset a failed, abandoned, or repair-required operation to Pending. | None beyond global or inherited family options. |
 | `arcanum operation reconcile` | Process every recoverable operation in bounded internal pages/concurrency; exit 2 means automatic recovery completed but operator repair is still required. | None beyond global or inherited family options. |
 
+Every registered operation kind has an owning recovery handler and an explicit recovery class
+(`DESIGN.md` §10.8.1). A `ReconciliationRequired` operation is therefore always a state recovery
+deliberately declined to resolve, never one nobody thought about; `arcanum operation list --state
+ReconciliationRequired` is the list of things that need you. Its terminal error code says why:
+
+| Terminal error code | Meaning | What to do |
+|---|---|---|
+| `operation.checkpoint_version_unsupported` | The checkpoint was written outside the version window this build's handler can read — from a newer build, or from one whose format the handler no longer understands. | Run the build that wrote it, or `arcanum operation retry <id>` after confirming the work can safely restart from scratch. |
+| `operation.checkpoint_corrupt` | The checkpoint payload could not be parsed. | The work cannot be resumed; `retry` restarts it from durable inputs where its policy allows. |
+| `operation.recovery_handler_missing` | No handler is registered for the kind. This is a build defect, not a runtime state. | Report it. Recovery will not guess an outcome. |
+| `operation.recovery_result_invalid` | A handler returned a non-terminal state. Also a build defect. | Report it. |
+| `operation.link_missing` | The ledger row lacks the inference run, claim, or reservation id its handler needs, so recovery cannot tell which entity the crashed work owned. | Inspect the linked domain state with `arcanum operation show <id>`, then `retry` or `cancel`. |
+
+`arcanum doctor` reports the same states as part of its `DurableOperations` panel, including stale
+operations (expired leases nobody has claimed) and per-kind repair guidance. Neither surface emits
+operation ids, public summaries, or checkpoint content into that detail.
+
 ### `arcanum backup`
 
 Plan, create, inspect, verify, list, restore, and migrate versioned encrypted portable backups. This

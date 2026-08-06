@@ -1234,6 +1234,9 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
+        public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
         public Task<Guid> RecordBillableOperationAsync(
             BillableOperationRecord operation,
             CancellationToken cancellationToken = default) =>
@@ -1336,6 +1339,9 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             InferenceRunStatus status,
             CancellationToken cancellationToken = default) =>
             inner.CompleteRunAsync(runId, status, cancellationToken);
+
+        public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) =>
+            inner.TryAbandonRunAsync(runId, cancellationToken);
 
         public async Task<Guid> RecordBillableOperationAsync(
             BillableOperationRecord operation,

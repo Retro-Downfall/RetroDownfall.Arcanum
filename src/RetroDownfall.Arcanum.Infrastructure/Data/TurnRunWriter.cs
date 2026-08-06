@@ -72,6 +72,34 @@ internal sealed class TurnRunWriter(ArcanumDbContext db) : ITurnRunWriter
             cancellationToken);
     }
 
+    public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default)
+    {
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                // The Running guard is what makes repeated recovery safe: a run that reached Completed or
+                // Failed before the crash landed keeps that status instead of being rewritten (#40).
+                cmd.CommandText =
+                    """
+                    UPDATE "InferenceRuns"
+                    SET "Status" = @abandoned, "CompletedAt" = @completedAt
+                    WHERE "Id" = @id AND "Status" = @running
+                    """;
+
+                AddParameter(cmd, "@id", runId.ToString("N"));
+                AddParameter(cmd, "@abandoned", (int)InferenceRunStatus.Abandoned);
+                AddParameter(cmd, "@running", (int)InferenceRunStatus.Running);
+                AddParameter(cmd, "@completedAt", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+
+                return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
+            },
+            cancellationToken);
+    }
+
     public Task<Guid> RecordBillableOperationAsync(BillableOperationRecord operation, CancellationToken cancellationToken = default)
     {
         Guid id = Guid.NewGuid();
