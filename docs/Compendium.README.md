@@ -300,6 +300,13 @@ parent's current-turn materialized allowlist, and each explicit path/content rem
 | `integrations.a2A.defaultWorkspace` | `string`, `""` | path | Fallback for inbound tasks; empty falls through to `workspaces.defaultRoot`, then the current directory. |
 | `integrations.a2A.outboundCredentialEnvironmentVariable` | `string`, `""` | env var name | Environment variable holding the credential presented to remote agents. Empty sends none, so only unauthenticated peers are reachable — including *not* another Arcanum. The value never lives in configuration, and it is sent only to the origin you named or an allowlisted target, never to a host the remote Agent Card picks. |
 | `integrations.a2A.outboundCredentialHeader` | `string`, `"X-Arcanum-Key"` | header name | Header carrying that credential. Use `Authorization` (with a `Bearer …` value) for agents expecting bearer auth. |
+| `integrations.a2A.inputModes` | `string[]`, `[]` | media types | Content types inbound Sendings may carry. Empty advertises `text/plain`. |
+| `integrations.a2A.outputModes` | `string[]`, `[]` | media types | Content types this instance can answer with. Empty advertises `text/plain`. A peer whose `acceptedOutputModes` intersect none of these is **rejected by name** rather than silently answered as text. |
+| `integrations.a2A.skills[].id` | `string?`, `null` | non-empty, unique | Advertised Agent Card skill identifier peers match on. An empty skill list advertises the single historical `apprentice-goal-execution` skill, so a default card is unchanged. A declared skill without an id fails validation rather than vanishing from the card. |
+| `integrations.a2A.skills[].name` | `string?`, `null` | — | Display name for the skill; defaults to its id. |
+| `integrations.a2A.skills[].description` | `string?`, `null` | — | What the skill does, shown to other agents. |
+| `integrations.a2A.skills[].inputModes` | `string[]`, `[]` | media types | Per-skill inbound content types; empty inherits `integrations.a2A.inputModes`. |
+| `integrations.a2A.skills[].outputModes` | `string[]`, `[]` | media types | Per-skill outbound content types; empty inherits `integrations.a2A.outputModes`. |
 | `integrations.commLink.webhookUrlEnvironmentVariable` | `string?`, `null` | portable, case-insensitively unique environment name | Exact secret-bearing webhook reference; omission uses `ARCANUM_COMMLINK_WEBHOOK_URL`. |
 | `integrations.commLink.allowedSchemes` | `string[]`, `["https"]` | URI schemes | Allowed webhook schemes. |
 | `integrations.commLink.allowedHosts` | `string[]`, `[]` | hostnames | Optional webhook host allowlist; empty adds no host restriction beyond the outbound URL guard. |

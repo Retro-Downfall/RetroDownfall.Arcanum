@@ -1849,10 +1849,90 @@ public sealed class ConfigurationValidator(
 
         }
 
+        ValidateModes(settings.InputModes, "integrations.a2A.inputModes", errors);
+
+        ValidateModes(settings.OutputModes, "integrations.a2A.outputModes", errors);
+
+        A2ASkillSettings[] skills = settings.Skills ?? [];
+
+        HashSet<string> seenSkillIds = new(StringComparer.OrdinalIgnoreCase);
+
+        for (int index = 0; index < skills.Length; index++)
+        {
+
+            A2ASkillSettings skill = skills[index];
+
+            if (string.IsNullOrWhiteSpace(skill.Id))
+            {
+
+                // A skill with no id is silently dropped from the card, so say so at startup rather than
+                // letting an operator wonder why their declaration never appeared (issue #63).
+                errors.Add(new ConfigurationValidationError(
+                    $"integrations.a2A.skills[{index}].id",
+                    "An advertised A2A skill requires a non-empty id; peers match on it."));
+
+            }
+            else if (!seenSkillIds.Add(skill.Id.Trim()))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    $"integrations.a2A.skills[{index}].id",
+                    $"Advertised A2A skill id '{skill.Id.Trim()}' is declared more than once."));
+
+            }
+
+            ValidateModes(skill.InputModes, $"integrations.a2A.skills[{index}].inputModes", errors);
+
+            ValidateModes(skill.OutputModes, $"integrations.a2A.skills[{index}].outputModes", errors);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Advertised modalities are media types. A malformed entry is only ever visible on someone else's
+    /// Agent Card reader, so it has to fail at startup instead.
+    /// </summary>
+    private static void ValidateModes(
+        string[]? modes,
+        string path,
+        List<ConfigurationValidationError> errors)
+    {
+
+        foreach (string mode in modes ?? [])
+        {
+
+            if (string.IsNullOrWhiteSpace(mode))
+            {
+
+                continue;
+
+            }
+
+            string trimmed = mode.Trim();
+
+            int slash = trimmed.IndexOf('/', StringComparison.Ordinal);
+
+            if (slash <= 0
+                || slash == trimmed.Length - 1
+                || trimmed.AsSpan().ContainsAny(WhitespaceCharacters))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    path,
+                    $"'{mode}' is not a media type; advertised A2A modalities look like 'text/plain'."));
+
+            }
+
+        }
+
     }
 
     private static readonly System.Buffers.SearchValues<char> InvalidHeaderNameCharacters =
         System.Buffers.SearchValues.Create(" \t:()<>@,;\\\"/[]?={}");
+
+    private static readonly System.Buffers.SearchValues<char> WhitespaceCharacters =
+        System.Buffers.SearchValues.Create(" \t\r\n");
 
     private static void ValidateWebResearch(
         WebResearchIntegrationSettings settings,

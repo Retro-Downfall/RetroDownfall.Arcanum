@@ -109,4 +109,16 @@ public sealed record ConclaveA2ASettings
     /// </summary>
     public string OutboundCredentialHeader { get; set; } = "X-Arcanum-Key";
 
+    /// <summary>
+    /// Operator-declared Agent Card skills. Empty (default) advertises the single historical
+    /// <c>apprentice-goal-execution</c> skill so the default card is unchanged (issue #63).
+    /// </summary>
+    public A2ASkillSettings[] Skills { get; set; } = [];
+
+    /// <summary>Advertised inbound media types. Empty (default) means <c>text/plain</c>.</summary>
+    public string[] InputModes { get; set; } = [];
+
+    /// <summary>Advertised outbound media types. Empty (default) means <c>text/plain</c>.</summary>
+    public string[] OutputModes { get; set; } = [];
+
 }

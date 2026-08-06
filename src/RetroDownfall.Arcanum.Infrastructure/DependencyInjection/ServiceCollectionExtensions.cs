@@ -594,6 +594,11 @@ public static class ServiceCollectionExtensions
                 OutboundUrlGuard.CreateUntrustedEgressHandler(A2AClientService.OutboundConnectTimeout));
         services.AddSingleton<IA2AClientService, A2AClientService>();
         services.AddSingleton<ArcanumA2AAgentHandler>();
+        // Durable record of in-flight A2A correspondences, so a restart can cancel an orphaned remote
+        // task and a peer's tasks/cancel still reaches the real Apprentice (issue #62).
+        services.AddScoped<IA2ASendingLedger, A2ASendingLedger>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, A2AInboundSendingRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, A2AOutboundSendingRecoveryHandler>();
         services.AddSingleton(static sp => new A2AServer(
             sp.GetRequiredService<ArcanumA2AAgentHandler>(),
             new InMemoryTaskStore(),

@@ -754,9 +754,12 @@ The Conclave and its A2A surface (requires arcanum serve). See DESIGN §5.7.1 fo
 | Command | Purpose | Options |
 |---|---|---|
 | `arcanum conclave status` | Show whether A2A is disabled, configured, degraded, or healthy, with the effective server and Agent Card paths and the next action when something is missing. | None beyond global or inherited family options. |
-| `arcanum conclave dispatch` | Dispatch a Sending to a remote A2A agent and wait for its terminal result. Cancelling also cancels the remote task. | `--agent-url <url>` — Remote agent base URL or Agent Card URL.<br>`--goal <goal>` — Goal text delegated to the remote agent.<br>`--name <name>` — Optional display name for the Sending. |
+| `arcanum conclave dispatch` | Dispatch a Sending to a remote A2A agent and wait for its terminal result. Reports the remote task id, the remote cost (or "unknown"), and the remote wall-clock. Cancelling also cancels the remote task. | `--agent-url <url>` — Remote agent base URL or Agent Card URL.<br>`--goal <goal>` — Goal text delegated to the remote agent.<br>`--name <name>` — Optional display name for the Sending.<br>`--continuable` — Return a continuation task id when the remote asks for more input or authentication, instead of ending the Sending. |
+| `arcanum conclave continue <task-id>` | Answer a Sending the remote parked at `input-required` or `auth-required`, resuming the same remote task rather than re-running the goal. | `--agent-url <url>` — The same remote agent the Sending was dispatched to.<br>`--message <text>` — The input or credential the remote asked for.<br>`--continuable` — Keep returning a continuation if the remote asks again. |
 
-An inbound Sending *is* an Apprentice, so `arcanum apprentice list/get/cancel` and `arcanum watch apprentice` are the surfaces for observing and cancelling work other agents send here.
+Remote cost is reported as **unknown** when the peer publishes no usage — never as zero. A2A has no standard usage field, so only a peer that supplies one (which includes another Arcanum) yields real figures.
+
+An inbound Sending *is* an Apprentice, so `arcanum apprentice list/get/cancel` and `arcanum watch apprentice` are the surfaces for observing and cancelling work other agents send here. `arcanum watch apprentice` renders the four Sending frames distinguishably — dispatched, in-flight remote state, and the terminal frame with its response or failure reason, external cost, and remote duration.
 
 ### `arcanum model`
 

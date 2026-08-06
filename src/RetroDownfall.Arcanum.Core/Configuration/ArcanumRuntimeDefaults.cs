@@ -177,6 +177,9 @@ public static class ArcanumRuntimeSettings
             OutboundCredentialHeader = string.IsNullOrWhiteSpace(integration.OutboundCredentialHeader)
                 ? defaults.OutboundCredentialHeader
                 : integration.OutboundCredentialHeader.Trim(),
+            Skills = integration.Skills ?? [],
+            InputModes = integration.InputModes ?? [],
+            OutputModes = integration.OutputModes ?? [],
         };
     }
 

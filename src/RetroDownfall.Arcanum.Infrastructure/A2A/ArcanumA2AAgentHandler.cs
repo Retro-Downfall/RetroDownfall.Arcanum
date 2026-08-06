@@ -22,9 +22,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// <remarks>
 /// A2A tasks map to Apprentices, not Sessions: the task lifecycle IS the Apprentice lifecycle, so this
 /// class does no independent scheduling — it starts the Apprentice via <see cref="IApprenticeRuntime"/> and
-/// then simply relays <see cref="IApprenticeRuntime.SubscribeChronicleAsync"/>. The A2A task id ↔ Apprentice
-/// id association lives only in <see cref="_taskToApprentice"/> and is intentionally not persisted to
-/// the Grimoire, so it does not survive a process restart.
+/// then simply relays <see cref="IApprenticeRuntime.SubscribeChronicleAsync"/>. <see cref="_taskToApprentice"/>
+/// is the live index and dies with the process; the association itself is recorded durably through
+/// <see cref="IA2ASendingLedger"/>, so a peer that cancels after a restart still reaches the real
+/// Apprentice (issue #62, docs/Arcanum.DESIGN.md &#167;5.7.1.2).
 /// </remarks>
 public sealed class ArcanumA2AAgentHandler(
     IServiceScopeFactory scopeFactory,
@@ -33,6 +34,19 @@ public sealed class ArcanumA2AAgentHandler(
 {
 
     private readonly ConcurrentDictionary<string, Guid> _taskToApprentice = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Tasks parked at <c>input-required</c> whose Apprentice is <c>Escalated</c> and still resumable.
+    /// </summary>
+    /// <remarks>
+    /// Escalation ends <see cref="ExecuteAsync"/>, which drops the live mapping. Without this second
+    /// index a peer that answers the question gets a brand-new Apprentice with none of the first one's
+    /// plan, session, or progress — which is not a continuation at all (issue #64).
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, ParkedSending> _awaitingContinuation = new(StringComparer.Ordinal);
+
+    /// <summary>An escalated Apprentice waiting to be answered, and the durable record still open for it.</summary>
+    private readonly record struct ParkedSending(Guid ApprenticeId, A2ASendingLedgerEntry Ledger);
 
     public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
@@ -58,6 +72,30 @@ public sealed class ArcanumA2AAgentHandler(
         {
 
             await RejectAsync(updater, "A non-empty message is required to spawn an Apprentice.", cancellationToken).ConfigureAwait(false);
+
+            return;
+
+        }
+
+        Result<string> modality = A2AAgentCardPolicy.ValidateRequestedModes(settings, context.Configuration?.AcceptedOutputModes);
+
+        if (modality.IsFailure)
+        {
+
+            // An unsupported modality is refused by name rather than silently answered as text: a peer
+            // that asked for audio and received prose has no way to tell that it was downgraded
+            // (issue #63).
+            await RejectAsync(updater, modality.Error.Message, cancellationToken).ConfigureAwait(false);
+
+            return;
+
+        }
+
+        if (_awaitingContinuation.TryGetValue(context.TaskId, out ParkedSending parked))
+        {
+
+            await ContinueApprenticeAsync(context, updater, parked, goal, cancellationToken)
+                .ConfigureAwait(false);
 
             return;
 
@@ -118,6 +156,15 @@ public sealed class ArcanumA2AAgentHandler(
 
         _taskToApprentice[context.TaskId] = apprentice.Id;
 
+        // The in-memory index dies with the process; the durable record is what lets a peer's
+        // tasks/cancel after a restart reach the real Apprentice instead of answering into the void
+        // (issue #62).
+        A2ASendingLedgerEntry ledgerEntry = await RecordInboundAsync(
+                scope.ServiceProvider,
+                context.TaskId,
+                apprentice.Id)
+            .ConfigureAwait(false);
+
         await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
 
         IApprenticeRuntime runtime = scope.ServiceProvider.GetRequiredService<IApprenticeRuntime>();
@@ -148,7 +195,14 @@ public sealed class ArcanumA2AAgentHandler(
 
             await updater.StartWorkAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            await ForwardChronicleToTaskAsync(apprentice.Id, chronicle, firstEvent, updater, cancellationToken)
+            await ForwardChronicleToTaskAsync(
+                    context.TaskId,
+                    apprentice.Id,
+                    ledgerEntry,
+                    chronicle,
+                    firstEvent,
+                    updater,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
         }
@@ -156,6 +210,149 @@ public sealed class ArcanumA2AAgentHandler(
         {
 
             _taskToApprentice.TryRemove(context.TaskId, out _);
+
+            // A task parked awaiting continuation is still in flight, so its durable record stays open.
+            if (!_awaitingContinuation.ContainsKey(context.TaskId))
+            {
+
+                await ReleaseInboundAsync(scope.ServiceProvider, ledgerEntry).ConfigureAwait(false);
+
+            }
+
+            await chronicle.DisposeAsync().ConfigureAwait(false);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Records the durable correspondence. Deliberately untokened and non-throwing: the record matters
+    /// most exactly when this request is being torn down, and a ledger failure must never turn into an
+    /// unhandled exception from an <see cref="IAgentHandler"/> callback or a leaked live-index entry.
+    /// </summary>
+    private static async Task<A2ASendingLedgerEntry> RecordInboundAsync(
+        IServiceProvider services,
+        string taskId,
+        Guid apprenticeId)
+    {
+
+        try
+        {
+
+            IA2ASendingLedger? ledger = A2ASendingLedgerScope.Resolve(services);
+
+            return ledger is null
+                ? default
+                : await ledger.RegisterInboundAsync(taskId, apprenticeId, CancellationToken.None).ConfigureAwait(false);
+
+        }
+        catch (Exception)
+        {
+
+            // Best-effort; see remarks. A2A stays usable without the durable record.
+            return default;
+
+        }
+
+    }
+
+    private static async Task ReleaseInboundAsync(IServiceProvider services, A2ASendingLedgerEntry entry)
+    {
+
+        if (!entry.IsRecorded)
+        {
+
+            return;
+
+        }
+
+        if (A2ASendingLedgerScope.Resolve(services) is { } ledger)
+        {
+
+            await ledger.ReleaseAsync(entry, CancellationToken.None).ConfigureAwait(false);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Resumes an escalated Apprentice with the peer's answer through Divine Intervention and re-attaches
+    /// the task relay, instead of minting a second Apprentice that knows nothing of the first (issue #64).
+    /// </summary>
+    private async Task ContinueApprenticeAsync(
+        RequestContext context,
+        TaskUpdater updater,
+        ParkedSending parked,
+        string guidance,
+        CancellationToken cancellationToken)
+    {
+
+        _awaitingContinuation.TryRemove(context.TaskId, out _);
+
+        Guid apprenticeId = parked.ApprenticeId;
+
+        _taskToApprentice[context.TaskId] = apprenticeId;
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        IApprenticeRuntime runtime = scope.ServiceProvider.GetRequiredService<IApprenticeRuntime>();
+
+        IAsyncEnumerator<ApprenticeEvent> chronicle = runtime
+            .SubscribeChronicleAsync(apprenticeId, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+
+        ValueTask<bool> firstEvent = chronicle.MoveNextAsync();
+
+        try
+        {
+
+            Result<string> intervened = await runtime
+                .InterveneAsync(apprenticeId, guidance, resume: true, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (intervened.IsFailure)
+            {
+
+                await FailAsync(
+                    updater,
+                    $"The Apprentice could not be resumed with the supplied answer: {intervened.Error.Message}",
+                    cancellationToken).ConfigureAwait(false);
+
+                return;
+
+            }
+
+            // Submit before Work even though the task already exists: the SDK opens this request's
+            // response stream on the first Submit, and a continuation that skips it produces no events
+            // for the peer at all.
+            await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
+
+            await updater.StartWorkAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            await ForwardChronicleToTaskAsync(
+                    context.TaskId,
+                    apprenticeId,
+                    parked.Ledger,
+                    chronicle,
+                    firstEvent,
+                    updater,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        finally
+        {
+
+            _taskToApprentice.TryRemove(context.TaskId, out _);
+
+            // The record opened by the original ExecuteAsync stayed open across the park; close it now
+            // unless this continuation parked the task again.
+            if (!_awaitingContinuation.ContainsKey(context.TaskId))
+            {
+
+                await ReleaseInboundAsync(scope.ServiceProvider, parked.Ledger).ConfigureAwait(false);
+
+            }
 
             await chronicle.DisposeAsync().ConfigureAwait(false);
 
@@ -166,15 +363,54 @@ public sealed class ArcanumA2AAgentHandler(
     public async Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
 
-        if (!_taskToApprentice.TryGetValue(context.TaskId, out Guid apprenticeId))
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        // A task parked at input-required is still ours to stop: the peer giving up on the question must
+        // cancel the Apprentice waiting for it, not just abandon the mapping (issue #64).
+        bool live = _taskToApprentice.TryGetValue(context.TaskId, out Guid apprenticeId);
+
+        if (!live && _awaitingContinuation.TryRemove(context.TaskId, out ParkedSending parked))
+        {
+
+            apprenticeId = parked.ApprenticeId;
+
+            live = true;
+
+            await ReleaseInboundAsync(scope.ServiceProvider, parked.Ledger).ConfigureAwait(false);
+
+        }
+
+        bool recoveredFromLedger = false;
+
+        if (!live)
+        {
+
+            // The in-memory index dies with the process, but the durable record does not: a peer that
+            // cancels after a restart must stop the resumed Apprentice, not merely be told "Canceled"
+            // while the work keeps running (issue #62).
+            Guid? recorded = A2ASendingLedgerScope.Resolve(scope.ServiceProvider) is { } ledger
+                ? await ledger.FindInboundApprenticeAsync(context.TaskId, cancellationToken).ConfigureAwait(false)
+                : null;
+
+            if (recorded is { } recoveredId)
+            {
+
+                apprenticeId = recoveredId;
+
+                recoveredFromLedger = true;
+
+            }
+
+        }
+
+        if (!live && !recoveredFromLedger)
         {
 
             // Overriding IAgentHandler.CancelAsync replaces the SDK's own Canceled transition, so returning
-            // silently would leave the peer's task with no terminal state at all. There is no Apprentice to
-            // stop — a restart drops the in-memory mapping (docs/Arcanum.DESIGN.md §5.4.4) — but the peer is
-            // still owed an answer.
+            // silently would leave the peer's task with no terminal state at all. Nothing local claims this
+            // task — no live mapping and no durable record — but the peer is still owed an answer.
             logger.LogInformation(
-                "A2A CancelAsync: task {TaskId} has no live Apprentice mapping; answering Canceled.",
+                "A2A CancelAsync: task {TaskId} has no live or recorded Apprentice mapping; answering Canceled.",
                 context.TaskId);
 
             await RunTerminalTransitionAsync(
@@ -184,8 +420,6 @@ public sealed class ArcanumA2AAgentHandler(
             return;
 
         }
-
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         IApprenticeRuntime runtime = scope.ServiceProvider.GetRequiredService<IApprenticeRuntime>();
 
@@ -207,10 +441,24 @@ public sealed class ArcanumA2AAgentHandler(
 
         }
 
+        if (recoveredFromLedger)
+        {
+
+            // Recovered from the durable record after a restart: no ExecuteAsync relay is running for
+            // this task, so nothing else will ever drive its terminal transition. The peer would wait
+            // forever otherwise.
+            await RunTerminalTransitionAsync(
+                ct => new TaskUpdater(eventQueue, context.TaskId, context.ContextId).CancelAsync(ct).AsTask(),
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
     }
 
     private async Task ForwardChronicleToTaskAsync(
+        string taskId,
         Guid apprenticeId,
+        A2ASendingLedgerEntry ledgerEntry,
         IAsyncEnumerator<ApprenticeEvent> chronicle,
         ValueTask<bool> firstEvent,
         TaskUpdater updater,
@@ -219,15 +467,33 @@ public sealed class ArcanumA2AAgentHandler(
 
         bool hasEvent = await firstEvent.ConfigureAwait(false);
 
+        // Peer-visible usage, accumulated from provider-authoritative frames. A2A has no usage field, so
+        // Arcanum publishes its own namespaced block; reporting nothing leaves the caller with an
+        // explicit "unknown" rather than a fabricated zero (issue #60).
+        long reportedTokens = 0;
+
+        string? lastProgressLabel = null;
+
         while (hasEvent)
         {
 
             ApprenticeEvent @event = chronicle.Current;
 
+            if (@event.WizardEvent?.Usage is { } usage)
+            {
+
+                reportedTokens += Math.Max(0, usage.TotalTokens);
+
+            }
+
             switch (@event.Type)
             {
 
                 case ApprenticeEventType.ApprenticeEscalated:
+
+                    // The task is parked, not finished: the peer can answer it and resume this very
+                    // Apprentice (issue #64). Its durable record stays open — the Sending has not settled.
+                    _awaitingContinuation[taskId] = new ParkedSending(apprenticeId, ledgerEntry);
 
                     await RequireInputAsync(
                         updater,
@@ -242,7 +508,7 @@ public sealed class ArcanumA2AAgentHandler(
 
                     await updater.AddArtifactAsync([Part.FromText(finalText)], cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                    await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                    await updater.CompleteAsync(BuildCompletionMessage(reportedTokens), cancellationToken).ConfigureAwait(false);
 
                     return;
 
@@ -260,9 +526,20 @@ public sealed class ArcanumA2AAgentHandler(
 
                 default:
 
-                    // Step-level events (planGenerated, stepStarted/Completed, toolCall/Result, ...) have
-                    // no A2A TaskState equivalent beyond "Working" (already emitted); only the terminal
-                    // transitions above matter for the A2A task lifecycle in this pass.
+                    // Step-level events have no distinct A2A TaskState, but a peer watching a long
+                    // Sending should still see it moving rather than a single "Working" that never
+                    // changes for an hour (issue #61). Only the phase label travels: step results, tool
+                    // output, and Apprentice prose stay on this side of the door.
+                    if (DescribeProgress(@event) is { } label
+                        && !string.Equals(label, lastProgressLabel, StringComparison.Ordinal))
+                    {
+
+                        lastProgressLabel = label;
+
+                        await RelayProgressAsync(updater, label, cancellationToken).ConfigureAwait(false);
+
+                    }
+
                     break;
 
             }
@@ -277,6 +554,64 @@ public sealed class ArcanumA2AAgentHandler(
             updater,
             "The Apprentice's Chronicle ended without a terminal result; the Sending cannot be completed.",
             cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// The peer-safe phase label for a step-level Chronicle event, or <c>null</c> for events that say
+    /// nothing an external agent needs.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately structural: the event kind and a step number. Tool names, tool arguments, step
+    /// results, and Ward reasons describe this instance's internals and its operator's workspace, and a
+    /// remote agent has no business seeing them (docs/Arcanum.DESIGN.md &#167;5.7.1).
+    /// </remarks>
+    internal static string? DescribeProgress(ApprenticeEvent @event) => @event.Type switch
+    {
+        ApprenticeEventType.PlanGenerated => "Planning complete.",
+        ApprenticeEventType.StepStarted => $"Working on step {StepLabel(@event)}.",
+        ApprenticeEventType.StepCompleted => $"Completed step {StepLabel(@event)}.",
+        ApprenticeEventType.StepRetrying => $"Retrying step {StepLabel(@event)}.",
+        ApprenticeEventType.PlanRevised => "Plan revised.",
+        ApprenticeEventType.ApprenticeIntervened => "Resumed with operator guidance.",
+        ApprenticeEventType.ApprenticePaused => "Paused.",
+        ApprenticeEventType.ApprenticeResumed => "Resumed.",
+        _ => null,
+    };
+
+    private static string StepLabel(ApprenticeEvent @event) =>
+        @event.StepIndex is { } index ? (index + 1).ToString() : "?";
+
+    private static Task RelayProgressAsync(TaskUpdater updater, string label, CancellationToken cancellationToken) =>
+        RunTerminalTransitionAsync(
+            ct => updater.StartWorkAsync(BuildAgentMessage(label), ct).AsTask(),
+            cancellationToken);
+
+    /// <summary>
+    /// Builds the terminal status message, carrying Arcanum's usage block when any was observed.
+    /// </summary>
+    /// <remarks>
+    /// The A2A SDK's <c>TaskUpdater</c> exposes no way to write task-level metadata, so the block rides
+    /// on the completion message, which is where <c>A2ASendingUsageMetadata.Read</c> also looks. A run
+    /// that observed no provider-authoritative usage returns <c>null</c> and stays explicitly unknown.
+    /// </remarks>
+    private static Message? BuildCompletionMessage(long reportedTokens)
+    {
+
+        if (reportedTokens <= 0)
+        {
+
+            return null;
+
+        }
+
+        Message message = BuildAgentMessage("The Apprentice completed the delegated goal.");
+
+        message.Metadata ??= [];
+
+        A2ASendingUsageMetadata.Write(message.Metadata, reportedTokens, costUsd: null);
+
+        return message;
 
     }
 
@@ -397,6 +732,8 @@ public sealed class ArcanumA2AAgentHandler(
     {
 
         _taskToApprentice.Clear();
+
+        _awaitingContinuation.Clear();
 
         return ValueTask.CompletedTask;
 

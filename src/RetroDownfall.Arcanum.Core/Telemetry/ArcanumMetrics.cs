@@ -191,4 +191,39 @@ public static class ArcanumMetrics
         "USD",
         "Cost reported by native web-research providers");
 
+    /// <summary>
+    /// Outbound A2A Sendings that settled. Labels: closed <c>outcome</c> (<c>completed</c>,
+    /// <c>failed</c>, <c>continuation</c>) and closed <c>cost</c> (<c>known</c>, <c>unknown</c>).
+    /// </summary>
+    /// <remarks>
+    /// The <c>cost=unknown</c> series is the point: delegated work whose price nobody reported is
+    /// visible as unpriced rather than folded into the totals as zero (issue #60). Peer identity is
+    /// deliberately not a label — allowlist entries can name private partner endpoints.
+    /// </remarks>
+    public static readonly Counter<long> ConclaveSendingsTotal = Meter.CreateCounter<long>(
+        "arcanum_conclave_sendings_total",
+        "{sendings}",
+        "Outbound A2A Sendings by outcome and whether the peer reported cost");
+
+    /// <summary>
+    /// Tokens a remote A2A peer reported for delegated work. Recorded only when the peer reports them,
+    /// so this counter never implies that unreported Sendings were free.
+    /// </summary>
+    public static readonly Counter<long> ConclaveSendingRemoteTokensTotal = Meter.CreateCounter<long>(
+        "arcanum_conclave_sending_remote_tokens_total",
+        "{tokens}",
+        "Tokens reported by remote A2A agents for delegated Sendings");
+
+    /// <summary>Cost a remote A2A peer reported for delegated work, when it reports any.</summary>
+    public static readonly Counter<double> ConclaveSendingRemoteCostUsdTotal = Meter.CreateCounter<double>(
+        "arcanum_conclave_sending_remote_cost_usd_total",
+        "USD",
+        "Cost reported by remote A2A agents for delegated Sendings");
+
+    /// <summary>Remote wall-clock of a settled outbound Sending. Label: closed <c>outcome</c>.</summary>
+    public static readonly Histogram<double> ConclaveSendingDuration = Meter.CreateHistogram<double>(
+        "arcanum_conclave_sending_duration_seconds",
+        "s",
+        "Wall-clock duration of outbound A2A Sendings measured from dispatch to settle");
+
 }

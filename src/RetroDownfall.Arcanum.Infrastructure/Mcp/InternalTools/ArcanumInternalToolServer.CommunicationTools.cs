@@ -420,11 +420,27 @@ internal sealed partial class ArcanumInternalToolServer
 
             IA2AClientService client = scope.ServiceProvider.GetRequiredService<IA2AClientService>();
 
-            // The in-process MCP server is workspace-scoped, not Apprentice-scoped, so it cannot yet supply
-            // the inbound delegation chain of the Apprentice that is calling. The client still stamps this
-            // node, which breaks direct loops; multi-hop propagation is tracked in issue #59.
+            // The in-process MCP server is workspace-scoped rather than Apprentice-scoped, so the calling
+            // Apprentice arrives through the request-id binding rather than an AsyncLocal. Extending its
+            // inherited chain instead of restarting from empty is what makes a multi-hop cycle
+            // (A → B → C → A) detectable at the repeated node, not just the direct A → B → A case
+            // (issue #59).
+            ApprenticeToolInvocationContext? caller = ApprenticeToolInvocationAmbient.Current;
+
+            // A Sending has no whole-operation deadline (#55), so the window between dispatch and its
+            // terminal frame is unbounded. Relaying remote state changes onto the caller's Chronicle is
+            // what stops that window being a black box (issue #61).
+            IProgress<A2ASendingProgress>? progress = CreateSendingProgress(scope, caller);
+
             Result<A2ADispatchResult> result = await client
-                .DispatchSendingAsync(args.Goal.Trim(), args.Name, agentUrl, delegationChain: null, cancellationToken)
+                .DispatchSendingAsync(
+                    args.Goal.Trim(),
+                    args.Name,
+                    agentUrl,
+                    caller?.DelegationChain,
+                    cancellationToken,
+                    progress,
+                    args.Continuable == true ? A2ADispatchMode.Continuable : A2ADispatchMode.Blocking)
                 .ConfigureAwait(false);
 
             // Distinguishes "never dispatched" (config gate, allowlist, concurrency cap, bad goal — a
@@ -436,34 +452,7 @@ internal sealed partial class ArcanumInternalToolServer
                 return ToolError($"dispatch_sending failed: {result.Error.Message}");
             }
 
-            DispatchSendingResultWire payload = result.IsSuccess
-                ? new DispatchSendingResultWire
-                {
-                    AgentUrl = agentUrl,
-                    TaskId = result.Value.TaskId,
-                    Succeeded = true,
-                    // The remote agent controls this text completely and it lands directly in the model's
-                    // context. Frame it as untrusted data so a hostile peer's "ignore your instructions"
-                    // reads as quoted content rather than as a new directive.
-                    Response = FrameUntrustedRemoteText(agentUrl, result.Value.ResponseText),
-                }
-                : new DispatchSendingResultWire
-                {
-                    AgentUrl = agentUrl,
-                    Succeeded = false,
-                    Error = result.Error.Message,
-                };
-
-            string json = JsonSerializer.Serialize(payload, _json.DispatchSendingResultWire);
-
-            return new McpToolsCallResultWire
-            {
-                Content =
-                [
-                    new McpToolContentTextWire { Text = json },
-                ],
-                IsError = false,
-            };
+            return BuildSendingToolResult(agentUrl, result);
         }
         catch (OperationCanceledException)
         {
@@ -475,6 +464,189 @@ internal sealed partial class ArcanumInternalToolServer
 
             return ToolError("An internal error occurred during dispatch_sending.");
         }
+    }
+
+    /// <summary>
+    /// Answers a Sending a remote agent parked at <c>input-required</c>/<c>auth-required</c>, resuming
+    /// that same remote task.
+    /// </summary>
+    /// <remarks>
+    /// Without this, a continuable <c>dispatch_sending</c> would let an Apprentice park a remote task it
+    /// has no way to answer — the remote would sit alive and billing until reconciliation or the peer's
+    /// own patience ran out. The capability and its counterpart ship together (issue #64).
+    /// </remarks>
+    private async Task<McpToolsCallResultWire> ExecuteContinueSendingAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+
+        if (!_a2aClientEnabled)
+        {
+            return ToolError("A2A is disabled; continue_sending is not available.");
+        }
+
+        ContinueSendingParams? args;
+
+        try
+        {
+            args = JsonSerializer.Deserialize(arguments, _json.ContinueSendingParams);
+        }
+        catch (JsonException ex)
+        {
+            _logger?.LogError(ex, "continue_sending argument deserialization failed.");
+
+            return ToolError("Invalid arguments for continue_sending.");
+        }
+
+        if (args is null
+            || string.IsNullOrWhiteSpace(args.TaskId)
+            || string.IsNullOrWhiteSpace(args.AgentUrl)
+            || string.IsNullOrWhiteSpace(args.Message))
+        {
+            return ToolError("continue_sending requires a non-empty 'task_id', 'agent_url', and 'message'.");
+        }
+
+        string agentUrl = args.AgentUrl.Trim();
+
+        try
+        {
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            IA2AClientService client = scope.ServiceProvider.GetRequiredService<IA2AClientService>();
+
+            ApprenticeToolInvocationContext? caller = ApprenticeToolInvocationAmbient.Current;
+
+            IProgress<A2ASendingProgress>? progress = CreateSendingProgress(scope, caller);
+
+            Result<A2ADispatchResult> result = await client
+                .ContinueSendingAsync(
+                    agentUrl,
+                    args.TaskId.Trim(),
+                    args.Message.Trim(),
+                    caller?.DelegationChain,
+                    cancellationToken,
+                    progress,
+                    args.Continuable == true ? A2ADispatchMode.Continuable : A2ADispatchMode.Blocking)
+                .ConfigureAwait(false);
+
+            if (result.IsFailure && IsPreflightRejection(result.Error.Code))
+            {
+                return ToolError($"continue_sending failed: {result.Error.Message}");
+            }
+
+            return BuildSendingToolResult(agentUrl, result);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "continue_sending failed.");
+
+            return ToolError("An internal error occurred during continue_sending.");
+        }
+    }
+
+    /// <summary>
+    /// Shapes a settled Sending into the structured tool payload both the model and
+    /// <c>ApprenticeService</c>'s Chronicle interception read.
+    /// </summary>
+    private McpToolsCallResultWire BuildSendingToolResult(string agentUrl, Result<A2ADispatchResult> result)
+    {
+
+        DispatchSendingResultWire payload = result.IsSuccess
+            ? new DispatchSendingResultWire
+            {
+                AgentUrl = agentUrl,
+                TaskId = result.Value.TaskId,
+                Succeeded = true,
+
+                // The remote agent controls this text completely and it lands directly in the model's
+                // context. Frame it as untrusted data so a hostile peer's "ignore your instructions"
+                // reads as quoted content rather than as a new directive.
+                Response = FrameUntrustedRemoteText(agentUrl, result.Value.ResponseText),
+                CostKnown = result.Value.RemoteCost.IsKnown,
+                RemoteTotalTokens = result.Value.RemoteCost.TotalTokens,
+                RemoteCostUsd = result.Value.RemoteCost.CostUsd,
+                DispatchedAt = Stamp(result.Value.DispatchedAt),
+                SettledAt = Stamp(result.Value.SettledAt),
+                ContinuationTaskId = result.Value.Continuation?.TaskId,
+                ContinuationNeed = DescribeNeed(result.Value.Continuation?.Need),
+            }
+            : new DispatchSendingResultWire
+            {
+                AgentUrl = agentUrl,
+                Succeeded = false,
+                Error = result.Error.Message,
+            };
+
+        string json = JsonSerializer.Serialize(payload, _json.DispatchSendingResultWire);
+
+        return new McpToolsCallResultWire
+        {
+            Content =
+            [
+                new McpToolContentTextWire { Text = json },
+            ],
+            IsError = false,
+        };
+
+    }
+
+    private static DateTimeOffset? Stamp(DateTimeOffset value) => value == default ? null : value;
+
+    private static string? DescribeNeed(A2AContinuationNeed? need) => need switch
+    {
+        A2AContinuationNeed.Input => "input",
+        A2AContinuationNeed.Authentication => "auth",
+        _ => null,
+    };
+
+    /// <summary>
+    /// Builds the observer that turns remote A2A task-state changes into <c>sendingProgress</c> Chronicle
+    /// frames on the calling Apprentice's stream.
+    /// </summary>
+    /// <remarks>
+    /// Returns <c>null</c> for an operator-initiated Sending (<c>POST /api/conclave/sendings</c>): there is
+    /// no Apprentice Chronicle to publish onto, and the blocking call itself is the operator's progress
+    /// indicator. Frames carry peer identity, direction, remote state, and a timestamp only — never the
+    /// peer's own status prose (issue #61).
+    /// </remarks>
+    private static IProgress<A2ASendingProgress>? CreateSendingProgress(
+        AsyncServiceScope scope,
+        ApprenticeToolInvocationContext? caller)
+    {
+
+        if (caller is not { IsValid: true })
+        {
+
+            return null;
+
+        }
+
+        ChronicleHub? hub = scope.ServiceProvider.GetService<ChronicleHub>();
+
+        if (hub is null)
+        {
+
+            return null;
+
+        }
+
+        Guid apprenticeId = caller.ApprenticeId;
+
+        return new Progress<A2ASendingProgress>(update => hub.Publish(apprenticeId, new ApprenticeEvent
+        {
+            Type = ApprenticeEventType.SendingProgress,
+            ApprenticeId = apprenticeId,
+            Timestamp = update.Timestamp,
+            Description = update.AgentUrl,
+            Summary = update.TaskId,
+            SendingState = update.RemoteState,
+            SendingDirection = update.Direction == A2ASendingDirection.Inbound ? "inbound" : "outbound",
+        }));
+
     }
 
     /// <summary>

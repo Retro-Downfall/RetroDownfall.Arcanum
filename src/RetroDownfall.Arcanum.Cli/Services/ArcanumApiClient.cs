@@ -452,16 +452,39 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         string agentUrl,
         string goal,
         string? name,
+        bool continuable = false,
         CancellationToken cancellationToken = default)
     {
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-            new DispatchSendingRequest(agentUrl, goal, name),
+            new DispatchSendingRequest(agentUrl, goal, name, continuable ? true : null),
             ArcanumJsonContext.Default.DispatchSendingRequest);
 
         return SendRequestAsync(
             HttpMethod.Post,
             "api/conclave/sendings",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSendingDispatchDto,
+            cancellationToken);
+
+    }
+
+    public Task<Result<SendingDispatchDto>> ContinueSendingAsync(
+        string agentUrl,
+        string taskId,
+        string message,
+        bool continuable = false,
+        CancellationToken cancellationToken = default)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            new ContinueSendingRequest(agentUrl, message, continuable ? true : null),
+            ArcanumJsonContext.Default.ContinueSendingRequest);
+
+        return SendRequestAsync(
+            HttpMethod.Post,
+            $"api/conclave/sendings/{Uri.EscapeDataString(taskId)}/continue",
             json,
             JsonUtf8ContentType,
             ArcanumJsonContext.Default.ApiResponseSendingDispatchDto,

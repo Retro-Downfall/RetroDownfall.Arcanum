@@ -162,6 +162,83 @@ public sealed class A2AConfigurationTests
 
     }
 
+    [Fact]
+    public void Validator_accepts_declared_skills_and_modalities()
+    {
+
+        Result result = Validate(new A2AIntegrationSettings
+        {
+            InputModes = ["text/plain", "text/markdown"],
+            OutputModes = ["text/plain"],
+            Skills =
+            [
+                new A2ASkillSettings { Id = "code-review", Name = "Code review", OutputModes = ["text/markdown"] },
+                new A2ASkillSettings { Id = "apprentice-goal-execution" },
+            ],
+        });
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+    }
+
+    [Fact]
+    public void Validator_rejects_a_declared_skill_with_no_id()
+    {
+
+        // A skill with no id never reaches the card, so an operator who declares one would otherwise be
+        // left wondering why it never appeared (issue #63).
+        Result result = Validate(new A2AIntegrationSettings
+        {
+            Skills = [new A2ASkillSettings { Name = "nameless" }],
+        });
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "integrations.a2A.skills[0].id");
+
+    }
+
+    [Fact]
+    public void Validator_rejects_duplicate_declared_skill_ids()
+    {
+
+        Result result = Validate(new A2AIntegrationSettings
+        {
+            Skills =
+            [
+                new A2ASkillSettings { Id = "code-review" },
+                new A2ASkillSettings { Id = "Code-Review" },
+            ],
+        });
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "integrations.a2A.skills[1].id");
+
+    }
+
+    [Theory]
+    [InlineData("text")]
+    [InlineData("text/")]
+    [InlineData("/plain")]
+    [InlineData("text / plain")]
+    public void Validator_rejects_an_advertised_modality_that_is_not_a_media_type(string mode)
+    {
+
+        Result result = Validate(new A2AIntegrationSettings { OutputModes = [mode] });
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "integrations.a2A.outputModes");
+
+    }
+
     private static Result Validate(A2AIntegrationSettings a2a) =>
         new ConfigurationValidator().Validate(new ArcanumSettings
         {

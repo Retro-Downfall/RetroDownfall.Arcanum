@@ -474,6 +474,35 @@ public sealed record DispatchSendingParams
     [JsonPropertyName("name")]
     public string? Name { get; init; }
 
+    /// <summary>
+    /// When <c>true</c>, a remote agent that reaches <c>input-required</c>/<c>auth-required</c> returns a
+    /// continuation task id instead of ending the Sending (issue #64). Default <c>false</c> keeps the
+    /// historical blocking behavior.
+    /// </summary>
+    [JsonPropertyName("continuable")]
+    public bool? Continuable { get; init; }
+
+}
+
+/// <summary>
+/// Arguments for the in-process <c>continue_sending</c> tool: answers a Sending a remote agent parked
+/// at <c>input-required</c>/<c>auth-required</c> without re-running the goal (issue #64).
+/// </summary>
+public sealed record ContinueSendingParams
+{
+
+    [JsonPropertyName("task_id")]
+    public required string TaskId { get; init; }
+
+    [JsonPropertyName("agent_url")]
+    public required string AgentUrl { get; init; }
+
+    [JsonPropertyName("message")]
+    public required string Message { get; init; }
+
+    [JsonPropertyName("continuable")]
+    public bool? Continuable { get; init; }
+
 }
 
 /// <summary>
@@ -499,5 +528,38 @@ public sealed record DispatchSendingResultWire
 
     [JsonPropertyName("error")]
     public string? Error { get; init; }
+
+    /// <summary>
+    /// Whether the peer reported what the delegated work cost. <c>false</c> means "unknown", never
+    /// "free" — see <c>A2ARemoteCost</c> and issue #60.
+    /// </summary>
+    [JsonPropertyName("costKnown")]
+    public bool CostKnown { get; init; }
+
+    [JsonPropertyName("remoteTotalTokens")]
+    public long? RemoteTotalTokens { get; init; }
+
+    [JsonPropertyName("remoteCostUsd")]
+    public decimal? RemoteCostUsd { get; init; }
+
+    /// <summary>
+    /// When the remote task was accepted. Distinct from <see cref="SettledAt"/> so remote wall-clock is
+    /// derivable from the Chronicle rather than collapsing onto one timestamp (issue #60).
+    /// </summary>
+    [JsonPropertyName("dispatchedAt")]
+    public DateTimeOffset? DispatchedAt { get; init; }
+
+    [JsonPropertyName("settledAt")]
+    public DateTimeOffset? SettledAt { get; init; }
+
+    /// <summary>
+    /// Set when the remote stopped at <c>input-required</c>/<c>auth-required</c> in continuable mode and
+    /// is waiting to be answered (issue #64).
+    /// </summary>
+    [JsonPropertyName("continuationTaskId")]
+    public string? ContinuationTaskId { get; init; }
+
+    [JsonPropertyName("continuationNeed")]
+    public string? ContinuationNeed { get; init; }
 
 }
