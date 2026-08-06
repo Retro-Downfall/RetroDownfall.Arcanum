@@ -44,6 +44,38 @@ internal sealed class IdempotencyClaimStore(ArcanumDbContext db) : IIdempotencyC
             cancellationToken);
     }
 
+    public Task<IdempotencyClaim?> GetByIdAsync(Guid claimId, CancellationToken cancellationToken = default)
+    {
+        return SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbCommand cmd = connection.CreateCommand();
+
+                cmd.CommandText =
+                    """
+                    SELECT "Id", "ClaimKeyHash", "FingerprintHash", "State", "OwnerId", "LeaseExpiresAt", "HeartbeatAt",
+                           "RunId", "StatusCode", "ContentType", "ResponseBody", "TerminalStreamComplete", "CreatedAt", "UpdatedAt"
+                    FROM "IdempotencyClaims"
+                    WHERE "Id" = @id
+                    LIMIT 1
+                    """;
+
+                AddParameter(cmd, "@id", claimId.ToString("N"));
+
+                await using DbDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    return null;
+                }
+
+                return ReadClaim(reader);
+            },
+            cancellationToken);
+    }
+
     public async Task<IdempotencyClaimAcquireResult> TryAcquireAsync(
         IdempotencyClaimAcquireRequest request,
         CancellationToken cancellationToken = default)

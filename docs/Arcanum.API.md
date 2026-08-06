@@ -254,7 +254,13 @@ Envelope-payload specifics:
 - **`GET /api/meta`** wraps **`InstanceMetadataDto`** (version, OS, runtime, process identity, Grimoire paths, effective host binding, and intelligence feature flags). `EmbeddingsVectorMode` / `EmbeddingsVectorDiagnostic` identify sqlite-vec versus the complete streamed managed fallback; the retained compatibility integer `EmbeddingsManagedSearchRowBudget` is `0`, meaning no total row budget.
 - **`GET /api/health`** wraps **`HealthReportDto`** even when overall status is Unhealthy. An
   Unhealthy report returns HTTP **503** with `IsSuccess: true` and populated `Data`; clients must
-  not discard that readiness snapshot merely because the status is non-2xx.
+  not discard that readiness snapshot merely because the status is non-2xx. The
+  **`DurableOperations`** component's detail carries the last reconciliation summary *and* the
+  states that pass could not fix — `stale=<n>`, `awaiting_repair=<n>`, per-kind repair guidance
+  keyed by terminal error code, and any operation kind with no registered recovery handler
+  (DESIGN §10.8.3). It is `Degraded` whenever any of those is non-empty. The detail is drawn only
+  from the closed kind/state/error-code vocabularies: it never contains an operation id, a public
+  summary, or checkpoint content.
 - **`GET /api/config`** / **`PUT /api/config`** / **`POST /api/config/validate`** use **`ArcanumSettings`** as the payload type (§8.12). Read masks provider endpoints and returns only environment-variable references for provider credentials, HTTPS certificate passwords, and CommLink—not their secret values. Raw bodies fail closed on every unknown/obsolete path before source-generated deserialization; writes merge only endpoint masks.
 - **`DELETE /api/sessions/{id}`** returns **204** with no body on success (soft-delete archive; idempotent — DESIGN §11.16); **`POST /api/sessions/{id}/rest`** returns **202** with `ApiResponse<bool>` when the job is queued, or **503** with `Session.RestQueueFull` when enqueue is rejected.
 - **`POST /api/commlink/send`** returns **502** with `ApiResponse<bool>` when the outbound webhook HTTP call fails (non-success status or transport error).

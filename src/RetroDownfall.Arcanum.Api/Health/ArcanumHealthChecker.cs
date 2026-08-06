@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Mcp;
+using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Resilience;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -23,11 +24,32 @@ public sealed class ArcanumHealthChecker(
     IWorkspaceCheckCapabilityReporter? workspaceCheckCapabilityReporter = null,
     LongRunningOperationReconciliationStatus? operationReconciliationStatus = null,
     IEncryptedBlobDiagnostics? encryptedBlobDiagnostics = null,
-    IProviderApiKeyResolver? providerApiKeyResolver = null)
+    IProviderApiKeyResolver? providerApiKeyResolver = null,
+    IDurableOperationDiagnostics? operationDiagnosticsSource = null)
 {
 
     private readonly IProviderApiKeyResolver _providerApiKeyResolver =
         providerApiKeyResolver ?? EnvironmentOnlyProviderApiKeyResolver.Instance;
+
+    /// <summary>
+    /// A health probe must never fail because diagnostics failed. An unreadable ledger degrades to
+    /// "unknown" rather than taking the whole report down.
+    /// </summary>
+    private static async Task<DurableOperationDiagnosticsReport> SafeInspectAsync(
+        IDurableOperationDiagnostics diagnostics,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await diagnostics
+                .InspectAsync(DateTimeOffset.UtcNow, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return DurableOperationDiagnosticsReport.Empty;
+        }
+    }
 
     public async Task<HealthReportDto> BuildReportAsync(CancellationToken cancellationToken)
     {
@@ -170,13 +192,22 @@ public sealed class ArcanumHealthChecker(
                 LastRunAt: null,
                 LastSummary: null,
                 PublicDetail: "Durable operation reconciliation status is unavailable.");
+        // The reconciliation snapshot only says what the last pass did. Issue #40 also requires the
+        // states that pass could not fix — stale leases, operations recovery gave up on, and kinds
+        // with no owning handler — to be visible with the guidance for repairing them.
+        DurableOperationDiagnosticsReport operationDiagnostics = operationDiagnosticsSource is null
+            ? DurableOperationDiagnosticsReport.Empty
+            : await SafeInspectAsync(operationDiagnosticsSource, cancellationToken).ConfigureAwait(false);
+
         bool operationAttention = operationSnapshot.Deferred
             || !operationSnapshot.StartupCompleted
-            || operationSnapshot.LastSummary?.RequiresAttention > 0;
+            || operationSnapshot.LastSummary?.RequiresAttention > 0
+            || operationDiagnostics.NeedsAttention;
         components.Add(new HealthComponentDto(
             "DurableOperations",
             operationAttention ? HealthStatus.Degraded : HealthStatus.Healthy,
-            operationSnapshot.PublicDetail ?? "Durable operation reconciliation completed."));
+            $"{operationSnapshot.PublicDetail ?? "Durable operation reconciliation completed."} "
+            + operationDiagnostics.Describe()));
 
         components.Add(await BuildFileEncryptionComponentAsync(
                 encryptedBlobDiagnostics,

@@ -10,6 +10,15 @@ public interface ITurnRunWriter
 
     Task CompleteRunAsync(Guid runId, InferenceRunStatus status, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Compare-and-set transition from <see cref="InferenceRunStatus.Running"/> to
+    /// <see cref="InferenceRunStatus.Abandoned"/>, used by crash recovery. Unlike
+    /// <see cref="CompleteRunAsync"/> this cannot downgrade a run that genuinely reached a terminal
+    /// status before the process died, which makes repeated startup reconciliation safe (#40).
+    /// </summary>
+    /// <returns><see langword="true"/> when this call performed the transition.</returns>
+    Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default);
+
     Task<Guid> RecordBillableOperationAsync(BillableOperationRecord operation, CancellationToken cancellationToken = default);
 
 }

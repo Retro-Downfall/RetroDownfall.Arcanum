@@ -62,38 +62,45 @@ public static class LongRunningOperationErrorCodes
     public const string RecoveryHandlerMissing = "operation.recovery_handler_missing";
     public const string RecoveryFailed = "operation.recovery_failed";
     public const string InvalidRecoveryResult = "operation.recovery_result_invalid";
+
+    /// <summary>
+    /// The ledger row is missing the domain id its handler needs (inference run, claim, reservation).
+    /// Recovery cannot guess which entity the crashed work owned, so an operator has to look (#40).
+    /// </summary>
+    public const string MissingOperationLink = "operation.link_missing";
 }
 
 /// <summary>
-/// Code-owned policy inventory used by documentation, validation, and operator surfaces.
+/// Named terminal codes recorded by the shared recovery handlers, so <c>arcanum operation list</c>
+/// says what actually happened instead of a bare "abandoned" (#40).
+/// </summary>
+public static class LongRunningOperationRecoveryOutcomes
+{
+    /// <summary>A crashed subagent child: never restarted, never re-billed, reservation released.</summary>
+    public const string SubagentChildAbandoned = "subagent.child_abandoned";
+
+    /// <summary>The ledger row outlived the Apprentice it was tracking.</summary>
+    public const string ApprenticeMissing = "apprentice.missing";
+
+    /// <summary>
+    /// The interrupted response was not fully captured, so the claim can never be replayed as a
+    /// cached result and the caller must re-send.
+    /// </summary>
+    public const string ClaimNotReplayable = "idempotency.claim_not_replayable";
+}
+
+/// <summary>
+/// Policy column of <see cref="LongRunningOperationRecoveryRegistry"/>, kept as a separate surface
+/// because callers that only need "which class does this kind recover as" should not depend on the
+/// whole descriptor. It is projected rather than duplicated, so the two cannot drift (#40).
 /// </summary>
 public static class LongRunningOperationPolicyCatalog
 {
     private static readonly IReadOnlyDictionary<string, LongRunningOperationRecoveryPolicy> Policies =
-        new Dictionary<string, LongRunningOperationRecoveryPolicy>(StringComparer.Ordinal)
-        {
-            [LongRunningOperationKinds.InferenceRun] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-            [LongRunningOperationKinds.Subagent] = LongRunningOperationRecoveryPolicy.AbandonSafely,
-            [LongRunningOperationKinds.BudgetReservation] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-            [LongRunningOperationKinds.Batch] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
-            [LongRunningOperationKinds.Apprentice] = LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
-            [LongRunningOperationKinds.AttachmentPromotion] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-            [LongRunningOperationKinds.WorkspaceIndex] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
-            [LongRunningOperationKinds.IdempotencyClaim] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-            [LongRunningOperationKinds.BlobEncryptionMigration] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
-            [LongRunningOperationKinds.BlobEncryptionKeyRotation] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
-            [LongRunningOperationKinds.BackupCreate] = LongRunningOperationRecoveryPolicy.AbandonSafely,
-            [LongRunningOperationKinds.DataRetentionPrune] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
-            [LongRunningOperationKinds.DataRetentionMutation] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-            [LongRunningOperationKinds.DataRetentionFactoryReset] = LongRunningOperationRecoveryPolicy.RestartIdempotently,
-
-            // Both A2A directions reconcile rather than resume: the peer's HTTP connection and the SDK's
-            // task store died with the process, so the correspondence cannot be re-established — but the
-            // durable record still lets a restart cancel the remote task and answer a peer's tasks/cancel
-            // against the real Apprentice (#62).
-            [LongRunningOperationKinds.A2AInboundSending] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-            [LongRunningOperationKinds.A2AOutboundSending] = LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
-        };
+        LongRunningOperationRecoveryRegistry.Descriptors.ToDictionary(
+            static entry => entry.Key,
+            static entry => entry.Value.Policy,
+            StringComparer.Ordinal);
 
     public static IReadOnlyDictionary<string, LongRunningOperationRecoveryPolicy> Registered => Policies;
 

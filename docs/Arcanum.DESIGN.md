@@ -2650,28 +2650,74 @@ Lifecycle writes use SQL compare-and-swap:
 - cancellation, retry, and terminal transitions require the exact row revision. Terminal and
   repair-required transitions release the lease.
 
-The code-owned recovery-policy inventory is:
+#### 10.8.1 The recovery matrix is executable
 
-| Kind | Policy | Recovery intent |
-|------|--------|-----------------|
-| `inference-run` | `ReconcileAndComplete` | Reconcile accounting/reservation evidence; never replay a live stream. |
-| `subagent` | `AbandonSafely` | A crashed child has no resumable conversational context; expire its lease and mark it abandoned without replaying provider work. |
-| `budget-reservation` | `ReconcileAndComplete` | Idempotently release a stranded reservation when actual cost cannot be established. |
-| `batch` | `RestartIdempotently` | Restart from durable batch/input/output status; do not duplicate completed lines. |
-| `apprentice` | `ResumeFromCheckpoint` | Resume from its versioned durable checkpoint and parent/child lineage. |
-| `attachment-promotion` | `ReconcileAndComplete` | Inspect durable file/row state and finish or roll back promotion. |
-| `workspace-index` | `RestartIdempotently` | Re-enumerate deterministically; durable indexed rows remain the authority. |
-| `idempotency-claim` | `ReconcileAndComplete` | Complete, fail, or explicitly abandon the linked claim so it cannot stay stranded. |
-| `blob-encryption-migration` | `RestartIdempotently` | Re-scan metadata and reconcile plaintext, envelope, and replace-before-metadata states. |
-| `blob-encryption-key-rotation` | `RestartIdempotently` | Continue toward the active write key while retaining every still-referenced prior key. |
-| `backup-create` | `AbandonSafely` | Preserve phase/output metadata for inspection and never resume with a recovery passphrase that was intentionally not persisted. Normal failure/cancellation removes owned staging; an expired unfinished operation becomes abandoned, while a fully self-verified atomically published archive remains valid. |
+`LongRunningOperationRecoveryRegistry` **is** the recovery matrix — not a table in this document
+that code is expected to match. Each `LongRunningOperationRecoveryDescriptor` carries the kind, its
+recovery policy, the owning component, the accepted checkpoint-version window, its startup
+priority, the recovery intent, and the guidance an operator needs when automatic recovery gives up.
+`LongRunningOperationPolicyCatalog.Registered` **projects** the registry's policy column rather than
+restating it, so the two cannot drift.
+
+Every kind in `LongRunningOperationKinds` has exactly one descriptor and exactly one registered
+`ILongRunningOperationRecoveryHandler`; `RecoveryHandlerCoverageTests` fails the build if a kind is
+added without deciding who recovers it, if a handler exists but was never registered, or if one is
+registered twice.
+
+| Kind | Policy | Owner | Recovery intent |
+|------|--------|-------|-----------------|
+| `inference-run` | `ReconcileAndComplete` | `TurnEngine` | Abandon the interrupted run through a compare-and-set that cannot downgrade a run that genuinely finished; keep already-ledgered usage; release the reservation; make a claim without fully captured terminal bytes non-replayable. Never replays a live stream. |
+| `subagent` | `AbandonSafely` | `SubagentRunner` | A crashed child has no resumable conversational context. Abandon it, release its reservation, and never restart it — restarting from a ledger row is how a recursion storm begins. |
+| `budget-reservation` | `ReconcileAndComplete` | `BudgetReservationService` | Idempotently release a stranded reservation when actual cost cannot be established. |
+| `batch` | `RestartIdempotently` | `BatchRecoveryService` | Seal dispatched-but-unrecorded lines from their durable checkpoints, clear partial output artifacts, and re-queue. Completed lines are never dispatched twice. |
+| `apprentice` | `ResumeFromCheckpoint` | `ApprenticeService` | Verify the Apprentice still exists and hand it back to its own checkpoint resume path (§5.7); close the ledger row rather than driving the work a second time. A row that outlived its Apprentice is abandoned as `apprentice.missing`. |
+| `attachment-promotion` | `ReconcileAndComplete` | `SessionAttachmentStore` | Run the shared attachment reconciliation: verify hashes, collect stale pending rows, drop unreferenced temp/final blobs, preserve valid prior versions, create no duplicate version. |
+| `workspace-index` | `RestartIdempotently` | `WorkspaceIndexingService` | Close the row. Indexed rows are the authority and indexing is idempotent by file identity and content hash, so the ordinary background tick re-enumerates — startup does not duplicate that work. |
+| `idempotency-claim` | `ReconcileAndComplete` | `IdempotencyClaimStore` | Reclaim the dead owner's lease and abandon the claim unless its terminal bytes were fully captured; a genuinely complete claim stays replayable. |
+| `blob-encryption-migration` | `RestartIdempotently` | `BlobEncryptionLifecycleService` | Re-scan metadata and reconcile plaintext, envelope, and replace-before-metadata states. |
+| `blob-encryption-key-rotation` | `RestartIdempotently` | `BlobEncryptionLifecycleService` | Continue toward the active write key while retaining every still-referenced prior key. |
+| `backup-create` | `AbandonSafely` | `BackupService` | Preserve phase/output metadata for inspection and never resume with a recovery passphrase that was intentionally not persisted. Normal failure/cancellation removes owned staging; an expired unfinished operation becomes abandoned, while a fully self-verified atomically published archive remains valid. |
+| `data-retention-prune` | `RestartIdempotently` | `DataRetentionService` | Restart from the durable prune cursor; pruned rows are already gone. |
+| `data-retention-mutation` | `ReconcileAndComplete` | `DataRetentionService` | Reconcile a partially applied retention mutation against its durable journal. |
+| `data-retention-factory-reset` | `RestartIdempotently` | `DataRetentionService` | Restart from durable quarantine state so a half-erased state root is never presented as a working installation. |
+| `a2a-inbound-sending` | `ReconcileAndComplete` | `A2ASendingLedger` | The peer's connection died with the process; abandon the relay with a named reason. The serving Apprentice is durable and untouched. |
+| `a2a-outbound-sending` | `ReconcileAndComplete` | `A2ASendingLedger` | Cancel the orphaned remote task so it stops billing on the peer, recording whether the cancel was confirmed or the peer was unreachable. |
+
+**What recovery deliberately does not claim.** Provider calls, peer agents, and webhooks have no
+exactly-once protocol, so Arcanum never asserts one. A crashed turn's real cost is whatever reached
+`BillableOperations` before the process died — already written exactly once by the turn itself.
+Recovery does not add an estimate on top of that, and subagent recovery in particular aggregates
+nothing: a recovery-time guess would double-count real money against a number Arcanum cannot
+verify. The same rule produces `a2a.outbound_remote_abandoned`, which says the remote task *may*
+still be running rather than pretending it was stopped.
+
+#### 10.8.2 Reconciliation
 
 `LongRunningOperationReconciler` selects only expired `Running`/`Waiting` leases, acquires a fresh
-two-minute recovery lease, dispatches by bounded kind, rejects unsupported checkpoint versions
-before handler code, maps corrupt checkpoints to `operation.checkpoint_corrupt`, and applies the
-handler result with the acquired revision. Missing handlers and unexpected recovery failures
-become `ReconciliationRequired`, never guessed success. `BudgetReservationRecoveryHandler` is the
-first concrete shared handler and calls the reservation service's idempotent release transition.
+two-minute recovery lease, dispatches by bounded kind, and applies the handler result with the
+acquired revision.
+
+- **Startup ordering.** Kinds whose descriptor is `BeforeStateWrites` — `backup-create` and
+  `data-retention-factory-reset` — reconcile in a first pass, before any ordinary durable workload
+  can append to a state-root tree that is about to be rolled back or replaced. The ordering is
+  per-page: `FindExpiredAsync` has no offset, so a backlog large enough to fill a page with ordinary
+  kinds can push a pre-state-write operation into the second phase. It is still recovered in the
+  same pass and still before the host finishes starting; only its position relative to other kinds
+  is best-effort, and making it exact needs a kind-filtered expiry query.
+- **Checkpoint window.** A checkpoint is readable only within `[MinCheckpointVersion,
+  min(MaxCheckpointVersion, handler.SupportedCheckpointVersion)]`. Both ends are enforced *before*
+  handler code: a payload from a newer build and a payload from a build whose format the handler no
+  longer understands are equally unreadable, and handing either to a handler risks acting on a
+  misparsed payload. Out-of-window checkpoints become `operation.checkpoint_version_unsupported`.
+- **Failing safely.** Corrupt checkpoints map to `operation.checkpoint_corrupt`; a handler that
+  returns a non-terminal state maps to `operation.recovery_result_invalid`; a missing handler maps
+  to `operation.recovery_handler_missing`. All become `ReconciliationRequired`, never guessed
+  success — "degraded" never implies the work was discarded.
+- **Repeatability.** Every handler is safe to run again: a terminal operation is no longer expired,
+  so a second pass does not reach it, and each handler's own effects are compare-and-set or
+  idempotent. `LongRunningOperationCrashRecoveryTests` asserts this for every registered kind at
+  every durable step, using expired-lease row state and a fake clock as the barrier rather than
+  sleeps.
 
 Host startup runs reconciliation after Grimoire migration and before subsequently registered
 durable workloads. Recovery uses 100-operation query pages and concurrency 4; the page size is not
@@ -2682,12 +2728,24 @@ work completed. Manual `arcanum operation reconcile` processes every recoverable
 bounded concurrency before returning. Unsupported/corrupt checkpoints still require operator repair
 rather than endless automatic retries.
 
+#### 10.8.3 Operator surfaces
+
 All `/api/operations*` routes inherit `/api` API-key authentication and rate limiting. Operator
 commands are `arcanum operation list [--kind …] [--state …]`, `show <id>`, `cancel <id>`,
-`retry <id>`, and `reconcile`. `GET /api/health` includes `DurableOperations`; `arcanum doctor`
-reports that component's safe detail. Prometheus exposes `arcanum_operations{kind,state}` gauges
-and `arcanum_operation_reconciliation_total{kind,outcome}`. Kind/state/outcome labels come from
-closed vocabularies; operation IDs, summaries, and user content are never metric labels.
+`retry <id>`, and `reconcile`.
+
+`IDurableOperationDiagnostics` reports what a reconciliation pass *could not* fix, which the pass
+summary alone cannot say: stale operations (expired leases nobody claimed), operations awaiting
+repair (grouped by kind and terminal error code, each carrying that kind's registry repair
+guidance), and kinds with no registered handler — the last being a build-time registration bug
+rather than a runtime condition. `GET /api/health` folds this into the `DurableOperations`
+component and `arcanum doctor` reports its safe detail; a diagnostics failure degrades that
+component rather than taking the health report down.
+
+Prometheus exposes `arcanum_operations{kind,state}` gauges and
+`arcanum_operation_reconciliation_total{kind,outcome}`. Kind/state/outcome labels come from closed
+vocabularies; operation IDs, summaries, and user content are never metric labels — the same rule
+governs the diagnostics detail string.
 
 ---
 

@@ -219,9 +219,15 @@ These are the recurring shapes. Matching them is what makes a change "fit."
 - **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema via `McpJsonSerializerContext`; honor unconditional `WorkspacePathPolicy` containment and treat `ToolOutputCapBytes` as one response/page allocation, adding an attuned continuation when complete useful output can exceed it; decide whether it belongs in `ToolRiskClassifier.IntrinsicWardToolNames`. Do not treat campaign Sanctum as the primary filesystem boundary.
 - **Treat all wire types as versioned contracts.** Casing is fixed at the context level; don't add `[JsonPropertyName]` except on OpenAI `/v1` and MCP JSON-RPC types (see [API §8.2](Arcanum.API.md#82-arcanumjsoncontext--source-generated-public)).
 - **Register long-running work.** Use the scoped `ILongRunningOperationCoordinator`; add the kind
-  and exactly one recovery policy to `LongRunningOperationPolicyCatalog`, implement an idempotent
-  recovery handler, store only minimum encrypted checkpoint state, and expose only a bounded safe
-  summary. Never persist a live Task/token/enumerator/process/DI object. See
+  and exactly one `LongRunningOperationRecoveryDescriptor` to `LongRunningOperationRecoveryRegistry`
+  (`LongRunningOperationPolicyCatalog` projects its policy column, so there is nothing to update
+  there), implement an idempotent recovery handler, register it, store only minimum encrypted
+  checkpoint state, and expose only a bounded safe summary. Never persist a live
+  Task/token/enumerator/process/DI object. `RecoveryHandlerCoverageTests` fails if a kind has no
+  owning handler, and `LongRunningOperationCrashRecoveryTests` replays a crash at every durable step
+  of every kind — so a new kind must be repeat-safe before it can go green. Be explicit about what
+  recovery cannot know: never aggregate a cost, re-bill a provider, or claim a child process or peer
+  task survived. See
   [DESIGN §10.8](Arcanum.DESIGN.md#108-durable-operation-ledger-and-restart-reconciliation).
 - **Change the schema by editing its object file.** The Grimoire schema is a declarative tree under
   `Infrastructure/Data/Schema/`: one `.sql` file per table (with its indexes co-located), per FTS5

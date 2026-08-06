@@ -10,6 +10,12 @@ public interface IIdempotencyClaimStore
     Task<IdempotencyClaim?> TryGetAsync(string claimKeyHash, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Looks a claim up by its identity rather than its key hash. Crash recovery holds the claim id
+    /// from the durable operation ledger, never the caller's original key (#40).
+    /// </summary>
+    Task<IdempotencyClaim?> GetByIdAsync(Guid claimId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Atomically inserts or reclaims a <see cref="IdempotencyClaimState.Running"/> claim, or returns
     /// the existing claim. <see cref="IdempotencyClaimState.Claimed"/> is recoverable pre-execution
     /// state and is never executable. A different fingerprint returns conflict.
