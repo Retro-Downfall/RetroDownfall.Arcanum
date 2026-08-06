@@ -569,6 +569,269 @@ public sealed class BackupArchiveCodec
 
     }
 
+    /// <summary>
+    /// Authenticates an archive and materializes every entry beneath a caller-owned protected root
+    /// so a restore can stage a complete generation before it is allowed to touch live state. The
+    /// declared format is classified against the supported matrix first, so an archive written by a
+    /// newer Arcanum is refused before any destination byte exists. Any failure leaves the
+    /// destination and scratch roots as empty as they were found.
+    /// </summary>
+    internal async Task<BackupArchiveExtraction> ExtractAsync(
+        string archivePath,
+        ReadOnlyMemory<char> passphrase,
+        string destinationRoot,
+        string scratchRoot,
+        CancellationToken cancellationToken)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(archivePath);
+
+        string fullPath = Path.GetFullPath(archivePath);
+
+        string fullDestination = RequireExistingDirectory(destinationRoot, nameof(destinationRoot));
+
+        string fullScratch = RequireExistingDirectory(scratchRoot, nameof(scratchRoot));
+
+        int formatVersion = 0;
+
+        OwnedTemporaryFile? payload = null;
+
+        bool extracted = false;
+
+        try
+        {
+
+            ValidatePassphrase(passphrase.Span);
+
+            formatVersion = await PeekFormatVersionAsync(fullPath, cancellationToken).ConfigureAwait(false);
+
+            if (BackupRestoreFormatCatalog.Classify(formatVersion) is BackupVerifyIssue unsupported)
+            {
+
+                return BackupArchiveExtraction.Failed(formatVersion, unsupported);
+
+            }
+
+            ParsedHeader parsed = await ReadHeaderAsync(fullPath, cancellationToken).ConfigureAwait(false);
+
+            payload = await DecryptToProtectedTemporaryAsync(
+                fullPath,
+                parsed,
+                passphrase,
+                fullScratch,
+                cancellationToken).ConfigureAwait(false);
+
+            extracted = true;
+
+            ExtractedPayload contents = await ExtractPayloadAsync(
+                payload.Path,
+                fullDestination,
+                cancellationToken).ConfigureAwait(false);
+
+            ValidateManifest(
+                contents.Manifest,
+                parsed.Header,
+                parsed.Raw.AsSpan(44, SaltLength));
+
+            BackupVerifyIssue[] issues = CompareManifest(contents.Manifest, contents.Entries);
+
+            bool databaseReadable = false;
+
+            if (issues.Length == 0
+                && contents.Manifest.Entries.Any(
+                    static entry => entry.Component == BackupComponent.GrimoireDatabase))
+            {
+
+                BackupVerifyIssue? databaseIssue = await VerifyDatabaseAsync(
+                    fullDestination,
+                    contents.Manifest,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (databaseIssue is null)
+                {
+
+                    databaseReadable = true;
+
+                }
+                else
+                {
+
+                    issues = [databaseIssue];
+
+                }
+
+            }
+
+            if (issues.Length > 0)
+            {
+
+                ClearDirectoryContents(fullDestination);
+
+                return new BackupArchiveExtraction(
+                    Manifest: null,
+                    formatVersion,
+                    Entries: 0,
+                    Bytes: 0,
+                    DatabaseReadable: false,
+                    issues);
+
+            }
+
+            return new BackupArchiveExtraction(
+                contents.Manifest,
+                formatVersion,
+                contents.Entries.Count,
+                contents.Entries.Values.Sum(static entry => entry.Size),
+                databaseReadable,
+                Issues: []);
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            if (extracted)
+            {
+
+                ClearDirectoryContents(fullDestination);
+
+            }
+
+            throw;
+
+        }
+        catch (CryptographicException)
+        {
+
+            ClearDirectoryContents(fullDestination);
+
+            return BackupArchiveExtraction.Failed(
+                formatVersion,
+                new BackupVerifyIssue(
+                    "backup.authentication_failed",
+                    "The backup passphrase is wrong or authenticated archive bytes were changed."));
+
+        }
+        catch (Exception ex) when (
+            ex is InvalidDataException
+                or JsonException
+                or NotSupportedException
+                or EndOfStreamException
+                or IOException
+                or UnauthorizedAccessException)
+        {
+
+            ClearDirectoryContents(fullDestination);
+
+            return BackupArchiveExtraction.Failed(
+                formatVersion,
+                new BackupVerifyIssue(
+                    "backup.invalid_archive",
+                    "The backup archive is malformed, incomplete, unsupported, or unreadable."));
+
+        }
+        finally
+        {
+
+            if (payload is not null)
+            {
+
+                _options.BeforeTemporaryPayloadCleanupForTests?.Invoke(payload.Path);
+
+                _ = payload.TryDelete();
+
+            }
+
+        }
+
+    }
+
+    private static string RequireExistingDirectory(string path, string parameterName)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(path, parameterName);
+
+        string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+        return Directory.Exists(full)
+            ? full
+            : throw new DirectoryNotFoundException(
+                $"The protected backup extraction root does not exist: {full}");
+
+    }
+
+    /// <summary>
+    /// Reads only the magic and declared format version. Unlike <see cref="ReadHeaderAsync"/> this
+    /// does not reject an unknown version, so the caller can report an actionable upgrade message
+    /// instead of a generic malformed-archive failure.
+    /// </summary>
+    private static async Task<int> PeekFormatVersionAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+
+        await using FileStream input = new(
+            path,
+            new FileStreamOptions
+            {
+
+                Mode = FileMode.Open,
+
+                Access = FileAccess.Read,
+
+                Share = FileShare.Read,
+
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
+
+            });
+
+        byte[] prefix = new byte[Magic.Length + sizeof(int)];
+
+        await input.ReadExactlyAsync(prefix, cancellationToken).ConfigureAwait(false);
+
+        return CryptographicOperations.FixedTimeEquals(prefix.AsSpan(0, Magic.Length), Magic)
+            ? BinaryPrimitives.ReadInt32BigEndian(prefix.AsSpan(Magic.Length))
+            : throw new InvalidDataException("Backup archive magic is invalid.");
+
+    }
+
+    private static void ClearDirectoryContents(string root)
+    {
+
+        try
+        {
+
+            foreach (string entry in Directory.EnumerateFileSystemEntries(root))
+            {
+
+                if (Directory.Exists(entry) && !IsSymbolicLink(entry))
+                {
+
+                    Directory.Delete(entry, recursive: true);
+
+                }
+                else
+                {
+
+                    File.Delete(entry);
+
+                }
+
+            }
+
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException
+                or DirectoryNotFoundException)
+        {
+
+        }
+
+    }
+
+    private static bool IsSymbolicLink(string path) =>
+        new DirectoryInfo(path).LinkTarget is not null;
+
     private static BackupVerifyResult InvalidResult(
         string archivePath,
         int formatVersion,
@@ -1300,19 +1563,30 @@ public sealed class BackupArchiveCodec
 
     }
 
+    private static Task<OwnedTemporaryFile> DecryptToProtectedTemporaryAsync(
+        string archivePath,
+        ParsedHeader parsed,
+        ReadOnlyMemory<char> passphrase,
+        CancellationToken cancellationToken) =>
+        DecryptToProtectedTemporaryAsync(
+            archivePath,
+            parsed,
+            passphrase,
+            Path.GetDirectoryName(archivePath)!,
+            cancellationToken);
+
     private static async Task<OwnedTemporaryFile> DecryptToProtectedTemporaryAsync(
         string archivePath,
         ParsedHeader parsed,
         ReadOnlyMemory<char> passphrase,
+        string scratchDirectory,
         CancellationToken cancellationToken)
     {
 
         byte[] key = DeriveKey(passphrase.Span, parsed.Salt, parsed.Header.KdfIterations);
 
-        string directory = Path.GetDirectoryName(archivePath)!;
-
         string payloadPath = Path.Combine(
-            directory,
+            scratchDirectory,
             "." + Path.GetFileName(archivePath) + ".payload.tmp." + Guid.NewGuid().ToString("N"));
 
         OwnedTemporaryFile? payload = null;

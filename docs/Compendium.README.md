@@ -612,11 +612,13 @@ Protection/OS credential stores are excluded, and the master API key is absent u
 selected as a sensitive component. Global MCP configuration is authored state and may contain
 literal environment values, so the backup planner surfaces a warning when it is selected.
 
-After a coordinated restore, restart Arcanum so the restored configuration snapshot is loaded.
-Referenced environment secrets and external workspace paths must be supplied separately on the
-target, and restored certificates may not match or be trusted for a different hostname. Verify an
-archive before depending on it; issue #37 provides create/inspect/verify/list, not an automated
-restore command.
+Restoring is likewise owned by the CLI: `arcanum backup restore` moves the configuration,
+certificates, database, and blobs as one generation, and Compendium implements no restore UI of its
+own. Restart Arcanum afterwards so the restored configuration snapshot is loaded. Referenced
+environment secrets and external workspace paths must still be supplied separately on the target,
+and restored certificates may not match or be trusted for a different hostname. Verify an archive
+before depending on it, and prefer `arcanum backup restore --dry-run` first: it validates the whole
+archive and reports the plan without touching the installation.
 
 ## Saving and validation
 

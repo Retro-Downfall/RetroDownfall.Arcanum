@@ -796,6 +796,12 @@ internal static class CliFailureMapper
 
 [JsonSerializable(typeof(BackupListItem[]))]
 
+[JsonSerializable(typeof(BackupRestorePlan))]
+
+[JsonSerializable(typeof(BackupRestoreResult))]
+
+[JsonSerializable(typeof(BackupMigrateResult))]
+
 [JsonSerializable(typeof(HealthWatchSnapshot))]
 
 [JsonSerializable(typeof(ConfigurationPresetListPayload))]

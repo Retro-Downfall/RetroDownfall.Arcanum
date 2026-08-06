@@ -969,10 +969,10 @@ Inspects and repairs durable long-running operations. Safe detail omits checkpoi
 
 ### `arcanum backup`
 
-Plan, create, inspect, verify, and list versioned encrypted portable backups. This is a safe local
-operation over canonical Arcanum state: it takes a live snapshot through SQLite's online backup API and
-does not copy `arcanum.db`/WAL/SHM files directly. It accepts only the typed scopes and components
-below; no option admits an arbitrary source path.
+Plan, create, inspect, verify, list, restore, and migrate versioned encrypted portable backups. This
+is a safe local operation over canonical Arcanum state: it takes a live snapshot through SQLite's
+online backup API and does not copy `arcanum.db`/WAL/SHM files directly. It accepts only the typed
+scopes and components below; no option admits an arbitrary source path.
 
 The scope catalog is `full` (default), `configuration-and-authored-assets`,
 `sessions-and-memory`, `specific-session`, and `metadata-only`. `specific-session` requires the
@@ -1018,14 +1018,32 @@ includes the passphrase or portable key bytes.
 | `arcanum backup inspect <archive>` | Read only the bounded safe outer header by default. Decrypted inspection authenticates bounded chunks in memory, skips selected content, and shows the capped final manifest without creating plaintext staging. | `--decrypt` — Decrypt the manifest; prompts securely when neither explicit source is present.<br>`--passphrase-env <name>` / `--passphrase-fd <fd>` — Supply a passphrase source; supplying one also makes the manifest available. |
 | `arcanum backup verify <archive>` | Authenticate the complete archive, validate its bounded structure/manifest and every entry size/SHA-256, and validate any Grimoire snapshot in protected temporary storage. Invalid archives return exit `1`; temporary plaintext is removed. | `--passphrase-env <name>` / `--passphrase-fd <fd>` — Optional noninteractive source; otherwise prompt securely once. |
 | `arcanum backup list` | List safe outer headers for valid top-level `.arcbackup` files, newest first, without decrypting manifests. Missing directories yield an empty result; malformed/unreadable candidates are omitted. | `--directory <path>` — Directory to scan; defaults to `~/.config/arcanum/backups`. |
+| `arcanum backup restore <archive>` | Verify an archive completely, stage the whole generation under a protected root, converge it onto this build's schema and this machine's paths and secret protection, then commit atomically or leave the installation exactly as it was. Refuses while a host or another restore holds the maintenance lock. Exit `1` for a rejected, rolled-back, or reconciliation-required outcome. | `--conflict-mode <mode>` — `replace-installation` (default), `new-profile-root`, or `import-selected-sessions`.<br>`--destination <path>` — Empty or absent profile root; required by `new-profile-root` and rejected elsewhere.<br>`--session-id <guid>...` — Sessions to import; required by `import-selected-sessions` and rejected elsewhere.<br>`--map <kind>=<from>=<to>...` — Typed root rewrite. Kinds: `campaign-root`, `workspace-root`, `codex-root`, `spell-root`, `attachment-source`.<br>`--restore-master-api-key` — Adopt the archived master API key; off by default.<br>`--dry-run` — Authenticate, validate, plan, and check capacity without mutating anything.<br>`--no-safety-backup` — Skip the pre-restore safety backup; the decision is recorded in the result.<br>`--passphrase-env <name>` / `--passphrase-fd <fd>` — Noninteractive passphrase source.<br>The shared global `--yes` confirms the destructive replacement without an interactive prompt. |
+| `arcanum backup migrate <archive>` | Rewrite a supported archive at the current container format through the authoritative codec. Entry bytes carry across verbatim; the source archive is never modified, and a refusal writes nothing. | `-o, --output <path>` — **Required** destination for the migrated archive; it may not equal the source.<br>`--overwrite` — Explicitly permit replacing an existing migrated archive.<br>`--passphrase-env <name>` / `--passphrase-fd <fd>` — Noninteractive passphrase source. |
 
 The encrypted manifest reports each component as `complete`, `omitted-by-policy`, `unavailable`, or
 `failed`, with requested includes/excludes, warnings, files, sizes, and SHA-256 values. The backup
 does not resolve environment references or separately export their values, raw OS credential/Data
 Protection stores, external workspace trees, daemon registration, or ephemeral process state;
-literal values already authored into a selected file remain part of that file. Issue #37 adds no
-`backup restore` command: verify the artifact before relying on it and treat database, blobs,
-configuration/assets, and portable recovery keys as one recovery generation.
+literal values already authored into a selected file remain part of that file.
+
+Restore consumes exactly that artifact. It classifies the declared format against the supported
+matrix before staging, so an archive written by a newer Arcanum fails with upgrade guidance while
+the current installation is intact. It requires the archive to carry portable recovery material, and
+for `replace-installation` a Grimoire snapshot as well. Capacity planning reserves room for the
+restored generation *and* the displaced installation at the same time. Older supported snapshots
+converge through the same declarative schema installer the host uses at startup — never by editing
+migration history. Commit is two directory renames guarded by a filesystem journal; a fault at any
+phase yields a complete commit, a complete rollback, or an explicit reconciliation request, never a
+mixture of old and new trees. The Data Protection key ring (`keys/`) and existing archives
+(`backups/`) are carried across the swap because they belong to the destination, not the archive.
+
+Restored attachment snapshots stay readable even when their originating workspace does not exist
+here, but their live provenance is demoted to `WorkspaceUnavailable` until the workspace is
+explicitly rebound and revalidated. Trusted MCP workspace metadata is withheld rather than
+installed, and `Host:ListenAny` is reset to `false`: neither is authorization that transfers between
+machines. `new-profile-root` installs data only and never writes secret protection for another root,
+so adopt that generation with a `replace-installation` restore before using it.
 When the configuration component has a committed preset generation, its authenticated entries also
 contain the paired `arcanum.preset.json` and `arcanum.preset.rollback.json`; the transient preset
 journal is never included. Restore the pair only beside its matching `arcanum.json` during a

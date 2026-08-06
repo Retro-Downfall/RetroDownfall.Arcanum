@@ -210,7 +210,176 @@ internal static partial class CliCommandTree
 
         backup.Add(list);
 
+        backup.Add(BuildRestore(serviceProvider));
+
+        backup.Add(BuildMigrate(serviceProvider));
+
         return backup;
+
+    }
+
+    private static Command BuildRestore(IServiceProvider serviceProvider)
+    {
+
+        Command restore = new(
+            "restore",
+            "Verify an archive completely, then commit it atomically or leave this installation unchanged.");
+
+        Argument<string> archive = ArchiveArgument();
+
+        Option<string?> conflictMode = new("--conflict-mode")
+        {
+
+            Description = "Typed mode: " + BackupCliCatalog.ConflictModeHelp
+                + ". Default: replace-installation.",
+
+        };
+
+        Option<string?> destination = new("--destination")
+        {
+
+            Description = "Empty or absent profile root; required by --conflict-mode new-profile-root.",
+
+        };
+
+        Option<Guid[]> sessions = new("--session-id")
+        {
+
+            AllowMultipleArgumentsPerToken = true,
+
+            Description = "Session to import; repeat or provide several. "
+                + "Required by --conflict-mode import-selected-sessions.",
+
+        };
+
+        Option<string[]> map = new("--map")
+        {
+
+            AllowMultipleArgumentsPerToken = true,
+
+            Description = "Typed root rewrite as <kind>=<from>=<to>. Kinds: "
+                + BackupCliCatalog.MappingKindHelp + ".",
+
+        };
+
+        Option<bool> masterApiKey = new("--restore-master-api-key")
+        {
+
+            Description = "Adopt the archived master API key on this machine. Off by default.",
+
+        };
+
+        Option<bool> dryRun = new("--dry-run")
+        {
+
+            Description = "Authenticate, validate, and plan everything without mutating the destination.",
+
+        };
+
+        Option<bool> skipSafetyBackup = new("--no-safety-backup")
+        {
+
+            Description = "Skip the pre-restore safety backup; the decision is recorded in the result.",
+
+        };
+
+        Option<string?> passphraseEnvironment = PassphraseEnvironmentOption();
+
+        Option<int?> passphraseFileDescriptor = PassphraseFileDescriptorOption();
+
+        restore.Add(archive);
+
+        restore.Add(conflictMode);
+
+        restore.Add(destination);
+
+        restore.Add(sessions);
+
+        restore.Add(map);
+
+        restore.Add(masterApiKey);
+
+        restore.Add(dryRun);
+
+        restore.Add(skipSafetyBackup);
+
+        restore.Add(passphraseEnvironment);
+
+        restore.Add(passphraseFileDescriptor);
+
+        restore.SetAction(
+            async (ParseResult result, CancellationToken cancellationToken) =>
+                await serviceProvider
+                    .GetRequiredService<BackupCommands>()
+                    .Restore(
+                        result.GetValue(archive)!,
+                        result.GetValue(conflictMode),
+                        result.GetValue(destination),
+                        result.GetValue(sessions) ?? [],
+                        result.GetValue(map) ?? [],
+                        result.GetValue(masterApiKey),
+                        result.GetValue(dryRun),
+                        result.GetValue(skipSafetyBackup),
+                        result.GetValue(passphraseEnvironment),
+                        result.GetValue(passphraseFileDescriptor),
+                        cancellationToken)
+                    .ConfigureAwait(false));
+
+        return restore;
+
+    }
+
+    private static Command BuildMigrate(IServiceProvider serviceProvider)
+    {
+
+        Command migrate = new(
+            "migrate",
+            "Rewrite a supported archive at the current format; the source archive is never modified.");
+
+        Argument<string> archive = ArchiveArgument();
+
+        Option<string?> output = new("--output", "-o")
+        {
+
+            Description = "Required destination .arcbackup path for the migrated archive.",
+
+        };
+
+        Option<bool> overwrite = new("--overwrite")
+        {
+
+            Description = "Explicitly allow replacing an existing migrated archive.",
+
+        };
+
+        Option<string?> passphraseEnvironment = PassphraseEnvironmentOption();
+
+        Option<int?> passphraseFileDescriptor = PassphraseFileDescriptorOption();
+
+        migrate.Add(archive);
+
+        migrate.Add(output);
+
+        migrate.Add(overwrite);
+
+        migrate.Add(passphraseEnvironment);
+
+        migrate.Add(passphraseFileDescriptor);
+
+        migrate.SetAction(
+            async (ParseResult result, CancellationToken cancellationToken) =>
+                await serviceProvider
+                    .GetRequiredService<BackupCommands>()
+                    .Migrate(
+                        result.GetValue(archive)!,
+                        result.GetValue(output),
+                        result.GetValue(overwrite),
+                        result.GetValue(passphraseEnvironment),
+                        result.GetValue(passphraseFileDescriptor),
+                        cancellationToken)
+                    .ConfigureAwait(false));
+
+        return migrate;
 
     }
 
