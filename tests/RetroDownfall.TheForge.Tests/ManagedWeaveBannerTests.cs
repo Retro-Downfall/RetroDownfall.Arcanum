@@ -55,6 +55,13 @@ public sealed class ManagedWeaveBannerTests
             "diagnostic",
             50_000,
             "local",
-            false);
+            false,
+            false,
+            false,
+            false,
+            "disabled",
+            null,
+            null,
+            0);
 
 }

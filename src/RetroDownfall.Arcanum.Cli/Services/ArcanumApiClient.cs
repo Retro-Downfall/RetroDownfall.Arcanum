@@ -433,6 +433,44 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
     #endregion
 
+    #region Conclave / A2A
+
+    public Task<Result<ConclaveStatusDto>> GetConclaveStatusAsync(CancellationToken cancellationToken = default) =>
+        SendRequestAsync(
+            HttpMethod.Get,
+            "api/conclave/status",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseConclaveStatusDto,
+            cancellationToken);
+
+    /// <summary>
+    /// Dispatches a Sending to a remote A2A agent and waits for its terminal result. Cancelling
+    /// <paramref name="cancellationToken"/> also cancels the remote task.
+    /// </summary>
+    public Task<Result<SendingDispatchDto>> DispatchSendingAsync(
+        string agentUrl,
+        string goal,
+        string? name,
+        CancellationToken cancellationToken = default)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            new DispatchSendingRequest(agentUrl, goal, name),
+            ArcanumJsonContext.Default.DispatchSendingRequest);
+
+        return SendRequestAsync(
+            HttpMethod.Post,
+            "api/conclave/sendings",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSendingDispatchDto,
+            cancellationToken);
+
+    }
+
+    #endregion
+
     public async Task<Result<string>> AskAsync(PingRequest body, CancellationToken cancellationToken)
     {
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(body, ArcanumJsonContext.Default.PingRequest);

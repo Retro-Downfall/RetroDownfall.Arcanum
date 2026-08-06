@@ -13,7 +13,6 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Core.Configuration;
-using RetroDownfall.Arcanum.Core.Environment;
 
 namespace RetroDownfall.Arcanum.Api.A2A;
 
@@ -28,6 +27,11 @@ namespace RetroDownfall.Arcanum.Api.A2A;
 /// <c>docs/Arcanum.DESIGN.md</c> &#167;5.7.1). Structural mapping happens once at startup from the config snapshot at boot;
 /// <see cref="ArcanumA2AAgentHandler"/> itself still re-checks <c>IOptionsMonitor</c> per call, matching
 /// every other Conclave gate.
+/// <para>
+/// The feature gates (<c>Arcanum:Features:Conclave</c> plus <c>Arcanum:Features:A2AServer</c>) are the only
+/// opt-in. There is deliberately <em>no</em> edition gate: A2A is off by default, but an operator who turns it
+/// on gets a working server on any edition rather than a silently dead surface (issue #12).
+/// </para>
 /// </remarks>
 [ExcludeFromCodeCoverage] // Reason: thin HTTP mapping/serialization glue; behavior covered via ArcanumA2AAgentHandler and A2A integration tests.
 internal static class A2AServerEndpoints
@@ -35,15 +39,46 @@ internal static class A2AServerEndpoints
 
     private const string ApiGroupPrefix = "/api";
 
-    public static RouteGroupBuilder MapA2AServer(this RouteGroupBuilder apiGroup, ArcanumSettings startupSettings)
+    /// <summary>
+    /// Resolves the absolute path the A2A server is mounted at from the configured
+    /// <c>Arcanum:Integrations:A2A:ServerPath</c>.
+    /// </summary>
+    /// <remarks>
+    /// Every A2A route must live behind <see cref="ApiKeyEndpointFilter"/>, and <c>apiGroup</c> is rooted at
+    /// <c>/api</c>. A configured path outside that prefix is therefore <em>mounted under</em> it rather than
+    /// refused: an operator who asks for <c>/conclave/a2a</c> gets <c>/api/conclave/a2a</c> and a working
+    /// server. Refusing to map (the previous behavior) left the operator with a silently dead surface and no
+    /// diagnostic — the effective path is reported through <c>GET /api/meta</c> and <c>GET /api/health</c>
+    /// so the mount point is never a guess (issue #12).
+    /// </remarks>
+    internal static string ResolveServerPath(string? configuredPath)
     {
 
-        ArcanumEdition edition = ArcanumEnvironment.ResolveEdition(startupSettings.Edition);
+        string trimmed = configuredPath?.Trim() ?? string.Empty;
 
-        if (edition != ArcanumEdition.Development)
+        if (trimmed.Length == 0)
         {
-            return apiGroup;
+
+            return ArcanumRuntimeDefaults.Conclave.A2A.ServerPath;
+
         }
+
+        if (trimmed == ApiGroupPrefix
+            || trimmed.StartsWith($"{ApiGroupPrefix}/", StringComparison.Ordinal))
+        {
+
+            return trimmed.TrimEnd('/') is { Length: > 0 } normalized ? normalized : ApiGroupPrefix;
+
+        }
+
+        string relative = trimmed.Trim('/');
+
+        return relative.Length == 0 ? ApiGroupPrefix : $"{ApiGroupPrefix}/{relative}";
+
+    }
+
+    public static RouteGroupBuilder MapA2AServer(this RouteGroupBuilder apiGroup, ArcanumSettings startupSettings)
+    {
 
         ConclaveA2ASettings a2a = startupSettings.ResolveA2A();
 
@@ -54,18 +89,7 @@ internal static class A2AServerEndpoints
 
         }
 
-        string serverPath = string.IsNullOrWhiteSpace(a2a.ServerPath) ? "/api/conclave/a2a" : a2a.ServerPath.Trim();
-
-        if (!serverPath.StartsWith(ApiGroupPrefix, StringComparison.Ordinal))
-        {
-
-            // Every A2A route must live behind ApiKeyEndpointFilter (constraint: security boundaries
-            // apply). apiGroup is rooted at "/api", so a ServerPath outside that prefix cannot be mapped
-            // here without either duplicating the filter or risking an unauthenticated route; refuse to
-            // map rather than silently expose the surface unauthenticated.
-            return apiGroup;
-
-        }
+        string serverPath = ResolveServerPath(a2a.ServerPath);
 
         string relative = serverPath[ApiGroupPrefix.Length..];
 

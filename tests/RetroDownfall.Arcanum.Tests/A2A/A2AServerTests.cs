@@ -311,7 +311,7 @@ public sealed class A2AServerTests
     }
 
     [Fact]
-    public async Task CancelAsync_UnknownTask_IsNoOp()
+    public async Task CancelAsync_UnknownTask_CancelsNoApprenticeButStillAnswersThePeer()
     {
 
         FakeConclaveArchmage archmage = new();
@@ -325,6 +325,149 @@ public sealed class A2AServerTests
         await handler.CancelAsync(RequestWithText("irrelevant", taskId: "never-seen"), queue, CancellationToken.None);
 
         Assert.Empty(runtime.CancelledApprenticeIds);
+
+        // Returning silently overrides the SDK's own Canceled transition, leaving the peer with a task that
+        // never reaches a terminal state. Not knowing the task still has to produce an answer.
+        List<StreamResponse> responses = await DrainAsync(queue);
+
+        Assert.Equal(TaskState.Canceled, LatestState(responses));
+
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TerminalEventRaisedWhileStarting_IsStillObserved()
+    {
+
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new() { Id = apprenticeId, Status = ApprenticeStatus.Idle.ToString() };
+
+        FakeConclaveArchmage archmage = new() { OnCast = _ => Result<Apprentice>.Success(apprentice) };
+
+        // Models the production ChronicleHub: live-only, no replay, per-subscriber channel created at
+        // subscribe time. The terminal event is raised *during* StartAsync, so a handler that subscribes
+        // only after StartAsync returns loses it and leaves the A2A task in Working forever.
+        LiveOnlyApprenticeRuntime runtime = new();
+
+        runtime.OnStart = () =>
+        {
+
+            runtime.Publish(new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.ApprenticeFailed,
+                ApprenticeId = apprenticeId,
+                Error = "failed immediately",
+            });
+
+            runtime.CompleteAll();
+
+        };
+
+        ArcanumA2AAgentHandler handler = CreateHandler(EnabledSettings(), archmage, runtime, new FakeApprenticeRepository { Item = apprentice }, new FakeSessionRepository());
+
+        AgentEventQueue queue = new();
+
+        await handler.ExecuteAsync(RequestWithText("do the thing"), queue, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        List<StreamResponse> responses = await DrainAsync(queue);
+
+        Assert.Equal(TaskState.Failed, LatestState(responses));
+
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ChronicleEndsWithoutATerminalEvent_StillAnswersThePeer()
+    {
+
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new() { Id = apprenticeId, Status = ApprenticeStatus.Idle.ToString() };
+
+        FakeConclaveArchmage archmage = new() { OnCast = _ => Result<Apprentice>.Success(apprentice) };
+
+        LiveOnlyApprenticeRuntime runtime = new();
+
+        // Peer disconnect / host teardown: the Chronicle simply ends. Leaving the task in Working is not an
+        // answer, so the handler must produce a terminal transition of its own.
+        runtime.OnStart = runtime.CompleteAll;
+
+        ArcanumA2AAgentHandler handler = CreateHandler(EnabledSettings(), archmage, runtime, new FakeApprenticeRepository { Item = apprentice }, new FakeSessionRepository());
+
+        AgentEventQueue queue = new();
+
+        await handler.ExecuteAsync(RequestWithText("do the thing"), queue, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        List<StreamResponse> responses = await DrainAsync(queue);
+
+        Assert.Equal(TaskState.Failed, LatestState(responses));
+
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ChainAlreadyContainsThisNode_RejectsWithoutCreatingApprentice()
+    {
+
+        FakeConclaveArchmage archmage = new();
+
+        FakeApprenticeRuntime runtime = new(Channel.CreateUnbounded<ApprenticeEvent>().Reader);
+
+        ArcanumA2AAgentHandler handler = CreateHandler(EnabledSettings(), archmage, runtime, new FakeApprenticeRepository(), new FakeSessionRepository());
+
+        AgentEventQueue queue = new();
+
+        RequestContext context = RequestWithText("do the thing");
+
+        ConclaveDelegationChain.Write(context.Message!, ["upstream-node", ConclaveDelegationChain.NodeId]);
+
+        await handler.ExecuteAsync(context, queue, CancellationToken.None);
+
+        List<StreamResponse> responses = await DrainAsync(queue);
+
+        // The Sending looped back to this instance. Spawning an Apprentice here is exactly what makes the
+        // loop infinite, so the cycle must break before any work is minted (issue #12).
+        Assert.Null(archmage.LastRequest);
+
+        Assert.Empty(runtime.StartedApprenticeIds);
+
+        Assert.Equal(TaskState.Rejected, LatestState(responses));
+
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ChainFromAnotherNode_IsAcceptedAndCarriedOntoTheApprentice()
+    {
+
+        Guid apprenticeId = Guid.NewGuid();
+
+        Apprentice apprentice = new() { Id = apprenticeId, Status = ApprenticeStatus.Idle.ToString() };
+
+        FakeConclaveArchmage archmage = new() { OnCast = _ => Result<Apprentice>.Success(apprentice) };
+
+        Channel<ApprenticeEvent> chronicle = Channel.CreateUnbounded<ApprenticeEvent>();
+
+        FakeApprenticeRuntime runtime = new(chronicle.Reader);
+
+        ArcanumA2AAgentHandler handler = CreateHandler(EnabledSettings(), archmage, runtime, new FakeApprenticeRepository { Item = apprentice }, new FakeSessionRepository());
+
+        AgentEventQueue queue = new();
+
+        RequestContext context = RequestWithText("do the thing");
+
+        ConclaveDelegationChain.Write(context.Message!, ["upstream-node"]);
+
+        chronicle.Writer.TryWrite(new ApprenticeEvent { Type = ApprenticeEventType.ApprenticeCompleted, ApprenticeId = apprenticeId });
+
+        chronicle.Writer.Complete();
+
+        await handler.ExecuteAsync(context, queue, CancellationToken.None);
+
+        Assert.NotNull(archmage.LastRequest);
+
+        // The upstream hops plus this node travel with the spawned Apprentice so its own delegation stays
+        // loop-aware instead of restarting the chain from empty.
+        Assert.Equal(["upstream-node", ConclaveDelegationChain.NodeId], archmage.LastRequest!.DelegationChain);
 
     }
 
@@ -392,7 +535,7 @@ public sealed class A2AServerTests
     private static ArcanumA2AAgentHandler CreateHandler(
         ArcanumSettings settings,
         FakeConclaveArchmage archmage,
-        FakeApprenticeRuntime runtime,
+        IApprenticeRuntime runtime,
         FakeApprenticeRepository repo,
         FakeSessionRepository sessionRepo)
     {
@@ -446,10 +589,15 @@ public sealed class A2AServerTests
 
         public Result<string> StartResult { get; set; } = Result<string>.Success("started");
 
+        /// <summary>Runs inside <see cref="StartAsync"/>, so a test can race the Chronicle subscription.</summary>
+        public Action? OnStart { get; set; }
+
         public Task<Result<string>> StartAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
         {
 
             StartedApprenticeIds.Add(apprenticeId);
+
+            OnStart?.Invoke();
 
             return Task.FromResult(StartResult);
 
@@ -482,6 +630,115 @@ public sealed class A2AServerTests
         {
 
             await foreach (ApprenticeEvent evt in chronicle.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+
+                yield return evt;
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Live-only Chronicle, mirroring <c>ChronicleHub</c>: a subscriber receives only events published
+    /// after its own subscription registered, and there is no replay. Anything buffered before the
+    /// subscription is lost — which is exactly the production behavior a shared pre-filled channel hides.
+    /// </summary>
+    private sealed class LiveOnlyApprenticeRuntime : IApprenticeRuntime
+    {
+
+        private readonly Lock _gate = new();
+
+        private readonly List<Channel<ApprenticeEvent>> _subscribers = [];
+
+        public List<Guid> StartedApprenticeIds { get; } = [];
+
+        public List<Guid> CancelledApprenticeIds { get; } = [];
+
+        public Action? OnStart { get; set; }
+
+        public void Publish(ApprenticeEvent @event)
+        {
+
+            lock (_gate)
+            {
+
+                foreach (Channel<ApprenticeEvent> subscriber in _subscribers)
+                {
+
+                    subscriber.Writer.TryWrite(@event);
+
+                }
+
+            }
+
+        }
+
+        public void CompleteAll()
+        {
+
+            lock (_gate)
+            {
+
+                foreach (Channel<ApprenticeEvent> subscriber in _subscribers)
+                {
+
+                    subscriber.Writer.TryComplete();
+
+                }
+
+            }
+
+        }
+
+        public Task<Result<string>> StartAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
+        {
+
+            StartedApprenticeIds.Add(apprenticeId);
+
+            OnStart?.Invoke();
+
+            return Task.FromResult(Result<string>.Success("started"));
+
+        }
+
+        public Task<Result<string>> PauseAsync(Guid apprenticeId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<string>.Success(string.Empty));
+
+        public Task<Result<string>> ResumeAsync(Guid apprenticeId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<string>.Success(string.Empty));
+
+        public Task<Result<string>> CancelAsync(Guid apprenticeId, CancellationToken cancellationToken = default)
+        {
+
+            CancelledApprenticeIds.Add(apprenticeId);
+
+            return Task.FromResult(Result<string>.Success(string.Empty));
+
+        }
+
+        public Task<Result<ApprenticeDetailDto>> ReweaveAsync(Guid apprenticeId, IReadOnlyList<PlanStep> steps, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<string>> InterveneAsync(Guid apprenticeId, string guidance, bool resume, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<ApprenticeEvent> SubscribeChronicleAsync(
+            Guid apprenticeId,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+
+            Channel<ApprenticeEvent> channel = Channel.CreateUnbounded<ApprenticeEvent>();
+
+            lock (_gate)
+            {
+
+                _subscribers.Add(channel);
+
+            }
+
+            await foreach (ApprenticeEvent evt in channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
 
                 yield return evt;

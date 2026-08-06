@@ -255,6 +255,7 @@ internal static class CliApplicationFactory
         services.AddTransient<AttachmentCommands>();
 
         services.AddTransient<OperationCommands>();
+        services.AddTransient<ConclaveCommands>();
 
         services.AddTransient<BackupCommands>();
 

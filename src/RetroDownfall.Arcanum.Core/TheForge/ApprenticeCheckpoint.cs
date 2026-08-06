@@ -26,4 +26,11 @@ public sealed record ApprenticeCheckpoint
 
     public Guid? ParentApprenticeId { get; init; }
 
+    /// <summary>
+    /// A2A delegation hops that led to this Apprentice, oldest first, ending with this instance's own node
+    /// id. Empty/absent for purely local work. Kept here (rather than in a new column) for the same reason
+    /// as <see cref="ParentApprenticeId"/>: no schema change, no compiled-model regeneration.
+    /// </summary>
+    public IReadOnlyList<string>? DelegationChain { get; init; }
+
 }

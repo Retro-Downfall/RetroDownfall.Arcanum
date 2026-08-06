@@ -225,11 +225,218 @@ public sealed class A2AClientTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task DispatchSendingAsync_StampsThisNodeOntoTheDelegationChain()
+    {
+
+        ChainCapturingAgentHandler agentHandler = new("done");
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(agentHandler);
+
+        using HttpMessageHandler handler = server.CreateHandler();
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        Result<A2ADispatchResult> result = await client.DispatchSendingAsync("delegate this", null, DiscoveryUrl);
+
+        Assert.True(result.IsSuccess);
+
+        // Without this the receiving agent has no way to notice the work has already passed through us.
+        Assert.Equal([ConclaveDelegationChain.NodeId], agentHandler.ObservedChain);
+
+    }
+
+    [Fact]
+    public async Task DispatchSendingAsync_LocalCancellation_CancelsTheRemoteTaskInsteadOfAbandoningIt()
+    {
+
+        using GateAgentHandler gateHandler = new(1);
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(gateHandler);
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        // Cancelling on the first poll (rather than the instant the remote starts work) is the case that
+        // matters and the only deterministic one: by then the client holds the remote task id.
+        using PollAwareHandler handler = new(serverHandler);
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        using CancellationTokenSource cts = new();
+
+        Task<Result<A2ADispatchResult>> dispatch =
+            client.DispatchSendingAsync("long running work", null, DiscoveryUrl, cancellationToken: cts.Token);
+
+        Assert.True(
+            await handler.WaitForFirstTaskPollAsync(TimeSpan.FromSeconds(30)),
+            "dispatch_sending never polled the remote task. Requests seen: " + string.Join(" | ", handler.Seen));
+
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => dispatch);
+
+        // Abandoning the HTTP call leaves the remote Apprentice running and billing. The peer must be
+        // told to cancel (issue #12: cancellation propagation in both directions).
+        Assert.True(
+            await gateHandler.WaitForCancelAsync(TimeSpan.FromSeconds(10)),
+            "dispatch_sending did not send an A2A cancel to the remote agent after local cancellation.");
+
+    }
+
+    [Fact]
+    public async Task DispatchSendingAsync_RemoteEntersInputRequired_ReturnsActionableFailureInsteadOfHanging()
+    {
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(new InputRequiredAgentHandler("need more detail"));
+
+        using HttpMessageHandler handler = server.CreateHandler();
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        // input-required is not an A2A terminal state, so a naive "poll until terminal" loop spins forever
+        // and pins a MaxConcurrentA2ATasks slot. A blocking Sending cannot supply the extra input, so this
+        // has to end as an actionable failure.
+        Result<A2ADispatchResult> result = await client
+            .DispatchSendingAsync("do the thing", null, DiscoveryUrl)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.TaskRejected, result.Error.Code);
+
+        Assert.Contains("need more detail", result.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task DispatchSendingAsync_CardAdvertisesADisallowedInterface_IsRejectedEvenWhenItIsNotTheFirst()
+    {
+
+        // The A2A SDK picks an interface by protocol-binding preference, not by position, so validating
+        // only SupportedInterfaces[0] lets a hostile card steer the connection to an unchecked URL.
+        AgentCard card = BuildFakeCard();
+
+        card.SupportedInterfaces =
+        [
+            new AgentInterface { Url = $"http://{FakeAgentHost}/agent", ProtocolBinding = "JSONRPC", ProtocolVersion = "1.0" },
+            new AgentInterface { Url = "http://evil.example.test/agent", ProtocolBinding = "HTTP+JSON", ProtocolVersion = "1.0" },
+        ];
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(new EchoingAgentHandler("nope"), card);
+
+        using HttpMessageHandler handler = server.CreateHandler();
+
+        A2AClientService client = CreateClient(handler, EnabledSettings(allowedRemoteAgents: [$"http://{FakeAgentHost}"]));
+
+        Result<A2ADispatchResult> result = await client.DispatchSendingAsync("do the thing", null, DiscoveryUrl);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Sending.AgentNotAllowed, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task DispatchSendingAsync_ExplicitAgentCardUrl_IsFetchedAtThatExactPath()
+    {
+
+        // Arcanum publishes its own Agent Card at {ServerPath}/agent-card and deliberately does NOT serve
+        // the SDK's unauthenticated /.well-known path, so a hard-coded well-known probe cannot discover
+        // another Arcanum at all.
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(
+            new EchoingAgentHandler("reached"),
+            cardPath: "/api/conclave/a2a/agent-card",
+            mapWellKnown: false);
+
+        using HttpMessageHandler handler = server.CreateHandler();
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        Result<A2ADispatchResult> result = await client.DispatchSendingAsync(
+            "do the thing",
+            null,
+            $"http://{FakeAgentHost}/api/conclave/a2a/agent-card");
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("reached", result.Value.ResponseText);
+
+    }
+
+    [Fact]
+    public async Task DispatchSendingAsync_SendsTheConfiguredOutboundCredentialHeader()
+    {
+
+        const string envVar = "ARCANUM_TEST_A2A_OUTBOUND_KEY";
+
+        global::System.Environment.SetEnvironmentVariable(envVar, "peer-secret");
+
+        try
+        {
+
+            using TestServer server = await CreateFakeRemoteAgentServerAsync(new EchoingAgentHandler("ok"));
+
+            using HttpMessageHandler serverHandler = server.CreateHandler();
+
+            using HeaderCapturingHandler handler = new(serverHandler);
+
+            ArcanumSettings settings = EnabledSettings();
+
+            settings.Integrations!.A2A!.OutboundCredentialEnvironmentVariable = envVar;
+
+            A2AClientService client = CreateClient(handler, settings);
+
+            Result<A2ADispatchResult> result = await client.DispatchSendingAsync("do the thing", null, DiscoveryUrl);
+
+            Assert.True(result.IsSuccess);
+
+            // Without this, the Archmage Client cannot reach ANY authenticated peer — including another
+            // Arcanum, whose A2A routes all sit behind ApiKeyEndpointFilter.
+            Assert.All(
+                handler.ObservedCredentialHeaders,
+                static value => Assert.Equal("peer-secret", value));
+
+            Assert.NotEmpty(handler.ObservedCredentialHeaders);
+
+        }
+        finally
+        {
+
+            global::System.Environment.SetEnvironmentVariable(envVar, null);
+
+        }
+
+    }
+
+    [Fact]
+    public async Task DispatchSendingAsync_NoOutboundCredentialConfigured_SendsNoCredentialHeader()
+    {
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(new EchoingAgentHandler("ok"));
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        using HeaderCapturingHandler handler = new(serverHandler);
+
+        A2AClientService client = CreateClient(handler, EnabledSettings());
+
+        await client.DispatchSendingAsync("do the thing", null, DiscoveryUrl);
+
+        Assert.Empty(handler.ObservedCredentialHeaders);
+
+    }
+
     private static A2AClientService CreateClient(HttpMessageHandler handler, ArcanumSettings settings) =>
         new(new FakeHttpClientFactory(handler), new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<A2AClientService>.Instance);
 
-    private static async Task<TestServer> CreateFakeRemoteAgentServerAsync(IAgentHandler agentHandler)
+    private static async Task<TestServer> CreateFakeRemoteAgentServerAsync(
+        IAgentHandler agentHandler,
+        AgentCard? card = null,
+        string? cardPath = null,
+        bool mapWellKnown = true)
     {
+
+        AgentCard advertised = card ?? BuildFakeCard();
 
         IHostBuilder hostBuilder = new HostBuilder()
             .ConfigureWebHost(webHost =>
@@ -256,7 +463,24 @@ public sealed class A2AClientTests : IDisposable
 
                         endpoints.MapA2A(server, "/agent");
 
-                        endpoints.MapWellKnownAgentCard(BuildFakeCard());
+                        if (mapWellKnown)
+                        {
+
+                            endpoints.MapWellKnownAgentCard(advertised);
+
+                        }
+
+                        if (cardPath is not null)
+                        {
+
+                            endpoints.MapGet(
+                                cardPath,
+                                () => Microsoft.AspNetCore.Http.Results.Json(
+                                    advertised,
+                                    (System.Text.Json.Serialization.Metadata.JsonTypeInfo<AgentCard>)
+                                        A2AJsonUtilities.DefaultOptions.GetTypeInfo(typeof(AgentCard))));
+
+                        }
 
                     });
 
@@ -288,6 +512,55 @@ public sealed class A2AClientTests : IDisposable
     {
 
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+
+    }
+
+    /// <summary>
+    /// Forwards to the fake remote agent while signalling the first task-status poll — the point at which
+    /// the client provably holds the remote task id.
+    /// </summary>
+    private sealed class PollAwareHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+
+        private readonly TaskCompletionSource _firstPoll = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public System.Collections.Concurrent.ConcurrentBag<string> Seen { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+
+            // The JSON-RPC binding posts every call to the same path, so the method name only appears in
+            // the body. The HTTP+JSON binding puts it in the path. Match either.
+            string path = request.RequestUri?.AbsolutePath ?? string.Empty;
+
+            string body = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+            Seen.Add($"{request.Method} {path} :: {(body.Length > 120 ? body[..120] : body)}");
+
+            if (body.Contains("\"GetTask\"", StringComparison.Ordinal)
+                || body.Contains("tasks/get", StringComparison.OrdinalIgnoreCase)
+                || (path.Contains("/tasks", StringComparison.OrdinalIgnoreCase)
+                    && !path.Contains("agent-card", StringComparison.OrdinalIgnoreCase)))
+            {
+
+                _firstPoll.TrySetResult();
+
+            }
+
+            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+        }
+
+        public async Task<bool> WaitForFirstTaskPollAsync(TimeSpan timeout)
+        {
+
+            Task completed = await Task.WhenAny(_firstPoll.Task, Task.Delay(timeout)).ConfigureAwait(false);
+
+            return ReferenceEquals(completed, _firstPoll.Task);
+
+        }
 
     }
 
@@ -331,6 +604,85 @@ public sealed class A2AClientTests : IDisposable
 
     }
 
+    /// <summary>Completes immediately, recording the delegation chain the caller stamped on the message.</summary>
+    private sealed class ChainCapturingAgentHandler(string responseText) : IAgentHandler
+    {
+
+        public string[] ObservedChain { get; private set; } = [];
+
+        public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
+        {
+
+            ObservedChain = ConclaveDelegationChain.Read(context.Message?.Metadata);
+
+            TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
+
+            await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
+
+            await updater.StartWorkAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            await updater.AddArtifactAsync([Part.FromText(responseText)], cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        }
+
+        public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+    }
+
+    /// <summary>Parks the task in the non-terminal <c>input-required</c> state and never finishes.</summary>
+    private sealed class InputRequiredAgentHandler(string reason) : IAgentHandler
+    {
+
+        public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
+        {
+
+            TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
+
+            await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
+
+            await updater.StartWorkAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            await updater.RequireInputAsync(
+                new Message { Role = Role.Agent, MessageId = Guid.NewGuid().ToString("N"), Parts = [Part.FromText(reason)] },
+                cancellationToken).ConfigureAwait(false);
+
+        }
+
+        public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+    }
+
+    /// <summary>Records the outbound credential header the Archmage Client attached, if any.</summary>
+    private sealed class HeaderCapturingHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+
+        public System.Collections.Concurrent.ConcurrentBag<string> ObservedCredentialHeaders { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+
+            if (request.Headers.TryGetValues(A2AClientService.DefaultOutboundCredentialHeader, out IEnumerable<string>? values))
+            {
+
+                foreach (string value in values)
+                {
+
+                    ObservedCredentialHeaders.Add(value);
+
+                }
+
+            }
+
+            return base.SendAsync(request, cancellationToken);
+
+        }
+
+    }
+
     /// <summary>Always rejects the incoming task.</summary>
     private sealed class RejectingAgentHandler(string reason) : IAgentHandler
     {
@@ -362,6 +714,9 @@ public sealed class A2AClientTests : IDisposable
 
         private readonly TaskCompletionSource<string> _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        private readonly TaskCompletionSource _cancelObserved =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private int _enteredCount;
 
         public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
@@ -386,14 +741,38 @@ public sealed class A2AClientTests : IDisposable
 
         }
 
-        public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+        public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
+        {
+
+            _cancelObserved.TrySetResult();
+
+            _release.TrySetCanceled();
+
+            return Task.CompletedTask;
+
+        }
 
         public Task WaitUntilEnteredAsync() => _allEntered.Task;
 
+        public async Task<bool> WaitForCancelAsync(TimeSpan timeout)
+        {
+
+            Task completed = await Task.WhenAny(_cancelObserved.Task, Task.Delay(timeout)).ConfigureAwait(false);
+
+            return ReferenceEquals(completed, _cancelObserved.Task);
+
+        }
+
         public void Release(string text) => _release.TrySetResult(text);
 
-        public void Dispose() => _allEntered.TrySetCanceled();
+        public void Dispose()
+        {
+
+            _allEntered.TrySetCanceled();
+
+            _cancelObserved.TrySetCanceled();
+
+        }
 
     }
 

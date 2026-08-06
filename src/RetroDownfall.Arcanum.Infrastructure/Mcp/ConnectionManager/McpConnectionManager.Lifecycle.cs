@@ -578,7 +578,10 @@ public sealed partial class McpConnectionManager
 
         bool allowHostProcessTools = HostProcessToolPolicy.AreAllowed(edition);
 
-        bool conclaveEffective = edition == ArcanumEdition.Development && conclave.Enabled;
+        // Feature-gated only. The Conclave tools follow Arcanum:Features:Conclave (and the A2A client
+        // follows Arcanum:Features:A2AClient) on every edition; an operator who opts in is not silently
+        // handed a toolset that never appears because the host runs the default Local edition (issue #12).
+        bool conclaveEffective = conclave.Enabled;
 
         bool a2aClientEffective = conclaveEffective && a2a.Enabled && a2a.ClientEnabled;
 

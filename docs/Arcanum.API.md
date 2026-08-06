@@ -21,8 +21,8 @@ test, and documentation citations remain stable.
 | Method | Path | Contract/purpose |
 |--------|------|-----------------|
 | GET | `/metrics` | Prometheus text-format metrics. |
-| GET | `/api/health` | Authenticated `ApiResponse<HealthReportDto>` readiness snapshot. Healthy/Degraded reports return **200**; a valid Unhealthy report remains a success envelope with its component detail and returns **503**. |
-| GET | `/api/meta` | Instance metadata and feature flags for sidecar discovery (`ApiResponse<InstanceMetadataDto>`). |
+| GET | `/api/health` | Authenticated `ApiResponse<HealthReportDto>` readiness snapshot. Healthy/Degraded reports return **200**; a valid Unhealthy report remains a success envelope with its component detail and returns **503**. Components include **`Conclave`**, whose detail leads with `state=disabled\|configured\|degraded\|healthy` (DESIGN §5.7.1); only `degraded` affects readiness. |
+| GET | `/api/meta` | Instance metadata and feature flags for sidecar discovery (`ApiResponse<InstanceMetadataDto>`). Carries `conclaveEnabled`, `a2AServerEnabled`, `a2AClientEnabled`, `conclaveA2AState`, `a2AServerPath`, `a2AAgentCardPath`, and `a2AAllowedRemoteAgentCount`. |
 | POST | `/api/server/quit` | Accept an authenticated operator shutdown request (`202` + `ApiResponse<bool>`), then stop the host after the acknowledgement completes. |
 | GET | `/api/budget` | Daily budget snapshot (`ApiResponse<BudgetSummaryDto>`: enabled, daily limit, today's spend, remaining, spent percent, alert threshold; DESIGN §22.2). |
 | GET | `/api/grimoire/stats` | Grimoire database statistics (`ApiResponse<GrimoireStatsDto>`; database + WAL byte sizes and per-table row counts via `GrimoireStatsService`). |
@@ -165,10 +165,12 @@ test, and documentation citations remain stable.
 | POST | `/api/apprentices/{id}/cancel` | Cancel execution (**202**; DESIGN §5.7). |
 | POST | `/api/apprentices/{id}/reweave` | Replace pending plan steps (`ApiResponse<ApprenticeDetailDto>`; **400** `Apprentice.InvalidPlan`; **409** `Apprentice.CannotReweave`; DESIGN §5.7). |
 | POST | `/api/apprentices/{id}/intervene` | Resolve **Escalated** Apprentice with DM guidance (**202**; **409** `Apprentice.NotEscalated`; DESIGN §5.7). |
-| POST | `/api/apprentices/{id}/cast` | **The Conclave** cross-Apprentice delegation: mint a child Apprentice from a parent (`ApiResponse<ApprenticeDetailDto>`; **201**; gated by `Arcanum:Features:Conclave` and the code-owned lineage/capacity limits). |
+| POST | `/api/apprentices/{id}/cast` | **The Conclave** cross-Apprentice delegation: mint a child Apprentice from a parent (`ApiResponse<ApprenticeDetailDto>`; **201**; gated by `Arcanum:Features:Conclave`. No fixed depth/breadth ceiling — loops are caught by cycle detection, DESIGN §5.7.1). |
 | GET | `/api/apprentices/{id}/chronicle` | Chronicle SSE stream (`text/event-stream`; CLI `watch apprentice` / compatibility alias `apprentice chronicle`; DESIGN §5.7, DESIGN §19.6). |
-| — | `/api/conclave/a2a/*` | A2A (Agent-to-Agent) JSON-RPC surface (`MapA2A`), mapped only when `Arcanum:Features:Conclave && Arcanum:Features:A2AServer`. |
-| GET | `/api/conclave/a2a/agent-card` | Authenticated A2A Agent Card ("Heraldry") — not the public, unauthenticated `/.well-known/agent-card.json` convention. |
+| GET | `/api/conclave/status` | Conclave/A2A state (`ApiResponse<ConclaveStatusDto>`): `state` is `disabled` \| `configured` \| `degraded` \| `healthy`, plus the effective server/Agent Card paths, the enabled surfaces, and the **count** of allowed remote agents (never the entries). CLI `arcanum conclave status`; DESIGN §5.7.1. |
+| POST | `/api/conclave/sendings` | Dispatch a Sending to a remote A2A agent and block until it settles (`{ agentUrl, goal, name? }` → `ApiResponse<SendingDispatchDto>`; **400** `Validation.InvalidBody`; **403** `Sending.Disabled` / `Sending.AgentNotAllowed`; **502** `Sending.AgentUnreachable` / `Sending.AgentCardInvalid`; **400** `Sending.TaskRejected`). Cancelling the request cancels the remote task. CLI `arcanum conclave dispatch`. |
+| — | `/api/conclave/a2a/*` | A2A (Agent-to-Agent) JSON-RPC surface (`MapA2A`), mapped only when `Arcanum:Features:Conclave && Arcanum:Features:A2AServer`. The path follows `Arcanum:Integrations:A2A:ServerPath`; a configured path outside `/api` is mounted under it rather than refused. |
+| GET | `/api/conclave/a2a/agent-card` | Authenticated A2A Agent Card ("Heraldry") — not the public, unauthenticated `/.well-known/agent-card.json` convention. Path follows `ServerPath`; the effective value is reported by `/api/conclave/status` and `/api/meta`. |
 | GET | `/api/workspaces` | List registered workspaces (`ApiResponse<WorkspaceInfo[]>`; §8.17). |
 | GET | `/api/workspaces/{id}` | Workspace metadata (`ApiResponse<WorkspaceInfo>`; **404** when missing). |
 | POST | `/api/workspaces` | Register a workspace directory (`ApiResponse<WorkspaceInfo>`; **201** with `Location`; **400** validation). |

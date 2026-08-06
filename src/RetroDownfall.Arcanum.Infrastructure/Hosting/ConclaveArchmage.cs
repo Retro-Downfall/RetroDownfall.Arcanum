@@ -59,13 +59,16 @@ internal sealed class ConclaveArchmage(
             UpdatedAt = now,
         };
 
-        if (request.ParentApprenticeId is { } parentId)
+        bool hasDelegationChain = request.DelegationChain is { Count: > 0 };
+
+        if (request.ParentApprenticeId is not null || hasDelegationChain)
         {
             child.CheckpointData = ApprenticeRepository.SerializeCheckpoint(new ApprenticeCheckpoint
             {
                 CurrentStep = 0,
                 Timestamp = now,
-                ParentApprenticeId = parentId,
+                ParentApprenticeId = request.ParentApprenticeId,
+                DelegationChain = hasDelegationChain ? [.. request.DelegationChain!] : null,
             });
         }
 

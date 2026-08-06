@@ -29,4 +29,11 @@ public sealed record InstanceMetadataDto(
     string EmbeddingsVectorDiagnostic,
     int EmbeddingsManagedSearchRowBudget,
     string Edition,
-    bool HostProcessToolsAllowed);
+    bool HostProcessToolsAllowed,
+    bool ConclaveEnabled,
+    bool A2AServerEnabled,
+    bool A2AClientEnabled,
+    string ConclaveA2AState,
+    string? A2AServerPath,
+    string? A2AAgentCardPath,
+    int A2AAllowedRemoteAgentCount);

@@ -173,6 +173,10 @@ public static class ArcanumRuntimeSettings
             AgentCardDescription = integration.AgentCardDescription,
             AllowedRemoteAgents = integration.AllowedRemoteAgents ?? [],
             DefaultWorkspace = integration.DefaultWorkspace,
+            OutboundCredentialEnvironmentVariable = integration.OutboundCredentialEnvironmentVariable,
+            OutboundCredentialHeader = string.IsNullOrWhiteSpace(integration.OutboundCredentialHeader)
+                ? defaults.OutboundCredentialHeader
+                : integration.OutboundCredentialHeader.Trim(),
         };
     }
 

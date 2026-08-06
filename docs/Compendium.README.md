@@ -293,11 +293,13 @@ parent's current-turn materialized allowlist, and each explicit path/content rem
 
 | Descriptor key | Type and default | Bounds | Semantics |
 |---|---|---|---|
-| `integrations.a2A.serverPath` | `string`, `"/api/conclave/a2a"` | valid API path | A2A endpoints and Agent Card discovery path. |
+| `integrations.a2A.serverPath` | `string`, `"/api/conclave/a2a"` | any path | Inbound A2A endpoint and Agent Card path. A value outside `/api` is mounted under it (`/conclave/a2a` → `/api/conclave/a2a`) so the API-key boundary always applies; the effective path is reported by `arcanum conclave status`. |
 | `integrations.a2A.agentCardName` | `string?`, `null` | — | Advertised identity name. |
 | `integrations.a2A.agentCardDescription` | `string?`, `null` | — | Advertised identity description. |
-| `integrations.a2A.allowedRemoteAgents` | `string[]`, `[]` | URLs or origins | Optional remote Agent Card allowlist; empty adds no allowlist beyond the outbound URL guard. |
+| `integrations.a2A.allowedRemoteAgents` | `string[]`, `[]` | URLs or origins | Optional **outbound** allowlist for `dispatch_sending` targets; empty adds no allowlist beyond the outbound URL guard. Every interface the remote Agent Card advertises is checked, not just the first. |
 | `integrations.a2A.defaultWorkspace` | `string`, `""` | path | Fallback for inbound tasks; empty falls through to `workspaces.defaultRoot`, then the current directory. |
+| `integrations.a2A.outboundCredentialEnvironmentVariable` | `string`, `""` | env var name | Environment variable holding the credential presented to remote agents. Empty sends none, so only unauthenticated peers are reachable — including *not* another Arcanum. The value never lives in configuration, and it is sent only to the origin you named or an allowlisted target, never to a host the remote Agent Card picks. |
+| `integrations.a2A.outboundCredentialHeader` | `string`, `"X-Arcanum-Key"` | header name | Header carrying that credential. Use `Authorization` (with a `Bearer …` value) for agents expecting bearer auth. |
 | `integrations.commLink.webhookUrlEnvironmentVariable` | `string?`, `null` | portable, case-insensitively unique environment name | Exact secret-bearing webhook reference; omission uses `ARCANUM_COMMLINK_WEBHOOK_URL`. |
 | `integrations.commLink.allowedSchemes` | `string[]`, `["https"]` | URI schemes | Allowed webhook schemes. |
 | `integrations.commLink.allowedHosts` | `string[]`, `[]` | hostnames | Optional webhook host allowlist; empty adds no host restriction beyond the outbound URL guard. |

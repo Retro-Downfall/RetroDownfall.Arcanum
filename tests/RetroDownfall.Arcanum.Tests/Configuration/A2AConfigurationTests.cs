@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
 
@@ -87,6 +88,85 @@ public sealed class A2AConfigurationTests
         Assert.Equal(features.A2AClient, conclave.A2A.ClientEnabled);
 
     }
+
+    [Fact]
+    public void ConclaveA2ASettings_defaults_send_no_outbound_credential()
+    {
+
+        ConclaveA2ASettings a2a = ArcanumRuntimeDefaults.Conclave.A2A;
+
+        Assert.Equal(string.Empty, a2a.OutboundCredentialEnvironmentVariable);
+
+        Assert.Equal("X-Arcanum-Key", a2a.OutboundCredentialHeader);
+
+    }
+
+    [Fact]
+    public void Validator_accepts_a_well_formed_A2A_block()
+    {
+
+        Result result = Validate(new A2AIntegrationSettings
+        {
+            ServerPath = "/conclave/inbound",
+            AllowedRemoteAgents = ["https://partner.example.test", "https://other.example.test/agent"],
+            OutboundCredentialEnvironmentVariable = "ARCANUM_A2A_PEER_KEY",
+            OutboundCredentialHeader = "Authorization",
+        });
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+    }
+
+    [Theory]
+    [InlineData("not-a-url")]
+    [InlineData("ftp://partner.example.test")]
+    [InlineData("partner.example.test")]
+    public void Validator_rejects_an_allowlist_entry_that_can_never_match(string entry)
+    {
+
+        Result result = Validate(new A2AIntegrationSettings { AllowedRemoteAgents = [entry] });
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "integrations.a2A.allowedRemoteAgents[0]");
+
+    }
+
+    [Fact]
+    public void Validator_rejects_an_absolute_url_as_the_server_path()
+    {
+
+        Result result = Validate(new A2AIntegrationSettings { ServerPath = "https://example.test/api/conclave/a2a" });
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "integrations.a2A.serverPath");
+
+    }
+
+    [Fact]
+    public void Validator_rejects_a_credential_header_the_http_stack_would_refuse()
+    {
+
+        Result result = Validate(new A2AIntegrationSettings { OutboundCredentialHeader = "X Arcanum Key" });
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "integrations.a2A.outboundCredentialHeader");
+
+    }
+
+    private static Result Validate(A2AIntegrationSettings a2a) =>
+        new ConfigurationValidator().Validate(new ArcanumSettings
+        {
+            Integrations = new IntegrationSettings { A2A = a2a },
+        });
 
     [Fact]
     public void Conclave_feature_can_enable_Conclave_without_A2A()

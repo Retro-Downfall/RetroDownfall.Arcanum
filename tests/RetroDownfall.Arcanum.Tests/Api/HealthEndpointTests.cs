@@ -79,6 +79,33 @@ public sealed class HealthEndpointTests
 
         Assert.Contains(body.Data.Components, static c => c.Name == "FileEncryption");
 
+        Assert.Contains(body.Data.Components, static c => c.Name == "Conclave");
+
+    }
+
+    [SkippableFact]
+    public async Task GetHealth_ReportsConclaveDisabledWithoutDegradingOverallHealth()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.GetAsync("/api/health");
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<HealthReportDto>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseHealthReportDto);
+
+        HealthComponentDto conclave = Assert.Single(
+            body!.Data!.Components,
+            static c => c.Name == "Conclave");
+
+        // Off by default is a healthy, deliberate state — never Degraded noise.
+        Assert.Equal(HealthStatus.Healthy, conclave.Status);
+
+        Assert.Contains("state=disabled", conclave.Detail, StringComparison.Ordinal);
+
     }
 
     [SkippableFact]

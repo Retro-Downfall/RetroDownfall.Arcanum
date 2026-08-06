@@ -139,15 +139,20 @@ public static class OutboundUrlGuard
     /// <summary>
     /// Creates a <see cref="SocketsHttpHandler"/> for untrusted egress with DNS-rebind IP pinning.
     /// </summary>
-    public static SocketsHttpHandler CreateUntrustedEgressHandler() =>
-        CreateEgressHandler(allowPrivateAndLoopback: false);
+    /// <param name="connectTimeout">
+    /// Optional bound on establishing the TCP connection to each candidate address. <c>null</c> (the
+    /// default) leaves connection establishment to the OS. This bounds only connection setup — it is
+    /// never a deadline on the request as a whole (see <c>docs/Arcanum.DESIGN.md</c> &#167;2.1).
+    /// </param>
+    public static SocketsHttpHandler CreateUntrustedEgressHandler(TimeSpan? connectTimeout = null) =>
+        CreateEgressHandler(allowPrivateAndLoopback: false, connectTimeout);
 
     /// <summary>
     /// Creates a <see cref="SocketsHttpHandler"/> for provider inference and connectivity probes.
     /// Loopback and RFC1918 are allowed; link-local remains blocked; DNS is pinned at connect time.
     /// </summary>
     public static SocketsHttpHandler CreateProviderEgressHandler() =>
-        CreateEgressHandler(allowPrivateAndLoopback: true);
+        CreateEgressHandler(allowPrivateAndLoopback: true, connectTimeout: null);
 
     public static bool IsRedirectStatusCode(HttpStatusCode statusCode) =>
         statusCode is HttpStatusCode.Moved
@@ -223,7 +228,7 @@ public static class OutboundUrlGuard
 
     }
 
-    private static SocketsHttpHandler CreateEgressHandler(bool allowPrivateAndLoopback) =>
+    private static SocketsHttpHandler CreateEgressHandler(bool allowPrivateAndLoopback, TimeSpan? connectTimeout) =>
         new()
         {
 
@@ -233,14 +238,17 @@ public static class OutboundUrlGuard
             // defeat address validation/pinning for the original destination.
             UseProxy = false,
 
+            // SocketsHttpHandler.ConnectTimeout is ignored once ConnectCallback is set, so the bound is
+            // applied inside the callback instead.
             ConnectCallback = (context, cancellationToken) =>
-                EgressConnectCallbackAsync(context, allowPrivateAndLoopback, cancellationToken),
+                EgressConnectCallbackAsync(context, allowPrivateAndLoopback, connectTimeout, cancellationToken),
 
         };
 
     private static async ValueTask<Stream> EgressConnectCallbackAsync(
         SocketsHttpConnectionContext context,
         bool allowPrivateAndLoopback,
+        TimeSpan? connectTimeout,
         CancellationToken cancellationToken)
     {
 
@@ -248,10 +256,31 @@ public static class OutboundUrlGuard
 
         int port = context.DnsEndPoint.Port;
 
-        Result<IReadOnlyList<IPAddress>> resolved = await ResolveValidatedAddressesAsync(
-            host,
-            allowPrivateAndLoopback,
-            cancellationToken).ConfigureAwait(false);
+        using CancellationTokenSource? connectScope = connectTimeout is { } timeout
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : null;
+
+        connectScope?.CancelAfter(connectTimeout!.Value);
+
+        CancellationToken connectToken = connectScope?.Token ?? cancellationToken;
+
+        Result<IReadOnlyList<IPAddress>> resolved;
+
+        try
+        {
+
+            resolved = await ResolveValidatedAddressesAsync(
+                host,
+                allowPrivateAndLoopback,
+                connectToken).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException) when (ConnectDeadlineElapsed(connectScope, cancellationToken))
+        {
+
+            throw new HttpRequestException($"Timed out resolving '{host}' within the outbound connect timeout.");
+
+        }
 
         if (resolved.IsFailure)
         {
@@ -273,7 +302,7 @@ public static class OutboundUrlGuard
             try
             {
 
-                await socket.ConnectAsync(new IPEndPoint(address, port), cancellationToken).ConfigureAwait(false);
+                await socket.ConnectAsync(new IPEndPoint(address, port), connectToken).ConfigureAwait(false);
 
                 return new NetworkStream(socket, ownsSocket: true);
 
@@ -286,6 +315,20 @@ public static class OutboundUrlGuard
                 connectErrors.Add(ex);
 
                 socket.Dispose();
+
+            }
+            catch (OperationCanceledException ex) when (ConnectDeadlineElapsed(connectScope, cancellationToken))
+            {
+
+                // The connect bound elapsed, not the caller's cancellation. Surface it as a transport
+                // failure so callers see a connection problem rather than a spurious cancellation.
+                socket.Dispose();
+
+                connectErrors ??= [];
+
+                connectErrors.Add(ex);
+
+                break;
 
             }
             catch
@@ -306,6 +349,13 @@ public static class OutboundUrlGuard
             connectErrors is null ? null : new AggregateException(connectErrors));
 
     }
+
+    /// <summary>
+    /// True when <paramref name="connectScope"/> fired its own connect bound rather than the caller
+    /// cancelling the request.
+    /// </summary>
+    private static bool ConnectDeadlineElapsed(CancellationTokenSource? connectScope, CancellationToken callerToken) =>
+        connectScope is { IsCancellationRequested: true } && !callerToken.IsCancellationRequested;
 
     private static Result ValidateLiteralHost(string host, bool allowPrivateAndLoopback)
     {
