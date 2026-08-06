@@ -1,8 +1,10 @@
+using System.Net;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Workspaces;
@@ -1489,8 +1491,42 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
     }
 
-    private static SanctumGuard CreateGuard(FakeCampaignRepository repository, FakeSanctumBreachRepository? breachRepository = null) =>
-        new(repository, breachRepository ?? new FakeSanctumBreachRepository(), NullLogger<SanctumGuard>.Instance);
+    private static SanctumGuard CreateGuard(
+        FakeCampaignRepository repository,
+        FakeSanctumBreachRepository? breachRepository = null,
+        IDnsResolver? dnsResolver = null) =>
+        new(
+            repository,
+            breachRepository ?? new FakeSanctumBreachRepository(),
+            NullLogger<SanctumGuard>.Instance,
+            dnsResolver ?? DeterministicDns());
+
+    /// <summary>
+    /// Allow-list evaluation resolves both the request host and any non-literal allowed domain, so
+    /// these tests would otherwise depend on live DNS — which fails in bursts when the resolver is
+    /// slow or unreachable. This fixed table covers every host the network tests use; anything else
+    /// raises <see cref="System.Net.Sockets.SocketException"/>, exactly as the real resolver does
+    /// for an unknown name, which is what the deny cases rely on.
+    /// </summary>
+    private static FakeDnsResolver DeterministicDns()
+    {
+
+        FakeDnsResolver resolver = new();
+
+        // Literal request hosts: the real resolver returns the parsed literal without a lookup.
+        resolver.Add("127.0.0.1", IPAddress.Loopback);
+        resolver.Add("192.0.2.1", IPAddress.Parse("192.0.2.1"));
+
+        // Names that must resolve. 127.0.0.1.nip.io is a wildcard-DNS host that maps to loopback.
+        resolver.Add("127.0.0.1.nip.io", IPAddress.Loopback);
+        resolver.Add("localhost", IPAddress.Loopback);
+        resolver.Add("example.com", IPAddress.Parse("93.184.216.34"));
+        resolver.Add("api.example.com", IPAddress.Parse("93.184.216.34"));
+
+        // Deliberately absent, so they fail to resolve: evil.test and
+        // this-domain-definitely-does-not-exist-12345.invalid.
+        return resolver;
+    }
 
     private static SanctumConfig EnabledPathBoundaryConfig() =>
         new()

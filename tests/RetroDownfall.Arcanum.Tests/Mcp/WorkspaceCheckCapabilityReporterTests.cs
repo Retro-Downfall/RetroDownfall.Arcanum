@@ -88,11 +88,15 @@ public sealed class WorkspaceCheckCapabilityReporterTests
     {
         TaskCompletionSource<WorkspaceCheckCapabilityStatus> pending =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The two deadlines race for the same refresh task: the caller's asyncWait wants to give up
+        // and report "refreshing", while the probe deadline wants to complete it as "timed out".
+        // Keep them orders of magnitude apart so a stalled machine cannot flip which one wins —
+        // the probe deadline is unreachable here, so the caller's wait always expires first.
         WorkspaceCheckCapabilityReporter reporter = CreateReporter(
             generation: () => "generation-a",
             probe: (_, _) => pending.Task,
             asyncWait: TimeSpan.FromMilliseconds(20),
-            probeTimeout: TimeSpan.FromMilliseconds(50));
+            probeTimeout: TimeSpan.FromMinutes(10));
 
         WorkspaceCheckCapabilityStatus status =
             await reporter.GetStatusAsync(
@@ -103,6 +107,33 @@ public sealed class WorkspaceCheckCapabilityReporterTests
         Assert.True(status.IsHealthDegraded);
         Assert.Contains(
             "refresh",
+            status.Reason,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Probe_exceeding_its_deadline_reports_a_timed_out_status()
+    {
+        TaskCompletionSource<WorkspaceCheckCapabilityStatus> pending =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The mirror image of the test above, and the same separation trick: here the caller waits
+        // far longer than the probe deadline, so the refresh always completes as "timed out" first.
+        WorkspaceCheckCapabilityReporter reporter = CreateReporter(
+            generation: () => "generation-a",
+            probe: (_, _) => pending.Task,
+            asyncWait: TimeSpan.FromMinutes(10),
+            probeTimeout: TimeSpan.FromMilliseconds(50));
+
+        WorkspaceCheckCapabilityStatus status =
+            await reporter.GetStatusAsync(
+                "/workspace",
+                CancellationToken.None);
+
+        Assert.False(status.IsAvailable);
+        Assert.True(status.IsHealthDegraded);
+        Assert.Contains(
+            "timed out",
             status.Reason,
             StringComparison.OrdinalIgnoreCase);
     }

@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Sanctum;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -26,8 +27,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 public sealed class SanctumGuard(
     ICampaignRepository campaignRepository,
     ISanctumBreachRepository breachRepository,
-    ILogger<SanctumGuard> logger) : ISanctumGuard
+    ILogger<SanctumGuard> logger,
+    IDnsResolver? dnsResolver = null) : ISanctumGuard
 {
+
+    /// <summary>
+    /// Allow-list evaluation compares resolved addresses, so it needs a resolver. Production keeps
+    /// the real one; tests substitute a deterministic fake rather than depending on live DNS.
+    /// </summary>
+    private readonly IDnsResolver _dnsResolver = dnsResolver ?? new SystemDnsResolver();
 
     public async Task<SanctumResult> ValidatePathAsync(
         string campaignId,
@@ -458,7 +466,7 @@ public sealed class SanctumGuard(
         };
     }
 
-    private static async Task<bool> IsHostAllowedAsync(
+    private async Task<bool> IsHostAllowedAsync(
         string host,
         IReadOnlyList<string> allowedDomains,
         CancellationToken ct)
@@ -477,7 +485,9 @@ public sealed class SanctumGuard(
 
         try
         {
-            requestAddresses = await Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false);
+            requestAddresses = await _dnsResolver
+                .GetHostAddressesAsync(host, ct)
+                .ConfigureAwait(false);
         }
         catch (SocketException)
         {
@@ -510,7 +520,9 @@ public sealed class SanctumGuard(
 
             try
             {
-                allowedAddresses = await Dns.GetHostAddressesAsync(normalized, ct).ConfigureAwait(false);
+                allowedAddresses = await _dnsResolver
+                    .GetHostAddressesAsync(normalized, ct)
+                    .ConfigureAwait(false);
             }
             catch (SocketException)
             {
