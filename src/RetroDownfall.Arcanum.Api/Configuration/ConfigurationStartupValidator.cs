@@ -99,7 +99,7 @@ internal sealed class ConfigurationStartupValidator : IStartupFilter
 /// Thrown during host startup when <see cref="ConfigurationValidator"/> rejects the
 /// bound configuration. Aborts the host cleanly (no <c>Environment.FailFast</c>).
 /// </summary>
-internal sealed class ConfigurationValidationException : InvalidOperationException
+public sealed class ConfigurationValidationException : InvalidOperationException
 {
 
     public ConfigurationValidationException(Error error)

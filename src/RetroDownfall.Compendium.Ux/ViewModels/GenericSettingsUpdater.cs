@@ -53,6 +53,44 @@ public static class GenericSettingsUpdater
 
     }
 
+    /// <summary>
+    /// Resolves the declared CLR type of the property a descriptor key addresses, or <c>null</c> when the
+    /// path does not exist. Lets the editor validate a value against the exact type Save will coerce to.
+    /// </summary>
+    public static Type? ResolveValueType(string key)
+    {
+
+        Type node = typeof(ArcanumSettings);
+
+        string[] parts = key.Split('.', StringSplitOptions.RemoveEmptyEntries);
+
+        if (parts.Length == 0)
+        {
+
+            return null;
+
+        }
+
+        foreach (string part in parts)
+        {
+
+            PropertyInfo? property = GetCachedProperty(node, ToPascal(part));
+
+            if (property is null)
+            {
+
+                return null;
+
+            }
+
+            node = property.PropertyType;
+
+        }
+
+        return node;
+
+    }
+
     public static ArcanumSettings ApplyFields(
         ArcanumSettings settings,
         IReadOnlyList<GenericSettingFieldViewModel> fields,
@@ -75,7 +113,29 @@ public static class GenericSettingsUpdater
 
             }
 
-            ArcanumSettings? updated = SetByPath(result, field.Descriptor.Key, Coerce(field), logger);
+            ArcanumSettings? updated;
+
+            try
+            {
+
+                updated = SetByPath(result, field.Descriptor.Key, Coerce(field), logger);
+
+            }
+            catch (Exception ex) when (
+                ex is JsonException
+                or FormatException
+                or OverflowException
+                or ArgumentException
+                or InvalidCastException)
+            {
+
+                // Attribute the failure to the key that caused it: an unattributed exception escaping
+                // here aborts the whole save with a message naming no field and no section.
+                throw new InvalidOperationException(
+                    $"'{field.Descriptor.Key}' could not be applied: {ex.Message}",
+                    ex);
+
+            }
 
             if (updated is null)
             {

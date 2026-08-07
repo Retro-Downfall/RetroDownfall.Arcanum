@@ -881,17 +881,15 @@ public sealed class RunCommandTests
 
         ConfigurationManager configuration = new();
 
-        configuration.AddInMemoryCollection(
-            new Dictionary<string, string?>
-            {
-
-                ["Arcanum:Security:Ward:UnattendedMode"] = "true",
-
-            });
-
         CliApplicationFactory.ConfigureCliServices(
             services,
             configuration);
+
+        // The CLI snapshot is parsed from the persisted arcanum.json by the same System.Text.Json
+        // contract the host uses, so an in-memory IConfiguration entry is not a way to set a Ward
+        // preference here; configure the bound options directly instead.
+        services.Configure<ArcanumSettings>(
+            static settings => settings.Security.Ward.UnattendedMode = true);
 
         ReplaceApiTransport(services, handler);
 

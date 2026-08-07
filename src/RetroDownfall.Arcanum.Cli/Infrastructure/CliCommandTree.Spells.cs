@@ -14,7 +14,7 @@ internal static partial class CliCommandTree
         Command spell = new("spell", "Spell utilities (requires arcanum serve).");
 
         Command list = new("list", "List spells.");
-        Option<string?> listWorkspace = new("--workspace");
+        Option<string?> listWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         list.Add(listWorkspace);
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.List(ActiveWorkspace(sp, pr.GetValue(listWorkspace)), ct).ConfigureAwait(false));
@@ -26,20 +26,20 @@ internal static partial class CliCommandTree
             Arity = ArgumentArity.ZeroOrOne,
             Description = "Optional exact spell name or unique name prefix; omit for an interactive picker.",
         };
-        Option<string?> getWorkspace = new("--workspace");
+        Option<string?> getWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         get.Add(getName); get.Add(getWorkspace);
         get.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Get(pr.GetValue(getName), ActiveWorkspace(sp, pr.GetValue(getWorkspace)), ct).ConfigureAwait(false));
         spell.Add(get);
 
         Command create = new("create", "Create a spell.");
-        Option<string?> createName = new("--name");
-        Option<string?> createWorkspace = new("--workspace");
-        Option<string?> createDescription = new("--description");
-        Option<string?> createBody = new("--body");
-        Option<string[]> createTag = new("--tag") { AllowMultipleArgumentsPerToken = true };
-        Option<string[]> createDeclaredTool = new("--declared-tool") { AllowMultipleArgumentsPerToken = true };
-        Option<string[]> createDependency = new("--dependency") { AllowMultipleArgumentsPerToken = true };
+        Option<string?> createName = new("--name") { Description = "Spell name." };
+        Option<string?> createWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
+        Option<string?> createDescription = new("--description") { Description = "Short spell description stored in the frontmatter." };
+        Option<string?> createBody = new("--body") { Description = "Spell body Markdown." };
+        Option<string[]> createTag = new("--tag") { AllowMultipleArgumentsPerToken = true, Description = "Tag to attach; repeatable." };
+        Option<string[]> createDeclaredTool = new("--declared-tool") { AllowMultipleArgumentsPerToken = true, Description = "Tool the spell declares it may use; repeatable." };
+        Option<string[]> createDependency = new("--dependency") { AllowMultipleArgumentsPerToken = true, Description = "Spell dependency by name; repeatable." };
         create.Add(createName); create.Add(createWorkspace); create.Add(createDescription);
         create.Add(createBody); create.Add(createTag); create.Add(createDeclaredTool);
         create.Add(createDependency);
@@ -56,10 +56,10 @@ internal static partial class CliCommandTree
         spell.Add(create);
 
         Command update = new("update", "Update a spell.");
-        Argument<string> updateName = new("name");
-        Option<string?> updateWorkspace = new("--workspace");
-        Option<string?> updateDescription = new("--description");
-        Option<string[]> updateTag = new("--tag") { AllowMultipleArgumentsPerToken = true };
+        Argument<string> updateName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> updateWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
+        Option<string?> updateDescription = new("--description") { Description = "Replacement spell description." };
+        Option<string[]> updateTag = new("--tag") { AllowMultipleArgumentsPerToken = true, Description = "Replacement tag; repeatable." };
         update.Add(updateName); update.Add(updateWorkspace); update.Add(updateDescription); update.Add(updateTag);
         update.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Update(
@@ -71,19 +71,19 @@ internal static partial class CliCommandTree
         spell.Add(update);
 
         Command delete = new("delete", "Delete a spell.");
-        Argument<string> deleteName = new("name");
-        Option<string?> deleteWorkspace = new("--workspace");
+        Argument<string> deleteName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> deleteWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         delete.Add(deleteName); delete.Add(deleteWorkspace);
         delete.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Delete(pr.GetValue(deleteName)!, ActiveWorkspace(sp, pr.GetValue(deleteWorkspace)), ct).ConfigureAwait(false));
         spell.Add(delete);
 
         Command search = new("search", "Search spells by query, tag, tool, or source.");
-        Option<string?> searchQuery = new("--query", "-q");
-        Option<string?> searchTag = new("--tag");
-        Option<string?> searchTool = new("--tool");
-        Option<string?> searchSource = new("--source");
-        Option<string?> searchWorkspace = new("--workspace");
+        Option<string?> searchQuery = new("--query", "-q") { Description = "Free-text query matched against spell name, description, and body." };
+        Option<string?> searchTag = new("--tag") { Description = "Restrict results to spells carrying this tag." };
+        Option<string?> searchTool = new("--tool") { Description = "Restrict results to spells declaring this tool." };
+        Option<string?> searchSource = new("--source") { Description = "Restrict results to this spell source." };
+        Option<string?> searchWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         search.Add(searchQuery); search.Add(searchTag); search.Add(searchTool);
         search.Add(searchSource); search.Add(searchWorkspace);
         search.SetAction(async (ParseResult pr, CancellationToken ct) =>
@@ -97,18 +97,18 @@ internal static partial class CliCommandTree
         spell.Add(search);
 
         Command validate = new("validate", "Validate a spell's frontmatter and dependencies.");
-        Argument<string> validateName = new("name");
-        Option<string?> validateWorkspace = new("--workspace");
+        Argument<string> validateName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> validateWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         validate.Add(validateName); validate.Add(validateWorkspace);
         validate.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Validate(pr.GetValue(validateName)!, ActiveWorkspace(sp, pr.GetValue(validateWorkspace)), ct).ConfigureAwait(false));
         spell.Add(validate);
 
         Command execute = new("execute", "Execute a spell and print the assistant response.");
-        Argument<string> executeName = new("name");
-        Option<string?> executeWorkspace = new("--workspace");
-        Option<string?> executeVersion = new("--version");
-        Option<string?> executeInput = new("--input");
+        Argument<string> executeName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> executeWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
+        Option<string?> executeVersion = new("--version") { Description = "Named spell version to execute; defaults to the active version." };
+        Option<string?> executeInput = new("--input") { Description = "Input text passed to the spell." };
         execute.Add(executeName); execute.Add(executeWorkspace); execute.Add(executeVersion); execute.Add(executeInput);
         execute.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Execute(
@@ -120,35 +120,35 @@ internal static partial class CliCommandTree
         spell.Add(execute);
 
         Command versions = new("versions", "List spell versions.");
-        Argument<string> versionsName = new("name");
-        Option<string?> versionsWorkspace = new("--workspace");
+        Argument<string> versionsName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> versionsWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         versions.Add(versionsName); versions.Add(versionsWorkspace);
         versions.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Versions(pr.GetValue(versionsName)!, ActiveWorkspace(sp, pr.GetValue(versionsWorkspace)), ct).ConfigureAwait(false));
         spell.Add(versions);
 
         Command export = new("export", "Export a spell as portable JSON.");
-        Argument<string> exportName = new("name");
-        Option<string?> exportWorkspace = new("--workspace");
-        Option<string?> exportOutput = new("--output");
+        Argument<string> exportName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> exportWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
+        Option<string?> exportOutput = new("--output") { Description = "Destination file path; omit to write the JSON to stdout." };
         export.Add(exportName); export.Add(exportWorkspace); export.Add(exportOutput);
         export.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Export(pr.GetValue(exportName)!, ActiveWorkspace(sp, pr.GetValue(exportWorkspace)), pr.GetValue(exportOutput), ct).ConfigureAwait(false));
         spell.Add(export);
 
         Command import = new("import", "Import a spell from portable JSON.");
-        Option<string?> importFile = new("--file");
-        Option<string?> importWorkspace = new("--workspace");
+        Option<string?> importFile = new("--file") { Description = "Portable spell JSON file to import." };
+        Option<string?> importWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         import.Add(importFile); import.Add(importWorkspace);
         import.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Import(pr.GetValue(importFile), ActiveWorkspace(sp, pr.GetValue(importWorkspace)), ct).ConfigureAwait(false));
         spell.Add(import);
 
         Command cast = new("cast", "Dry-run preview of a spell's assembled system prompt.");
-        Argument<string> castName = new("name");
-        Option<string?> castWorkspace = new("--workspace");
-        Option<string?> castSession = new("--session");
-        Option<string?> castCampaign = new("--campaign");
+        Argument<string> castName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> castWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
+        Option<string?> castSession = new("--session") { Description = "Session GUID, exact title, or unique title prefix used for the preview." };
+        Option<string?> castCampaign = new("--campaign") { Description = "Campaign GUID, exact name, or unique prefix used for the preview." };
         cast.Add(castName); cast.Add(castWorkspace); cast.Add(castSession); cast.Add(castCampaign);
         cast.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Cast(
@@ -160,9 +160,9 @@ internal static partial class CliCommandTree
         spell.Add(cast);
 
         Command clone = new("clone", "Clone a spell to a new name.");
-        Argument<string> cloneName = new("name");
-        Option<string?> cloneNewName = new("--new-name");
-        Option<string?> cloneWorkspace = new("--workspace");
+        Argument<string> cloneName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> cloneNewName = new("--new-name") { Description = "Name for the cloned spell." };
+        Option<string?> cloneWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         clone.Add(cloneName); clone.Add(cloneNewName); clone.Add(cloneWorkspace);
         clone.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Clone(pr.GetValue(cloneName)!, pr.GetValue(cloneNewName), ActiveWorkspace(sp, pr.GetValue(cloneWorkspace)), ct).ConfigureAwait(false));
@@ -177,10 +177,10 @@ internal static partial class CliCommandTree
         Command version = new("version", "Manage named spell file versions.");
 
         Command create = new("create", "Create a new spell version.");
-        Argument<string> createName = new("name");
-        Option<string?> createVersion = new("--version");
-        Option<string?> createBody = new("--body");
-        Option<string?> createWorkspace = new("--workspace");
+        Argument<string> createName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> createVersion = new("--version") { Description = "Version label to create." };
+        Option<string?> createBody = new("--body") { Description = "Version body Markdown." };
+        Option<string?> createWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         create.Add(createName); create.Add(createVersion); create.Add(createBody); create.Add(createWorkspace);
         create.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Create(
@@ -192,10 +192,10 @@ internal static partial class CliCommandTree
         version.Add(create);
 
         Command update = new("update", "Update an existing spell version's body.");
-        Argument<string> updateName = new("name");
-        Option<string?> updateVersion = new("--version");
-        Option<string?> updateBody = new("--body");
-        Option<string?> updateWorkspace = new("--workspace");
+        Argument<string> updateName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> updateVersion = new("--version") { Description = "Version label to update." };
+        Option<string?> updateBody = new("--body") { Description = "Replacement version body Markdown." };
+        Option<string?> updateWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         update.Add(updateName); update.Add(updateVersion); update.Add(updateBody); update.Add(updateWorkspace);
         update.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Update(
@@ -207,9 +207,9 @@ internal static partial class CliCommandTree
         version.Add(update);
 
         Command activate = new("activate", "Activate a spell version, swapping it into SPELL.md.");
-        Argument<string> activateName = new("name");
-        Option<string?> activateVersion = new("--version");
-        Option<string?> activateWorkspace = new("--workspace");
+        Argument<string> activateName = new("name") { Description = "Exact spell name or unique name prefix." };
+        Option<string?> activateVersion = new("--version") { Description = "Version label to activate." };
+        Option<string?> activateWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
         activate.Add(activateName); activate.Add(activateVersion); activate.Add(activateWorkspace);
         activate.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Activate(
@@ -233,7 +233,7 @@ internal static partial class CliCommandTree
             "Persistent project containers for sessions, spells, prompts, Codex, and Sanctum; filesystem access and indexing remain Workspace responsibilities.");
 
         Command list = new("list", "List registered campaigns.");
-        Option<string?> listType = new("--type");
+        Option<string?> listType = new("--type") { Description = "Restrict the listing to campaigns of this type." };
         list.Add(listType);
         list.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.List(pr.GetValue(listType), ct).ConfigureAwait(false));
@@ -272,10 +272,10 @@ internal static partial class CliCommandTree
         campaign.Add(use);
 
         Command create = new("create", "Register a new campaign.");
-        Option<string?> createName = new("--name");
-        Option<string?> createPath = new("--path");
-        Option<string?> createType = new("--type");
-        Option<string?> createDescription = new("--description");
+        Option<string?> createName = new("--name") { Description = "Campaign name." };
+        Option<string?> createPath = new("--path") { Description = "Filesystem path to associate with the campaign." };
+        Option<string?> createType = new("--type") { Description = "Campaign type." };
+        Option<string?> createDescription = new("--description") { Description = "Short campaign description." };
         create.Add(createName); create.Add(createPath); create.Add(createType); create.Add(createDescription);
         create.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Create(
@@ -288,7 +288,7 @@ internal static partial class CliCommandTree
 
         Command update = new("update", "Update a campaign.");
         Argument<string?> updateId = OptionalResourceArgument("id", "campaign GUID or name");
-        Option<string?> updateName = new("--name");
+        Option<string?> updateName = new("--name") { Description = "New campaign name." };
         update.Add(updateId); update.Add(updateName);
         update.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Update(pr.GetValue(updateId), pr.GetValue(updateName), ct).ConfigureAwait(false));
@@ -303,7 +303,7 @@ internal static partial class CliCommandTree
 
         Command export = new("export", "Export a campaign's spells and prompts as JSON.");
         Argument<string?> exportId = OptionalResourceArgument("id", "campaign GUID or name");
-        Option<string?> exportOutput = new("--output");
+        Option<string?> exportOutput = new("--output") { Description = "Destination file path; omit to write the JSON to stdout." };
         export.Add(exportId); export.Add(exportOutput);
         export.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Export(pr.GetValue(exportId), pr.GetValue(exportOutput), ct).ConfigureAwait(false));
@@ -311,7 +311,7 @@ internal static partial class CliCommandTree
 
         Command import = new("import", "Import spells and prompts into a campaign.");
         Argument<string?> importId = OptionalResourceArgument("id", "campaign GUID or name");
-        Option<string?> importFile = new("--file");
+        Option<string?> importFile = new("--file") { Description = "Portable campaign JSON file to import." };
         import.Add(importId); import.Add(importFile);
         import.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Import(pr.GetValue(importId), pr.GetValue(importFile), ct).ConfigureAwait(false));
@@ -319,9 +319,9 @@ internal static partial class CliCommandTree
 
         Command spells = new("spells", "List spells scoped to a campaign, shadowing built-ins.");
         Argument<string?> spellsId = OptionalResourceArgument("id", "campaign GUID or name");
-        Option<string?> spellsQuery = new("--query", "-q");
-        Option<string?> spellsTag = new("--tag");
-        Option<string?> spellsTool = new("--tool");
+        Option<string?> spellsQuery = new("--query", "-q") { Description = "Free-text query matched against spell name, description, and body." };
+        Option<string?> spellsTag = new("--tag") { Description = "Restrict results to spells carrying this tag." };
+        Option<string?> spellsTool = new("--tool") { Description = "Restrict results to spells declaring this tool." };
         spells.Add(spellsId); spells.Add(spellsQuery); spells.Add(spellsTag); spells.Add(spellsTool);
         spells.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Spells(
@@ -334,8 +334,8 @@ internal static partial class CliCommandTree
 
         Command prompts = new("prompts", "List prompts scoped to a campaign.");
         Argument<string?> promptsId = OptionalResourceArgument("id", "campaign GUID or name");
-        Option<string?> promptsQuery = new("--query", "-q");
-        Option<string?> promptsTag = new("--tag");
+        Option<string?> promptsQuery = new("--query", "-q") { Description = "Free-text query matched against prompt name, description, and body." };
+        Option<string?> promptsTag = new("--tag") { Description = "Restrict results to prompts carrying this tag." };
         prompts.Add(promptsId); prompts.Add(promptsQuery); prompts.Add(promptsTag);
         prompts.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Prompts(pr.GetValue(promptsId), pr.GetValue(promptsQuery), pr.GetValue(promptsTag), ct).ConfigureAwait(false));
@@ -343,10 +343,10 @@ internal static partial class CliCommandTree
 
         Command sessions = new("sessions", "List sessions scoped to a campaign.");
         Argument<string?> sessionsId = OptionalResourceArgument("id", "campaign GUID or name");
-        Option<string?> sessionsStatus = new("--status");
-        Option<string?> sessionsSearch = new("--search");
-        Option<int?> sessionsLimit = new("--limit");
-        Option<string?> sessionsBeforeUpdatedAt = new("--before-updated-at");
+        Option<string?> sessionsStatus = new("--status") { Description = "Restrict the listing to sessions in this status." };
+        Option<string?> sessionsSearch = new("--search") { Description = "Free-text search over session titles." };
+        Option<int?> sessionsLimit = new("--limit") { Description = "Maximum number of sessions to return." };
+        Option<string?> sessionsBeforeUpdatedAt = new("--before-updated-at") { Description = "Return only sessions last updated before this ISO-8601 timestamp." };
         sessions.Add(sessionsId); sessions.Add(sessionsStatus); sessions.Add(sessionsSearch);
         sessions.Add(sessionsLimit); sessions.Add(sessionsBeforeUpdatedAt);
         sessions.SetAction(async (ParseResult pr, CancellationToken ct) =>
@@ -370,7 +370,7 @@ internal static partial class CliCommandTree
 
         Command codexPut = new("put", "Write CODEX.md from a file.");
         Argument<string?> codexPutId = OptionalResourceArgument("id", "campaign GUID or name");
-        Option<string?> codexPutFile = new("--file");
+        Option<string?> codexPutFile = new("--file") { Description = "File whose contents replace CODEX.md." };
         codexPut.Add(codexPutId); codexPut.Add(codexPutFile);
         codexPut.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await codexHandler.Put(pr.GetValue(codexPutId), pr.GetValue(codexPutFile), ct).ConfigureAwait(false));
@@ -643,13 +643,13 @@ internal static partial class CliCommandTree
 
         Command divine = new("divine", "Semantic search over Grimoire entries.");
 
-        Argument<string> divineQuery = new("query");
+        Argument<string> divineQuery = new("query") { Description = "Semantic search query." };
 
-        Option<int?> divineLimit = new("--limit");
+        Option<int?> divineLimit = new("--limit") { Description = "Maximum number of matches to return." };
 
-        Option<string?> divineCampaign = new("--campaign");
+        Option<string?> divineCampaign = new("--campaign") { Description = "Restrict the search to this Campaign GUID, exact name, or unique prefix." };
 
-        Option<string?> divineStatus = new("--status");
+        Option<string?> divineStatus = new("--status") { Description = "Restrict the search to entries in this status." };
 
         divine.Add(divineQuery);
 

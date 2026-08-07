@@ -156,6 +156,8 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
                 CodeBlock c => RenderCodeBlock(c),
                 ParagraphBlock p => new Markup(InlineToMarkup(p.Inline)),
                 ListBlock l => RenderListBlock(l),
+                QuoteBlock q => RenderQuoteBlock(q),
+                ThematicBreakBlock => new Rule { Style = new Style(foreground: palette.Muted) },
                 _ => new Markup(Markup.Escape(BlockToFallbackText(block))),
             };
         }
@@ -208,9 +210,59 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
         };
     }
 
-    private IRenderable RenderListBlock(ListBlock list)
+    private IRenderable RenderQuoteBlock(QuoteBlock quote)
+    {
+        StringBuilder body = new();
+
+        foreach (Block child in quote)
+        {
+            string markup = child is ParagraphBlock p
+                ? InlineToMarkup(p.Inline)
+                : Markup.Escape(BlockToFallbackText(child));
+
+            if (markup.Length == 0)
+            {
+                continue;
+            }
+
+            if (body.Length > 0)
+            {
+                body.Append('\n');
+            }
+
+            body.Append(markup);
+        }
+
+        if (body.Length == 0)
+        {
+            return new Text(string.Empty);
+        }
+
+        string bar = palette.MutedMarkup("▌");
+
+        StringBuilder quoted = new();
+
+        foreach (string line in body.ToString().Split('\n'))
+        {
+            if (quoted.Length > 0)
+            {
+                quoted.Append('\n');
+            }
+
+            quoted.Append(bar).Append(' ').Append(line);
+        }
+
+        return new Markup(quoted.ToString());
+    }
+
+    private IRenderable RenderListBlock(ListBlock list) =>
+        new Markup(ListBlockToMarkup(list, depth: 0));
+
+    private string ListBlockToMarkup(ListBlock list, int depth)
     {
         StringBuilder sb = new();
+
+        string indent = new(' ', (depth + 1) * 2);
 
         bool first = true;
 
@@ -228,15 +280,17 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
 
             first = false;
 
-            sb.Append("  - ");
+            sb.Append(indent);
 
-            sb.Append(ListItemToMarkup(item));
+            sb.Append("- ");
+
+            sb.Append(ListItemToMarkup(item, depth));
         }
 
-        return new Markup(sb.ToString());
+        return sb.ToString();
     }
 
-    private string ListItemToMarkup(ListItemBlock item)
+    private string ListItemToMarkup(ListItemBlock item, int depth)
     {
         StringBuilder sb = new();
 
@@ -244,6 +298,17 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
 
         foreach (Block child in item)
         {
+            if (child is ListBlock nested)
+            {
+                sb.Append('\n');
+
+                sb.Append(ListBlockToMarkup(nested, depth + 1));
+
+                first = false;
+
+                continue;
+            }
+
             if (!first)
             {
                 sb.Append(' ');
@@ -296,18 +361,25 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
                     sb.Append(' ');
                     break;
 
+                case HtmlInline html:
+                    sb.Append(html.Tag);
+                    break;
+
+                case HtmlEntityInline entity:
+                    sb.Append(entity.Transcoded.ToString());
+                    break;
+
+                case AutolinkInline autolink:
+                    sb.Append(autolink.Url);
+                    break;
+
                 case ContainerInline child:
                     AppendInlinesPlain(child, sb);
                     break;
 
                 default:
-                    string raw = inline.ToString() ?? string.Empty;
-
-                    if (raw.Length > 0)
-                    {
-                        sb.Append(raw);
-                    }
-
+                    // Markdig does not override ToString on inline nodes; emitting nothing is the
+                    // only safe fallback, because ToString would print the CLR type name.
                     break;
             }
         }
@@ -356,28 +428,69 @@ public sealed class MarkdigSpectreRenderer(IThemePalette palette)
                     sb.Append('\n');
                     break;
 
+                case HtmlInline html:
+                    sb.Append(Markup.Escape(html.Tag));
+                    break;
+
+                case HtmlEntityInline entity:
+                    sb.Append(Markup.Escape(entity.Transcoded.ToString()));
+                    break;
+
+                case AutolinkInline autolink:
+                    sb.Append(Markup.Escape(autolink.Url));
+                    break;
+
                 case ContainerInline child:
                     AppendInlinesMarkup(child, sb);
                     break;
 
                 default:
-                    string raw = inline.ToString() ?? string.Empty;
-
-                    sb.Append(Markup.Escape(raw));
-
+                    // Markdig does not override ToString on inline nodes; emitting nothing is the
+                    // only safe fallback, because ToString would print the CLR type name.
                     break;
             }
         }
     }
 
+    /// <summary>
+    /// Plain text for a block the renderer has no dedicated arm for. Markdig does not override
+    /// <see cref="object.ToString"/> on its syntax nodes, so falling through to it would print CLR
+    /// type names ("Markdig.Syntax.QuoteBlock") into the operator's answer.
+    /// </summary>
     private static string BlockToFallbackText(Block block)
     {
-        if (block is LeafBlock leaf && leaf.Lines.Count > 0)
+        if (block is LeafBlock leaf)
         {
-            return leaf.Lines.ToString();
+            return leaf.Lines.Count > 0
+                ? leaf.Lines.ToString()
+                : InlineToPlain(leaf.Inline);
         }
 
-        return block.ToString() ?? string.Empty;
+        if (block is ContainerBlock container)
+        {
+            StringBuilder sb = new();
+
+            foreach (Block child in container)
+            {
+                string text = BlockToFallbackText(child);
+
+                if (text.Length == 0)
+                {
+                    continue;
+                }
+
+                if (sb.Length > 0)
+                {
+                    sb.Append('\n');
+                }
+
+                sb.Append(text);
+            }
+
+            return sb.ToString();
+        }
+
+        return string.Empty;
     }
 
 }

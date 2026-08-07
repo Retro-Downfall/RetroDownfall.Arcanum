@@ -152,4 +152,87 @@ public sealed class ChatCommandHelperTests
         Assert.Equal(int.MaxValue, total.ReasoningTokens);
     }
 
+    [Fact]
+    public void ComputeErasableRowCount_counts_the_partially_filled_final_row()
+    {
+
+        // A single-line answer occupies one terminal row even though it completed no newlines;
+        // erasing zero rows left the streamed copy on screen above the rendered Markdown.
+        Assert.Equal(1, ChatCommand.ComputeErasableRowCount("Hello world", width: 80));
+
+    }
+
+    [Fact]
+    public void ComputeErasableRowCount_counts_every_occupied_row()
+    {
+
+        Assert.Equal(3, ChatCommand.ComputeErasableRowCount("a\nb\nc", width: 80));
+
+    }
+
+    [Fact]
+    public void ComputeErasableRowCount_counts_terminal_wrap_rows()
+    {
+
+        Assert.Equal(3, ChatCommand.ComputeErasableRowCount(new string('x', 25), width: 10));
+
+    }
+
+    [Fact]
+    public void EvaluatePromptInterrupt_first_stroke_with_text_only_clears_the_line()
+    {
+
+        ChatCommand.ReplInterruptDecision decision =
+            ChatCommand.EvaluatePromptInterrupt(consecutiveInterrupts: 0, hadPendingText: true);
+
+        Assert.False(decision.ExitRepl);
+
+        Assert.Equal(0, decision.ConsecutiveInterrupts);
+
+        Assert.NotNull(decision.Notice);
+
+    }
+
+    [Fact]
+    public void EvaluatePromptInterrupt_first_stroke_on_empty_line_warns_without_exiting()
+    {
+
+        ChatCommand.ReplInterruptDecision decision =
+            ChatCommand.EvaluatePromptInterrupt(consecutiveInterrupts: 0, hadPendingText: false);
+
+        Assert.False(decision.ExitRepl);
+
+        Assert.Equal(1, decision.ConsecutiveInterrupts);
+
+        Assert.NotNull(decision.Notice);
+
+    }
+
+    [Fact]
+    public void EvaluatePromptInterrupt_second_consecutive_stroke_exits_cleanly()
+    {
+
+        ChatCommand.ReplInterruptDecision decision =
+            ChatCommand.EvaluatePromptInterrupt(consecutiveInterrupts: 1, hadPendingText: false);
+
+        Assert.True(decision.ExitRepl);
+
+    }
+
+    [Fact]
+    public void EvaluatePromptInterrupt_text_entry_resets_the_exit_countdown()
+    {
+
+        ChatCommand.ReplInterruptDecision cleared =
+            ChatCommand.EvaluatePromptInterrupt(consecutiveInterrupts: 1, hadPendingText: true);
+
+        Assert.Equal(0, cleared.ConsecutiveInterrupts);
+
+        Assert.False(
+            ChatCommand.EvaluatePromptInterrupt(
+                cleared.ConsecutiveInterrupts,
+                hadPendingText: false).ExitRepl);
+
+    }
+
 }

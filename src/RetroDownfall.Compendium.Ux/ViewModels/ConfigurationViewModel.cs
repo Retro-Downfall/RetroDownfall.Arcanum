@@ -43,7 +43,19 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     [ObservableProperty] private IReadOnlyDictionary<string, string> _validationErrorsByPointer = new Dictionary<string, string>();
 
+    /// <summary>
+    /// Set when the initial (or a subsequent) read of arcanum.json failed. The editor is then bound to
+    /// fabricated defaults rather than the operator's file, so saving is blocked until a read succeeds.
+    /// </summary>
+    [ObservableProperty] private bool _loadFailed;
+
+    [ObservableProperty] private bool _hasFieldErrors;
+
+    [ObservableProperty] private string? _lastErrorMessage;
+
     private ArcanumSettings _snapshot = new();
+
+    private Dictionary<string, string> _serverValidationErrors = new(StringComparer.Ordinal);
 
     public HostSectionViewModel Host { get; } = new();
 
@@ -95,7 +107,9 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         Presets = new PresetsSectionViewModel(this, presetService, uiDispatcher);
 
-        SaveCommand = new AsyncRelayCommand(SaveAsync, () => IsDirty && !IsSaving && !HasExternalChange);
+        SaveCommand = new AsyncRelayCommand(
+            SaveAsync,
+            () => IsDirty && !IsSaving && !HasExternalChange && !LoadFailed && !HasFieldErrors);
 
         RefreshCommand = new AsyncRelayCommand(RefreshAsync, () => !IsSaving);
 
@@ -126,11 +140,65 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         IsDirty = true;
 
+        RefreshFieldValidation();
+
         SaveCommand.NotifyCanExecuteChanged();
 
         CancelCommand.NotifyCanExecuteChanged();
 
     }
+
+    /// <summary>
+    /// Republishes the pointer-keyed validation surface as the union of the descriptor field errors
+    /// computed in the editor and the errors returned by the last write attempt, so a rejected value is
+    /// rendered next to the control that owns it instead of being dropped on Save.
+    /// </summary>
+    private void RefreshFieldValidation()
+    {
+
+        Dictionary<string, string> merged = new(StringComparer.Ordinal);
+
+        bool anyFieldError = false;
+
+        foreach (GenericSettingFieldViewModel field in AllGenericFields())
+        {
+
+            if (!field.HasError)
+            {
+
+                continue;
+
+            }
+
+            anyFieldError = true;
+
+            merged[field.Descriptor.Key] = field.ErrorMessage ?? "This value is not valid.";
+
+        }
+
+        foreach (KeyValuePair<string, string> serverError in _serverValidationErrors)
+        {
+
+            merged[serverError.Key] = serverError.Value;
+
+        }
+
+        HasFieldErrors = anyFieldError;
+
+        ValidationErrorsByPointer = merged;
+
+    }
+
+    private IEnumerable<GenericSettingFieldViewModel> AllGenericFields() =>
+        _genericSections.Values
+            .ToArray()
+            .SelectMany(static section => section.Fields);
+
+    private List<string> InvalidFieldSummaries() =>
+        AllGenericFields()
+            .Where(static field => field.HasError)
+            .Select(static field => $"{field.Descriptor.Key}: {field.ErrorMessage}")
+            .ToList();
 
     partial void OnIsDirtyChanged(bool value)
     {
@@ -154,6 +222,10 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     partial void OnHasExternalChangeChanged(bool value) => SaveCommand.NotifyCanExecuteChanged();
 
+    partial void OnLoadFailedChanged(bool value) => SaveCommand.NotifyCanExecuteChanged();
+
+    partial void OnHasFieldErrorsChanged(bool value) => SaveCommand.NotifyCanExecuteChanged();
+
     public GenericSectionViewModel GetOrCreateGenericSection(ConfigSection section)
     {
 
@@ -169,6 +241,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         ReloadGenericSection(created);
 
         _genericSections[section] = created;
+
+        RefreshFieldValidation();
 
         return created;
 
@@ -223,6 +297,12 @@ public sealed partial class ConfigurationViewModel : ObservableObject
             await _uiDispatcher.InvokeAsync(() =>
             {
 
+                // Fail closed: the editor is showing fabricated defaults, so a Save here would replace
+                // the operator's real file with them. Saving stays blocked until a read succeeds.
+                LoadFailed = true;
+
+                LastErrorMessage = ex.Message;
+
                 StatusMessage = $"Failed to load {path}";
 
             }).ConfigureAwait(false);
@@ -234,6 +314,28 @@ public sealed partial class ConfigurationViewModel : ObservableObject
     }
 
     private void ApplyLoadedSettings(ArcanumSettings settings)
+    {
+
+        RestoreSections(settings);
+
+        LoadFailed = false;
+
+        HasExternalChange = false;
+
+        LastErrorMessage = null;
+
+        LastSavedAt = _store.GetLastWriteTimeUtc();
+
+        StatusMessage = $"Loaded from {_store.ConfigurationFilePath}";
+
+    }
+
+    /// <summary>
+    /// Rebinds every section to <paramref name="settings"/> and clears the dirty/validation state.
+    /// Deliberately leaves <see cref="HasExternalChange"/> and <see cref="LastSavedAt"/> alone so a
+    /// snapshot restore (Cancel) never dismisses the watcher's on-disk-change warning without a reload.
+    /// </summary>
+    private void RestoreSections(ArcanumSettings settings)
     {
 
         _snapshot = settings;
@@ -249,7 +351,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         Cli.LoadFrom(settings.Cli);
 
-        foreach (GenericSectionViewModel generic in _genericSections.Values)
+        foreach (GenericSectionViewModel generic in _genericSections.Values.ToArray())
         {
 
             ReloadGenericSection(generic);
@@ -258,13 +360,9 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         IsDirty = false;
 
-        HasExternalChange = false;
+        _serverValidationErrors = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        ValidationErrorsByPointer = new Dictionary<string, string>();
-
-        LastSavedAt = _store.GetLastWriteTimeUtc();
-
-        StatusMessage = $"Loaded from {_store.ConfigurationFilePath}";
+        RefreshFieldValidation();
 
     }
 
@@ -299,6 +397,56 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         }
 
+        if (LoadFailed)
+        {
+
+            string path = _store.ConfigurationFilePath;
+
+            await _uiDispatcher.InvokeAsync(() =>
+            {
+
+                LastErrorMessage = $"Cannot save: {path} was never read successfully.";
+
+                StatusMessage = $"Cannot save {path}";
+
+            }).ConfigureAwait(false);
+
+            await _dialogService
+                .ShowAlertAsync(
+                    "Cannot save",
+                    $"Compendium never read {path} successfully, so this window shows default settings rather than yours."
+                    + $"{Environment.NewLine}{Environment.NewLine}Repair the file on disk and choose Reload before saving.")
+                .ConfigureAwait(false);
+
+            return;
+
+        }
+
+        List<string> invalidFields = InvalidFieldSummaries();
+
+        if (invalidFields.Count > 0)
+        {
+
+            await _uiDispatcher.InvokeAsync(() =>
+            {
+
+                LastErrorMessage = $"{invalidFields.Count} setting(s) must be corrected before saving.";
+
+                StatusMessage = "Fix the highlighted settings before saving.";
+
+            }).ConfigureAwait(false);
+
+            await _dialogService
+                .ShowAlertAsync(
+                    "Invalid settings",
+                    $"These settings cannot be saved until they are corrected:{Environment.NewLine}{Environment.NewLine}"
+                    + string.Join(Environment.NewLine, invalidFields))
+                .ConfigureAwait(false);
+
+            return;
+
+        }
+
         IsSaving = true;
 
         try
@@ -322,13 +470,19 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
                     LastSavedAt = _store.GetLastWriteTimeUtc();
 
+                    LastErrorMessage = null;
+
                     StatusMessage = "Saved arcanum.json";
 
-                    ValidationErrorsByPointer = new Dictionary<string, string>();
+                    _serverValidationErrors = new Dictionary<string, string>(StringComparer.Ordinal);
+
+                    RefreshFieldValidation();
 
                 }
                 else
                 {
+
+                    LastErrorMessage = result.ErrorMessage ?? "Save failed.";
 
                     StatusMessage = result.ErrorMessage ?? "Save failed.";
 
@@ -341,18 +495,29 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
                     }
 
-                    ValidationErrorsByPointer = byPointer;
+                    _serverValidationErrors = byPointer;
+
+                    RefreshFieldValidation();
 
                 }
 
             }).ConfigureAwait(false);
 
-            if (!result.IsSuccess && result.ValidationErrors.Count > 0)
+            if (!result.IsSuccess)
             {
 
-                string first = result.ValidationErrors[0].Detail;
+                // Every unsuccessful save is surfaced, not only the validation ones: locked files,
+                // write-lock timeouts and stale-fingerprint refusals carry no validation errors and
+                // would otherwise be invisible behind the SaveBar's "Unsaved changes" text.
+                bool hasValidationErrors = result.ValidationErrors.Count > 0;
 
-                await _dialogService.ShowAlertAsync("Validation Error", first).ConfigureAwait(false);
+                string detail = hasValidationErrors
+                    ? result.ValidationErrors[0].Detail
+                    : result.ErrorMessage ?? "Save failed.";
+
+                await _dialogService
+                    .ShowAlertAsync(hasValidationErrors ? "Validation Error" : "Save failed", detail)
+                    .ConfigureAwait(false);
 
             }
 
@@ -360,9 +525,14 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         catch (Exception ex)
         {
 
-            await _uiDispatcher
-                .InvokeAsync(() => StatusMessage = "Could not save arcanum.json")
-                .ConfigureAwait(false);
+            await _uiDispatcher.InvokeAsync(() =>
+            {
+
+                LastErrorMessage = ex.Message;
+
+                StatusMessage = "Could not save arcanum.json";
+
+            }).ConfigureAwait(false);
 
             await _dialogService
                 .ShowAlertAsync(
@@ -424,11 +594,37 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         }
 
-        ApplyLoadedSettings(_snapshot);
+        RestoreSections(_snapshot);
+
+        LastErrorMessage = null;
 
         StatusMessage = "Discarded local edits.";
 
         return Task.CompletedTask;
+
+    }
+
+    /// <summary>
+    /// Decides whether the window may close. Unsaved edits require an explicit operator confirmation so
+    /// closing never silently discards them, matching the Reload-with-edits confirmation.
+    /// </summary>
+    public async Task<bool> ConfirmDiscardOnExitAsync()
+    {
+
+        if (!IsDirty)
+        {
+
+            return true;
+
+        }
+
+        return await _dialogService
+            .ShowConfirmAsync(
+                "Unsaved changes",
+                "Discard the unsaved configuration edits and close Compendium?",
+                "Discard",
+                "Keep editing")
+            .ConfigureAwait(false);
 
     }
 

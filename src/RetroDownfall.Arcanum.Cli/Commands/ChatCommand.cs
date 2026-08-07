@@ -260,10 +260,10 @@ public sealed class ChatCommand(
 
         int exitCode = 0;
 
+        int consecutiveInterrupts = 0;
+
         while (true)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
             await RefreshMcpServersThrottledAsync(cancellationToken).ConfigureAwait(false);
 
             if (cliEnvironment.IsInteractive)
@@ -278,8 +278,6 @@ public sealed class ChatCommand(
 
                 AnsiConsole.MarkupLine(statusBar);
             }
-
-            string? raw;
 
             int stagedCount = stagedFiles.Count
                 + stagedImages.Count
@@ -297,16 +295,11 @@ public sealed class ChatCommand(
                 RenderManaBarLine(session, used, manaContextLimit);
             }
 
-            void OnReplCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
-            {
-                e.Cancel = true;
-            }
-
-            Console.CancelKeyPress += OnReplCancelKeyPress;
+            CliLineReadResult read;
 
             try
             {
-                raw = CliLineReader.ReadLine(promptMarkup, allowEmpty: true);
+                read = CliLineReader.Read(promptMarkup, allowEmpty: true);
             }
             catch (InvalidOperationException)
             {
@@ -314,21 +307,42 @@ public sealed class ChatCommand(
 
                 return exitCode;
             }
-            finally
+
+            if (read.Outcome == CliLineReadOutcome.EndOfInput)
             {
-                Console.CancelKeyPress -= OnReplCancelKeyPress;
+
+                break;
+
             }
 
-            if (raw is null)
+            if (read.Outcome == CliLineReadOutcome.Interrupted)
             {
 
-                AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Turn cancelled at prompt.")));
+                ReplInterruptDecision decision = EvaluatePromptInterrupt(
+                    consecutiveInterrupts,
+                    read.HadPendingText);
+
+                consecutiveInterrupts = decision.ConsecutiveInterrupts;
+
+                if (decision.Notice is not null)
+                {
+                    AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(decision.Notice)));
+                }
+
+                if (decision.ExitRepl)
+                {
+
+                    break;
+
+                }
 
                 continue;
 
             }
 
-            string prompt = raw.Trim();
+            consecutiveInterrupts = 0;
+
+            string prompt = (read.Line ?? string.Empty).Trim();
 
             if (string.IsNullOrWhiteSpace(prompt))
             {
@@ -1648,10 +1662,6 @@ public sealed class ChatCommand(
 
         CliStreamContent streamContent = new();
 
-        int linesPrinted = 0;
-
-        int currentLineLen = 0;
-
         int width = Math.Max(1, AnsiConsole.Profile.Width);
 
         bool streamWithMarkdownRewrite = cliEnvironment.IsInteractive && cliEnvironment.ColorEnabled;
@@ -1753,9 +1763,10 @@ public sealed class ChatCommand(
 
                         if (streamWithMarkdownRewrite)
                         {
-                            AnsiConsole.Markup(Markup.Escape(chunk));
-
-                            AdvanceLineCounter(chunk, width, ref linesPrinted, ref currentLineLen);
+                            // Raw model text goes straight to stdout: Spectre re-wraps every chunk
+                            // from column zero at the profile width, which both corrupts the text
+                            // and desynchronises the erase-row count from the real screen.
+                            Console.Out.Write(chunk);
                         }
 
                         break;
@@ -1941,7 +1952,7 @@ public sealed class ChatCommand(
 
             AnsiConsole.WriteLine();
 
-            EraseStreamedLines(linesPrinted);
+            EraseStreamedLines(ComputeErasableRowCount(streamContent.AnswerText, width));
 
             AnsiConsole.Write(markdig.Render(body));
 
@@ -2042,7 +2053,15 @@ public sealed class ChatCommand(
                                     session.MemoryCompressed = true;
                                 }
 
-                                stderrConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape(evt.Message ?? string.Empty)));
+                                // Never write out of band while Spectre's Live region owns the
+                                // viewport: a raw line lands inside the region Live is repainting
+                                // and offsets its remembered shape for the rest of the turn.
+                                liveDiagnostics.Add(ToolDiagnosticLine.Create(
+                                    "notice",
+                                    ToolDiagnosticOutcome.Succeeded,
+                                    evt.Message ?? string.Empty));
+
+                                Refresh(force: true);
 
                                 break;
 
@@ -2294,6 +2313,60 @@ public sealed class ChatCommand(
 
     }
 
+    /// <summary>
+    /// Decides what a Ctrl+C at the idle <c>Mage &gt;</c> prompt means. A first interrupt with text
+    /// composed discards the line; a first interrupt on an empty line warns; a second consecutive
+    /// interrupt on an empty line leaves the REPL cleanly so the exit summary and accumulated exit
+    /// code are still honoured.
+    /// </summary>
+    internal static ReplInterruptDecision EvaluatePromptInterrupt(
+        int consecutiveInterrupts,
+        bool hadPendingText)
+    {
+
+        if (hadPendingText)
+        {
+
+            return new ReplInterruptDecision(
+                0,
+                false,
+                "Input cleared. Press Ctrl+C again on an empty line to exit.");
+
+        }
+
+        int next = consecutiveInterrupts + 1;
+
+        if (next >= 2)
+        {
+
+            return new ReplInterruptDecision(0, true, null);
+
+        }
+
+        return new ReplInterruptDecision(
+            next,
+            false,
+            "Press Ctrl+C again to exit, or type /exit.");
+
+    }
+
+    /// <summary>
+    /// Number of terminal rows the streamed plain-text answer occupies, which is one more than the
+    /// number of completed newlines because the partially filled final row is also on screen.
+    /// </summary>
+    internal static int ComputeErasableRowCount(string streamedText, int width)
+    {
+
+        int linesPrinted = 0;
+
+        int currentLineLen = 0;
+
+        AdvanceLineCounter(streamedText, width, ref linesPrinted, ref currentLineLen);
+
+        return linesPrinted + 1;
+
+    }
+
     internal static void AdvanceLineCounter(string chunk, int width, ref int linesPrinted, ref int currentLineLen)
     {
         foreach (char c in chunk)
@@ -2324,25 +2397,31 @@ public sealed class ChatCommand(
         }
     }
 
-    private static void EraseStreamedLines(int linesPrinted)
+    private static void EraseStreamedLines(int rowCount)
     {
 
-        if (linesPrinted <= 0)
+        if (rowCount <= 0)
         {
 
             return;
 
         }
 
-        // Move the cursor up one line and clear it, repeating for each streamed line.
+        // Move the cursor up one row and clear it, repeating for each occupied row. Written straight
+        // to stdout: routing escape sequences through Spectre would word-wrap them at the profile
+        // width and corrupt the erase.
 
-        string eraseSequence =
-            $"\u001b[1A\u001b[2K" +
-            string.Join(string.Empty, Enumerable.Repeat("\u001b[1A\u001b[2K", linesPrinted - 1));
-
-        AnsiConsole.Write(eraseSequence);
+        Console.Out.Write(string.Concat(Enumerable.Repeat("\u001b[1A\u001b[2K", rowCount)));
 
     }
+
+    /// <summary>
+    /// Outcome of a Ctrl+C received while the REPL is waiting at the prompt.
+    /// </summary>
+    internal readonly record struct ReplInterruptDecision(
+        int ConsecutiveInterrupts,
+        bool ExitRepl,
+        string? Notice);
 
     private sealed class SessionMut
     {

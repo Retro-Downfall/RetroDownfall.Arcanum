@@ -210,8 +210,19 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
         }
 
-        // Validate numeric ranges
-        if (Descriptor.Kind is SettingKind.Int or SettingKind.Long or SettingKind.Float)
+        // Validate free-text JSON maps against the exact type Save coerces them to
+        if (Descriptor.Kind == SettingKind.Dictionary
+            && Value is string dictionaryJson
+            && !TryValidateDictionaryJson(dictionaryJson, out string? dictionaryError))
+        {
+            errors.Add(dictionaryError ?? "Invalid JSON");
+        }
+
+        // Validate numeric ranges. An unset value has nothing to range-check: template descriptors such
+        // as providers.contextWindowLimit read as null until a provider exists, and NumericValue would
+        // otherwise report their placeholder 0 as out of bounds.
+        if (Descriptor.Kind is SettingKind.Int or SettingKind.Long or SettingKind.Float
+            && Value is not null)
         {
             double numericValue = NumericValue;
             if (numericValue < Descriptor.Min || numericValue > Descriptor.Max)
@@ -245,6 +256,54 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
         ErrorMessage = errors.Count > 0 ? string.Join("; ", errors) : null;
         OnPropertyChanged(nameof(HasError));
+    }
+
+    private bool TryValidateDictionaryJson(string json, out string? error)
+    {
+
+        string text = string.IsNullOrWhiteSpace(json) ? "{}" : json;
+
+        Type? targetType = GenericSettingsUpdater.ResolveValueType(Descriptor.Key);
+
+        try
+        {
+
+            if (targetType is null)
+            {
+
+                using JsonDocument document = JsonDocument.Parse(text);
+
+                if (document.RootElement.ValueKind != JsonValueKind.Object)
+                {
+
+                    error = "Must be a JSON object";
+
+                    return false;
+
+                }
+
+            }
+            else
+            {
+
+                _ = JsonSerializer.Deserialize(text, targetType, ConfigurationJsonContext.Default);
+
+            }
+
+            error = null;
+
+            return true;
+
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException)
+        {
+
+            error = $"Invalid JSON: {ex.Message}";
+
+            return false;
+
+        }
+
     }
 
     private static string DeriveGroup(string key)

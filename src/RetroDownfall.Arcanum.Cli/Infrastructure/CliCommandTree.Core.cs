@@ -413,9 +413,19 @@ internal static partial class CliCommandTree
 
         };
 
-        Option<int?> chunksLimit = new("--limit");
+        Option<int?> chunksLimit = new("--limit")
+        {
 
-        Option<int?> chunksOffset = new("--offset");
+            Description = "Maximum number of chunks to return.",
+
+        };
+
+        Option<int?> chunksOffset = new("--offset")
+        {
+
+            Description = "Number of chunks to skip before returning results.",
+
+        };
 
         chunks.Add(chunksWorkspace);
 

@@ -44,8 +44,9 @@ internal static class OverlayLayout
     }
 
     /// <summary>
-    /// Wraps long lines to <paramref name="innerWidth"/>; truncates a single logical line to
-    /// <see cref="MaxWrappedPreviewRows"/> wrapped rows with an ellipsis on the last row.
+    /// Wraps long lines to <paramref name="innerWidth"/> display cells; truncates a single logical line
+    /// to <see cref="MaxWrappedPreviewRows"/> wrapped rows with an ellipsis on the last row.
+    /// Slices land on grapheme boundaries, so a wide glyph is never split and never overflows the frame.
     /// </summary>
     public static List<string> WrapLines(IReadOnlyList<string> lines, int innerWidth)
     {
@@ -61,7 +62,7 @@ internal static class OverlayLayout
                 continue;
             }
 
-            if (line.Length <= width)
+            if (TerminalCellMetrics.MeasureWidth(line) <= width)
             {
                 result.Add(line);
                 continue;
@@ -71,18 +72,17 @@ internal static class OverlayLayout
             int rows = 0;
             while (offset < line.Length && rows < MaxWrappedPreviewRows)
             {
-                int remaining = line.Length - offset;
+                CellSlice chunk = TerminalCellMetrics.TakeCells(line, offset, width);
                 bool lastAllowed = rows == MaxWrappedPreviewRows - 1;
-                if (lastAllowed && remaining > width)
+                if (lastAllowed && !chunk.ReachedEnd)
                 {
-                    int take = Math.Max(1, width - 1);
-                    result.Add(line.Substring(offset, take) + "…");
+                    CellSlice head = TerminalCellMetrics.TakeCells(line, offset, Math.Max(1, width - 1));
+                    result.Add(line[offset..head.EndIndex] + "…");
                     break;
                 }
 
-                int chunk = Math.Min(width, remaining);
-                result.Add(line.Substring(offset, chunk));
-                offset += chunk;
+                result.Add(line[offset..chunk.EndIndex]);
+                offset = chunk.EndIndex;
                 rows++;
             }
         }

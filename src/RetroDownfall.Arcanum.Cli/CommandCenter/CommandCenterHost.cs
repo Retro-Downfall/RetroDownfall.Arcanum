@@ -236,9 +236,23 @@ internal sealed class CommandCenterHost(
                     {
                         try
                         {
+                            List<CommandCenterUiUpdateKind> queued = new();
                             await foreach (CommandCenterUiUpdate update in uiChannel.Reader.ReadAllAsync(runToken).ConfigureAwait(false))
                             {
-                                app.Invoke(() => window.ApplyState(state, kind: update.Kind));
+                                // Drain whatever else arrived while the UI thread was busy and collapse
+                                // it, so a burst of streaming flushes costs one pane rebuild, not one
+                                // per flush.
+                                queued.Clear();
+                                queued.Add(update.Kind);
+                                while (uiChannel.Reader.TryRead(out CommandCenterUiUpdate? pending))
+                                {
+                                    queued.Add(pending.Kind);
+                                }
+
+                                foreach (CommandCenterUiUpdateKind kind in CommandCenterUiUpdatePump.Coalesce(queued))
+                                {
+                                    app.Invoke(() => window.ApplyState(state, kind: kind));
+                                }
                             }
                         }
                         catch (OperationCanceledException)

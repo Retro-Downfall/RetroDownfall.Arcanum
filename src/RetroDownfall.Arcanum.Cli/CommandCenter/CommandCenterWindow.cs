@@ -804,9 +804,10 @@ internal sealed class CommandCenterWindow : Window
         int longest = 0;
         foreach (string line in lines)
         {
-            if (line.Length > longest)
+            int cells = TerminalCellMetrics.MeasureWidth(line);
+            if (cells > longest)
             {
-                longest = line.Length;
+                longest = cells;
             }
         }
 
@@ -888,9 +889,10 @@ internal sealed class CommandCenterWindow : Window
         int longest = 0;
         foreach (string line in lines)
         {
-            if (line.Length > longest)
+            int cells = TerminalCellMetrics.MeasureWidth(line);
+            if (cells > longest)
             {
-                longest = line.Length;
+                longest = cells;
             }
         }
 
@@ -1917,13 +1919,18 @@ internal sealed class CommandCenterWindow : Window
         }
     }
 
+    /// <summary>
+    /// Clips <paramref name="text"/> to <paramref name="width"/> terminal cells, not UTF-16 units:
+    /// a CJK glyph or emoji paints two cells, so a code-unit budget overflows the pane and can slice a
+    /// surrogate pair into replacement glyphs.
+    /// </summary>
     private static string TruncateToWidth(string text, int width)
     {
-        if (width < 2 || text.Length <= width)
+        if (width < 2 || TerminalCellMetrics.MeasureWidth(text) <= width)
         {
             return text;
         }
 
-        return text[..(width - 1)] + "…";
+        return TerminalCellMetrics.TruncateToCells(text, width - 1) + "…";
     }
 }

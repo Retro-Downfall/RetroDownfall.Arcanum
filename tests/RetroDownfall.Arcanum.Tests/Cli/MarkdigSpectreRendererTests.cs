@@ -147,4 +147,74 @@ public sealed class MarkdigSpectreRendererTests
 
     }
 
+    [Fact]
+    public void Render_blockquote_shows_the_quoted_text_not_a_type_name()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        TestConsole console = new();
+
+        console.Write(renderer.Render("> Note: back up first"));
+
+        Assert.DoesNotContain("Markdig", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("Note: back up first", console.Output, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Render_thematic_break_does_not_emit_a_type_name()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        TestConsole console = new();
+
+        console.Write(renderer.Render("before\n\n---\n\nafter"));
+
+        Assert.DoesNotContain("Markdig", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("before", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("after", console.Output, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Render_nested_list_shows_the_nested_items()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        TestConsole console = new();
+
+        console.Write(renderer.Render("- outer\n  - nested\n"));
+
+        Assert.DoesNotContain("Markdig", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("outer", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("nested", console.Output, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public void Render_inline_html_does_not_emit_a_type_name()
+    {
+
+        MarkdigSpectreRenderer renderer = CreateRenderer();
+
+        TestConsole console = new();
+
+        console.Write(renderer.Render("See <br> here."));
+
+        Assert.DoesNotContain("Markdig", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("See", console.Output, StringComparison.Ordinal);
+
+        Assert.Contains("here.", console.Output, StringComparison.Ordinal);
+
+    }
+
 }

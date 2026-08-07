@@ -5,9 +5,11 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.Services.Setup;
 using RetroDownfall.Arcanum.Core.Backup;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -765,6 +767,9 @@ internal static class CliFailureMapper
             BackupPassphraseInputException passphrase => new CliFailure(
                 CliExitCode.ConfigurationError,
                 passphrase.Message),
+            ConfigurationValidationException validation => new CliFailure(
+                CliExitCode.ConfigurationError,
+                DescribeConfigurationValidationFailure(validation)),
             OperationCanceledException => new CliFailure(
                 CliExitCode.Cancelled,
                 "The operation was cancelled."),
@@ -772,6 +777,42 @@ internal static class CliFailureMapper
                 CliExitCode.GenericError,
                 "An unexpected CLI error occurred."),
         };
+
+    /// <summary>
+    /// Renders the startup validation failure the operator has to act on. Without this the only copy
+    /// of the per-pointer detail is the rolling JSON log file, which has no console sink unless
+    /// enterprise telemetry is enabled.
+    /// </summary>
+    internal static string DescribeConfigurationValidationFailure(
+        ConfigurationValidationException exception)
+    {
+
+        ArgumentNullException.ThrowIfNull(exception);
+
+        StringBuilder builder = new(exception.Message);
+
+        if (exception.Error.Details is { Count: > 0 } details)
+        {
+
+            foreach (ConfigurationValidationError detail in details)
+            {
+
+                builder.Append(Environment.NewLine)
+                    .Append("  - ")
+                    .Append(detail.Pointer)
+                    .Append(": ")
+                    .Append(detail.Detail);
+
+            }
+
+        }
+
+        builder.Append(Environment.NewLine)
+            .Append("Run 'arcanum config validate' to re-check, or 'arcanum config edit' to repair arcanum.json.");
+
+        return builder.ToString();
+
+    }
 
 }
 

@@ -13,12 +13,54 @@ public partial class MainWindow : Window
 
     private readonly Dictionary<ConfigSection, TabItem> _openTabs = new();
 
+    private bool _discardConfirmed;
+
     public MainWindow()
     {
 
         InitializeComponent();
 
         DataContextChanged += OnDataContextChanged;
+
+        Closing += OnWindowClosing;
+
+    }
+
+    private async void OnWindowClosing(object? sender, WindowClosingEventArgs e)
+    {
+
+        if (_discardConfirmed || DataContext is not ConfigurationViewModel vm || !vm.IsDirty)
+        {
+
+            return;
+
+        }
+
+        // Pending edits live only in memory, so closing must ask before throwing them away.
+        e.Cancel = true;
+
+        try
+        {
+
+            if (!await vm.ConfirmDiscardOnExitAsync().ConfigureAwait(true))
+            {
+
+                return;
+
+            }
+
+        }
+        catch (Exception)
+        {
+
+            // The confirmation could not be shown; keep the window (and the unsaved edits) open.
+            return;
+
+        }
+
+        _discardConfirmed = true;
+
+        Close();
 
     }
 

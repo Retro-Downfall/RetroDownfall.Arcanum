@@ -23,6 +23,12 @@ public partial class SaveBar : UserControl
     public static readonly StyledProperty<bool> HasExternalChangeProperty =
         AvaloniaProperty.Register<SaveBar, bool>(nameof(HasExternalChange));
 
+    public static readonly StyledProperty<bool> LoadFailedProperty =
+        AvaloniaProperty.Register<SaveBar, bool>(nameof(LoadFailed));
+
+    public static readonly StyledProperty<string?> LastErrorMessageProperty =
+        AvaloniaProperty.Register<SaveBar, string?>(nameof(LastErrorMessage));
+
     public static readonly StyledProperty<ICommand?> SaveCommandProperty =
         AvaloniaProperty.Register<SaveBar, ICommand?>(nameof(SaveCommand));
 
@@ -77,6 +83,24 @@ public partial class SaveBar : UserControl
 
     }
 
+    public bool LoadFailed
+    {
+
+        get => GetValue(LoadFailedProperty);
+
+        set => SetValue(LoadFailedProperty, value);
+
+    }
+
+    public string? LastErrorMessage
+    {
+
+        get => GetValue(LastErrorMessageProperty);
+
+        set => SetValue(LastErrorMessageProperty, value);
+
+    }
+
     public ICommand? SaveCommand
     {
 
@@ -117,6 +141,10 @@ public partial class SaveBar : UserControl
 
         HasExternalChangeProperty.Changed.AddClassHandler<SaveBar>((control, _) => control.UpdateStatus());
 
+        LoadFailedProperty.Changed.AddClassHandler<SaveBar>((control, _) => control.UpdateStatus());
+
+        LastErrorMessageProperty.Changed.AddClassHandler<SaveBar>((control, _) => control.UpdateStatus());
+
     }
 
     public SaveBar()
@@ -131,9 +159,28 @@ public partial class SaveBar : UserControl
     private void UpdateStatus()
     {
 
+        if (ReloadButton is not null)
+
+        {
+
+            // Reload is the only way out of an unreadable configuration, so it must stay reachable.
+            ReloadButton.IsVisible = HasExternalChange || LoadFailed;
+
+        }
+
         if (StatusLabel is null)
 
         {
+
+            return;
+
+        }
+
+        if (LoadFailed)
+
+        {
+
+            StatusLabel.Text = "Could not read arcanum.json - repair the file or Reload.";
 
             return;
 
@@ -154,6 +201,18 @@ public partial class SaveBar : UserControl
         {
 
             StatusLabel.Text = "File changed on disk.";
+
+            return;
+
+        }
+
+        if (!string.IsNullOrEmpty(LastErrorMessage))
+
+        {
+
+            // An unsuccessful save must outrank "Unsaved changes": the operator otherwise sees only
+            // that nothing persisted, with no indication of why or what to do about it.
+            StatusLabel.Text = LastErrorMessage;
 
             return;
 

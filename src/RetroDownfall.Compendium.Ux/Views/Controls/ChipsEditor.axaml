@@ -31,6 +31,12 @@
 
         </Grid>
 
+        <TextBlock Text="{Binding #Root.ValidationMessage}"
+                   FontSize="{DynamicResource ForgeUiSecondaryFontSize}"
+                   Foreground="{DynamicResource ForgeErrorBrush}"
+                   TextWrapping="Wrap"
+                   IsVisible="{Binding #Root.ValidationMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
     </StackPanel>
 
 </UserControl>

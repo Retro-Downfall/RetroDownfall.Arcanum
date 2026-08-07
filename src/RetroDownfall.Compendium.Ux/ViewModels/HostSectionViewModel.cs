@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Logging;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Compendium.Ux.Services;
 
 namespace RetroDownfall.Compendium.Ux.ViewModels;
@@ -34,7 +35,7 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
     private HostSettings _snapshot = new();
 
-    private LocalCertificateGenerator? _certificateGenerator;
+    private Func<LocalCertificateResult>? _certificateGenerator;
 
     private IDialogService? _dialogService;
 
@@ -49,6 +50,17 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
     public void AttachServices(
         LocalCertificateGenerator certificateGenerator,
+        IDialogService dialogService)
+    {
+
+        ArgumentNullException.ThrowIfNull(certificateGenerator);
+
+        AttachServices(certificateGenerator.Generate, dialogService);
+
+    }
+
+    internal void AttachServices(
+        Func<LocalCertificateResult> certificateGenerator,
         IDialogService dialogService)
     {
 
@@ -140,9 +152,39 @@ public sealed partial class HostSectionViewModel : ObservableObject
 
         }
 
-        LocalCertificateResult result = await Task
-            .Run(() => _certificateGenerator.Generate())
-            .ConfigureAwait(true);
+        Func<LocalCertificateResult> generate = _certificateGenerator;
+
+        LocalCertificateResult result;
+
+        try
+        {
+
+            result = await Task
+                .Run(generate)
+                .ConfigureAwait(true);
+
+        }
+        catch (Exception ex)
+        {
+
+            // Generation writes to disk and adjusts file modes, so it can fail for reasons entirely
+            // outside Compendium. Report it and leave HTTPS and the certificate paths untouched rather
+            // than letting the fault reach the dispatcher and terminate the app with unsaved edits.
+            if (_dialogService is not null)
+            {
+
+                await _dialogService
+                    .ShowAlertAsync(
+                        "Could not generate certificate",
+                        $"Compendium could not write a self-signed localhost certificate to {ArcanumPaths.CertificatesDirectory}."
+                        + $"{Environment.NewLine}{Environment.NewLine}{ex.Message}")
+                    .ConfigureAwait(true);
+
+            }
+
+            return;
+
+        }
 
         HttpsEnabled = true;
 
