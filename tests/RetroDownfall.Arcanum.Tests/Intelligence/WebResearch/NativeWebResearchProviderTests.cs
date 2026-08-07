@@ -398,6 +398,73 @@ public sealed class NativeWebResearchProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task Local_reader_applies_the_campaign_egress_ward_to_redirect_targets()
+    {
+        // other.test is a perfectly good public host, so OutboundUrlGuard alone lets the hop through.
+        // Only the campaign Sanctum policy knows it is outside the allowed domains.
+        RecordingHandler handler = new(
+            (_, _) => Task.FromResult(
+                new HttpResponseMessage(HttpStatusCode.Redirect)
+                {
+                    Headers =
+                    {
+                        Location = new Uri("https://other.test/collect"),
+                    },
+                }));
+        List<Uri> wardedTargets = [];
+
+        Result<WebReadResult> result = await CreateLocal(handler)
+            .ReadUrlAsync(
+                "https://example.test/",
+                new WebReadOptions
+                {
+                    RedirectEgressWard = (target, _) =>
+                    {
+                        wardedTargets.Add(target);
+
+                        return ValueTask.FromResult(false);
+                    },
+                });
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(
+            ErrorCodes.WebResearch.SsrfBlocked,
+            result.Error.Code);
+        Assert.Equal(new Uri("https://other.test/collect"), Assert.Single(wardedTargets));
+        Assert.Equal(1, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task Local_reader_follows_a_redirect_the_campaign_egress_ward_allows()
+    {
+        int calls = 0;
+        RecordingHandler handler = new(
+            (_, _) =>
+            {
+                calls++;
+
+                return Task.FromResult(
+                    calls == 1
+                        ? new HttpResponseMessage(HttpStatusCode.Redirect)
+                        {
+                            Headers = { Location = new Uri("https://other.test/page") },
+                        }
+                        : HtmlResponse("<html><body><main><p>allowed</p></main></body></html>"));
+            });
+
+        Result<WebReadResult> result = await CreateLocal(handler)
+            .ReadUrlAsync(
+                "https://example.test/",
+                new WebReadOptions
+                {
+                    RedirectEgressWard = static (_, _) => ValueTask.FromResult(true),
+                });
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains("allowed", result.Value.Markdown, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Local_reader_enforces_response_and_utf8_content_bounds()
     {
         RecordingHandler rawHandler = new(

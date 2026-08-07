@@ -16,6 +16,12 @@ namespace RetroDownfall.Arcanum.Api.Daemons;
 
 internal static class DaemonEndpoints
 {
+    /// <summary>Matches the <see cref="ArcanumSettingClamps.UnseenServantIntervalMinutes"/> floor.</summary>
+    private const int MinimumInitiativeMinutes = 1;
+
+    /// <summary>Matches the <see cref="ArcanumSettingClamps.UnseenServantIntervalMinutes"/> ceiling (one week).</summary>
+    private const int MaximumInitiativeMinutes = 10_080;
+
     public static RouteGroupBuilder MapDaemonEndpoints(this RouteGroupBuilder apiGroup)
     {
 
@@ -294,21 +300,42 @@ internal static class DaemonEndpoints
                     return Results.BadRequest(ApiResponse<UnseenServantJobStatusDto>.FromResult(invalid, traceId));
                 }
 
-                pacer.SetDynamicInterval(trimmedName, body.IntervalMinutes);
+                if (body.IntervalMinutes < MinimumInitiativeMinutes || body.IntervalMinutes > MaximumInitiativeMinutes)
+                {
+                    Result<UnseenServantJobStatusDto> invalid = Result<UnseenServantJobStatusDto>.Failure(
+                        new Error(
+                            ErrorCodes.Validation.InvalidBody,
+                            $"intervalMinutes must be between {MinimumInitiativeMinutes} and {MaximumInitiativeMinutes}."));
 
-                UnseenServantJob? configured = (settings.CurrentValue.Daemon?.Jobs ?? []).FirstOrDefault(
+                    return Results.BadRequest(ApiResponse<UnseenServantJobStatusDto>.FromResult(invalid, traceId));
+                }
+
+                IReadOnlyList<UnseenServantJob> configuredJobs = settings.CurrentValue.Daemon?.Jobs ?? [];
+
+                UnseenServantJob? configured = configuredJobs.FirstOrDefault(
                     job => string.Equals(job.Name.Trim(), trimmedName, StringComparison.Ordinal));
 
-                UnseenServantJob jobForInterval = configured
-                    ?? new UnseenServantJob
-                    {
-                        Name = trimmedName,
-                        TargetSpell = string.Empty,
-                        IntervalMinutes = 60,
-                        Enabled = false,
-                    };
+                if (configured is null)
+                {
 
-                UnseenServantJobStatusDto dto = ToUnseenServantJobStatusDto(jobForInterval, pacer, tracker);
+                    // UnseenServantPacer.SetDynamicInterval is deliberately a no-op for an unconfigured name,
+                    // so reporting 200 with a fabricated status would tell the operator a typo had landed.
+                    Result<UnseenServantJobStatusDto> missing = Result<UnseenServantJobStatusDto>.Failure(
+                        new Error(
+                            ErrorCodes.Daemon.NotFound,
+                            $"No Unseen Servant job named '{trimmedName}' is configured under Arcanum:Daemon:Jobs. "
+                            + "Run 'arcanum daemon jobs' to list the configured names."));
+
+                    return Results.Json(
+                        ApiResponse<UnseenServantJobStatusDto>.FromResult(missing, traceId),
+                        ArcanumJsonContext.Default.ApiResponseUnseenServantJobStatusDto,
+                        statusCode: StatusCodes.Status404NotFound);
+
+                }
+
+                pacer.SetDynamicInterval(trimmedName, body.IntervalMinutes);
+
+                UnseenServantJobStatusDto dto = ToUnseenServantJobStatusDto(configured, pacer, tracker);
 
                 Result<UnseenServantJobStatusDto> ok = Result<UnseenServantJobStatusDto>.Success(dto);
 

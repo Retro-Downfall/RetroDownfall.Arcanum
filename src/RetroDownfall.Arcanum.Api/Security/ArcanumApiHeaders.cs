@@ -9,4 +9,7 @@ public static class ArcanumApiHeaders
 
     /// <summary>Opaque continuation for stable audit-log paging.</summary>
     public const string AuditNextCursor = "X-Arcanum-Next-Cursor";
+
+    /// <summary>Advisory notice emitted when a <c>/v1</c> structured-output request was downgraded.</summary>
+    public const string StructuredOutputWarning = "X-Arcanum-Structured-Output-Warning";
 }

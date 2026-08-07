@@ -273,6 +273,10 @@ public sealed class WebResearchCredentialStore : IWebResearchCredentialStore, ID
             {
                 await stream.WriteAsync(cipher, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+                // Durable flush before the atomic replace so an unclean power loss cannot leave a
+                // present-but-empty fallback behind the committed rename.
+                stream.Flush(flushToDisk: true);
             }
 
             File.Move(tempPath, path, overwrite: true);

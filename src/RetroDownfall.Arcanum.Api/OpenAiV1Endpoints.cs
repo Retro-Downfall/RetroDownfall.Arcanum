@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -304,14 +305,52 @@ internal static partial class OpenAiV1Endpoints
             SystemFingerprint: responseSystemFingerprint,
             ServiceTier: null);
 
-        if (turn.Warnings.Count > 0)
+        if (turn.Warnings.Count > 0
+            && SanitizeWarningHeaderValue(turn.Warnings) is { Length: > 0 } warningHeader)
         {
             httpContext.Response.Headers.Append(
                 "X-Arcanum-Structured-Output-Warning",
-                string.Join(" | ", turn.Warnings));
+                warningHeader);
         }
 
         return Results.Json(response, ArcanumJsonContext.Default.OpenAiChatResponse);
+    }
+
+    /// <summary>
+    /// Reduces structured-output validation warnings to a value that is always legal in an HTTP
+    /// response header. Warning text quotes model- and schema-supplied JSON property names verbatim
+    /// (see <c>JsonSchemaHelper</c>'s "additional property '…' is not allowed"), so an accented or
+    /// emoji key — ordinary model behaviour — would otherwise reach Kestrel's ASCII header
+    /// validation and throw, turning an already-billed 200 completion into a 500. Every character
+    /// outside printable US-ASCII (including CR/LF, the header-injection sink) collapses to '?', and
+    /// the value is capped so a pathological schema cannot inflate the response headers. The
+    /// <c>system_fingerprint</c> suffix remains the authoritative warning signal.
+    /// </summary>
+    private static string SanitizeWarningHeaderValue(IReadOnlyList<string> warnings)
+    {
+        const int maxLength = 512;
+
+        const string truncationMarker = " [truncated]";
+
+        string joined = string.Join(" | ", warnings);
+
+        int budget = Math.Min(joined.Length, maxLength);
+
+        StringBuilder sanitized = new(budget + truncationMarker.Length);
+
+        for (int i = 0; i < budget; i++)
+        {
+            char candidate = joined[i];
+
+            _ = sanitized.Append(candidate is >= ' ' and <= '~' ? candidate : '?');
+        }
+
+        if (joined.Length > budget)
+        {
+            _ = sanitized.Append(truncationMarker);
+        }
+
+        return sanitized.ToString();
     }
 
     private static (string? Content, string? Summary) MapBufferedReasoning(
@@ -442,161 +481,174 @@ internal static partial class OpenAiV1Endpoints
             // TurnEngine for production). Keep-alives and SSE serialization stay in this writer
             // (ADR 0004 transport/replay boundary). Tests inject a fake IArcanumIntelligenceProvider;
             // resolving ITurnExecutionFacade here would bypass that fake.
-            await using IAsyncEnumerator<IntelligenceEvent> enumerator =
+            IAsyncEnumerator<IntelligenceEvent> enumerator =
                 intelligence.StreamPromptAsync(ping, ct, auditContext).GetAsyncEnumerator(ct);
 
             Task<bool> move = enumerator.MoveNextAsync().AsTask();
 
-            while (true)
+            // The pump owns the enumerator explicitly: a client disconnect can abandon it with a
+            // MoveNextAsync still in flight, and disposing a compiler-generated async iterator in
+            // that state throws NotSupportedException — which would surface an ordinary disconnect
+            // as an unhandled streaming error instead of a clean abort (see QuiesceAndDisposeAsync).
+            try
             {
-                using CancellationTokenSource delayCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-
-                Task keepAliveDelay = Task.Delay(StreamKeepAliveInterval, delayCts.Token);
-
-                Task completed = await Task.WhenAny(move, keepAliveDelay).ConfigureAwait(false);
-
-                if (completed == keepAliveDelay)
+                while (true)
                 {
-                    if (!clientGone)
-                    {
-                        try
-                        {
-                            await SseStreamWriter.WriteKeepAliveAsync(httpContext, ct).ConfigureAwait(false);
-                        }
-                        catch (Exception keepAliveEx) when (ClientDisconnect.IsClientDisconnect(keepAliveEx, httpContext))
-                        {
-                            clientGone = true;
-                            disconnected = true;
+                    using CancellationTokenSource delayCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
-                            if (!continueThenReplay)
+                    Task keepAliveDelay = Task.Delay(StreamKeepAliveInterval, delayCts.Token);
+
+                    Task completed = await Task.WhenAny(move, keepAliveDelay).ConfigureAwait(false);
+
+                    if (completed == keepAliveDelay)
+                    {
+                        if (!clientGone)
+                        {
+                            try
                             {
-                                streamCts.Cancel();
-                                aborted = true;
-                                break;
+                                await SseStreamWriter.WriteKeepAliveAsync(httpContext, ct).ConfigureAwait(false);
+                            }
+                            catch (Exception keepAliveEx) when (ClientDisconnect.IsClientDisconnect(keepAliveEx, httpContext))
+                            {
+                                clientGone = true;
+                                disconnected = true;
+
+                                if (!continueThenReplay)
+                                {
+                                    streamCts.Cancel();
+                                    aborted = true;
+                                    break;
+                                }
                             }
                         }
+
+                        continue;
                     }
 
-                    continue;
-                }
+                    delayCts.Cancel();
 
-                delayCts.Cancel();
-
-                if (!await move.ConfigureAwait(false))
-                {
-                    break;
-                }
-
-                IntelligenceEvent ev = enumerator.Current;
-
-                if (clientGone && continueThenReplay)
-                {
-                    if (ev.Type == IntelligenceEventType.Result)
+                    if (!await move.ConfigureAwait(false))
                     {
-                        sseUsage = ev.Usage;
-                        sseFinishReason = ev.FinishReason;
+                        break;
+                    }
+
+                    IntelligenceEvent ev = enumerator.Current;
+
+                    if (clientGone && continueThenReplay)
+                    {
+                        if (ev.Type == IntelligenceEventType.Result)
+                        {
+                            sseUsage = ev.Usage;
+                            sseFinishReason = ev.FinishReason;
+                        }
+
+                        move = enumerator.MoveNextAsync().AsTask();
+                        continue;
+                    }
+
+                    try
+                    {
+                        switch (ev.Type)
+                        {
+                            case IntelligenceEventType.Token when !string.IsNullOrEmpty(ev.Data):
+                                await WriteContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ev.Data, ct).ConfigureAwait(false);
+                                break;
+
+                            case IntelligenceEventType.Reasoning when ev.Reasoning is { Text.Length: > 0 } reasoning:
+                                await WriteReasoningChunkAsync(
+                                    httpContext,
+                                    sseBuffer,
+                                    completionId,
+                                    created,
+                                    echoModel,
+                                    systemFingerprint,
+                                    reasoning,
+                                    ct).ConfigureAwait(false);
+                                break;
+
+                            case IntelligenceEventType.Reasoning:
+                                break;
+
+                            case IntelligenceEventType.ToolCall when ev.ToolCall is { } toolCallPayload:
+                                await WriteToolCallChunksAsync(
+                                    httpContext,
+                                    sseBuffer,
+                                    completionId,
+                                    created,
+                                    echoModel,
+                                    systemFingerprint,
+                                    toolCallPayload,
+                                    nextToolCallDeltaIndex,
+                                    ct).ConfigureAwait(false);
+
+                                nextToolCallDeltaIndex++;
+
+                                break;
+
+                            case IntelligenceEventType.ToolCall:
+                                break;
+
+                            case IntelligenceEventType.Result:
+                                sseUsage = ev.Usage;
+
+                                sseFinishReason = ev.FinishReason;
+
+                                if (ev.Warnings.Count > 0)
+                                {
+                                    systemFingerprint = string.IsNullOrEmpty(systemFingerprint)
+                                        ? "arcanum:structured-output-warning"
+                                        : systemFingerprint + ":arcanum:structured-output-warning";
+                                }
+
+                                break;
+
+                            case IntelligenceEventType.Error:
+                                await WriteStreamErrorAsync(
+                                    httpContext,
+                                    sseBuffer,
+                                    completionId,
+                                    created,
+                                    echoModel,
+                                    systemFingerprint,
+                                    new Error(
+                                        ev.Data ?? ErrorCodes.Hub.Error,
+                                        ev.Message),
+                                    ct).ConfigureAwait(false);
+                                streamErrored = true;
+                                TurnContextGuards.MarkIdempotencyTerminal(httpContext);
+                                return Results.Empty;
+
+                            case IntelligenceEventType.Status:
+                            case IntelligenceEventType.ToolResult:
+                            case IntelligenceEventType.SessionBound:
+                            case IntelligenceEventType.ConversationBound:
+                            case IntelligenceEventType.Warded:
+                            case IntelligenceEventType.WardResolved:
+                            default:
+                                break;
+                        }
+                    }
+                    catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
+                    {
+                        clientGone = true;
+                        disconnected = true;
+
+                        if (!continueThenReplay)
+                        {
+                            streamCts.Cancel();
+                            aborted = true;
+                            break;
+                        }
                     }
 
                     move = enumerator.MoveNextAsync().AsTask();
-                    continue;
                 }
-
-                try
-                {
-                    switch (ev.Type)
-                    {
-                        case IntelligenceEventType.Token when !string.IsNullOrEmpty(ev.Data):
-                            await WriteContentChunkAsync(httpContext, sseBuffer, completionId, created, echoModel, systemFingerprint, ev.Data, ct).ConfigureAwait(false);
-                            break;
-
-                        case IntelligenceEventType.Reasoning when ev.Reasoning is { Text.Length: > 0 } reasoning:
-                            await WriteReasoningChunkAsync(
-                                httpContext,
-                                sseBuffer,
-                                completionId,
-                                created,
-                                echoModel,
-                                systemFingerprint,
-                                reasoning,
-                                ct).ConfigureAwait(false);
-                            break;
-
-                        case IntelligenceEventType.Reasoning:
-                            break;
-
-                        case IntelligenceEventType.ToolCall when ev.ToolCall is { } toolCallPayload:
-                            await WriteToolCallChunksAsync(
-                                httpContext,
-                                sseBuffer,
-                                completionId,
-                                created,
-                                echoModel,
-                                systemFingerprint,
-                                toolCallPayload,
-                                nextToolCallDeltaIndex,
-                                ct).ConfigureAwait(false);
-
-                            nextToolCallDeltaIndex++;
-
-                            break;
-
-                        case IntelligenceEventType.ToolCall:
-                            break;
-
-                        case IntelligenceEventType.Result:
-                            sseUsage = ev.Usage;
-
-                            sseFinishReason = ev.FinishReason;
-
-                            if (ev.Warnings.Count > 0)
-                            {
-                                systemFingerprint = string.IsNullOrEmpty(systemFingerprint)
-                                    ? "arcanum:structured-output-warning"
-                                    : systemFingerprint + ":arcanum:structured-output-warning";
-                            }
-
-                            break;
-
-                        case IntelligenceEventType.Error:
-                            await WriteStreamErrorAsync(
-                                httpContext,
-                                sseBuffer,
-                                completionId,
-                                created,
-                                echoModel,
-                                systemFingerprint,
-                                new Error(
-                                    ev.Data ?? ErrorCodes.Hub.Error,
-                                    ev.Message),
-                                ct).ConfigureAwait(false);
-                            streamErrored = true;
-                            TurnContextGuards.MarkIdempotencyTerminal(httpContext);
-                            return Results.Empty;
-
-                        case IntelligenceEventType.Status:
-                        case IntelligenceEventType.ToolResult:
-                        case IntelligenceEventType.SessionBound:
-                        case IntelligenceEventType.ConversationBound:
-                        case IntelligenceEventType.Warded:
-                        case IntelligenceEventType.WardResolved:
-                        default:
-                            break;
-                    }
-                }
-                catch (Exception writeEx) when (ClientDisconnect.IsClientDisconnect(writeEx, httpContext))
-                {
-                    clientGone = true;
-                    disconnected = true;
-
-                    if (!continueThenReplay)
-                    {
-                        streamCts.Cancel();
-                        aborted = true;
-                        break;
-                    }
-                }
-
-                move = enumerator.MoveNextAsync().AsTask();
+            }
+            finally
+            {
+                await SseStreamWriter
+                    .QuiesceAndDisposeAsync(enumerator, move, streamCts)
+                    .ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (

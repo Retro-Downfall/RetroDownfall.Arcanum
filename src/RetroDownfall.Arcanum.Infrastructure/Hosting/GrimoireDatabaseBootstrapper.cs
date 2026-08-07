@@ -263,7 +263,7 @@ public static class GrimoireDatabaseBootstrapper
 
             GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(dbPath);
 
-            string secret = await ResolveActiveSecretAsync(secretStore, apiKey, cancellationToken).ConfigureAwait(false);
+            string secret = await ResolveActiveSecretAsync(secretStore).ConfigureAwait(false);
 
             return DeriveWithSidecar(secret, sidecar);
 
@@ -272,11 +272,87 @@ public static class GrimoireDatabaseBootstrapper
         if (File.Exists(dbPath))
         {
 
+            // A pending salt means a previous KDF upgrade was interrupted. It is written durably
+            // before PRAGMA rekey, so it is the only copy of the salt if the rekey committed and
+            // the promotion did not land; if the rekey never committed the database is still
+            // legacy and the pending salt simply does not open it.
+            string? recovered = await TryRecoverPendingKdfUpgradeAsync(secretStore, dbPath, cancellationToken).ConfigureAwait(false);
+
+            if (recovered is not null)
+            {
+
+                return recovered;
+
+            }
+
             return await UpgradeLegacyDatabaseAsync(secretStore, apiKey, dbPath, cancellationToken).ConfigureAwait(false);
 
         }
 
         return await CreateNewDatabaseSecretAsync(secretStore, dbPath, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private static async Task<string?> TryRecoverPendingKdfUpgradeAsync(
+        ISecretStore secretStore,
+        string dbPath,
+        CancellationToken cancellationToken)
+    {
+
+        if (!GrimoireKdfSidecarFile.PendingExists(dbPath))
+        {
+
+            return null;
+
+        }
+
+        GrimoireKdfSidecar pending;
+
+        try
+        {
+
+            pending = GrimoireKdfSidecarFile.ReadPending(dbPath);
+
+        }
+        catch (Exception ex)
+        {
+
+            Log.Warning(
+                ex,
+                "A pending Grimoire KDF salt exists at {PendingPath} but could not be read; falling back to the legacy upgrade path.",
+                GrimoireKdfSidecarFile.GetPendingSidecarPath(dbPath));
+
+            return null;
+
+        }
+
+        string? secret = await secretStore.GetGrimoireEncryptionSecretAsync().ConfigureAwait(false);
+
+        if (string.IsNullOrEmpty(secret))
+        {
+
+            return null;
+
+        }
+
+        string candidate = DeriveWithSidecar(secret, pending);
+
+        if (!await CanOpenDatabaseAsync(dbPath, candidate, cancellationToken).ConfigureAwait(false))
+        {
+
+            // The interrupted rekey never committed; the database is still legacy and the pending
+            // salt is stale. UpgradeLegacyDatabaseAsync re-drives the upgrade with a fresh salt.
+            return null;
+
+        }
+
+        GrimoireKdfSidecarFile.PromotePending(dbPath);
+
+        Log.Warning(
+            "A previously interrupted Grimoire KDF upgrade was completed: the pending PBKDF2 salt opened {DbPath} and was promoted to the committed sidecar.",
+            dbPath);
+
+        return candidate;
 
     }
 
@@ -335,23 +411,33 @@ public static class GrimoireDatabaseBootstrapper
 
         string newPassphrase = DeriveWithSidecar(secret, sidecar);
 
-        await using SqliteConnection rekeyConnection = new(new SqliteConnectionStringBuilder
+        // PRAGMA rekey is irreversible, so the salt must already be on durable storage before it
+        // runs — otherwise a crash, a full disk, or a read-only config directory between the rekey
+        // and the sidecar write destroys the only copy of the salt and bricks the database.
+        // The pending file is promoted to the committed sidecar once the rekey has committed;
+        // ResolveGrimoirePassphraseAsync recovers from either side of that window on next start.
+        GrimoireKdfSidecarFile.WritePending(dbPath, sidecar);
+
+        await using (SqliteConnection rekeyConnection = new(new SqliteConnectionStringBuilder
         {
             DataSource = dbPath,
             Password = oldPassphrase,
-        }.ToString());
+        }.ToString()))
+        {
 
-        await rekeyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await rekeyConnection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        await using SqliteCommand rekeyCommand = rekeyConnection.CreateCommand();
+            await using SqliteCommand rekeyCommand = rekeyConnection.CreateCommand();
 
-        rekeyCommand.CommandText = $"PRAGMA rekey = '{EscapeSqlString(newPassphrase)}';";
+            rekeyCommand.CommandText = $"PRAGMA rekey = '{EscapeSqlString(newPassphrase)}';";
 
-        await rekeyCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await rekeyCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-        await rekeyConnection.CloseAsync().ConfigureAwait(false);
+            await rekeyConnection.CloseAsync().ConfigureAwait(false);
 
-        GrimoireKdfSidecarFile.Write(dbPath, sidecar);
+        }
+
+        GrimoireKdfSidecarFile.PromotePending(dbPath);
 
         Log.Information("Grimoire database upgraded to PBKDF2 KDF (version 2).");
 
@@ -376,9 +462,7 @@ public static class GrimoireDatabaseBootstrapper
     }
 
     private static async Task<string> ResolveActiveSecretAsync(
-        ISecretStore secretStore,
-        string apiKey,
-        CancellationToken cancellationToken)
+        ISecretStore secretStore)
     {
 
         SecretStoreReadResult dedicated = await ReadGrimoireSecretResultAsync(secretStore).ConfigureAwait(false);
@@ -408,7 +492,18 @@ public static class GrimoireDatabaseBootstrapper
 
         }
 
-        return apiKey;
+        // Same reasoning for an absent secret: every sidecar-backed database was keyed from the
+        // dedicated secret (CreateNewDatabaseSecretAsync / RekeyToPbkdf2Async / backup restore),
+        // never from the master API key, so PBKDF2(apiKey, salt) can only produce the misleading
+        // "key verification failed". Point the operator at the file that is actually missing.
+        Log.Fatal(
+            "Grimoire encryption secret grimoire-key.dat is missing while a KDF sidecar exists. "
+            + "The database was keyed from the dedicated Grimoire secret, not the master API key, so it cannot be opened without it. "
+            + "Restore grimoire-key.dat (it lives under the Application Support arcanum folder on macOS/Windows, not beside arcanum.db) together with the matching key-*.xml from ~/.config/arcanum/keys/, "
+            + "run 'arcanum backup restore' against a verified .arcbackup generation, or reset the Grimoire (delete arcanum.db and arcanum.db.kdf) to start fresh — session data is otherwise unrecoverable.");
+
+        throw new GrimoireDatabaseUnavailableException(
+            "Arcanum Grimoire encryption secret (grimoire-key.dat) is missing. See logs for recovery steps.");
 
     }
 

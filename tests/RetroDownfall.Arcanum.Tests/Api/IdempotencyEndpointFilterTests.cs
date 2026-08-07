@@ -181,6 +181,170 @@ public sealed class IdempotencyEndpointFilterTests
     }
 
     [SkippableFact]
+    public async Task PostPing_SameKeyAndBodyButDifferentQueryString_Returns409Conflict()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // Query parameters steer execution (?workspace= / ?version= on the spell and prompt execute
+        // routes), so a fingerprint blind to them replays the first request's answer against the wrong
+        // target instead of raising a conflict.
+        _factory.FakeIntelligence.NextFailure = null;
+
+        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = JsonSerializer.Serialize(
+            new PingRequest(Prompt: "identical body"),
+            ArcanumJsonContext.Default.PingRequest);
+
+        async Task<HttpResponseMessage> SendAsync(string query)
+        {
+
+            HttpRequestMessage req = new(HttpMethod.Post, "/api/intelligence/ping" + query)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+
+            req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+            return await client.SendAsync(req);
+
+        }
+
+        _factory.FakeIntelligence.NextText = "workspace-a-response";
+
+        HttpResponseMessage first = await SendAsync("?workspace=/repo/A");
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        _factory.FakeIntelligence.NextText = "workspace-b-response";
+
+        HttpResponseMessage second = await SendAsync("?workspace=/repo/B");
+
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+
+        Assert.Contains(
+            ErrorCodes.Security.IdempotencyConflict,
+            await second.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+    }
+
+    [SkippableFact]
+    public async Task PostPing_SameKeyAndSameQueryInAnyOrder_StillReplays()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "canonical-query-response";
+
+        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
+
+        string key = $"test-key-{Guid.NewGuid():N}";
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = JsonSerializer.Serialize(
+            new PingRequest(Prompt: "identical body"),
+            ArcanumJsonContext.Default.PingRequest);
+
+        async Task<HttpResponseMessage> SendAsync(string query)
+        {
+
+            HttpRequestMessage req = new(HttpMethod.Post, "/api/intelligence/ping" + query)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+            };
+
+            req.Headers.Add(ArcanumApiHeaders.IdempotencyKey, key);
+
+            return await client.SendAsync(req);
+
+        }
+
+        HttpResponseMessage first = await SendAsync("?a=1&b=2");
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        // Parameter order alone must not manufacture a conflict.
+        HttpResponseMessage second = await SendAsync("?b=2&a=1");
+
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+
+        Assert.Equal(before + 1, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+    }
+
+    [SkippableFact]
+    public async Task PostPing_WithDuplicateIdempotencyKeyHeaders_Returns400AndDoesNotExecute()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // An ambiguous header used to fall through to the handler with no claim at all — the caller
+        // believed it was protected and was billed twice.
+        _factory.FakeIntelligence.NextFailure = null;
+
+        _factory.FakeIntelligence.NextText = "must-not-execute";
+
+        int before = _factory.FakeIntelligence.ExecutePromptCallCount;
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = JsonSerializer.Serialize(
+            new PingRequest(Prompt: "ambiguous key"),
+            ArcanumJsonContext.Default.PingRequest);
+
+        HttpRequestMessage request = new(HttpMethod.Post, "/api/intelligence/ping")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+        request.Headers.Add(ArcanumApiHeaders.IdempotencyKey, "duplicate-key");
+
+        request.Headers.Add(ArcanumApiHeaders.IdempotencyKey, "duplicate-key");
+
+        HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Contains(
+            ErrorCodes.Security.IdempotencyKeyAmbiguous,
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+
+        Assert.Equal(before, _factory.FakeIntelligence.ExecutePromptCallCount);
+
+    }
+
+    [Fact]
+    public void ResolvePrincipal_IsIndependentOfTheClientSuppliedHostHeader()
+    {
+
+        // A caller that varies Host could otherwise partition its own claims and defeat replay protection.
+        DefaultHttpContext localhost = new();
+
+        localhost.Request.Host = new HostString("localhost", 5001);
+
+        DefaultHttpContext loopbackIp = new();
+
+        loopbackIp.Request.Host = new HostString("127.0.0.1", 5001);
+
+        Assert.Equal(
+            IdempotencyIdentity.ResolvePrincipal(localhost),
+            IdempotencyIdentity.ResolvePrincipal(loopbackIp));
+
+    }
+
+    [SkippableFact]
     public async Task PostSpellExecute_WithIdempotencyKey_SecondRequestReplaysWithoutReExecuting()
     {
 
@@ -2124,6 +2288,7 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         string fingerprintHash = IdempotencyIdentity.ComputeFingerprintHash(
             bodyBytes,
             path,
+            string.Empty,
             "application/json");
 
         return new IdempotencyClaim(

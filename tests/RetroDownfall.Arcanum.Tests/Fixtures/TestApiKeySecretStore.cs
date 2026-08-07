@@ -18,8 +18,11 @@ public sealed class TestApiKeySecretStore(string apiKey) : ISecretStore
     public Task SaveApiKeyAsync(string apiKey) =>
         Task.CompletedTask;
 
+    // Sidecar-backed databases are keyed from the dedicated Grimoire secret, never from the master
+    // API key, and the bootstrapper now fails closed when it is absent instead of silently falling
+    // back. GrimoireFixture keys its template from the same value.
     public Task<string?> GetGrimoireEncryptionSecretAsync() =>
-        Task.FromResult<string?>(null);
+        Task.FromResult<string?>(GrimoireFixture.TestGrimoireSecret);
 
     public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) =>
         Task.CompletedTask;

@@ -111,6 +111,29 @@ public sealed class TurnEventEmitterTests
         }
     }
 
+    // A consumer that abandons the run disposes the emitter while the pipeline is still producing.
+    // The producer's terminal emission (RunAbandoned/RunFailed, raised from inside a catch block)
+    // must not throw ObjectDisposedException off the disposed emit gate — that would fault the
+    // producer Task with nobody observing it and leave the run with no terminal event at all.
+    [Fact]
+    public async Task EmitAsync_after_dispose_does_not_throw()
+    {
+        TurnEventEmitter emitter = new(Guid.NewGuid());
+
+        await emitter.DisposeAsync();
+
+        await emitter.EmitAsync(new RunFailed(
+            emitter.NextCorrelation(),
+            new Error(ErrorCodes.Hub.Error, "terminal emission after abandonment"),
+            TurnTerminationReason.ProviderFailure,
+            Usage: null,
+            Warnings: [],
+            Interrupted: true,
+            PartialText: null));
+
+        Assert.False(emitter.TerminalEmitted);
+    }
+
     private static async Task<List<TurnEvent>> ReadAllAsync(TurnEventEmitter emitter)
     {
         List<TurnEvent> events = [];

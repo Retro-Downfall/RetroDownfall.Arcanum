@@ -90,6 +90,7 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
 | Windows child execution | Per-invocation AppContainer filesystem jail with explicit allowed-root ACLs; Job Object assignment precedes untrusted target resume. Setup failure is fail-closed. |
 | Daemon concurrency | `Daemon:MaxConcurrentJobs` limits scheduled Unseen Servant jobs, not every on-demand run. |
 | macOS child network | Seatbelt is a filesystem jail only; child network remains available. |
+| macOS `workspace_check` IPC | macOS restricts `~/Library/Group Containers` to entitled processes, so the child cannot have a private .NET PAL root. The jail grants the two shared `/private/tmp/.dotnet` IPC roots instead (§11.7.1); the broad-temp-write prohibition is unchanged. |
 | Child environment | Secret/config and loader-hijack variables are scrubbed; there is no full per-binary environment allowlist. |
 | External MCP stdio | Operator-configured external processes are trusted and do not receive Arcanum's filesystem jail. |
 | A2A remote allowlist | An empty `AllowedRemoteAgents` list still permits SSRF-guarded public targets. Every interface the remote Agent Card advertises is re-checked against the allowlist and the outbound guard, not just the first. |
@@ -2886,6 +2887,38 @@ projection boundary rather than an assertion that a complete command artifact ex
 
 **External MCP:** `McpBridgeTool` / `McpToolResultFormatter` apply the same **`ToolOutputCapBytes`** limit to bridged `tools/call` text results. `McpClient` bounds `tools/list` tool descriptions (8 KiB UTF-8) and input schemas (64 KiB UTF-8; oversized schemas fall back to an empty object schema).
 
+### 11.7.1 Shared .NET inter-process roots for `workspace_check` (macOS)
+
+A sandboxed SDK child cannot start without a writable .NET PAL root: the SDK takes a named `Mutex`
+(NuGet's migration runner) before any command executes, and the runtime resolves named synchronization
+objects under a hard-coded `/tmp/.dotnet/{shm,lockfiles}` — it does **not** honour `TMPDIR`.
+
+Arcanum previously redirected the PAL to a private per-run `~/Library/Group Containers/<id>` through
+`DOTNET_SANDBOX_APPLICATION_GROUP_ID`. macOS now restricts that directory to processes carrying the
+matching app-group entitlement, so creating one fails with `EPERM` even outside any sandbox, and every
+`workspace_check` invocation failed with `unavailable`/`output_root_unavailable` before it began. That
+redirect is removed.
+
+`MacOsDotNetIpcRoots` instead ensures `/private/tmp/.dotnet/shm` and `/private/tmp/.dotnet/lockfiles`
+exist and grants exactly those two subpaths to the Seatbelt profile. The **no broad `/tmp` write**
+invariant is unchanged — `MacOsSandboxExecProfileBuilder.AssertNoWholeVolumeFootguns` still rejects
+`(subpath "/tmp")`, `(subpath "/private/tmp")`, and `(subpath "/var/tmp")`; these are two named leaf
+directories, not the temp tree.
+
+These roots are host-owned and shared with the operator's other .NET processes. They are created once
+if absent, are never per-run state, and are **never** deleted with the run —
+`WorkspaceCheckRunDirectories.SandboxWritableRoots` (handed to the jail) is deliberately distinct from
+`WritableRoots` (created and deleted per run). The residual exposure is that a Ward-approved child can
+create, hold, or remove PAL synchronization entries shared with the operator's other .NET processes —
+a local denial-of-service or tampering surface inside the operator's own account, and the same access
+every unsandboxed .NET process on the host already has. It grants no read access to any other
+process's files or memory. This sits alongside the already-accepted residual risks in §11.15 (open
+network egress, best-effort detached-descendant cleanup) that operator Ward approval covers.
+
+`WorkspaceCheckCapabilityReporter` probes these roots as part of eligibility, so a host where they
+cannot be created does not advertise the tool, and `arcanum doctor` plus `GET /api/health` component
+`WorkspaceCheck` report the specific reason instead of failing only at invocation time.
+
 ### 11.9 Sanitized public error envelopes
 
 Inference-pipeline errors must not leak internal exception text to clients:
@@ -2991,7 +3024,7 @@ run `arcanum doctor --fix-permissions` to repair the checked paths.
 - **Known gap:** cgroups v2 covers the entire process subtree (grandchildren included), but the `ulimit`/setrlimit path only bounds the direct child — a grandchild spawned by a tool script is not rlimit-bound on macOS (or on Linux when cgroups fell back to setrlimit). On Windows, Job Objects cover the job's process tree once assigned, subject to the post-start assign race above.
 
 **OS filesystem jail (macOS-ARM beta posture):** The same **`CappedChildProcessRunner`** composes env scrub → resource limits → **filesystem jail** → cwd / output caps / cancellation. This is a **filesystem sandbox only** — it does **not** prevent network use by network-capable binaries. Sanctum network policy still applies to model-supplied network targets such as `read_url`; CommLink enforces its URL policy at dispatch. `execute_command` network behavior is **not** solved by the FS jail.
-- **macOS (active):** wraps the child with deprecated **`/usr/bin/sandbox-exec`** and an owner-only Seatbelt profile (deny-default + explicit allows). Access classes: workspace / Sanctum `AllowedPaths` → read+write; spell script roots (incl. global spells) → **read+execute** (no write unless also an AllowedPath/workspace); system runtime (`/bin`, `/usr`, `/System`, …) → read+execute, **no write**; per-invocation owner-only **`TMPDIR`** → read+write (no broad `/tmp`). Directory walk uses `(allow file-read* (vnode-type DIRECTORY))` for getcwd/dyld path resolution — **not** whole-volume file-content read. **Critical invariant:** no `(subpath "/")` / `(literal "/")` for file content. Network is explicitly allowed in the filesystem-only profile. Apple may remove the deprecated tool; absence or profile setup failure fail-closes unless `Arcanum:Security:AllowUnsandboxedToolChildren=true`. Distinct from the Linux internal helper argv `__sandbox-exec`.
+- **macOS (active):** wraps the child with deprecated **`/usr/bin/sandbox-exec`** and an owner-only Seatbelt profile (deny-default + explicit allows). Access classes: workspace / Sanctum `AllowedPaths` → read+write; spell script roots (incl. global spells) → **read+execute** (no write unless also an AllowedPath/workspace); system runtime (`/bin`, `/usr`, `/System`, …) → read+execute, **no write**; per-invocation owner-only **`TMPDIR`** → read+write (no broad `/tmp`); and, for `workspace_check` only, the two shared .NET PAL inter-process roots `/private/tmp/.dotnet/shm` and `/private/tmp/.dotnet/lockfiles` → read+write (see §11.7.1). Directory walk uses `(allow file-read* (vnode-type DIRECTORY))` for getcwd/dyld path resolution — **not** whole-volume file-content read. **Critical invariant:** no `(subpath "/")` / `(literal "/")` for file content. Network is explicitly allowed in the filesystem-only profile. Apple may remove the deprecated tool; absence or profile setup failure fail-closes unless `Arcanum:Security:AllowUnsandboxedToolChildren=true`. Distinct from the Linux internal helper argv `__sandbox-exec`.
 - **Linux (inactive for this beta):** Landlock / internal **`__sandbox-exec`** helper code remains **in-tree but is not invoked** (probe-first: not activated until Landlock-backed end-to-end wiring is validated). Default is fail-closed with the public message: *"Linux filesystem jail is not active in this beta. Set Arcanum:Security:AllowUnsandboxedToolChildren=true to run without FS confinement, or use macOS for sandboxed command tools."* Escape hatch runs unsandboxed with a warning; resource limits still apply where available. Do **not** conflate this helper with macOS `/usr/bin/sandbox-exec`.
 - **Windows (active AppContainer jail; ADR):** selected design is a fresh AppContainer profile/SID per invocation, explicit inherited ACL grants on canonical local-drive roots, and a trusted broker that launches the target suspended only after its Job membership is confirmed. Read/write is granted only to workspace/Sanctum allowed roots and the owner-only invocation temp directory; runtime and spell-script roots receive read/execute. UNC, device/extended paths, alternate data streams, traversal components, and reparse-point roots are rejected before ACL mutation. Original security descriptors are restored in reverse order and the profile/temp/config are removed on success, failure, or cancellation; a random non-reused SID limits residual authority after a host crash, where immediate ACL restoration cannot be guaranteed. AppContainer was chosen over (a) a restricted token plus a filesystem broker, which would require routing every filesystem operation and remains vulnerable to unbrokered runtime calls; (b) temporary ACLs alone, which do not remove the user's ambient access token; and (c) Windows Sandbox/WDAG or Hyper-V containers, which are heavyweight optional features unsuitable for per-tool local execution. Job Objects remain the process-tree/resource boundary and are not represented as filesystem isolation. Health/`arcanum doctor` report Healthy only when the live AppContainer API probe succeeds; otherwise command tools fail closed. `AllowUnsandboxedToolChildren` may permit a non-Sanctum invocation to run without confinement, but never overrides a Sanctum strict path-boundary requirement.
 - **Fail-closed:** when the jail cannot be applied and the escape hatch is false, the model-visible result is a clear expected denial (Linux beta message above, missing `/usr/bin/sandbox-exec`, profile setup failure, or Windows Sanctum denial) — **not** a Hub generic internal error / unhandled exception / provider failure.
@@ -3865,7 +3898,10 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   `/usr/bin/sandbox-exec` Seatbelt for a filesystem-only jail. Linux Landlock support is inactive and
   command tools fail closed unless the unsandboxed escape hatch is acknowledged. Windows uses a
   per-invocation AppContainer filesystem jail and a Job Object process-tree/resource boundary.
-  `workspace_check` is unavailable on Linux and Windows. No platform provides child-process network
+  `workspace_check` is unavailable on Linux and Windows. On macOS it additionally requires the two
+  shared .NET PAL inter-process roots described in §11.7.1, because macOS no longer permits a private
+  per-run group container; a Ward-approved child can therefore tamper with PAL synchronization entries
+  belonging to the operator's own other .NET processes. No platform provides child-process network
   isolation. Inspect `arcanum doctor` and the `ToolChildSandbox` / `WorkspaceCheck` health
   components before approving execution.
 - **The Weave's vector search has a managed fallback.** No sqlite-vec native asset ships by default.

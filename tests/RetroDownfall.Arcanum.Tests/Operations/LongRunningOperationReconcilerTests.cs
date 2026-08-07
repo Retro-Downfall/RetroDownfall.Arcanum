@@ -22,20 +22,21 @@ public sealed class LongRunningOperationReconcilerTests
             NullLogger<LongRunningOperationReconciler>.Instance);
 
     /// <summary>
-    /// A payload written by a newer build is already rejected. A payload written by an *older*
-    /// build the handler has since stopped understanding is just as unreadable, and silently
-    /// handing it to the handler risks acting on misparsed recovery state. The A2A Sending kinds
-    /// are the real case: their ledger format starts at version 1, so a version 0 row predates the
-    /// contract entirely.
+    /// An A2A Sending row exists at checkpoint version 0 between being registered and being
+    /// checkpointed, so a kill in that window leaves a genuine row below the ledger's format
+    /// version. It must reach the handler, whose own "no readable record" path abandons it with a
+    /// named a2a.* reason — not be rejected on the version window and stranded as
+    /// `checkpoint_version_unsupported`, which no operator repair action can clear.
     /// </summary>
     [Fact]
-    public async Task Checkpoint_below_the_registry_minimum_requires_operator_repair()
+    public async Task An_a2a_row_that_died_before_its_first_checkpoint_is_abandoned_by_name()
     {
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
         RecordingRecoveryHandler handler = new(
             LongRunningOperationKinds.A2AInboundSending,
-            supportedCheckpointVersion: 1);
+            supportedCheckpointVersion: 1,
+            static _ => LongRunningOperationRecoveryResult.Abandoned("a2a.inbound_apprentice_missing"));
         LongRunningOperation stale = store.Seed(
             LongRunningOperationKinds.A2AInboundSending,
             LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
@@ -49,12 +50,10 @@ public sealed class LongRunningOperationReconcilerTests
             store.Operations,
             operation => operation.Id == stale.Id);
 
-        Assert.Empty(handler.Invocations);
-        Assert.Equal(1, summary.RequiresAttention);
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, recovered.State);
-        Assert.Equal(
-            LongRunningOperationErrorCodes.UnsupportedCheckpointVersion,
-            recovered.TerminalErrorCode);
+        Assert.Equal([stale.Id], handler.Invocations);
+        Assert.Equal(0, summary.RequiresAttention);
+        Assert.Equal(LongRunningOperationState.Abandoned, recovered.State);
+        Assert.Equal("a2a.inbound_apprentice_missing", recovered.TerminalErrorCode);
     }
 
     [Fact]
@@ -208,5 +207,55 @@ public sealed class LongRunningOperationReconcilerTests
         Assert.Equal(
             LongRunningOperationErrorCodes.InvalidRecoveryResult,
             recovered.TerminalErrorCode);
+    }
+
+    /// <summary>
+    /// The reconciler and its store are both scoped, so one scope means one DbContext and one
+    /// SqliteConnection — whose live-command list is not synchronized. Every concurrently recovered
+    /// operation therefore has to run in its own scope; the outer scope may only page the expiry
+    /// query. The sentinel store here fails the test loudly if any per-operation call is ever issued
+    /// against the shared instance.
+    /// </summary>
+    [Fact]
+    public async Task Each_concurrently_recovered_operation_runs_in_its_own_scope()
+    {
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore shared = new(time);
+
+        for (int index = 0; index < 8; index++)
+        {
+            _ = shared.Seed(
+                LongRunningOperationKinds.WorkspaceIndex,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        }
+
+        RecordingRecoveryHandler scopedHandler = new(
+            LongRunningOperationKinds.WorkspaceIndex,
+            supportedCheckpointVersion: 0);
+        RecordingRecoveryHandler sharedHandler = new(
+            LongRunningOperationKinds.WorkspaceIndex,
+            supportedCheckpointVersion: 0,
+            static _ => throw new InvalidOperationException(
+                "Recovery used the shared scope's handler."));
+        RecordingServiceScopeFactory scopes = new(shared, scopedHandler);
+
+        LongRunningOperationReconciler reconciler = new(
+            new PagingOnlyOperationStore(shared),
+            [sharedHandler],
+            time,
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            scopes);
+
+        LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
+            time.GetUtcNow(),
+            "test-owner",
+            maxOperations: 100,
+            maxConcurrency: 4);
+
+        Assert.Equal(8, summary.Claimed);
+        Assert.Equal(8, scopedHandler.Invocations.Count);
+        Assert.Empty(sharedHandler.Invocations);
+        Assert.Equal(8, scopes.Created);
+        Assert.Equal(8, scopes.Disposed);
     }
 }

@@ -514,6 +514,11 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         CommitOutcome? commit = null;
 
+        // An unverifiable reversal leaves the displaced installation inside staging, so the cleanup
+        // below must not run: the journal plus the staging root are the operator's only recovery
+        // point until BackupRestoreRecovery resolves them at the next start.
+        bool retainStagingForReconciliation = false;
+
         BackupRestorePlan effectivePlan = plan;
 
         string? safetyBackupPath = null;
@@ -633,6 +638,23 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             if (!commit.Succeeded)
             {
 
+                if (commit.Reversal is { Restored: false } commitReversal)
+                {
+
+                    retainStagingForReconciliation = true;
+
+                    RetainForReconciliation(staging.Path, journal, phases);
+
+                    return ReversalIncomplete(
+                        operationId,
+                        effectivePlan,
+                        phases,
+                        safetyBackupPath,
+                        staging.Path,
+                        commitReversal);
+
+                }
+
                 return RolledBack(
                     operationId,
                     effectivePlan,
@@ -662,11 +684,28 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 if (!rewrap.GrimoireSecretWritten)
                 {
 
-                    Reverse(commit, liveRoot, stagedRoot, displacedRoot);
+                    ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
 
                     await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
 
                     commit = null;
+
+                    if (!reversal.Restored)
+                    {
+
+                        retainStagingForReconciliation = true;
+
+                        RetainForReconciliation(staging.Path, journal, phases);
+
+                        return ReversalIncomplete(
+                            operationId,
+                            effectivePlan,
+                            phases,
+                            safetyBackupPath,
+                            staging.Path,
+                            reversal);
+
+                    }
 
                     return RolledBack(
                         operationId,
@@ -744,9 +783,18 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             if (commit is { Succeeded: true })
             {
 
-                Reverse(commit, liveRoot, stagedRoot, displacedRoot);
+                ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
 
                 await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
+
+                if (!reversal.Restored)
+                {
+
+                    retainStagingForReconciliation = true;
+
+                    RetainForReconciliation(staging.Path, journal, phases);
+
+                }
 
             }
 
@@ -766,9 +814,26 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             if (commit is { Succeeded: true })
             {
 
-                Reverse(commit, liveRoot, stagedRoot, displacedRoot);
+                ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
 
                 await rewrapper.RestoreAsync(priorSecrets).ConfigureAwait(false);
+
+                if (!reversal.Restored)
+                {
+
+                    retainStagingForReconciliation = true;
+
+                    RetainForReconciliation(staging.Path, journal, phases);
+
+                    return ReversalIncomplete(
+                        operationId,
+                        effectivePlan,
+                        phases,
+                        safetyBackupPath,
+                        staging.Path,
+                        reversal);
+
+                }
 
                 return RolledBack(
                     operationId,
@@ -797,11 +862,41 @@ internal sealed class BackupRestoreService : IBackupRestoreService
         finally
         {
 
-            BackupRestoreJournal.Delete(staging.Path);
+            if (!retainStagingForReconciliation)
+            {
 
-            _ = staging.TryDelete();
+                BackupRestoreJournal.Delete(staging.Path);
+
+                _ = staging.TryDelete();
+
+            }
 
         }
+
+    }
+
+    /// <summary>
+    /// Rewinds a retained journal to <see cref="BackupRestorePhase.Commit"/> so the staging root is
+    /// resolved from filesystem evidence at the next start.
+    /// </summary>
+    /// <remarks>
+    /// A journal left at a later phase reads to <see cref="BackupRestoreRecovery"/> as "the commit
+    /// had already completed; only cleanup remained", which discards the staging root — and with it
+    /// the displaced installation the reversal failed to put back.
+    /// </remarks>
+    private static void RetainForReconciliation(
+        string stagingRoot,
+        BackupRestoreJournalRecord journal,
+        List<BackupRestorePhaseRecord> phases)
+    {
+
+        _ = BackupRestoreJournal.Advance(stagingRoot, journal, BackupRestorePhase.Commit);
+
+        Record(
+            phases,
+            BackupRestorePhase.Cleanup,
+            "The reversal could not be verified, so the restore journal and the displaced "
+            + $"installation were retained under {stagingRoot} for reconciliation at the next start.");
 
     }
 
@@ -1092,7 +1187,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
     /// The two-rename commit. Between the renames the journal names both roots, so an interrupted
     /// commit is always resolvable to exactly one complete tree.
     /// </summary>
-    private static CommitOutcome Commit(
+    private CommitOutcome Commit(
         BackupRestoreConflictMode mode,
         string liveRoot,
         string destinationRoot,
@@ -1115,7 +1210,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
                 Directory.Move(stagedRoot, destinationRoot);
 
-                return new CommitOutcome(true, DisplacedExisting: false, Issue: null);
+                return new CommitOutcome(true, Issue: null);
 
             }
 
@@ -1137,7 +1232,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
             }
 
-            return new CommitOutcome(true, displaced, Issue: null);
+            return new CommitOutcome(true, Issue: null);
 
         }
         catch (Exception exception) when (
@@ -1146,22 +1241,15 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
             // A rename failed partway. Undo whatever landed here and now, rather than leaving the
             // live root missing for the journal to repair at the next start.
-            Reverse(
-                new CommitOutcome(
-                    Succeeded: false,
-                    Directory.Exists(displacedRoot),
-                    Issue: null),
-                liveRoot,
-                stagedRoot,
-                displacedRoot);
+            ReversalOutcome reversal = Reverse(liveRoot, stagedRoot, displacedRoot);
 
             return new CommitOutcome(
                 false,
-                DisplacedExisting: false,
                 new BackupVerifyIssue(
                     "backup.restore_commit_failed",
                     "The restored generation could not be committed atomically; the prior installation "
-                    + "was returned to its original state."));
+                    + "was returned to its original state."),
+                reversal);
 
         }
 
@@ -1172,8 +1260,13 @@ internal sealed class BackupRestoreService : IBackupRestoreService
     /// far the code believes it got — the same evidence <see cref="BackupRestoreRecovery"/> uses
     /// after a process death, so an in-process reversal and a restart reversal agree.
     /// </summary>
-    private static void Reverse(
-        CommitOutcome commit,
+    /// <remarks>
+    /// A reversal that cannot be verified is never reported as clean. The displaced tree is the
+    /// operator's only remaining copy of the installation, so an incomplete reversal keeps the
+    /// journal and the staging root for <see cref="BackupRestoreRecovery"/> to resolve at the next
+    /// start rather than tidying away the evidence.
+    /// </remarks>
+    private ReversalOutcome Reverse(
         string liveRoot,
         string stagedRoot,
         string displacedRoot)
@@ -1184,13 +1277,17 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
             bool stagedStillPresent = Directory.Exists(stagedRoot);
 
-            // Preserved entries only reached the live root once both renames landed.
-            if (commit.Succeeded && commit.DisplacedExisting)
+            // Filesystem evidence, not a success flag: any preserved entry that already reached the
+            // new live tree is carried back, even when the commit reported failure partway through
+            // preserving. Otherwise a half-preserved key ring rides into staging and is deleted.
+            if (Directory.Exists(displacedRoot))
             {
 
                 PreserveMachineLocalEntries(liveRoot, displacedRoot);
 
             }
+
+            _options.BeforeReversalRenameForTests?.Invoke();
 
             if (!stagedStillPresent && Directory.Exists(liveRoot))
             {
@@ -1211,7 +1308,15 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             exception is IOException or UnauthorizedAccessException)
         {
 
+            return new ReversalOutcome(Restored: false, exception.GetType().Name);
+
         }
+
+        // The displaced tree is gone only when every part of it landed back in the live root. While
+        // it still exists the reversal is incomplete however far the code believes it got.
+        return Directory.Exists(displacedRoot)
+            ? new ReversalOutcome(Restored: false, "the displaced installation is still in staging")
+            : new ReversalOutcome(Restored: true, Diagnostics: null);
 
     }
 
@@ -1220,7 +1325,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
     /// ring that local secret wrapping depends on, and the backup archives — including the one this
     /// restore is reading from.
     /// </summary>
-    private static void PreserveMachineLocalEntries(string from, string to)
+    private void PreserveMachineLocalEntries(string from, string to)
     {
 
         foreach (string name in BackupRestoreLayout.PreservedFromCurrentInstallation)
@@ -1236,6 +1341,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 continue;
 
             }
+
+            _options.BeforePreservedEntryMoveForTests?.Invoke(name);
 
             Directory.Move(source, destination);
 
@@ -1619,6 +1726,40 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             [.. phases],
             [.. issues]);
 
+    /// <summary>
+    /// The outcome when a post-commit reversal could not be verified. Nothing is deleted: the
+    /// journal and the staging root — which still holds the displaced installation — are retained so
+    /// <see cref="BackupRestoreRecovery"/> can resolve them from filesystem evidence at the next
+    /// start, and the operator is told where they are instead of being told the rollback was clean.
+    /// </summary>
+    private static BackupRestoreResult ReversalIncomplete(
+        Guid operationId,
+        BackupRestorePlan plan,
+        List<BackupRestorePhaseRecord> phases,
+        string? safetyBackupPath,
+        string stagingRoot,
+        ReversalOutcome reversal) =>
+        new(
+            BackupRestoreStatus.ReconciliationRequired,
+            plan.ArchivePath,
+            operationId,
+            plan.ConflictMode,
+            plan.DestinationRoot,
+            safetyBackupPath,
+            plan,
+            Manifest: null,
+            Reconciliation: null,
+            [.. phases],
+            [
+                new BackupVerifyIssue(
+                    "backup.restore_reversal_incomplete",
+                    "The restore failed after commit and the prior installation could not be verifiably "
+                    + "returned to its original state. Nothing was deleted: the restore journal and the "
+                    + "displaced installation are preserved under " + stagingRoot
+                    + " and are resolved at the next start. Diagnostics: "
+                    + (reversal.Diagnostics ?? "the reversal did not complete")),
+            ]);
+
     private static BackupRestoreResult RolledBack(
         Guid operationId,
         BackupRestorePlan plan,
@@ -1640,8 +1781,16 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
     private sealed record CommitOutcome(
         bool Succeeded,
-        bool DisplacedExisting,
-        BackupVerifyIssue? Issue);
+        BackupVerifyIssue? Issue,
+        ReversalOutcome? Reversal = null);
+
+    /// <summary>
+    /// What a reversal could actually prove about the filesystem afterwards. <c>Restored</c> is only
+    /// true when the displaced installation is verifiably back in the live root.
+    /// </summary>
+    private sealed record ReversalOutcome(
+        bool Restored,
+        string? Diagnostics);
 
     private sealed record StageResult(
         BackupRestorePlan Plan,

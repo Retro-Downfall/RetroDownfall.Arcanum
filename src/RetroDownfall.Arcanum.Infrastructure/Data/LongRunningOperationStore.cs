@@ -339,6 +339,22 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
             cancellationToken);
     }
 
+    /// <summary>
+    /// Every row no live worker can still drive forward. Beyond expired Running/Waiting leases this
+    /// includes two states that would otherwise have no exit at all:
+    /// <list type="bullet">
+    /// <item>
+    /// <c>Cancelling</c> — only the kinds that poll the flag settle their own row, and only while
+    /// their lease is alive. Once the lease lapses nobody observes it, and the state is accepted
+    /// nowhere else, so an unobserved cancellation would wedge its kind forever.
+    /// </item>
+    /// <item>
+    /// <c>Pending</c> with a prior attempt — what <c>arcanum operation retry</c> produces. A row at
+    /// attempt zero is excluded deliberately: its creator is about to lease it in the very next
+    /// statement, and reconciling it would race the caller that just made it.
+    /// </item>
+    /// </list>
+    /// </summary>
     public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
         DateTimeOffset utcNow,
         int limit,
@@ -353,7 +369,8 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                     SELECT {SelectColumns}
                     FROM "LongRunningOperations"
                     WHERE (
-                        "State" IN (@running, @waiting)
+                        "State" IN (@running, @waiting, @cancelling)
+                        OR ("State" = @pending AND "AttemptCount" > 0)
                         OR (
                             "State" = @attention
                             AND "Kind" IN (@retentionPrune, @retentionMutation, @retentionFactory)
@@ -364,6 +381,8 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                     """;
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
+                Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
+                Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
                 Add(cmd, "@attention", (int)LongRunningOperationState.ReconciliationRequired);
                 Add(cmd, "@retentionPrune", LongRunningOperationKinds.DataRetentionPrune);
                 Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
@@ -406,7 +425,7 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                         "Revision" = "Revision" + 1
                     WHERE "Id" = @id
                       AND (
-                          "State" IN (@pending, @running, @waiting)
+                          "State" IN (@pending, @running, @waiting, @cancelling)
                           OR (
                               "State" = @attention
                               AND "Kind" IN (@retentionPrune, @retentionMutation, @retentionFactory)
@@ -416,6 +435,7 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
+                Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
                 Add(cmd, "@attention", (int)LongRunningOperationState.ReconciliationRequired);
                 Add(cmd, "@retentionPrune", LongRunningOperationKinds.DataRetentionPrune);
                 Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
@@ -654,6 +674,13 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
             },
             cancellationToken);
 
+    /// <summary>
+    /// Returns a row to <c>Pending</c> for another attempt. Failed, Abandoned and
+    /// ReconciliationRequired have all released their lease, so no live worker can be reset out from
+    /// under. Cancelling is admitted only once its lease has lapsed, which is exactly the case no
+    /// owner will ever settle — the operator must be able to back out of a cancellation nobody
+    /// observed, without being able to yank a cancellation still in progress.
+    /// </summary>
     public Task<bool> ResetForRetryAsync(
         Guid operationId,
         long expectedRevision,
@@ -670,7 +697,11 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                 "TerminalErrorCode" = NULL,
                 "Revision" = "Revision" + 1
             WHERE "Id" = @id AND "Revision" = @revision
-              AND "State" IN (@failed, @abandoned, @attention)
+              AND (
+                  "State" IN (@failed, @abandoned, @attention)
+                  OR (
+                      "State" = @cancelling
+                      AND ("LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)))
             """,
             cmd =>
             {
@@ -680,6 +711,7 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                 Add(cmd, "@failed", (int)LongRunningOperationState.Failed);
                 Add(cmd, "@abandoned", (int)LongRunningOperationState.Abandoned);
                 Add(cmd, "@attention", (int)LongRunningOperationState.ReconciliationRequired);
+                Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
                 Add(cmd, "@now", Format(utcNow));
             },
             cancellationToken);

@@ -664,6 +664,9 @@ public sealed partial class WizardIntelligenceProvider(
         Result<PromptTurnResult> lastFailure = Result<PromptTurnResult>.Failure(
             new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
 
+        // Built once for the whole logical run and shared by every candidate (DESIGN §10.7.2).
+        TurnContextSeed seed = new();
+
         for (int attemptIndex = 0; attemptIndex < candidates.Count; attemptIndex++)
         {
             (ProviderSettings provider, string resolvedModel) = candidates[attemptIndex];
@@ -733,7 +736,9 @@ public sealed partial class WizardIntelligenceProvider(
                         inferenceToken,
                         callerToken,
                         auditContext,
-                        eventSink)
+                        eventSink,
+                        seed,
+                        canFallBack: !isLastAttempt)
                     .ConfigureAwait(false);
 
                 if (attempt.IsConnectivityFailure)
@@ -806,7 +811,9 @@ public sealed partial class WizardIntelligenceProvider(
         CancellationToken callerToken,
         InferenceAuditContext? auditContext,
         Func<IntelligenceEvent, CancellationToken, ValueTask>?
-            eventSink)
+            eventSink,
+        TurnContextSeed? seed = null,
+        bool canFallBack = false)
     {
 
         StreamFailureClassification classification = new();
@@ -819,7 +826,9 @@ public sealed partial class WizardIntelligenceProvider(
                 classification,
                 inferenceToken,
                 callerToken,
-                auditContext)
+                auditContext,
+                seed,
+                canFallBack)
             .ConfigureAwait(false))
         {
             if (eventSink is not null)
@@ -1019,6 +1028,9 @@ public sealed partial class WizardIntelligenceProvider(
             yield break;
         }
 
+        // Built once for the whole logical run and shared by every candidate (DESIGN §10.7.2).
+        TurnContextSeed streamSeed = new();
+
         for (int attemptIndex = 0; attemptIndex < streamCandidates.Count; attemptIndex++)
         {
             (ProviderSettings candidateProvider, string candidateModel) = streamCandidates[attemptIndex];
@@ -1094,7 +1106,17 @@ public sealed partial class WizardIntelligenceProvider(
 
             StreamFailureClassification classification = new();
 
-            IAsyncEnumerator<IntelligenceEvent> enumerator = RunInferenceAttemptAsync(lease, request, prompt, TurnResponseMode.Streaming, classification, inferenceToken, callerToken, auditContext).GetAsyncEnumerator();
+            IAsyncEnumerator<IntelligenceEvent> enumerator = RunInferenceAttemptAsync(
+                lease,
+                request,
+                prompt,
+                TurnResponseMode.Streaming,
+                classification,
+                inferenceToken,
+                callerToken,
+                auditContext,
+                streamSeed,
+                canFallBack: !isLastAttempt).GetAsyncEnumerator();
 
             Exception? moveNextFailure = null;
 
@@ -1356,6 +1378,24 @@ public sealed partial class WizardIntelligenceProvider(
         }
     }
 
+    /// <summary>
+    /// True when this candidate must hand the Grimoire turn to the next provider untouched: it died
+    /// on a connectivity error before committing any output, and another candidate is still to be
+    /// tried. Discarding the empty assistant row here would force the next candidate to seed the
+    /// turn again — a second user <c>Entry</c>, and a second Session for a session-less request
+    /// (DESIGN §10.7.2). The last candidate always resolves the turn, so nothing is left dangling.
+    /// </summary>
+    private static bool ShouldDeferTurnToNextCandidate(
+        TurnContextSeed? seed,
+        bool canFallBack,
+        StreamFailureClassification classification,
+        int streamedLength) =>
+        seed is not null
+        && canFallBack
+        && classification.IsConnectivityFailure
+        && !classification.ProviderCommitted
+        && streamedLength == 0;
+
     private static bool IsPreCommitStreamingEvent(IntelligenceEvent evt) =>
         evt.Type is IntelligenceEventType.Status
             or IntelligenceEventType.SessionBound
@@ -1375,7 +1415,9 @@ public sealed partial class WizardIntelligenceProvider(
         StreamFailureClassification classification,
         CancellationToken inferenceToken,
         CancellationToken callerToken,
-        InferenceAuditContext? auditContext)
+        InferenceAuditContext? auditContext,
+        TurnContextSeed? seed = null,
+        bool canFallBack = false)
 #pragma warning restore CS8425
     {
 
@@ -1443,13 +1485,27 @@ public sealed partial class WizardIntelligenceProvider(
 
         bool streamTurnBegunEarly = false;
 
-        if (!streaming)
+        // A retried candidate inherits the turn the run already opened (DESIGN §10.7.2). Beginning
+        // it again would insert a second user Entry — and, for a session-less request, a second
+        // orphaned Session — because interrupted-turn cleanup only discards the empty assistant row.
+        if (seed?.Turn is { } seededTurn)
+        {
+            grimoireTurn = seededTurn;
+
+            streamTurnBegunEarly = true;
+        }
+        else if (!streaming)
         {
             grimoireTurn = await grimoireTurnWriter
                 .TryBeginBufferedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
                 .ConfigureAwait(false);
 
             streamTurnBegunEarly = true;
+
+            if (seed is not null)
+            {
+                seed.Turn = grimoireTurn;
+            }
         }
         else if (attachmentsEnabled && !InferenceContextBuilder.HasStatelessMessages(request))
         {
@@ -1458,6 +1514,11 @@ public sealed partial class WizardIntelligenceProvider(
                 .ConfigureAwait(false);
 
             streamTurnBegunEarly = true;
+
+            if (seed is not null)
+            {
+                seed.Turn = grimoireTurn;
+            }
         }
 
         SessionAttachmentTurnPreparation streamAttachmentPrep = await SessionAttachmentTurnService
@@ -1884,7 +1945,25 @@ public sealed partial class WizardIntelligenceProvider(
 
         IReadOnlyList<ParsedSpell>? streamResonants = streamResolvedSpell?.Resonants;
 
-        Embedding<float>? streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, inferenceToken).ConfigureAwait(false);
+        Embedding<float>? streamQueryEmbedding;
+
+        // Provider-independent and billed through TryRecordAuxiliaryUsageAsync, so the run resolves
+        // it once and every fallback candidate reuses it (DESIGN §10.7.2).
+        if (seed is { QueryEmbeddingResolved: true })
+        {
+            streamQueryEmbedding = seed.QueryEmbedding;
+        }
+        else
+        {
+            streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, inferenceToken).ConfigureAwait(false);
+
+            if (seed is not null)
+            {
+                seed.QueryEmbedding = streamQueryEmbedding;
+
+                seed.QueryEmbeddingResolved = true;
+            }
+        }
 
         SemanticContextChunk[]? streamSemanticContext = await RetrieveSemanticContextAsync(request, streamQueryEmbedding, inferenceToken).ConfigureAwait(false);
 
@@ -2067,6 +2146,11 @@ public sealed partial class WizardIntelligenceProvider(
             grimoireTurn = await grimoireTurnWriter
                 .TryBeginStreamedAssistantReplyAsync(request, prompt, targetModel, inferenceToken)
                 .ConfigureAwait(false);
+
+            if (seed is not null)
+            {
+                seed.Turn = grimoireTurn;
+            }
         }
 
         if (grimoireTurn.SessionId is { } bcid)
@@ -2904,12 +2988,19 @@ public sealed partial class WizardIntelligenceProvider(
                             "Hub inference failed; exception type {ExceptionType}.",
                             streamingMoveNextFailure.GetType().FullName);
 
-                        await grimoireTurnWriter
-                            .ResolveInterruptedAndMarkFinalizedAsync(
-                                grimoireTurn,
-                                null,
-                                CancellationToken.None)
-                            .ConfigureAwait(false);
+                        if (!ShouldDeferTurnToNextCandidate(
+                                seed,
+                                canFallBack,
+                                classification,
+                                streamAccumulator.Length))
+                        {
+                            await grimoireTurnWriter
+                                .ResolveInterruptedAndMarkFinalizedAsync(
+                                    grimoireTurn,
+                                    null,
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                        }
 
                         classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
                             new Error(
@@ -3278,7 +3369,11 @@ public sealed partial class WizardIntelligenceProvider(
 
                     Error noProgressError = new(
                         ErrorCodes.Hub.NoProgressDetected,
-                        "Tool execution stopped because the latest call/result round was identical to the previous round and produced no new evidence.");
+                        "Tool execution stopped because the latest call/result round repeated a recent round and produced no new evidence.");
+
+                    logger.LogWarning(
+                        "Tool loop stopped for no progress; recurring round signature {ProgressSignature}.",
+                        toolLoopProgressDetector.RepeatedSignature);
 
                     inferenceTypedError = noProgressError;
 
@@ -3314,10 +3409,17 @@ public sealed partial class WizardIntelligenceProvider(
                 // W3.5: cleanup must use CancellationToken.None, not the (often already-cancelled)
                 // inferenceToken — otherwise ResolveInterruptedAssistantEntryAsync rethrows OCE here
                 // and the terminal Error event below is never emitted to the client.
-                await grimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync(
-                    grimoireTurn,
-                    streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
-                    CancellationToken.None).ConfigureAwait(false);
+                if (!ShouldDeferTurnToNextCandidate(
+                        seed,
+                        canFallBack,
+                        classification,
+                        streamAccumulator.Length))
+                {
+                    await grimoireTurnWriter.ResolveInterruptedAndMarkFinalizedAsync(
+                        grimoireTurn,
+                        streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null,
+                        CancellationToken.None).ConfigureAwait(false);
+                }
 
                 yield return new IntelligenceEvent(
                     IntelligenceEventType.Error,
@@ -3765,11 +3867,18 @@ public sealed partial class WizardIntelligenceProvider(
                 }
             }
 
-            await grimoireTurnWriter
-                .TryResolveInterruptedOnStreamExitAsync(
-                    grimoireTurn,
-                    streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null)
-                .ConfigureAwait(false);
+            if (!ShouldDeferTurnToNextCandidate(
+                    seed,
+                    canFallBack,
+                    classification,
+                    streamAccumulator.Length))
+            {
+                await grimoireTurnWriter
+                    .TryResolveInterruptedOnStreamExitAsync(
+                        grimoireTurn,
+                        streamAccumulator.Length > 0 ? streamAccumulator.ToString() : null)
+                    .ConfigureAwait(false);
+            }
         }
     }
 
@@ -7343,6 +7452,29 @@ public sealed partial class WizardIntelligenceProvider(
         Result<PromptTurnResult> Result,
         bool IsConnectivityFailure,
         bool ProviderCommitted);
+
+    /// <summary>
+    /// Per-logical-run turn seed (DESIGN §10.7.2: "<c>TurnContextSeed</c> is built once per logical
+    /// run, while each provider receives an isolated <c>ProviderAttemptContext</c>"). The fallback
+    /// orchestrator creates one and hands it to every candidate attempt, so a run that falls back
+    /// from a dead provider reuses the Grimoire turn it already opened — one Session, one user
+    /// <c>Entry</c>, one assistant row — and pays for the RAG query embedding exactly once, instead
+    /// of re-seeding (and permanently duplicating) the turn per candidate.
+    /// </summary>
+    private sealed class TurnContextSeed
+    {
+
+        /// <summary>
+        /// The Grimoire turn opened by the first candidate that got far enough to begin one.
+        /// <see langword="null"/> until then; a stateless request seeds an empty handle.
+        /// </summary>
+        public GrimoireTurnWriter.TurnHandle? Turn { get; set; }
+
+        public bool QueryEmbeddingResolved { get; set; }
+
+        public Embedding<float>? QueryEmbedding { get; set; }
+
+    }
 
     private sealed class StreamFailureClassification
     {

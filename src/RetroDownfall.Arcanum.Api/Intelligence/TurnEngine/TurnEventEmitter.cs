@@ -55,10 +55,18 @@ internal sealed class TurnEventEmitter : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(evt);
 
-        await _emitGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        bool gateHeld = false;
 
         try
         {
+            // Inside the try: a consumer that abandons the run disposes this emitter while the
+            // producer is still emitting, and both WaitAsync and Release throw ObjectDisposedException
+            // on a disposed semaphore. Terminal emission from a producer's catch block must never
+            // throw, or the run ends as a faulted, unobserved background task.
+            await _emitGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            gateHeld = true;
+
             if (TerminalEmitted)
             {
                 return;
@@ -77,9 +85,23 @@ internal sealed class TurnEventEmitter : IAsyncDisposable
         {
             // Producer raced with completion — ignore further writes.
         }
+        catch (ObjectDisposedException)
+        {
+            // The consumer abandoned the run and disposed the emitter; nothing is listening.
+        }
         finally
         {
-            _ = _emitGate.Release();
+            if (gateHeld)
+            {
+                try
+                {
+                    _ = _emitGate.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Disposed under us mid-emit — the gate no longer guards anything.
+                }
+            }
         }
     }
 

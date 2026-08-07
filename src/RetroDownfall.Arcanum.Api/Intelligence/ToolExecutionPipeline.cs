@@ -23,6 +23,8 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
+using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Sanctum;
@@ -1471,6 +1473,9 @@ public sealed class ToolExecutionPipeline(
 
         }
 
+        // Sanctum cleared the initial URL above; the ward keeps every redirect hop under the same policy.
+        using IDisposable? egressWard = BeginSanctumEgressWard(fcc, turnContext);
+
         object? rawResult = await InvokeToolCallAsync(
             fcc,
             chatOptions,
@@ -1691,6 +1696,47 @@ public sealed class ToolExecutionPipeline(
         }
 
         return new SanctumEnforcementOutcome(allowed, turnContext.SanctumMode, true);
+
+    }
+
+    /// <summary>
+    /// Publishes a per-hop network ward for the native web tools when the turn runs inside an enabled
+    /// Sanctum. The ward re-runs <see cref="ISanctumGuard.ValidateNetworkAsync"/>, so a redirect that
+    /// leaves the campaign's allowed domains is both blocked and recorded as a breach.
+    /// Returns <c>null</c> for every other tool and for unrestricted turns.
+    /// </summary>
+    private IDisposable? BeginSanctumEgressWard(FunctionCallContent fcc, TurnContext turnContext)
+    {
+
+        if (turnContext.Campaign is null || !turnContext.SanctumEnabled)
+        {
+
+            return null;
+
+        }
+
+        string toolName = fcc.Name ?? string.Empty;
+
+        if (!string.Equals(toolName, "read_url", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(toolName, "browse_web", StringComparison.OrdinalIgnoreCase))
+        {
+
+            return null;
+
+        }
+
+        string campaignId = turnContext.CampaignId!;
+
+        return SanctumEgressWardAmbient.Begin(async (Uri target, CancellationToken token) =>
+        {
+
+            SanctumResult result = await sanctumGuard
+                .ValidateNetworkAsync(campaignId, target.AbsoluteUri, toolName, token)
+                .ConfigureAwait(false);
+
+            return result.Allowed;
+
+        });
 
     }
 

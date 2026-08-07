@@ -55,6 +55,49 @@ public sealed class StructuredOutputEndpointTests
 
     }
 
+    // Validation warnings quote model-supplied JSON property names verbatim, so a non-ASCII or
+    // control character in the model's output would reach Kestrel's response-header validation and
+    // throw — turning an already-billed 200 completion into a 500. The header must be reduced to
+    // printable US-ASCII instead.
+    [Fact]
+    public async Task PostChatCompletions_Buffered_NonAsciiWarning_StillReturnsTheCompletion()
+    {
+
+        _factory.FakeIntelligence.NextText = """{"name": "Alice"}""";
+
+        _factory.FakeIntelligence.NextWarnings =
+            ["validation failed after correction stopped: $.: additional property 'résumé\r\n' is not allowed."];
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = """
+            {
+              "model": "mistral:latest",
+              "messages": [
+                { "role": "user", "content": "hello" }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/chat/completions",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.True(response.Headers.Contains("X-Arcanum-Structured-Output-Warning"));
+
+        string headerValue = Assert.Single(
+            response.Headers.GetValues("X-Arcanum-Structured-Output-Warning"));
+
+        Assert.All(headerValue, character => Assert.InRange(character, ' ', '~'));
+
+        Assert.Contains("additional property", headerValue, StringComparison.Ordinal);
+
+        Assert.DoesNotContain('é', headerValue);
+
+    }
+
     [Fact]
     public async Task PostChatCompletions_Buffered_NoWarning_NoHeader()
     {

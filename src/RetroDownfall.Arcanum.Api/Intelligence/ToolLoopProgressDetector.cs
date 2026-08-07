@@ -10,14 +10,31 @@ internal readonly record struct ToolLoopProgressEntry(
     string ResultText);
 
 /// <summary>
-/// Detects a completed tool round that produced exactly the same calls and results as the
-/// immediately preceding round. It retains one fixed-size fingerprint, so productive loops can
-/// continue without a round counter or growing history.
+/// Detects a completed tool round that produced exactly the same calls and results as any of the
+/// last <see cref="RecentRoundWindow"/> rounds. Comparing against a window rather than only the
+/// adjacent round catches an oscillation (A, B, A, B …) that a confused model can otherwise sustain
+/// forever — the shared tool loop has no round, duration, or model-call ceiling (DESIGN §2.1), so
+/// this is the only structural stop. The window is a fixed-size ring of digests, so productive
+/// loops still run unbounded on O(1) memory with no round counter.
 /// </summary>
 internal sealed class ToolLoopProgressDetector
 {
 
-    private byte[]? _previousFingerprint;
+    /// <summary>
+    /// How many completed rounds the current round is compared against. Small and fixed so memory
+    /// stays constant; wide enough to catch the two- and three-round oscillations models fall into.
+    /// </summary>
+    private const int RecentRoundWindow = 8;
+
+    private readonly byte[]?[] _recentFingerprints = new byte[]?[RecentRoundWindow];
+
+    private int _nextSlot;
+
+    /// <summary>
+    /// Hex digest of the round signature that most recently recurred, for trace/diagnostic capture
+    /// of the <c>no_progress</c> stop (DESIGN §10.7.3). <see langword="null"/> until one recurs.
+    /// </summary>
+    public string? RepeatedSignature { get; private set; }
 
     public bool ObserveCompletedRound(
         IReadOnlyList<ToolLoopProgressEntry> entries)
@@ -36,12 +53,33 @@ internal sealed class ToolLoopProgressDetector
 
         byte[] fingerprint = ComputeFingerprint(entries);
 
-        bool repeated = _previousFingerprint is not null
-            && CryptographicOperations.FixedTimeEquals(
-                _previousFingerprint,
-                fingerprint);
+        bool repeated = false;
 
-        _previousFingerprint = fingerprint;
+        foreach (byte[]? previous in _recentFingerprints)
+        {
+
+            if (previous is not null
+                && CryptographicOperations.FixedTimeEquals(previous, fingerprint))
+            {
+
+                repeated = true;
+
+                break;
+
+            }
+
+        }
+
+        _recentFingerprints[_nextSlot] = fingerprint;
+
+        _nextSlot = (_nextSlot + 1) % RecentRoundWindow;
+
+        if (repeated)
+        {
+
+            RepeatedSignature = Convert.ToHexString(fingerprint.AsSpan(0, 8));
+
+        }
 
         return repeated;
 

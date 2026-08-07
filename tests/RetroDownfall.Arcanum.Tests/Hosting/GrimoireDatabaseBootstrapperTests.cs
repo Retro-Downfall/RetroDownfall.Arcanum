@@ -213,6 +213,230 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
     }
 
+    // Issue: the legacy KDF upgrade used to run the irreversible PRAGMA rekey before persisting the
+    // salt, so a crash or a failing sidecar write in that window destroyed the only copy of the
+    // salt. The salt must be on durable storage first: if it cannot be persisted, the database must
+    // still open with its legacy passphrase.
+    [Fact]
+    public async Task EnsureInitializedAsync_LegacyUpgrade_DoesNotRekeyWhenTheSaltCannotBePersisted()
+    {
+
+        _secretStore.SetApiKey("legacy-api-key");
+
+        string dedicatedSecret = "dedicated-legacy-secret";
+
+        _secretStore.SetDedicatedSecret(dedicatedSecret);
+
+        string legacyPassphrase =
+            GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecretLegacy(dedicatedSecret);
+
+        await CreateLegacyDatabaseAsync(legacyPassphrase);
+
+        // Occupy the staging path with a directory so persisting the salt fails the way a full disk
+        // or a read-only ~/.config/arcanum would.
+        Directory.CreateDirectory(GrimoireKdfSidecarFile.GetPendingSidecarPath(_dbPath));
+
+        _ = await Assert.ThrowsAnyAsync<IOException>(() =>
+            GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                _secretStore,
+                _passphraseSource,
+                _scopeFactory,
+                _dbPath,
+                _tempDir,
+                CancellationToken.None));
+
+        Assert.False(File.Exists(_sidecarPath));
+
+        // Pooling must be off: a pooled handle keeps the key it was opened with and would answer
+        // SELECT 1 without re-deriving it from the file, hiding a committed rekey.
+        await using SqliteConnection probe = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = _dbPath,
+            Password = legacyPassphrase,
+            Pooling = false,
+        }.ToString());
+
+        await probe.OpenAsync();
+
+        await using SqliteCommand cmd = probe.CreateCommand();
+
+        cmd.CommandText = "SELECT 1;";
+
+        _ = await cmd.ExecuteScalarAsync();
+
+    }
+
+    // The salt is staged before the rekey and promoted after it, so a completed upgrade leaves the
+    // committed sidecar and no staging file behind.
+    [Fact]
+    public async Task EnsureInitializedAsync_LegacyUpgrade_PromotesTheStagedSaltAndLeavesNoPendingFile()
+    {
+
+        _secretStore.SetApiKey("legacy-api-key");
+
+        string dedicatedSecret = "dedicated-legacy-secret";
+
+        _secretStore.SetDedicatedSecret(dedicatedSecret);
+
+        await CreateLegacyDatabaseAsync(
+            GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecretLegacy(dedicatedSecret));
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        Assert.True(File.Exists(_sidecarPath));
+
+        Assert.False(File.Exists(GrimoireKdfSidecarFile.GetPendingSidecarPath(_dbPath)));
+
+        Assert.Equal(
+            GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(
+                _secretStore.DedicatedSecret!,
+                GrimoireKdfSidecarFile.Read(_dbPath).GetSaltBytes()),
+            _passphraseSource.Passphrase);
+
+    }
+
+    // Crash side A: the rekey committed but the pending sidecar was never promoted. The salt is on
+    // disk, so startup must find it, open the database, and promote it.
+    [Fact]
+    public async Task EnsureInitializedAsync_PendingSidecarAfterCommittedRekey_RecoversAndPromotes()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        string dedicatedSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+
+        _secretStore.SetDedicatedSecret(dedicatedSecret);
+
+        GrimoireKdfSidecar sidecar = GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2);
+
+        string pbkdf2Passphrase = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(
+            dedicatedSecret,
+            sidecar.GetSaltBytes());
+
+        await CreateLegacyDatabaseAsync(pbkdf2Passphrase);
+
+        // Simulate the interrupted upgrade: the database is already keyed with the new passphrase
+        // and only the pending sidecar exists.
+        GrimoireKdfSidecarFile.WritePending(_dbPath, sidecar);
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        Assert.Equal(pbkdf2Passphrase, _passphraseSource.Passphrase);
+
+        Assert.True(File.Exists(_sidecarPath));
+
+        Assert.False(File.Exists(GrimoireKdfSidecarFile.GetPendingSidecarPath(_dbPath)));
+
+        Assert.Equal(sidecar.SaltBase64, GrimoireKdfSidecarFile.Read(_dbPath).SaltBase64);
+
+    }
+
+    // Crash side B: the salt was staged but the rekey never committed. The stale pending salt must
+    // not block the legacy upgrade from being re-driven.
+    [Fact]
+    public async Task EnsureInitializedAsync_StalePendingSidecarBeforeRekey_RedrivesLegacyUpgrade()
+    {
+
+        _secretStore.SetApiKey("legacy-api-key");
+
+        string dedicatedSecret = "dedicated-legacy-secret";
+
+        _secretStore.SetDedicatedSecret(dedicatedSecret);
+
+        await CreateLegacyDatabaseAsync(
+            GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecretLegacy(dedicatedSecret));
+
+        GrimoireKdfSidecar stale = GrimoireKdfSidecar.Create(GrimoireKeyDerivation.KdfVersion2);
+
+        GrimoireKdfSidecarFile.WritePending(_dbPath, stale);
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        Assert.True(File.Exists(_sidecarPath));
+
+        Assert.NotEqual(stale.SaltBase64, GrimoireKdfSidecarFile.Read(_dbPath).SaltBase64);
+
+        await using SqliteConnection probe = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = _dbPath,
+            Password = _passphraseSource.Passphrase,
+        }.ToString());
+
+        await probe.OpenAsync();
+
+        await using SqliteCommand cmd = probe.CreateCommand();
+
+        cmd.CommandText = "SELECT 1;";
+
+        _ = await cmd.ExecuteScalarAsync();
+
+    }
+
+    // A sidecar-backed database is never keyed from the master API key, so a missing
+    // grimoire-key.dat must name that file instead of falling back and reporting "key verification
+    // failed" / possible tampering.
+    [Fact]
+    public async Task EnsureInitializedAsync_MissingGrimoireSecretWithSidecar_NamesTheMissingKeyFile()
+    {
+
+        _secretStore.SetApiKey("test-api-key");
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+            _secretStore,
+            _passphraseSource,
+            _scopeFactory,
+            _dbPath,
+            _tempDir,
+            CancellationToken.None);
+
+        // The operator restored arcanum.db and arcanum.db.kdf but not grimoire-key.dat, which lives
+        // under a different directory on macOS/Windows.
+        TestSecretStore withoutGrimoireKey = new();
+
+        withoutGrimoireKey.SetApiKey("test-api-key");
+
+        GrimoireDatabaseUnavailableException error =
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
+                    withoutGrimoireKey,
+                    new GrimoireDbPassphraseSource(),
+                    _scopeFactory,
+                    _dbPath,
+                    _tempDir,
+                    CancellationToken.None));
+
+        Assert.Contains(
+            "grimoire-key.dat",
+            error.Message,
+            StringComparison.Ordinal);
+
+        // The master API key never keys a sidecar-backed database, so it must not be tried and the
+        // operator must not be pointed at tampering or a master-key mismatch.
+        Assert.DoesNotContain(
+            "key verification failed",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+    }
+
     private async Task CreateLegacyDatabaseAsync(string passphrase)
     {
 

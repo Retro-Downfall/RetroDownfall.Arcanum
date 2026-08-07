@@ -257,7 +257,7 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
 
     private void Load(string? encoded)
     {
-        if (encoded?.StartsWith(KeyRingHeader + "\n", StringComparison.Ordinal) == true)
+        if (encoded is not null && IsKeyRing(encoded))
         {
             LoadKeyRing(encoded);
             return;
@@ -271,9 +271,20 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         _activeKeyId = material.KeyId;
     }
 
+    // The canonical key-ring encoding is LF-delimited (see BackupSecretRewrapper). A ring persisted
+    // by an older Windows build used Environment.NewLine, so every line may carry a trailing '\r';
+    // those rings must still load or the install loses access to every encrypted blob.
+    private static bool IsKeyRing(string encoded) =>
+        encoded.StartsWith(KeyRingHeader + "\n", StringComparison.Ordinal)
+        || encoded.StartsWith(KeyRingHeader + "\r\n", StringComparison.Ordinal);
+
     private void LoadKeyRing(string encoded)
     {
-        string[] lines = encoded.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        string[] lines = encoded
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(static line => line.TrimEnd('\r'))
+            .Where(static line => line.Length > 0)
+            .ToArray();
         if (lines.Length < 3
             || !string.Equals(lines[0], KeyRingHeader, StringComparison.Ordinal)
             || !lines[1].StartsWith("active=", StringComparison.Ordinal))
@@ -329,15 +340,18 @@ public sealed class FileEncryptionKeyProvider : IFileEncryptionKeyRing, IDisposa
         IReadOnlyDictionary<string, FileEncryptionKeyMaterial> keys,
         string activeKeyId)
     {
+        // Always LF: AppendLine emits CRLF on Windows, which every key-ring reader
+        // (this type, BackupSecretSnapshotReader, BackupSecretRewrapper) rejects.
         System.Text.StringBuilder encoded = new();
-        _ = encoded.AppendLine(KeyRingHeader);
-        _ = encoded.Append("active=").AppendLine(activeKeyId);
+        _ = encoded.Append(KeyRingHeader).Append('\n');
+        _ = encoded.Append("active=").Append(activeKeyId).Append('\n');
         foreach ((string keyId, FileEncryptionKeyMaterial material) in
                  keys.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
         {
             _ = encoded.Append(keyId)
                 .Append('=')
-                .AppendLine(Convert.ToBase64String(material.MasterKey.Span));
+                .Append(Convert.ToBase64String(material.MasterKey.Span))
+                .Append('\n');
         }
 
         await _secretStore.SaveFileEncryptionSecretAsync(encoded.ToString())

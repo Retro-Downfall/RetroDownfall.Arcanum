@@ -236,11 +236,15 @@ public static class LongRunningOperationRecoveryRegistry
                 ManualRepairGuidance:
                     "Re-run the factory reset; quarantined trees are listed by 'arcanum doctor' until removed."),
 
+            // Version 0 is admitted because the ledger row exists before its first checkpoint: a kill
+            // between registering the Sending and writing the record leaves the row at 0, and the
+            // handler's own "no readable record" path abandons it with a named a2a.* reason. Rejecting
+            // it on the version window instead would strand it as checkpoint_version_unsupported.
             new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.A2AInboundSending,
                 LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
                 Owner: "A2ASendingLedger",
-                MinCheckpointVersion: 1,
+                MinCheckpointVersion: 0,
                 MaxCheckpointVersion: 1,
                 LongRunningOperationStartupPriority.Readiness,
                 RecoveryIntent:
@@ -253,7 +257,7 @@ public static class LongRunningOperationRecoveryRegistry
                 LongRunningOperationKinds.A2AOutboundSending,
                 LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
                 Owner: "A2ASendingLedger",
-                MinCheckpointVersion: 1,
+                MinCheckpointVersion: 0,
                 MaxCheckpointVersion: 1,
                 LongRunningOperationStartupPriority.Readiness,
                 RecoveryIntent:

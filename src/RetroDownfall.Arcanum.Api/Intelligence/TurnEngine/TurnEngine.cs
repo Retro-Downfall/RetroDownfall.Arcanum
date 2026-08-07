@@ -43,16 +43,51 @@ internal sealed class TurnEngine(
 
         Guid runId = Guid.NewGuid();
 
+        // Producer-owned linked source so an abandoned enumeration (the production client-disconnect
+        // path) can unwind the pipeline instead of leaving it running against a disposed emitter.
+        using CancellationTokenSource producerCts =
+            CancellationTokenSource.CreateLinkedTokenSource(executionToken);
+
         await using TurnEventEmitter emitter = new(runId);
 
-        Task producer = ProduceAsync(request, emitter, executionToken, auditContext);
+        Task producer = ProduceAsync(request, emitter, producerCts.Token, auditContext);
 
-        await foreach (TurnEvent evt in emitter.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
+        try
         {
-            yield return evt;
-        }
+            await foreach (TurnEvent evt in emitter.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
+            {
+                yield return evt;
+            }
 
-        await producer.ConfigureAwait(false);
+            await producer.ConfigureAwait(false);
+        }
+        finally
+        {
+            // Runs before the emitter's DisposeAsync (declared in the enclosing scope), including
+            // when the consumer abandons the iterator at a `yield return`. Completing the channel
+            // first releases a producer parked on a full bounded write; cancelling then awaiting it
+            // guarantees the pipeline is finished — and its Task observed — before the emit gate is
+            // disposed under it.
+            emitter.CompleteWithoutTerminal();
+
+            await producerCts.CancelAsync().ConfigureAwait(false);
+
+            try
+            {
+                await producer.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Abandoned run — the pipeline unwound on the producer token as instructed.
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(
+                    "Turn {RunId} producer faulted while unwinding; exception type {ExceptionType}.",
+                    runId,
+                    ex.GetType().FullName);
+            }
+        }
 
         executionToken.ThrowIfCancellationRequested();
     }

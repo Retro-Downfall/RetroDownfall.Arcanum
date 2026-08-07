@@ -380,7 +380,9 @@ public sealed class A2AClientTests : IDisposable
 
             using HeaderCapturingHandler handler = new(serverHandler);
 
-            ArcanumSettings settings = EnabledSettings();
+            // The allowlist is what vouches for a credential target: agent_url reaches the service verbatim
+            // from the model, so an empty allowlist withholds the credential from every target.
+            ArcanumSettings settings = EnabledSettings([DiscoveryUrl]);
 
             settings.Integrations!.A2A!.OutboundCredentialEnvironmentVariable = envVar;
 

@@ -314,6 +314,141 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(LongRunningOperationState.Cancelling, persisted.State);
     }
 
+    /// <summary>
+    /// 'arcanum operation retry' parks the row in Pending. If the only discovery query ignored
+    /// Pending, nothing would ever re-drive it, and for a data-retention kind Pending also blocks
+    /// single-flight — so the documented repair action would deny the whole subsystem forever.
+    /// </summary>
+    [SkippableFact]
+    public async Task FindExpiredAsync_ReDrivesARetriedOperationButNotOneAwaitingItsFirstLease()
+    {
+        RequireSqlCipher();
+        LongRunningOperationStore store = new(_db!);
+        DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
+        LongRunningOperation retried = await CreateAsync(store, now);
+        LongRunningOperation justCreated = await CreateAsync(store, now);
+
+        LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(
+            retried.Id,
+            "dead-host",
+            now,
+            now.AddMinutes(1));
+        Assert.True(
+            await store.TryTransitionAsync(
+                retried.Id,
+                lease.Operation.Revision,
+                "dead-host",
+                LongRunningOperationState.ReconciliationRequired,
+                now.AddSeconds(1),
+                LongRunningOperationErrorCodes.CorruptCheckpoint));
+
+        LongRunningOperation attention = Assert.IsType<LongRunningOperation>(
+            await store.GetAsync(retried.Id));
+        Assert.True(
+            await store.ResetForRetryAsync(retried.Id, attention.Revision, now.AddSeconds(2)));
+
+        IReadOnlyList<LongRunningOperation> recoverable = await store.FindExpiredAsync(
+            now.AddSeconds(3),
+            10);
+
+        Assert.Contains(recoverable, operation => operation.Id == retried.Id);
+
+        // Its creator leases it in the very next statement; reconciling it would race that caller.
+        Assert.DoesNotContain(recoverable, operation => operation.Id == justCreated.Id);
+
+        LongRunningOperationLeaseResult recovery = await store.TryAcquireLeaseAsync(
+            retried.Id,
+            "recovery-worker",
+            now.AddSeconds(3),
+            now.AddMinutes(2));
+        Assert.True(recovery.Acquired);
+    }
+
+    /// <summary>
+    /// Only the kinds that poll the flag settle their own Cancelling row, and only while their lease
+    /// is alive. Once it lapses the row must be recoverable, or a cancellation nobody observed wedges
+    /// its kind permanently with no CLI exit.
+    /// </summary>
+    [SkippableFact]
+    public async Task AnUnobservedCancellationIsRecoverableOnceItsLeaseLapses()
+    {
+        RequireSqlCipher();
+        LongRunningOperationStore store = new(_db!);
+        DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
+        LongRunningOperation operation = await CreateAsync(store, now);
+        LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            "dead-host",
+            now,
+            now.AddMinutes(1));
+        Assert.True(
+            await store.RequestCancellationAsync(
+                operation.Id,
+                leased.Operation.Revision,
+                now.AddSeconds(5)));
+
+        // The owner still holds a live lease, so it is the one that must settle the row.
+        Assert.DoesNotContain(
+            await store.FindExpiredAsync(now.AddSeconds(10), 10),
+            candidate => candidate.Id == operation.Id);
+
+        IReadOnlyList<LongRunningOperation> recoverable = await store.FindExpiredAsync(
+            now.AddMinutes(2),
+            10);
+
+        Assert.Contains(recoverable, candidate => candidate.Id == operation.Id);
+
+        LongRunningOperationLeaseResult recovery = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            "recovery-worker",
+            now.AddMinutes(2),
+            now.AddMinutes(4));
+
+        Assert.True(recovery.Acquired);
+    }
+
+    /// <summary>
+    /// The operator must also be able to back out of a cancellation nobody observed by hand, without
+    /// being able to yank one that is still in progress.
+    /// </summary>
+    [SkippableFact]
+    public async Task ResetForRetryAsync_AcceptsALapsedCancellationAndRefusesALiveOne()
+    {
+        RequireSqlCipher();
+        LongRunningOperationStore store = new(_db!);
+        DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
+        LongRunningOperation operation = await CreateAsync(store, now);
+        LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
+            operation.Id,
+            "worker",
+            now,
+            now.AddMinutes(1));
+        Assert.True(
+            await store.RequestCancellationAsync(
+                operation.Id,
+                leased.Operation.Revision,
+                now.AddSeconds(5)));
+
+        LongRunningOperation cancelling = Assert.IsType<LongRunningOperation>(
+            await store.GetAsync(operation.Id));
+
+        bool whileOwned = await store.ResetForRetryAsync(
+            operation.Id,
+            cancelling.Revision,
+            now.AddSeconds(10));
+        bool onceLapsed = await store.ResetForRetryAsync(
+            operation.Id,
+            cancelling.Revision,
+            now.AddMinutes(2));
+
+        LongRunningOperation persisted = Assert.IsType<LongRunningOperation>(
+            await store.GetAsync(operation.Id));
+        Assert.False(whileOwned);
+        Assert.True(onceLapsed);
+        Assert.Equal(LongRunningOperationState.Pending, persisted.State);
+        Assert.Null(persisted.LeaseOwner);
+    }
+
     [SkippableFact]
     public async Task CreateAsync_PreservesRootParentAndRecoveryLinks()
     {

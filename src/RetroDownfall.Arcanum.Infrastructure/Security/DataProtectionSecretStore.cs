@@ -249,6 +249,11 @@ public sealed class DataProtectionSecretStore(
 
                 await stream.FlushAsync().ConfigureAwait(false);
 
+                // FlushAsync only drains the managed buffer to the OS. grimoire-key.dat has no
+                // OS-credential copy, so the rename must not be able to outrun the data: fsync
+                // before the atomic replace, matching GrimoireKdfSidecarFile.Write.
+                stream.Flush(flushToDisk: true);
+
             }
 
             File.Move(tempPath, path, overwrite: true);

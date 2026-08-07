@@ -17,6 +17,9 @@ public static class ErrorCodes
 
         public const string InvalidBody = "Validation.InvalidBody";
 
+        /// <summary>A JSON route received a body whose <c>Content-Type</c> is missing or is not JSON.</summary>
+        public const string UnsupportedMediaType = "Validation.UnsupportedMediaType";
+
         public const string InvalidQuery = "Validation.InvalidQuery";
 
         public const string InvalidProviderType = "Validation.InvalidProviderType";
@@ -396,6 +399,9 @@ public static class ErrorCodes
 
         /// <summary>The <c>Idempotency-Key</c> request header exceeds the maximum allowed length.</summary>
         public const string IdempotencyKeyTooLong = "Security.IdempotencyKeyTooLong";
+
+        /// <summary>The request carries more than one <c>Idempotency-Key</c> header value.</summary>
+        public const string IdempotencyKeyAmbiguous = "Security.IdempotencyKeyAmbiguous";
 
         /// <summary>Same idempotency key reused with a different request fingerprint.</summary>
         public const string IdempotencyConflict = "Security.IdempotencyConflict";

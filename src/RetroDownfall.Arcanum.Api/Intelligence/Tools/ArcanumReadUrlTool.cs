@@ -129,6 +129,7 @@ public sealed class ArcanumReadUrlTool : AIFunction
             MaxRedirects =
                 ArcanumSettingClamps.WebBrowsingMaxRedirects(
                     settings.MaxRedirects),
+            RedirectEgressWard = SanctumEgressWardAmbient.Current,
         };
 
         try

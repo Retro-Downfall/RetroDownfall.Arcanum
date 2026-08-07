@@ -182,11 +182,18 @@ internal static class ConfigurationEndpoints
 
             Result validation = validator.Validate(merged);
 
-            Result<bool> result = validation.IsSuccess
-                ? Result<bool>.Success(true)
-                : Result<bool>.Failure(validation.Error);
+            if (validation.IsFailure)
+            {
 
-            return Results.Ok(ApiResponse<bool>.FromResult(result, traceId));
+                // API.md §8.12: semantic failure is 400, matching the sibling branches above and PUT /api/config.
+                // A 200 here lets status-code-driven scripts treat an invalid configuration as validated.
+                Result<bool> invalid = Result<bool>.Failure(validation.Error);
+
+                return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
+
+            }
+
+            return Results.Ok(ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId));
         })
         .WithName("ValidateConfiguration")
         .WithLargeRequestBody();

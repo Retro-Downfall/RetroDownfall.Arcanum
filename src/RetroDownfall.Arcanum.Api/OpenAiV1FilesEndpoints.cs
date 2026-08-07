@@ -26,6 +26,8 @@ internal static partial class OpenAiV1Endpoints
 
     private const int MaxUploadFilenameChars = 255;
 
+    private const long MultipartEnvelopeAllowanceBytes = 1L * 1024L * 1024L;
+
     private const string FileIdPrefix = "file-";
 
     internal static void MapOpenAiV1Files(this RouteGroupBuilder v1)
@@ -33,7 +35,7 @@ internal static partial class OpenAiV1Endpoints
 
         _ = v1.MapPost("/files", HandleUploadAsync)
             .WithName("PostOpenAiFiles")
-            .WithFileUploadRequestBody()
+            .WithFileUploadRequestBody(ResolveMaxMultipartBodyBytes())
             .DisableAntiforgery();
 
         _ = v1.MapGet("/files", HandleListAsync)
@@ -206,6 +208,15 @@ internal static partial class OpenAiV1Endpoints
     internal static long ResolveMaxUploadBytes() =>
         ArcanumSettingClamps.FilesMaxUploadSizeBytes(
             ArcanumRuntimeDefaults.Files.MaxUploadSizeBytes);
+
+    /// <summary>
+    /// The multipart ceiling for <c>POST /v1/files</c>: the code-owned upload envelope plus one allowance
+    /// for boundaries, part headers, and the sibling <c>purpose</c> field. Sized so a file at the envelope
+    /// still binds and the handler's own <see cref="IsUploadSizeAllowed"/> check owns the documented 413,
+    /// while a grossly oversized body is still cut off before it is buffered to disk.
+    /// </summary>
+    internal static long ResolveMaxMultipartBodyBytes() =>
+        ResolveMaxUploadBytes() + MultipartEnvelopeAllowanceBytes;
 
     internal static bool IsUploadSizeAllowed(long fileLength) =>
         fileLength <= ResolveMaxUploadBytes();

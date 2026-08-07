@@ -61,29 +61,74 @@ internal static class SseStreamWriter
 
         }
 
-        await using IAsyncEnumerator<T> enumerator = source.GetAsyncEnumerator(cancellationToken);
+        // Owned by this writer so a disconnect can unwind the producer and let the outstanding
+        // MoveNextAsync complete before the enumerator is disposed (see QuiesceAndDisposeAsync).
+        using CancellationTokenSource streamCts =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        IAsyncEnumerator<T> enumerator = source.GetAsyncEnumerator(streamCts.Token);
 
         // Keep a single pending MoveNextAsync for the lifetime of each item wait.
         // Heartbeats must WhenAny against the same move task — never start a second
         // MoveNextAsync while one is outstanding (IAsyncEnumerator is not concurrent-safe).
         Task<bool>? pendingMove = null;
 
-        while (true)
+        try
         {
 
-            pendingMove ??= enumerator.MoveNextAsync().AsTask();
-
-            Task delay = Task.Delay(heartbeatInterval, cancellationToken);
-
-            Task completed = await Task.WhenAny(pendingMove, delay).ConfigureAwait(false);
-
-            if (completed == delay)
+            while (true)
             {
+
+                pendingMove ??= enumerator.MoveNextAsync().AsTask();
+
+                // Per-iteration linked source so a frame that wins the race releases the heartbeat
+                // timer and its registration immediately instead of leaving one TimerQueueTimer per
+                // delivered frame alive for the whole interval (matches the OpenAI /v1 writer).
+                using CancellationTokenSource delayCts =
+                    CancellationTokenSource.CreateLinkedTokenSource(streamCts.Token);
+
+                Task delay = Task.Delay(heartbeatInterval, delayCts.Token);
+
+                Task completed = await Task.WhenAny(pendingMove, delay).ConfigureAwait(false);
+
+                if (completed == delay)
+                {
+
+                    try
+                    {
+
+                        await WriteKeepAliveAsync(httpContext, cancellationToken).ConfigureAwait(false);
+
+                    }
+
+                    catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+                    {
+
+                        return;
+
+                    }
+
+                    continue;
+
+                }
+
+                delayCts.Cancel();
+
+                bool hasNext = await pendingMove.ConfigureAwait(false);
+
+                pendingMove = null;
+
+                if (!hasNext)
+                {
+
+                    break;
+
+                }
 
                 try
                 {
 
-                    await WriteKeepAliveAsync(httpContext, cancellationToken).ConfigureAwait(false);
+                    await writeFrameAsync(enumerator.Current, cancellationToken).ConfigureAwait(false);
 
                 }
 
@@ -94,36 +139,74 @@ internal static class SseStreamWriter
 
                 }
 
-                continue;
-
             }
 
-            bool hasNext = await pendingMove.ConfigureAwait(false);
+        }
 
-            pendingMove = null;
+        finally
+        {
 
-            if (!hasNext)
+            await QuiesceAndDisposeAsync(enumerator, pendingMove, streamCts).ConfigureAwait(false);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Disposes a streaming enumerator only once it is quiescent. A compiler-generated async
+    /// iterator throws <see cref="NotSupportedException"/> from <c>DisposeAsync</c> while a
+    /// <c>MoveNextAsync</c> is still in flight, so every SSE writer that abandons the pump on a
+    /// client disconnect (or on a cancellation that surfaces from the keep-alive write) must first
+    /// cancel the producer and observe the outstanding move.
+    /// </summary>
+    public static async ValueTask QuiesceAndDisposeAsync<T>(
+        IAsyncEnumerator<T> enumerator,
+        Task<bool>? pendingMove,
+        CancellationTokenSource? unwindSignal)
+    {
+
+        ArgumentNullException.ThrowIfNull(enumerator);
+
+        if (pendingMove is not null)
+        {
+
+            if (!pendingMove.IsCompleted && unwindSignal is not null)
             {
 
-                break;
+                try
+                {
+
+                    await unwindSignal.CancelAsync().ConfigureAwait(false);
+
+                }
+
+                catch (ObjectDisposedException)
+                {
+
+                    // The caller already tore the linked source down; the move will unwind with it.
+
+                }
 
             }
 
             try
             {
 
-                await writeFrameAsync(enumerator.Current, cancellationToken).ConfigureAwait(false);
+                _ = await pendingMove.ConfigureAwait(false);
 
             }
 
-            catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+            catch
             {
 
-                return;
+                // The abandoned move's outcome is irrelevant — observing it only keeps the task
+                // from faulting unobserved and guarantees the iterator is parked before dispose.
 
             }
 
         }
+
+        await enumerator.DisposeAsync().ConfigureAwait(false);
 
     }
 

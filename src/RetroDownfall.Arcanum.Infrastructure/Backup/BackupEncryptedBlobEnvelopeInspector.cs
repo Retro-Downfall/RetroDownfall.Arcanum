@@ -201,7 +201,7 @@ internal static class BackupEncryptedBlobEnvelopeInspector
 
         }
 
-        if (header[8] != EncryptedBlobFormat.CurrentVersion)
+        if (!EncryptedBlobFormat.IsSupportedVersion(header[8]))
         {
 
             throw new InvalidDataException(
