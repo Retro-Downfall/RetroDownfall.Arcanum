@@ -423,6 +423,19 @@ public sealed class WorkspaceCheckCapabilityReporter
                 "The workspace-check sandbox or process-group launch chain is unavailable or untrusted.");
         }
 
+        // A child that cannot reach a writable .NET PAL root cannot start at all, so the tool must not
+        // be advertised on such a host. Probing here keeps `arcanum doctor`, /api/health, and the tool
+        // catalog consistent with what an actual run would do.
+        if (OperatingSystem.IsMacOS()
+            && !MacOsDotNetIpcRoots.AreAvailable())
+        {
+
+            return new WorkspaceCheckCapabilityStatus(
+                false,
+                true,
+                "The shared .NET inter-process roots under /tmp/.dotnet are unavailable, so a sandboxed SDK child cannot start.");
+        }
+
         return Map(executableStatus);
     }
 

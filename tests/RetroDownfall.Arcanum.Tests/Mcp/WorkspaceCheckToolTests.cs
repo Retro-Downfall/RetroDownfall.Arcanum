@@ -351,7 +351,6 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             NuGetHttpCache: "/runs/http",
             Temp: "/runs/tmp",
             GlobalPackages: "/trusted/packages",
-            SandboxApplicationGroupId: "group.example",
             DotNetHostPath: "/trusted/host/dotnet");
         Dictionary<string, string?> inherited = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -369,12 +368,15 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             WorkspaceCheckEnvironmentBuilder.Build(paths, inherited);
 
         Assert.Equal("/trusted/host/dotnet", environment["DOTNET_HOST_PATH"]);
-        Assert.Equal(
-            "group.example",
-            environment["NETCOREAPP_SANDBOX_APPLICATION_GROUP_ID"]);
-        Assert.Equal(
-            "group.example",
-            environment["DOTNET_SANDBOX_APPLICATION_GROUP_ID"]);
+
+        // macOS restricts ~/Library/Group Containers to entitled processes, so the PAL is never
+        // redirected there; the child uses the shared /tmp/.dotnet roots granted by the jail instead.
+        Assert.DoesNotContain(
+            "NETCOREAPP_SANDBOX_APPLICATION_GROUP_ID",
+            environment.Keys);
+        Assert.DoesNotContain(
+            "DOTNET_SANDBOX_APPLICATION_GROUP_ID",
+            environment.Keys);
         Assert.DoesNotContain("LANG", environment.Keys);
         Assert.DoesNotContain("LC_ALL", environment.Keys);
         Assert.DoesNotContain("LC_CTYPE", environment.Keys);
@@ -465,6 +467,49 @@ public sealed class WorkspaceCheckToolTests : IDisposable
                 (int)(File.GetUnixFileMode(path) & forbidden)));
 #pragma warning restore CA1416
 
+    }
+
+    [SkippableFact]
+    public void Workspace_check_grants_shared_dotnet_ipc_roots_without_owning_them()
+    {
+
+        Skip.IfNot(
+            OperatingSystem.IsMacOS(),
+            "The shared .NET PAL roots are a macOS-only jail grant.");
+
+        WorkspaceCheckRunDirectories directories =
+            WorkspaceCheckRunDirectories.Create();
+
+        try
+        {
+
+            // The child cannot start without a writable PAL root: the SDK takes a named Mutex before
+            // any command runs, and the runtime hard-codes /tmp/.dotnet regardless of TMPDIR.
+            Assert.NotNull(directories.SharedIpcRoots);
+            Assert.Equal(
+                ["/private/tmp/.dotnet/shm", "/private/tmp/.dotnet/lockfiles"],
+                directories.SharedIpcRoots);
+            Assert.All(
+                directories.SharedIpcRoots!,
+                path => Assert.True(Directory.Exists(path)));
+
+            // Shared roots reach the jail but are never per-run state, so cleanup must not delete them.
+            Assert.All(
+                directories.SharedIpcRoots!,
+                path => Assert.Contains(path, directories.SandboxWritableRoots));
+            Assert.All(
+                directories.SharedIpcRoots!,
+                path => Assert.DoesNotContain(path, directories.WritableRoots));
+        }
+        finally
+        {
+
+            Directory.Delete(directories.Root, recursive: true);
+        }
+
+        Assert.All(
+            directories.SharedIpcRoots!,
+            path => Assert.True(Directory.Exists(path)));
     }
 
     [Fact]

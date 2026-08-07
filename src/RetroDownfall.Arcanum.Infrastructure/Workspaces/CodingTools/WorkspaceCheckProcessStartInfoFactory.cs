@@ -14,8 +14,7 @@ internal sealed record WorkspaceCheckRunDirectories(
     string CliHome,
     string HttpCache,
     string Temp,
-    string? SharedMemoryRoot = null,
-    string? SandboxApplicationGroupId = null,
+    IReadOnlyList<string>? SharedIpcRoots = null,
     WorkspaceCheckTrxSource? TestResultsSource = null)
 {
 
@@ -35,20 +34,9 @@ internal sealed record WorkspaceCheckRunDirectories(
             return directories;
         }
 
-        string groupId = "arc"
-            + Guid.NewGuid().ToString("N")[..10];
-        string sharedMemoryRoot = Path.Combine(
-            System.Environment.GetFolderPath(
-                System.Environment.SpecialFolder.UserProfile),
-            "Library",
-            "Group Containers",
-            groupId);
-        CreateOwnerOnlyDirectory(sharedMemoryRoot);
-
         return directories with
         {
-            SharedMemoryRoot = sharedMemoryRoot,
-            SandboxApplicationGroupId = groupId,
+            SharedIpcRoots = MacOsDotNetIpcRoots.Ensure(),
         };
     }
 
@@ -102,28 +90,40 @@ internal sealed record WorkspaceCheckRunDirectories(
         SecureFilePermissions.ApplyOwnerOnlyDirectory(path);
     }
 
-    internal IReadOnlyList<string> WritableRoots
+    /// <summary>
+    /// Per-run roots the server creates and deletes. These are owner-only and live entirely beneath
+    /// <see cref="Root"/>; nothing outside the run is ever included.
+    /// </summary>
+    internal IReadOnlyList<string> WritableRoots =>
+    [
+        Artifacts,
+        Output,
+        Intermediate,
+        TestResults,
+        Home,
+        CliHome,
+        HttpCache,
+        Temp,
+    ];
+
+    /// <summary>
+    /// Every root the child is allowed to write: the per-run roots plus any host-shared .NET IPC
+    /// roots (<see cref="SharedIpcRoots"/>). Only this list is handed to the filesystem jail.
+    /// </summary>
+    internal IReadOnlyList<string> SandboxWritableRoots
     {
         get
         {
 
-            List<string> roots =
-            [
-                Artifacts,
-                Output,
-                Intermediate,
-                TestResults,
-                Home,
-                CliHome,
-                HttpCache,
-                Temp,
-            ];
-
-            if (!string.IsNullOrWhiteSpace(SharedMemoryRoot))
+            if (SharedIpcRoots is not { Count: > 0 })
             {
 
-                roots.Add(SharedMemoryRoot);
+                return WritableRoots;
             }
+
+            List<string> roots = [.. WritableRoots];
+
+            roots.AddRange(SharedIpcRoots);
 
             return roots;
         }
