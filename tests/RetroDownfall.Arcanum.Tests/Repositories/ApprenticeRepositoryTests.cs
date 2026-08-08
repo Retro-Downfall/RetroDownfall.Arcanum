@@ -174,4 +174,144 @@ public sealed class ApprenticeRepositoryTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A Conclave fan-out creates a batch of child Apprentices inside one clock tick, so ties on
+    /// <c>UpdatedAt</c> are ordinary rather than exotic. The paging cursor is a bare timestamp consumed
+    /// as a strict <c>&lt;</c>, so a tie straddling a page boundary must not strand the rows sharing
+    /// that timestamp: walking every page has to yield every Apprentice exactly once.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_paging_yields_every_apprentice_when_a_tie_straddles_the_boundary()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        DateTimeOffset newest = new(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+
+        // Page size is 2. The three tied rows cannot fit in one page, so the boundary necessarily
+        // falls inside the tie group whichever way the page is cut.
+        DateTimeOffset[] stamps =
+        [
+            newest,
+            newest.AddMinutes(-1),
+            newest.AddMinutes(-1),
+            newest.AddMinutes(-1),
+            newest.AddMinutes(-2),
+        ];
+
+        HashSet<Guid> expected = [];
+
+        foreach (DateTimeOffset stamp in stamps)
+        {
+
+            Apprentice created = await repository.AddAsync(
+                new Apprentice
+                {
+                    Id = Guid.NewGuid(),
+                    Name = "Cohort",
+                    Goal = "Tied timestamps",
+                    Status = ApprenticeStatus.Idle.ToString(),
+                    WorkspacePath = "/tmp/workspace",
+                    CreatedAt = stamp,
+                    UpdatedAt = stamp,
+                },
+                CancellationToken.None);
+
+            _ = expected.Add(created.Id);
+
+        }
+
+        List<Guid> walked = [];
+
+        DateTimeOffset? cursor = null;
+
+        for (int page = 0; page < 10; page++)
+        {
+
+            ListPageResult<Apprentice> result = await repository.ListAsync(
+                campaignId: null,
+                status: null,
+                limit: 2,
+                beforeUpdatedAt: cursor,
+                CancellationToken.None);
+
+            walked.AddRange(result.Items.Select(static a => a.Id));
+
+            if (!result.HasMore)
+            {
+
+                break;
+
+            }
+
+            Assert.NotNull(result.NextBeforeUpdatedAt);
+
+            // A cursor that does not advance would loop forever on the tie group.
+            Assert.True(cursor is null || result.NextBeforeUpdatedAt < cursor);
+
+            cursor = result.NextBeforeUpdatedAt;
+
+        }
+
+        Assert.Equal(expected.Count, walked.Count);
+
+        Assert.Equal(expected, walked.ToHashSet());
+
+    }
+
+    /// <summary>
+    /// Ordering must be a total order, not merely "descending by UpdatedAt". With no identity
+    /// tie-breaker the relative order of tied rows is undefined, so two identical queries can disagree
+    /// and the keyset cursor cannot reason about the boundary at all.
+    /// </summary>
+    [SkippableFact]
+    public async Task ListAsync_orders_tied_timestamps_deterministically()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        ApprenticeRepository repository = new(_db!, NullLogger<ApprenticeRepository>.Instance);
+
+        DateTimeOffset tied = new(2026, 1, 1, 9, 0, 0, TimeSpan.Zero);
+
+        for (int index = 0; index < 5; index++)
+        {
+
+            _ = await repository.AddAsync(
+                new Apprentice
+                {
+                    Id = Guid.NewGuid(),
+                    Name = "Tied",
+                    Goal = "Deterministic order",
+                    Status = ApprenticeStatus.Idle.ToString(),
+                    WorkspacePath = "/tmp/workspace",
+                    CreatedAt = tied,
+                    UpdatedAt = tied,
+                },
+                CancellationToken.None);
+
+        }
+
+        ListPageResult<Apprentice> first = await repository.ListAsync(
+            campaignId: null,
+            status: null,
+            limit: 5,
+            beforeUpdatedAt: null,
+            CancellationToken.None);
+
+        ListPageResult<Apprentice> second = await repository.ListAsync(
+            campaignId: null,
+            status: null,
+            limit: 5,
+            beforeUpdatedAt: null,
+            CancellationToken.None);
+
+        Assert.Equal(
+            first.Items.Select(static a => a.Id),
+            second.Items.Select(static a => a.Id));
+
+    }
+
 }

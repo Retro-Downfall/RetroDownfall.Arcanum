@@ -167,6 +167,28 @@ public sealed class TapestryWeavingService(
 
         }
 
+        // Reconciliation preserves each scope's current complete generation, so a scope that vanishes
+        // outright — a deleted session, a workspace no longer indexed — keeps its entire tree forever:
+        // it is never rediscovered, so it is never rebuilt or superseded, and nothing ever reads it
+        // again. Pruning here, against the same corpora this sweep discovered from, is what bounds the
+        // store by the data that actually exists.
+        int orphaned = await store
+            .PruneRemovedScopesAsync(
+                tapestry.WorkspaceTreesEnabled,
+                tapestry.SessionAttachmentTreesEnabled,
+                tapestry.SessionTreesEnabled,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (orphaned > 0)
+        {
+
+            logger.LogInformation(
+                "Tapestry pruning removed {Count} generation(s) for scopes that no longer exist.",
+                orphaned);
+
+        }
+
         return outcomes;
 
     }

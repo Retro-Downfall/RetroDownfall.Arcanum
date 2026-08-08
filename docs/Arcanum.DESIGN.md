@@ -879,7 +879,7 @@ this inventory and §10.2.5.
 | Session context pins | `SessionContextPins` | Raw SQL through `ISessionContextPinStore`; durable metadata only. Content is revalidated and materialized from its authoritative source on every turn (§10.2.6). |
 | OpenAI batch metadata | `Batches` | No request-count columns; `GET` derives counts from input/output/error files (§11.21). |
 | Embedding, attachment-retrieval, and Saga state | `entry_embeddings`[+`_vec`], workspace/attachment companions, `saga_memories`, `saga_memory_embeddings`[+`_vec`], `saga_extraction_watermarks`, `saga_memory_attachment_provenance`, `attachment_memory_consultations` | Declared one object per file under `Data/Schema/Tables/` and installed with the rest of the schema. Attachment chunks and derived Saga memories retain typed session/attachment/key/version/hash/materialized-time/source provenance. Campaign consultations are metadata-only and link to the finalized assistant entry so timestamp-group summary windows remain exact. While Arcanum has no users, schema changes edit those object files directly and local/test databases are recreated; no compatibility upgrade path is maintained. Reset transactionally by `POST /api/embeddings/reset?confirm=true`. |
-| The Tapestry (hierarchical memory) | `tapestry_generations`, `tapestry_nodes`, `tapestry_node_embeddings`[+`_vec`] | Declared under `Data/Schema/Tables/`; no EF entity and no compiled-model regeneration. Trees are **derived data**, never a second source of truth: leaf nodes reference their corpus row by stable id rather than copying its bytes, and every generation stores the clustering algorithm version, settings fingerprint, summary recipe/model, embedding dimension, and corpus fingerprint that produced it. Exactly one `Complete` generation per scope is visible to retrieval; `Building` rows are invisible and `Superseded` rows exist only until reconciliation removes them. Reset with `POST /api/embeddings/reset?confirm=true&scope=tapestry` (§21.11). |
+| The Tapestry (hierarchical memory) | `tapestry_generations`, `tapestry_nodes`, `tapestry_node_embeddings`[+`_vec`] | Declared under `Data/Schema/Tables/`; no EF entity and no compiled-model regeneration. Trees are **derived data**, never a second source of truth: leaf nodes reference their corpus row by stable id rather than copying its bytes, and every generation stores the clustering algorithm version, settings fingerprint, summary recipe/model, embedding dimension, and corpus fingerprint that produced it. Exactly one `Complete` generation per scope is visible to retrieval; `Building` rows are invisible, `Superseded` rows exist only until reconciliation removes them, and the published generation of a scope that no longer exists is dropped by the end-of-sweep prune (§21.11). Reset with `POST /api/embeddings/reset?confirm=true&scope=tapestry` (§21.11). |
 | Entry pinning | `Entries.IsPinned` | Pinned entries survive read-time compression and remain available to inference. |
 | Mandatory `apply_patch` receipt | deterministic `Entries` rows | Exact assistant `ToolCall` then system `ToolResult`; no receipt table (§10.7.4). |
 | Daemon execution history | process memory | `InMemoryDaemonExecutionRepository`; restart clears it. |
@@ -4333,6 +4333,18 @@ Forge codes on `ErrorCodes` + `ArcanumErrorMapper` (API §8.23). A few endpoint-
 
 Persistent agents + Chronicle SSE — behaviour in §5.7. Table `Apprentices`; Chronicle in-memory only. Conclave / Simulacrum / Second Wind / Shifting Fate / Divine Intervention: §5.7.
 
+**`GET /api/apprentices` ordering and the identity tie-breaker:** results order by
+`(UpdatedAt DESC, Id DESC)` and page on the same bare-timestamp `beforeUpdatedAt` cursor the session
+list uses, so they carry the identical tie contract described in §11.16. Ties are ordinary here rather
+than exceptional — a Conclave fan-out creates a batch of child Apprentices inside one clock tick — so
+without the `Id` component the order among them would be undefined and the keyset cursor could not
+reason about a tie straddling a page boundary. Pages are therefore cut at tie boundaries: every row
+sharing the first excluded row's timestamp is deferred to the next page, which the strict `UpdatedAt <`
+predicate then admits in full. A page whose rows are all one timestamp widens to the complete tie group
+instead and may exceed the requested `limit`, so the cursor always advances. The filtered set is already
+materialized client-side (EF Core's SQLite provider cannot translate `DateTimeOffset` ordering), so the
+tie group needs no second query.
+
 ### 19.7 Desktop project model and architecture
 
 The desktop Inference IDE is part of `RetroDownfall.Arcanum.slnx`:
@@ -4920,6 +4932,17 @@ Trees are derived data with an immutable **generation** per build:
   deadline: the sweep checkpoints between scopes and layers, and clustering observes the
   `CancellationToken` once per K-Means++ seeding round and once per refinement iteration, so the sweep
   stays cancellable throughout rather than only at scope and layer boundaries.
+- **Vanished scopes are pruned, not preserved.** Reconciliation deliberately keeps each scope's current
+  `Complete` generation, so it cannot reclaim a scope that disappears outright — a deleted session, a
+  workspace no longer indexed. Such a scope is never rediscovered, so it is never rebuilt, never
+  superseded, and never read again: retrieval scopes every query to a live scope. `PruneRemovedScopesAsync`
+  therefore runs at the end of every sweep and drops the published generation of any scope the sweep's
+  own corpora no longer contain. The diff runs set-wise in SQLite against the same queries
+  `DiscoverScopesAsync` reads from, so a tree can never be pruned on a rule that would not also have
+  rebuilt it, and no per-session parameter is round-tripped. The corpus participation flags are a
+  safety boundary rather than a filter: a corpus that is switched off is left completely untouched,
+  because treating a disabled feature as an emptied one would delete derived data whose every summary
+  is a billed model call the moment a flag flips.
 
 #### Summarization
 

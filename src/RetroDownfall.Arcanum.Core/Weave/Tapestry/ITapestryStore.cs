@@ -94,6 +94,33 @@ public interface ITapestryStore
     /// </summary>
     Task<int> ReconcileGenerationsAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Removes the published generation of every scope that no longer exists, and returns how many
+    /// were removed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ReconcileGenerationsAsync"/> deliberately preserves each scope's current complete
+    /// generation, so a scope that disappears entirely — a deleted session, a workspace that is no
+    /// longer indexed — keeps its whole tree forever. Nothing reads it again:
+    /// <see cref="DiscoverScopesAsync"/> never yields that scope, so it is never rebuilt or replaced,
+    /// and retrieval scopes every query to a live scope. It is unreachable storage that also inflates
+    /// the counts reported by the memory-status surfaces.
+    /// </para>
+    /// <para>
+    /// The corpus flags carry the same meaning as on <see cref="DiscoverScopesAsync"/> and are a
+    /// safety boundary, not a filter: a corpus that is switched off is left completely untouched.
+    /// Treating "the operator disabled session trees" as "every session scope is gone" would delete
+    /// derived data that is expensive to rebuild — every summary is a billed model call — the moment
+    /// a feature flag flips.
+    /// </para>
+    /// </remarks>
+    Task<int> PruneRemovedScopesAsync(
+        bool includeWorkspace,
+        bool includeSessionAttachments,
+        bool includeSessions,
+        CancellationToken cancellationToken);
+
     /// <summary>The nodes of one layer of a generation, in stable id order.</summary>
     Task<IReadOnlyList<TapestryNode>> GetLayerNodesAsync(
         string generationId,
