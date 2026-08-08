@@ -688,4 +688,86 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// Reconciliation preserves each scope's current complete generation, so a scope that disappears
+    /// outright keeps its whole tree forever: it is never rediscovered, never rebuilt, never
+    /// superseded, and never read again. Pruning is what bounds the store by the data that exists.
+    /// </summary>
+    [SkippableFact]
+    public async Task PruneRemovedScopesAsync_removes_the_published_tree_of_a_scope_that_no_longer_exists()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string published = await BeginAsync();
+
+        await _store!.AppendNodesAsync([Leaf(published, "n1", "c1", "alpha")], CancellationToken.None);
+
+        await _store.PublishGenerationAsync(
+            published,
+            1,
+            1,
+            1,
+            TapestryTerminalReason.LeafOnly,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        // The workspace scope was never backed by workspace_file_chunks rows, so it is exactly the
+        // shape of a scope whose source data has been deleted.
+        Assert.Empty(await _store.DiscoverScopesAsync(true, true, true, CancellationToken.None));
+
+        // Reconciliation is not enough on its own: the generation is Complete, so it is preserved.
+        Assert.Equal(0, await _store.ReconcileGenerationsAsync(CancellationToken.None));
+
+        Assert.NotNull(await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None));
+
+        int pruned = await _store.PruneRemovedScopesAsync(true, true, true, CancellationToken.None);
+
+        Assert.Equal(1, pruned);
+
+        Assert.Null(await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None));
+
+        // The nodes and their embeddings go with the generation rather than being left orphaned.
+        Assert.Empty(await _store.GetNodeEmbeddingsAsync(["n1"], CancellationToken.None));
+
+        Assert.Equal(0, await _store.CountPublishedNodesAsync(null, CancellationToken.None));
+
+    }
+
+    /// <summary>
+    /// The corpus flags are a safety boundary, not a filter. Treating "the operator switched session
+    /// trees off" as "every session scope is gone" would destroy derived data whose every summary is a
+    /// billed model call, the moment a feature flag flips.
+    /// </summary>
+    [SkippableFact]
+    public async Task PruneRemovedScopesAsync_leaves_a_disabled_corpus_untouched()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string published = await BeginAsync();
+
+        await _store!.AppendNodesAsync([Leaf(published, "n1", "c1", "alpha")], CancellationToken.None);
+
+        await _store.PublishGenerationAsync(
+            published,
+            1,
+            1,
+            1,
+            TapestryTerminalReason.LeafOnly,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        int pruned = await _store.PruneRemovedScopesAsync(
+            includeWorkspace: false,
+            includeSessionAttachments: true,
+            includeSessions: true,
+            CancellationToken.None);
+
+        Assert.Equal(0, pruned);
+
+        Assert.NotNull(await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None));
+
+    }
+
 }

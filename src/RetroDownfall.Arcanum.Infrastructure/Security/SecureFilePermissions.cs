@@ -7,6 +7,17 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Infrastructure.Security;
 
 /// <summary>
+/// The owner-only posture of one inventoried path. <see cref="IsOwnerOnly"/> is <see langword="true"/>
+/// for a path that does not exist: a secret that was never written is not a permission fault, and
+/// reporting it as one would bury the real finding in noise on a fresh installation.
+/// </summary>
+public readonly record struct SensitivePathPosture(
+    string Path,
+    bool IsDirectory,
+    bool Exists,
+    bool IsOwnerOnly);
+
+/// <summary>
 /// Applies owner-only permissions on sensitive Arcanum paths at creation time.
 /// </summary>
 public static class SecureFilePermissions
@@ -429,6 +440,128 @@ public static class SecureFilePermissions
                 logger.LogWarning(ex, "Could not enumerate log files under {LogDirectory} for permission self-check.", logDirectory);
 
             }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Every file <see cref="ApplyOwnerOnlyToSensitivePaths()"/> would harden, optionally widened to
+    /// the per-provider credential mirrors for <paramref name="providerNames"/>. Those mirrors are
+    /// installation-specific, so the caller supplies the configured provider names rather than this
+    /// class guessing them.
+    /// </summary>
+    public static IReadOnlyList<string> EnumerateOwnerOnlyPaths(
+        IReadOnlyList<string>? providerNames = null)
+    {
+
+        List<string> paths = [.. DefaultSensitiveFilePaths(), .. DefaultSecretFilePaths()];
+
+        foreach (string providerName in providerNames ?? [])
+        {
+
+            if (string.IsNullOrWhiteSpace(providerName))
+            {
+
+                continue;
+
+            }
+
+            string mirror = ArcanumPaths.InferenceProviderApiKeyStoreFile(providerName);
+
+            if (!paths.Contains(mirror, StringComparer.Ordinal))
+            {
+
+                paths.Add(mirror);
+
+            }
+
+        }
+
+        return paths;
+
+    }
+
+    /// <summary>
+    /// Reports the owner-only posture of the inventory without changing anything — not the modes, and
+    /// not the existence of any path. This is the read-only detector that
+    /// <c>arcanum doctor --repair permissions.apply_owner_only</c> is planned from; it deliberately
+    /// never creates a directory, because a diagnostic that materializes the thing it is inspecting
+    /// cannot tell an operator whether it was there before.
+    /// </summary>
+    public static IReadOnlyList<SensitivePathPosture> InspectOwnerOnlyPosture(
+        IReadOnlyList<string>? providerNames = null)
+    {
+
+        List<SensitivePathPosture> posture = [];
+
+        HashSet<string> seen = new(StringComparer.Ordinal);
+
+        foreach (string path in EnumerateOwnerOnlyPaths(providerNames))
+        {
+
+            if (seen.Add(path))
+            {
+
+                posture.Add(InspectPath(path, isDirectory: false));
+
+            }
+
+        }
+
+        // On a default layout the secret store lives inside the Grimoire directory, so the same path
+        // can arrive twice; report it once or the operator sees a doubled finding.
+        foreach (string directory in new[]
+        {
+            ArcanumPaths.GrimoireDirectory,
+            ArcanumPaths.SecretStoreDirectory,
+            ArcanumPaths.LogDirectory,
+            DataProtectionKeyPaths.Directory,
+        })
+        {
+
+            if (seen.Add(directory))
+            {
+
+                posture.Add(InspectPath(directory, isDirectory: true));
+
+            }
+
+        }
+
+        return posture;
+
+    }
+
+    private static SensitivePathPosture InspectPath(string path, bool isDirectory)
+    {
+
+        bool exists = isDirectory ? Directory.Exists(path) : File.Exists(path);
+
+        if (!exists)
+        {
+
+            return new SensitivePathPosture(path, isDirectory, Exists: false, IsOwnerOnly: true);
+
+        }
+
+        try
+        {
+
+            return new SensitivePathPosture(
+                path,
+                isDirectory,
+                Exists: true,
+                VerifyOwnerOnly(path, isDirectory));
+
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+
+            // An unreadable ACL is itself a posture problem, but not one this class can describe
+            // safely; report it as not-owner-only so the detector degrades rather than throwing.
+            return new SensitivePathPosture(path, isDirectory, Exists: true, IsOwnerOnly: false);
 
         }
 

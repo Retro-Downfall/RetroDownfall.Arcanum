@@ -2,6 +2,7 @@ using System.CommandLine;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Commands.Configuration;
+using RetroDownfall.Arcanum.Core.Cli;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -61,13 +62,48 @@ internal static partial class CliCommandTree
     private static Command BuildDoctor(IServiceProvider sp)
     {
         DoctorCommand handler = sp.GetRequiredService<DoctorCommand>();
-        Command doctor = new("doctor", "Run environment diagnostics (version, paths, API health).");
-        Option<bool> fixPermissions = new("--fix-permissions") { Description = "Apply owner-only permissions to configuration, preset state, the Grimoire database, and secret stores." };
+        Command doctor = new("doctor", "Run subsystem diagnostics, plan safe repairs, and name the exact remediation command.");
+        Option<string[]> only = new("--only") { AllowMultipleArgumentsPerToken = true, Description = "Run only these diagnostic ids or subsystems; repeatable. See 'arcanum doctor list'." };
+        Option<string[]> skip = new("--skip") { AllowMultipleArgumentsPerToken = true, Description = "Skip these diagnostic ids or subsystems; repeatable. See 'arcanum doctor list'." };
+        Option<bool> includeNetwork = new("--include-network") { Description = "Also probe configured provider endpoints with one non-billable model listing each. No completion is requested." };
+        Option<string[]> repair = new("--repair") { AllowMultipleArgumentsPerToken = true, Description = "Plan a repair by id; repeatable. Shows the plan and changes nothing unless --apply is also passed." };
+        Option<bool> apply = new("--apply") { Description = "Perform the planned repairs after confirmation. Requires --repair." };
+        Option<bool> strict = new("--strict") { Description = "Exit nonzero when any diagnostic is degraded or unavailable, not only when one is unhealthy." };
+        Option<bool> fixPermissions = new("--fix-permissions") { Description = "Apply owner-only permissions to configuration, preset state, the Grimoire database, and secret stores. Alias for --repair permissions.apply_owner_only --apply." };
 
+        doctor.Add(only);
+        doctor.Add(skip);
+        doctor.Add(includeNetwork);
+        doctor.Add(repair);
+        doctor.Add(apply);
+        doctor.Add(strict);
         doctor.Add(fixPermissions);
+
+        Command list = new("list", "List every diagnostic id, its subsystem, and every repair id it can emit.");
+
+        list.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.List(CliInvocationContext.Current.Json, ct).ConfigureAwait(false));
+
+        Command explain = new("explain", "Explain one diagnostic or repair: what it reads, what it changes, and how to run it.");
+        Argument<string> explainId = new("id") { Description = "A diagnostic or repair id from 'arcanum doctor list'." };
+
+        explain.Add(explainId);
+
+        explain.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Explain(pr.GetValue(explainId)!, CliInvocationContext.Current.Json, ct).ConfigureAwait(false));
+
+        doctor.Add(list);
+        doctor.Add(explain);
 
         doctor.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Run(
+                new DoctorRunRequest(
+                    pr.GetValue(only) ?? [],
+                    pr.GetValue(skip) ?? [],
+                    pr.GetValue(includeNetwork),
+                    pr.GetValue(repair) ?? [],
+                    pr.GetValue(apply),
+                    pr.GetValue(strict)),
                 pr.GetValue(fixPermissions),
                 CliInvocationContext.Current.Json,
                 ct).ConfigureAwait(false));

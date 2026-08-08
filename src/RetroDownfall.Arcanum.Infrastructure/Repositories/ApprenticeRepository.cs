@@ -77,16 +77,52 @@ public sealed class ApprenticeRepository : IApprenticeRepository
             matched = matched.Where(a => a.UpdatedAt < beforeCutoff).ToList();
         }
 
-        List<Apprentice> page = matched
+        // "Id" is the identity tie-breaker. Without it the sort is undefined among Apprentices sharing
+        // an "UpdatedAt" — a Conclave fan-out creates a batch of children within one clock tick — so a
+        // tie straddling a page boundary would be ordered differently on each query and the keyset
+        // cursor below could not reason about it at all.
+        List<Apprentice> ordered = matched
             .OrderByDescending(a => a.UpdatedAt)
+            .ThenByDescending(a => a.Id)
             .Take(pageSize + 1)
             .ToList();
 
-        bool hasMore = page.Count > pageSize;
+        bool hasMore = ordered.Count > pageSize;
+
+        List<Apprentice> page = ordered;
 
         if (hasMore)
         {
-            page = page.Take(pageSize).ToList();
+            // The cursor handed back is a bare timestamp consumed as a strict "UpdatedAt" < @before, so
+            // any Apprentice sharing the boundary timestamp with the last row of this page would be
+            // excluded from the next page and become permanently unreachable. Rather than widen the wire
+            // contract, the page is cut at the tie boundary: every row sharing the first excluded row's
+            // timestamp is deferred to the next page, which the strict predicate then admits in full.
+            // This mirrors SessionRepository.ListAsync, which carries the same cursor contract.
+            DateTimeOffset boundary = ordered[pageSize].UpdatedAt;
+
+            List<Apprentice> kept = ordered
+                .Take(pageSize)
+                .Where(a => a.UpdatedAt != boundary)
+                .ToList();
+
+            if (kept.Count > 0)
+            {
+                page = kept;
+            }
+            else
+            {
+                // Degenerate case: the whole page is one timestamp, so cutting at the tie boundary would
+                // return nothing and leave the cursor exactly where it started. Return the complete tie
+                // group instead — the page exceeds the requested limit, but it is whole and the cursor
+                // advances past it. The set is already materialized, so no second query is needed.
+                page = matched
+                    .Where(a => a.UpdatedAt == boundary)
+                    .OrderByDescending(a => a.Id)
+                    .ToList();
+
+                hasMore = matched.Exists(a => a.UpdatedAt < boundary);
+            }
         }
 
         DateTimeOffset? nextBefore = hasMore && page.Count > 0 ? page[^1].UpdatedAt : null;

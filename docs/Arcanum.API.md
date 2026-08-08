@@ -155,7 +155,7 @@ test, and documentation citations remain stable.
 | POST | `/api/prompts/{id}/export` | Portable prompt JSON (`ApiResponse<PromptExportDto>`; DESIGN §19). |
 | POST | `/api/prompts/import` | Import prompt (`ApiResponse<PromptSummaryDto>`; DESIGN §19). |
 | POST | `/api/prompts/{id}/clone` | Clone a prompt to a new name/version, optionally overriding the campaign scope (`ApiResponse<PromptDetailDto>`; body `ClonePromptRequest` with required `newName` / `newVersion` and optional `campaignId`). |
-| GET | `/api/apprentices` | List Apprentices (`ApiResponse<ListPageResult<ApprenticeSummaryDto>>`; optional `?campaignId=`, `?status=`, `?limit=`, `?beforeUpdatedAt=`; DESIGN §19.6). |
+| GET | `/api/apprentices` | List Apprentices (`ApiResponse<ListPageResult<ApprenticeSummaryDto>>`; optional `?campaignId=`, `?status=`, `?limit=`, `?beforeUpdatedAt=`). Ordered `(UpdatedAt DESC, Id DESC)`; `beforeUpdatedAt` is a bare timestamp consumed as a strict `<`, so a page ending inside a group of Apprentices sharing an `UpdatedAt` is cut at that tie boundary and may return fewer than `limit`, and a page that is entirely one timestamp widens to the whole tie group and may exceed it. DESIGN §19.6. |
 | GET | `/api/apprentices/{id}` | Apprentice detail (`ApiResponse<ApprenticeDetailDto>`; **404** `Apprentice.NotFound`; DESIGN §19.6). |
 | POST | `/api/apprentices` | Create Apprentice (`ApiResponse<ApprenticeDetailDto>`; **201** + `Location`; DESIGN §19.6). |
 | DELETE | `/api/apprentices/{id}` | Delete terminal Apprentice (**204**; **409** `Apprentice.Running`; DESIGN §19.6). |

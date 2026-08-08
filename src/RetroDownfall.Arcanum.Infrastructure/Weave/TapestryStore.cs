@@ -24,6 +24,31 @@ internal sealed class TapestryStore(
     WeaveIndexAvailability availability) : ITapestryStore
 {
 
+    /// <summary>
+    /// The live-scope-id query for each corpus. Both <see cref="DiscoverScopesAsync"/> and
+    /// <see cref="PruneRemovedScopesAsync"/> read from here, so "which scopes exist" has exactly one
+    /// definition: a tree can never be pruned on a rule the sweep would not also have rebuilt it on.
+    /// </summary>
+    private static string LiveScopeIdQuery(TapestryScopeKind kind) => kind switch
+    {
+        TapestryScopeKind.Workspace =>
+            """SELECT DISTINCT "WorkspacePath" FROM "workspace_file_chunks" """,
+        TapestryScopeKind.SessionAttachment =>
+            """SELECT DISTINCT "SessionId" FROM "session_attachment_chunks" """,
+        TapestryScopeKind.Session =>
+            """
+            SELECT DISTINCT "SessionId" FROM "Entries"
+            WHERE "Content" IS NOT NULL AND trim("Content") <> ''
+            """,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown Tapestry scope kind."),
+    };
+
+    private static string OrderedLiveScopeIdQuery(TapestryScopeKind kind) => kind switch
+    {
+        TapestryScopeKind.Workspace => LiveScopeIdQuery(kind) + """ORDER BY "WorkspacePath" """,
+        _ => LiveScopeIdQuery(kind) + """ORDER BY "SessionId" """,
+    };
+
     public async Task<IReadOnlyList<TapestryScope>> DiscoverScopesAsync(
         bool includeWorkspace,
         bool includeSessionAttachments,
@@ -35,41 +60,16 @@ internal sealed class TapestryStore(
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        if (includeWorkspace)
+        foreach (TapestryScopeKind kind in EnabledKinds(
+            includeWorkspace,
+            includeSessionAttachments,
+            includeSessions))
         {
 
             await CollectScopesAsync(
                 connection,
-                """SELECT DISTINCT "WorkspacePath" FROM "workspace_file_chunks" ORDER BY "WorkspacePath" """,
-                TapestryScopeKind.Workspace,
-                scopes,
-                cancellationToken).ConfigureAwait(false);
-
-        }
-
-        if (includeSessionAttachments)
-        {
-
-            await CollectScopesAsync(
-                connection,
-                """SELECT DISTINCT "SessionId" FROM "session_attachment_chunks" ORDER BY "SessionId" """,
-                TapestryScopeKind.SessionAttachment,
-                scopes,
-                cancellationToken).ConfigureAwait(false);
-
-        }
-
-        if (includeSessions)
-        {
-
-            await CollectScopesAsync(
-                connection,
-                """
-                SELECT DISTINCT "SessionId" FROM "Entries"
-                WHERE "Content" IS NOT NULL AND trim("Content") <> ''
-                ORDER BY "SessionId"
-                """,
-                TapestryScopeKind.Session,
+                OrderedLiveScopeIdQuery(kind),
+                kind,
                 scopes,
                 cancellationToken).ConfigureAwait(false);
 
@@ -78,6 +78,82 @@ internal sealed class TapestryStore(
         return scopes;
 
     }
+
+    /// <summary>
+    /// The corpora this sweep participates in. A disabled corpus is absent, which is what keeps
+    /// <see cref="PruneRemovedScopesAsync"/> from treating "the operator turned this feature off" as
+    /// "these scopes are gone".
+    /// </summary>
+    private static IEnumerable<TapestryScopeKind> EnabledKinds(
+        bool includeWorkspace,
+        bool includeSessionAttachments,
+        bool includeSessions)
+    {
+
+        if (includeWorkspace)
+        {
+            yield return TapestryScopeKind.Workspace;
+        }
+
+        if (includeSessionAttachments)
+        {
+            yield return TapestryScopeKind.SessionAttachment;
+        }
+
+        if (includeSessions)
+        {
+            yield return TapestryScopeKind.Session;
+        }
+
+    }
+
+    public Task<int> PruneRemovedScopesAsync(
+        bool includeWorkspace,
+        bool includeSessionAttachments,
+        bool includeSessions,
+        CancellationToken cancellationToken) =>
+        SqliteBusyRetry.ExecuteAsync(
+            async () =>
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await using DbTransaction transaction = await connection
+                    .BeginTransactionAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                int removed = 0;
+
+                foreach (TapestryScopeKind kind in EnabledKinds(
+                    includeWorkspace,
+                    includeSessionAttachments,
+                    includeSessions))
+                {
+
+                    // The diff runs set-wise in SQLite against the same source the sweep discovers from,
+                    // rather than round-tripping the live scope list into a parameter per session. Only
+                    // this kind is touched, so a disabled corpus keeps its trees untouched and needs no
+                    // rebuild when the operator turns it back on.
+                    string kindName = kind.ToString();
+
+                    removed += await DeleteGenerationsAsync(
+                        connection,
+                        transaction,
+                        $"""
+                        "ScopeKind" = @scopeKind
+                        AND "ScopeId" NOT IN ({LiveScopeIdQuery(kind)})
+                        """,
+                        command => AddParameter(command, "@scopeKind", kindName),
+                        cancellationToken).ConfigureAwait(false);
+
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                return removed;
+
+            },
+            cancellationToken);
 
     private static async Task CollectScopesAsync(
         DbConnection connection,

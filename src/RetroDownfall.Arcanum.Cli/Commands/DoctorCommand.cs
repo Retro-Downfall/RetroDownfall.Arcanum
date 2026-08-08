@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Cli.Diagnostics;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
@@ -11,9 +12,11 @@ using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Hosting;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Diagnostics;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using Spectre.Console;
@@ -21,7 +24,7 @@ using Spectre.Console.Rendering;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
-[ExcludeFromCodeCoverage] // Reason: interactive diagnostics command with environment-specific probes; not unit-testable without full host.
+[ExcludeFromCodeCoverage] // Reason: interactive diagnostics command with environment-specific probes; not unit-testable without full host. The check, repair, and aggregation logic it composes lives in Core/Infrastructure and is covered there.
 public sealed class DoctorCommand(
     IOptions<ArcanumSettings> options,
     IHttpClientFactory httpClientFactory,
@@ -31,7 +34,9 @@ public sealed class DoctorCommand(
     IEncryptedBlobDiagnostics encryptedBlobDiagnostics,
     IThemePalette themePalette,
     ICliEnvironment cliEnvironment,
-    IConsoleDispatcher consoleDispatcher)
+    IConsoleDispatcher consoleDispatcher,
+    DoctorDiagnosticRunner diagnosticRunner,
+    IConfirmationPrompt confirmationPrompt)
 {
 
     private const string OkGlyph = "\u2713";
@@ -41,138 +46,669 @@ public sealed class DoctorCommand(
     private const string FailGlyph = "\u2717";
 
     /// <summary>
-    /// Run environment diagnostics (version, paths, API health).
+    /// Run subsystem diagnostics, plan safe repairs, and name the exact remediation command.
     /// </summary>
-    /// <param name="fixPermissions">Apply owner-only permissions to configuration, preset state, the Grimoire database, and secret stores.</param>
+    /// <param name="request">Which checks to run, which repairs to plan, and whether to apply them.</param>
+    /// <param name="fixPermissions">Legacy alias for applying the owner-only permission repair.</param>
     /// <param name="json">Emit the report as JSON to stdout for programmatic consumption.</param>
-    public async Task<int> Run(bool fixPermissions, bool json, CancellationToken cancellationToken)
+    public async Task<int> Run(
+        DoctorRunRequest request,
+        bool fixPermissions,
+        bool json,
+        CancellationToken cancellationToken)
     {
 
-        if (fixPermissions)
+        ArgumentNullException.ThrowIfNull(request);
+
+        // --fix-permissions applies exactly one narrowing, idempotent repair and has never prompted,
+        // so automation that already passes it keeps working. Critically it grants that exemption to
+        // itself alone: any other --repair the operator named on the same line still needs --apply
+        // and still goes through confirmation, or the alias would become a way to silently
+        // force-apply an unrelated repair.
+        if (request.Apply && request.Repairs.Count > 0)
         {
 
-            SecureFilePermissions.ApplyOwnerOnlyToSensitivePaths();
+            bool confirmed = await ConfirmRepairsAsync(request, json, cancellationToken).ConfigureAwait(false);
 
-            AnsiConsole.MarkupLine(themePalette.HighlightMarkup("Applied owner-only permissions to sensitive Arcanum paths."));
+            if (!confirmed)
+            {
 
-            return 0;
+                consoleDispatcher.WriteDiagnostic(
+                    "Cancelled. Nothing was changed. Re-run without --apply to see the plan again.");
+
+                return (int)CliExitCode.Success;
+
+            }
+
+        }
+
+        Result<DoctorReport> report = fixPermissions
+            ? await BuildWithPermissionRepairAsync(request, cancellationToken).ConfigureAwait(false)
+            : await BuildReportAsync(request, cancellationToken).ConfigureAwait(false);
+
+        if (report.IsFailure)
+        {
+
+            consoleDispatcher.WriteDiagnostic(report.Error.Message);
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        // --fix-permissions kept its pre-#33 exit contract: it reports whether the repair succeeded,
+        // not whether the whole installation is healthy. A fresh install has always had failing
+        // local checks, and scripts that run it to harden permissions must not start failing.
+        bool healthy = fixPermissions
+            ? (report.Value.Repairs ?? []).All(
+                static repair => repair.State != DoctorRepairState.Failed)
+            : report.Value.Healthy;
+
+        if (json)
+        {
+
+            consoleDispatcher.WriteJson(
+                report.Value,
+                ArcanumJsonContext.Default.DoctorReport);
+
+            return healthy ? (int)CliExitCode.Success : (int)CliExitCode.GenericError;
+
+        }
+
+        return await RunHumanAsync(request, report.Value, healthy, cancellationToken).ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// The <c>--fix-permissions</c> path: the operator's own request runs unchanged, and the
+    /// owner-only repair is applied alongside it. Kept separate from the request rather than merged
+    /// into <see cref="DoctorRunRequest.Repairs"/> so the alias can never flip another repair's
+    /// <c>Apply</c>, which is exactly the bypass this shape exists to prevent.
+    /// </summary>
+    private async Task<Result<DoctorReport>> BuildWithPermissionRepairAsync(
+        DoctorRunRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        Result<DoctorReport> report = await BuildReportAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (report.IsFailure)
+        {
+
+            return report;
+
+        }
+
+        IDoctorRepair? permissions = diagnosticRunner.Repairs.FirstOrDefault(
+            static repair => repair.Id == PermissionApplyOwnerOnlyRepair.RepairId);
+
+        if (permissions is null)
+        {
+
+            return report;
+
+        }
+
+        DoctorRepairResult applied;
+
+        try
+        {
+
+            applied = await permissions.ApplyAsync(cancellationToken).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
+
+        }
+        catch (Exception exception)
+        {
+
+            applied = new DoctorRepairResult(
+                permissions.Id,
+                DoctorRepairState.Failed,
+                "The owner-only permission repair could not be applied.",
+                [],
+                exception.GetType().Name);
+
+        }
+
+        return Result<DoctorReport>.Success(report.Value with
+        {
+            Repairs =
+            [
+                .. (report.Value.Repairs ?? []).Where(result => result.RepairId != permissions.Id),
+                applied,
+            ],
+        });
+
+    }
+
+    /// <summary>
+    /// <c>arcanum doctor list</c> \u2014 every diagnostic and repair id, so an operator can discover the
+    /// exact value to pass to <c>--only</c>, <c>--skip</c>, or <c>--repair</c> instead of guessing.
+    /// </summary>
+    public Task<int> List(bool json, CancellationToken cancellationToken)
+    {
+
+        DoctorCatalog catalog = BuildCatalog();
+
+        if (json)
+        {
+
+            consoleDispatcher.WriteJson(catalog, ArcanumJsonContext.Default.DoctorCatalog);
+
+            return Task.FromResult((int)CliExitCode.Success);
+
+        }
+
+        Table checks = new();
+
+        checks.Border(TableBorder.None);
+
+        checks.HideHeaders();
+
+        checks.AddColumn(new TableColumn(string.Empty).NoWrap());
+
+        checks.AddColumn(new TableColumn(string.Empty).NoWrap());
+
+        checks.AddColumn(new TableColumn(string.Empty));
+
+        foreach (DoctorCatalogCheck check in catalog.Checks)
+        {
+
+            checks.AddRow(
+                themePalette.HighlightMarkup(Markup.Escape(check.Id)),
+                themePalette.MutedMarkup(Markup.Escape(check.Subsystem.ToString())),
+                themePalette.TextMarkup(Markup.Escape(
+                    check.RequiresNetwork ? check.Name + " (needs --include-network)" : check.Name)));
+
+        }
+
+        WritePanel("Diagnostics", checks);
+
+        AnsiConsole.WriteLine();
+
+        Table repairs = new();
+
+        repairs.Border(TableBorder.None);
+
+        repairs.HideHeaders();
+
+        repairs.AddColumn(new TableColumn(string.Empty).NoWrap());
+
+        repairs.AddColumn(new TableColumn(string.Empty));
+
+        foreach (DoctorCatalogRepair repair in catalog.Repairs)
+        {
+
+            repairs.AddRow(
+                themePalette.HighlightMarkup(Markup.Escape(repair.Id)),
+                themePalette.TextMarkup(Markup.Escape(repair.Description)));
+
+        }
+
+        WritePanel("Repairs", repairs);
+
+        return Task.FromResult((int)CliExitCode.Success);
+
+    }
+
+    /// <summary>
+    /// <c>arcanum doctor explain &lt;id&gt;</c> \u2014 what one diagnostic reads, or what one repair
+    /// changes and which detector justifies it.
+    /// </summary>
+    public Task<int> Explain(string id, bool json, CancellationToken cancellationToken)
+    {
+
+        DoctorCatalog catalog = BuildCatalog();
+
+        DoctorCatalogCheck? check = catalog.Checks.FirstOrDefault(
+            candidate => string.Equals(candidate.Id, id, StringComparison.OrdinalIgnoreCase));
+
+        DoctorCatalogRepair? repair = catalog.Repairs.FirstOrDefault(
+            candidate => string.Equals(candidate.Id, id, StringComparison.OrdinalIgnoreCase));
+
+        if (check is null && repair is null)
+        {
+
+            consoleDispatcher.WriteDiagnostic(
+                $"'{id}' is not a known diagnostic id, subsystem, or repair id. Run 'arcanum doctor list' to see every id.");
+
+            return Task.FromResult((int)CliExitCode.ConfigurationError);
 
         }
 
         if (json)
         {
 
-            DoctorReport report = await BuildJsonReportAsync(cancellationToken).ConfigureAwait(false);
-
             consoleDispatcher.WriteJson(
-                report,
-                ArcanumJsonContext.Default.DoctorReport);
+                new DoctorCatalog(
+                    check is null ? [] : [check],
+                    repair is null ? [] : [repair]),
+                ArcanumJsonContext.Default.DoctorCatalog);
 
-            return report.Healthy ? 0 : 1;
+            return Task.FromResult((int)CliExitCode.Success);
 
         }
 
-        WriteVersionPanel();
+        if (check is not null)
+        {
 
-        AnsiConsole.WriteLine();
+            WritePanel(
+                check.Id,
+                BuildLabelTable(
+                    ("Subsystem", check.Subsystem.ToString()),
+                    ("Reports", check.Name),
+                    ("Network", check.RequiresNetwork ? "yes \u2014 requires --include-network" : "no"),
+                    ("Run it", $"arcanum doctor --only {check.Id}")));
 
-        bool healthy = WritePathsPanel();
+        }
 
-        AnsiConsole.WriteLine();
+        if (repair is not null)
+        {
 
-        healthy &= WriteArcanumConfigPanel();
+            if (check is not null)
+            {
 
-        AnsiConsole.WriteLine();
+                AnsiConsole.WriteLine();
 
-        await WriteProviderCredentialsPanelAsync(cancellationToken).ConfigureAwait(false);
+            }
 
-        AnsiConsole.WriteLine();
+            WritePanel(
+                repair.Id,
+                BuildLabelTable(
+                    ("Subsystem", repair.Subsystem.ToString()),
+                    ("Changes", repair.Description),
+                    ("Detected by", string.Join(", ", repair.DetectorIds)),
+                    ("Plan it", $"arcanum doctor --repair {repair.Id}"),
+                    ("Apply it", $"arcanum doctor --repair {repair.Id} --apply")));
 
-        healthy &= WriteMcpConfigPanel();
+        }
 
-        AnsiConsole.WriteLine();
-
-        healthy &= WriteTokenizerPanel();
-
-        AnsiConsole.WriteLine();
-
-        // Sandbox posture is informational / warn — does not fail doctor exit solely for beta Degraded states.
-        WriteToolChildSandboxPanel();
-
-        AnsiConsole.WriteLine();
-
-        WriteMasterKeyPanel();
-
-        AnsiConsole.WriteLine();
-
-        healthy &= await WriteFileEncryptionPanelAsync(cancellationToken).ConfigureAwait(false);
-
-        AnsiConsole.WriteLine();
-
-        WriteEmbeddingsPanel();
-
-        AnsiConsole.WriteLine();
-
-        healthy &= await WriteApiReachabilityPanelAsync(cancellationToken).ConfigureAwait(false);
-
-        return healthy ? 0 : 1;
+        return Task.FromResult((int)CliExitCode.Success);
 
     }
 
-    private async Task<DoctorReport> BuildJsonReportAsync(CancellationToken cancellationToken)
+    private DoctorCatalog BuildCatalog() =>
+        new(
+            [
+                .. LegacyDoctorChecks.Catalog,
+                .. diagnosticRunner.Checks.Select(static check => new DoctorCatalogCheck(
+                    check.Id,
+                    check.Name,
+                    check.Subsystem,
+                    check.RequiresNetwork)),
+            ],
+            [
+                .. diagnosticRunner.Repairs.Select(static repair => new DoctorCatalogRepair(
+                    repair.Id,
+                    repair.Subsystem,
+                    repair.Description,
+                    repair.DetectorIds)),
+            ]);
+
+    private async Task<bool> ConfirmRepairsAsync(
+        DoctorRunRequest request,
+        bool json,
+        CancellationToken cancellationToken)
+    {
+
+        // Show the plan before asking. A confirmation prompt that does not say what will change is
+        // not consent, and the plan is free \u2014 it is the same side-effect-free call --repair makes.
+        Result<DoctorReport> plan = await BuildReportAsync(
+                request with { Apply = false, Only = [], Skip = [] },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (plan.IsSuccess && !json)
+        {
+
+            foreach (DoctorRepairResult result in plan.Value.Repairs ?? [])
+            {
+
+                WriteRepairPanel(result);
+
+                AnsiConsole.WriteLine();
+
+            }
+
+        }
+
+        return await confirmationPrompt
+            .PromptForConfirmationAsync(
+                $"Apply {request.Repairs.Count} repair(s) to this Arcanum installation?",
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// The legacy panel checks and the registered subsystem checks, in one report. The legacy twelve
+    /// come first so the <c>--json</c> document keeps its historical head, and the registered checks
+    /// are appended in registration order.
+    /// </summary>
+    private async Task<Result<DoctorReport>> BuildReportAsync(
+        DoctorRunRequest request,
+        CancellationToken cancellationToken)
+    {
+
+        Result<DoctorReport> registered = await diagnosticRunner
+            .RunAsync(request, cancellationToken, LegacyDoctorChecks.Catalog)
+            .ConfigureAwait(false);
+
+        if (registered.IsFailure)
+        {
+
+            return registered;
+
+        }
+
+        // The pre-#33 checks come first so the --json document keeps its historical head, and they
+        // resolve the selection themselves rather than being filtered afterwards — see
+        // BuildLegacyChecksAsync for why that distinction matters.
+        List<DoctorCheck> checks =
+        [
+            .. (await BuildLegacyChecksAsync(request, cancellationToken).ConfigureAwait(false))
+                .Select(LegacyDoctorChecks.Enrich),
+        ];
+
+        checks.AddRange(registered.Value.Checks);
+
+        if (checks.Count == 0)
+        {
+
+            // An empty report that says "healthy" is the worst possible answer: a CI gate would pass
+            // on a diagnostic that inspected nothing at all.
+            return Result<DoctorReport>.Failure(new Error(
+                DoctorErrors.UnknownSelectorCode,
+                "That combination of --only and --skip selects no diagnostics, so nothing would be "
+                + "checked. Run 'arcanum doctor list' to see every id."));
+
+        }
+
+        DoctorOutcome outcome = DoctorOutcomes.Aggregate(
+            checks.Select(static check => check.Outcome ?? DoctorOutcome.Healthy));
+
+        IReadOnlyList<DoctorRepairResult> repairs = registered.Value.Repairs ?? [];
+
+        bool healthy = !repairs.Any(static repair => repair.State == DoctorRepairState.Failed)
+            && !DoctorOutcomes.IsFailure(outcome, request.Strict);
+
+        return Result<DoctorReport>.Success(new DoctorReport(healthy, checks, outcome, repairs));
+
+    }
+
+    /// <summary>
+    /// Whether a legacy check survives <c>--only</c> / <c>--skip</c>, using
+    /// <see cref="DoctorDiagnosticRunner.MatchesSelector"/> so the two halves of the report can
+    /// never disagree about what a selector covers.
+    /// </summary>
+    private static bool IsSelected(DoctorCheck check, DoctorRunRequest request) =>
+        check.Id is null || check.Subsystem is null
+            ? request.Only.Count == 0
+            : IsSelected(check.Id, check.Subsystem.Value, request);
+
+    private static bool IsSelected(string id, DoctorSubsystem subsystem, DoctorRunRequest request)
+    {
+
+        bool included = request.Only.Count == 0
+            || request.Only.Any(selector =>
+                DoctorDiagnosticRunner.MatchesSelector(id, subsystem, selector));
+
+        bool excluded = request.Skip.Any(selector =>
+            DoctorDiagnosticRunner.MatchesSelector(id, subsystem, selector));
+
+        return included && !excluded;
+
+    }
+
+    private async Task<int> RunHumanAsync(
+        DoctorRunRequest request,
+        DoctorReport report,
+        bool healthy,
+        CancellationToken cancellationToken)
+    {
+
+        // Every panel is rendered from the report that was already computed. The decorated legacy
+        // panels used to be written by a second, independent pass over the same probes, which meant
+        // a plain `arcanum doctor` issued three /api/health requests instead of one and could print
+        // a panel that disagreed with the summary underneath it — two samples, two answers.
+        WriteVersionPanel();
+
+        foreach (DoctorCheck check in report.Checks.Where(static check => check.Id is not null))
+        {
+
+            AnsiConsole.WriteLine();
+
+            WriteFindingPanel(check);
+
+        }
+
+        foreach (DoctorRepairResult repair in report.Repairs ?? [])
+        {
+
+            AnsiConsole.WriteLine();
+
+            WriteRepairPanel(repair);
+
+        }
+
+        AnsiConsole.WriteLine();
+
+        WriteSummary(report, healthy, request.Strict);
+
+        await Task.CompletedTask.ConfigureAwait(false);
+
+        return healthy ? (int)CliExitCode.Success : (int)CliExitCode.GenericError;
+
+    }
+
+    private void WriteFindingPanel(DoctorCheck check)
+    {
+
+        Table table = new();
+
+        table.Border(TableBorder.None);
+
+        table.HideHeaders();
+
+        table.AddColumn(new TableColumn(string.Empty).NoWrap());
+
+        table.AddColumn(new TableColumn(string.Empty));
+
+        DoctorOutcome outcome = check.Outcome ?? DoctorOutcome.Healthy;
+
+        table.AddRow(
+            OutcomeGlyph(outcome),
+            themePalette.TextMarkup(Markup.Escape(check.Detail ?? string.Empty)));
+
+        foreach (DoctorRemedy remedy in check.Remedies ?? [])
+        {
+
+            table.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("\u2192")),
+                themePalette.HighlightLabelMarkup(
+                    Markup.Escape(remedy.Command),
+                    Markup.Escape(remedy.Explanation)));
+
+        }
+
+        WritePanel($"{check.Name} ({check.Id})", table);
+
+    }
+
+    private void WriteRepairPanel(DoctorRepairResult repair)
+    {
+
+        Table table = new();
+
+        table.Border(TableBorder.None);
+
+        table.HideHeaders();
+
+        table.AddColumn(new TableColumn(string.Empty).NoWrap());
+
+        table.AddColumn(new TableColumn(string.Empty));
+
+        table.AddRow(
+            repair.State switch
+            {
+                DoctorRepairState.Applied or DoctorRepairState.AlreadyConverged =>
+                    themePalette.HighlightMarkup(Markup.Escape(OkGlyph)),
+                DoctorRepairState.Failed => themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
+                _ => themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
+            },
+            themePalette.TextMarkup(Markup.Escape(repair.Summary)));
+
+        foreach (DoctorRepairStep step in repair.Steps)
+        {
+
+            table.AddRow(
+                themePalette.MutedMarkup(Markup.Escape("\u00b7")),
+                themePalette.MutedMarkup(Markup.Escape($"{step.Target}: {step.Before} \u2192 {step.After}")));
+
+        }
+
+        if (!string.IsNullOrWhiteSpace(repair.Failure))
+        {
+
+            table.AddRow(
+                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
+                themePalette.ErrorMarkup(Markup.Escape(repair.Failure)));
+
+        }
+
+        WritePanel($"Repair: {repair.RepairId} ({repair.State})", table);
+
+    }
+
+    private void WriteSummary(DoctorReport report, bool healthy, bool strict)
+    {
+
+        int unhealthy = report.Checks.Count(static check => check.Outcome == DoctorOutcome.Unhealthy);
+
+        int degraded = report.Checks.Count(static check =>
+            check.Outcome is DoctorOutcome.Degraded or DoctorOutcome.Unavailable);
+
+        int skipped = report.Checks.Count(static check => check.Outcome == DoctorOutcome.Skipped);
+
+        Table table = BuildLabelTable(
+            ("Outcome", (report.Outcome ?? DoctorOutcome.Healthy).ToString()),
+            ("Checks", $"{report.Checks.Count} run, {unhealthy} unhealthy, {degraded} needing attention, {skipped} skipped"),
+            ("Exit code", healthy ? "0" : "1"),
+            ("Strict", strict ? "on \u2014 anything short of healthy exits nonzero" : "off \u2014 only an unhealthy check exits nonzero"),
+            ("Discover ids", "arcanum doctor list"));
+
+        WritePanel("Summary", table);
+
+    }
+
+    private string OutcomeGlyph(DoctorOutcome outcome) => outcome switch
+    {
+        DoctorOutcome.Unhealthy => themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
+        DoctorOutcome.Degraded or DoctorOutcome.Unavailable =>
+            themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
+        DoctorOutcome.Skipped => themePalette.MutedMarkup(Markup.Escape("-")),
+        _ => themePalette.HighlightMarkup(Markup.Escape(OkGlyph)),
+    };
+
+    /// <summary>
+    /// The twelve pre-#33 checks, each run only when the selection actually wants it.
+    ///
+    /// <para>Per-check gating is not an optimization detail: several of these probe the network, load
+    /// the tokenizer, scan encrypted blob storage, or read the OS keychain. Running the whole batch
+    /// and filtering the results afterwards would mean <c>--skip host</c> still issued the HTTP
+    /// request it was told to avoid — filtering results after paying for them is not filtering.</para>
+    /// </summary>
+    private async Task<IReadOnlyList<DoctorCheck>> BuildLegacyChecksAsync(
+        DoctorRunRequest request,
+        CancellationToken cancellationToken)
     {
 
         List<DoctorCheck> checks = [];
 
-        bool healthy = true;
+        void AddIfSelected(string id, DoctorSubsystem subsystem, Func<DoctorCheck> build)
+        {
 
-        checks.Add(BuildVersionCheck());
+            if (IsSelected(id, subsystem, request))
+            {
 
-        (bool pathsHealthy, DoctorCheck pathsCheck) = BuildPathsCheck();
+                checks.Add(build());
 
-        healthy &= pathsHealthy;
-        checks.Add(pathsCheck);
+            }
 
-        (bool configHealthy, DoctorCheck configCheck) = BuildArcanumConfigCheck();
+        }
 
-        healthy &= configHealthy;
-        checks.Add(configCheck);
+        AddIfSelected("system.version", DoctorSubsystem.System, BuildVersionCheck);
 
-        checks.Add(
-            await BuildProviderCredentialsCheckAsync(cancellationToken).ConfigureAwait(false));
+        AddIfSelected("paths.required", DoctorSubsystem.Paths, () => BuildPathsCheck().Check);
 
-        (bool mcpHealthy, DoctorCheck mcpCheck) = BuildMcpConfigCheck();
+        AddIfSelected(
+            "configuration.file",
+            DoctorSubsystem.Configuration,
+            () => BuildArcanumConfigCheck().Check);
 
-        healthy &= mcpHealthy;
-        checks.Add(mcpCheck);
+        if (IsSelected("credentials.providers", DoctorSubsystem.Credentials, request))
+        {
 
-        (bool tokenizerHealthy, DoctorCheck tokenizerCheck) = BuildTokenizerCheck();
+            checks.Add(
+                await BuildProviderCredentialsCheckAsync(cancellationToken).ConfigureAwait(false));
 
-        healthy &= tokenizerHealthy;
-        checks.Add(tokenizerCheck);
+        }
 
-        checks.Add(BuildToolChildSandboxCheck());
+        AddIfSelected("mcp.global_config", DoctorSubsystem.Mcp, () => BuildMcpConfigCheck().Check);
 
-        checks.Add(BuildMasterKeyCheck());
+        AddIfSelected("system.tokenizer", DoctorSubsystem.System, () => BuildTokenizerCheck().Check);
 
-        (bool fileEncryptionHealthy, DoctorCheck fileEncryptionCheck) =
-            await BuildFileEncryptionCheckAsync(cancellationToken).ConfigureAwait(false);
+        AddIfSelected(
+            "runtime.tool_child_sandbox",
+            DoctorSubsystem.Runtime,
+            BuildToolChildSandboxCheck);
 
-        healthy &= fileEncryptionHealthy;
-        checks.Add(fileEncryptionCheck);
+        AddIfSelected("credentials.master_key", DoctorSubsystem.Credentials, BuildMasterKeyCheck);
 
-        checks.Add(BuildEmbeddingsCheck());
+        if (IsSelected("storage.file_encryption", DoctorSubsystem.Storage, request))
+        {
 
-        (bool apiHealthy, DoctorCheck apiCheck, DoctorProbeResult apiProbe) =
-            await BuildApiReachabilityCheckAsync(cancellationToken).ConfigureAwait(false);
+            checks.Add((await BuildFileEncryptionCheckAsync(cancellationToken).ConfigureAwait(false)).Check);
 
-        healthy &= apiHealthy;
-        checks.Add(apiCheck);
+        }
 
-        checks.Add(
-            BuildDurableOperationsCheck(apiProbe.Kind == DoctorProbeKind.Ok, apiProbe.Detail));
+        AddIfSelected("weave.embeddings", DoctorSubsystem.Weave, BuildEmbeddingsCheck);
 
-        return new DoctorReport(healthy, checks);
+        // The durable-operation summary is derived from the same probe as API health, so the probe
+        // runs when either is selected and is never issued twice.
+        bool wantsApi = IsSelected("host.api_health", DoctorSubsystem.Host, request);
+
+        bool wantsDurable = IsSelected("operations.durable_state", DoctorSubsystem.Operations, request);
+
+        if (wantsApi || wantsDurable)
+        {
+
+            (_, DoctorCheck apiCheck, DoctorProbeResult apiProbe) =
+                await BuildApiReachabilityCheckAsync(cancellationToken).ConfigureAwait(false);
+
+            if (wantsApi)
+            {
+
+                checks.Add(apiCheck);
+
+            }
+
+            if (wantsDurable)
+            {
+
+                checks.Add(
+                    BuildDurableOperationsCheck(apiProbe.Kind == DoctorProbeKind.Ok, apiProbe.Detail));
+
+            }
+
+        }
+
+        return checks;
 
     }
 
@@ -221,157 +757,52 @@ public sealed class DoctorCommand(
 
     }
 
-    private bool WritePathsPanel()
-    {
-
-        (bool healthy, Table table) = BuildPathsPanelCore();
-
-        WritePanel("Paths", table);
-
-        return healthy;
-
-    }
-
-    private (bool Healthy, Table Table) BuildPathsPanelCore()
-    {
-
-        Table table = new();
-
-        table.Border(TableBorder.None);
-
-        table.HideHeaders();
-
-        table.AddColumn(new TableColumn(string.Empty).NoWrap());
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        bool healthy = true;
-
-        string grimoireDir = ArcanumPaths.GrimoireDirectory;
-
-        healthy &= AddPathRow(table, "Grimoire directory", grimoireDir, Directory.Exists(grimoireDir), optional: false);
-
-        string configFile = Path.Combine(grimoireDir, "arcanum.json");
-
-        AddPathRow(table, "arcanum.json", configFile, File.Exists(configFile), optional: true);
-
-        string dbFile = ArcanumPaths.GrimoireDatabaseFile;
-
-        healthy &= AddPathRow(table, "Grimoire database", dbFile, File.Exists(dbFile), optional: false);
-
-        string securityFile = ArcanumPaths.ApiKeyStoreFile;
-
-        healthy &= AddPathRow(table, "API key store (Data Protection)", securityFile, File.Exists(securityFile), optional: false);
-
-        return (healthy, table);
-
-    }
-
+    /// <summary>
+    /// The paths Arcanum cannot run without. The database and the secret store are created by the
+    /// first <c>arcanum serve</c>, not by a directory repair, so the remedy names the command that
+    /// actually produces them — recommending a repair that cannot clear the finding is worse than
+    /// recommending nothing.
+    /// </summary>
     private (bool Healthy, DoctorCheck Check) BuildPathsCheck()
     {
 
-        (bool healthy, Table table) = BuildPathsPanelCore();
+        List<string> missing = [];
 
-        string detail = healthy ? "All required paths present" : "One or more required paths missing";
-
-        return (healthy, new DoctorCheck("Paths", healthy ? "ok" : "fail", detail));
-
-    }
-
-    private bool WriteArcanumConfigPanel()
-    {
-
-        (bool healthy, Table table) = BuildArcanumConfigPanelCore();
-
-        WritePanel("Configuration", table);
-
-        return healthy;
-
-    }
-
-    private (bool Healthy, Table Table) BuildArcanumConfigPanelCore()
-    {
-
-        string configFile = Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json");
-
-        Table table = new();
-
-        table.Border(TableBorder.None);
-
-        table.HideHeaders();
-
-        table.AddColumn(new TableColumn(string.Empty).NoWrap());
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        if (!File.Exists(configFile))
+        foreach ((string label, string path) in new[]
+        {
+            ("Grimoire directory", ArcanumPaths.GrimoireDirectory),
+            ("Grimoire database", ArcanumPaths.GrimoireDatabaseFile),
+            ("API key store", ArcanumPaths.ApiKeyStoreFile),
+        })
         {
 
-            table.AddRow(
-                themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
-                themePalette.MutedMarkup(Markup.Escape("arcanum.json:")),
-                themePalette.MutedMarkup(Markup.Escape($"{configFile} (not found, optional)")));
+            bool exists = path == ArcanumPaths.GrimoireDirectory
+                ? Directory.Exists(path)
+                : File.Exists(path);
 
-            return (true, table);
+            if (!exists)
+            {
+
+                missing.Add(label);
+
+            }
 
         }
 
-        bool healthy = true;
-
-        try
+        if (missing.Count == 0)
         {
 
-            ConfigurationBootstrapper.ValidateArcanumConfigurationFile(configFile);
+            return (true, new DoctorCheck("Paths", "ok", "Every required path is present."));
 
-            table.AddRow(
-                themePalette.HighlightMarkup(Markup.Escape(OkGlyph)),
-                themePalette.HighlightLabelMarkup(
-                    Markup.Escape("arcanum.json:"),
-                    Markup.Escape(configFile)),
-                themePalette.MutedMarkup(Markup.Escape("valid JSON")));
-        }
-        catch (InvalidOperationException ex)
-        {
-
-            healthy = false;
-
-            table.AddRow(
-                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
-                themePalette.ErrorLabelMarkup(
-                    Markup.Escape("arcanum.json:"),
-                    Markup.Escape(configFile)),
-                themePalette.ErrorMarkup(Markup.Escape(ex.Message)));
-        }
-        catch (IOException ex)
-        {
-
-            healthy = false;
-
-            table.AddRow(
-                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
-                themePalette.ErrorLabelMarkup(
-                    Markup.Escape("arcanum.json:"),
-                    Markup.Escape(configFile)),
-                themePalette.ErrorMarkup(Markup.Escape("unreadable: " + ex.Message)));
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-
-            healthy = false;
-
-            table.AddRow(
-                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
-                themePalette.ErrorLabelMarkup(
-                    Markup.Escape("arcanum.json:"),
-                    Markup.Escape(configFile)),
-                themePalette.ErrorMarkup(Markup.Escape("access denied: " + ex.Message)));
         }
 
-        return (healthy, table);
+        return (
+            false,
+            new DoctorCheck(
+                "Paths",
+                "fail",
+                $"{missing.Count} required path(s) missing: {string.Join(", ", missing)}. "
+                + "They are created the first time the host starts."));
 
     }
 
@@ -402,41 +833,6 @@ public sealed class DoctorCommand(
 
         }
 
-    }
-
-    private async Task WriteProviderCredentialsPanelAsync(CancellationToken cancellationToken)
-    {
-        IReadOnlyList<CredentialReferenceStatus> references =
-            await BuildCredentialReferenceStatusesAsync(cancellationToken).ConfigureAwait(false);
-        Table table = new();
-        table.Border(TableBorder.None);
-        table.HideHeaders();
-        table.AddColumn(new TableColumn(string.Empty).NoWrap());
-        table.AddColumn(new TableColumn(string.Empty));
-        table.AddColumn(new TableColumn(string.Empty));
-
-        if (references.Count == 0)
-        {
-            table.AddRow(
-                themePalette.MutedMarkup(Markup.Escape(" ")),
-                themePalette.MutedMarkup(Markup.Escape("References:")),
-                themePalette.MutedMarkup(Markup.Escape("No provider or PFX credential is configured.")));
-        }
-        else
-        {
-            foreach (CredentialReferenceStatus reference in references)
-            {
-                table.AddRow(
-                    reference.IsPresent
-                        ? themePalette.HighlightMarkup(Markup.Escape(OkGlyph))
-                        : themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
-                    themePalette.MutedMarkup(Markup.Escape(reference.Label + ":")),
-                    themePalette.TextMarkup(Markup.Escape(
-                        $"{reference.EnvironmentVariable} — {reference.Detail}")));
-            }
-        }
-
-        WritePanel("Provider / HTTPS Credentials", table);
     }
 
     private async Task<DoctorCheck> BuildProviderCredentialsCheckAsync(
@@ -579,109 +975,6 @@ public sealed class DoctorCommand(
         return references;
     }
 
-    private bool WriteMcpConfigPanel()
-    {
-
-        (bool healthy, Table table) = BuildMcpConfigPanelCore();
-
-        WritePanel("MCP", table);
-
-        return healthy;
-
-    }
-
-    private (bool Healthy, Table Table) BuildMcpConfigPanelCore()
-    {
-
-        string globalMcpPath = ArcanumPaths.GlobalMcpConfigFile;
-
-        Table table = new();
-
-        table.Border(TableBorder.None);
-
-        table.HideHeaders();
-
-        table.AddColumn(new TableColumn(string.Empty).NoWrap());
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        if (!File.Exists(globalMcpPath))
-        {
-            table.AddRow(
-                themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
-                themePalette.MutedMarkup(Markup.Escape("Global mcp.json:")),
-                themePalette.MutedMarkup(Markup.Escape($"{globalMcpPath} (not found, optional)")));
-
-            return (true, table);
-        }
-
-        bool healthy = true;
-
-        try
-        {
-            byte[] raw = File.ReadAllBytes(globalMcpPath);
-
-            using JsonDocument doc = JsonDocument.Parse(raw);
-
-            int serverCount = 0;
-
-            if (doc.RootElement.ValueKind == JsonValueKind.Object
-                && doc.RootElement.TryGetProperty("mcpServers", out JsonElement servers)
-                && servers.ValueKind == JsonValueKind.Object)
-            {
-                foreach (JsonProperty _ in servers.EnumerateObject())
-                {
-                    serverCount++;
-                }
-            }
-
-            table.AddRow(
-                themePalette.HighlightMarkup(Markup.Escape(OkGlyph)),
-                themePalette.HighlightLabelMarkup(
-                    Markup.Escape("Global mcp.json:"),
-                    Markup.Escape(globalMcpPath)),
-                themePalette.MutedMarkup(Markup.Escape($"{serverCount} server entry/entries parsed")));
-        }
-        catch (JsonException ex)
-        {
-            healthy = false;
-
-            table.AddRow(
-                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
-                themePalette.ErrorLabelMarkup(
-                    Markup.Escape("Global mcp.json:"),
-                    Markup.Escape(globalMcpPath)),
-                themePalette.ErrorMarkup(Markup.Escape("invalid JSON: " + ex.Message)));
-        }
-        catch (IOException ex)
-        {
-            healthy = false;
-
-            table.AddRow(
-                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
-                themePalette.ErrorLabelMarkup(
-                    Markup.Escape("Global mcp.json:"),
-                    Markup.Escape(globalMcpPath)),
-                themePalette.ErrorMarkup(Markup.Escape("unreadable: " + ex.Message)));
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            healthy = false;
-
-            table.AddRow(
-                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
-                themePalette.ErrorLabelMarkup(
-                    Markup.Escape("Global mcp.json:"),
-                    Markup.Escape(globalMcpPath)),
-                themePalette.ErrorMarkup(Markup.Escape("access denied: " + ex.Message)));
-        }
-
-        return (healthy, table);
-
-    }
-
     private (bool Healthy, DoctorCheck Check) BuildMcpConfigCheck()
     {
 
@@ -721,70 +1014,6 @@ public sealed class DoctorCommand(
 
     }
 
-    private bool WriteTokenizerPanel()
-    {
-
-        (bool healthy, Table table) = BuildTokenizerPanelCore();
-
-        WritePanel("Tokenizer", table);
-
-        return healthy;
-
-    }
-
-    private (bool Healthy, Table Table) BuildTokenizerPanelCore()
-    {
-
-        string encoding = string.IsNullOrWhiteSpace(
-            options.Value.ResolveIntelligence().TokenizerEncoding)
-            ? "o200k_base"
-            : options.Value.ResolveIntelligence().TokenizerEncoding.Trim();
-
-        Table table = new();
-
-        table.Border(TableBorder.None);
-
-        table.HideHeaders();
-
-        table.AddColumn(new TableColumn(string.Empty).NoWrap());
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        bool healthy = true;
-
-        try
-        {
-            Tokenizer tokenizer = TiktokenTokenizer.CreateForEncoding(encoding);
-
-            int tokenCount = tokenizer.CountTokens("arcanum doctor smoke test");
-
-            table.AddRow(
-                themePalette.HighlightMarkup(Markup.Escape(OkGlyph)),
-                themePalette.HighlightLabelMarkup(
-                    Markup.Escape("Tokenizer:"),
-                    Markup.Escape(encoding)),
-                themePalette.MutedMarkup(Markup.Escape($"smoke test counted {tokenCount} tokens")));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            healthy = false;
-
-            table.AddRow(
-                themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
-                themePalette.ErrorLabelMarkup(
-                    Markup.Escape("Tokenizer:"),
-                    Markup.Escape(encoding)),
-                themePalette.ErrorMarkup(
-                    Markup.Escape(
-                        $"failed ({ex.GetType().Name}: {ex.Message}). Confirm Microsoft.ML.Tokenizers.Data.O200kBase is referenced and the encoding name is valid.")));
-        }
-
-        return (healthy, table);
-
-    }
-
     private (bool Healthy, DoctorCheck Check) BuildTokenizerCheck()
     {
 
@@ -808,36 +1037,6 @@ public sealed class DoctorCommand(
 
     }
 
-    private void WriteToolChildSandboxPanel()
-    {
-
-        (_, Table table) = BuildToolChildSandboxPanelCore();
-
-        WritePanel("Tool Child Sandbox", table);
-
-    }
-
-    private (bool InformationalOk, Table Table) BuildToolChildSandboxPanelCore()
-    {
-
-        bool escapeHatch = options.Value.Security?.AllowUnsandboxedToolChildren ?? false;
-
-        ToolChildSandboxStatus status = ToolChildSandboxCapabilityReporter.BuildForCurrentHost(escapeHatch);
-
-        Table table = BuildLabelTable(
-            ("OS", status.Platform),
-            ("Filesystem jail", status.FilesystemJailMode.ToString()),
-            ("Resource limits", status.ResourceLimitsMode.ToString()),
-            ("Network isolation", status.NetworkIsolationMode.ToString()),
-            ("Escape hatch", status.EscapeHatchEnabled ? "enabled" : "disabled"),
-            ("Beta-safe default", status.IsBetaSafeDefault ? "yes" : "no"),
-            ("Status", status.PublicMessage),
-            ("Guidance", status.OperatorGuidance));
-
-        return (true, table);
-
-    }
-
     private DoctorCheck BuildToolChildSandboxCheck()
     {
 
@@ -856,29 +1055,6 @@ public sealed class DoctorCommand(
 
     }
 
-    private void WriteMasterKeyPanel()
-    {
-
-        (_, Table table) = BuildMasterKeyPanelCore();
-
-        WritePanel("Master API Key", table);
-
-    }
-
-    private (bool InformationalOk, Table Table) BuildMasterKeyPanelCore()
-    {
-
-        (bool present, string detail, string guidance) = ProbeMasterKeyPresence();
-
-        Table table = BuildLabelTable(
-            ("Present", present ? "yes (value not shown)" : "no"),
-            ("Detail", detail),
-            ("Guidance", guidance));
-
-        return (true, table);
-
-    }
-
     private DoctorCheck BuildMasterKeyCheck()
     {
 
@@ -889,17 +1065,6 @@ public sealed class DoctorCommand(
             present ? "ok" : "warn",
             $"{detail} {guidance}");
 
-    }
-
-    private async Task<bool> WriteFileEncryptionPanelAsync(CancellationToken cancellationToken)
-    {
-        (bool healthy, DoctorCheck check) = await BuildFileEncryptionCheckAsync(cancellationToken)
-            .ConfigureAwait(false);
-        Table table = BuildLabelTable(
-            ("Healthy", healthy ? "yes" : "no"),
-            ("Detail", check.Detail ?? "No diagnostic detail was provided."));
-        WritePanel("File Encryption", table);
-        return healthy;
     }
 
     private async Task<(bool Healthy, DoctorCheck Check)> BuildFileEncryptionCheckAsync(
@@ -981,15 +1146,6 @@ public sealed class DoctorCommand(
 
     }
 
-    private void WriteEmbeddingsPanel()
-    {
-
-        (_, Table table) = BuildEmbeddingsPanelCore();
-
-        WritePanel("Embeddings / Weave", table);
-
-    }
-
     private (bool InformationalOk, Table Table) BuildEmbeddingsPanelCore()
     {
 
@@ -1031,8 +1187,6 @@ public sealed class DoctorCommand(
     private DoctorCheck BuildEmbeddingsCheck()
     {
 
-        (_, Table _) = BuildEmbeddingsPanelCore();
-
         EmbeddingSettings embeddings = options.Value.ResolveEmbeddings();
 
         string mode = !embeddings.Enabled
@@ -1045,51 +1199,6 @@ public sealed class DoctorCommand(
             "Embeddings",
             mode is "disabled" or "managed" ? "ok" : "warn",
             $"enabled={embeddings.Enabled}; mode={mode}; budget=none");
-
-    }
-
-    private async Task<bool> WriteApiReachabilityPanelAsync(CancellationToken cancellationToken)
-    {
-
-        (bool healthy, Table table, DoctorProbeResult probe) =
-            await BuildApiReachabilityPanelCoreAsync(cancellationToken).ConfigureAwait(false);
-
-        WritePanel("API Health", table);
-
-        AnsiConsole.WriteLine();
-
-        WriteDurableOperationsPanel(probe);
-
-        return healthy;
-
-    }
-
-    /// <summary>
-    /// Durable-operation state is a first-class doctor surface, not a substring of the API Health
-    /// row: after a crash it is the panel an operator reads to find out what still needs repair.
-    /// </summary>
-    private void WriteDurableOperationsPanel(DoctorProbeResult probe)
-    {
-
-        DoctorCheck check = BuildDurableOperationsCheck(probe.Kind == DoctorProbeKind.Ok, probe.Detail);
-
-        Table table = new();
-
-        table.Border(TableBorder.None);
-
-        table.HideHeaders();
-
-        table.AddColumn(new TableColumn(string.Empty).NoWrap());
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        table.AddRow(
-            check.Status == "ok"
-                ? themePalette.HighlightMarkup(Markup.Escape(OkGlyph))
-                : themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
-            themePalette.MutedMarkup(Markup.Escape(check.Detail ?? string.Empty)));
-
-        WritePanel("DurableOperations", table);
 
     }
 
@@ -1125,126 +1234,6 @@ public sealed class DoctorCommand(
             "ok",
             detail
                 + " Repair anything stale or requiring reconciliation with 'arcanum operation list --state ReconciliationRequired'.");
-
-    }
-
-    private async Task<(bool Healthy, Table Table, DoctorProbeResult Probe)> BuildApiReachabilityPanelCoreAsync(CancellationToken cancellationToken)
-    {
-
-        HostSettings host = options.Value.Host;
-
-        bool listenAny = ArcanumEnvironment.IsHostAnyEnabled(host.ListenAny);
-
-        int timeoutSeconds = ArcanumSettingClamps.DoctorHealthTimeoutSeconds(
-            ArcanumRuntimeDefaults.CliDoctorHealthTimeoutSeconds);
-
-        string targetUrl = ArcanumLocalApiAddress.ResolveHealthProbeUrl(host);
-
-        HttpClient client = httpClientFactory.CreateClient(ArcanumApiClient.RequestHttpClientName);
-
-        string? apiKey = await secretStore.GetApiKeyAsync().ConfigureAwait(false);
-
-        DoctorProbeResult probe = await ProbeApiReachabilityAsync(
-                client,
-                new Uri(targetUrl),
-                apiKey,
-                timeoutSeconds,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        Table table = new();
-
-        table.Border(TableBorder.None);
-
-        table.HideHeaders();
-
-        table.AddColumn(new TableColumn(string.Empty).NoWrap());
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        table.AddColumn(new TableColumn(string.Empty));
-
-        bool healthy = true;
-
-        table.AddRow(
-            themePalette.MutedMarkup(Markup.Escape(" ")),
-            themePalette.MutedMarkup(Markup.Escape("Target:")),
-            themePalette.MutedMarkup(Markup.Escape(targetUrl)));
-
-        if (listenAny)
-        {
-
-            table.AddRow(
-                themePalette.MutedMarkup(Markup.Escape(" ")),
-                themePalette.MutedMarkup(Markup.Escape("Bind:")),
-                themePalette.MutedMarkup(
-                    Markup.Escape(
-                        "ListenAny is HTTPS-only. Trust the TLS certificate in the OS store; Compendium self-signed certs are loopback-SAN only.")));
-
-        }
-
-        switch (probe.Kind)
-        {
-            case DoctorProbeKind.Ok:
-                table.AddRow(
-                    themePalette.HighlightMarkup(Markup.Escape(OkGlyph)),
-                    themePalette.HighlightLabelMarkup(
-                        Markup.Escape("Status:"),
-                        Markup.Escape($"Reachable (HTTP {probe.HttpStatus})")),
-                    themePalette.MutedMarkup(Markup.Escape("API key accepted.")));
-                break;
-
-            case DoctorProbeKind.Unauthorized:
-                healthy = false;
-
-                table.AddRow(
-                    themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
-                    themePalette.ErrorLabelMarkup(
-                        Markup.Escape("Status:"),
-                        Markup.Escape($"Reached host (HTTP {probe.HttpStatus}) but auth failed")),
-                    themePalette.ErrorMarkup(Markup.Escape("Verify your API key or re-run 'arcanum serve'.")));
-                break;
-
-            case DoctorProbeKind.UnexpectedStatus:
-                healthy = false;
-
-                table.AddRow(
-                    themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
-                    themePalette.ErrorLabelMarkup(
-                        Markup.Escape("Status:"),
-                        Markup.Escape($"Unexpected HTTP {probe.HttpStatus}")),
-                    themePalette.MutedMarkup(Markup.Escape(probe.Detail ?? string.Empty)));
-                break;
-
-            case DoctorProbeKind.Timeout:
-                table.AddRow(
-                    themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
-                    themePalette.MutedMarkup(Markup.Escape("Status:")),
-                    themePalette.MutedMarkup(
-                        Markup.Escape(
-                            $"Timed out after {timeoutSeconds}s while waiting for the host health endpoint.")));
-                break;
-
-            case DoctorProbeKind.Unreachable:
-                table.AddRow(
-                    themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
-                    themePalette.MutedMarkup(Markup.Escape("Status:")),
-                    themePalette.MutedMarkup(
-                        Markup.Escape(
-                            listenAny
-                                ? $"Not reachable at {targetUrl}. Is 'arcanum serve' running with Host:Https enabled? Trust the cert or supply a SAN that matches localhost."
-                                : "Not reachable. Is 'arcanum serve' running?")));
-                break;
-
-            case DoctorProbeKind.Cancelled:
-                table.AddRow(
-                    themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
-                    themePalette.MutedMarkup(Markup.Escape("Status:")),
-                    themePalette.MutedMarkup(Markup.Escape("Cancelled by operator.")));
-                break;
-        }
-
-        return (healthy, table, probe);
 
     }
 
@@ -1384,42 +1373,6 @@ public sealed class DoctorCommand(
                     probe.Error),
             _ => new DoctorProbeResult(DoctorProbeKind.Unreachable, 0, probe.Error),
         };
-
-    private bool AddPathRow(Table table, string label, string path, bool exists, bool optional)
-    {
-
-        string escapedLabel = Markup.Escape(label + ":");
-
-        string escapedPath = Markup.Escape(path);
-
-        if (exists)
-        {
-            table.AddRow(
-                themePalette.HighlightMarkup(Markup.Escape(OkGlyph)),
-                themePalette.HighlightMarkup(escapedLabel),
-                themePalette.TextMarkup(escapedPath));
-
-            return true;
-        }
-
-        if (optional)
-        {
-            table.AddRow(
-                themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
-                themePalette.MutedMarkup(escapedLabel),
-                themePalette.MutedMarkup(Markup.Escape($"{path} (not found, optional)")));
-
-            return true;
-        }
-
-        table.AddRow(
-            themePalette.ErrorMarkup(Markup.Escape(FailGlyph)),
-            themePalette.ErrorMarkup(escapedLabel),
-            themePalette.ErrorMarkup(Markup.Escape($"{path} (not found)")));
-
-        return false;
-
-    }
 
     private Table BuildLabelTable(params (string Label, string Value)[] rows)
     {

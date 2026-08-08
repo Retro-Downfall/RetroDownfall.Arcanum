@@ -47,7 +47,7 @@ Effective inference context precedence is: explicit command option, saved active
 |---:|---|
 | `0` | Success, normal stream completion, or a cancelled interactive picker that performed no action. |
 | `1` | Generic validation, API, execution, failed Trial, or unexpected stream-disconnect failure. |
-| `2` | Command-line/configuration failure, a confirmation that cannot be obtained non-interactively, a non-positive watch-health interval, or an operation reconciliation that still requires operator attention. |
+| `2` | Command-line/configuration failure, a confirmation that cannot be obtained non-interactively, a non-positive watch-health interval, an unrecognized `doctor` diagnostic or repair id, or an operation reconciliation that still requires operator attention. |
 | `3` | Network failure where the command exposes the public network exit classification. |
 | `130` | Caller cancellation or Ctrl+C for non-interactive streaming/watch commands. In `chat`, Ctrl+C cancels the active turn and returns to the prompt. |
 
@@ -91,6 +91,18 @@ Command-specific refinements:
 - Watch commands and their compatibility aliases return `0` on normal completion, `2` on parse
   failure or a non-positive health interval, `1` on validation/API/unexpected-disconnect failure,
   and `130` on cancellation.
+- `doctor --fix-permissions` returns `0` unless the permission repair itself failed, matching its
+  pre-existing contract; the diagnostic it now prints alongside does not change its exit code.
+- `doctor` returns `0` when every diagnostic is `Healthy` or `Skipped`, and also when one is
+  `Degraded` or `Unavailable` — an unreachable host has always been a warning, and a diagnostic that
+  failed the build whenever `arcanum serve` was not running would be unusable in CI. `--strict`
+  promotes `Degraded` and `Unavailable` to `1`. Any `Unhealthy` diagnostic, or any repair that
+  reaches `Failed`, returns `1`. An unrecognized `--only`/`--skip`/`--repair` id, or `--apply`
+  without `--repair`, returns `2`. `3` is deliberately never returned: provider and host
+  unreachability are findings, not command failures. A declined repair confirmation returns `0`
+  having changed nothing, matching the other mutation commands. A `--only`/`--skip` combination that
+  selects no diagnostic at all returns `2` rather than an empty report claiming health, and a repair
+  id passed to `--only`/`--skip` returns `2` naming `--repair` instead.
 - `trial run` returns `1` when the completed Trial result is not passing, independently of HTTP
   or validation failure.
 - `operation reconcile` returns `2` when all recoverable pages were processed but one or more
@@ -499,20 +511,110 @@ Builds an Eye of the World snapshot for the current directory locally, without r
 
 ### `arcanum doctor`
 
-Run environment diagnostics (version, paths, API health).
+Run subsystem diagnostics, plan safe repairs, and name the exact remediation command.
 
-Runs System, Paths, Configuration, MCP, Tokenizer, File Encryption, durable-operation, and authenticated API-health diagnostics. Embedding status distinguishes sqlite-vec from the complete streamed managed SIMD fallback; managed compatibility budget `0` means no total row budget. The health probe has a code-owned two-second timeout: an unreachable API is a warning, while hard local checks return a nonzero exit. `--json` emits the typed doctor report rather than decorated panels.
+Every diagnostic carries a stable `subsystem.snake_case` **id**, an **outcome**, and zero or more
+**remedies**. No diagnostic mutates: each one opens the encrypted Grimoire read-only, stats files,
+and reads local state, and none creates a path, takes a lock, installs schema, or upgrades key
+material. Nothing changes on disk as a result of a diagnostic unless you pass `--repair <id> --apply`
+or the `--fix-permissions` alias.
+
+Two things do touch the disk regardless, and neither is a diagnostic. Every `arcanum` command's
+bootstrap ensures its own Data Protection key-ring directory exists before any verb runs. And SQLite
+materializes the `-wal`/`-shm` sidecars of a write-ahead-logged database on any open, including a
+read-only one; `grimoire.wal_size` therefore measures the log *before* the integrity checks open the
+database, so it reports the log the last host shutdown left rather than one this command created.
+
+Outcomes, least to most severe:
+
+| Outcome | Meaning | Effect on the exit code |
+|---|---|---|
+| `Skipped` | The precondition is absent (no database yet, web research disabled, a network probe you did not opt into). Not a fault. | none |
+| `Healthy` | The subsystem is in its intended state. | none |
+| `Unavailable` | The subsystem could not be consulted, so its state is unknown — most often an unreachable host. | `1` only with `--strict` |
+| `Degraded` | It works, but something needs attention. | `1` only with `--strict` |
+| `Unhealthy` | It is broken. | `1` |
+
+**Syntax:** `arcanum doctor [options]`
+
+| Option | Meaning |
+|---|---|
+| `--only <id>` | Run only these diagnostic ids or subsystems; repeatable. An unrecognized value exits `2` rather than silently running a smaller diagnostic. |
+| `--skip <id>` | Skip these diagnostic ids or subsystems; repeatable. |
+| `--include-network` | Also probe every configured provider endpoint with one non-billable `GET {endpoint}/models`. No completion is requested, so this never spends inference tokens. Without it, `providers.reachability` reports `Skipped`. |
+| `--repair <id>` | Plan a repair by id; repeatable. Shows the plan and changes nothing unless `--apply` is also passed. |
+| `--apply` | Perform the planned repairs after confirmation. Requires `--repair`; `--apply` alone exits `2` rather than repairing everything. Use the global `--yes` for automation. |
+| `--strict` | Exit nonzero when any diagnostic is `Degraded` or `Unavailable`, not only when one is `Unhealthy`. |
+| `--fix-permissions` | Apply the owner-only permission repair. It does not prompt, preserving its pre-existing automation contract, and its exit code still reflects only whether that repair succeeded — not whether the rest of the installation is healthy. Unlike previous releases it no longer short-circuits: the full diagnostic runs and reports alongside it. The exemption is granted to this repair alone; any other `--repair` named on the same command line still needs `--apply` and still goes through confirmation. |
+
+| Command | Explanation | Additional command options |
+|---|---|---|
+| `arcanum doctor list` | List every diagnostic id, its subsystem, and every repair id, so `--only`/`--skip`/`--repair` values are discoverable rather than guessed. | None beyond global or inherited family options. |
+| `arcanum doctor explain <id>` | Explain one diagnostic or repair: what it reads, what it changes, which detector justifies it, and how to run it. | None beyond global or inherited family options. |
+
+#### Diagnostic catalog
+
+`arcanum doctor list` is authoritative; this table is the shape of it. Ids are stable and part of the
+`--json` contract.
+
+| Check id | Subsystem | What it reads | Remediation |
+|---|---|---|---|
+| `system.version` | System | Build, OS, runtime, TTY, and colour posture. | — |
+| `system.tokenizer` | System | The configured encoding, via one smoke count. | — |
+| `paths.required` | Paths | Presence of the Grimoire directory, database, and secret store. Named individually when missing. | `arcanum serve` — the database and secret store are created on first host start, not by a directory repair |
+| `paths.managed_directories` | Paths | Which managed directories Arcanum owns are missing. | `arcanum doctor --repair paths.create_managed_directories --apply` |
+| `permissions.posture` | Permissions | Owner-only mode of every sensitive file and directory, including per-provider credential mirrors. Reads modes only, never contents. | `arcanum doctor --repair permissions.apply_owner_only --apply` |
+| `configuration.file` | Configuration | `arcanum.json` size, JSON syntax, and tree schema. The file is optional, so its absence is `Skipped`, not a warning — otherwise `--strict` would fail every default installation. | `arcanum config edit` |
+| `configuration.semantics` | Configuration | The full semantic validation the host runs at startup — provider shapes, model references, HTTPS certificate and port coherence, embeddings, path allowlists. | `arcanum config edit` |
+| `configuration.environment_overrides` | Configuration | Environment variables that claim a configuration path but did not take effect. Names and paths only, never values. | `arcanum config show` |
+| `credentials.os_store` | Credentials | Whether the OS credential backend is reachable at all, which is what separates "no credential stored" from "keychain unreachable". | `arcanum key list` |
+| `credentials.key_ring` | Credentials | The Data Protection key ring that decrypts every `.dat` mirror, and whether mirrors exist without it. The ring is machine-local and is never carried by a backup archive. | `arcanum key list` |
+| `credentials.providers` | Credentials | Per-credential presence and source, resolved exactly as the run time resolves it. | `arcanum key provider set <provider>` |
+| `credentials.master_key` | Credentials | Whether the master API key is readable. | `arcanum key set` |
+| `webresearch.credential` | WebResearch | Web-research credential presence and decryptability. Reachability is deliberately not probed: the provider bills every request. | `arcanum key provider set perplexity --kind web-research` |
+| `grimoire.key_material` | Grimoire | Encryption-secret status and a stranded pending KDF upgrade. The opening checks try every derivation this installation supports — committed sidecar, pending sidecar, and both legacy forms — so a pre-upgrade or mid-upgrade database is not misreported as unopenable. | `arcanum backup restore <archive>` |
+| `grimoire.integrity` | Grimoire | `PRAGMA quick_check` on the encrypted database, opened read-only. | `arcanum backup create --scope grimoire` |
+| `grimoire.foreign_keys` | Grimoire | `PRAGMA foreign_key_check`; reports table names only. | `arcanum backup create --scope grimoire` |
+| `grimoire.wal_size` | Grimoire | Write-ahead log size, which grows when no clean shutdown checkpoints it. | `arcanum daemon status` |
+| `storage.file_encryption` | Storage | Encrypted-blob inventory and file-encryption secret status. | `arcanum data encryption status` |
+| `operations.awaiting_repair` | Operations | Durable operations in `ReconciliationRequired`, `Failed`, or `Abandoned`, counted from the database over a read-only connection so a crashed host cannot hide them. | `arcanum operation list --state ReconciliationRequired` |
+| `operations.stale_leases` | Operations | Operation leases that expired while still claiming to run. | `arcanum operation list` |
+| `operations.durable_state` | Operations | The host's own durable-operation summary when it is reachable. | `arcanum operation list --state ReconciliationRequired` |
+| `runtime.pid_file` | Runtime | Whether the PID file names a live process. | `arcanum doctor --repair runtime.remove_stale_pid --apply` |
+| `runtime.maintenance_lock` | Runtime | Whether another process holds the installation maintenance lock. Read-only: it opens the existing file rather than acquiring the lock. | — |
+| `runtime.disk_space` | Runtime | Free space on the Arcanum volume. | `arcanum data prune --dry-run` |
+| `runtime.tool_child_sandbox` | Runtime | Filesystem jail, resource limits, and escape-hatch posture for tool children. | — |
+| `weave.embeddings` | Weave | Configured embedding provider, model, and vector mode. Managed compatibility budget `0` means no total row budget. | — |
+| `mcp.global_config` | Mcp | Global `mcp.json` syntax and server-entry count. Optional, so absence is `Skipped`. | `arcanum mcp list` |
+| `host.api_health` | Host | Authenticated reachability of the local API. | `arcanum serve` |
+| `host.health_components` | Host | The running host's own per-subsystem verdicts, relayed rather than re-implemented. No answer at all is `Unavailable`, never a failure; a host that answers and reports itself unhealthy is `Unhealthy`. | `arcanum serve`, `arcanum lore` |
+| `providers.reachability` | Providers | One non-billable model listing per configured provider. **Requires `--include-network`.** Endpoints are never printed. | `arcanum key provider set <provider>`, `arcanum config edit`, `arcanum model list` |
+
+#### Repairs
+
+Every repair has a read-only detector, a no-change dry-run plan, and converges: applying a
+successful repair a second time reports `AlreadyConverged` and changes nothing. No repair ever
+regenerates a key over existing ciphertext, deletes user data, or rewrites a corrupt encrypted
+database — those states fail closed with restore guidance instead.
+
+| Repair id | Detector | What it changes | Safety |
+|---|---|---|---|
+| `permissions.apply_owner_only` | `permissions.posture` | Sets owner-only mode on every inventoried sensitive path whose posture differs. | Only ever narrows access; sets an absolute mode rather than a delta; never creates a path. |
+| `paths.create_managed_directories` | `paths.managed_directories` | Creates the missing managed directories with owner-only permissions. | Creation only — never deletes, moves, or touches an existing directory. |
+| `runtime.remove_stale_pid` | `runtime.pid_file` | Deletes a PID file whose process is gone or which holds no process id. | Re-reads the posture at apply time and refuses while any process holds that id, so a host that started between plan and apply keeps its claim. |
 
 The `ProviderCredentials` check resolves each credential the same way the run time does — the
 environment reference first, then the OS-backed secure store — and reports which source satisfied it.
 A missing explicit reference or a stored-but-undecryptable credential is a warning naming the exact
-recovery command. Credential values are never shown.
+recovery command. Credential values are never shown, and no finding, remedy, or repair step ever
+carries a credential value, a raw response body, or a file's contents.
 
-**Syntax:** `arcanum doctor`
-
-| Option | Meaning |
-|---|---|
-| `--fix-permissions` | Apply owner-only permissions to configuration, preset state and recovery sidecars, the Grimoire database, and secret stores. |
+`--json` emits one typed `DoctorReport` on stdout rather than decorated panels, with diagnostics on
+stderr. `arcanum doctor list` and `arcanum doctor explain` emit a typed `DoctorCatalog` under
+`--json`. The report keeps its pre-existing shape — `healthy`, and per check `name`, `status`
+(`ok`/`warn`/`fail`), and `detail` — and adds `id`, `subsystem`, `outcome`, and `remedies` per check
+plus a top-level `outcome` and `repairs`, so an existing consumer is unaffected while a new one can
+key on the stable id. `status` is derived from `outcome`.
 
 ### `arcanum key`
 
