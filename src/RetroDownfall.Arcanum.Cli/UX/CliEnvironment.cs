@@ -71,13 +71,21 @@ public sealed class CliEnvironment : ICliEnvironment
 
     }
 
+    /// <summary>
+    /// <c>--print</c> is the explicit headless marker: it makes a real TTY behave like a redirected
+    /// one, so a scripted invocation never blocks on a picker or a prompt just because it happens to
+    /// be running attached to a terminal.
+    /// </summary>
     public bool IsInteractive =>
-        _isInteractive && !(_invocationContext?.Options.Json ?? false);
+        _isInteractive
+        && !(_invocationContext?.Options.Json ?? false)
+        && !(_invocationContext?.Options.Print ?? false);
 
     public bool ColorEnabled =>
         _colorEnabled
         && !(_invocationContext?.Options.Plain ?? false)
-        && !(_invocationContext?.Options.Json ?? false);
+        && !(_invocationContext?.Options.Json ?? false)
+        && !(_invocationContext?.Options.Print ?? false);
 
     public bool ShouldShowManaBar =>
         _showManaBarConfigured

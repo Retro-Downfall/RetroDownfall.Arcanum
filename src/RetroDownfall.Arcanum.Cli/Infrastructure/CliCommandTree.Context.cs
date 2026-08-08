@@ -88,19 +88,11 @@ internal static partial class CliCommandTree
 
         context.Add(BuildContextPreview(handler, "sources", ContextPreviewView.Sources));
 
+        context.Add(BuildContextPreview(handler, "cost", ContextPreviewView.Cost));
+
         return context;
 
     }
-
-    private static Command BuildMana(IServiceProvider serviceProvider) =>
-
-        BuildContextPreview(
-
-            serviceProvider.GetRequiredService<ContextCommands>(),
-
-            "mana",
-
-            ContextPreviewView.Mana);
 
     private static Command BuildContextPreview(
 
@@ -116,7 +108,7 @@ internal static partial class CliCommandTree
 
             name,
 
-            view == ContextPreviewView.Mana
+            view == ContextPreviewView.Cost
 
                 ? "Estimate the effective turn token allocation without main inference."
 
@@ -148,7 +140,7 @@ internal static partial class CliCommandTree
 
         };
 
-        Option<string?> campaign = new("--campaign", "-c")
+        Option<string?> campaign = new("--campaign", "-C")
 
         {
 

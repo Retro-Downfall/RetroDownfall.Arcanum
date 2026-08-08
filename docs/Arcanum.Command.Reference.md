@@ -11,7 +11,7 @@ descriptions in this reference are the same strings the parser reports. A symbol
 description fails the build, so `--help` and this document cannot diverge.
 
 Use the standard `--` end-of-options marker before positional text that begins with a hyphen; for
-example, `arcanum ask -- --explain-this` treats `--explain-this` as the prompt.
+example, `arcanum run -- --explain-this` treats `--explain-this` as the prompt.
 
 Options marked repeatable may be supplied more than once. System.CommandLine response-file
 expansion is disabled: an `@filename` value is application syntax only where this reference says
@@ -24,16 +24,44 @@ tool-argument input.
 
 | Option | Meaning |
 |---|---|
-| `--json` | Force structured machine-readable output. Non-streaming commands emit one JSON payload; watch streams emit one source event per line as NDJSON. Diagnostics and progress remain on stderr. |
+| `--output-format <text\|json>` | Select the output shape. `json` makes non-streaming commands emit one JSON payload; watch streams emit one source event per line as NDJSON. Diagnostics and progress remain on stderr. |
+| `--json` | Shorthand for `--output-format json`. Combining it with `--output-format text` is a contradiction and exits `2`. |
 | `--plain` | Disable ANSI color, styling, and terminal animations without changing persisted configuration. |
 | `--yes` | Automatically approve commands that otherwise require confirmation, including overwrites and explicit deletion flows. It is the only automatic confirmation switch; it does not change unrelated mutations. |
 | `--no-context` | Ignore saved `cli-context.json` defaults for this invocation. Independent current-directory Campaign/Workspace detection still applies. |
+| `-p`, `--print` | Headless mode. A real terminal behaves like a redirected one: no interactive picker opens, no prompt blocks, and no color is emitted. Use it so a scripted invocation cannot stall on a terminal it happens to be attached to. |
+| `-v`, `--verbose` | Emit additional operator diagnostics on stderr. It never changes payload content or the exit code. |
 | `-?`, `-h`, `--help` | Show help for the current command path and exit without running it. |
 | `--version` | Show the CLI version. This option is available at the root command. |
 
-The four Arcanum process options (`--json`, `--plain`, `--yes`, and `--no-context`) are recursive
-and may appear before or after subcommands. Help aliases are available at every command path;
-`--version` is root-only.
+The Arcanum process options (`--output-format`, `--json`, `--plain`, `--yes`, `--no-context`,
+`--print`, and `--verbose`) are recursive and may appear before or after subcommands. Help aliases
+are available at every command path; `--version` is root-only.
+
+### Short-option contract
+
+A short flag means exactly one thing everywhere in the tree. Claude Code parity does not justify
+ambiguous parsing, so `-c` is `--continue` at every scope and `--campaign` takes `-C`. The complete
+table is generated from the live parser into
+[`Arcanum.CommandMap.json`](Arcanum.CommandMap.json) and verified by test.
+
+| Short | Long | Notes |
+|---|---|---|
+| `-c` | `--continue` | Continue the most recent Session. |
+| `-C` | `--campaign` | Campaign selector. Uppercase because `-c` is Claude-aligned continuation. |
+| `-r` | `--resume` | Resume a named Session; omit the value for a picker. |
+| `-p` | `--print` | Headless marker (recursive). |
+| `-v` | `--verbose` | Extra stderr diagnostics (recursive). |
+| `-m` | `--model` | Model selector. |
+| `-s` | `--session` | Session selector. |
+| `-w` | `--workspace` | Workspace selector. |
+| `-n` | `--new` | Start without continuing a Session. |
+| `-o` | `--output` | Destination file path. |
+| `-q` | `--query` | Free-text query. |
+| `-t` | `--title` | Title value. |
+
+`--output-format` deliberately has no short form: `-o` already means `--output`, and a second
+meaning would reintroduce exactly the ambiguity this table exists to prevent.
 
 ## Shared selection and context behavior
 
@@ -49,7 +77,7 @@ Effective inference context precedence is: explicit command option, saved active
 | `1` | Generic validation, API, execution, failed Trial, or unexpected stream-disconnect failure. |
 | `2` | Command-line/configuration failure, a confirmation that cannot be obtained non-interactively, a non-positive watch-health interval, an unrecognized `doctor` diagnostic or repair id, or an operation reconciliation that still requires operator attention. |
 | `3` | Network failure where the command exposes the public network exit classification. |
-| `130` | Caller cancellation or Ctrl+C for non-interactive streaming/watch commands. In `chat`, Ctrl+C cancels the active turn and returns to the prompt. |
+| `130` | Caller cancellation or Ctrl+C for non-interactive streaming/watch commands. In Command Center, Ctrl+C cancels the active turn and returns to the composer. |
 
 Structured stdout is never mixed with diagnostics. `--plain` strips presentation only; it does not change payload content. Watch reconnect is opt-in and always warns that a gap may exist.
 
@@ -75,22 +103,27 @@ Command-specific refinements:
   `Run 'arcanum config validate' to re-check, or 'arcanum config edit' to repair arcanum.json.`
   are written to stderr, so the per-pointer detail is on the console and not only in the rolling
   JSON log.
-- `ask` returns `0` on success, `1` for empty prompt, inference-option, stream, or API failure, and
-  `130` when the in-flight turn is cancelled.
 - `run` returns `0` when its selected route or dry-run preview succeeds, `1` for a live
   execution/stream/API failure, `2` for invalid input, staging, context, or route selection, and
   `130` when cancelled.
-  An over-limit redirected input exits `2` before dispatch and is never truncated.
-- `chat` returns `0` after a clean REPL exit and `1` if any turn failed. Ctrl+C during a turn
-  cancels that turn and returns to the prompt rather than exiting `130`.
+  An over-limit redirected input exits `2` before dispatch and is never truncated. Supplying more
+  than one of `--session`, `--continue`, and `--resume` exits `2`, as does `--continue` with no
+  previous Session to continue.
 - Bare Command Center returns `0` after `/exit` or `/quit`, for non-interactive usage, and when
   `ARCANUM_NO_COMMAND_CENTER=1`; terminal-size or UI-bootstrap failure returns `1`.
 - `center` and `open center` return the same in-process Command Center result. Resource/application
   launch commands return `0` after a successful start or cancelled picker, `1` when selection or
   launch fails, and `130` for caller cancellation.
-- Watch commands and their compatibility aliases return `0` on normal completion, `2` on parse
-  failure or a non-positive health interval, `1` on validation/API/unexpected-disconnect failure,
-  and `130` on cancellation.
+- Watch commands return `0` on normal completion, `2` on parse failure or a non-positive health
+  interval, `1` on validation/API/unexpected-disconnect failure, and `130` on cancellation.
+- `completion <shell>` returns `0` after writing a script to stdout and `2` for an unsupported
+  shell. `completion install` returns `0` after writing or after a declined confirmation (having
+  changed nothing), `2` when confirmation cannot be obtained non-interactively, and `1` when the
+  target cannot be written. `completion resolve` always returns `0`: it is called from a shell
+  keystroke, so an unavailable host yields no suggestions rather than an error.
+- `help <topic>` returns `0`, or `2` for an unknown topic.
+- A removed or mistyped command exits `2` with a diagnostic naming the canonical replacement or the
+  nearest command. A suggestion is printed only; it is never executed.
 - `doctor --fix-permissions` returns `0` unless the permission repair itself failed, matching its
   pre-existing contract; the diagnostic it now prints alongside does not change its exit code.
 - `doctor` returns `0` when every diagnostic is `Healthy` or `Skipped`, and also when one is
@@ -123,8 +156,7 @@ Some options are nullable in the generated parser so handlers can resolve saved 
 
 | Command | Runtime requirement |
 |---|---|
-| `ask` | A non-empty prompt is required. |
-| `run` | A positional/interactive instruction, non-empty redirected stdin, or at least one valid `--with @path` source is required. |
+| `run` | A positional/interactive instruction, non-empty redirected stdin, or at least one valid `--with @path` source is required. At most one of `--session`, `--continue`, and `--resume` may be supplied, and `--continue` requires a previous Session. |
 | `campaign create` | `--name` and `--path` are required. |
 | `campaign import` | `--file` is required. |
 | `campaign codex put` | `--file` is required. |
@@ -154,30 +186,47 @@ A bare interactive invocation opens Command Center. A non-interactive invocation
 
 `arcanum center` is the explicit alias, and `arcanum open center` reaches the same in-process host.
 Unlike the automatic bare launch, an explicit request is not suppressed by
-`ARCANUM_NO_COMMAND_CENTER`; the normal terminal and UI requirements still apply.
+`ARCANUM_NO_COMMAND_CENTER`; the normal terminal and UI requirements still apply. All three accept
+`-c`/`--continue` to reopen the most recent Session and `-r`/`--resume [<id>]` to reopen a named
+one, matching the one-shot entry.
+
+Command Center is the only interactive turn entry. A terminal that cannot host it — redirected
+stdin or stdout, `ARCANUM_NO_COMMAND_CENTER=1`, or a window under 80×12 — gets usage naming
+`arcanum run` rather than a degraded second REPL.
 
 Interactive auto-start uses short connection/readiness observation only: two seconds per health
 probe, three seconds for an already-listening unhealthy host, and 20 seconds after spawn. A launcher
 timeout never kills the spawned host; retry, run `arcanum doctor`, verify `arcanum key show`, or
 inspect `~/.config/arcanum/logs/auto-serve-bootstrap.log`.
 
+### Slash commands
+
+One registry defines every slash command, its help text, and the canonical replacement for each
+removed spelling. Names track Claude Code wherever a direct analog exists; thematic names survive
+only where the capability has no Claude analog at all.
+
 | Command Center input | Action |
 |---|---|
-| `/help`, `/?` | Show Command Center help. |
+| `/help`, `/?` | Show Command Center help, rendered from the registry. |
 | `/keys` | Show keyboard shortcuts. |
 | `/status` | Show current session and serve status. |
 | `/doctor` | Run a compact health check. |
-| `/clear` | Clear the visible session log. |
-| `/mana` | Show current token counters. |
-| `/tools` | Show native tools. |
-| `/model list` | List configured models. |
+| `/clear` | Start a fresh session thread and clear the transcript view. |
+| `/compact` | Queue memory consolidation for the current session. |
+| `/context` | Show the effective turn context and token allocation. |
+| `/cost` | Show token and spend totals for the current session. |
+| `/memory` | Show the compressed Campaign Summary for this session. |
+| `/config` | Show the effective configuration summary and its file path. |
+| `/model [<name>]` | With no name, list configured models; with a name, select it for this session. |
 | `/provider list` | List configured providers. |
-| `/mcp` | Show MCP server status. |
+| `/mcp [reload]` | Show MCP server status, or reload MCP configuration. |
+| `/tools` | Show native tools. |
 | `/arsenal` | Show the effective workspace arsenal. |
-| `/campaign list [offset]` | List a 50-line terminal page of campaigns. When more state exists, the result prints the exact next offset command. |
+| `/look` | Show the working directory; the full Eye of the World snapshot is `arcanum look`. |
+| `/resume <id>` | Load a transcript and continue the selected session. |
 | `/session list` | Refresh and list sessions. |
-| `/session new` | Start a new session. |
-| `/session resume <id>` | Load a transcript and continue the selected session. |
+| `/session archive <id>` | Archive a session; archiving the active one starts a fresh thread. |
+| `/campaign list [offset]` | List a 50-line terminal page of campaigns. When more state exists, the result prints the exact next offset command. |
 | `/fork` | Fork the complete active session and open the branch. |
 | `/fork confirm` | Confirm a large attachment-bearing fork. |
 | `/fork alternative` | Fork before the selected answer and regenerate. |
@@ -189,14 +238,19 @@ inspect `~/.config/arcanum/logs/auto-serve-bootstrap.log`.
 | `/attachments add <name> [vN]` | Stage a prior attachment version as a reference. |
 | `/attachments reveal <name> [vN]` | Reveal an attachment file in the OS file manager. |
 | `/attachments refresh <name>` | Securely load the current tracked-file version. |
-| `/context [list]` | List persistent session context pins. |
-| `/context pin <kind> <target>` | Pin a file, directory snapshot, symbol range, session entry, attachment, URL, or diagnostic. |
-| `/context unpin <id>` | Remove one context pin. |
-| `/spell list [offset]` | List a 50-line terminal page of spells with exact next-offset continuation. |
+| `/pins` | List persistent session context pins. |
+| `/pin <kind> <target>` | Pin a file, directory snapshot, symbol range, session entry, attachment, URL, or diagnostic. |
+| `/unpin <id>` | Remove one context pin. |
+| `/spell list [cursor]` | List a 50-line terminal page of spells with exact next-cursor continuation. |
 | `/ward list [offset]` | List a 50-line terminal page of open Wards with exact next-offset continuation. |
 | `/ward allow [<id>]` | Allow the supplied or currently prompted Ward. |
 | `/ward deny [<id>]` | Deny the supplied or currently prompted Ward. |
 | `/exit`, `/quit` | Leave Command Center. |
+
+Persistent pins use `/pins`, `/pin`, and `/unpin` rather than overloading `/context`, because
+`/context` is the Claude-aligned context-window view. An unrecognized slash command names the
+canonical replacement when the spelling was removed, and otherwise suggests the nearest registered
+name; it is never executed automatically.
 
 List offsets must be nonnegative integers. Campaign pages are fetched from the API at the requested
 offset; Spell and Ward pages slice the complete fetched state for terminal rendering. When another
@@ -210,39 +264,34 @@ these are view allocations, not history totals. In Sessions, `Ctrl+PgDn` loads o
 repeated or missing checkpoint as no progress, honors cancellation, and rebuilds Incantations from
 the current transcript page.
 
-## `arcanum chat` slash commands
+## Turn entry points
 
-| REPL command | Action |
+Arcanum has exactly two ways to start a turn, and neither is a second implementation of the other:
+
+| Entry | Use |
 |---|---|
-| `/exit`, `/quit` | Leave the REPL. |
-| `/clear` | Clear the terminal. |
-| `/help` | Show the REPL command table. |
-| `/new` | Clear the last-session pointer so the next turn starts a new thread. |
-| `/history` | List recent sessions. |
-| `/resume <id>` | Resume a session by ID. |
-| `/delete <id>` | Archive the selected session; if it is active, also clear the REPL's active-session pointer. |
-| `/rest` | Queue memory consolidation for the current session. |
-| `/log` | Show the Campaign Log for the current session. |
-| `/memory`, `/summary` | Show compressed Campaign Summary memory. |
-| `/mana` | Show REPL and durable-session token usage. |
-| `/model [<name>]` | With no name, open the interactive configured-model picker; with a name, set the REPL model override. |
-| `/look` | Show an Eye of the World snapshot. |
-| `/tools` | Toggle MCP tools for subsequent turns; built-in tools are unaffected. |
-| `/mcp reload` | Reload MCP configuration. |
-| `/arsenal` | Show spells, native tools, and MCP status. |
-| `/attach` | Open the interactive file browser for next-turn staging. |
-| `@path` | Inline-stage a local text file or allowed Scrying image for the next turn; images require a vision-capable model. |
+| Bare `arcanum` (Command Center) | Interactive work. The analog of bare `claude`. |
+| `arcanum run [prompt…]` | One-shot and scripted work. The analog of `claude -p`. |
 
-At the idle `Mage >` prompt the keyboard contract is:
-
-| Key | Action |
-|---|---|
-| `Ctrl+C` with text composed | Discards the composed line and prints `Input cleared. Press Ctrl+C again on an empty line to exit.` The interrupt counter resets, so the discard never counts toward exiting. |
-| `Ctrl+C` on an empty line | Prints `Press Ctrl+C again to exit, or type /exit.` and returns to the prompt. |
-| `Ctrl+C` twice consecutively on an empty line | Leaves the REPL cleanly: the exit summary still runs and the accumulated exit code is preserved. |
-| `Ctrl+D` on an empty line | Leaves the REPL the same way. With text composed it is ignored. |
+Continuation is spelled the same on both: `-c`/`--continue` for the most recent Session,
+`-r`/`--resume [<id>]` for a named one. The `session` family is management only — it lists, shows,
+forks, renames, exports, and compacts Sessions, and it never starts a turn.
 
 ## CLI command tree
+
+Top-level families group as follows. The core mirrors Claude Code; the rest is Arcanum-specific
+capability that Claude Code has no analog for and that this reference does not attempt to reduce.
+
+| Group | Families |
+|---|---|
+| Core | *(bare)* Command Center, `center`, `run`, `serve`, `setup`, `config`, `mcp`, `doctor`, `key`, `completion`, `help` |
+| Inspection | `context`, `watch`, `look`, `operation`, `data`, `open` |
+| Domain | `campaign`, `session`, `saga`, `memory`, `spell`, `prompt`, `ward`, `trial`, `apprentice`, `conclave`, `lore`, `daemon`, `model`, `provider`, `workspace`, `tool`, `attachment`, `backup`, `preset`, `use` |
+| Web and bulk | `search`, `browse`, `research`, `file`, `batch` |
+
+A family stays top-level when it owns durable server state or a distinct lifecycle. Anything that
+only modifies how one turn runs is an option on `run`, and anything that only makes sense inside a
+live session is a slash command, not a verb.
 
 ### `arcanum setup`
 
@@ -354,7 +403,7 @@ archives extracted side-by-side beneath one parent. It recognizes the shipped `*
 names and only the active `*-linux-x64|arm64` architecture, then checks the repository development
 project. If nothing starts, diagnostics list every candidate by safe kind/display path and provide
 a repository-relative `dotnet run --project ...` command plus the equivalent current CLI command
-(`session show`, `campaign get`, `spell get`, `prompt get`, `apprentice get`, or `config edit`).
+(`session show`, `campaign show`, `spell show`, `prompt show`, `apprentice show`, or `config edit`).
 Copyable fallback arguments are quoted for PowerShell on Windows and a POSIX shell on macOS/Linux;
 this display-only formatting is separate from the direct structured process launch.
 Launching a new process is the portable baseline. A platform integration may truthfully report
@@ -366,7 +415,12 @@ and does not claim that an existing window was focused.
 Explicitly open Command Center in the current process. This is an alias for `arcanum open center`;
 the full interactive input table is in [Bare `arcanum`: Command Center](#bare-arcanum-command-center).
 
-**Syntax:** `arcanum center`
+**Syntax:** `arcanum center [-c] [-r [<session>]]`
+
+| Option | Meaning |
+|---|---|
+| `-c, --continue` | Reopen the most recent Session. Cannot be combined with `--resume`. |
+| `-r, --resume [<session>]` | Reopen a Session by GUID, exact title, or unique title prefix; omit the value for an interactive picker. |
 
 ### `arcanum serve`
 
@@ -379,33 +433,6 @@ Starts the local ASP.NET Core host. The nested `quit` command sends an authentic
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum serve quit` | Requests the running host to shut down. | None beyond global or inherited family options. |
-
-### `arcanum ask`
-
-Ask the Mage.
-
-Runs one inference turn and streams the answer. Prompt words are joined in order. Interactive use can auto-start the local host; `--new` and `--session` are mutually exclusive.
-
-**Syntax:** `arcanum ask [<prompt>...]`
-
-| Option | Meaning |
-|---|---|
-| `-m, --model <model>` | Use this configured model instead of the effective context or server default. |
-| `-n, --new` | Start a new session rather than continuing the active or last session. |
-| `--unattended` | Disable blocking human prompts and apply unattended Ward behavior. |
-| `-c, --campaign <campaign>` | Use the selected campaign GUID, name, or unique prefix. |
-| `--workspace <workspace>` | Use the selected workspace ID, name, or server-host path. |
-| `--session <session>` | Continue the selected session by GUID, exact title, or unique title prefix. |
-| `--temperature <temperature>` | Sampling temperature from 0 through 2. |
-| `--top-p <top-p>` | Nucleus sampling cutoff from 0 through 1. |
-| `--max-tokens <max-tokens>` | Maximum output tokens; any positive integer is accepted. |
-| `--seed <seed>` | Optional signed 64-bit sampling seed; provider support varies. |
-| `--stop <stop>` | Stop sequence; repeat the option to supply several sequences. |
-| `--response-format <response-format>` | Response format: text, json (alias of json_object), json_object, or json_schema. |
-| `--presence-penalty <presence-penalty>` | Presence penalty from -2 through 2. |
-| `--frequency-penalty <frequency-penalty>` | Frequency penalty from -2 through 2. |
-| `--image <image>` | Local image path to stage as a Scrying focus; repeatable, constrained by configured size and allowed MIME types, and requires a vision-capable model. |
-| `--attachment <attachment>` | Bound attachment GUID to include; repeatable. |
 
 ### `arcanum run`
 
@@ -444,8 +471,15 @@ may add locally produced `PatternSnapshot` and `ChronosyncDelta` context.
 
 Explicit context options follow the shared precedence over active local context, current-directory
 detection, and server defaults. Campaign, Workspace, Session, and Model are resolved before the
-route is dispatched; `--no-context` bypasses only saved context. Recursive `--plain` and `--json`
-retain their global meanings and may appear before or after `run`.
+route is dispatched; `--no-context` bypasses only saved context. Recursive `--plain`,
+`--output-format`, `--print`, and `--verbose` retain their global meanings and may appear before or
+after `run`.
+
+`--session`, `--continue`, and `--resume` all fill the same slot, so supplying more than one exits
+`2` rather than resolving a precedence. `--new` keeps its documented behavior of winning over an
+explicit selector instead of adding a second conflict. `--continue` with no previous Session exits
+`2` naming how to start one; `--resume` with no value opens the Session picker, and cancelling that
+picker exits `0` having done nothing.
 
 **Syntax:** `arcanum run [<prompt>...]`
 
@@ -454,12 +488,15 @@ retain their global meanings and may appear before or after `run`.
 | `--research` | Route through progress-driven server-side research. Cannot be combined with `--spell`. |
 | `--spell <spell>` | Force a Spell by exact name or unique name prefix. Cannot be combined with `--research`. |
 | `--with <@path>` | Stage one turn-scoped text file or image; repeat for several files. Relative and explicitly supplied absolute paths are supported. |
+| `--attachment <attachment>` | Bound attachment GUID to include on this turn; repeatable. Use `--with @path` for a local file that is not yet an attachment. |
 | `--dry-run` | Preview the resolved static pre-inference payload/context plan without provider spend, search, tools, or persistence. |
 | `--show-content` | With `--dry-run`, include model-visible content in the authenticated preview. |
 | `-m, --model <model>` | Use this configured model instead of the effective context or server default. |
-| `-n, --new` | Start without continuing the effective Session. If `--session` is also supplied, `--new` wins instead of creating another option conflict. |
+| `-n, --new` | Start without continuing the effective Session. If a session selector is also supplied, `--new` wins instead of creating another option conflict. |
 | `--unattended` | Apply unattended human-prompt and Ward behavior to the selected live route; dry-run reflects the resulting tool policy. |
-| `-c, --campaign <campaign>` | Use the selected Campaign GUID, exact name, or unique prefix. |
+| `-c, --continue` | Continue the most recent Session. Cannot be combined with `--resume` or `--session`. |
+| `-r, --resume [<session>]` | Resume a Session by GUID, exact title, or unique title prefix; omit the value for an interactive picker. |
+| `-C, --campaign <campaign>` | Use the selected Campaign GUID, exact name, or unique prefix. |
 | `-w, --workspace <workspace>` | Use the selected Workspace ID, name, or server-host path. This is also the base for relative `--with` paths in the bundled local client. |
 | `-s, --session <session>` | Continue the selected Session by GUID, exact title, or unique title prefix. |
 | `--temperature <temperature>` | Sampling temperature from 0 through 2. |
@@ -473,33 +510,6 @@ retain their global meanings and may appear before or after `run`.
 | `--sources <sources>` | Optional positive unique-source target. Omit it to continue until source exhaustion or deterministic no-progress. |
 | `--token-budget <token-budget>` | Explicit positive research synthesis output-token budget (default 2000). |
 | `--cost-budget <cost-budget>` | Optional nonnegative research search-provider cost limit in USD. |
-
-### `arcanum chat`
-
-Interactive multi-turn REPL with the Mage.
-
-Starts the multi-turn Mage REPL. Inference controls apply to every turn, while `--attachment` values are staged for the next successful turn. Complete assistant Markdown renders lazily in allocation-safe chunks; content after the former 256 Ki-character display cutoff is not discarded. See the REPL slash-command table above.
-
-**Syntax:** `arcanum chat`
-
-| Option | Meaning |
-|---|---|
-| `-m, --model <model>` | The specific model to use for this inference request. |
-| `-n, --new` | Start a new session thread, clearing the previous session at REPL startup. |
-| `--no-tools` | Disable MCP-provided tools for this REPL session (built-in tools still apply). |
-| `--unattended` | Force unattended for this run; skips ask_human blocking and uses Ward auto-deny. |
-| `-c, --campaign <campaign>` | Campaign GUID to resolve the workspace from. |
-| `--workspace <workspace>` | Workspace ID or path for this chat. |
-| `--session <session>` | Session GUID, exact title, or unique title prefix to resume. |
-| `--temperature <temperature>` | Sampling temperature 0-2 (lower = more deterministic). Applies to every turn. |
-| `--top-p <top-p>` | Nucleus sampling cutoff 0-1. Applies to every turn. |
-| `--max-tokens <max-tokens>` | Maximum output tokens per turn. |
-| `--seed <seed>` | Seed for sampling determinism (provider support varies). Applies to every turn. |
-| `--stop <stop>` | Stop sequence(s); pass --stop multiple times for several stops. |
-| `--response-format <response-format>` | Response format: text \| json (alias of json_object) \| json_object \| json_schema. |
-| `--presence-penalty <presence-penalty>` | Presence penalty -2..2. |
-| `--frequency-penalty <frequency-penalty>` | Frequency penalty -2..2. |
-| `--attachment <attachment>` | Bound attachment GUID to use on the next successful turn; repeatable. |
 
 ### `arcanum look`
 
@@ -700,8 +710,7 @@ Manages persistent project containers. Campaigns own sessions, prompts, spells, 
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum campaign list` | List registered campaigns. | `--type <type>` — Filter by exact type: spell, campaign, data, or custom. |
-| `arcanum campaign get [<id>]` | Show campaign detail. | None beyond global or inherited family options. |
-| `arcanum campaign use <campaign>` | Select a Campaign in the shared persistent CLI context. | None beyond global or inherited family options. |
+| `arcanum campaign show [<campaign>]` | Show campaign detail. | None beyond global or inherited family options. |
 | `arcanum campaign create` | Register a new campaign. | `--name <name>` — Campaign name.<br>`--path <path>` — Absolute server-host filesystem path represented by the campaign.<br>`--type <type>` — Campaign type: spell, campaign, data, or custom; defaults to campaign.<br>`--description <description>` — Optional human-readable campaign description. |
 | `arcanum campaign update [<id>]` | Update a campaign. | `--name <name>` — Supplies the resource name stored by this command. |
 | `arcanum campaign delete [<id>]` | Remove a campaign. | None beyond global or inherited family options. |
@@ -731,10 +740,7 @@ protections while explicitly reporting deferred accepted pins.
 |---|---|---|
 | `arcanum session list` | List recent sessions. | `--campaign <campaign>` — Filter by campaign GUID.<br>`--status <status>` — Filter by session status.<br>`--search <search>` — Filter by search text.<br>`--model <model>` — Filter by model.<br>`--from <from>` — Include sessions on or after this ISO-8601 timestamp.<br>`--to <to>` — Include sessions on or before this ISO-8601 timestamp.<br>`--limit <limit>` — Maximum sessions per page. |
 | `arcanum session show [<session>]` | Summarize a session, including telemetry and lineage. | None beyond global or inherited family options. |
-| `arcanum session get [<session>]` | Compatibility alias for session show. | None beyond global or inherited family options. |
-| `arcanum session chat [<session>]` | Continue a session by GUID, title, prefix, or interactive selection. | None beyond global or inherited family options. |
 | `arcanum session entries [<session>]` | List transcript entries for a session. | `--offset <offset>` — Number of entries to skip.<br>`--limit <limit>` — Maximum entries to return. |
-| `arcanum session watch [<session>]` | Watch replayed and live session entries. | `--since <since>` — Resume after this entry GUID. |
 | `arcanum session fork [<session>]` | Fork a session through the server fork API. | `--title <title>` — Optional fork title.<br>`--up-to-entry <up-to-entry>` — Copy through this entry GUID.<br>`--campaign <campaign>` — Optional destination campaign GUID. |
 | `arcanum session rename [<session>]` | Rename a session. | `--title <title>` — New session title. |
 | `arcanum session archive [<session>]` | Archive a session without deleting it. | None beyond global or inherited family options. |
@@ -792,7 +798,7 @@ Manages built-in and workspace spells, named version files, validation, dry-run 
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum spell list` | List spells. | `--workspace <workspace>` — Selects the workspace by ID, name, or server-host path. |
-| `arcanum spell get [<name>]` | Show spell detail. | `--workspace <workspace>` — Selects the workspace by ID, name, or server-host path. |
+| `arcanum spell show [<spell>]` | Show spell detail. | `--workspace <workspace>` — Selects the workspace by ID, name, or server-host path. |
 | `arcanum spell create` | Create a spell. | `--name <name>` — Name of the spell to create.<br>`--workspace <workspace>` — Selects the workspace by ID, name, or server-host path.<br>`--description <description>` — Stores the supplied human-readable description.<br>`--body <body>` — Supplies body text inline or from `@filename`, as accepted by the command.<br>`--tag <tag>` — Supplies a tag value; mutations may accept repeated tags, while list/search commands use it as a filter.<br>`--declared-tool <declared-tool>` — Declared tool name; repeat for several tools.<br>`--dependency <dependency>` — Spell dependency name; repeat for several dependencies. |
 | `arcanum spell update <name>` | Update a spell. | `--workspace <workspace>` — Selects the workspace by ID, name, or server-host path.<br>`--description <description>` — Replacement spell description.<br>`--tag <tag>` — Replacement tag; repeat for several tags. |
 | `arcanum spell delete <name>` | Delete a spell. | `--workspace <workspace>` — Selects the workspace by ID, name, or server-host path. |
@@ -817,18 +823,18 @@ Manages versioned prompt templates. Template and input values support inline tex
 
 | Command | Explanation | Additional command options |
 |---|---|---|
-| `arcanum prompt list` | List prompts. | `--campaign-id, --campaignId <campaign-id>` — Filter by campaign GUID.<br>`-q, --query <query>` — Free-text query.<br>`--tag <tag>` — Filter by tag. |
-| `arcanum prompt get [<id>]` | Show prompt detail. | None beyond global or inherited family options. |
-| `arcanum prompt versions <name>` | List versions of a prompt by name. | `--campaign-id, --campaignId <campaign-id>` — Filter by campaign GUID. |
-| `arcanum prompt create` | Create a prompt. | `--name <name>` — Prompt name.<br>`--version <version>` — Prompt version label.<br>`--template <template>` — Prompt template: inline text, or @filename to read from a file.<br>`--campaign-id, --campaignId <campaign-id>` — Campaign GUID to associate with.<br>`--description <description>` — Prompt description.<br>`--tag <tag>` — Tag; pass multiple times for several tags. |
+| `arcanum prompt list` | List prompts. | `--campaign-id <campaign-id>` — Filter by campaign GUID.<br>`-q, --query <query>` — Free-text query.<br>`--tag <tag>` — Filter by tag. |
+| `arcanum prompt show [<prompt-name>]` | Show prompt detail. | None beyond global or inherited family options. |
+| `arcanum prompt versions <name>` | List versions of a prompt by name. | `--campaign-id <campaign-id>` — Filter by campaign GUID. |
+| `arcanum prompt create` | Create a prompt. | `--name <name>` — Prompt name.<br>`--version <version>` — Prompt version label.<br>`--template <template>` — Prompt template: inline text, or @filename to read from a file.<br>`--campaign-id <campaign-id>` — Campaign GUID to associate with.<br>`--description <description>` — Prompt description.<br>`--tag <tag>` — Tag; pass multiple times for several tags. |
 | `arcanum prompt update [<id>]` | Update a prompt. | `--template <template>` — Prompt template: inline text, or @filename to read from a file.<br>`--tag <tag>` — Tag; pass multiple times for several tags. |
 | `arcanum prompt delete [<id>]` | Delete a prompt. | None beyond global or inherited family options. |
 | `arcanum prompt render [<id>]` | Render a prompt template with parameters. | `--param <param>` — Template parameter as key=value; pass multiple times for several parameters. |
 | `arcanum prompt test [<id>]` | Assemble the system prompt without LLM cost. | None beyond global or inherited family options. |
-| `arcanum prompt execute [<id>]` | Render and run session-backed inference, writing assistant response text to stdout and any tool-call summary to stderr. | `--input <input>` — User message for the prompt turn: inline text, or @filename to read from a file.<br>`--param <param>` — Template parameter as key=value; pass multiple times for several parameters.<br>`--session-id, --sessionId <session-id>` — Session GUID to bind context from. |
+| `arcanum prompt execute [<id>]` | Render and run session-backed inference, writing assistant response text to stdout and any tool-call summary to stderr. | `--input <input>` — User message for the prompt turn: inline text, or @filename to read from a file.<br>`--param <param>` — Template parameter as key=value; pass multiple times for several parameters.<br>`--session-id <session-id>` — Session GUID to bind context from. |
 | `arcanum prompt clone [<id>]` | Clone a prompt to a new name/version. | `--new-name <new-name>` — New prompt name.<br>`--new-version <new-version>` — New prompt version label.<br>`--campaign <campaign>` — Campaign GUID to associate the clone with. |
 | `arcanum prompt export [<id>]` | Export a prompt as portable JSON. | `--output <output>` — Write exported JSON to this file instead of stdout. |
-| `arcanum prompt import` | Import a prompt from portable JSON. | `--file <file>` — Path to a prompt export JSON file.<br>`--campaign-id, --campaignId <campaign-id>` — Campaign GUID to associate the import with. |
+| `arcanum prompt import` | Import a prompt from portable JSON. | `--file <file>` — Path to a prompt export JSON file.<br>`--campaign-id <campaign-id>` — Campaign GUID to associate the import with. |
 
 ### `arcanum ward`
 
@@ -839,7 +845,7 @@ Lists Forbidden Arts approval gates and resolves one gate. `--allow` and `--deny
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum ward list` | List active wards. | None beyond global or inherited family options. |
-| `arcanum ward get <id>` | Show ward detail. | None beyond global or inherited family options. |
+| `arcanum ward show <id>` | Show ward detail. | None beyond global or inherited family options. |
 | `arcanum ward resolve <id>` | Allow or deny a ward. | `--allow` — Allow the warded tool call to proceed.<br>`--deny` — Deny the warded tool call.<br>`--reason <reason>` — Optional reason recorded with the resolution. |
 
 ### `arcanum trial`
@@ -862,9 +868,9 @@ Manages durable Apprentice orchestration, intervention, replanning, child delega
 
 | Command | Explanation | Additional command options |
 |---|---|---|
-| `arcanum apprentice list` | List Apprentices. | `--campaign-id, --campaignId <campaign-id>` — Filter by campaign GUID.<br>`--status <status>` — Filter by status.<br>`--limit <limit>` — Maximum number of Apprentices to return. |
-| `arcanum apprentice get [<id>]` | Show Apprentice detail. | None beyond global or inherited family options. |
-| `arcanum apprentice create` | Create an Apprentice. | `--goal <goal>` — Apprentice goal: inline text, or @filename to read from a file.<br>`--name <name>` — Display name; defaults to a truncated form of the goal.<br>`--campaign-id, --campaignId <campaign-id>` — Campaign GUID to associate with.<br>`--workspace <workspace>` — Workspace root to scope the Apprentice. |
+| `arcanum apprentice list` | List Apprentices. | `--campaign-id <campaign-id>` — Filter by campaign GUID.<br>`--status <status>` — Filter by status.<br>`--limit <limit>` — Maximum number of Apprentices to return. |
+| `arcanum apprentice show [<apprentice>]` | Show Apprentice detail. | None beyond global or inherited family options. |
+| `arcanum apprentice create` | Create an Apprentice. | `--goal <goal>` — Apprentice goal: inline text, or @filename to read from a file.<br>`--name <name>` — Display name; defaults to a truncated form of the goal.<br>`--campaign-id <campaign-id>` — Campaign GUID to associate with.<br>`--workspace <workspace>` — Workspace root to scope the Apprentice. |
 | `arcanum apprentice delete [<id>]` | Delete a terminal Apprentice. | None beyond global or inherited family options. |
 | `arcanum apprentice start [<id>]` | Persist the start and begin plan generation/execution when a host concurrency slot is available. Temporary capacity queues the start instead of rejecting it; Chronicle/status surfaces progress and `cancel` removes queued work. | None beyond global or inherited family options. |
 | `arcanum apprentice pause [<id>]` | Pause at the next step boundary. | None beyond global or inherited family options. |
@@ -873,7 +879,6 @@ Manages durable Apprentice orchestration, intervention, replanning, child delega
 | `arcanum apprentice reweave [<id>]` | Replace the remaining plan steps. | `--plan <plan>` — JSON array of plan steps: inline text, or @filename to read from a file. |
 | `arcanum apprentice intervene [<id>]` | Provide Divine Intervention guidance to an escalated Apprentice. | `--guidance <guidance>` — Guidance text for the escalated Apprentice. |
 | `arcanum apprentice cast [<id>]` | Delegate a child Apprentice via The Conclave. | `--goal <goal>` — Child Apprentice goal text.<br>`--name <name>` — Display name for the child Apprentice. |
-| `arcanum apprentice chronicle [<id>]` | Stream live Apprentice events (SSE). | None beyond global or inherited family options. |
 
 ### `arcanum conclave`
 
@@ -900,7 +905,7 @@ before they adopt a configuration change.
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum model list` | List configured models across all providers (GET /api/models). | None beyond global or inherited family options. |
-| `arcanum model get [<model>]` | Show a configured model without exposing its endpoint. | None beyond global or inherited family options. |
+| `arcanum model show [<model>]` | Show a configured model without exposing its endpoint. | None beyond global or inherited family options. |
 
 ### `arcanum provider`
 
@@ -913,7 +918,7 @@ restart before they adopt a configuration change.
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum provider list` | List configured providers with redacted secrets (GET /api/providers). | None beyond global or inherited family options. |
-| `arcanum provider get [<provider>]` | Show a configured provider without exposing endpoint or credential details. | None beyond global or inherited family options. |
+| `arcanum provider show [<provider>]` | Show a configured provider without exposing endpoint or credential details. | None beyond global or inherited family options. |
 
 ### `arcanum workspace`
 
@@ -927,7 +932,6 @@ Manages registered server-host filesystem and indexing boundaries. Optional work
 | `arcanum workspace current` | Map the client current directory to registered server Workspace and Campaign resources. | None beyond global or inherited family options. |
 | `arcanum workspace register [<path>]` | Register a server-host path; omit path to register this directory when client and server share a host. | `--name <name>` — Workspace display name; defaults to the path's final segment.<br>`--type <type>` — Workspace type: spell, campaign, data, or custom (default). |
 | `arcanum workspace show [<workspace>]` | Show one registered workspace and its server-host path. | None beyond global or inherited family options. |
-| `arcanum workspace get [<workspace>]` | Compatibility alias for 'workspace show'. | None beyond global or inherited family options. |
 | `arcanum workspace tree [<workspace>]` | List the complete server-side workspace tree recursively by following every opaque `nextCursor` from the 500-entry workspace-files API; each page keeps a bounded 501-candidate heap, and a changed/missing exact checkpoint returns an actionable restart error instead of offset-shift skips or duplicates. | `--path <path>` — Optional relative path inside the selected workspace. |
 | `arcanum workspace info <path>` | Inspect a path through the server workspace API. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum workspace read <path>` | Read a file through the bounded server workspace API. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
@@ -947,7 +951,6 @@ Administers MCP server lifecycle, trust, tool discovery, and external diagnostic
 |---|---|---|
 | `arcanum mcp list` | List safe MCP scope, transport, trust, lifecycle, tool-count, and last-error status. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum mcp show [<server>]` | Show one MCP server's safe status summary. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
-| `arcanum mcp get [<server>]` | Compatibility alias for 'mcp show'. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum mcp start [<server>]` | Start one trusted MCP server. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum mcp stop [<server>]` | Stop one MCP server. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
 | `arcanum mcp restart [<server>]` | Restart one trusted MCP server. | `--workspace <workspace>` — Workspace ID, name, or server path; defaults to saved context or current-path detection. |
@@ -1056,7 +1059,7 @@ Uses the OpenAI-compatible `/v1/batches` surface. Local JSONL preflight catches 
 | `arcanum batch create <input-file>` | Create a batch from a local JSONL file or an existing uploaded file ID. | None beyond global or inherited family options. |
 | `arcanum batch list` | List one batch metadata page with durable request counts and status; human output prints the exact next command when more rows remain and JSON preserves `next_cursor`. | `--status <status>` — Filter by exact batch status.<br>`--cursor <cursor>` — Continue from the opaque cursor returned by the same status query. |
 | `arcanum batch show <id>` | Show one batch with request counts and artifact IDs. | None beyond global or inherited family options. |
-| `arcanum batch watch <id>` | Poll with bounded exponential backoff until the batch reaches a terminal state. | `--poll-interval <poll-interval>` — Initial poll interval in milliseconds (1-10000; default: 1000). |
+| `arcanum batch wait <id>` | Poll with bounded exponential backoff until the batch reaches a terminal state. | `--poll-interval <poll-interval>` — Initial poll interval in milliseconds (1-10000; default: 1000). |
 | `arcanum batch cancel <id>` | Request cancellation using the server's idempotent semantics. | None beyond global or inherited family options. |
 | `arcanum batch reset <id>` | Reset a server-classified stuck batch for retry. | None beyond global or inherited family options. |
 | `arcanum batch output <id>` | Download the batch output JSONL file. | `--output <output>` — Explicit local destination path. |
@@ -1071,7 +1074,7 @@ Manages session-bound snapshot and live-reference attachments. `list [session] -
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum attachment list [<session>]` | List the latest version of each attachment in a session. | `--session <session>` — Session GUID, title, or unique title prefix. |
-| `arcanum attachment add <path>` | Create a snapshot from any local path, or use '-' to stream stdin. | `--content-type, --mime <mime>` — Optional MIME type hint; the server remains authoritative.<br>`--name <name>` — Filename metadata, especially useful with stdin.<br>`--session <session>` — Session GUID, title, or unique title prefix. |
+| `arcanum attachment add <path>` | Create a snapshot from any local path, or use '-' to stream stdin. | `--mime <mime>` — Optional MIME type hint; the server remains authoritative.<br>`--name <name>` — Filename metadata, especially useful with stdin.<br>`--session <session>` — Session GUID, title, or unique title prefix. |
 | `arcanum attachment reference <workspace-path>` | Create a refreshable reference to a server workspace path. | `--workspace <workspace>` — Registered workspace ID, name, or saved workspace path.<br>`--name <name>` — Optional logical attachment key.<br>`--session <session>` — Session GUID, title, or unique title prefix. |
 | `arcanum attachment show [<attachment>]` | Show attachment metadata, or use --privacy for the attachment privacy model. | `--privacy` — Explain snapshot, reference, export, and terminal-byte privacy semantics.<br>`--session <session>` — Session GUID, title, or unique title prefix. |
 | `arcanum attachment versions [<attachment>]` | List every version for an attachment logical key. | `--session <session>` — Session GUID, title, or unique title prefix. |
@@ -1267,26 +1270,10 @@ Explains the effective values and previews model context without running main in
 | Command | Explanation | Additional command options |
 |---|---|---|
 | `arcanum context current` | Show effective campaign, workspace, model, and session context. | None beyond global or inherited family options. |
-| `arcanum context inspect [<prompt>...]` | Inspect the complete effective turn context without running main inference. | `--show-content` — Include model-visible content for explicit operator inspection.<br>`--no-retrieval` — Skip embedding and RAG retrieval work.<br>`-c, --campaign <campaign>` — Campaign GUID or name; defaults to saved/detected context.<br>`-w, --workspace <workspace>` — Workspace ID or path; defaults to saved/detected context.<br>`-m, --model <model>` — Model name; defaults to saved/server context.<br>`-s, --session <session>` — Session GUID, title, or prefix; defaults to saved context. |
-| `arcanum context tools [<prompt>...]` | Inspect effective turn tools without main inference. | `--show-content` — Include model-visible content for explicit operator inspection.<br>`--no-retrieval` — Skip embedding and RAG retrieval work.<br>`-c, --campaign <campaign>` — Campaign GUID or name; defaults to saved/detected context.<br>`-w, --workspace <workspace>` — Workspace ID or path; defaults to saved/detected context.<br>`-m, --model <model>` — Model name; defaults to saved/server context.<br>`-s, --session <session>` — Session GUID, title, or prefix; defaults to saved context. |
-| `arcanum context sources [<prompt>...]` | Inspect effective turn sources without main inference. | `--show-content` — Include model-visible content for explicit operator inspection.<br>`--no-retrieval` — Skip embedding and RAG retrieval work.<br>`-c, --campaign <campaign>` — Campaign GUID or name; defaults to saved/detected context.<br>`-w, --workspace <workspace>` — Workspace ID or path; defaults to saved/detected context.<br>`-m, --model <model>` — Model name; defaults to saved/server context.<br>`-s, --session <session>` — Session GUID, title, or prefix; defaults to saved context. |
-
-### `arcanum mana`
-
-Estimate the effective turn token allocation without main inference.
-
-Shows the same effective context budget used by inference without executing the main model turn.
-
-**Syntax:** `arcanum mana [<prompt>...]`
-
-| Option | Meaning |
-|---|---|
-| `--show-content` | Include model-visible content for explicit operator inspection. |
-| `--no-retrieval` | Skip embedding and RAG retrieval work. |
-| `-c, --campaign <campaign>` | Campaign GUID or name; defaults to saved/detected context. |
-| `-w, --workspace <workspace>` | Workspace ID or path; defaults to saved/detected context. |
-| `-m, --model <model>` | Model name; defaults to saved/server context. |
-| `-s, --session <session>` | Session GUID, title, or prefix; defaults to saved context. |
+| `arcanum context inspect [<prompt>...]` | Inspect the complete effective turn context without running main inference. | `--show-content` — Include model-visible content for explicit operator inspection.<br>`--no-retrieval` — Skip embedding and RAG retrieval work.<br>`-C, --campaign <campaign>` — Campaign GUID or name; defaults to saved/detected context.<br>`-w, --workspace <workspace>` — Workspace ID or path; defaults to saved/detected context.<br>`-m, --model <model>` — Model name; defaults to saved/server context.<br>`-s, --session <session>` — Session GUID, title, or prefix; defaults to saved context. |
+| `arcanum context tools [<prompt>...]` | Inspect effective turn tools without main inference. | `--show-content` — Include model-visible content for explicit operator inspection.<br>`--no-retrieval` — Skip embedding and RAG retrieval work.<br>`-C, --campaign <campaign>` — Campaign GUID or name; defaults to saved/detected context.<br>`-w, --workspace <workspace>` — Workspace ID or path; defaults to saved/detected context.<br>`-m, --model <model>` — Model name; defaults to saved/server context.<br>`-s, --session <session>` — Session GUID, title, or prefix; defaults to saved context. |
+| `arcanum context sources [<prompt>...]` | Inspect effective turn sources without main inference. | `--show-content` — Include model-visible content for explicit operator inspection.<br>`--no-retrieval` — Skip embedding and RAG retrieval work.<br>`-C, --campaign <campaign>` — Campaign GUID or name; defaults to saved/detected context.<br>`-w, --workspace <workspace>` — Workspace ID or path; defaults to saved/detected context.<br>`-m, --model <model>` — Model name; defaults to saved/server context.<br>`-s, --session <session>` — Session GUID, title, or prefix; defaults to saved context. |
+| `arcanum context cost [<prompt>...]` | Estimate the effective turn token allocation without main inference. This absorbs the former top-level `mana` command and matches the `/cost` slash command. | `--show-content` — Include model-visible content for explicit operator inspection.<br>`--no-retrieval` — Skip embedding and RAG retrieval work.<br>`-C, --campaign <campaign>` — Campaign GUID or name; defaults to saved/detected context.<br>`-w, --workspace <workspace>` — Workspace ID or path; defaults to saved/detected context.<br>`-m, --model <model>` — Model name; defaults to saved/server context.<br>`-s, --session <session>` — Session GUID, title, or prefix; defaults to saved context. |
 
 ### `arcanum preset`
 
@@ -1374,7 +1361,7 @@ These family options are accepted by the subcommands shown in their generated he
 |---|---|
 | `--reconnect` | Reconnect after an unexpected disconnect with capped exponential backoff; possible event gaps are always reported. |
 | `--event-type <event-type>` | Show matching event types; repeat for multiple free-form, case-insensitive values. |
-| `--tool, --tool-name <tool>` | Show events for matching tool names; repeat for multiple free-form, case-insensitive values. |
+| `--tool <tool>` | Show events for matching tool names; repeat for multiple free-form, case-insensitive values. |
 
 | Command | Explanation | Additional command options |
 |---|---|---|
@@ -1385,18 +1372,109 @@ These family options are accepted by the subcommands shown in their generated he
 | `arcanum watch daemons` | Follow live Unseen Servant daemon events. | None beyond global or inherited family options. |
 | `arcanum watch health` | Poll authenticated host health snapshots. | `--interval <interval>` — Seconds between health observations (default: 5; any positive integer). |
 
-## Compatibility aliases
+### `arcanum completion`
 
-| Alias | Canonical command |
+Generate shell completion from the canonical command tree.
+
+Generation is pure: it reads the command tree and writes a script, touching no network and no
+state. Output is deterministic and free of host, account, and endpoint values, so the same tree
+produces identical bytes on any machine and a generated script is safe to commit or share.
+
+Completion is a projection of the live parser, so it offers exactly the commands and options the
+binary accepts. Removed spellings cannot reappear through it.
+
+**Syntax:** `arcanum completion <shell>`
+
+| Command | Explanation | Additional command options |
+|---|---|---|
+| `arcanum completion <shell>` | Write the completion script for `bash`, `zsh`, `fish`, or `powershell` to stdout. | None beyond global or inherited family options. |
+| `arcanum completion install <shell>` | Write the script to this shell's conventional per-user location after confirmation. | `--target <target>` — Explicit destination path; defaults to the shell's conventional per-user completion location. |
+
+Installation names the exact target on stderr before asking, reports when an existing file will be
+replaced, writes through a temp file and atomic replace, and prints the sourcing step for that
+shell. It is a mutation, so a redirected invocation without `--yes` fails closed rather than
+writing to a shell configuration unattended.
+
+Default targets, all under the operator's own home directory:
+
+| Shell | Target |
 |---|---|
+| bash | `~/.local/share/bash-completion/completions/arcanum` |
+| zsh | `~/.zfunc/_arcanum` |
+| fish | `~/.config/fish/completions/arcanum.fish` |
+| powershell | `~/.config/powershell/arcanum.completion.ps1` |
+
+**Dynamic completion.** Where a symbol names a live resource — models, providers, Campaigns,
+Workspaces, Sessions, Spells, Prompts, Apprentices, and visible MCP servers — the generated script
+calls a hidden `completion resolve` helper. That path is bounded by design because it runs inside a
+keystroke: it never starts the host, gives up on its own short budget rather than making the shell
+wait, prints nothing at all on failure so static completion simply continues, and caches only names
+briefly. Prompt text, transcripts, endpoints, credentials, MCP commands/arguments/environment,
+attachment contents, and tool arguments are never read or cached by it.
+
+### `arcanum help`
+
+Explain a task-oriented topic in plain language, with the commands that do it.
+
+`--help` answers "what are this command's options"; `arcanum help <topic>` answers "how do I do X".
+Each topic glosses the thematic vocabulary in plain terms before naming commands, so an operator
+who has not read the metaphor table can still navigate. Omit the topic to list them all.
+
+**Syntax:** `arcanum help [<topic>]`
+
+| Topic | Covers |
+|---|---|
+| `sessions` | Starting, continuing, branching, and finding conversations. |
+| `memory` | What Arcanum remembers between turns, and how to compress or inspect it. |
+| `attachments` | Getting files, images, and pinned context into a turn. |
+| `security` | Approval gates, credentials, and filesystem boundaries. |
+| `automation` | Running Arcanum from scripts, CI, and background jobs. |
+| `context` | What Arcanum sends to the model, and how much it costs. |
+| `output` | Controlling what reaches stdout, stderr, and the terminal. |
+
+## Removed spellings
+
+Arcanum maintains no backward-compatibility or data-migration path, so there is no alias layer:
+exactly one spelling resolves each action. The spellings below were removed. Each fails to parse
+with exit `2` and a diagnostic naming its replacement, which is the entire migration path.
+
+| Removed | Use instead |
+|---|---|
+| `arcanum ask` | `arcanum run` |
+| `arcanum chat` | Bare `arcanum` for interactive work, or `arcanum run` for one-shot work |
+| `arcanum mana` | `arcanum context cost` |
+| `arcanum session chat` | `arcanum run -c`, `arcanum run -r <id>`, or `arcanum run --session <id>` |
+| `arcanum session get` | `arcanum session show` |
+| `arcanum session watch` | `arcanum watch session` |
 | `arcanum workspace get` | `arcanum workspace show` |
 | `arcanum mcp get` | `arcanum mcp show` |
-| `arcanum session get` | `arcanum session show` |
-| `arcanum session watch` | `arcanum watch session`; preserves the legacy selector/`--since` surface and does not add the root watch filter/reconnect options. |
-| `arcanum apprentice chronicle` | `arcanum watch apprentice`; preserves the legacy selector surface and does not add the root watch filter/reconnect options. |
+| `arcanum campaign get` | `arcanum campaign show` |
 | `arcanum campaign use` | `arcanum use campaign` |
+| `arcanum spell get` | `arcanum spell show` |
+| `arcanum prompt get` | `arcanum prompt show` |
+| `arcanum model get` | `arcanum model show` |
+| `arcanum provider get` | `arcanum provider show` |
+| `arcanum ward get` | `arcanum ward show` |
+| `arcanum apprentice get` | `arcanum apprentice show` |
+| `arcanum apprentice chronicle` | `arcanum watch apprentice` |
+| `arcanum batch watch` | `arcanum batch wait` |
 | `--tool-name` on watch commands | `--tool` |
-| Camel-case prompt aliases such as `--campaignId` and `--sessionId` | Their kebab-case forms, retained for compatibility. |
+| `--campaignId`, `--sessionId`, `--agentUrl` | Their kebab-case forms |
+| `--content-type` on `attachment add` | `--mime` |
+| `-c` for `--campaign` | `-C`; `-c` is now `--continue` |
+| `/mana` | `/context` |
+| `/new`, `/session new` | `/clear` |
+| `/summary`, `/log` | `/memory` |
+| `/rest` | `/compact` |
+| `/history` | `/session list` |
+| `/delete` | `/session archive` |
+| `/session resume` | `/resume` |
+| `/context list`, `/context pin`, `/context unpin` | `/pins`, `/pin`, `/unpin` |
+
+`arcanum batch wait` is deliberately not spelled `watch`: it polls a REST resource until it reaches
+a terminal state, while `watch <source>` is the live SSE-stream family with its own
+`--reconnect`/`--event-type` contract. Sharing the verb implied a shared mechanism that does not
+exist.
 
 ## Watch stream details
 
@@ -1410,3 +1488,7 @@ Watch terminal output uses UTC timestamps and source-specific colors. The shared
 - [`Arcanum.DESIGN.md`](Arcanum.DESIGN.md) — architecture, ownership, security, and implementation rationale.
 - [`Arcanum.API.md`](Arcanum.API.md) — HTTP routes, wire shapes, status mapping, and public error codes.
 - [`Arcanum.DEBUGGING.Human.md`](Arcanum.DEBUGGING.Human.md) — operator troubleshooting.
+- [`Arcanum.CommandMap.json`](Arcanum.CommandMap.json) — the machine-readable command map: every
+  command path, argument, option, alias, closed value set, dynamic-completion source, and example,
+  projected from the live parser. It is regenerated and diffed by test, so an unintended entry in
+  its diff is an unintended change to the public CLI surface.

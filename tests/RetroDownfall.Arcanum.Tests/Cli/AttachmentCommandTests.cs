@@ -882,9 +882,12 @@ public sealed class AttachmentCommandTests
 
     }
 
+    /// <summary>
+    /// Binding an already-persisted attachment by GUID is capability that used to live only on
+    /// <c>ask</c>; collapsing to one one-shot entry had to carry it over, not drop it.
+    /// </summary>
     [Fact]
-
-    public async Task Ask_repeatable_attachment_options_serialize_reference_ids()
+    public async Task Run_repeatable_attachment_options_serialize_reference_ids()
     {
 
         RecordingHandler handler = new();
@@ -892,7 +895,7 @@ public sealed class AttachmentCommandTests
         CliTestResult result = await RunCommandAsync(
             handler,
             [
-                "ask",
+                "run",
                 "--session",
                 SessionId.ToString("D"),
                 "--attachment",
@@ -915,9 +918,13 @@ public sealed class AttachmentCommandTests
 
     }
 
+    /// <summary>
+    /// A failed one-shot turn must not silently swallow the attachment references it was asked to
+    /// bind: the failure surfaces and the request that was attempted still carried them. The
+    /// multi-turn retry this replaced belonged to the removed frameless REPL.
+    /// </summary>
     [Fact]
-
-    public async Task Chat_retries_initial_attachment_references_after_a_failed_turn()
+    public async Task Run_reports_a_failed_turn_without_losing_the_attachment_references()
     {
 
         RecordingHandler handler = new(failFirstPing: true);
@@ -925,46 +932,26 @@ public sealed class AttachmentCommandTests
         CliTestResult result = await RunCommandAsync(
             handler,
             [
-                "chat",
+                "run",
                 "--session",
                 SessionId.ToString("D"),
                 "--attachment",
                 FirstAttachmentId.ToString("D"),
                 "--attachment",
                 SecondAttachmentId.ToString("D"),
-            ],
-            "first turn\nsecond turn\n/exit\n");
+                "question",
+            ]);
 
-        RecordedRequest[] pings = handler.Requests
-            .Where(static request => request.Path == "/api/intelligence/ping-stream")
-            .ToArray();
-
-        Assert.Equal(2, pings.Length);
+        RecordedRequest ping = Assert.Single(
+            handler.Requests,
+            static request => request.Path == "/api/intelligence/ping-stream");
 
         AssertAttachmentReferences(
-            pings[0].Body,
+            ping.Body,
             FirstAttachmentId,
             SecondAttachmentId);
 
-        AssertAttachmentReferences(
-            pings[1].Body,
-            FirstAttachmentId,
-            SecondAttachmentId);
-
-        Assert.Contains("simulated failed turn", result.Output, StringComparison.OrdinalIgnoreCase);
-
-    }
-
-    [Fact]
-
-    public void Chat_keeps_staged_inputs_until_a_turn_completes()
-    {
-
-        Assert.True(ChatCommand.ShouldClearStagedInputs(ChatTurnOutcome.Completed));
-
-        Assert.False(ChatCommand.ShouldClearStagedInputs(ChatTurnOutcome.Failed));
-
-        Assert.False(ChatCommand.ShouldClearStagedInputs(ChatTurnOutcome.Cancelled));
+        Assert.NotEqual(0, result.ExitCode);
 
     }
 

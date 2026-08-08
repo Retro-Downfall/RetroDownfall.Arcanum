@@ -20,13 +20,88 @@ internal sealed class OpenCommands(
     ICliResourceCatalog resources,
     IApplicationLauncher launcher,
     ICommandCenterHost commandCenter,
+    CliSessionManager sessionManager,
     IConsoleDispatcher console)
 {
 
-    public async Task<int> Center(CancellationToken cancellationToken) =>
-        await commandCenter
-            .RunAsync(cancellationToken)
+    public Task<int> Center(CancellationToken cancellationToken) =>
+        Center(
+            continueSession: false,
+            resume: false,
+            resumeTarget: null,
+            cancellationToken);
+
+    public async Task<int> Center(
+        bool continueSession,
+        bool resume,
+        string? resumeTarget,
+        CancellationToken cancellationToken)
+    {
+
+        if (continueSession && resume)
+        {
+
+            console.WriteDiagnostic(
+                "--continue and --resume each select a session; supply exactly one.");
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        Guid? startupSession = null;
+
+        if (continueSession)
+        {
+
+            startupSession = sessionManager.GetLastSessionId(quiet: true);
+
+            if (startupSession is null)
+            {
+
+                console.WriteDiagnostic(
+                    "No previous session to continue. Open Command Center with: arcanum");
+
+                return (int)CliExitCode.ConfigurationError;
+
+            }
+
+        }
+        else if (resume)
+        {
+
+            ResourceSelectionResult<SessionSummaryDto> selection = await resources
+                .SelectSessionAsync(
+                    string.IsNullOrWhiteSpace(resumeTarget) ? null : resumeTarget,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (selection.Status == ResourceSelectionStatus.Cancelled)
+            {
+
+                return (int)CliExitCode.Success;
+
+            }
+
+            if (selection.Status != ResourceSelectionStatus.Selected
+                || selection.Value is null)
+            {
+
+                console.WriteDiagnostic(
+                    selection.Error ?? "The session could not be selected.");
+
+                return (int)CliExitCode.GenericError;
+
+            }
+
+            startupSession = selection.Value.Id;
+
+        }
+
+        return await commandCenter
+            .RunAsync(startupSession, cancellationToken)
             .ConfigureAwait(false);
+
+    }
 
     public int TheForge() =>
         Launch(

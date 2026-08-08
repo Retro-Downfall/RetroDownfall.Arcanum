@@ -26,7 +26,6 @@ public sealed class SessionCommands(
     IThemePalette themePalette,
     IConsoleDispatcher dispatcher,
     IConfirmationPrompt confirmationPrompt,
-    ChatCommand chatCommand,
     WatchCommands watchCommands,
     ICliResourceCatalog? resourceCatalog = null)
 {
@@ -196,31 +195,6 @@ public sealed class SessionCommands(
         AnsiConsole.Write(table);
 
         return 0;
-
-    }
-
-    public Task<int> Get(
-        string? identifier,
-        CancellationToken cancellationToken = default) =>
-        Show(identifier, cancellationToken);
-
-    public async Task<int> Chat(
-        string? identifier,
-        CancellationToken cancellationToken = default)
-    {
-
-        SessionResolution resolution = await ResolveSessionAsync(identifier, cancellationToken).ConfigureAwait(false);
-
-        if (!resolution.Success)
-        {
-
-            return resolution.Cancelled ? 0 : 1;
-
-        }
-
-        return await chatCommand
-            .Chat(cancellationToken, sessionIdOption: resolution.Id.ToString("D"))
-            .ConfigureAwait(false);
 
     }
 

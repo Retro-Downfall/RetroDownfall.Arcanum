@@ -25,7 +25,7 @@ internal static partial class CliCommandTree
 
         Command dispatch = new("dispatch", "Dispatch a Sending to a remote A2A agent and wait for its result.");
 
-        Option<string?> agentUrl = new("--agent-url", "--agentUrl")
+        Option<string?> agentUrl = new("--agent-url")
         {
             Description = "Remote agent base URL or Agent Card URL.",
         };
@@ -65,7 +65,7 @@ internal static partial class CliCommandTree
             Description = "Remote A2A task id reported by 'arcanum conclave dispatch --continuable'.",
         };
 
-        Option<string?> continueAgentUrl = new("--agent-url", "--agentUrl")
+        Option<string?> continueAgentUrl = new("--agent-url")
         {
             Description = "Remote agent base URL or Agent Card URL — the same one the Sending was dispatched to.",
         };

@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Cli.Commands.Lore;
 using RetroDownfall.Arcanum.Cli.Commands.ProvingGrounds;
 using RetroDownfall.Arcanum.Cli.Commands.TheForge;
 using RetroDownfall.Arcanum.Cli.Commands.Wards;
+using RetroDownfall.Arcanum.Cli.Infrastructure.Surface;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.Services.Setup;
 using RetroDownfall.Arcanum.Cli.UX;
@@ -226,13 +227,20 @@ internal static class CliApplicationFactory
 
         services.AddTransient<RunCommand>();
 
+        services.AddSingleton(TimeProvider.System);
+
+        services.AddSingleton<ICliCompletionResolver, CliCompletionResolver>();
+
+        services.AddTransient<CompletionCommands>();
+
+        services.AddTransient<HelpTopicCommands>();
+
         services.AddTransient<IRunInputReader, RunInputReader>();
 
         services.AddTransient<IRunAttachmentStager, RunAttachmentStager>();
 
         services.AddTransient<IRunExecutionDispatcher, RunExecutionDispatcher>();
 
-        services.AddTransient<ChatCommand>();
 
         services.AddTransient<LookCommand>();
 
@@ -392,20 +400,58 @@ internal static class CliApplicationFactory
                     ResponseFileTokenReplacer = null,
 
                 });
+            string? requestedFormat = parseResult.GetValue(globalOptions.OutputFormat);
+
+            bool jsonShorthand = parseResult.GetValue(globalOptions.Json);
+
             CliInvocationOptions options = new(
-                parseResult.GetValue(globalOptions.Json),
+                ResolveJsonOutput(requestedFormat, jsonShorthand),
                 parseResult.GetValue(globalOptions.Plain),
                 parseResult.GetValue(globalOptions.Yes),
-                parseResult.GetValue(globalOptions.NoContext));
+                parseResult.GetValue(globalOptions.NoContext),
+                parseResult.GetValue(globalOptions.Print),
+                parseResult.GetValue(globalOptions.Verbose));
             activeOptions = options;
 
             using IDisposable invocationScope =
                 CliInvocationContext.Push(options);
 
+            // --json is shorthand for --output-format json, so pairing it with an explicit text
+            // format is a contradiction rather than a precedence question. Failing here keeps the
+            // one-document stdout contract unambiguous for scripts.
+            if (jsonShorthand
+                && string.Equals(requestedFormat, "text", StringComparison.Ordinal))
+            {
+
+                IConsoleDispatcher dispatcher =
+                    serviceProvider.GetRequiredService<IConsoleDispatcher>();
+
+                dispatcher.WriteDiagnostic(
+                    "--json is shorthand for --output-format json and cannot be combined with --output-format text.");
+
+                return (int)CliExitCode.ConfigurationError;
+
+            }
+
+            // A removed spelling or a typo must name the canonical command. With no alias layer,
+            // this diagnostic is the whole migration path, so it is emitted before the generic
+            // parse-error handling in both text and JSON modes.
+            string? suggestion = parseResult.Errors.Count > 0
+                ? CliSuggestionEngine.Describe(parseResult, args)
+                : null;
+
             if (parseResult.Errors.Count > 0 && options.Json)
             {
                 IConsoleDispatcher dispatcher =
                     serviceProvider.GetRequiredService<IConsoleDispatcher>();
+
+                if (suggestion is not null)
+                {
+
+                    dispatcher.WriteDiagnostic(suggestion);
+
+                }
+
                 dispatcher.WriteDiagnostic("The command line is invalid.");
 
                 if (!IsJsonStreamInvocation(parseResult))
@@ -413,13 +459,29 @@ internal static class CliApplicationFactory
 
                     dispatcher.WriteJson(
                         new CliErrorPayload(
-                            "The command line is invalid.",
+                            suggestion ?? "The command line is invalid.",
                             (int)CliExitCode.ConfigurationError),
                         CliJsonContext.Default.CliErrorPayload);
 
                 }
 
                 return (int)CliExitCode.ConfigurationError;
+            }
+
+            // Returning here suppresses System.CommandLine's own error rendering. That output would
+            // otherwise bury the actionable line under a full help dump plus its own nearest-name
+            // guess, which for a removed spelling is actively misleading — `mana` invites "did you
+            // mean saga, data" when the real answer is `context cost`. One correct sentence and
+            // exit 2 is the whole contract.
+            if (suggestion is not null)
+            {
+
+                serviceProvider
+                    .GetRequiredService<IConsoleDispatcher>()
+                    .WriteDiagnostic(suggestion);
+
+                return (int)CliExitCode.ConfigurationError;
+
             }
 
             IAnsiConsole originalAnsiConsole = AnsiConsole.Console;
@@ -539,16 +601,25 @@ internal static class CliApplicationFactory
 
     /// <summary>
     /// Commands that install their own <see cref="Console.CancelKeyPress"/> contract and must never
-    /// be torn down by System.CommandLine's process-termination handler. <c>chat</c> maps Ctrl+C to
-    /// "cancel this turn / clear this line", so a termination handler would kill the REPL instead.
+    /// be torn down by System.CommandLine's process-termination handler. Command Center is entered
+    /// before parsing, so no parsed verb currently claims the keypress; the hook stays because any
+    /// future long-lived interactive verb needs it and silently inheriting the termination handler
+    /// would kill that verb's own Ctrl+C contract.
     /// </summary>
-    private static readonly string[] SelfManagedTerminationCommands = ["chat"];
+    private static readonly string[] SelfManagedTerminationCommands = [];
 
     internal static TimeSpan? ResolveProcessTerminationTimeout(ParseResult parseResult) =>
         OwnsCancelKeyPress(parseResult) ? null : ProcessTerminationGrace;
 
     private static bool OwnsCancelKeyPress(ParseResult parseResult)
     {
+
+        if (SelfManagedTerminationCommands.Length == 0)
+        {
+
+            return false;
+
+        }
 
         for (SymbolResult? current = parseResult.CommandResult;
             current is not null;
@@ -620,6 +691,14 @@ internal static class CliApplicationFactory
         return false;
 
     }
+
+    /// <summary>
+    /// One switch drives the structured-output contract. <c>--output-format json</c> is the
+    /// Claude-compatible spelling and <c>--json</c> is its shorthand; either alone selects JSON.
+    /// </summary>
+    private static bool ResolveJsonOutput(string? outputFormat, bool jsonShorthand) =>
+        jsonShorthand
+        || string.Equals(outputFormat, "json", StringComparison.Ordinal);
 
     private static int NormalizeExitCode(int exitCode) =>
         Enum.IsDefined((CliExitCode)exitCode)
@@ -736,11 +815,15 @@ internal static class CliApplicationFactory
             Arcanum CLI
 
               arcanum                 Open the Command Center (interactive TTY)
+              arcanum run "<prompt>"  Run one turn and exit (script-safe, no TUI)
               arcanum <command> …     Run a direct command (script-safe, no TUI)
 
-            Examples:
-              arcanum chat
-              arcanum ask "hello"
+            This terminal is not interactive, so Command Center cannot open here.
+            Use `arcanum run` for scripted turns:
+
+              arcanum run -p "hello"
+              arcanum run -c "keep going"
+              cat error.log | arcanum run "What failed here?"
               arcanum doctor
               arcanum campaign list
 
@@ -748,7 +831,8 @@ internal static class CliApplicationFactory
               ARCANUM_NO_COMMAND_CENTER=1   Print this usage instead of the TUI
               ARCANUM_NO_AUTO_SERVE=1       Disable auto-start of `arcanum serve`
 
-            Run `arcanum --help` for the full command list.
+            Run `arcanum --help` for the full command list, or
+            `arcanum help <topic>` for a task-oriented guide.
             """);
     }
 

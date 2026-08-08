@@ -20,17 +20,17 @@ internal static partial class CliCommandTree
             await handler.List(ActiveWorkspace(sp, pr.GetValue(listWorkspace)), ct).ConfigureAwait(false));
         spell.Add(list);
 
-        Command get = new("get", "Show spell detail.");
-        Argument<string?> getName = new("name")
+        Command show = new("show", "Show spell detail.");
+        Argument<string?> showName = new("spell")
         {
             Arity = ArgumentArity.ZeroOrOne,
             Description = "Optional exact spell name or unique name prefix; omit for an interactive picker.",
         };
-        Option<string?> getWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
-        get.Add(getName); get.Add(getWorkspace);
-        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(getName), ActiveWorkspace(sp, pr.GetValue(getWorkspace)), ct).ConfigureAwait(false));
-        spell.Add(get);
+        Option<string?> showWorkspace = new("--workspace") { Description = "Workspace ID, name, or server-host path; defaults to the saved CLI context." };
+        show.Add(showName); show.Add(showWorkspace);
+        show.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Get(pr.GetValue(showName), ActiveWorkspace(sp, pr.GetValue(showWorkspace)), ct).ConfigureAwait(false));
+        spell.Add(show);
 
         Command create = new("create", "Create a spell.");
         Option<string?> createName = new("--name") { Description = "Spell name." };
@@ -226,7 +226,6 @@ internal static partial class CliCommandTree
     {
         CampaignCommands handler = sp.GetRequiredService<CampaignCommands>();
         CampaignCodexCommands codexHandler = sp.GetRequiredService<CampaignCodexCommands>();
-        ContextCommands contextHandler = sp.GetRequiredService<ContextCommands>();
 
         Command campaign = new(
             "campaign",
@@ -239,37 +238,16 @@ internal static partial class CliCommandTree
             await handler.List(pr.GetValue(listType), ct).ConfigureAwait(false));
         campaign.Add(list);
 
-        Command get = new("get", "Show campaign detail.");
-        Argument<string?> getId = new("id")
+        Command show = new("show", "Show campaign detail.");
+        Argument<string?> showId = new("campaign")
         {
             Arity = ArgumentArity.ZeroOrOne,
             Description = "Optional campaign GUID, exact name, or unique name prefix; omit for an interactive picker.",
         };
-        get.Add(getId);
-        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(getId), ct).ConfigureAwait(false));
-        campaign.Add(get);
-
-        Command use = new(
-            "use",
-            "Select a Campaign in the shared persistent CLI context.");
-
-        Argument<string> useIdentifier = new("campaign")
-        {
-
-            Description = "Campaign GUID or name.",
-
-        };
-
-        use.Add(useIdentifier);
-
-        use.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await contextHandler.Use(
-                CliContextScope.Campaign,
-                pr.GetValue(useIdentifier)!,
-                ct).ConfigureAwait(false));
-
-        campaign.Add(use);
+        show.Add(showId);
+        show.SetAction(async (ParseResult pr, CancellationToken ct) =>
+            await handler.Get(pr.GetValue(showId), ct).ConfigureAwait(false));
+        campaign.Add(show);
 
         Command create = new("create", "Register a new campaign.");
         Option<string?> createName = new("--name") { Description = "Campaign name." };
@@ -450,28 +428,6 @@ internal static partial class CliCommandTree
 
         session.Add(show);
 
-        Command get = new("get", "Compatibility alias for session show.");
-
-        Argument<string?> getIdentifier = SessionArgument();
-
-        get.Add(getIdentifier);
-
-        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Get(pr.GetValue(getIdentifier), ct).ConfigureAwait(false));
-
-        session.Add(get);
-
-        Command chat = new("chat", "Continue a session by GUID, title, prefix, or interactive selection.");
-
-        Argument<string?> chatIdentifier = SessionArgument();
-
-        chat.Add(chatIdentifier);
-
-        chat.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Chat(pr.GetValue(chatIdentifier), ct).ConfigureAwait(false));
-
-        session.Add(chat);
-
         Command entries = new("entries", "List transcript entries for a session.");
 
         Argument<string?> entriesIdentifier = SessionArgument();
@@ -494,24 +450,6 @@ internal static partial class CliCommandTree
                 ct).ConfigureAwait(false));
 
         session.Add(entries);
-
-        Command watch = new("watch", "Watch replayed and live session entries.");
-
-        Argument<string?> watchIdentifier = SessionArgument();
-
-        Option<string?> watchSince = new("--since") { Description = "Resume after this entry GUID." };
-
-        watch.Add(watchIdentifier);
-
-        watch.Add(watchSince);
-
-        watch.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Watch(
-                pr.GetValue(watchIdentifier),
-                pr.GetValue(watchSince),
-                ct).ConfigureAwait(false));
-
-        session.Add(watch);
 
         Command fork = new("fork", "Fork a session through the server fork API.");
 

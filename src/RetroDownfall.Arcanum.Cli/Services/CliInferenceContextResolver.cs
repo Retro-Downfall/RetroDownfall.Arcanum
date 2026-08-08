@@ -13,7 +13,8 @@ public sealed record CliInferenceContextRequest(
     string? Session,
     string CurrentDirectory,
     bool NoContext,
-    bool NewSession);
+    bool NewSession,
+    bool SessionPicker = false);
 
 public sealed record CliInferenceContextResult(
     bool IsSuccess,
@@ -126,11 +127,16 @@ public sealed class CliInferenceContextResolver(
 
         }
 
-        if (!string.IsNullOrWhiteSpace(request.Session))
+        // A bare --resume asks for the picker explicitly, which is not the same as an absent
+        // selector: absent means "fall through to saved context", picker means "let me choose now".
+        if (request.SessionPicker
+            || !string.IsNullOrWhiteSpace(request.Session))
         {
 
             ResourceSelectionResult<SessionSummaryDto> session = await resources
-                .SelectSessionAsync(request.Session, cancellationToken)
+                .SelectSessionAsync(
+                    request.SessionPicker ? null : request.Session,
+                    cancellationToken)
                 .ConfigureAwait(false);
 
             if (!TrySelected(session, out explicitSession, out string? error))

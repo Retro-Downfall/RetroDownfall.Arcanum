@@ -68,7 +68,7 @@ public sealed class PromptCommandTests
             new ApiResponse<PromptDetailDto>(detail, true, null),
             ArcanumJsonContext.Default.ApiResponsePromptDetailDto));
 
-        CliTestResult result = RunCommand(handler, ["prompt", "get", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["prompt", "show", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 

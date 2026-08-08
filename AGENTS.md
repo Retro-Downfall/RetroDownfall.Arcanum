@@ -7,7 +7,7 @@
 
 ## What this is
 **Arcanum** is a .NET 10, local-first AI assistant/inference hub. One `arcanum` binary is both the
-HTTP host (`arcanum serve`) and thin CLI clients (`run`, `ask`, `chat`, …) over the same API. Windows/Linux
+HTTP host (`arcanum serve`) and thin CLI clients (`run`, `watch`, `session`, …) over the same API. Windows/Linux
 ship Native AOT; macOS is a signed folder-based self-contained publish.
 
 ## Project layout & dependency direction

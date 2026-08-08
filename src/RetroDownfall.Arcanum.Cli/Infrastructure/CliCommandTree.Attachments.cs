@@ -61,7 +61,7 @@ internal static partial class CliCommandTree
 
         };
 
-        Option<string?> addMime = new("--mime", "--content-type")
+        Option<string?> addMime = new("--mime")
         {
 
             Description = "Optional MIME type hint; the server remains authoritative.",

@@ -28,7 +28,7 @@ CLI surface changes with `Arcanum.Command.Reference.md`, navigation updates with
 
 **Arcanum** is a **single deployable CLI** that can:
 
-1. Run **terminal-oriented commands** — currently `run` (unified Agent, research, named-Spell, and dry-run execution), `ask` (single-prompt LLM inference with optional Grimoire thread continuation), `chat` (interactive multi-turn REPL), `look` (workspace perception), `lore` (key-value CRUD), `daemon` (OS-level background service lifecycle plus **API-first** monitoring of Unseen Servant jobs via `daemon jobs`, `daemon initiative`, and Comm Link smoke tests via `daemon alert` when Kestrel is up), plus campaign/session/spell/prompt/ward/trial/apprentice/model/provider verbs that are thin clients over the same HTTP API.
+1. Run **terminal-oriented commands** — currently `run` (the one-shot entry: unified Agent, research, named-Spell, and dry-run execution, with `-c`/`-r` continuation), `look` (workspace perception), `lore` (key-value CRUD), `daemon` (OS-level background service lifecycle plus **API-first** monitoring of Unseen Servant jobs via `daemon jobs`, `daemon initiative`, and Comm Link smoke tests via `daemon alert` when Kestrel is up), plus campaign/session/spell/prompt/ward/trial/apprentice/model/provider verbs that are thin clients over the same HTTP API.
 2. Act as a **long-running HTTP host** exposing a Minimal API surface (the `serve` command).
 
 The codebase is organized as a **multi-project solution**: `Core` (domain primitives, contracts, configuration), `Secrets` (native OS credential stores), `Infrastructure` (Serilog, Data Protection, encrypted Grimoire via EF Core + SQLCipher, workspace scanning, Eye of the World perception, MCP client layer with both subprocess and in-process transports), `Api` (HTTP surface, multi-provider intelligence hub, semantic spell routing, API-key security), and `Cli` (System.CommandLine 2.0.10 entry point). All projects target **Native AOT readiness** where the toolchain allows.
@@ -84,7 +84,7 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
   10-second post-SIGINT grace window (`CliApplicationFactory.ProcessTerminationGrace`), not a
   total-duration cap. It bounds only how long a Ctrl+C waits for cooperative shutdown, so a command
   that never observes the token can still be stopped from the keyboard; Arcanum still owns no total
-  duration for streaming commands. `chat` opts out entirely — timeout `null`, no
+  duration for streaming commands. A verb that installs its own Ctrl+C contract opts out entirely — timeout `null`, no
   `ProcessTerminationHandler` installed — because it owns its own Ctrl+C contract, mapping the key to
   "cancel this turn / clear this line" rather than teardown. `CliApplicationFactory.SelfManagedTerminationCommands`
   is the extension point for any future command that does the same.
@@ -521,25 +521,29 @@ references plus MCP URL, command, arguments, and working directory are excluded.
 and timestamp and has no resolution authority. Fuzzy matching remains a terminal search operation;
 server APIs retain exact semantics.
 
-**Active CLI context contract:** `arcanum use campaign <id-or-name>` (also
-`arcanum campaign use <id-or-name>`), `use workspace <id-or-path>`, `use model <name>`, and
+**Active CLI context contract:** `arcanum use campaign <id-or-name>`,
+`use workspace <id-or-path>`, `use model <name>`, and
 `use session <id>` select local defaults without mutating Campaign, Workspace, Model, or Session
-server records. `arcanum use clear [campaign|workspace|model|session]`
+server records. `use` is the only active-context selector — the second `campaign use` spelling wrote
+the same `cli-context.json` from another place and is removed. `arcanum use clear
+[campaign|workspace|model|session]`
 clears one scope (or every scope when omitted). `arcanum context current` prints the effective
 campaign, workspace, model, and session plus each value's source; `--json` returns the same typed
 payload. `arcanum context inspect [prompt]`, `context tools`, `context sources`, and
-`arcanum mana [prompt]` resolve those same effective values and call the authenticated read-only
+`context cost [prompt]` resolve those same effective values and call the authenticated read-only
 context-preview API. All four accept `--show-content` and `--no-retrieval`; content is hidden by
 default, while `--no-retrieval` suppresses embedding/RAG work and explains the resulting unavailable
-sources. All direct commands accept recursive `--no-context`, which bypasses saved values for that
-invocation but still permits independent current-directory Campaign and Workspace detection.
+sources. `context cost` absorbs the former top-level `mana` command, so token allocation is
+inspected in the same family as everything else about the effective turn. All direct commands accept
+recursive `--no-context`, which bypasses saved values for that invocation but still permits
+independent current-directory Campaign and Workspace detection.
 
 Effective-value precedence is fixed: **explicit command option → active CLI context →
 current-directory resource detection → server default**. The deepest containing Campaign supplies
 Campaign context, while the deepest containing registered Workspace independently supplies
-Workspace context. `run`, `ask`, and `chat` accept explicit
-`--workspace` and `--session` in addition to `--campaign` and `--model`, resolve every explicit or
-saved server resource through the authenticated API, and use the effective workspace for Eye of
+Workspace context. `run` accepts explicit
+`--workspace` and `--session` in addition to `--campaign` and `--model`, resolves every explicit or
+saved server resource through the authenticated API, and uses the effective workspace for Eye of
 the World, Chronosync, MCP workspace scope, file staging, and `PingRequest.WorkingDirectory`.
 Interactive inference prints a context line before work starts. Other option-bearing commands use
 the matching saved default (workspace for Spell/version and Trial commands; Campaign for
@@ -560,7 +564,21 @@ a future remote-host client must require an explicit server path and cannot infe
 identity from a client path. `cli-session.txt` remains a temporary last-session mirror for older CLI flows,
 while `cli-context.json.sessionId` is the active-context authority.
 
-**Unified execution entry point:** `arcanum run [prompt...]` is the flexible one-turn CLI surface
+**Turn entry points:** Arcanum has exactly two, and neither is a second implementation of the
+other. Bare `arcanum` opens Command Center for interactive work — the analog of bare `claude` — and
+`arcanum run [prompt...]` is the one-shot and scripted entry, the analog of `claude -p`. The former
+`ask` and `chat` verbs were parallel implementations of the same turn and are removed; `AskCommand`
+survives only as the internal turn implementation both entries share, so no third turn code path
+exists.
+
+Continuation is spelled identically on both entries: `-c`/`--continue` resumes the most recent
+Session and `-r`/`--resume [<id>]` resumes a named one, with a bare `--resume` opening the Session
+picker. `--session`, `--continue`, and `--resume` fill one slot, so supplying more than one is a
+contradiction that exits `2` rather than a precedence question; `--new` retains its documented
+precedence over an explicit selector. The `session` family is management only and never starts a
+turn.
+
+`arcanum run [prompt...]` is the flexible one-turn CLI surface
 over the existing orchestration paths. Its pipeline is intentionally composed from small bounded
 services: `RunInputReader` resolves positional, redirected, or one-line interactive input;
 `CliInferenceContextResolver` resolves Campaign, Workspace, Session, and Model through the normal
@@ -664,7 +682,7 @@ on Windows and POSIX-shell quoting on macOS/Linux; this has no effect on the she
 
 ### 4.4.1 Auto-launch serve lifecycle
 
-Interactive `run` / `chat` / `ask` / **Command Center** call `IArcanumServeLauncher.EnsureRunningAsync` after Grimoire init (Command Center: after host entry, before TG Run):
+Interactive `run` and **Command Center** call `IArcanumServeLauncher.EnsureRunningAsync` after Grimoire init (Command Center: after host entry, before TG Run):
 
 1. Gate: `ICliEnvironment.IsInteractive` and `ARCANUM_NO_AUTO_SERVE` unset. `NO_COLOR` does **not** disable auto-serve (it only gates color + live layout / Command Center theme).
 2. Authenticated `GET /api/health` (re-reads `ISecretStore` on each poll) gives each connection/readiness probe two seconds. Map: 200 → already running; 401/403 → auth failed (do not spawn); 503 → retry for three seconds then fail (do not spawn); TLS failure / timeout → failed (do not spawn — something answered); connection refused / network unreachable / DNS → definite no-listener → proceed.
@@ -805,25 +823,28 @@ One binary; the CLI verb selects the process role (per-command detail in
   safe versioned deep-link contract; unavailable applications retain copyable development and CLI
   fallbacks.
 - **`serve`** — the long-running HTTP host: builds `WebApplication` with slim defaults and blocks until shutdown.
-- **`ask`** — streams single-prompt inference via NDJSON, then exits (0/1/130).
 - **`run`** — composes positional/piped/interactive input and bounded current-turn files, resolves active
-  context, then dispatches one Agent, research, named-Spell, or read-only preview run.
-- **`chat`** — multi-turn REPL with per-turn cancellation and swap-at-end rendering. Complete
-  assistant Markdown is parsed lazily through at-most-256-Ki-character Markdig chunks so one render
-  allocation stays bounded without a total-answer cutoff.
-- Short-lived verbs — `look` / `doctor` run local checks (no HTTP for path checks); `lore`, `daemon jobs|initiative|alert` call the running host's `/api` (Unseen Servant interval control via `/api/unseen-servant/*`, §5.5.2; Comm Link smoke tests via `POST /api/commlink/send`); `daemon install|uninstall|status` drives OS service lifecycle. Bare interactive `arcanum` opens the Command Center (long-lived TUI) until `/exit`; direct `chat` remains the frameless Spectre REPL.
+  context, then dispatches one Agent, research, named-Spell, or read-only preview run. It is the
+  only one-shot turn entry; `-p/--print` marks it explicitly headless so a scripted invocation never
+  blocks on a picker or prompt even when attached to a terminal.
+- **`completion` / `help`** — pure projections of the command tree. `completion` writes a shell
+  script and touches no state; `help <topic>` explains a task in plain language. Neither reaches the
+  host, except the hidden `completion resolve` helper, which is bounded and silent by design.
+- Short-lived verbs — `look` / `doctor` run local checks (no HTTP for path checks); `lore`, `daemon jobs|initiative|alert` call the running host's `/api` (Unseen Servant interval control via `/api/unseen-servant/*`, §5.5.2; Comm Link smoke tests via `POST /api/commlink/send`); `daemon install|uninstall|status` drives OS service lifecycle. Bare interactive `arcanum` opens the Command Center (long-lived TUI) until `/exit`. A terminal that cannot host it — redirected stdin/stdout, `ARCANUM_NO_COMMAND_CENTER=1`, or a window under 80×12 — gets usage naming `arcanum run` rather than a degraded second REPL.
 
 ### 5.2 Why System.CommandLine 2.0.10
 
-Source-generated parsing (AOT-clean, no reflection). Spectre remains for rendering. `RepeatableOptionMerger` rewrites repeated flags into CAF JSON-array syntax; XML-doc aliases preserve legacy camelCase option spellings.
+Source-generated parsing (AOT-clean, no reflection). Spectre remains for rendering. `RepeatableOptionMerger` rewrites repeated flags into CAF JSON-array syntax. There is no alias layer: exactly one spelling resolves each action, and a removed spelling fails to parse with a diagnostic naming its replacement.
 
-Every direct command inherits four recursive root options, accepted before or after the verb:
+Every direct command inherits these recursive root options, accepted before or after the verb:
 
-- `--json` forces one valid JSON document on stdout. Commands with typed structured output write
+- `--output-format text|json` selects the output shape, and `--json` is its shorthand. `json` forces
+  one valid JSON document on stdout. Commands with typed structured output write
   that type through `IConsoleDispatcher.WriteJson` and an explicit source-generated
   `JsonTypeInfo`; legacy text commands are captured at the process boundary and returned as
   `CliTextPayload { output, exitCode }`. ANSI is disabled while JSON is active, so terminal control
-  sequences cannot corrupt a pipe such as `arcanum operation list --json | jq`.
+  sequences cannot corrupt a pipe such as `arcanum operation list --json | jq`. Combining `--json`
+  with `--output-format text` is a contradiction and exits `2` rather than resolving a precedence.
 - `--plain` disables ANSI color and terminal animation for that invocation. It does
   not persist or replace `Arcanum:Cli:Theme`.
 - `--yes` is the only global auto-approval signal. `IConfirmationPrompt` returns immediately when
@@ -832,6 +853,23 @@ Every direct command inherits four recursive root options, accepted before or af
   modals and inference `ask_human` are separate interactive protocols.
 - `--no-context` bypasses owner-local saved CLI context for one invocation while retaining
   independent current-directory Campaign and Workspace detection.
+- `-p`/`--print` is the explicit headless marker. It makes a real TTY behave like a redirected one
+  through `ICliEnvironment.IsInteractive`, so a scripted invocation never blocks on a picker or a
+  prompt merely because it happens to be attached to a terminal. Headless was previously implicit
+  from non-TTY detection alone, which a script could not assert.
+- `-v`/`--verbose` enables `IConsoleDispatcher.WriteVerbose`, which writes additional operator
+  detail to stderr only. It never changes payload content or the exit code.
+
+**Short-option contract.** A short flag means exactly one thing across the entire tree, verified by
+test. Claude parity does not justify ambiguous parsing, so `-c` is `--continue` everywhere and
+`--campaign` takes `-C`. `--output-format` is deliberately long-only because `-o` already means
+`--output`.
+
+**Surface projection.** `CliSurfaceBuilder` walks the live `RootCommand` object graph — no assembly
+scanning, AOT-clean — into a `CliSurfaceMap`. Help examples, shell completion, "did you mean", topic
+help, and the committed `docs/Arcanum.CommandMap.json` are all readers of that one projection, so
+none of them can describe a tree the parser does not have. The command map is regenerated and
+compared by test, which makes an unintended diff in it an unintended change to the public surface.
 
 `IConsoleDispatcher` owns the process stream contract: requested text/JSON payloads go to stdout;
 diagnostics, warnings, progress, and confirmation copy go to stderr. `CliInvocationContext` carries
@@ -875,7 +913,7 @@ is required because Serilog's file sink is not multi-writer safe.
 
 **Composition:**
 
-- **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and installs the complete embedded schema via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSchemaInstaller`** (raw SQLite, one transaction, no migration chain and no `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`. A key mismatch or unreadable dedicated secret throws the sanitized `GrimoireDatabaseUnavailableException`, so startup fails closed while host/test cleanup can unwind normally; it never terminates the embedding process with `Environment.FailFast`. Legacy databases are transparently re-encrypted to the new KDF on unlock; the new salt is durably staged to `{grimoire.db}.kdf.pending` before the irreversible `PRAGMA rekey` and promoted by atomic rename after it commits, so either side of that crash window is recoverable on the next start (§16.3). The same bootstrapper runs from the CLI (`run` / `ask` / `chat`) so host and CLI share one schema-install path (§10.5).
+- **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and installs the complete embedded schema via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSchemaInstaller`** (raw SQLite, one transaction, no migration chain and no `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`. A key mismatch or unreadable dedicated secret throws the sanitized `GrimoireDatabaseUnavailableException`, so startup fails closed while host/test cleanup can unwind normally; it never terminates the embedding process with `Environment.FailFast`. Legacy databases are transparently re-encrypted to the new KDF on unlock; the new salt is durably staged to `{grimoire.db}.kdf.pending` before the irreversible `PRAGMA rekey` and promoted by atomic rename after it commits, so either side of that crash window is recoverable on the next start (§16.3). The same bootstrapper runs from the CLI (`run` and Command Center) so host and CLI share one schema-install path (§10.5).
 - **`CampaignLoggerQueue` / `Loremaster`** — bounded `Channel<Guid>` (capacity 100 **session IDs**, not Entry rows) with **non-blocking `TryQueue`**: duplicate session ids coalesce via a pending-marker map; a full channel rejects with a warning log and clears the marker so the session remains eligible for a later sweep (internal sweeps fail-open). Explicit `POST /api/sessions/{id}/rest` returns **202** when accepted/coalesced and **503** + `Session.RestQueueFull` when rejected. Background service `Loremaster` (formerly `CampaignLoggerBackgroundService`) runs hybrid sweeps using **`Session.UnsummarizedEntryCount`** (incremented on every entry append — both the inference path and The Forge `POST /api/sessions/{id}/entries` path, each serialized per-session via **`SessionEntryPersistence`** / **`SessionWriteLock`** + **`SqliteBusyRetry`** so concurrent appends never lose an increment; reset on summarize) instead of full-table `Entries` aggregation. The consume path loads session headers via **`GetSessionHeaderAsync`** (no entry hydration). Headless summarization uses a stateless `PingRequest` with `SkipSpellRouting`, `DisableMcpTools`, `UnattendedMode`, optional `Arcanum:FastModel` (else `DefaultModel`); on success, `UpdateSessionCampaignRollupAsync` atomically sets `Session.Summary`, `LastSummarizedMessageAt`, and the remaining unsummarized count. On inference failure, the watermark is **not** advanced.
 - **`ArcanumDbContext`** — compiled model; SQLCipher passphrase from hosted service.
 - **`SessionRepository`** — implements **`ISessionRepository`** for Forge session CRUD, entry append, export, and analytics. Entry writes delegate shared invariants (lock, retry, per-entry validation, counter, UpdatedAt) to internal **`SessionEntryPersistence`**. **`AddEntryAsync`** returns **`Result<Entry>`** for expected domain outcomes (not found, archived, invalid or oversized entry); there is no total persisted-entry ceiling. **`UpdateSessionAsync`** patches Title/Status only — Grimoire-owned counters and rollups are never clobbered from caller-supplied `Session` rows.
@@ -1794,7 +1832,7 @@ never enter step results, plans, prompts, checkpoints, or Chronicle replay.
 
 **CLI:** `arcanum apprentice` exposes the full list/get/create/delete/start/pause/resume/cancel/
 reweave/intervene/cast lifecycle over the authenticated API. `arcanum watch apprentice` follows
-the live Chronicle, while `arcanum apprentice chronicle` remains its compatibility alias; neither
+the live Chronicle and is the only spelling for it — the former `apprentice chronicle` alias is removed; neither
 is a route-table stub.
 
 ### 5.7.1 A2A and The Conclave
@@ -2068,7 +2106,7 @@ After the dynamic system prompt, rehydrated attachments, and final tool set have
 - **Threshold:** the complete materialized total is compared to `ContextWindowLimit(provider) * ContextWindowCompressionThreshold / 100` (both clamped). Live calls no longer skip this decision merely because a thread is short; `CompressionPreflightMinMessages` remains only for the manual compact operation.
 - **Swap:** when over threshold, **`Session.Summary`** and **`Session.LastSummarizedMessageAt`** must both be present; otherwise a **warning** is logged and history is left unfiltered. When present, Grimoire entries with `CreatedAt <= LastSummarizedMessageAt` are omitted from the inference transcript and the summary is injected via **`SystemPromptBuilder.Build(..., campaignSummary: ...)`** as `### Campaign Summary (compressed context)` (see §10.5). **No `Entry` rows are deleted.** The rebuilt payload is measured again with the same profile and tool/options payload.
 - **Per-call admission:** immediately before every provider call, including structured-output retries, `EnsureContextBudget` first removes the lowest-priority semantic materializations (Tapestry → Saga → workspace RAG → attachment RAG — derived summaries before auto-extracted memory, before exact raw leaves), then may remove oldest complete in-memory tool exchanges. It never removes accepted explicit attachments or half of a tool exchange. It finalizes one breakdown, adjusts the reservation, and passes that same object to `IModelCallExecutor` for identity validation and enforcement. This repeats after each tool result and structured-output correction, so a continuation cannot reuse an obsolete initial count; explicit content that still cannot fit returns `Hub.ContextBudgetExceeded` instead of being silently discarded.
-- **Diagnostics and authority:** native streams emit `context` frames; `/api/intelligence/mana`, audit/session telemetry, Command Center `/mana`, and the non-focusable Command Center Context pane expose profile, classification, margin, and source rows. The pane renders chat history, explicit attachments, refreshed files, attachment RAG, and workspace RAG from the latest immutable call breakdown. It initially labels the total `estimated`, then replaces only the displayed total with valid provider-reported input labeled `billed` when the post-usage frame arrives. Provider-reported usage remains authoritative after a call and is attached separately with signed variance; historical reported values are never rewritten. If the per-turn materialization ledger evicts attachment/workspace semantic chunks for context pressure, the same breakdown carries aggregate dropped chunk/token counters and the pane shows a warning.
+- **Diagnostics and authority:** native streams emit `context` frames; `/api/intelligence/mana`, audit/session telemetry, Command Center `/context`, and the non-focusable Command Center Context pane expose profile, classification, margin, and source rows. The pane renders chat history, explicit attachments, refreshed files, attachment RAG, and workspace RAG from the latest immutable call breakdown. It initially labels the total `estimated`, then replaces only the displayed total with valid provider-reported input labeled `billed` when the post-usage frame arrives. Provider-reported usage remains authoritative after a call and is attached separately with signed variance; historical reported values are never rewritten. If the per-turn materialization ledger evicts attachment/workspace semantic chunks for context pressure, the same breakdown carries aggregate dropped chunk/token counters and the pane shows a warning.
 - **Pre-inference preview:** `POST /api/intelligence/context/inspect`, `arcanum run --dry-run`, and
   the `context inspect|tools|sources` / `mana` CLI family reuse the production model lease, Spell
   router, retrieval readers, tool builder and filters, `SystemPromptBuilder.BuildDocument`,
@@ -2359,7 +2397,7 @@ The provider persists through `IGrimoireRepository`. When `sessionId` is set, pr
 
 **Problem:** the API host's cwd is not the operator's shell cwd.
 
-**Solution:** `PingRequest` carries `WorkingDirectory`, `ContextSnapshot` (`PatternSnapshot`), optional `SessionId`, optional `StatelessMessages` (`CoreChatMessage[]` transcript for stateless callers), optional `AttachedFiles`, optional `ChronosyncDelta` (`ChronosyncReport`), and optional `DataStreams` (reserved for future real-time JSON injection). For live `run` Agent/Spell, `ask`, and `chat` inference, the CLI resolves `Environment.CurrentDirectory`, runs Eye of the World, runs `IChronosyncEngine` inside a DI scope against the local Grimoire, and populates these fields before the inference HTTP call; `run --dry-run` deliberately remains a static server preview and may omit the locally produced snapshot/delta until live handoff. CLI bootstrap (`run`, `ask`, `chat`) reuses `IGrimoireCliInitialization` once per process so SQLCipher setup and first-run migrations match the host (`GrimoireDatabaseBootstrapper`, shared with `GrimoireDatabaseHostedService`).
+**Solution:** `PingRequest` carries `WorkingDirectory`, `ContextSnapshot` (`PatternSnapshot`), optional `SessionId`, optional `StatelessMessages` (`CoreChatMessage[]` transcript for stateless callers), optional `AttachedFiles`, optional `ChronosyncDelta` (`ChronosyncReport`), and optional `DataStreams` (reserved for future real-time JSON injection). For live `run` Agent/Spell inference and Command Center turns, the CLI resolves `Environment.CurrentDirectory`, runs Eye of the World, runs `IChronosyncEngine` inside a DI scope against the local Grimoire, and populates these fields before the inference HTTP call; `run --dry-run` deliberately remains a static server preview and may omit the locally produced snapshot/delta until live handoff. CLI bootstrap (`run` and Command Center) reuses `IGrimoireCliInitialization` once per process so SQLCipher setup and first-run migrations match the host (`GrimoireDatabaseBootstrapper`, shared with `GrimoireDatabaseHostedService`).
 
 **`SystemPromptBuilder.Build` ordering (DCI blocks):**
 
@@ -3308,7 +3346,7 @@ the cursor still advances past it.
   …/compact`) — see §4.3. Entry deletion removes the corresponding `entry_embeddings` and optional
   vector row in the same transaction before deleting the Entry.
 
-**CLI lifecycle:** `arcanum session` exposes list/show/chat/entries/watch/fork/rename/archive/export/rest/attachments/delete-entry/pin-entry/unpin-entry/compact without opening the Grimoire. Session selectors use the shared ID/title/prefix picker; entry selectors first resolve a session, then page its entry API. `arcanum session chat [session]` and root `arcanum chat --session <id-or-title>` both enter the existing chat loop. `session show` combines `GET /api/sessions/{id}` and the attachments metadata endpoint; `SessionDetailDto` includes the persisted `TotalTokensUsed`, `TotalCostUsd`, and `ForkedFromSessionId` projections. Archived sessions remain readable, exportable, and forkable. API error codes flow through unchanged so feature-gate and lifecycle failures remain actionable.
+**CLI lifecycle:** `arcanum session` exposes list/show/entries/fork/rename/archive/export/rest/attachments/delete-entry/pin-entry/unpin-entry/compact/divine without opening the Grimoire. It is management only: continuation moved to the inference entries (`arcanum run -c`, `-r [<id>]`, or `--session <id>`, and the same flags on Command Center), and live streaming moved to `watch session`. Session selectors use the shared ID/title/prefix picker; entry selectors first resolve a session, then page its entry API. `session show` combines `GET /api/sessions/{id}` and the attachments metadata endpoint; `SessionDetailDto` includes the persisted `TotalTokensUsed`, `TotalCostUsd`, and `ForkedFromSessionId` projections. Archived sessions remain readable, exportable, and forkable. API error codes flow through unchanged so feature-gate and lifecycle failures remain actionable.
 
 **Metadata update (`PATCH /api/sessions/{id}`):** Accepts **`UpdateSessionRequest`** with optional **`title`** (`string?`) and **`status`** (`active` | `archived`). Only supplied (non-null) fields change; an empty or whitespace `title` clears it to `null`. An unrecognized `status` returns **400** `Session.InvalidStatus`. Setting `status` to `archived` has the same soft-delete effect as `DELETE /api/sessions/{id}` (PATCH returns **200** + the updated `SessionDetailDto` rather than **204**).
 
@@ -3320,7 +3358,7 @@ the cursor still advances past it.
 - **`GET /api/sessions/{id}/export?format=json|markdown`**
 - **`GET /api/sessions/analytics`** — aggregate counts over Grimoire (sessions, entries by role, tokens, per-model breakdowns).
 
-**Live stream (`GET /api/sessions/{id}/stream`):** `text/event-stream`. Subscribes to **`SessionEventHub`** **before** the DB read (entries published during replay are not lost), replays a code-owned bounded window of the most recent entries in ascending order, emits `data: {"type":"live"}\n\n`, then forwards live entries (hub inference + manual append), de-duplicating any already replayed. Each subscriber channel is bounded `DropOldest`; a slow reader may miss live Entries and receives a warning in server logs. Restart drops subscriptions but not Entries, so Grimoire replay remains authoritative. On disconnect, best-effort `data: [DONE]\n\n`. CLI `watch session [session] [--since <entry-id>]` ignores the live sentinel, stops on `[DONE]`, renders terminal lines normally, and emits newline-delimited `EntryDto` JSON with `--json`; `session watch` is the compatibility alias. Opt-in reconnect advances `since` to the last received valid Entry but still warns of a possible gap because replay is bounded.
+**Live stream (`GET /api/sessions/{id}/stream`):** `text/event-stream`. Subscribes to **`SessionEventHub`** **before** the DB read (entries published during replay are not lost), replays a code-owned bounded window of the most recent entries in ascending order, emits `data: {"type":"live"}\n\n`, then forwards live entries (hub inference + manual append), de-duplicating any already replayed. Each subscriber channel is bounded `DropOldest`; a slow reader may miss live Entries and receives a warning in server logs. Restart drops subscriptions but not Entries, so Grimoire replay remains authoritative. On disconnect, best-effort `data: [DONE]\n\n`. CLI `watch session [session] [--since <entry-id>]` ignores the live sentinel, stops on `[DONE]`, renders terminal lines normally, and emits newline-delimited `EntryDto` JSON with `--json`. It is the only spelling; the former `session watch` alias is removed. Opt-in reconnect advances `since` to the last received valid Entry but still warns of a possible gap because replay is bounded.
 
 **Campaign Log:** **`POST /api/sessions/{id}/rest`** returns **202** + **`ApiResponse<bool>`** when the session exists and is queued (API §8.7), or **503** + **`Session.RestQueueFull`** when the bounded Campaign Logger queue rejects the enqueue.
 
@@ -4151,7 +4189,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 
 ### 15.6 Dependency injection split
 
-`AddArcanumEyeOfTheWorld()` registers `IEyeOfTheWorld` → `EyeOfTheWorldService` only (no Grimoire, no Serilog). Used by CLI `look` and `ask` paths. `AddArcanumInfrastructure` chains it.
+`AddArcanumEyeOfTheWorld()` registers `IEyeOfTheWorld` → `EyeOfTheWorldService` only (no Grimoire, no Serilog). Used by the CLI `look` and turn paths. `AddArcanumInfrastructure` chains it.
 
 ### 15.7 Tradeoffs
 
@@ -4298,7 +4336,7 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   `open theforge|compendium|session|campaign|spell|prompt|apprentice` shares the normal resource
   selector, passes only server-owned identifiers in a versioned one-argument envelope, and keeps
   development/current-CLI fallbacks when a desktop application is unavailable.
-- **Frameless `run`/`ask`/`chat`:** Spectre input/output, effective-context resolution, and bounded file/image staging; live `run` sources use the normal host attachment pipeline while its dry-run is non-persistent. TTY/`NO_COLOR` theme gating and atomic owner-only `cli-context.json` plus the temporary `cli-session.txt` mirror remain shared CLI infrastructure.
+- **One-shot `run`:** Spectre input/output, effective-context resolution, and bounded file/image staging; live `run` sources use the normal host attachment pipeline while its dry-run is non-persistent. TTY/`NO_COLOR` theme gating and atomic owner-only `cli-context.json` plus the temporary `cli-session.txt` mirror remain shared CLI infrastructure.
 - **doctor:** themed panels per subsystem finding, a repair plan/apply panel, and a summary; optional
   `--json` `DoctorReport` and `--json` `DoctorCatalog` for `doctor list`/`doctor explain`. The
   diagnostic registry, outcome vocabulary, and repair plan/apply contract are §4.4.2.

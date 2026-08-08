@@ -52,7 +52,7 @@ public sealed class CampaignCommandTests
             new ApiResponse<CampaignDto>(campaign, true, null),
             ArcanumJsonContext.Default.ApiResponseCampaignDto));
 
-        CliTestResult result = RunCommand(handler, ["campaign", "get", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["campaign", "show", SampleId.ToString()]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -75,7 +75,7 @@ public sealed class CampaignCommandTests
                 null),
             ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto));
 
-        CliTestResult result = RunCommand(handler, ["campaign", "get", "not-a-guid"]);
+        CliTestResult result = RunCommand(handler, ["campaign", "show", "not-a-guid"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -117,7 +117,7 @@ public sealed class CampaignCommandTests
 
         });
 
-        CliTestResult result = RunCommand(handler, ["campaign", "get"]);
+        CliTestResult result = RunCommand(handler, ["campaign", "show"]);
 
         Assert.Equal(1, result.ExitCode);
 
@@ -193,7 +193,7 @@ public sealed class CampaignCommandTests
             ArcanumJsonContext.Default.ApiResponseCampaignDto,
             HttpStatusCode.NotFound));
 
-        CliTestResult result = RunCommand(handler, ["campaign", "get", SampleId.ToString()]);
+        CliTestResult result = RunCommand(handler, ["campaign", "show", SampleId.ToString()]);
 
         Assert.Equal(1, result.ExitCode);
 

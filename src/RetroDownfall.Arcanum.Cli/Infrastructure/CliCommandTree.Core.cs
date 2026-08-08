@@ -8,57 +8,6 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
 internal static partial class CliCommandTree
 {
-    private static Command BuildChat(IServiceProvider sp)
-    {
-        ChatCommand handler = sp.GetRequiredService<ChatCommand>();
-        Command chat = new("chat", "Interactive multi-turn REPL with the Mage.");
-        Option<string?> model = new("--model", "-m") { Description = "The specific model to use for this inference request." };
-        Option<bool> @new = new("--new", "-n") { Description = "Start a new session thread, clearing the previous session at REPL startup." };
-        Option<bool> noTools = new("--no-tools") { Description = "Disable MCP-provided tools for this REPL session (built-in tools still apply)." };
-        Option<bool> unattended = new("--unattended") { Description = "Force unattended for this run; skips ask_human blocking and uses Ward auto-deny." };
-        Option<string?> campaign = new("--campaign", "-c") { Description = "Campaign GUID to resolve the workspace from." };
-        Option<string?> workspace = new("--workspace") { Description = "Workspace ID or path for this chat." };
-        Option<string?> session = new("--session") { Description = "Session GUID, exact title, or unique title prefix to resume." };
-        Option<string?> temperature = new("--temperature") { Description = "Sampling temperature 0-2 (lower = more deterministic). Applies to every turn." };
-        Option<string?> topP = new("--top-p") { Description = "Nucleus sampling cutoff 0-1. Applies to every turn." };
-        Option<string?> maxTokens = new("--max-tokens") { Description = "Maximum output tokens per turn." };
-        Option<string?> seed = new("--seed") { Description = "Seed for sampling determinism (provider support varies). Applies to every turn." };
-        Option<string[]> stop = new("--stop") { AllowMultipleArgumentsPerToken = true, Description = "Stop sequence(s); pass --stop multiple times for several stops." };
-        Option<string?> responseFormat = new("--response-format") { Description = "Response format: text | json_object | json_schema." };
-        Option<string?> presencePenalty = new("--presence-penalty") { Description = "Presence penalty -2..2." };
-        Option<string?> frequencyPenalty = new("--frequency-penalty") { Description = "Frequency penalty -2..2." };
-        Option<string[]> attachment = new("--attachment") { Description = "Bound attachment GUID to use on the next successful turn; repeatable." };
-
-        chat.Add(model); chat.Add(@new); chat.Add(noTools); chat.Add(unattended);
-        chat.Add(campaign); chat.Add(workspace); chat.Add(session);
-        chat.Add(temperature); chat.Add(topP); chat.Add(maxTokens);
-        chat.Add(seed); chat.Add(stop); chat.Add(responseFormat); chat.Add(presencePenalty);
-        chat.Add(frequencyPenalty); chat.Add(attachment);
-
-        chat.SetAction(async (ParseResult pr, CancellationToken ct) =>
-        {
-            return await handler.Chat(
-                ct,
-                pr.GetValue(model),
-                pr.GetValue(@new),
-                pr.GetValue(noTools),
-                pr.GetValue(unattended),
-                pr.GetValue(campaign),
-                pr.GetValue(workspace),
-                pr.GetValue(session),
-                pr.GetValue(temperature),
-                pr.GetValue(topP),
-                pr.GetValue(maxTokens),
-                pr.GetValue(seed),
-                pr.GetValue(stop) ?? [],
-                pr.GetValue(responseFormat),
-                pr.GetValue(presencePenalty),
-                pr.GetValue(frequencyPenalty),
-                pr.GetValue(attachment) ?? []).ConfigureAwait(false);
-        });
-        return chat;
-    }
-
     private static Command BuildDoctor(IServiceProvider sp)
     {
         DoctorCommand handler = sp.GetRequiredService<DoctorCommand>();
@@ -209,12 +158,12 @@ internal static partial class CliCommandTree
         Command list = new("list", "List configured models across all providers (GET /api/models).");
         list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
         model.Add(list);
-        Command get = new("get", "Show a configured model without exposing its endpoint.");
+        Command show = new("show", "Show a configured model without exposing its endpoint.");
         Argument<string?> identifier = OptionalResourceArgument("model", "model name or provider/model ID");
-        get.Add(identifier);
-        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
+        show.Add(identifier);
+        show.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
-        model.Add(get);
+        model.Add(show);
         return model;
     }
 
@@ -225,12 +174,12 @@ internal static partial class CliCommandTree
         Command list = new("list", "List configured providers with redacted secrets (GET /api/providers).");
         list.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.List(ct).ConfigureAwait(false));
         provider.Add(list);
-        Command get = new("get", "Show a configured provider without exposing endpoint or credential details.");
+        Command show = new("show", "Show a configured provider without exposing endpoint or credential details.");
         Argument<string?> identifier = OptionalResourceArgument("provider", "provider name");
-        get.Add(identifier);
-        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
+        show.Add(identifier);
+        show.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Get(pr.GetValue(identifier), ct).ConfigureAwait(false));
-        provider.Add(get);
+        provider.Add(show);
         return provider;
     }
 
@@ -306,17 +255,6 @@ internal static partial class CliCommandTree
 
         show.SetAction(async (ParseResult pr, CancellationToken ct) =>
             await handler.Show(pr.GetValue(showIdentifier), ct).ConfigureAwait(false));
-
-        Command get = new("get", "Compatibility alias for 'workspace show'.");
-
-        Argument<string?> getIdentifier = OptionalResourceArgument(
-            "workspace",
-            "workspace ID, name, or server path");
-
-        get.Add(getIdentifier);
-
-        get.SetAction(async (ParseResult pr, CancellationToken ct) =>
-            await handler.Show(pr.GetValue(getIdentifier), ct).ConfigureAwait(false));
 
         Command tree = new("tree", "List the server-side workspace tree recursively.");
 
@@ -500,8 +438,6 @@ internal static partial class CliCommandTree
 
         workspace.Add(show);
 
-        workspace.Add(get);
-
         workspace.Add(tree);
 
         workspace.Add(info);
@@ -572,27 +508,6 @@ internal static partial class CliCommandTree
                 await handler.Show(
                     pr.GetValue(showIdentifier),
                     ActiveWorkspace(sp, pr.GetValue(showWorkspace)),
-                    ct).ConfigureAwait(false));
-
-        Command get = new(
-            "get",
-            "Compatibility alias for 'mcp show'.");
-
-        Argument<string?> getIdentifier = OptionalResourceArgument(
-            "server",
-            "MCP server name");
-
-        Option<string?> getWorkspace = WorkspaceOption();
-
-        get.Add(getIdentifier);
-
-        get.Add(getWorkspace);
-
-        get.SetAction(
-            async (ParseResult pr, CancellationToken ct) =>
-                await handler.Show(
-                    pr.GetValue(getIdentifier),
-                    ActiveWorkspace(sp, pr.GetValue(getWorkspace)),
                     ct).ConfigureAwait(false));
 
         Command start = BuildMcpLifecycleCommand(
@@ -711,8 +626,6 @@ internal static partial class CliCommandTree
         mcp.Add(list);
 
         mcp.Add(show);
-
-        mcp.Add(get);
 
         mcp.Add(start);
 

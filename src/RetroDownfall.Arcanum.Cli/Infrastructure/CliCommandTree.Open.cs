@@ -11,7 +11,15 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 internal static partial class CliCommandTree
 {
 
-    private static Command BuildCenter(IServiceProvider services)
+    private static Command BuildCenter(IServiceProvider services) =>
+        CommandCenterCommand(services);
+
+    /// <summary>
+    /// Command Center is the interactive turn entry, so it carries the same continuation contract as
+    /// the one-shot entry: <c>-c</c> reopens the most recent Session and <c>-r</c> reopens a named
+    /// one, rather than requiring a separate management verb to get back into a thread.
+    /// </summary>
+    private static Command CommandCenterCommand(IServiceProvider services)
     {
 
         OpenCommands handler = services.GetRequiredService<OpenCommands>();
@@ -20,9 +28,35 @@ internal static partial class CliCommandTree
             "center",
             "Open Command Center in the current arcanum process.");
 
+        Option<bool> continueSession = new("--continue", "-c")
+        {
+
+            Description = "Reopen the most recent Session. Cannot be combined with --resume.",
+
+        };
+
+        Option<string?> resume = new("--resume", "-r")
+        {
+
+            Arity = ArgumentArity.ZeroOrOne,
+
+            Description = "Reopen a Session by GUID, exact title, or unique title prefix; omit the value for an interactive picker.",
+
+        };
+
+        center.Add(continueSession);
+
+        center.Add(resume);
+
         center.SetAction(
-            async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler.Center(cancellationToken).ConfigureAwait(false));
+            async (ParseResult result, CancellationToken cancellationToken) =>
+                await handler
+                    .Center(
+                        result.GetValue(continueSession),
+                        result.GetResult(resume) is not null,
+                        result.GetValue(resume),
+                        cancellationToken)
+                    .ConfigureAwait(false));
 
         return center;
 
@@ -37,13 +71,7 @@ internal static partial class CliCommandTree
             "open",
             "Open an Arcanum application, optionally at a selected resource.");
 
-        Command center = new(
-            "center",
-            "Open Command Center in the current arcanum process.");
-
-        center.SetAction(
-            async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler.Center(cancellationToken).ConfigureAwait(false));
+        Command center = CommandCenterCommand(services);
 
         Command theForge = new(
             "theforge",

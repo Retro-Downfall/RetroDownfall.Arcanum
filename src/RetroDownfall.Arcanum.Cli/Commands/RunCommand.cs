@@ -18,6 +18,8 @@ public sealed record RunCommandRequest(
 
     string[] With,
 
+    string[] Attachment,
+
     bool DryRun,
 
     bool ShowContent,
@@ -27,6 +29,12 @@ public sealed record RunCommandRequest(
     bool NewSession,
 
     bool Unattended,
+
+    bool Continue,
+
+    bool Resume,
+
+    string? ResumeTarget,
 
     string? Campaign,
 
@@ -70,6 +78,8 @@ internal sealed class RunCommand(
 
     IArcanumServeLauncher serveLauncher,
 
+    CliSessionManager sessionManager,
+
     IConsoleDispatcher dispatcher)
 {
 
@@ -99,6 +109,17 @@ internal sealed class RunCommand(
         {
 
             return Fail("--spell requires a named Spell.");
+
+        }
+
+        if (!TryResolveSessionSelector(
+                request,
+                out string? sessionSelector,
+                out bool sessionPicker,
+                out string? selectorError))
+        {
+
+            return Fail(selectorError!);
 
         }
 
@@ -164,10 +185,11 @@ internal sealed class RunCommand(
                     request.Model,
                     request.NewSession
                         ? null
-                        : request.Session,
+                        : sessionSelector,
                     invocationDirectory,
                     CliInvocationContext.Current.NoContext,
-                    request.NewSession),
+                    request.NewSession,
+                    sessionPicker && !request.NewSession),
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -262,6 +284,81 @@ internal sealed class RunCommand(
                     staged.ScryingFoci),
                 cancellationToken)
             .ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// <c>--session</c>, <c>--continue</c>, and <c>--resume</c> all fill the same slot, so supplying
+    /// more than one is a contradiction rather than a precedence question. <c>--new</c> keeps its
+    /// documented behavior of winning over an explicit selector instead of adding a second conflict.
+    /// </summary>
+    private bool TryResolveSessionSelector(
+        RunCommandRequest request,
+        out string? selector,
+        out bool picker,
+        out string? error)
+    {
+
+        selector = request.Session;
+
+        picker = false;
+
+        error = null;
+
+        int selectorCount = (string.IsNullOrWhiteSpace(request.Session) ? 0 : 1)
+            + (request.Continue ? 1 : 0)
+            + (request.Resume ? 1 : 0);
+
+        if (selectorCount > 1)
+        {
+
+            error = "--session, --continue, and --resume each select a session; supply exactly one.";
+
+            return false;
+
+        }
+
+        if (request.Continue)
+        {
+
+            Guid? previous = sessionManager.GetLastSessionId(quiet: true);
+
+            if (previous is null)
+            {
+
+                error = "No previous session to continue. Start one with: arcanum run \"<prompt>\"";
+
+                return false;
+
+            }
+
+            selector = previous.Value.ToString("D");
+
+            dispatcher.WriteVerbose($"Continuing session {selector}.");
+
+            return true;
+
+        }
+
+        if (request.Resume)
+        {
+
+            if (string.IsNullOrWhiteSpace(request.ResumeTarget))
+            {
+
+                picker = true;
+
+                selector = null;
+
+                return true;
+
+            }
+
+            selector = request.ResumeTarget;
+
+        }
+
+        return true;
 
     }
 

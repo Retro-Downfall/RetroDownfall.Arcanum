@@ -19,7 +19,7 @@ public sealed class ContextPreviewCommandTests
 
     [InlineData("context", "sources")]
 
-    [InlineData("mana", null)]
+    [InlineData("context", "cost")]
 
     public async Task Preview_commands_are_discoverable(string command, string? subcommand = null)
 

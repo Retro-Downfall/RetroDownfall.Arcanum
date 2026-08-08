@@ -40,7 +40,7 @@ internal static partial class CliCommandTree
 
         };
 
-        Option<string[]> toolName = new("--tool", "--tool-name")
+        Option<string[]> toolName = new("--tool")
         {
 
             AllowMultipleArgumentsPerToken = true,

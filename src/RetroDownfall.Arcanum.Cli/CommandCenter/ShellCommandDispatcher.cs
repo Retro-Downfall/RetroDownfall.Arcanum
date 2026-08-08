@@ -42,14 +42,27 @@ internal sealed class ShellCommandDispatcher(
                 state.ExitCode = 0;
                 return ShellDispatchResult.Exit;
 
+            // Claude's /clear starts a fresh conversation rather than only wiping the view, so it
+            // absorbs what used to be /session new.
             case ShellCommandKind.Clear:
+                if (CommandCenterSessionMutationGuard.TryDenySessionMutationWhileGenerating(state, out CommandCenterUiUpdate? denyClear))
+                {
+                    if (denyClear is not null)
+                    {
+                        state.Log.Append(SessionLogEntryKind.Status, CommandCenterSessionMutationGuard.GeneratingDenyMessage);
+                    }
+
+                    return ShellDispatchResult.Continue;
+                }
+
                 state.Log.Clear();
                 state.Incantations.Clear();
-                state.Log.Append(SessionLogEntryKind.Status, "Log cleared.");
+                sessionWorkspace.StartNewSession(state);
+                state.Log.Append(SessionLogEntryKind.Status, "Started a new session thread.");
                 return ShellDispatchResult.Continue;
 
             case ShellCommandKind.Help:
-                state.Log.Append(SessionLogEntryKind.Command, BuildHelpText());
+                state.Log.Append(SessionLogEntryKind.Command, SlashCommandRegistry.BuildHelpText());
                 return ShellDispatchResult.Continue;
 
             case ShellCommandKind.Denied:
@@ -93,14 +106,14 @@ internal sealed class ShellCommandDispatcher(
 
                     .ConfigureAwait(false);
 
-            case ShellCommandKind.ContextList:
+            case ShellCommandKind.PinList:
                 return await ListContextPinsAsync(state, cancellationToken).ConfigureAwait(false);
 
-            case ShellCommandKind.ContextPin:
+            case ShellCommandKind.Pin:
                 return await PinContextAsync(
                     state, parsed.Argument, parsed.SecondaryArgument, cancellationToken).ConfigureAwait(false);
 
-            case ShellCommandKind.ContextUnpin:
+            case ShellCommandKind.Unpin:
                 return await UnpinContextAsync(state, parsed.Argument, cancellationToken).ConfigureAwait(false);
 
             case ShellCommandKind.Status:
@@ -113,10 +126,38 @@ internal sealed class ShellCommandDispatcher(
                     await BuildDoctorTextAsync(state, cancellationToken).ConfigureAwait(false));
                 return ShellDispatchResult.Continue;
 
-            case ShellCommandKind.ModelList:
+            case ShellCommandKind.Model:
                 state.Log.Append(
                     SessionLogEntryKind.Command,
                     await FormatModelsAsync(cancellationToken).ConfigureAwait(false));
+                return ShellDispatchResult.Continue;
+
+            case ShellCommandKind.ModelSelect:
+                return await SelectModelAsync(state, parsed.Argument, cancellationToken).ConfigureAwait(false);
+
+            case ShellCommandKind.Compact:
+                return await CompactSessionAsync(state, cancellationToken).ConfigureAwait(false);
+
+            case ShellCommandKind.Memory:
+                return await ShowSessionMemoryAsync(state, cancellationToken).ConfigureAwait(false);
+
+            case ShellCommandKind.Cost:
+                return await ShowSessionCostAsync(state, cancellationToken).ConfigureAwait(false);
+
+            case ShellCommandKind.Context:
+                state.Log.Append(SessionLogEntryKind.Command, FormatContext(state));
+                return ShellDispatchResult.Continue;
+
+            case ShellCommandKind.Config:
+                state.Log.Append(SessionLogEntryKind.Command, FormatConfig(state));
+                return ShellDispatchResult.Continue;
+
+            case ShellCommandKind.Look:
+                state.Log.Append(
+                    SessionLogEntryKind.Command,
+                    $"Working directory: {state.WorkingDirectory}"
+                    + Environment.NewLine
+                    + "Full Eye of the World snapshot: run `arcanum look`.");
                 return ShellDispatchResult.Continue;
 
             case ShellCommandKind.ProviderList:
@@ -129,6 +170,9 @@ internal sealed class ShellCommandDispatcher(
                 await RefreshMcpAsync(state, cancellationToken).ConfigureAwait(false);
                 state.Log.Append(SessionLogEntryKind.Command, FormatMcp(state));
                 return ShellDispatchResult.Continue;
+
+            case ShellCommandKind.McpReload:
+                return await ReloadMcpAsync(state, cancellationToken).ConfigureAwait(false);
 
             case ShellCommandKind.Arsenal:
                 state.Log.Append(
@@ -162,19 +206,8 @@ internal sealed class ShellCommandDispatcher(
 
                 return await ResumeSessionAsync(state, parsed.Argument, cancellationToken).ConfigureAwait(false);
 
-            case ShellCommandKind.SessionNew:
-                if (CommandCenterSessionMutationGuard.TryDenySessionMutationWhileGenerating(state, out CommandCenterUiUpdate? denyNew))
-                {
-                    if (denyNew is not null)
-                    {
-                        state.Log.Append(SessionLogEntryKind.Status, CommandCenterSessionMutationGuard.GeneratingDenyMessage);
-                    }
-
-                    return ShellDispatchResult.Continue;
-                }
-
-                sessionWorkspace.StartNewSession(state);
-                return ShellDispatchResult.Continue;
+            case ShellCommandKind.SessionArchive:
+                return await ArchiveSessionAsync(state, parsed.Argument, cancellationToken).ConfigureAwait(false);
 
             case ShellCommandKind.SessionFork:
                 Guid? cutoff = null;
@@ -279,9 +312,6 @@ internal sealed class ShellCommandDispatcher(
                     await FormatToolsAsync(state, cancellationToken).ConfigureAwait(false));
                 return ShellDispatchResult.Continue;
 
-            case ShellCommandKind.Mana:
-                state.Log.Append(SessionLogEntryKind.Command, FormatMana(state));
-                return ShellDispatchResult.Continue;
 
             case ShellCommandKind.WardList:
                 state.Log.Append(
@@ -936,51 +966,6 @@ internal sealed class ShellCommandDispatcher(
                 state.ServeLaunch?.Guidance ?? "",
             ]);
 
-    private static string BuildHelpText() =>
-        string.Join(
-            Environment.NewLine,
-            [
-                "Command Center commands:",
-                "  /help                 Show this help",
-                "  /keys                 Keyboard shortcuts",
-                "  /status               Session / serve summary",
-                "  /doctor               Compact health check",
-                "  /clear                Clear the session log",
-                "  /mana                 Current mana counters",
-                "  /tools                Native tools (arsenal)",
-                "  /model list           List models",
-                "  /provider list        List providers",
-                "  /mcp                  MCP server status",
-                "  /arsenal              Workspace arsenal",
-                "  /campaign list [offset]  List a bounded display page of campaigns",
-                "  /session list         Refresh + list sessions",
-                "  /session new          Start a New Session",
-                "  /session resume <id>  Load transcript + continue that session",
-                "  /fork                 Fork the entire active session and open the branch",
-                "  /fork confirm         Confirm a large attachment-bearing fork",
-                "  /fork alternative     Fork before the selected answer and regenerate",
-                "  /fork at <entry-id>   Fork through a transcript entry and open the branch",
-                "  /fork at              Fork through the selected transcript entry",
-                "  /branch parent|child  Open the visible parent or newest child branch",
-                "  /attach <path>        Stage a local text file or image (Scrying) for the next turn",
-                "  @path                 Inline stage (text attach or Scrying image) in a message",
-                "  /attachments          List bound session attachments",
-                "  /attachments add <name> [vN]  Stage a prior attachment as AttachmentReferences",
-                "  /attachments reveal <name> [vN]  Reveal attachment file in OS file manager",
-                "  /attachments refresh <name>  Securely load the current tracked file version",
-                "  /context              Inspect persistent session context pins",
-                "  /context pin <kind> <target>  Pin file/directorySnapshot/symbolRange/sessionEntry/attachment/url/diagnostic",
-                "  /context unpin <id>   Remove a context pin",
-                "  /spell list [opaque-cursor]  List a bounded metadata page of spells",
-                "  /ward list [offset]   List a bounded display page of open wards",
-                "  /ward allow [id]      Allow pending ward (id optional when prompted)",
-                "  /ward deny [id]       Deny pending ward (id optional when prompted)",
-                "  /exit | /quit         Leave Command Center",
-                "",
-                "Ctrl+K opens the command palette. F1 shows shortcuts.",
-                "Plain text starts a chat turn.",
-            ]);
-
     private static string BuildKeysHelp() =>
         string.Join(
             Environment.NewLine,
@@ -1005,29 +990,258 @@ internal sealed class ShellCommandDispatcher(
                 "  /exit         Leave Command Center",
             ]);
 
-    private static string FormatMana(CommandCenterState state)
+    /// <summary>
+    /// The <c>/context</c> view: how the context window is being spent on this turn. This is the
+    /// readout <c>/mana</c> used to show; <c>/cost</c> now owns durable spend.
+    /// </summary>
+    private static string FormatContext(CommandCenterState state)
     {
         if (state.LastContextBreakdown is { } context)
         {
             string reported = context.ProviderReportedInputTokens is { } providerReported
                 ? $", provider reported={providerReported}, variance={context.EstimationVarianceTokens ?? 0}"
                 : ", provider reported=unavailable";
-            return $"Mana context: input={context.InputTokens}, reserved={context.ReservedTokens}, "
+            return $"Context: input={context.InputTokens}, reserved={context.ReservedTokens}, "
                 + $"total={context.TotalTokens}, quality={context.OverallClassification}, "
                 + $"profile={context.Profile.ProfileId}{reported}.";
         }
 
         if (state.ManaLimit is > 0)
         {
-            return $"Mana: {state.ManaUsed ?? 0} / {state.ManaLimit} (session counters in Command Center are best-effort).";
+            return $"Context: {state.ManaUsed ?? 0} / {state.ManaLimit} tokens "
+                + "(Command Center counters are best-effort until the first turn completes).";
         }
 
         if (state.ManaUsed is { } used)
         {
-            return $"Mana used (last known): {used}";
+            return $"Context tokens (last known): {used}";
         }
 
-        return "Mana: no counters yet this session. Full report: `arcanum chat` then `/mana`.";
+        return "Context: no counters yet this session. Full report: `arcanum context inspect`.";
+    }
+
+    /// <summary>
+    /// The <c>/cost</c> view: durable token and spend totals for the session, read from the same
+    /// authenticated session detail that <c>arcanum session show</c> uses.
+    /// </summary>
+    private async Task<ShellDispatchResult> ShowSessionCostAsync(
+        CommandCenterState state,
+        CancellationToken cancellationToken)
+    {
+        if (!TryRequireSession(state, out Guid sessionId))
+        {
+            return ShellDispatchResult.Continue;
+        }
+
+        Result<SessionDetailDto> result = await apiClient
+            .GetSessionAsync(sessionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            state.Log.Append(SessionLogEntryKind.Error, result.Error.Message);
+
+            return ShellDispatchResult.Continue;
+        }
+
+        SessionDetailDto detail = result.Value!;
+
+        string spend = detail.TotalCostUsd is { } cost
+            ? $"${cost:0.####} USD"
+            : "not reported by this provider";
+
+        state.Log.Append(
+            SessionLogEntryKind.Command,
+            $"Cost: {detail.TotalTokensUsed:N0} tokens over {detail.EntryCount:N0} entries; spend {spend}.");
+
+        return ShellDispatchResult.Continue;
+    }
+
+    /// <summary>
+    /// The <c>/memory</c> view: the compressed Campaign Summary the Loremaster maintains.
+    /// </summary>
+    private async Task<ShellDispatchResult> ShowSessionMemoryAsync(
+        CommandCenterState state,
+        CancellationToken cancellationToken)
+    {
+        if (!TryRequireSession(state, out Guid sessionId))
+        {
+            return ShellDispatchResult.Continue;
+        }
+
+        Result<SessionDetailDto> result = await apiClient
+            .GetSessionAsync(sessionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            state.Log.Append(SessionLogEntryKind.Error, result.Error.Message);
+
+            return ShellDispatchResult.Continue;
+        }
+
+        string? summary = result.Value!.Summary;
+
+        state.Log.Append(
+            SessionLogEntryKind.Command,
+            string.IsNullOrWhiteSpace(summary)
+                ? "Memory: no Campaign Summary yet. Run `/compact` to queue consolidation."
+                : $"Campaign Summary:{Environment.NewLine}{summary}");
+
+        return ShellDispatchResult.Continue;
+    }
+
+    /// <summary>
+    /// <c>/compact</c> queues Campaign Logger consolidation for the active session. The server owns
+    /// acceptance, so a full queue is reported rather than silently dropped.
+    /// </summary>
+    private async Task<ShellDispatchResult> CompactSessionAsync(
+        CommandCenterState state,
+        CancellationToken cancellationToken)
+    {
+        if (!TryRequireSession(state, out Guid sessionId))
+        {
+            return ShellDispatchResult.Continue;
+        }
+
+        Result result = await apiClient
+            .RestAsync(sessionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        state.Log.Append(
+            result.IsSuccess ? SessionLogEntryKind.Status : SessionLogEntryKind.Error,
+            result.IsSuccess
+                ? "Memory consolidation queued for this session."
+                : result.Error.Message);
+
+        return ShellDispatchResult.Continue;
+    }
+
+    /// <summary>
+    /// <c>/config</c> shows the effective configuration summary. It reports only safe values: no
+    /// endpoint, credential, or credential reference reaches the transcript.
+    /// </summary>
+    private string FormatConfig(CommandCenterState state)
+    {
+        ArcanumSettings settings = settingsMonitor.CurrentValue;
+
+        string campaign = state.CampaignId is { } campaignId
+            ? campaignId.ToString("D")
+            : "-";
+
+        return string.Join(
+            Environment.NewLine,
+            [
+                "Configuration:",
+                $"  Default model     {settings.DefaultModel ?? "-"}",
+                $"  Session model     {state.Model ?? settings.DefaultModel ?? "-"}",
+                $"  Providers         {settings.Providers.Length} configured",
+                $"  Workspace         {state.WorkingDirectory}",
+                $"  Campaign          {campaign}",
+                "  Full detail       run `arcanum config list`",
+            ]);
+    }
+
+    private async Task<ShellDispatchResult> SelectModelAsync(
+        CommandCenterState state,
+        string? model,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            state.Log.Append(SessionLogEntryKind.Error, "Usage: /model [<name>]");
+
+            return ShellDispatchResult.Continue;
+        }
+
+        Result<ModelInfoDto[]> result = await apiClient
+            .GetModelsAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            state.Log.Append(SessionLogEntryKind.Error, result.Error.Message);
+
+            return ShellDispatchResult.Continue;
+        }
+
+        ModelInfoDto? selected = Array.Find(
+            result.Value!,
+            candidate => string.Equals(candidate.Model, model, StringComparison.OrdinalIgnoreCase));
+
+        if (selected is null)
+        {
+            state.Log.Append(
+                SessionLogEntryKind.Error,
+                $"`{model}` is not a configured model. Run `/model` to list the configured models.");
+
+            return ShellDispatchResult.Continue;
+        }
+
+        state.Model = selected.Model;
+
+        state.Log.Append(SessionLogEntryKind.Status, $"Model set to {selected.Model} for this session.");
+
+        return ShellDispatchResult.Continue;
+    }
+
+    private async Task<ShellDispatchResult> ReloadMcpAsync(
+        CommandCenterState state,
+        CancellationToken cancellationToken)
+    {
+        Result<string> result = await apiClient
+            .ReloadMcpAsync(new OptionalWorkspaceRequest(state.WorkingDirectory), cancellationToken)
+            .ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            state.Log.Append(SessionLogEntryKind.Error, result.Error.Message);
+
+            return ShellDispatchResult.Continue;
+        }
+
+        await RefreshMcpAsync(state, cancellationToken).ConfigureAwait(false);
+
+        state.Log.Append(SessionLogEntryKind.Status, result.Value ?? "MCP configuration reloaded.");
+
+        return ShellDispatchResult.Continue;
+    }
+
+    private async Task<ShellDispatchResult> ArchiveSessionAsync(
+        CommandCenterState state,
+        string? identifier,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(identifier, out Guid sessionId))
+        {
+            state.Log.Append(SessionLogEntryKind.Error, "Usage: /session archive <session-id>");
+
+            return ShellDispatchResult.Continue;
+        }
+
+        Result result = await apiClient
+            .ArchiveSessionAsync(sessionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            state.Log.Append(SessionLogEntryKind.Error, result.Error.Message);
+
+            return ShellDispatchResult.Continue;
+        }
+
+        // Archiving the thread we are standing in would leave the composer bound to a session the
+        // server will refuse to append to, so drop the pointer and start clean.
+        if (state.SessionId == sessionId)
+        {
+            sessionWorkspace.StartNewSession(state);
+        }
+
+        await sessionWorkspace.RefreshSessionsAsync(state, cancellationToken).ConfigureAwait(false);
+
+        state.Log.Append(SessionLogEntryKind.Status, $"Archived session {sessionId:D}.");
+
+        return ShellDispatchResult.Continue;
     }
 
     private async Task<string> FormatToolsAsync(CommandCenterState state, CancellationToken cancellationToken)

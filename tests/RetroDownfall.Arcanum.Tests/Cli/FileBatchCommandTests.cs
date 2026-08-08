@@ -45,7 +45,7 @@ public sealed class FileBatchCommandTests
 
         }
 
-        foreach (string command in new[] { "create", "list", "show", "watch", "cancel", "reset", "output", "errors" })
+        foreach (string command in new[] { "create", "list", "show", "wait", "cancel", "reset", "output", "errors" })
         {
 
             Assert.Contains(command, batch.Output, StringComparison.Ordinal);
@@ -265,7 +265,7 @@ public sealed class FileBatchCommandTests
 
     [Fact]
 
-    public void Batch_watch_polls_until_terminal_and_displays_request_counts()
+    public void Batch_wait_polls_until_terminal_and_displays_request_counts()
     {
 
         Queue<HttpResponseMessage> responses = new(
@@ -280,7 +280,7 @@ public sealed class FileBatchCommandTests
 
         CliTestResult result = RunCommand(
             handler,
-            ["batch", "watch", BatchId, "--poll-interval", "1"]);
+            ["batch", "wait", BatchId, "--poll-interval", "1"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -310,7 +310,7 @@ public sealed class FileBatchCommandTests
             [
                 "--json",
                 "batch",
-                "watch",
+                "wait",
                 BatchId,
                 "--poll-interval",
                 "not-a-number",

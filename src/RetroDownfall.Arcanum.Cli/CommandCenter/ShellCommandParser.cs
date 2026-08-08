@@ -6,22 +6,29 @@ internal enum ShellCommandKind
     Exit,
     Quit,
     Clear,
+    Compact,
+    Config,
+    Context,
+    Cost,
+    Memory,
+    Look,
     Status,
     Doctor,
-    ModelList,
+    Model,
+    ModelSelect,
     ProviderList,
     Mcp,
+    McpReload,
     Arsenal,
     CampaignList,
     SessionList,
     SessionResume,
-    SessionNew,
+    SessionArchive,
     SessionFork,
     BranchParent,
     BranchChild,
     SpellList,
     Tools,
-    Mana,
     WardList,
     WardAllow,
     WardDeny,
@@ -33,9 +40,9 @@ internal enum ShellCommandKind
 
     AttachmentsRefresh,
 
-    ContextList,
-    ContextPin,
-    ContextUnpin,
+    PinList,
+    Pin,
+    Unpin,
     Denied,
     Unknown,
 }
@@ -88,25 +95,31 @@ internal sealed class ShellCommandParser
             return new ParsedShellCommand(ShellCommandKind.Attach, raw, Argument: arg);
         }
 
-        if (head is "context")
+        // /context is the Claude-aligned token/context-window view. Persistent pins are a distinct
+        // Arcanum capability and get their own verbs rather than overloading the same name.
+        if (head is "pins")
         {
-            if (parts.Length == 1 || (parts.Length == 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)))
-            {
-                return new ParsedShellCommand(ShellCommandKind.ContextList, raw);
-            }
-            if (parts.Length >= 4 && parts[1].Equals("pin", StringComparison.OrdinalIgnoreCase))
-            {
-                return new ParsedShellCommand(
-                    ShellCommandKind.ContextPin,
+            return parts.Length == 1
+                ? new ParsedShellCommand(ShellCommandKind.PinList, raw)
+                : Denied(raw, "Usage: /pins");
+        }
+
+        if (head is "pin")
+        {
+            return parts.Length >= 3
+                ? new ParsedShellCommand(
+                    ShellCommandKind.Pin,
                     raw,
-                    Argument: parts[2],
-                    SecondaryArgument: string.Join(' ', parts.Skip(3)));
-            }
-            if (parts.Length == 3 && parts[1].Equals("unpin", StringComparison.OrdinalIgnoreCase))
-            {
-                return new ParsedShellCommand(ShellCommandKind.ContextUnpin, raw, Argument: parts[2]);
-            }
-            return Denied(raw, "Usage: /context [list] | /context pin <kind> <target> | /context unpin <pin-id>");
+                    Argument: parts[1],
+                    SecondaryArgument: string.Join(' ', parts.Skip(2)))
+                : Denied(raw, "Usage: /pin <kind> <target>");
+        }
+
+        if (head is "unpin")
+        {
+            return parts.Length == 2
+                ? new ParsedShellCommand(ShellCommandKind.Unpin, raw, Argument: parts[1])
+                : Denied(raw, "Usage: /unpin <pin-id>");
         }
 
         if (head.StartsWith("attach", StringComparison.Ordinal))
@@ -180,21 +193,37 @@ internal sealed class ShellCommandParser
             "exit" => new ParsedShellCommand(ShellCommandKind.Exit, raw),
             "quit" => new ParsedShellCommand(ShellCommandKind.Quit, raw),
             "clear" => new ParsedShellCommand(ShellCommandKind.Clear, raw),
+            "compact" => new ParsedShellCommand(ShellCommandKind.Compact, raw),
+            "config" => new ParsedShellCommand(ShellCommandKind.Config, raw),
+            "context" => new ParsedShellCommand(ShellCommandKind.Context, raw),
+            "cost" => new ParsedShellCommand(ShellCommandKind.Cost, raw),
+            "memory" => new ParsedShellCommand(ShellCommandKind.Memory, raw),
+            "look" => new ParsedShellCommand(ShellCommandKind.Look, raw),
             "status" => new ParsedShellCommand(ShellCommandKind.Status, raw),
             "doctor" => new ParsedShellCommand(ShellCommandKind.Doctor, raw),
-            "mcp" => new ParsedShellCommand(ShellCommandKind.Mcp, raw),
+            "mcp" when parts.Length == 1 => new ParsedShellCommand(ShellCommandKind.Mcp, raw),
+            "mcp" when parts.Length == 2 && parts[1].Equals("reload", StringComparison.OrdinalIgnoreCase)
+                => new ParsedShellCommand(ShellCommandKind.McpReload, raw),
             "arsenal" => new ParsedShellCommand(ShellCommandKind.Arsenal, raw),
             "tools" => new ParsedShellCommand(ShellCommandKind.Tools, raw),
-            "mana" => new ParsedShellCommand(ShellCommandKind.Mana, raw),
             "keys" => new ParsedShellCommand(ShellCommandKind.Keys, raw),
-            "model" when parts.Length >= 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)
-                => new ParsedShellCommand(ShellCommandKind.ModelList, raw),
+            "model" when parts.Length == 1 => new ParsedShellCommand(ShellCommandKind.Model, raw),
+            "model" => new ParsedShellCommand(
+                ShellCommandKind.ModelSelect,
+                raw,
+                Argument: string.Join(' ', parts.Skip(1))),
             "provider" when parts.Length >= 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(ShellCommandKind.ProviderList, raw),
+            "resume" when parts.Length == 2
+                => new ParsedShellCommand(ShellCommandKind.SessionResume, raw, Argument: parts[1]),
             "session" when parts.Length >= 2 && parts[1].Equals("list", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(ShellCommandKind.SessionList, raw),
             "session" when parts.Length >= 2 && parts[1].Equals("new", StringComparison.OrdinalIgnoreCase)
-                => new ParsedShellCommand(ShellCommandKind.SessionNew, raw),
+                => Denied(raw, "`/session new` was removed. Use `/clear` to start a fresh thread."),
+            "session" when parts.Length == 3 && parts[1].Equals("archive", StringComparison.OrdinalIgnoreCase)
+                => new ParsedShellCommand(ShellCommandKind.SessionArchive, raw, Argument: parts[2]),
+            "session" when parts.Length >= 3 && parts[1].Equals("resume", StringComparison.OrdinalIgnoreCase)
+                => Denied(raw, "`/session resume` was removed. Use `/resume <id>` instead."),
             "fork" when parts.Length == 1
                 => new ParsedShellCommand(ShellCommandKind.SessionFork, raw),
             "fork" when parts.Length == 2 && parts[1].Equals("at", StringComparison.OrdinalIgnoreCase)
@@ -209,8 +238,6 @@ internal sealed class ShellCommandParser
                 => new ParsedShellCommand(ShellCommandKind.BranchParent, raw),
             "branch" when parts.Length == 2 && parts[1].Equals("child", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(ShellCommandKind.BranchChild, raw),
-            "session" when parts.Length >= 3 && parts[1].Equals("resume", StringComparison.OrdinalIgnoreCase)
-                => new ParsedShellCommand(ShellCommandKind.SessionResume, raw, Argument: parts[2]),
             "ward" when parts.Length >= 2 && parts[1].Equals("allow", StringComparison.OrdinalIgnoreCase)
                 => new ParsedShellCommand(
                     ShellCommandKind.WardAllow,
@@ -299,11 +326,23 @@ internal sealed class ShellCommandParser
         return int.TryParse(span, out version) && version > 0;
     }
 
-    private static ParsedShellCommand Unknown(string raw) =>
-        new(
+    /// <summary>
+    /// Every unrecognized name goes through the registry, so a removed spelling names its exact
+    /// replacement and a near miss suggests the closest canonical command instead of dead-ending.
+    /// </summary>
+    private static ParsedShellCommand Unknown(string raw)
+    {
+
+        string spelling = raw.TrimStart('/').Split(' ', StringSplitOptions.RemoveEmptyEntries) is [string head, ..]
+            ? head.ToLowerInvariant()
+            : string.Empty;
+
+        return new ParsedShellCommand(
             ShellCommandKind.Unknown,
             raw,
-            DenialMessage: $"Unknown command `{raw}`. Type `/help` for available commands.");
+            DenialMessage: SlashCommandRegistry.DescribeUnknown(raw, spelling));
+
+    }
 
     private static ParsedShellCommand Denied(string raw, string message) =>
         new(ShellCommandKind.Denied, raw, DenialMessage: message);

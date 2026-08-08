@@ -436,7 +436,7 @@ For logs, category and search are free-form. Level keeps the API's existing null
 contract: `trace`, `debug`, `information`, `warning`, `error`, or `critical`; Compendium adds no
 second severity policy.
 
-The same per-invocation rule applies to `arcanum context inspect|tools|sources` and `arcanum mana`:
+The same per-invocation rule applies to `arcanum context inspect|tools|sources|cost`:
 `--show-content` is an explicit one-run operator reveal and `--no-retrieval` is a one-run request to
 skip embedding/RAG work. Compendium does not persist either switch. Use these commands after editing
 model, tool, Spell, retrieval, or context-window settings to verify the effective provider, tool

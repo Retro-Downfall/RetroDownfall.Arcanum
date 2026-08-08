@@ -459,7 +459,7 @@ public sealed class ContextCommands(
 
                 break;
 
-            case ContextPreviewView.Mana:
+            case ContextPreviewView.Cost:
 
                 WriteMana(preview);
 
@@ -642,6 +642,6 @@ public enum ContextPreviewView
 
     Sources,
 
-    Mana,
+    Cost,
 
 }
