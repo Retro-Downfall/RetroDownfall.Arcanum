@@ -25,6 +25,37 @@ public static class OutboundUrlGuard
     public static IDnsResolver DnsResolver { get; set; } = new SystemDnsResolver();
 
     /// <summary>
+    /// Test-only seam that substitutes the pinned address list between validation and connect, so tests
+    /// can prove the post-resolution re-check still fails closed on a poisoned or empty list. It grants
+    /// no bypass: every address it yields is re-validated by <see cref="IsBlockedAddress"/> before a
+    /// socket is opened. Production code leaves this at the default (<see langword="null"/>).
+    /// Set via <see cref="SetPinnedAddressRewriterForTests"/>.
+    /// </summary>
+    private static Func<IReadOnlyList<IPAddress>, IReadOnlyList<IPAddress>>? _pinnedAddressRewriterForTests;
+
+    /// <summary>
+    /// Supplies a test-only rewriter for the pinned address list. Pass <see langword="null"/> to restore
+    /// the default.
+    /// </summary>
+    internal static void SetPinnedAddressRewriterForTests(
+        Func<IReadOnlyList<IPAddress>, IReadOnlyList<IPAddress>>? rewriter)
+    {
+
+        _pinnedAddressRewriterForTests = rewriter;
+
+    }
+
+    /// <summary>
+    /// Restores all test seams to production defaults. Call from test teardown to avoid cross-test leakage.
+    /// </summary>
+    internal static void ResetTestSeams()
+    {
+
+        _pinnedAddressRewriterForTests = null;
+
+    }
+
+    /// <summary>
     /// Validates an untrusted outbound URL (webhooks and similar operator-supplied egress targets).
     /// </summary>
     public static Task<Result> ValidateUntrustedUrlAsync(string? url, CancellationToken cancellationToken = default) =>
@@ -287,9 +318,13 @@ public static class OutboundUrlGuard
             throw new HttpRequestException(resolved.Error.Message);
         }
 
+        IReadOnlyList<IPAddress> pinned = _pinnedAddressRewriterForTests is null
+            ? resolved.Value
+            : _pinnedAddressRewriterForTests(resolved.Value);
+
         List<Exception>? connectErrors = null;
 
-        foreach (IPAddress address in resolved.Value)
+        foreach (IPAddress address in pinned)
         {
 
             if (IsBlockedAddress(address, allowPrivateAndLoopback))

@@ -223,6 +223,14 @@ public sealed class DataProtectionSecretStore(
 
     }
 
+    /// <summary>
+    /// Test seam for <see cref="WriteProtectedAsync"/>. Production callers only ever pass paths built
+    /// by <see cref="ArcanumPaths"/>, which always name a file inside the secret store directory, so
+    /// the rooted-path guard on the directory cannot be driven from the public surface.
+    /// </summary>
+    internal static Task WriteProtectedForTestsAsync(string path, string plainText, IDataProtector protector) =>
+        WriteProtectedAsync(path, plainText, protector);
+
     private static async Task WriteProtectedAsync(string path, string plainText, IDataProtector protector)
     {
 

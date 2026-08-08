@@ -444,6 +444,96 @@ public sealed class ApiKeyEndpointFilterTests
     Assert.Equal(0, store.GetCallCount);
   }
 
+  [Fact]
+  public async Task InvokeAsync_HeaderExactlyAtClampLength_AllowsRequest()
+  {
+    int maxChars = ArcanumSettingClamps.MaxApiKeyHeaderUtf16Chars(
+      ArcanumRuntimeDefaults.SecurityMaxApiKeyHeaderUtf16Chars);
+
+    string boundaryKey = new('k', maxChars);
+
+    ApiKeyEndpointFilter filter = CreateFilter(boundaryKey);
+
+    DefaultHttpContext httpContext = new();
+
+    httpContext.Request.Headers[ArcanumApiHeaders.ApiKey] = boundaryKey;
+
+    bool nextCalled = false;
+
+    await filter.InvokeAsync(
+      CreateContext(httpContext),
+      _ =>
+      {
+        nextCalled = true;
+
+        return ValueTask.FromResult<object?>(Results.Ok());
+      });
+
+    Assert.True(nextCalled);
+  }
+
+  [Fact]
+  public async Task InvokeAsync_HeaderOverClampLength_FailsClosedEvenWhenItMatchesStoredKey()
+  {
+    int maxChars = ArcanumSettingClamps.MaxApiKeyHeaderUtf16Chars(
+      ArcanumRuntimeDefaults.SecurityMaxApiKeyHeaderUtf16Chars);
+
+    string oversizedKey = new('k', maxChars + 1);
+
+    ApiKeyEndpointFilter filter = CreateFilter(oversizedKey);
+
+    DefaultHttpContext httpContext = new();
+
+    httpContext.Request.Headers[ArcanumApiHeaders.ApiKey] = oversizedKey;
+
+    bool nextCalled = false;
+
+    IResult result = Assert.IsType<JsonHttpResult<ApiResponse<string>>>(
+      await filter.InvokeAsync(
+        CreateContext(httpContext),
+        _ =>
+        {
+          nextCalled = true;
+
+          return ValueTask.FromResult<object?>(Results.Ok());
+        }));
+
+    Assert.False(nextCalled);
+
+    Assert.Equal(StatusCodes.Status401Unauthorized, UnauthorizedStatus(result));
+  }
+
+  [Fact]
+  public async Task InvokeAsync_OversizedBearerToken_FailsClosedEvenWhenItMatchesStoredKey()
+  {
+    int maxChars = ArcanumSettingClamps.MaxApiKeyHeaderUtf16Chars(
+      ArcanumRuntimeDefaults.SecurityMaxApiKeyHeaderUtf16Chars);
+
+    string oversizedKey = new('b', maxChars + 1);
+
+    ApiKeyEndpointFilter filter = CreateFilter(oversizedKey);
+
+    DefaultHttpContext httpContext = new();
+
+    httpContext.Request.Headers.Authorization = $"Bearer {oversizedKey}";
+
+    bool nextCalled = false;
+
+    IResult result = Assert.IsType<JsonHttpResult<ApiResponse<string>>>(
+      await filter.InvokeAsync(
+        CreateContext(httpContext),
+        _ =>
+        {
+          nextCalled = true;
+
+          return ValueTask.FromResult<object?>(Results.Ok());
+        }));
+
+    Assert.False(nextCalled);
+
+    Assert.Equal(StatusCodes.Status401Unauthorized, UnauthorizedStatus(result));
+  }
+
   private static ApiKeyEndpointFilter CreateFilter(string? storedKey) =>
     CreateFilter(new FakeSecretStore(storedKey));
 

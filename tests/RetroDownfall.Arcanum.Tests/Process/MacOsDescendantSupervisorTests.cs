@@ -7,15 +7,17 @@ public sealed class MacOsDescendantSupervisorTests
 {
 
     /// <summary>
-    /// The supervisor runs for the full lifetime of every macOS tool child (execute_command,
-    /// run_spell_script, workspace_check, the SDK resolver). Its full process-table scan issues two
-    /// proc_pidinfo syscalls per live PID, so running it on every 10 ms tick cost tens of percent of
-    /// a core plus steady GC pressure per concurrent child. Steady-state tracking belongs to the
-    /// already-registered kqueue NOTE_FORK/NOTE_EXIT watcher; the scan is only the reconciliation
-    /// safety net.
+    /// The full process-table scan must run on every monitor tick. macOS delivers NOTE_FORK without
+    /// the child's pid, so the kqueue watcher can report that a tracked process forked but never
+    /// which pid to track: the scan is the only way to learn a descendant's identity. It has to do so
+    /// before that descendant escapes its process group and its parent exits, because after
+    /// reparenting to launchd no ancestry walk can attribute it to this root and containment is lost
+    /// permanently. Throttling the scan is therefore not a performance trade — it silently widens the
+    /// escape window. The scan is expensive (two proc_pidinfo syscalls per live pid); the way to pay
+    /// less is to make each scan cheaper, never to scan less often.
     /// </summary>
     [SkippableFact]
-    public async Task Monitor_loop_reconciles_the_process_table_far_less_often_than_it_ticks()
+    public async Task Monitor_loop_scans_the_process_table_on_every_tick()
     {
 
         Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
@@ -40,16 +42,25 @@ public sealed class MacOsDescendantSupervisorTests
 
             await Task.Delay(TimeSpan.FromSeconds(1));
 
-            // The full scan must run on every ~10 ms tick. macOS delivers NOTE_FORK without the
-            // child's pid, so the scan is the only way to learn a descendant's identity, and it has
-            // to win the race against that descendant escaping its process group and being
-            // reparented to launchd. Throttling the scan silently widens that window and loses
-            // containment, so assert a floor rather than a ceiling: a one-second observation at a
-            // 10 ms cadence is ~100 scans, and anything below 25 means the cadence regressed.
+            // Assert the invariant itself — one scan per tick — rather than a scans-per-second rate.
+            // A rate threshold has to be calibrated against wall clock, and the honest loop slows
+            // down by an order of magnitude under coverage instrumentation on a loaded parallel
+            // suite, so any floor is either too tight (false failures) or too loose to catch the
+            // regression. Comparing the two counters is exact and load-independent: a throttled
+            // cadence makes scans fall behind ticks immediately, however slowly the host is running.
+            long ticks = supervisor!.MonitorTickCount;
+
+            long scans = supervisor.FullScanCount;
+
+            Assert.True(ticks > 0, "The monitor loop did not run.");
+
+            // The counters are read without a lock, so the loop may sit between its tick increment
+            // and its scan: one outstanding tick is expected, more is a throttle.
             Assert.True(
-                supervisor!.FullScanCount >= 25,
-                $"The reconciliation scan ran only {supervisor.FullScanCount} times in one second; "
-                + "the containment window depends on it running every tick.");
+                ticks - scans <= 1,
+                $"The monitor loop ticked {ticks} times but scanned only {scans} times. The scan must "
+                + "run on every tick: NOTE_FORK carries no child pid, so the scan is the only way to "
+                + "identify a descendant before it escapes its process group and is reparented.");
 
         }
         finally

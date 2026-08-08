@@ -16,6 +16,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     private readonly CancellationTokenSource _monitorCts = new();
     private readonly Task _monitorTask;
     private long _fullScanCount;
+    private long _monitorTickCount;
     private bool _stopped;
 
     private MacOsDescendantSupervisor(
@@ -225,6 +226,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         {
             while (!_monitorCts.IsCancellationRequested)
             {
+                _ = Interlocked.Increment(ref _monitorTickCount);
+
                 TrackKernelEvents();
 
                 // The full reconciliation runs on every tick, and the cadence cannot be relaxed.
@@ -308,10 +311,16 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     }
 
     /// <summary>
-    /// Number of full process-table reconciliations performed so far. Exposed so a test can prove the
-    /// monitor loop no longer scans on every tick.
+    /// Number of full process-table scans performed so far. Compared against
+    /// <see cref="MonitorTickCount"/> so a test can prove the scan still runs on every tick without
+    /// depending on wall-clock rate, which varies with host load and coverage instrumentation.
     /// </summary>
     internal long FullScanCount => Interlocked.Read(ref _fullScanCount);
+
+    /// <summary>
+    /// Number of monitor-loop iterations performed so far.
+    /// </summary>
+    internal long MonitorTickCount => Interlocked.Read(ref _monitorTickCount);
 
     private void DiscoverDescendants()
     {
