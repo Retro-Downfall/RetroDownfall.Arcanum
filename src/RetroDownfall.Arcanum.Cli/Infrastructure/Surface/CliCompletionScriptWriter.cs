@@ -65,7 +65,8 @@ internal static class CliCompletionScriptWriter
                 string.Empty,
                 [.. map.Commands.Select(static command => command.Name)],
                 [.. GlobalSpellings(map).Where(IsDashPrefixed)],
-                null),
+                null,
+                map.GlobalOptions),
         ];
 
         foreach (CliSurfaceCommand command in map.Commands.SelectMany(CliSurfaceBuilder.Flatten))
@@ -74,7 +75,15 @@ internal static class CliCompletionScriptWriter
             nodes.Add(
                 new CompletionNode(
                     command.Path,
-                    [.. command.Commands.Select(static child => child.Name)],
+                    [
+                        // A positional with a closed value set is completed exactly like a
+                        // subcommand: after `arcanum completion `, `bash` is as valid a next word
+                        // as `install`, and offering only one of them is the wrong half.
+                        .. command.Commands
+                            .Select(static child => child.Name)
+                            .Concat(command.Arguments.SelectMany(static argument => argument.Values))
+                            .Distinct(StringComparer.Ordinal),
+                    ],
                     [
                         .. command.Options
                             .SelectMany(static option => option.Aliases.Append(option.Name))
@@ -83,7 +92,8 @@ internal static class CliCompletionScriptWriter
                             .Distinct(StringComparer.Ordinal)
                             .OrderBy(static spelling => spelling, StringComparer.Ordinal),
                     ],
-                    command));
+                    command,
+                    map.GlobalOptions));
 
         }
 
@@ -109,17 +119,17 @@ internal static class CliCompletionScriptWriter
     /// <c>option=values</c> pairs the shell can look up after <c>--option </c>.
     /// </summary>
     private static IEnumerable<(string Option, string Values, string? Provider)> ValueSources(
-        CliSurfaceCommand? command)
+        CompletionNode node)
     {
 
-        if (command is null)
-        {
+        // Recursive root options are valid at every path but are not repeated in each command's own
+        // option list, so their closed sets have to be contributed here or `--output-format <TAB>`
+        // would offer nothing anywhere below the root.
+        IEnumerable<CliSurfaceOption> options = node.Command is null
+            ? node.GlobalOptions
+            : node.Command.Options.Concat(node.GlobalOptions.Where(static option => option.Recursive));
 
-            yield break;
-
-        }
-
-        foreach (CliSurfaceOption option in command.Options)
+        foreach (CliSurfaceOption option in options)
         {
 
             if (option.Values.Count > 0)
@@ -254,7 +264,7 @@ internal static class CliCompletionScriptWriter
         foreach (CompletionNode node in nodes)
         {
 
-            foreach ((string option, string values, string? provider) in ValueSources(node.Command))
+            foreach ((string option, string values, string? provider) in ValueSources(node))
             {
 
                 string payload = dynamicSource ? provider ?? string.Empty : values;
@@ -390,7 +400,7 @@ internal static class CliCompletionScriptWriter
         foreach (CompletionNode node in nodes)
         {
 
-            foreach ((string option, string values, string? provider) in ValueSources(node.Command))
+            foreach ((string option, string values, string? provider) in ValueSources(node))
             {
 
                 string payload = dynamicSource ? provider ?? string.Empty : values;
@@ -483,7 +493,7 @@ internal static class CliCompletionScriptWriter
 
             }
 
-            foreach ((string option, string values, string? provider) in ValueSources(node.Command))
+            foreach ((string option, string values, string? provider) in ValueSources(node))
             {
 
                 builder
@@ -625,7 +635,7 @@ internal static class CliCompletionScriptWriter
         foreach (CompletionNode node in nodes)
         {
 
-            foreach ((string option, string values, string? provider) in ValueSources(node.Command))
+            foreach ((string option, string values, string? provider) in ValueSources(node))
             {
 
                 string payload = dynamicSource ? provider ?? string.Empty : values;
@@ -660,6 +670,7 @@ internal static class CliCompletionScriptWriter
         string Path,
         IReadOnlyList<string> Children,
         IReadOnlyList<string> Options,
-        CliSurfaceCommand? Command);
+        CliSurfaceCommand? Command,
+        IReadOnlyList<CliSurfaceOption> GlobalOptions);
 
 }

@@ -24,12 +24,16 @@ internal static partial class CliCommandTree
             "completion",
             "Generate shell completion for bash, zsh, fish, or powershell.");
 
-        Argument<string> shell = ShellArgument();
+        // Optional at the parser level even though a shell is required: `completion` also has an
+        // `install` subcommand, and a required positional here makes `completion install zsh`
+        // report a missing argument for the parent and print `completion <shell> install <shell>`
+        // as its usage. The handler enforces the requirement and names the supported shells.
+        Argument<string?> shell = OptionalShellArgument();
 
         completion.Add(shell);
 
         completion.SetAction((ParseResult result) =>
-            handler.Generate(result.GetValue(shell)!, surface()));
+            handler.Generate(result.GetValue(shell), surface()));
 
         Command install = new(
             "install",
@@ -100,6 +104,24 @@ internal static partial class CliCommandTree
 
         Argument<string> shell = new("shell")
         {
+
+            Description = "Target shell: bash, zsh, fish, or powershell.",
+
+        };
+
+        shell.AcceptOnlyFromAmong(CliCompletionShells.Names);
+
+        return shell;
+
+    }
+
+    private static Argument<string?> OptionalShellArgument()
+    {
+
+        Argument<string?> shell = new("shell")
+        {
+
+            Arity = ArgumentArity.ZeroOrOne,
 
             Description = "Target shell: bash, zsh, fish, or powershell.",
 

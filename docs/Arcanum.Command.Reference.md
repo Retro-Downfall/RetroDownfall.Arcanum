@@ -10,6 +10,12 @@ Every option and argument reachable from the root command carries a help descrip
 descriptions in this reference are the same strings the parser reports. A symbol declared without a
 description fails the build, so `--help` and this document cannot diverge.
 
+`<command> --help` ends with an `Examples:` section for every runnable command. Those examples are
+parse-tested against the live tree, so a renamed verb or removed option breaks the build rather
+than shipping help that no longer works. A command that deliberately has no safe example — a
+credential write, an irreversible deletion, an OS-service registration — says so and why, instead
+of appearing to have been forgotten.
+
 Use the standard `--` end-of-options marker before positional text that begins with a hyphen; for
 example, `arcanum run -- --explain-this` treats `--explain-this` as the prompt.
 

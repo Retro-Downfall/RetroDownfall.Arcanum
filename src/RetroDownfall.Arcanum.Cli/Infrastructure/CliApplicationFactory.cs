@@ -520,6 +520,13 @@ internal static class CliApplicationFactory
                     .InvokeAsync(config)
                     .ConfigureAwait(false);
 
+                // Appended after invocation rather than from inside the help action: HelpAction is
+                // sealed, and its Terminating/ClearsParseErrors flags are read-only, so a wrapper
+                // or subclass cannot preserve the exit-0-under---help contract for commands with
+                // required arguments. Writing to config.Output keeps examples inside the same
+                // captured stream as the rest of help, so `--help --json` stays one document.
+                CliHelpExamples.Append(root, parseResult, args, config.Output);
+
                 int normalizedExitCode = parseResult.Errors.Count > 0
                     ? (int)CliExitCode.ConfigurationError
                     : NormalizeExitCode(exitCode);

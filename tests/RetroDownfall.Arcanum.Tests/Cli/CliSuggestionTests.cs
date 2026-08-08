@@ -111,6 +111,42 @@ public sealed class CliSuggestionTests
 
     }
 
+    /// <summary>
+    /// A command with a required argument still parses with errors under <c>--help</c>. Suggesting
+    /// a spelling there would replace the help the operator explicitly asked for, and would name a
+    /// command they had already typed correctly.
+    /// </summary>
+    [Theory]
+    [InlineData("key", "provider", "set")]
+    [InlineData("completion", "install")]
+    [InlineData("trial", "run")]
+    [InlineData("lore", "set")]
+    public void Help_on_a_command_with_required_arguments_still_shows_help(params string[] path)
+    {
+
+        CliTestResult result = CliTestHarness.Run(CreateServices(), [.. path, "--help"]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.DoesNotContain("Did you mean", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("Usage:", result.Output, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The nearest-match branch must never echo the token the operator typed.
+    /// </summary>
+    [Fact]
+    public void A_valid_subcommand_is_never_suggested_back_to_the_caller()
+    {
+
+        CliTestResult result = CliTestHarness.Run(CreateServices(), "key", "provider", "set");
+
+        Assert.DoesNotContain("Did you mean `arcanum key provider set`", result.Error, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public void An_unrelated_word_gets_no_invented_suggestion()
     {

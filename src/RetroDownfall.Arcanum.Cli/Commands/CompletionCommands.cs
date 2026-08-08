@@ -17,8 +17,18 @@ internal sealed class CompletionCommands(
     IConsoleDispatcher dispatcher)
 {
 
-    public int Generate(string shell, CliSurfaceMap map)
+    public int Generate(string? shell, CliSurfaceMap map)
     {
+
+        if (string.IsNullOrWhiteSpace(shell))
+        {
+
+            dispatcher.WriteDiagnostic(
+                $"A shell is required. Supported: {string.Join(", ", CliCompletionShells.Names)}.");
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
 
         if (!CliCompletionShells.IsSupported(shell))
         {

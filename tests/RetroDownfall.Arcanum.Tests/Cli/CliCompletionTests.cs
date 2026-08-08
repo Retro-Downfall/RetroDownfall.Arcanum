@@ -183,6 +183,56 @@ public sealed class CliCompletionTests
 
     }
 
+    /// <summary>
+    /// A positional with a closed value set is completed exactly like a subcommand: after
+    /// <c>arcanum completion </c>, <c>bash</c> is as valid a next word as <c>install</c>, and
+    /// offering only one of them is the wrong half.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Shells))]
+    public void Generated_scripts_offer_positional_enum_values(string shell)
+    {
+
+        string script = CliCompletionScriptWriter.Write(shell, CliSurfaceTests.BuildMap());
+
+        foreach (string name in CliCompletionShells.Names)
+        {
+
+            Assert.Contains(name, script, StringComparison.Ordinal);
+
+        }
+
+        Assert.Contains("sessions", script, StringComparison.Ordinal);
+
+        Assert.Contains("automation", script, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Recursive root options are valid at every path but are not repeated in each command's own
+    /// option list, so their closed sets must be contributed explicitly or
+    /// <c>--output-format &lt;TAB&gt;</c> would offer nothing anywhere below the root.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Shells))]
+    public void Generated_scripts_offer_recursive_global_option_values_at_nested_paths(string shell)
+    {
+
+        string script = CliCompletionScriptWriter.Write(shell, CliSurfaceTests.BuildMap());
+
+        // Each shell binds an option to its values in its own idiom: bash/zsh/PowerShell key a map
+        // by "path|option", while fish emits one `complete` line carrying both the path condition
+        // and the values.
+        string expected = shell == CliCompletionShells.Fish
+            ? "\"session list\"' -l 'output-format' -a 'json text'"
+            : "session list|--output-format";
+
+        Assert.Contains(expected, script, StringComparison.Ordinal);
+
+        Assert.Contains("json text", script, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public void An_unsupported_shell_is_a_command_line_error()
     {

@@ -80,9 +80,30 @@ internal static class CliSuggestionEngine
 
         }
 
+        // Past the removed-spelling table, a parse failure is only a naming problem when the
+        // failing token is genuinely unknown. `--help` on a command with a required argument also
+        // parses with errors, and answering that with a spelling suggestion would replace the help
+        // the operator asked for.
+        if (RequestsHelp(arguments))
+        {
+
+            return null;
+
+        }
+
         Command resolved = parseResult.CommandResult.Command;
 
         string unrecognized = verbs[^1];
+
+        // A token that really is a child of the resolved command was not the problem; the parse
+        // failed for some other reason, and System.CommandLine's own message is the better one.
+        if (resolved.Subcommands.Any(
+                command => string.Equals(command.Name, unrecognized, StringComparison.Ordinal)))
+        {
+
+            return null;
+
+        }
 
         // The resolved command is the deepest one that parsed, so its children are exactly the
         // candidates that were valid where the operator's token failed.
@@ -99,6 +120,15 @@ internal static class CliSuggestionEngine
             : $"`{unrecognized}` is not an {prefix} command. Did you mean `{prefix} {suggestion}`?";
 
     }
+
+    /// <summary>
+    /// Removed spellings are still named when help is requested — the replacement is the answer to
+    /// "how do I use this", and help for a command that no longer exists is not. Every other
+    /// suggestion defers to help.
+    /// </summary>
+    private static bool RequestsHelp(IReadOnlyList<string> arguments) =>
+        arguments.Any(static argument =>
+            argument is "--help" or "-h" or "-?" or "/?" or "/h");
 
     private static string RootName(ParseResult parseResult) =>
         parseResult.RootCommandResult.Command.Name;

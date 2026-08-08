@@ -1174,8 +1174,11 @@ prints nothing when the host is unavailable, so completion silently falls back t
 ```bash
 arcanum help                        # list task-oriented topics
 arcanum help sessions               # plain-language guide with runnable commands
-arcanum run --help                  # options for one command
+arcanum run --help                  # options plus runnable examples for one command
 ```
+
+Every runnable command's `--help` ends with an `Examples:` section. Those examples are parse-tested
+against the live tree, so they cannot go stale; a command with no safe example says why instead.
 
 A mistyped or removed command exits `2` naming the canonical replacement or the nearest command. It
 is only printed — Arcanum never runs a suggestion for you.
