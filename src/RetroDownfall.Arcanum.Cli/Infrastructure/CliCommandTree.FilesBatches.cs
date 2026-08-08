@@ -213,11 +213,14 @@ internal static partial class CliCommandTree
                     result.GetValue(showId)!,
                     cancellationToken).ConfigureAwait(false));
 
-        Command watch = new(
-            "watch",
+        // Deliberately not "watch": `watch <source>` is the live SSE-stream family, while this
+        // polls a REST resource until it reaches a terminal state. Sharing the verb implied a
+        // shared mechanism (and a shared --reconnect/--event-type contract) that does not exist.
+        Command wait = new(
+            "wait",
             "Poll with bounded exponential backoff until the batch reaches a terminal state.");
 
-        Argument<string> watchId = BatchIdArgument();
+        Argument<string> waitId = BatchIdArgument();
 
         Option<int?> pollInterval = new("--poll-interval")
         {
@@ -226,14 +229,14 @@ internal static partial class CliCommandTree
 
         };
 
-        watch.Add(watchId);
+        wait.Add(waitId);
 
-        watch.Add(pollInterval);
+        wait.Add(pollInterval);
 
-        watch.SetAction(
+        wait.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
                 await handler.WatchBatch(
-                    result.GetValue(watchId)!,
+                    result.GetValue(waitId)!,
                     result.GetValue(pollInterval) ?? 1_000,
                     cancellationToken).ConfigureAwait(false));
 
@@ -263,7 +266,7 @@ internal static partial class CliCommandTree
 
         batch.Add(show);
 
-        batch.Add(watch);
+        batch.Add(wait);
 
         batch.Add(cancel);
 

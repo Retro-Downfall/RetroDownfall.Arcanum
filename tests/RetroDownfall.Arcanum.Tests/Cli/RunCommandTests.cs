@@ -142,6 +142,7 @@ public sealed class RunCommandTests
             execution,
             grimoire,
             serve,
+            SessionManager(),
             console);
 
         int exitCode = await command.RunAsync(
@@ -1180,7 +1181,8 @@ public sealed class RunCommandTests
         FakeContextResolver? resolver = null,
         NoopGrimoireInitialization? grimoire = null,
         NoopServeLauncher? serve = null,
-        RecordingConsole? console = null) =>
+        RecordingConsole? console = null,
+        Guid? lastSessionId = null) =>
         new(
             input ?? new FakeRunInputReader(inputResult),
             new FakeRunAttachmentStager(stageResult),
@@ -1191,7 +1193,32 @@ public sealed class RunCommandTests
             execution ?? new FakeRunExecutionDispatcher(),
             grimoire ?? new NoopGrimoireInitialization(),
             serve ?? new NoopServeLauncher(),
+            SessionManager(lastSessionId),
             console ?? new RecordingConsole());
+
+    /// <summary>
+    /// Backed by an in-memory context store so <c>--continue</c> resolution never reads or writes a
+    /// real operator Grimoire (DESIGN 13.5).
+    /// </summary>
+    private static CliSessionManager SessionManager(Guid? lastSessionId = null) =>
+        new(
+            new ConfiguredThemePalette(new ThemeSemanticColors(), new ThemeSemanticColors()),
+            logger: null,
+            new InMemoryContextStore(lastSessionId));
+
+    private sealed class InMemoryContextStore(Guid? sessionId) : ICliContextStore
+    {
+
+        private CliContextDocument _document =
+            CliContextDocument.Empty with { SessionId = sessionId };
+
+        public string FilePath => Path.Combine(Path.GetTempPath(), "arcanum-tests-cli-context.json");
+
+        public CliContextDocument Load() => _document;
+
+        public void Save(CliContextDocument document) => _document = document;
+
+    }
 
     private static RunCommandRequest Request(
         bool research = false,
@@ -1200,18 +1227,25 @@ public sealed class RunCommandTests
         bool newSession = false,
         string? session = null,
         string[]? with = null,
-        string[]? prompt = null) =>
+        string[]? prompt = null,
+        bool continueSession = false,
+        bool resume = false,
+        string? resumeTarget = null) =>
         new(
             prompt ?? ["prompt"],
             EscapedArguments: [],
             research,
             spell,
             with ?? [],
+            Attachment: [],
             dryRun,
             ShowContent: false,
             Model: null,
             newSession,
             Unattended: false,
+            continueSession,
+            resume,
+            resumeTarget,
             Campaign: null,
             Workspace: null,
             session,
@@ -1412,6 +1446,8 @@ public sealed class RunCommandTests
 
         public List<string> Diagnostics { get; } = [];
 
+        public List<string> Verbose { get; } = [];
+
         public List<object> JsonValues { get; } = [];
 
         public void WritePayload(string value)
@@ -1421,6 +1457,9 @@ public sealed class RunCommandTests
 
         public void WriteDiagnostic(string value) =>
             Diagnostics.Add(value);
+
+        public void WriteVerbose(string value) =>
+            Verbose.Add(value);
 
         public void WriteJson<T>(
             T value,

@@ -198,7 +198,7 @@ internal sealed class RunExecutionDispatcher(
             presencePenalty: options.PresencePenalty,
             frequencyPenalty: options.FrequencyPenalty,
             image: [],
-            attachment: [],
+            attachment: options.Attachment,
             attachedFiles: request.AttachedFiles,
             preparedScryingFoci: request.ScryingFoci,
             overrideSpellName: spellName,

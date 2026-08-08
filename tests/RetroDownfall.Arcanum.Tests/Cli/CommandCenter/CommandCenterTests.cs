@@ -26,10 +26,14 @@ public sealed class ShellCommandParserTests
 {
     private readonly ShellCommandParser _parser = new();
 
+    /// <summary>
+    /// Pins get their own verbs because <c>/context</c> is now the Claude-aligned context-window
+    /// view rather than a pin manager.
+    /// </summary>
     [Theory]
-    [InlineData("/context", (int)ShellCommandKind.ContextList)]
-    [InlineData("/context list", (int)ShellCommandKind.ContextList)]
-    [InlineData("/context unpin 11111111-1111-1111-1111-111111111111", (int)ShellCommandKind.ContextUnpin)]
+    [InlineData("/pins", (int)ShellCommandKind.PinList)]
+    [InlineData("/unpin 11111111-1111-1111-1111-111111111111", (int)ShellCommandKind.Unpin)]
+    [InlineData("/context", (int)ShellCommandKind.Context)]
     public void Parses_context_management_commands(string input, int expected)
     {
         Assert.Equal((ShellCommandKind)expected, _parser.Parse(input).Kind);
@@ -38,8 +42,8 @@ public sealed class ShellCommandParserTests
     [Fact]
     public void Parses_context_pin_kind_and_target()
     {
-        ParsedShellCommand parsed = _parser.Parse("/context pin symbolRange src/App.cs:10-20");
-        Assert.Equal(ShellCommandKind.ContextPin, parsed.Kind);
+        ParsedShellCommand parsed = _parser.Parse("/pin symbolRange src/App.cs:10-20");
+        Assert.Equal(ShellCommandKind.Pin, parsed.Kind);
         Assert.Equal("symbolRange", parsed.Argument);
         Assert.Equal("src/App.cs:10-20", parsed.SecondaryArgument);
     }
@@ -49,18 +53,24 @@ public sealed class ShellCommandParserTests
     [InlineData("/exit", "Exit")]
     [InlineData("/quit", "Quit")]
     [InlineData("/clear", "Clear")]
+    [InlineData("/compact", "Compact")]
+    [InlineData("/config", "Config")]
+    [InlineData("/cost", "Cost")]
+    [InlineData("/memory", "Memory")]
+    [InlineData("/look", "Look")]
     [InlineData("/status", "Status")]
     [InlineData("/doctor", "Doctor")]
     [InlineData("/mcp", "Mcp")]
+    [InlineData("/mcp reload", "McpReload")]
     [InlineData("/arsenal", "Arsenal")]
     [InlineData("/tools", "Tools")]
-    [InlineData("/mana", "Mana")]
+    [InlineData("/context", "Context")]
     [InlineData("/keys", "Keys")]
-    [InlineData("/model list", "ModelList")]
+    [InlineData("/model", "Model")]
+    [InlineData("/model gpt-4o-mini", "ModelSelect")]
     [InlineData("/provider list", "ProviderList")]
     [InlineData("/campaign list", "CampaignList")]
     [InlineData("/session list", "SessionList")]
-    [InlineData("/session new", "SessionNew")]
     [InlineData("/spell list", "SpellList")]
     [InlineData("/ward list", "WardList")]
     [InlineData("/ward allow", "WardAllow")]
@@ -140,7 +150,7 @@ public sealed class ShellCommandParserTests
     public void Session_resume_captures_id()
     {
         Guid id = Guid.Parse("11111111-1111-1111-1111-111111111111");
-        ParsedShellCommand parsed = _parser.Parse($"/session resume {id:D}");
+        ParsedShellCommand parsed = _parser.Parse($"/resume {id:D}");
         Assert.Equal(ShellCommandKind.SessionResume, parsed.Kind);
         Assert.Equal(id.ToString("D"), parsed.Argument);
     }
@@ -461,7 +471,7 @@ public sealed class ShellCommandDispatcherTests
         CommandCenterState state = new(new SessionLogBuffer());
 
         ShellDispatchResult result = await dispatcher.DispatchAsync(
-            "/session resume not-a-guid",
+            "/resume not-a-guid",
             state,
             CancellationToken.None);
 
@@ -480,7 +490,7 @@ public sealed class ShellCommandDispatcherTests
         state.Log.Append(SessionLogEntryKind.User, "keep");
 
         ShellDispatchResult result = await dispatcher.DispatchAsync(
-            "/session resume 33333333-3333-3333-3333-333333333333",
+            "/resume 33333333-3333-3333-3333-333333333333",
             state,
             CancellationToken.None);
 
@@ -507,7 +517,7 @@ public sealed class ShellCommandDispatcherTests
         ShellCommandDispatcher dispatcher = CreateDispatcher();
         CommandCenterState state = new(new SessionLogBuffer()) { SessionId = Guid.NewGuid() };
 
-        _ = await dispatcher.DispatchAsync("/session new", state, CancellationToken.None);
+        _ = await dispatcher.DispatchAsync("/clear", state, CancellationToken.None);
 
         Assert.Null(state.SessionId);
     }
@@ -522,7 +532,7 @@ public sealed class ShellCommandDispatcherTests
         Assert.True(state.TryBeginTurn());
         state.Log.Append(SessionLogEntryKind.User, "in-flight");
 
-        _ = await dispatcher.DispatchAsync("/session new", state, CancellationToken.None);
+        _ = await dispatcher.DispatchAsync("/clear", state, CancellationToken.None);
 
         Assert.Equal(prior, state.SessionId);
         Assert.Equal("Busy", state.SessionTitle);
@@ -541,7 +551,7 @@ public sealed class ShellCommandDispatcherTests
         Assert.True(state.TryBeginTurn());
         state.Log.Append(SessionLogEntryKind.User, "keep");
 
-        _ = await dispatcher.DispatchAsync($"/session resume {target:D}", state, CancellationToken.None);
+        _ = await dispatcher.DispatchAsync($"/resume {target:D}", state, CancellationToken.None);
 
         Assert.Equal(prior, state.SessionId);
         Assert.Contains("keep", state.Log.RenderPlainText(), StringComparison.Ordinal);

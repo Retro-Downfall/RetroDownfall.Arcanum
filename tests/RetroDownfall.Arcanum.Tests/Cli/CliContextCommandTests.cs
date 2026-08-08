@@ -32,24 +32,31 @@ public sealed class CliContextCommandTests
 
     }
 
+    /// <summary>
+    /// <c>use</c> is the single active-context selector. <c>campaign use</c> wrote the same
+    /// <c>cli-context.json</c> from a second place and is gone.
+    /// </summary>
     [Fact]
-
-    public async Task Campaign_use_is_an_alias_for_shared_campaign_context_selection()
+    public async Task Use_campaign_is_the_only_campaign_context_selector()
     {
 
         FakeCliContextService context = new();
 
-        ServiceCollection services = CreateServices(context);
+        CliTestResult selected = await CliTestHarness.RunAsync(
+            CreateServices(context),
+            ["use", "campaign", "campaign-alpha"]);
 
-        CliTestResult result = await CliTestHarness.RunAsync(
-            services,
-            ["campaign", "use", "campaign-alpha"]);
-
-        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(0, selected.ExitCode);
 
         Assert.Equal(CliContextScope.Campaign, context.SelectedScope);
 
         Assert.Equal("campaign-alpha", context.SelectedIdentifier);
+
+        CliTestResult removed = await CliTestHarness.RunAsync(
+            CreateServices(new FakeCliContextService()),
+            ["campaign", "use", "campaign-alpha"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, removed.ExitCode);
 
     }
 

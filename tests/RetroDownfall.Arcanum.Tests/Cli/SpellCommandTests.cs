@@ -79,7 +79,7 @@ public sealed class SpellCommandTests
                     new ApiResponse<SpellDetail>(detail, true, null),
                     ArcanumJsonContext.Default.ApiResponseSpellDetail));
 
-        CliTestResult result = RunCommand(handler, ["spell", "get", "greet"]);
+        CliTestResult result = RunCommand(handler, ["spell", "show", "greet"]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -123,7 +123,7 @@ public sealed class SpellCommandTests
 
         CliTestResult result = RunCommand(
             handler,
-            ["spell", "get", "--", SpellName],
+            ["spell", "show", "--", SpellName],
             resources);
 
         Assert.Equal((int)CliExitCode.Success, result.ExitCode);
@@ -175,7 +175,7 @@ public sealed class SpellCommandTests
 
         CliTestResult result = RunCommand(
             handler,
-            ["spell", "get", "greet", "--workspace", WorkspaceId],
+            ["spell", "show", "greet", "--workspace", WorkspaceId],
             resources);
 
         Assert.Equal(0, result.ExitCode);
@@ -230,7 +230,7 @@ public sealed class SpellCommandTests
 
         CliTestResult result = RunCommand(
             handler,
-            ["spell", "get", "greet", "--workspace", WorkspaceId],
+            ["spell", "show", "greet", "--workspace", WorkspaceId],
             resources);
 
         Assert.Equal(cancelled ? 0 : 1, result.ExitCode);

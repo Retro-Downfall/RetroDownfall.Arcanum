@@ -48,7 +48,7 @@ public sealed class WardCommandTests
             new ApiResponse<WardDto>(ward, true, null),
             ArcanumJsonContext.Default.ApiResponseWardDto));
 
-        CliTestResult result = RunCommand(handler, ["ward", "get", "ward-1"]);
+        CliTestResult result = RunCommand(handler, ["ward", "show", "ward-1"]);
 
         Assert.Equal(0, result.ExitCode);
 

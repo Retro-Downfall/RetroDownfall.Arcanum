@@ -1,6 +1,7 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Cli.Infrastructure.Surface;
 using RetroDownfall.Arcanum.Cli.Services;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
@@ -12,9 +13,17 @@ internal static partial class CliCommandTree
         out CliGlobalOptions globalOptions)
     {
         RootCommand root = new("Arcanum CLI");
+        Option<string?> outputFormat = new("--output-format")
+        {
+            Description = "Output shape for machine consumption: text (default) or json.",
+            Recursive = true,
+        };
+
+        outputFormat.AcceptOnlyFromAmong("text", "json");
+
         Option<bool> json = new("--json")
         {
-            Description = "Force structured JSON output for machine consumption.",
+            Description = "Shorthand for --output-format json.",
             Recursive = true,
         };
         Option<bool> plain = new("--plain")
@@ -32,11 +41,31 @@ internal static partial class CliCommandTree
             Description = "Bypass saved CLI context for this invocation.",
             Recursive = true,
         };
+        Option<bool> print = new("--print", "-p")
+        {
+            Description = "Headless mode: never open an interactive picker or prompt, and write the result to stdout.",
+            Recursive = true,
+        };
+        Option<bool> verbose = new("--verbose", "-v")
+        {
+            Description = "Emit additional operator diagnostics on stderr.",
+            Recursive = true,
+        };
+        root.Add(outputFormat);
         root.Add(json);
         root.Add(plain);
         root.Add(yes);
         root.Add(noContext);
-        globalOptions = new CliGlobalOptions(json, plain, yes, noContext);
+        root.Add(print);
+        root.Add(verbose);
+        globalOptions = new CliGlobalOptions(
+            outputFormat,
+            json,
+            plain,
+            yes,
+            noContext,
+            print,
+            verbose);
 
         Command center = BuildCenter(serviceProvider);
 
@@ -45,9 +74,7 @@ internal static partial class CliCommandTree
         Command setup = BuildSetup(serviceProvider);
 
         Command serve = BuildServe(serviceProvider);
-        Command ask = BuildAsk(serviceProvider);
         Command run = BuildRun(serviceProvider);
-        Command chat = BuildChat(serviceProvider);
         Command look = BuildLook(serviceProvider);
         Command doctor = BuildDoctor(serviceProvider);
         Command key = BuildKey(serviceProvider);
@@ -84,12 +111,21 @@ internal static partial class CliCommandTree
         Command data = BuildData(serviceProvider);
         Command use = BuildUse(serviceProvider);
         Command context = BuildContext(serviceProvider);
-        Command mana = BuildMana(serviceProvider);
         Command config = BuildConfig(serviceProvider);
 
         Command preset = BuildPreset(serviceProvider);
 
         Command watch = BuildWatch(serviceProvider);
+
+        // Completion and topic help are projections of this same root, so the map is resolved
+        // lazily: by the time a handler runs, every family below has been added.
+        CliSurfaceMap? surface = null;
+
+        Command completion = BuildCompletion(
+            serviceProvider,
+            () => surface ??= CliSurfaceBuilder.Build(root));
+
+        Command help = BuildHelpTopics(serviceProvider);
 
         root.Add(center);
 
@@ -98,9 +134,7 @@ internal static partial class CliCommandTree
         root.Add(setup);
 
         root.Add(serve);
-        root.Add(ask);
         root.Add(run);
-        root.Add(chat);
         root.Add(look);
         root.Add(doctor);
         root.Add(key);
@@ -136,12 +170,15 @@ internal static partial class CliCommandTree
         root.Add(data);
         root.Add(use);
         root.Add(context);
-        root.Add(mana);
         root.Add(config);
 
         root.Add(preset);
 
         root.Add(watch);
+
+        root.Add(completion);
+
+        root.Add(help);
 
         return root;
     }
@@ -222,7 +259,10 @@ internal static partial class CliCommandTree
 }
 
 internal readonly record struct CliGlobalOptions(
+    Option<string?> OutputFormat,
     Option<bool> Json,
     Option<bool> Plain,
     Option<bool> Yes,
-    Option<bool> NoContext);
+    Option<bool> NoContext,
+    Option<bool> Print,
+    Option<bool> Verbose);

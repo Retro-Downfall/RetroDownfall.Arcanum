@@ -35,7 +35,7 @@ public sealed class AskCommandErrorHandlingTests
 
         services.AddSingleton<IEyeOfTheWorld, ThrowingEye>();
 
-        CliTestResult result = CliTestHarness.Run(services, "ask", "hello");
+        CliTestResult result = CliTestHarness.Run(services, "run", "hello");
 
         Assert.Equal(1, result.ExitCode);
 

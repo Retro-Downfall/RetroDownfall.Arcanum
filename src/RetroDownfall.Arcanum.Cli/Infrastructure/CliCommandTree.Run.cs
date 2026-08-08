@@ -50,6 +50,13 @@ internal static partial class CliCommandTree
 
         };
 
+        Option<string[]> attachment = new("--attachment")
+        {
+
+            Description = "Bound attachment GUID to include on this turn; repeatable. Use --with @path for a local file.",
+
+        };
+
         Option<bool> dryRun = new("--dry-run")
         {
 
@@ -85,7 +92,23 @@ internal static partial class CliCommandTree
 
         };
 
-        Option<string?> campaign = new("--campaign", "-c")
+        Option<bool> continueSession = new("--continue", "-c")
+        {
+
+            Description = "Continue the most recent Session. Cannot be combined with --resume or --session.",
+
+        };
+
+        Option<string?> resume = new("--resume", "-r")
+        {
+
+            Arity = ArgumentArity.ZeroOrOne,
+
+            Description = "Resume a Session by GUID, exact title, or unique title prefix; omit the value for an interactive picker.",
+
+        };
+
+        Option<string?> campaign = new("--campaign", "-C")
         {
 
             Description = "Use the selected Campaign GUID, exact name, or unique prefix.",
@@ -191,6 +214,8 @@ internal static partial class CliCommandTree
 
         command.Add(with);
 
+        command.Add(attachment);
+
         command.Add(dryRun);
 
         command.Add(showContent);
@@ -200,6 +225,10 @@ internal static partial class CliCommandTree
         command.Add(newSession);
 
         command.Add(unattended);
+
+        command.Add(continueSession);
+
+        command.Add(resume);
 
         command.Add(campaign);
 
@@ -238,11 +267,15 @@ internal static partial class CliCommandTree
                         result.GetValue(research),
                         result.GetValue(spell),
                         result.GetValue(with) ?? [],
+                        result.GetValue(attachment) ?? [],
                         result.GetValue(dryRun),
                         result.GetValue(showContent),
                         result.GetValue(model),
                         result.GetValue(newSession),
                         result.GetValue(unattended),
+                        result.GetValue(continueSession),
+                        result.GetResult(resume) is not null,
+                        result.GetValue(resume),
                         result.GetValue(campaign),
                         result.GetValue(workspace),
                         result.GetValue(session),

@@ -44,7 +44,7 @@ public sealed class AskCommandReasoningTests
         services.AddSingleton<IChronosyncEngine, NoopChronosyncEngine>();
         services.AddSingleton<IArcanumServeLauncher, NoopServeLauncher>();
 
-        CliTestResult result = await CliTestHarness.RunAsync(services, ["ask", "question"]);
+        CliTestResult result = await CliTestHarness.RunAsync(services, ["run", "question"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("final answer", result.Output, StringComparison.Ordinal);
@@ -54,7 +54,7 @@ public sealed class AskCommandReasoningTests
     }
 
     [Fact]
-    public async Task Chat_coalesces_fragmented_reasoning_escapes_markup_and_keeps_answer_clean()
+    public async Task Run_coalesces_fragmented_reasoning_escapes_markup_and_keeps_answer_clean()
     {
         const string escapedReasoning = "[red]literal[/]";
         IntelligenceEvent[] frames =
@@ -84,8 +84,7 @@ public sealed class AskCommandReasoningTests
 
         CliTestResult result = await CliTestHarness.RunAsync(
             services,
-            ["chat"],
-            input: "question" + System.Environment.NewLine + "/exit" + System.Environment.NewLine);
+            ["run", "question"]);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("final answer", result.Output, StringComparison.Ordinal);

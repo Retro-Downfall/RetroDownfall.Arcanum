@@ -24,8 +24,8 @@ public sealed class CliApplicationFactoryTests
         string[] empty = [];  // method retired; identity behavior preserved in RunAsync directly
         Assert.Empty(empty);
 
-        string[] unchanged = ["ask", "hello"];
-        Assert.Equal(["ask", "hello"], unchanged);
+        string[] unchanged = ["run", "hello"];
+        Assert.Equal(["run", "hello"], unchanged);
 
         string[] helpUnchanged = ["--help"];
         Assert.Equal(["--help"], helpUnchanged);
@@ -324,8 +324,8 @@ public sealed class CliApplicationFactoryTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("serve", result.Output, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("ask", result.Output, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("chat", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("run", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("center", result.Output, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("look", result.Output, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("key", result.Output, StringComparison.OrdinalIgnoreCase);
 
@@ -364,17 +364,13 @@ public sealed class CliApplicationFactoryTests
 
         Assert.Contains("current", context.Output, StringComparison.OrdinalIgnoreCase);
 
-        CliTestResult ask = CliTestHarness.Run(services, "ask", "--help");
+        Assert.Contains("cost", context.Output, StringComparison.OrdinalIgnoreCase);
 
-        CliTestResult chat = CliTestHarness.Run(services, "chat", "--help");
+        CliTestResult run = CliTestHarness.Run(services, "run", "--help");
 
-        Assert.Contains("--workspace", ask.Output, StringComparison.Ordinal);
+        Assert.Contains("--workspace", run.Output, StringComparison.Ordinal);
 
-        Assert.Contains("--session", ask.Output, StringComparison.Ordinal);
-
-        Assert.Contains("--workspace", chat.Output, StringComparison.Ordinal);
-
-        Assert.Contains("--session", chat.Output, StringComparison.Ordinal);
+        Assert.Contains("--session", run.Output, StringComparison.Ordinal);
 
     }
 
@@ -397,11 +393,11 @@ public sealed class CliApplicationFactoryTests
     }
 
     [Theory]
-    [InlineData("campaign", "get")]
-    [InlineData("prompt", "get")]
-    [InlineData("spell", "get")]
-    [InlineData("apprentice", "get")]
-    public void Resource_get_help_marks_identifier_as_optional_for_interactive_selection(
+    [InlineData("campaign", "show")]
+    [InlineData("prompt", "show")]
+    [InlineData("spell", "show")]
+    [InlineData("apprentice", "show")]
+    public void Resource_show_help_marks_identifier_as_optional_for_interactive_selection(
         string family,
         string command)
     {
@@ -557,7 +553,7 @@ public sealed class CliApplicationFactoryTests
     }
 
     [Fact]
-    public void ConfigureCliServices_registers_grimoire_readiness_so_chat_command_resolves()
+    public void ConfigureCliServices_registers_grimoire_readiness_so_the_run_command_resolves()
     {
         ServiceCollection services = new();
         ConfigurationManager configuration = new();
@@ -566,8 +562,8 @@ public sealed class CliApplicationFactoryTests
         using ServiceProvider provider = services.BuildServiceProvider();
         IGrimoireDbReadiness readiness = provider.GetRequiredService<IGrimoireDbReadiness>();
         Assert.NotNull(readiness);
-        ChatCommand chatCommand = provider.GetRequiredService<ChatCommand>();
-        Assert.NotNull(chatCommand);
+        RunCommand runCommand = provider.GetRequiredService<RunCommand>();
+        Assert.NotNull(runCommand);
     }
 
     [Fact]

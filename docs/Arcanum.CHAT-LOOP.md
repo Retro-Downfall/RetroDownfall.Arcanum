@@ -6,9 +6,9 @@ buffered/streaming model-tool loop and the ordering contract for attachment cont
 ## Read-only preflight preview
 
 Before the normal loop, operators can run `arcanum context inspect [prompt]`, `arcanum context
-tools`, `arcanum context sources`, `arcanum mana [prompt]`, or `arcanum run --dry-run`. These
+tools`, `arcanum context sources`, `arcanum context cost [prompt]`, or `arcanum run --dry-run`. These
 commands resolve the same saved/explicit Campaign, Workspace, Model, and Session context as
-`ask`/`chat`/`run`, then call `POST /api/intelligence/context/inspect`.
+`run`, then call `POST /api/intelligence/context/inspect`.
 
 The preview resolves a production model lease, loads Session history and explicit context pins,
 reads CODEX, applies production Spell routing and resonant dependencies, optionally retrieves

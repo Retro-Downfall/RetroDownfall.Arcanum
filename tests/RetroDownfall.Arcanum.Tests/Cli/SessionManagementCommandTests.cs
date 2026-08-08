@@ -36,13 +36,13 @@ public sealed class SessionManagementCommandTests
 
         Assert.Equal(0, result.ExitCode);
 
+        // Management only. Starting or continuing a turn lives on the inference entries
+        // (bare `arcanum` and `arcanum run -c/-r`), and live streaming lives on `watch session`.
         string[] commands =
         [
             "list",
             "show",
-            "chat",
             "entries",
-            "watch",
             "fork",
             "rename",
             "archive",
@@ -53,6 +53,7 @@ public sealed class SessionManagementCommandTests
             "pin-entry",
             "unpin-entry",
             "compact",
+            "divine",
         ];
 
         foreach (string command in commands)
@@ -350,26 +351,27 @@ public sealed class SessionManagementCommandTests
 
     }
 
+    /// <summary>
+    /// The management tree no longer starts a turn. Continuation moved to the inference entry, and
+    /// every spelling there accepts a GUID, an exact title, or a unique title prefix.
+    /// </summary>
     [Fact]
-
-    public void Session_chat_and_root_chat_expose_title_or_id_continuation()
+    public void Session_continuation_lives_on_the_inference_entry()
     {
 
         RecordingHandler handler = new();
 
-        CliTestResult nested = RunCommand(handler, ["session", "chat", "--help"]);
+        CliTestResult run = RunCommand(handler, ["run", "--help"]);
 
-        CliTestResult root = RunCommand(handler, ["chat", "--help"]);
+        Assert.Equal(0, run.ExitCode);
 
-        Assert.Equal(0, nested.ExitCode);
+        Assert.Contains("--session", run.Output, StringComparison.Ordinal);
 
-        Assert.Contains("session", nested.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("--continue", run.Output, StringComparison.Ordinal);
 
-        Assert.Contains("title", nested.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("--resume", run.Output, StringComparison.Ordinal);
 
-        Assert.Contains("--session", root.Output, StringComparison.Ordinal);
-
-        Assert.Contains("title", root.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("title", run.Output, StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -399,7 +401,7 @@ public sealed class SessionManagementCommandTests
 
         CliTestResult result = RunCommand(
             handler,
-            ["--json", "session", "watch", sessionId.ToString("D")]);
+            ["--json", "watch", "session", sessionId.ToString("D")]);
 
         Assert.Equal(0, result.ExitCode);
 
@@ -463,8 +465,8 @@ public sealed class SessionManagementCommandTests
             handler,
             [
                 "--json",
-                "session",
                 "watch",
+                "session",
                 sessionId.ToString("D"),
                 "--since",
                 entryId.ToString("D"),

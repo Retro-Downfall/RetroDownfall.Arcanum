@@ -199,7 +199,7 @@ File watcher events are only refresh hints. The UI does not hash files or infer 
 Text attachment pins can be admitted implicitly within the existing per-pin and per-turn byte
 budgets. Image
 pins remain durable but report `Unsupported` for implicit materialization, because silently adding
-an image would bypass explicit vision intent; pass the bound attachment GUID to `ask` or `chat`
+an image would bypass explicit vision intent; pass the bound attachment GUID to `run --attachment`
 instead. Those direct IDs use the same explicit-first ledger and reference budget.
 
 Attachment metadata commands never write content to the terminal. Export is the deliberate
@@ -450,7 +450,7 @@ The full route, DTO, status, and error-code reference is
 
 The CLI gives these independent streams one observation grammar without merging them on the
 server: `arcanum watch session`, `watch apprentice`, `watch logs`, `watch mcp`, `watch daemons`,
-and `watch health`. `session watch` and `apprentice chronicle` remain compatibility aliases. SSE
+and `watch health`. `watch <source>` is the only live-stream entry; the former `session watch` and `apprentice chronicle` spellings are removed. SSE
 heartbeats stay out of normal data output, `[DONE]` completes successfully, terminal timestamps are
 UTC, event types are colored, and Ctrl+C exits `130`. Recursive `--json` emits only newline-delimited
 source objects on stdout; all diagnostics remain on stderr.

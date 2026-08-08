@@ -95,7 +95,7 @@ public sealed class CliOperatorSurfaceTests
     public void ResolveProcessTerminationTimeout_is_finite_for_ordinary_commands()
     {
 
-        ParseResult parsed = BuildProbeRoot().Parse(["ask", "hello"]);
+        ParseResult parsed = BuildProbeRoot().Parse(["run", "hello"]);
 
         TimeSpan? timeout = CliApplicationFactory.ResolveProcessTerminationTimeout(parsed);
 
@@ -107,22 +107,29 @@ public sealed class CliOperatorSurfaceTests
 
     }
 
+    /// <summary>
+    /// No parsed verb currently owns Ctrl+C: Command Center is entered before parsing, and the
+    /// frameless REPL that used to claim it is gone. Every parsed command therefore gets the
+    /// standard cooperative-shutdown grace window.
+    /// </summary>
     [Fact]
-    public void ResolveProcessTerminationTimeout_is_absent_for_chat()
+    public void ResolveProcessTerminationTimeout_applies_to_every_parsed_command()
     {
 
-        ParseResult parsed = BuildProbeRoot().Parse(["chat"]);
+        ParseResult parsed = BuildProbeRoot().Parse(["run", "hello"]);
 
-        Assert.Null(CliApplicationFactory.ResolveProcessTerminationTimeout(parsed));
+        Assert.Equal(
+            CliApplicationFactory.ProcessTerminationGrace,
+            CliApplicationFactory.ResolveProcessTerminationTimeout(parsed));
 
     }
 
     [Theory]
     [InlineData(new[] { "doctor" }, true)]
     [InlineData(new[] { "config", "validate" }, true)]
-    [InlineData(new[] { "ask", "--help" }, true)]
+    [InlineData(new[] { "run", "--help" }, true)]
     [InlineData(new[] { "--version" }, true)]
-    [InlineData(new[] { "ask", "hello" }, false)]
+    [InlineData(new[] { "run", "hello" }, false)]
     [InlineData(new string[0], false)]
     public void AllowsDegradedConfiguration_keeps_only_repair_paths_alive(string[] args, bool expected)
     {

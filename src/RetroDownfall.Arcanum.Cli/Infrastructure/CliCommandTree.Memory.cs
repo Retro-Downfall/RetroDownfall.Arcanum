@@ -266,7 +266,7 @@ internal static partial class CliCommandTree
         Command alert = new("alert", "Send a Comm Link test alert (requires API: arcanum serve).");
         Argument<string> message = new("message") { Description = "The alert message." };
         Option<string?> title = new("--title", "-t") { Description = "Alert title." };
-        Option<string?> severity = new("--severity", "-s") { Description = "Severity: Info, Warning, or Critical." };
+        Option<string?> severity = new("--severity") { Description = "Severity: Info, Warning, or Critical." };
         Option<string?> source = new("--source") { Description = "The alert source label." };
         alert.Add(message); alert.Add(title); alert.Add(severity); alert.Add(source);
         alert.SetAction(async (ParseResult pr, CancellationToken ct) => await handler.Alert(

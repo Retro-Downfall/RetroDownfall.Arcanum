@@ -33,7 +33,9 @@ public readonly record struct CliInvocationOptions(
     bool Json,
     bool Plain,
     bool Yes,
-    bool NoContext = false);
+    bool NoContext = false,
+    bool Print = false,
+    bool Verbose = false);
 
 public interface ICliInvocationContext
 {
@@ -48,6 +50,13 @@ public interface IConsoleDispatcher
     void WritePayload(string value);
 
     void WriteDiagnostic(string value);
+
+    /// <summary>
+    /// Additional operator-facing detail that is suppressed unless <c>-v</c>/<c>--verbose</c> is
+    /// present. It shares the diagnostic stream, so it never contaminates a structured payload, and
+    /// it is subject to the same redaction rules as every other diagnostic.
+    /// </summary>
+    void WriteVerbose(string value);
 
     void WriteJson<T>(T value, JsonTypeInfo<T> typeInfo);
 
@@ -287,6 +296,20 @@ internal sealed class ConsoleDispatcher : IConsoleDispatcher
 
     public void WriteDiagnostic(string value) =>
         WriteLine(StandardError, value);
+
+    public void WriteVerbose(string value)
+    {
+
+        if (!Options.Verbose)
+        {
+
+            return;
+
+        }
+
+        WriteLine(StandardError, value);
+
+    }
 
     /// <summary>
     /// Serializes through explicit source-generated metadata only. Serialization runs to completion

@@ -620,9 +620,12 @@ public sealed class WatchCommandTests
 
     }
 
+    /// <summary>
+    /// <c>apprentice chronicle</c> was a second spelling of this stream and is gone; the canonical
+    /// entry must still hand back the server's own event objects untouched.
+    /// </summary>
     [Fact]
-
-    public void Apprentice_chronicle_compatibility_alias_preserves_raw_ndjson()
+    public void Watch_apprentice_preserves_raw_ndjson()
     {
 
         const string Payload = "{\"type\":\"toolCall\",\"apprenticeId\":\"22222222-2222-2222-2222-222222222222\",\"timestamp\":\"2026-08-01T12:00:00Z\",\"toolCall\":{\"name\":\"apply_patch\"}}";
@@ -632,7 +635,7 @@ public sealed class WatchCommandTests
 
         CliTestResult result = RunCommand(
             handler,
-            ["--json", "apprentice", "chronicle", ApprenticeId.ToString("D")]);
+            ["--json", "watch", "apprentice", ApprenticeId.ToString("D")]);
 
         Assert.Equal(0, result.ExitCode);
 
