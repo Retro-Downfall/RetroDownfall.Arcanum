@@ -2,6 +2,7 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
+[Collection("ProcessEnvironment")]
 public sealed class McpSecurityLimitsInheritEnvTests
 {
 

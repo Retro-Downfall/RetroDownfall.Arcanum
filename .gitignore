@@ -8,6 +8,8 @@ artifacts/
 
 .tmp/
 .tmp-*/
+# Default --output-dir for every packaging script and release workflow.
+dist/
 TestResults/
 __pycache__/
 *.cobertura.xml

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Http;
@@ -35,7 +36,7 @@ public sealed class ApiKeyEndpointFilter(
             return Unauthorized(context.HttpContext);
         }
 
-        if (string.IsNullOrEmpty(headerValue) || headerValue.Length > maxHeaderUtf16)
+        if (headerValue.Length > maxHeaderUtf16)
         {
             return Unauthorized(context.HttpContext);
         }
@@ -52,14 +53,9 @@ public sealed class ApiKeyEndpointFilter(
 
         Span<byte> headerDigest = stackalloc byte[Sha256Bytes];
 
-        if (!SHA256.TryHashData(headerUtf8, headerDigest, out int written) || written != Sha256Bytes)
-        {
-
-            ZeroHeaderUtf8(headerUtf8, rentedHeaderUtf8);
-
-            return Unauthorized(context.HttpContext);
-
-        }
+        // The destination is exactly SHA-256's output size, so the throwing overload cannot fail and
+        // needs no failure arm. TryHashData's false result is only reachable with an undersized span.
+        _ = SHA256.HashData(headerUtf8, headerDigest);
 
         if (!CryptographicOperations.FixedTimeEquals(expectedDigest, headerDigest))
         {
@@ -75,7 +71,21 @@ public sealed class ApiKeyEndpointFilter(
         return await next(context).ConfigureAwait(false);
     }
 
-    private static bool TryExtractHeaderValue(IHeaderDictionary headers, out string? headerValue)
+    /// <summary>
+    /// Extracts the presented credential from <c>X-Arcanum-Api-Key</c> or a <c>Bearer</c>
+    /// <c>Authorization</c> header.
+    /// </summary>
+    /// <remarks>
+    /// Contract relied upon by <see cref="InvokeAsync"/>: when this returns <see langword="true"/>,
+    /// <paramref name="headerValue"/> is non-null <b>and non-empty</b> — every success path ends in
+    /// <c>return !string.IsNullOrEmpty(headerValue)</c>. The caller therefore performs no emptiness
+    /// check of its own. Any future exit that can return <see langword="true"/> must preserve that,
+    /// or the caller will hash an empty credential. A duplicated header of either kind is rejected
+    /// rather than resolved, so a proxy cannot smuggle a second candidate credential.
+    /// </remarks>
+    private static bool TryExtractHeaderValue(
+        IHeaderDictionary headers,
+        [NotNullWhen(true)] out string? headerValue)
     {
         headerValue = null;
 

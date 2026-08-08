@@ -53,6 +53,41 @@ public sealed class ApiWireContractTests
     }
 
     [SkippableFact]
+    public async Task PostCommLinkSend_NonJsonContentType_ReturnsEnveloped415NotHubUnhandled()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // curl's default content type. ReadFromJsonAsync raises InvalidOperationException here, which used
+        // to escape as HTTP 500 Hub.Unhandled with an Error-level stack trace for a routine client mistake.
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/commlink/send",
+            new StringContent(
+                """{"title":"t","body":"b"}""",
+                Encoding.UTF8,
+                "application/x-www-form-urlencoded"));
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("Hub.Unhandled", json, StringComparison.Ordinal);
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.NotNull(body.Error);
+
+        Assert.Equal("Validation.UnsupportedMediaType", body.Error!.Value.Code);
+
+    }
+
+    [SkippableFact]
     public async Task PostSessions_MissingBody_ReturnsEnveloped400()
     {
 

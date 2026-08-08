@@ -8,7 +8,6 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using Microsoft.Net.Http.Headers;
 using RetroDownfall.Arcanum.Api.A2A;
 using RetroDownfall.Arcanum.Api.Middleware;
 using RetroDownfall.Arcanum.Api.Health;
@@ -42,6 +41,7 @@ using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.TheForge;
 using Scalar.AspNetCore;
 
@@ -52,6 +52,27 @@ public static class ApiBootstrapper
     private const string ArcanumCorsPolicyName = "ArcanumCors";
 
     internal const string ArcanumRateLimiterPolicyName = "ArcanumRateLimit";
+
+    /// <summary>Fixed <c>endpoint</c> label for requests that matched no route, keeping metric cardinality bounded.</summary>
+    internal const string UnmatchedRouteMetricLabel = "unmatched";
+
+    internal const string OtherMethodMetricLabel = "other";
+
+    /// <summary>
+    /// Kestrel accepts any RFC 7230 token as a request method, so the raw method is attacker-chosen
+    /// and unbounded. Only these known verbs become the <c>method</c> metric label; everything else
+    /// collapses to <see cref="OtherMethodMetricLabel"/>.
+    /// </summary>
+    private static readonly HashSet<string> KnownHttpMethodMetricLabels =
+        new(StringComparer.Ordinal)
+        {
+            "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT",
+        };
+
+    internal static string ResolveMethodMetricLabel(string? method) =>
+        method is not null && KnownHttpMethodMetricLabels.Contains(method)
+            ? method
+            : OtherMethodMetricLabel;
 
     private static readonly string[] DefaultCorsAllowedOrigins = new HostSettings().CorsAllowedOrigins;
 
@@ -287,23 +308,17 @@ public static class ApiBootstrapper
                         policy.WithOrigins(origins);
                     }
 
-                    policy.WithMethods(
-                        HttpMethods.Get,
-                        HttpMethods.Post,
-                        HttpMethods.Put,
-                        HttpMethods.Delete,
-                        HttpMethods.Patch,
-                        HttpMethods.Head,
-                        HttpMethods.Options);
+                    // DESIGN §11.4: any header / any method are retained unconditionally because callers
+                    // always present custom headers (X-Arcanum-Key, Idempotency-Key) and use varied verbs.
+                    policy.AllowAnyMethod();
 
-                    policy.WithHeaders(
-                        HeaderNames.ContentType,
-                        HeaderNames.Accept,
-                        HeaderNames.Authorization,
-                        ArcanumApiHeaders.ApiKey,
-                        HeaderNames.CacheControl,
-                        HeaderNames.IfNoneMatch,
-                        "X-Requested-With");
+                    policy.AllowAnyHeader();
+
+                    // Custom response headers are invisible to browser JavaScript unless exposed, which
+                    // would make the documented cursor-pagination contract unfollowable from a browser.
+                    policy.WithExposedHeaders(
+                        ArcanumApiHeaders.AuditNextCursor,
+                        ArcanumApiHeaders.StructuredOutputWarning);
                 });
         });
 
@@ -325,6 +340,10 @@ public static class ApiBootstrapper
 
                 client.Timeout = Timeout.InfiniteTimeSpan;
             })
+            // DESIGN §11.11: live inference and embedding traffic uses the same pinned provider egress
+            // handler as the probes. Without it a validated endpoint could 3xx-redirect or DNS-rebind to a
+            // link-local metadata address after the one-time PUT /api/config validation.
+            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateProviderEgressHandler())
             .AddHttpMessageHandler<OpenAiRequestAugmentingHandler>();
 
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
@@ -467,6 +486,8 @@ public static class ApiBootstrapper
     /// <c>endpoint</c> label bounded — a raw URL would leak unbounded identifiers (session ids, etc.) as
     /// label values. Requests to <c>/metrics</c> itself are skipped so a Prometheus scraper cannot create
     /// a self-referential feedback loop (every scrape incrementing the very counter it just read).
+    /// Requests that match no route carry the fixed <see cref="UnmatchedRouteMetricLabel"/> sentinel — the
+    /// raw path there is attacker-chosen and would grow the exporter's series map without bound.
     /// </summary>
     public static void UseArcanumMetrics(this WebApplication app)
     {
@@ -485,13 +506,12 @@ public static class ApiBootstrapper
             await next().ConfigureAwait(false);
 
             string routeLabel = (context.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText
-                ?? context.Request.Path.Value
-                ?? "unknown";
+                ?? UnmatchedRouteMetricLabel;
 
             ArcanumMetrics.HttpRequestsTotal.Add(
                 1,
                 new KeyValuePair<string, object?>("endpoint", routeLabel),
-                new KeyValuePair<string, object?>("method", context.Request.Method),
+                new KeyValuePair<string, object?>("method", ResolveMethodMetricLabel(context.Request.Method)),
                 new KeyValuePair<string, object?>("status_code", context.Response.StatusCode.ToString(CultureInfo.InvariantCulture)));
 
         });

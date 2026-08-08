@@ -2,6 +2,7 @@ using RetroDownfall.Arcanum.Cli.UX;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
+[Collection("ProcessEnvironment")]
 public sealed class CliEnvironmentTests
 {
 

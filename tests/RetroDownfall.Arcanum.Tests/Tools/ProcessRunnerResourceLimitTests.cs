@@ -19,6 +19,7 @@ namespace RetroDownfall.Arcanum.Tests.Tools;
 /// runner process (e.g. if the enclosing cgroup/rlimit setup differs from what the assertion expects),
 /// so they are marked <see cref="FactAttribute.Skip"/> and intended for manual verification.
 /// </remarks>
+[Collection("ProcessEnvironment")]
 public sealed class ProcessRunnerResourceLimitTests : IDisposable
 {
 

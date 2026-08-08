@@ -33,6 +33,8 @@
                       StatusMessage="{Binding StatusMessage}"
                       LastSavedAt="{Binding LastSavedAt}"
                       HasExternalChange="{Binding HasExternalChange}"
+                      LoadFailed="{Binding LoadFailed}"
+                      LastErrorMessage="{Binding LastErrorMessage}"
                       SaveCommand="{Binding SaveCommand}"
                       RefreshCommand="{Binding RefreshCommand}"
                       CancelCommand="{Binding CancelCommand}" />
@@ -73,6 +75,7 @@
       <TabControl x:Name="DocumentTabs"
                   Grid.Column="1"
                   Background="{DynamicResource ForgeBackgroundBrush}"
+                  IsEnabled="{Binding !LoadFailed}"
                   Margin="0" />
 
     </Grid>

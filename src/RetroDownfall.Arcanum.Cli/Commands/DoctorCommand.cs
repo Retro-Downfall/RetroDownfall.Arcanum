@@ -163,10 +163,14 @@ public sealed class DoctorCommand(
 
         checks.Add(BuildEmbeddingsCheck());
 
-        (bool apiHealthy, DoctorCheck apiCheck) = await BuildApiReachabilityCheckAsync(cancellationToken).ConfigureAwait(false);
+        (bool apiHealthy, DoctorCheck apiCheck, DoctorProbeResult apiProbe) =
+            await BuildApiReachabilityCheckAsync(cancellationToken).ConfigureAwait(false);
 
         healthy &= apiHealthy;
         checks.Add(apiCheck);
+
+        checks.Add(
+            BuildDurableOperationsCheck(apiProbe.Kind == DoctorProbeKind.Ok, apiProbe.Detail));
 
         return new DoctorReport(healthy, checks);
 
@@ -1047,15 +1051,84 @@ public sealed class DoctorCommand(
     private async Task<bool> WriteApiReachabilityPanelAsync(CancellationToken cancellationToken)
     {
 
-        (bool healthy, Table table) = await BuildApiReachabilityPanelCoreAsync(cancellationToken).ConfigureAwait(false);
+        (bool healthy, Table table, DoctorProbeResult probe) =
+            await BuildApiReachabilityPanelCoreAsync(cancellationToken).ConfigureAwait(false);
 
         WritePanel("API Health", table);
+
+        AnsiConsole.WriteLine();
+
+        WriteDurableOperationsPanel(probe);
 
         return healthy;
 
     }
 
-    private async Task<(bool Healthy, Table Table)> BuildApiReachabilityPanelCoreAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Durable-operation state is a first-class doctor surface, not a substring of the API Health
+    /// row: after a crash it is the panel an operator reads to find out what still needs repair.
+    /// </summary>
+    private void WriteDurableOperationsPanel(DoctorProbeResult probe)
+    {
+
+        DoctorCheck check = BuildDurableOperationsCheck(probe.Kind == DoctorProbeKind.Ok, probe.Detail);
+
+        Table table = new();
+
+        table.Border(TableBorder.None);
+
+        table.HideHeaders();
+
+        table.AddColumn(new TableColumn(string.Empty).NoWrap());
+
+        table.AddColumn(new TableColumn(string.Empty));
+
+        table.AddRow(
+            check.Status == "ok"
+                ? themePalette.HighlightMarkup(Markup.Escape(OkGlyph))
+                : themePalette.MutedMarkup(Markup.Escape(WarnGlyph)),
+            themePalette.MutedMarkup(Markup.Escape(check.Detail ?? string.Empty)));
+
+        WritePanel("DurableOperations", table);
+
+    }
+
+    /// <summary>
+    /// Pure mapping from the health probe to the <c>DurableOperations</c> check. Degrades to a
+    /// warning naming the repair verb whenever the host could not be reached.
+    /// </summary>
+    internal static DoctorCheck BuildDurableOperationsCheck(bool hostReachable, string? detail)
+    {
+
+        if (!hostReachable)
+        {
+
+            return new DoctorCheck(
+                "DurableOperations",
+                "warn",
+                "Host unreachable, so durable-operation state could not be read. Start 'arcanum serve', then re-run 'arcanum doctor' or 'arcanum operation list --state ReconciliationRequired'.");
+
+        }
+
+        if (string.IsNullOrWhiteSpace(detail))
+        {
+
+            return new DoctorCheck(
+                "DurableOperations",
+                "warn",
+                "The host did not report durable-operation state. Inspect it with 'arcanum operation list'.");
+
+        }
+
+        return new DoctorCheck(
+            "DurableOperations",
+            "ok",
+            detail
+                + " Repair anything stale or requiring reconciliation with 'arcanum operation list --state ReconciliationRequired'.");
+
+    }
+
+    private async Task<(bool Healthy, Table Table, DoctorProbeResult Probe)> BuildApiReachabilityPanelCoreAsync(CancellationToken cancellationToken)
     {
 
         HostSettings host = options.Value.Host;
@@ -1171,11 +1244,11 @@ public sealed class DoctorCommand(
                 break;
         }
 
-        return (healthy, table);
+        return (healthy, table, probe);
 
     }
 
-    private async Task<(bool Healthy, DoctorCheck Check)> BuildApiReachabilityCheckAsync(CancellationToken cancellationToken)
+    private async Task<(bool Healthy, DoctorCheck Check, DoctorProbeResult Probe)> BuildApiReachabilityCheckAsync(CancellationToken cancellationToken)
     {
 
         HostSettings host = options.Value.Host;
@@ -1199,7 +1272,7 @@ public sealed class DoctorCommand(
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return probe.Kind switch
+        (bool Healthy, DoctorCheck Check) mapped = probe.Kind switch
         {
             DoctorProbeKind.Ok => (true, new DoctorCheck(
                 "API Health",
@@ -1218,6 +1291,8 @@ public sealed class DoctorCommand(
             DoctorProbeKind.Cancelled => (true, new DoctorCheck("API Health", "warn", "Cancelled by operator")),
             _ => (false, new DoctorCheck("API Health", "fail", "Unknown probe result")),
         };
+
+        return (mapped.Healthy, mapped.Check, probe);
 
     }
 

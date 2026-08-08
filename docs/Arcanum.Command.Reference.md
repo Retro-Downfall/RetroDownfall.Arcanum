@@ -6,6 +6,10 @@ This is the canonical user-facing reference for the Arcanum CLI command tree, ar
 
 Use `arcanum [global-options] <command> [command-options]`. In the syntax tables, `<value>` is required, `[<value>]` is optional, and `<value>...` accepts remaining tokens. Run `arcanum --help` or `arcanum <command> --help` for the executable's current short help.
 
+Every option and argument reachable from the root command carries a help description, and the
+descriptions in this reference are the same strings the parser reports. A symbol declared without a
+description fails the build, so `--help` and this document cannot diverge.
+
 Use the standard `--` end-of-options marker before positional text that begins with a hyphen; for
 example, `arcanum ask -- --explain-this` treats `--explain-this` as the prompt.
 
@@ -56,8 +60,21 @@ checkpoint bound protects one allocation only and must expose or automatically f
 continuation. Retained-boundary diagnostics name the owner, safe measurement/limit, saved or
 checkpointed state, and exact continuation or recovery action.
 
+When `arcanum.json` cannot be loaded at all — malformed JSON, an I/O failure, or a permissions
+failure — the parse error and the remedy
+`Run 'arcanum config edit' to repair <path>, or 'arcanum doctor' for full diagnostics.` go to stderr
+before the dispatcher exists. The repair and diagnosis verbs still run on defaults so they can name
+the fault: `doctor` and `config` as the first argument, and `--help`, `-h`, `-?`, `/?`, or
+`--version` anywhere in the arguments. Every other invocation, including a bare `arcanum`, exits `2`
+without dispatching. No invocation aborts the process on an unloadable configuration file.
+
 Command-specific refinements:
 
+- `serve` returns `2` when host startup configuration validation fails. The validation message, one
+  `  - <pointer>: <detail>` line per failing pointer, and the remedy
+  `Run 'arcanum config validate' to re-check, or 'arcanum config edit' to repair arcanum.json.`
+  are written to stderr, so the per-pointer detail is on the console and not only in the rolling
+  JSON log.
 - `ask` returns `0` on success, `1` for empty prompt, inference-option, stream, or API failure, and
   `130` when the in-flight turn is cancelled.
 - `run` returns `0` when its selected route or dry-run preview succeeds, `1` for a live
@@ -203,6 +220,15 @@ the current transcript page.
 | `/arsenal` | Show spells, native tools, and MCP status. |
 | `/attach` | Open the interactive file browser for next-turn staging. |
 | `@path` | Inline-stage a local text file or allowed Scrying image for the next turn; images require a vision-capable model. |
+
+At the idle `Mage >` prompt the keyboard contract is:
+
+| Key | Action |
+|---|---|
+| `Ctrl+C` with text composed | Discards the composed line and prints `Input cleared. Press Ctrl+C again on an empty line to exit.` The interrupt counter resets, so the discard never counts toward exiting. |
+| `Ctrl+C` on an empty line | Prints `Press Ctrl+C again to exit, or type /exit.` and returns to the prompt. |
+| `Ctrl+C` twice consecutively on an empty line | Leaves the REPL cleanly: the exit summary still runs and the accumulated exit code is preserved. |
+| `Ctrl+D` on an empty line | Leaves the REPL the same way. With text composed it is ignored. |
 
 ## CLI command tree
 
@@ -560,7 +586,7 @@ Controls the OS background service and the server-owned Unseen Servant scheduler
 | `arcanum daemon uninstall` | Stop and uninstall the Arcanum background daemon. | None beyond global or inherited family options. |
 | `arcanum daemon status` | Show whether the Arcanum daemon is running. | None beyond global or inherited family options. |
 | `arcanum daemon jobs` | List Unseen Servant jobs (requires API: arcanum serve). | None beyond global or inherited family options. |
-| `arcanum daemon initiative <job-name> <minutes>` | Set the adaptive polling interval for a job; minutes must be at least 1 (requires API: arcanum serve). | None beyond global or inherited family options. |
+| `arcanum daemon initiative <job-name> <minutes>` | Set the adaptive polling interval for a job; minutes must be between 1 and 10080 (requires API: arcanum serve). A name not configured under `Arcanum:Daemon:Jobs` is rejected with `404 Daemon.NotFound` naming `arcanum daemon jobs` rather than reported as applied. | None beyond global or inherited family options. |
 | `arcanum daemon alert <message>` | Send a Comm Link test alert (requires API: arcanum serve). | `-t, --title <title>` — Alert title.<br>`-s, --severity <severity>` — Severity: Info, Warning, or Critical.<br>`--source <source>` — The alert source label. |
 
 ### `arcanum campaign`
@@ -964,8 +990,15 @@ Inspects and repairs durable long-running operations. Safe detail omits checkpoi
 | `arcanum operation list` | List durable operations. | `--kind <kind>` — Filter by registered operation kind.<br>`--state <state>` — Filter by lifecycle state. |
 | `arcanum operation show <id>` | Show safe operation detail (checkpoint payloads are never returned). | None beyond global or inherited family options. |
 | `arcanum operation cancel <id>` | Request cancellation through a compare-and-swap transition. | None beyond global or inherited family options. |
-| `arcanum operation retry <id>` | Reset a failed, abandoned, or repair-required operation to Pending. | None beyond global or inherited family options. |
+| `arcanum operation retry <id>` | Reset a failed, abandoned, repair-required, or unobserved-cancelling operation to Pending. A `Cancelling` row is admitted only once its lease has lapsed, so a cancellation still in progress cannot be yanked out from under its owner. | None beyond global or inherited family options. |
 | `arcanum operation reconcile` | Process every recoverable operation in bounded internal pages/concurrency; exit 2 means automatic recovery completed but operator repair is still required. | None beyond global or inherited family options. |
+
+A retried row does not wait for the original caller to come back. The reconciler treats a `Pending`
+row with a prior attempt as recoverable and re-drives it under its kind's registered recovery policy;
+a row still at attempt zero is left alone because its creator is about to lease it. `Cancelling` is
+recoverable on the same terms once its lease lapses, so a cancellation nobody observed is settled by
+the reconciler through the kind's handler instead of waiting forever for an owner that will never
+poll the flag.
 
 Every registered operation kind has an owning recovery handler and an explicit recovery class
 (`DESIGN.md` §10.8.1). A `ReconciliationRequired` operation is therefore always a state recovery
@@ -978,11 +1011,15 @@ ReconciliationRequired` is the list of things that need you. Its terminal error 
 | `operation.checkpoint_corrupt` | The checkpoint payload could not be parsed. | The work cannot be resumed; `retry` restarts it from durable inputs where its policy allows. |
 | `operation.recovery_handler_missing` | No handler is registered for the kind. This is a build defect, not a runtime state. | Report it. Recovery will not guess an outcome. |
 | `operation.recovery_result_invalid` | A handler returned a non-terminal state. Also a build defect. | Report it. |
-| `operation.link_missing` | The ledger row lacks the inference run, claim, or reservation id its handler needs, so recovery cannot tell which entity the crashed work owned. | Inspect the linked domain state with `arcanum operation show <id>`, then `retry` or `cancel`. |
+| `operation.link_missing` | The ledger row lacks the inference run, claim, or reservation id its handler needs, so recovery cannot tell which entity the crashed work owned. | Inspect the linked domain state with `arcanum operation show <id>`, then `retry` or `cancel`. A cancelled row is settled by the reconciler through the kind's handler once its lease lapses; no owner has to observe the flag. |
 
 `arcanum doctor` reports the same states as part of its `DurableOperations` panel, including stale
-operations (expired leases nobody has claimed) and per-kind repair guidance. Neither surface emits
-operation ids, public summaries, or checkpoint content into that detail.
+operations (expired leases nobody has claimed), the count awaiting repair, per-kind repair guidance
+keyed by terminal error code, and any kind with no registered recovery handler. That detail comes
+from the host's `DurableOperations` health component: when the host cannot be reached the check warns
+and names the repair path rather than being omitted, and `--json` emits it as a `DurableOperations`
+check alongside the other diagnostics. Neither surface emits operation ids, public summaries, or
+checkpoint content into that detail.
 
 ### `arcanum backup`
 
@@ -1117,7 +1154,7 @@ Writes owner-local active CLI defaults. It never mutates the selected Campaign, 
 | `arcanum use workspace <identifier>` | Select an active workspace. | None beyond global or inherited family options. |
 | `arcanum use model <identifier>` | Select an active model. | None beyond global or inherited family options. |
 | `arcanum use session <identifier>` | Select an active session. | None beyond global or inherited family options. |
-| `arcanum use clear [<scope>]` | Clear all saved context when scope is omitted, or clear campaign, workspace, model, or session context. | None beyond global or inherited family options. |
+| `arcanum use clear [<scope>]` | Clear all saved context when scope is omitted, or clear campaign, workspace, model, or session context. Only those four names are accepted; numeric enum spellings and comma-separated flag lists are rejected with exit `2` and the expected names, so no unnamed scope is ever cleared. | None beyond global or inherited family options. |
 
 ### `arcanum context`
 

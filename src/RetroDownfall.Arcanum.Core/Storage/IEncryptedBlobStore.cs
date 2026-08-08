@@ -16,7 +16,28 @@ public enum EncryptedBlobAlgorithm : byte
 
 public static class EncryptedBlobFormat
 {
-    public const byte CurrentVersion = 1;
+    /// <summary>
+    /// Version 1 binds the canonical header (with the declared plaintext-length field zeroed so the
+    /// streaming writer can back-patch it), the chunk index, and the chunk length into every chunk's
+    /// associated data. It does not mark the final chunk, so a coordinated truncation at a chunk
+    /// boundary that also rewrites the header length field still authenticates. Version 1 envelopes
+    /// remain readable; they are never written.
+    /// </summary>
+    public const byte LegacyVersion1 = 1;
+
+    /// <summary>
+    /// Version 2 additionally binds a final-chunk marker and, on the final chunk, the total declared
+    /// plaintext length. Truncating or extending at a chunk boundary therefore changes the associated
+    /// data of the chunk that becomes final, and AES-GCM authentication fails.
+    /// </summary>
+    public const byte LengthBoundVersion2 = 2;
+
+    public const byte CurrentVersion = LengthBoundVersion2;
+
+    public const byte MinimumSupportedVersion = LegacyVersion1;
+
+    public static bool IsSupportedVersion(byte version) =>
+        version is >= MinimumSupportedVersion and <= CurrentVersion;
 }
 
 public sealed record EncryptedBlobDescriptor(

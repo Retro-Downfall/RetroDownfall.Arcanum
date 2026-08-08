@@ -44,6 +44,7 @@ class CoverageThresholdParserTests(unittest.TestCase):
         *,
         omitted: str | None = None,
         partial: str | None = None,
+        nested_partial: str | None = None,
         line_rate: str = "1.00",
         branch_rate: str = "1.00",
     ) -> str:
@@ -57,11 +58,27 @@ class CoverageThresholdParserTests(unittest.TestCase):
                 if security_type == partial
                 else "100% (2/2)"
             )
+            filename = f"RetroDownfall.Arcanum/Security/{security_type}.cs"
             classes.append(
                 f"""
-        <class name="RetroDownfall.Arcanum.Security.{security_type}">
+        <class name="RetroDownfall.Arcanum.Security.{security_type}" filename="{filename}" branch-rate="1">
           <lines>
             <line number="10" condition-coverage="{condition}" />
+          </lines>
+        </class>"""
+            )
+
+            if security_type != nested_partial:
+                continue
+
+            # Coverlet keeps the async state machine as a nested class on the same file;
+            # its branches live on source lines the synchronous shell never reports.
+            classes.append(
+                f"""
+        <class name="RetroDownfall.Arcanum.Security.{security_type}/&lt;InvokeAsync&gt;d__4" filename="{filename}" branch-rate="0.25">
+          <lines>
+            <line number="10" condition-coverage="100% (2/2)" />
+            <line number="24" condition-coverage="25% (1/4)" />
           </lines>
         </class>"""
             )
@@ -97,6 +114,59 @@ class CoverageThresholdParserTests(unittest.TestCase):
         )
         path = self._write_xml(xml)
         self.assertEqual(coverage_threshold.main([str(path)]), 1)
+
+    def test_declaring_type_name_folds_async_state_machines(self) -> None:
+        self.assertEqual(
+            coverage_threshold.declaring_type_name(
+                "RetroDownfall.Arcanum.Api.Security.ApiKeyEndpointFilter/<InvokeAsync>d__4"
+            ),
+            "ApiKeyEndpointFilter",
+        )
+        self.assertEqual(
+            coverage_threshold.declaring_type_name(
+                "RetroDownfall.Arcanum.Api.Security.ApiKeyEndpointFilter"
+            ),
+            "ApiKeyEndpointFilter",
+        )
+
+    def test_uncovered_branch_in_nested_state_machine_fails_the_gate(self) -> None:
+        # Regression guard: matching on the substring after the last "." yielded
+        # "OutboundUrlGuard/<...>d__17" and skipped every async body, so the security gate
+        # only ever inspected the fully covered synchronous shell.
+        xml = self._coverage_xml(
+            nested_partial="OutboundUrlGuard",
+        )
+        path = self._write_xml(xml)
+
+        self.assertEqual(coverage_threshold.main([str(path)]), 1)
+
+    def test_fully_covered_nested_state_machine_passes_the_gate(self) -> None:
+        xml = self._coverage_xml()
+        path = self._write_xml(xml)
+
+        self.assertEqual(coverage_threshold.main([str(path)]), 0)
+
+    def test_powershell_gate_rejects_uncovered_nested_state_machine(self) -> None:
+        pwsh = shutil.which("pwsh")
+        if pwsh is None:
+            self.skipTest("pwsh is not installed")
+
+        path = self._write_xml(
+            self._coverage_xml(
+                nested_partial="OutboundUrlGuard",
+            )
+        )
+        script = Path(__file__).parent / "coverage_threshold.ps1"
+
+        completed = subprocess.run(
+            [pwsh, "-NoProfile", "-File", str(script), str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("OutboundUrlGuard", completed.stderr)
 
     def test_platform_targets_can_be_overridden_by_valid_percentages(self) -> None:
         xml = self._coverage_xml(

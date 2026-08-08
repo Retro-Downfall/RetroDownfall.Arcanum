@@ -96,6 +96,43 @@ public sealed class FileEncryptionKeyProviderTests
         Assert.Equal([current.KeyId], await restored.GetActiveKeyIdsAsync());
     }
 
+    // The persisted key ring must be LF-delimited on every platform: AppendLine emits CRLF on
+    // Windows, and every reader (this provider, BackupSecretSnapshotReader, BackupSecretRewrapper)
+    // requires bare LF, so a CRLF ring makes every encrypted blob permanently unreadable.
+    [Fact]
+    public async Task Persisted_key_ring_is_line_feed_delimited_on_every_platform()
+    {
+        string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        RecordingSecretStore secrets = new(SecretStoreReadResult.Ok(secret));
+        FileEncryptionKeyProvider provider = new(secrets);
+        _ = await provider.GetForWriteAsync();
+
+        _ = await provider.RotateAsync();
+
+        Assert.NotNull(secrets.SavedSecret);
+        Assert.DoesNotContain('\r', secrets.SavedSecret!);
+        Assert.StartsWith("ARCANUM-KEYRING-1\n", secrets.SavedSecret!, StringComparison.Ordinal);
+    }
+
+    // A ring already written with CRLF by an older Windows build must still load, otherwise the
+    // install stays bricked after the writer is fixed.
+    [Fact]
+    public async Task Key_ring_written_with_carriage_returns_still_loads()
+    {
+        string secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        RecordingSecretStore source = new(SecretStoreReadResult.Ok(secret));
+        FileEncryptionKeyProvider writer = new(source);
+        FileEncryptionKeyMaterial prior = await writer.GetForWriteAsync();
+        FileEncryptionKeyMaterial current = await writer.RotateAsync();
+        string crlfRing = source.SavedSecret!.Replace("\n", "\r\n", StringComparison.Ordinal);
+
+        FileEncryptionKeyProvider restored = new(
+            new RecordingSecretStore(SecretStoreReadResult.Ok(crlfRing)));
+
+        Assert.Equal(current.KeyId, (await restored.GetForWriteAsync()).KeyId);
+        Assert.Equal(prior.KeyId, (await restored.GetForReadAsync(prior.KeyId)).KeyId);
+    }
+
     [Fact]
     public async Task Active_write_key_cannot_be_retired()
     {

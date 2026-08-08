@@ -49,6 +49,17 @@ public sealed class PrometheusMetricsExporter : IDisposable
 
     private const int MaxLabelValueLength = 256;
 
+    /// <summary>
+    /// Hard ceiling on distinct label sets retained per metric. This exporter is a process-lifetime
+    /// singleton that never evicts a series, so without a ceiling any producer that emits an
+    /// unbounded label value would grow both process RSS and the scrape body until the host dies.
+    /// Series beyond the ceiling are refused and counted in
+    /// <c>arcanum_metrics_series_dropped_total</c> rather than silently discarded.
+    /// </summary>
+    private const int MaxSeriesPerMetric = 2000;
+
+    private const string DroppedSeriesMetricName = "arcanum_metrics_series_dropped_total";
+
     private readonly ConcurrentDictionary<string, InstrumentInfo> _instrumentInfo = new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, MetricValueState>> _counterSeries = new(StringComparer.Ordinal);
@@ -58,6 +69,8 @@ public sealed class PrometheusMetricsExporter : IDisposable
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, HistogramState>> _histogramSeries = new(StringComparer.Ordinal);
 
     private readonly object _startLock = new();
+
+    private long _droppedSeries;
 
     private MeterListener? _listener;
 
@@ -173,6 +186,17 @@ public sealed class PrometheusMetricsExporter : IDisposable
 
         }
 
+        output.Append("# HELP ").Append(DroppedSeriesMetricName)
+            .Append(" Label sets refused because a metric reached the per-metric series ceiling\n");
+
+        output.Append("# TYPE ").Append(DroppedSeriesMetricName).Append(" counter\n");
+
+        AppendSampleLine(
+            output,
+            DroppedSeriesMetricName,
+            string.Empty,
+            Interlocked.Read(ref _droppedSeries).ToString(CultureInfo.InvariantCulture));
+
         return Task.FromResult(output.ToString());
 
     }
@@ -274,6 +298,13 @@ public sealed class PrometheusMetricsExporter : IDisposable
                 metricName,
                 static _ => new ConcurrentDictionary<string, HistogramState>(StringComparer.Ordinal));
 
+            if (!TryReserveSeries(histogramSeries, labelKey))
+            {
+
+                return;
+
+            }
+
             HistogramState histogramState = histogramSeries.GetOrAdd(
                 labelKey,
                 _ => new HistogramState(info.HistogramBucketBoundaries));
@@ -290,6 +321,13 @@ public sealed class PrometheusMetricsExporter : IDisposable
         ConcurrentDictionary<string, MetricValueState> valueSeries = seriesByMetric.GetOrAdd(
             metricName,
             static _ => new ConcurrentDictionary<string, MetricValueState>(StringComparer.Ordinal));
+
+        if (!TryReserveSeries(valueSeries, labelKey))
+        {
+
+            return;
+
+        }
 
         MetricValueState valueState = valueSeries.GetOrAdd(labelKey, static _ => new MetricValueState());
 
@@ -330,6 +368,35 @@ public sealed class PrometheusMetricsExporter : IDisposable
         MetricValueState valueState = series.GetOrAdd(labelKey, static _ => new MetricValueState());
 
         valueState.Set(value);
+
+    }
+
+    /// <summary>
+    /// Gate on adding a new label set to a metric. Existing series always pass; a new one is refused
+    /// once the metric is at <see cref="MaxSeriesPerMetric"/>. The count check is racy by a few
+    /// entries under concurrent recording, which is fine for a ceiling whose only job is to keep an
+    /// unevictable singleton from growing without bound.
+    /// </summary>
+    private bool TryReserveSeries<TState>(ConcurrentDictionary<string, TState> series, string labelKey)
+    {
+
+        if (series.ContainsKey(labelKey))
+        {
+
+            return true;
+
+        }
+
+        if (series.Count >= MaxSeriesPerMetric)
+        {
+
+            _ = Interlocked.Increment(ref _droppedSeries);
+
+            return false;
+
+        }
+
+        return true;
 
     }
 

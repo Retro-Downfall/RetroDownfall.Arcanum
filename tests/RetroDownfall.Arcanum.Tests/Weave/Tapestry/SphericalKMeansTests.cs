@@ -539,4 +539,86 @@ public sealed class SphericalKMeansTests
 
     }
 
+    [Fact]
+    public void Cluster_ObservesCancellationDuringSeeding()
+    {
+
+        // Enough clusters that seeding runs several rounds: without a token reaching the algorithm,
+        // clustering a real layer is minutes of uninterruptible CPU inside one synchronous call.
+        SphericalKMeansPoint[] points =
+        [
+            .. Enumerable.Range(0, 64).Select(index => Point(
+                $"p{index:D3}",
+                MathF.Cos(index * 0.1f),
+                MathF.Sin(index * 0.1f))),
+        ];
+
+        using CancellationTokenSource cts = new();
+
+        cts.Cancel();
+
+        _ = Assert.Throws<OperationCanceledException>(() =>
+            SphericalKMeans.Cluster(points, k: 16, seed: 99UL, cancellationToken: cts.Token));
+
+    }
+
+    [Fact]
+    public void ClusterLayer_ObservesCancellation()
+    {
+
+        SphericalKMeansPoint[] points =
+        [
+            .. Enumerable.Range(0, 64).Select(index => Point(
+                $"p{index:D3}",
+                MathF.Cos(index * 0.1f),
+                MathF.Sin(index * 0.1f))),
+        ];
+
+        using CancellationTokenSource cts = new();
+
+        cts.Cancel();
+
+        _ = Assert.Throws<OperationCanceledException>(() =>
+            SphericalKMeans.ClusterLayer(
+                points,
+                targetChildrenPerSummary: 4,
+                maxClustersPerLayer: 16,
+                seed: 99UL,
+                cancellationToken: cts.Token));
+
+    }
+
+    [Fact]
+    public void Cluster_SeedingIsIncrementalYetProducesTheDocumentedMemberships()
+    {
+
+        // Pins the K-Means++ selection weights that the incremental nearest-distance array must
+        // reproduce exactly. A running minimum is exact in floating point, so collapsing the per-round
+        // rescan of every chosen centroid into one fold of the newest centroid cannot move a boundary.
+        SphericalKMeansPoint[] points =
+        [
+            Point("a1", 1f, 0f, 0f),
+            Point("a2", 0.98f, 0.02f, 0f),
+            Point("b1", 0f, 1f, 0f),
+            Point("b2", 0.02f, 0.98f, 0f),
+            Point("c1", 0f, 0f, 1f),
+            Point("c2", 0f, 0.02f, 0.98f),
+        ];
+
+        SphericalKMeansResult result = SphericalKMeans.Cluster(points, k: 3, seed: 4242UL);
+
+        Assert.Equal(3, result.Clusters.Count);
+
+        Assert.Empty(result.Rejected);
+
+        string[][] memberships = [.. result.Clusters.Select(static cluster => cluster.MemberIds.ToArray())];
+
+        Assert.Contains(memberships, static members => members.SequenceEqual(new[] { "a1", "a2" }));
+
+        Assert.Contains(memberships, static members => members.SequenceEqual(new[] { "b1", "b2" }));
+
+        Assert.Contains(memberships, static members => members.SequenceEqual(new[] { "c1", "c2" }));
+
+    }
+
 }

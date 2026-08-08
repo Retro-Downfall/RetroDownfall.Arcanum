@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -856,6 +857,275 @@ public sealed class TrustedMcpWorkspaceStoreTests : IAsyncLifetime
         Assert.Throws<ArgumentException>(
             () => TrustedMcpWorkspaceStore.NormalizeWorkspaceRoot(
                 oversizedAfterNormalization));
+
+    }
+
+    [Fact]
+    public async Task Trust_queries_fail_closed_for_workspace_path_beyond_internal_limit()
+    {
+
+        string oversized = Path.DirectorySeparatorChar
+            + new string('x', TrustedMcpWorkspaceStore.MaxNormalizedWorkspacePathChars);
+
+        string digest = new('A', TrustedMcpWorkspaceStore.Sha256HexLength);
+
+        using TrustedMcpWorkspaceStore store = new();
+
+        TrustedMcpWorkspaceSnapshot snapshot = await store.GetSnapshotAsync(oversized);
+
+        Assert.Null(snapshot.CurrentDigest);
+
+        Assert.False(snapshot.IsApproved);
+
+        Assert.False(await store.IsTrustedAsync(oversized));
+
+        Assert.False(await store.IsTrustedAsync(oversized, digest));
+
+        Assert.False(await store.IsApprovedDigestAsync(oversized, digest));
+
+    }
+
+    [Fact]
+    public async Task IsApprovedDigestAsync_fails_closed_when_workspace_path_cannot_be_normalized()
+    {
+
+        _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");
+
+        using TrustedMcpWorkspaceStore store = new();
+
+        await store.TrustAsync(_workspace.Root);
+
+        string approvedDigest = await ComputeSha256HexAsync(
+            Path.Combine(_workspace.Root, "mcp.json"));
+
+        string unnormalizable = _workspace.Root
+            + Path.DirectorySeparatorChar
+            + new string('x', TrustedMcpWorkspaceStore.MaxNormalizedWorkspacePathChars);
+
+        Assert.False(await store.IsApprovedDigestAsync(unnormalizable, approvedDigest));
+
+    }
+
+    [Fact]
+    public async Task IsTrustedAsync_fails_closed_when_no_page_holds_an_entry_for_the_workspace()
+    {
+
+        _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");
+
+        string otherWorkspace = _workspace.CreateSubdir("other-workspace");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(otherWorkspace, "mcp.json"),
+            """{"mcpServers":{"other":{}}}""");
+
+        using TrustedMcpWorkspaceStore store = new();
+
+        await store.TrustAsync(otherWorkspace);
+
+        Assert.True(File.Exists(_storePath));
+
+        string currentDigest = await ComputeSha256HexAsync(
+            Path.Combine(_workspace.Root, "mcp.json"));
+
+        Assert.False(await store.IsTrustedAsync(_workspace.Root));
+
+        Assert.False(await store.IsTrustedAsync(_workspace.Root, currentDigest));
+
+        Assert.False(await store.IsApprovedDigestAsync(_workspace.Root, currentDigest));
+
+    }
+
+    [Fact]
+    public async Task Conflicting_duplicate_entries_across_pages_fail_closed()
+    {
+
+        string root = Path.GetFullPath(_workspace.Root);
+
+        string digestA = new('A', TrustedMcpWorkspaceStore.Sha256HexLength);
+
+        string digestB = new('B', TrustedMcpWorkspaceStore.Sha256HexLength);
+
+        WriteTrustStorePage(0, CreateSingleEntryDocument(root, digestA));
+
+        WriteTrustStorePage(1, CreateSingleEntryDocument(root, digestB));
+
+        using TrustedMcpWorkspaceStore store = new();
+
+        Assert.False(await store.IsApprovedDigestAsync(root, digestA));
+
+        Assert.False(await store.IsApprovedDigestAsync(root, digestB));
+
+    }
+
+    [Fact]
+    public async Task Consistent_duplicate_entries_across_pages_still_require_an_exact_digest_match()
+    {
+
+        string root = Path.GetFullPath(_workspace.Root);
+
+        string approvedDigest = new('A', TrustedMcpWorkspaceStore.Sha256HexLength);
+
+        string otherDigest = new('B', TrustedMcpWorkspaceStore.Sha256HexLength);
+
+        WriteTrustStorePage(0, CreateSingleEntryDocument(root, approvedDigest));
+
+        WriteTrustStorePage(1, CreateSingleEntryDocument(root, approvedDigest));
+
+        using TrustedMcpWorkspaceStore store = new();
+
+        Assert.True(await store.IsApprovedDigestAsync(root, approvedDigest));
+
+        Assert.False(await store.IsApprovedDigestAsync(root, otherDigest));
+
+    }
+
+    [Fact]
+    public async Task TrustAsync_refuses_to_write_when_the_same_workspace_is_duplicated_across_pages()
+    {
+
+        _workspace.WriteFile("mcp.json", """{"mcpServers":{}}""");
+
+        string root = Path.GetFullPath(_workspace.Root);
+
+        string storedDigest = new('A', TrustedMcpWorkspaceStore.Sha256HexLength);
+
+        WriteTrustStorePage(0, CreateSingleEntryDocument(root, storedDigest));
+
+        WriteTrustStorePage(1, CreateSingleEntryDocument(root, storedDigest));
+
+        byte[] firstPage = await File.ReadAllBytesAsync(GetPagePath(0));
+
+        byte[] secondPage = await File.ReadAllBytesAsync(GetPagePath(1));
+
+        using TrustedMcpWorkspaceStore store = new();
+
+        TrustedMcpWorkspaceStoreException exception =
+            await Assert.ThrowsAsync<TrustedMcpWorkspaceStoreException>(
+                () => store.TrustAsync(_workspace.Root));
+
+        Assert.Contains("corrupt", exception.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(firstPage, await File.ReadAllBytesAsync(GetPagePath(0)));
+
+        Assert.Equal(secondPage, await File.ReadAllBytesAsync(GetPagePath(1)));
+
+        Assert.False(await store.IsTrustedAsync(_workspace.Root));
+
+    }
+
+    [Fact]
+    public async Task Retrusting_a_workspace_replaces_the_existing_entry_and_revokes_the_old_digest()
+    {
+
+        string mcpPath = _workspace.WriteFile("mcp.json", """{"mcpServers":{"a":{}}}""");
+
+        using TrustedMcpWorkspaceStore store = new();
+
+        await store.TrustAsync(_workspace.Root);
+
+        string firstDigest = await ComputeSha256HexAsync(mcpPath);
+
+        _workspace.WriteFile("mcp.json", """{"mcpServers":{"b":{}}}""");
+
+        string secondDigest = await ComputeSha256HexAsync(mcpPath);
+
+        await store.TrustAsync(_workspace.Root);
+
+        Assert.False(await store.IsApprovedDigestAsync(_workspace.Root, firstDigest));
+
+        Assert.True(await store.IsApprovedDigestAsync(_workspace.Root, secondDigest));
+
+        Assert.True(await store.IsTrustedAsync(_workspace.Root));
+
+        TrustedMcpWorkspaceDocument persisted = JsonSerializer.Deserialize(
+            await File.ReadAllBytesAsync(_storePath),
+            McpConfigJsonSerializerContext.Default.TrustedMcpWorkspaceDocument)!;
+
+        Assert.Equal(secondDigest, Assert.Single(persisted.Entries).Value);
+
+        Assert.Empty(Directory.GetFiles(
+            ArcanumPaths.GrimoireDirectory,
+            "trusted-mcp-workspaces.page-*.json",
+            SearchOption.TopDirectoryOnly));
+
+    }
+
+    [SkippableFact]
+    public async Task TrustAsync_refuses_to_store_a_workspace_path_that_is_not_round_trip_normalized()
+    {
+
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "Windows strips trailing spaces during full-path expansion.");
+
+        string trailingSpaceRoot = Path.Combine(_workspace.Root, "workspace ");
+
+        Directory.CreateDirectory(trailingSpaceRoot);
+
+        await File.WriteAllTextAsync(
+            Path.Combine(trailingSpaceRoot, "mcp.json"),
+            """{"mcpServers":{}}""");
+
+        string requested = trailingSpaceRoot + Path.DirectorySeparatorChar + ".";
+
+        // Expansion yields a trailing-space path that no longer normalizes to itself,
+        // so it must never be persisted as a store key.
+        Assert.Equal(
+            trailingSpaceRoot,
+            TrustedMcpWorkspaceStore.NormalizeWorkspaceRoot(requested));
+
+        Assert.NotEqual(
+            trailingSpaceRoot,
+            TrustedMcpWorkspaceStore.NormalizeWorkspaceRoot(trailingSpaceRoot));
+
+        using TrustedMcpWorkspaceStore store = new();
+
+        TrustedMcpWorkspaceStoreException exception =
+            await Assert.ThrowsAsync<TrustedMcpWorkspaceStoreException>(
+                () => store.TrustAsync(requested));
+
+        Assert.Contains("corrupt", exception.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(File.Exists(_storePath));
+
+        Assert.False(await store.IsTrustedAsync(requested));
+
+    }
+
+    private static string GetPagePath(long pageIndex) =>
+        pageIndex == 0
+            ? Path.Combine(ArcanumPaths.GrimoireDirectory, "trusted-mcp-workspaces.json")
+            : Path.Combine(
+                ArcanumPaths.GrimoireDirectory,
+                $"trusted-mcp-workspaces.page-{pageIndex:D8}.json");
+
+    private static TrustedMcpWorkspaceDocument CreateSingleEntryDocument(
+        string normalizedPath,
+        string digest)
+    {
+
+        TrustedMcpWorkspaceDocument document = new();
+
+        document.Entries[normalizedPath] = digest;
+
+        return document;
+
+    }
+
+    private static void WriteTrustStorePage(
+        long pageIndex,
+        TrustedMcpWorkspaceDocument document)
+    {
+
+        string path = GetPagePath(pageIndex);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        File.WriteAllBytes(
+            path,
+            JsonSerializer.SerializeToUtf8Bytes(
+                document,
+                McpConfigJsonSerializerContext.Default.TrustedMcpWorkspaceDocument));
 
     }
 

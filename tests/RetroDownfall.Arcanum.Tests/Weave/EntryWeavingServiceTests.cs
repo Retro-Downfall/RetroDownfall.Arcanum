@@ -177,6 +177,31 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task RunTickAsync_ShortProviderResponse_WritesNoRowsAndDoesNotThrow()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "first entry");
+
+        await CreateEntryAsync(sessionId, "second entry");
+
+        // IWeaveService never promises one vector per input. Indexing positionally against the request
+        // count would throw IndexOutOfRangeException, which the hosted loop's catch-all retries once a
+        // second forever — re-issuing a billable embedding call every second.
+        FakeWeaveService weave = new() { DropVectors = 1 };
+
+        EntryWeavingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.RunTickAsync(embeddings, CancellationToken.None);
+
+        Assert.Equal(0, await CountEntryEmbeddingsAsync());
+
+    }
+
+    [SkippableFact]
     public async Task RunTickAsync_RespectsBatchSizeAcrossMultipleTicks()
     {
 
@@ -404,6 +429,9 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
         public bool ThrowOnEmbed { get; set; }
 
+        /// <summary>Vectors to omit from an otherwise successful response, simulating a short provider reply.</summary>
+        public int DropVectors { get; set; }
+
         public int EmbedBatchCallCount { get; private set; }
 
         public List<string>? LastBatch { get; private set; }
@@ -435,9 +463,9 @@ public sealed class EntryWeavingServiceTests : IAsyncLifetime
 
             }
 
-            Embedding<float>[] generated = new Embedding<float>[texts.Count];
+            Embedding<float>[] generated = new Embedding<float>[Math.Max(0, texts.Count - DropVectors)];
 
-            for (int i = 0; i < texts.Count; i++)
+            for (int i = 0; i < generated.Length; i++)
             {
 
                 generated[i] = new Embedding<float>(new float[] { 1f, 0f, 0f });

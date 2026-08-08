@@ -467,7 +467,9 @@ public sealed class McpCommands(
 
         McpToolInvokeResponse response = result.Value;
 
-        AnsiConsole.WriteLine(response.Result.GetRawText());
+        // Raw stdout: Spectre would render the document as a Text renderable and hard-wrap it at the
+        // profile width, putting literal newlines inside JSON string literals.
+        Console.Out.WriteLine(response.Result.GetRawText());
 
         AnsiConsole.MarkupLine(
             themePalette.MutedMarkup(

@@ -43,6 +43,67 @@ public static class EmbeddingBlobCodec
     }
 
     /// <summary>
+    /// A zero-copy <c>float32</c> view over a stored embedding BLOB, for scan paths that only read the
+    /// vector and would otherwise pay <see cref="Decode"/>'s allocation and copy for every candidate
+    /// row. Validation is identical to <see cref="Decode"/>'s: a blob whose length is not a whole number
+    /// of floats is a corrupt row, not a short vector, so it throws rather than silently truncating the
+    /// way a bare <see cref="MemoryMarshal.Cast{TFrom, TTo}(ReadOnlySpan{TFrom})"/> would.
+    /// </summary>
+    public static ReadOnlySpan<float> AsVector(ReadOnlySpan<byte> bytes)
+    {
+
+        if (bytes.Length % sizeof(float) != 0)
+        {
+            throw new InvalidOperationException(
+                $"Embedding blob length {bytes.Length} is not a multiple of {sizeof(float)} bytes.");
+
+        }
+
+        return MemoryMarshal.Cast<byte, float>(bytes);
+
+    }
+
+    /// <summary>
+    /// The squared L2 norm of <paramref name="vector"/>, accumulated over exactly the lanes and in
+    /// exactly the order <see cref="CosineSimilarity(ReadOnlySpan{float}, ReadOnlySpan{float})"/> uses
+    /// internally. Hoisting an invariant query vector's norm out of a scan loop with this is therefore
+    /// bit-identical to letting every row recompute it.
+    /// </summary>
+    public static double NormSquared(ReadOnlySpan<float> vector)
+    {
+
+        double norm = 0;
+
+        int simdWidth = Vector<float>.Count;
+
+        int i = 0;
+
+        if (vector.Length >= simdWidth)
+        {
+
+            for (; i <= vector.Length - simdWidth; i += simdWidth)
+            {
+
+                Vector<float> v = new(vector.Slice(i, simdWidth));
+
+                norm += Vector.Dot(v, v);
+
+            }
+
+        }
+
+        for (; i < vector.Length; i++)
+        {
+
+            norm += (double)vector[i] * vector[i];
+
+        }
+
+        return norm;
+
+    }
+
+    /// <summary>
     /// Cosine similarity in <c>[-1, 1]</c> (imprinted embeddings are typically near-unit vectors, so
     /// results cluster in <c>[0, 1]</c> in practice). Returns <c>0</c> for mismatched or zero-length
     /// vectors rather than throwing — the managed fallback path treats that as "no signal", not a
@@ -67,9 +128,27 @@ public static class EmbeddingBlobCodec
 
         }
 
-        double dot = 0;
+        return CosineSimilarity(a, NormSquared(a), b);
 
-        double normA = 0;
+    }
+
+    /// <summary>
+    /// <see cref="CosineSimilarity(ReadOnlySpan{float}, ReadOnlySpan{float})"/> with
+    /// <paramref name="a"/>'s squared norm supplied by the caller, for brute-force scans where
+    /// <paramref name="a"/> is one fixed query vector scored against every row in the corpus. Recomputing
+    /// its norm per row spends a third of the vector math re-deriving a constant; pass
+    /// <see cref="NormSquared"/> of the query once instead. Results are bit-identical either way.
+    /// </summary>
+    public static float CosineSimilarity(ReadOnlySpan<float> a, double normA, ReadOnlySpan<float> b)
+    {
+
+        if (a.Length != b.Length || a.Length == 0)
+        {
+            return 0f;
+
+        }
+
+        double dot = 0;
 
         double normB = 0;
 
@@ -89,8 +168,6 @@ public static class EmbeddingBlobCodec
 
                 dot += Vector.Dot(va, vb);
 
-                normA += Vector.Dot(va, va);
-
                 normB += Vector.Dot(vb, vb);
 
             }
@@ -101,8 +178,6 @@ public static class EmbeddingBlobCodec
         {
 
             dot += (double)a[i] * b[i];
-
-            normA += (double)a[i] * a[i];
 
             normB += (double)b[i] * b[i];
 

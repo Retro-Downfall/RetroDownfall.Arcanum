@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Tests.Intelligence;
 
 namespace RetroDownfall.Arcanum.Tests.Collections;
 
+[Collection("ProcessEnvironment")]
 public sealed class TestHarnessPathSafetyTests
 {
 

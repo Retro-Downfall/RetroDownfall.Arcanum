@@ -127,9 +127,9 @@ public sealed partial class McpConnectionManager
 
     private void AttachEntryToPartition(ManagedMcpServerEntry entry, McpPartitionClients partition, List<LoadedMcpToolRow> toolsSink)
     {
-        if (entry.Client is not null && !partition.Clients.Contains(entry.Client))
+        if (entry.Client is not null)
         {
-            partition.Clients.Add(entry.Client);
+            _ = partition.AddClientIfAbsent(entry.Client);
         }
 
         foreach (LoadedMcpToolRow row in entry.LoadedTools)

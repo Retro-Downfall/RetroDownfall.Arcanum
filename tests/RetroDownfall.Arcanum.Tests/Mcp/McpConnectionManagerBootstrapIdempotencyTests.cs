@@ -349,15 +349,15 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
         object? partition =
             lazy!.GetType().GetProperty("Value")?.GetValue(lazy);
         Assert.NotNull(partition);
-        object? clients =
-            partition!.GetType().GetProperty("Clients")?.GetValue(
-                partition);
-        Assert.NotNull(clients);
+
+        // The partition's client list is private behind its own gate — three disjoint locks used to
+        // mutate a bare List<T> that the status surface enumerated unlocked — so tests go through the
+        // same synchronized entry point production code does.
         System.Reflection.MethodInfo? add =
-            clients!.GetType().GetMethod("Add");
+            partition!.GetType().GetMethod("AddClientIfAbsent");
         Assert.NotNull(add);
 
-        _ = add!.Invoke(clients, [client]);
+        _ = add!.Invoke(partition, [client]);
 
     }
 

@@ -174,6 +174,19 @@ public sealed class LocalHttpWebProvider : IWebResearchProvider
                                 "The page entered a redirect cycle."));
                         }
 
+                        // OutboundUrlGuard only classifies the resolved IP. Without the campaign ward, one
+                        // 302 off an allowlisted host turns a contained Sanctum into arbitrary egress.
+                        if (options.RedirectEgressWard is not null
+                            && !await options.RedirectEgressWard(
+                                    redirected,
+                                    deadline.Token)
+                                .ConfigureAwait(false))
+                        {
+                            return Complete(Failure(
+                                ErrorCodes.WebResearch.SsrfBlocked,
+                                "The redirect target was rejected by the campaign network policy."));
+                        }
+
                         current = redirected;
                         redirectCount++;
                         continue;

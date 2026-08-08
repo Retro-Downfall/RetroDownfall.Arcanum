@@ -29,10 +29,17 @@ public interface ITapestryStore
     /// Enumerates one scope's leaf sources in stable id order, carrying each source feature's
     /// already-imprinted embedding when one exists at <paramref name="expectedDimensions"/> so a
     /// rebuild re-embeds only what it must.
+    ///
+    /// Pass <paramref name="includeEmbeddings"/> as <c>false</c> to skip the embedding join entirely and
+    /// leave every <see cref="TapestryLeafSource.ExistingEmbedding"/> null. The corpus fingerprint that decides
+    /// whether a rebuild is needed at all consumes only source ids and content hashes, so reading and
+    /// decoding a vector per leaf to answer "has anything changed?" is pure waste on the overwhelmingly
+    /// common unchanged path.
     /// </summary>
     Task<IReadOnlyList<TapestryLeafSource>> EnumerateLeafSourcesAsync(
         TapestryScope scope,
         int expectedDimensions,
+        bool includeEmbeddings,
         CancellationToken cancellationToken);
 
     /// <summary>The single published generation for a scope, or <c>null</c> when none is complete.</summary>

@@ -614,6 +614,13 @@ internal sealed partial class SessionAttachmentStore
 
         List<SessionAttachmentRecord> revalidated = new(rows.Count);
 
+        // ListBoundAsync returns every version of every logical key, and all versions of one key name
+        // the same workspace file. Revalidation is a pure function of the row's stored source metadata
+        // plus the file's current state, so rows whose stored metadata is identical must revalidate
+        // identically — memoizing them collapses the repeated open/containment-check/double-SHA-256 pass
+        // over one file into a single pass per distinct snapshot, for the whole request.
+        Dictionary<AttachmentSourceMetadata, AttachmentSourceMetadata> observed = [];
+
         foreach (SessionAttachmentRecord row in rows)
 
         {
@@ -630,43 +637,58 @@ internal sealed partial class SessionAttachmentStore
 
             }
 
-            AttachmentSourceMetadata current;
-
-            try
+            if (!observed.TryGetValue(source, out AttachmentSourceMetadata? current))
 
             {
 
-                current = await _sourceResolver
-
-                    .RevalidateAsync(source, cancellationToken)
-
-                    .ConfigureAwait(false);
-
-            }
-            catch (OperationCanceledException)
-
-            {
-
-                throw;
-
-            }
-            catch (Exception)
-
-            {
-
-                current = source with
+                try
 
                 {
 
-                    Status = AttachmentSourceStatus.CorruptMetadata,
+                    current = await _sourceResolver
 
-                    DiagnosticReason = "Source metadata could not be safely revalidated.",
+                        .RevalidateAsync(source, cancellationToken)
 
-                };
+                        .ConfigureAwait(false);
+
+                }
+                catch (OperationCanceledException)
+
+                {
+
+                    throw;
+
+                }
+                catch (Exception)
+
+                {
+
+                    current = source with
+
+                    {
+
+                        Status = AttachmentSourceStatus.CorruptMetadata,
+
+                        DiagnosticReason = "Source metadata could not be safely revalidated.",
+
+                    };
+
+                }
+
+                observed[source] = current;
 
             }
 
-            await UpdateSourceAsync(row.Id, current, cancellationToken).ConfigureAwait(false);
+            // Persist only a real change. Revalidating an unchanged source is the overwhelmingly common
+            // case, and this endpoint is driven by a debounced workspace watcher, so writing back
+            // byte-identical column values once per version row per keystroke is pure write amplification.
+            if (current != source)
+
+            {
+
+                await UpdateSourceAsync(row.Id, current, cancellationToken).ConfigureAwait(false);
+
+            }
 
             revalidated.Add(row with { Source = current });
 
@@ -806,6 +828,13 @@ internal sealed partial class SessionAttachmentStore
 
         List<SessionAttachmentRecord> all = await ListAllRowsAsync(cancellationToken).ConfigureAwait(false);
 
+        if (AfterMissingFileSnapshotForTesting is not null)
+        {
+
+            await AfterMissingFileSnapshotForTesting(cancellationToken).ConfigureAwait(false);
+
+        }
+
         foreach (SessionAttachmentRecord row in all)
         {
 
@@ -822,11 +851,14 @@ internal sealed partial class SessionAttachmentStore
             catch (InvalidOperationException)
             {
 
-                await DeleteRowByIdAsync(row, cancellationToken).ConfigureAwait(false);
+                if (await DeleteSweptRowAsync(row, cancellationToken).ConfigureAwait(false))
+                {
 
-                _logger.LogWarning(
-                    "Deleted SessionAttachments row {AttachmentId} with escaping RelativePath.",
-                    row.Id);
+                    _logger.LogWarning(
+                        "Deleted SessionAttachments row {AttachmentId} with escaping RelativePath.",
+                        row.Id);
+
+                }
 
                 continue;
 
@@ -839,18 +871,36 @@ internal sealed partial class SessionAttachmentStore
 
             }
 
-            await DeleteRowByIdAsync(row, cancellationToken).ConfigureAwait(false);
+            if (await DeleteSweptRowAsync(row, cancellationToken).ConfigureAwait(false))
+            {
 
-            _logger.LogWarning(
-                "Deleted SessionAttachments row {AttachmentId} whose file is missing ({RelativePath}).",
-                row.Id,
-                row.RelativePath);
+                _logger.LogWarning(
+                    "Deleted SessionAttachments row {AttachmentId} whose file is missing ({RelativePath}).",
+                    row.Id,
+                    row.RelativePath);
+
+            }
 
         }
 
     }
 
-    private async Task DeleteRowByIdAsync(SessionAttachmentRecord row, CancellationToken cancellationToken)
+    /// <summary>
+    /// Deletes a row a sweep decided is dead, but only while the persisted row still names the exact
+    /// <c>State</c> and <c>RelativePath</c> the sweep observed.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="SweepMissingFileRowsAsync"/> snapshots every row with no gate held, so
+    /// <c>PromotePendingAsync</c> can rewrite <c>SessionId</c>/<c>State</c>/<c>RelativePath</c> and unlink
+    /// the old pending file between the snapshot and the <c>File.Exists</c> probe. An unconditional
+    /// <c>DELETE ... WHERE "Id" = @id</c> would then destroy the freshly promoted row, and the orphan-file
+    /// sweep that runs next would unlink its ciphertext — silently losing an attachment the persisted
+    /// Entry still references. The <c>State</c>/<c>RelativePath</c> predicate makes the delete an atomic
+    /// no-op in that window, matching the guard every sibling sweep in this file already applies. Returns
+    /// <see langword="true"/> only when a row was actually removed, so the caller never logs a phantom
+    /// deletion.
+    /// </remarks>
+    private async Task<bool> DeleteSweptRowAsync(SessionAttachmentRecord row, CancellationToken cancellationToken)
     {
 
         string? gateKey = row.SessionId is Guid sessionId
@@ -866,6 +916,8 @@ internal sealed partial class SessionAttachmentStore
 
         using IDisposable? gateLease = gate;
 
+        int affected = 0;
+
         await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -878,14 +930,22 @@ internal sealed partial class SessionAttachmentStore
                     """
                     DELETE FROM "SessionAttachments"
                     WHERE "Id" = @id
+                      AND "State" = @state
+                      AND "RelativePath" = @relativePath
                     """;
 
                 AddParameter(cmd, "@id", row.Id.ToString());
 
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                AddParameter(cmd, "@state", row.State.ToString());
+
+                AddParameter(cmd, "@relativePath", row.RelativePath);
+
+                affected = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             },
             cancellationToken).ConfigureAwait(false);
+
+        return affected > 0;
 
     }
 

@@ -48,6 +48,21 @@ Cross-OS targets are skipped with a platform note instead of a link failure.
 EOF
 }
 
+require_cmd() {
+  local cmd="$1"
+  local hint="${2:-}"
+
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "error: required command not found: $cmd" >&2
+
+    if [[ -n "$hint" ]]; then
+      echo "  $hint" >&2
+    fi
+
+    exit 1
+  fi
+}
+
 host_os() {
   case "$(uname -s)" in
     Darwin) echo darwin ;;
@@ -231,11 +246,66 @@ publish_rid() {
     && publish_regex_smoke_rid "$rid" "$log"
 }
 
+# ripgrep exits 1 for "no match" and >1 for a real failure (missing file, bad pattern, and
+# 127 when rg itself is absent). A process substitution's exit status is never propagated to
+# the reading loop, so capture the output here and inspect the status explicitly — otherwise
+# a failed scan is indistinguishable from a clean publish and the gate reports PASS.
+rg_capture() {
+  local pattern="$1"
+  shift
+
+  local out
+  local status
+
+  set +e
+  out="$(rg "$pattern" "$@")"
+  status=$?
+  set -e
+
+  if [[ "$status" -gt 1 ]]; then
+    echo "  ripgrep failed (exit $status) while scanning: $*" >&2
+    return 1
+  fi
+
+  printf '%s' "$out"
+  return 0
+}
+
+# An empty or truncated publish log looks exactly like a clean AOT publish to the warning
+# scanner, so require positive evidence that ILC actually ran before trusting a zero count.
+assert_log_has_ilc_output() {
+  local log="$1"
+  local rid="$2"
+
+  if [[ ! -r "$log" || ! -s "$log" ]]; then
+    echo "  Publish log for RID $rid is empty or unreadable: $log" >&2
+    return 1
+  fi
+
+  local markers
+
+  if ! markers="$(rg_capture "Generating native code|ILC :|ilc\.rsp" "$log")"; then
+    return 1
+  fi
+
+  if [[ -z "$markers" ]]; then
+    echo "  Publish log for RID $rid contains no ILC output; refusing to report a pass." >&2
+    return 1
+  fi
+
+  return 0
+}
+
 count_il_violations() {
   local log="$1"
   local violations=0
   local line
   local skip
+  local matches
+
+  if ! matches="$(rg_capture "warning IL[0-9]{4}|ILC :" "$log")"; then
+    return 1
+  fi
 
   while IFS= read -r line; do
     if [[ "$line" =~ warning\ IL[0-9]{4}|ILC\ :\ (warning\ )?IL[0-9]{4} ]]; then
@@ -253,13 +323,21 @@ count_il_violations() {
         violations=$((violations + 1))
       fi
     fi
-  done < <(rg "warning IL[0-9]{4}|ILC :" "$log" || true)
+  done <<<"$matches"
 
   echo "$violations"
+  return 0
 }
 
 check_nowarn_banned() {
-  if rg -q "IlcArg.*--nowarn" "$PROJECT" "$REGEX_SMOKE_PROJECT"; then
+  local matches
+
+  if ! matches="$(rg_capture "IlcArg.*--nowarn" "$PROJECT" "$REGEX_SMOKE_PROJECT")"; then
+    echo "AOT IL gate failed: could not scan the project files for banned IlcArg --nowarn" >&2
+    return 1
+  fi
+
+  if [[ -n "$matches" ]]; then
     echo "AOT IL gate failed: blanket IlcArg --nowarn is not permitted" >&2
     return 1
   fi
@@ -293,8 +371,22 @@ run_single_rid() {
     return 1
   fi
 
+  if ! assert_log_has_ilc_output "$log" "$rid"; then
+    rm -f "$log"
+    echo "AOT IL gate failed: cannot verify RID $rid" >&2
+    echo
+    return 1
+  fi
+
   local violations
-  violations="$(count_il_violations "$log")"
+
+  if ! violations="$(count_il_violations "$log")"; then
+    rm -f "$log"
+    echo "AOT IL gate failed: cannot scan the publish log for RID $rid" >&2
+    echo
+    return 1
+  fi
+
   rm -f "$log"
 
   if [[ "$violations" -gt 0 ]]; then
@@ -348,6 +440,11 @@ main() {
         ;;
     esac
   done
+
+  # Fail closed on a missing toolchain: every scan in this script goes through ripgrep, and
+  # a missing rg would otherwise make the gate report PASS while verifying nothing.
+  require_cmd dotnet "Install the .NET SDK (https://dotnet.microsoft.com/download)."
+  require_cmd rg "Install ripgrep (brew install ripgrep / apt-get install -y ripgrep)."
 
   if [[ -z "$target" ]]; then
     target="$(host_rid)"

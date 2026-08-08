@@ -252,6 +252,9 @@ public sealed class BlobEncryptionFileProcessor(
         }
     }
 
+    // FileShare.Delete is required: MigrateAsync writes the encrypted replacement over this exact
+    // path while this reader is still open, and File.Move(overwrite: true) on Windows needs DELETE
+    // access on the destination, which a plain FileShare.Read handle denies.
     private static FileStream OpenLegacy(string path) =>
         new(
             path,
@@ -259,7 +262,7 @@ public sealed class BlobEncryptionFileProcessor(
             {
                 Mode = FileMode.Open,
                 Access = FileAccess.Read,
-                Share = FileShare.Read,
+                Share = FileShare.Read | FileShare.Delete,
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
             });
 

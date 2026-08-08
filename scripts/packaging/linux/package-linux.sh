@@ -121,6 +121,34 @@ require_cmd dotnet
 require_cmd tar
 require_cmd sha256sum
 
+# The Native AOT image does NOT absorb the P/Invoke shared libraries. SQLitePCLRaw only
+# static-links e_sqlcipher for browser-wasm, so every linux-* publish emits
+# libe_sqlcipher.so (and libonigwrap.so) beside the host. Shipping an archive without them
+# produces a CLI that dies with DllNotFoundException the moment it opens the Grimoire, and
+# nothing downstream launches the binary — so assert here and fail the build loudly.
+require_staged_natives() {
+  local stage_dir="$1"
+  shift
+
+  local missing=()
+  local name
+
+  for name in "$@"; do
+    if [[ ! -f "$stage_dir/$name" ]]; then
+      missing+=("$name")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "error: staged package is missing required native libraries: ${missing[*]}" >&2
+    echo "error: expected them beside the host in $stage_dir; the archive would be unusable." >&2
+    ls -la "$stage_dir" >&2 || true
+    exit 1
+  fi
+
+  echo "==> Verified native sidecars in $stage_dir: $*"
+}
+
 publish_cli() {
   local publish_dir="$WORK/cli-publish"
   local stage_dir="$WORK/stage/arcanum-linux-${ARCH_SUFFIX}"
@@ -146,10 +174,19 @@ publish_cli() {
     exit 1
   fi
 
+  # Stage the whole publish directory (as publish_gui and the macOS packager do) and rename
+  # only the apphost; the flattened native sidecars must travel with it.
   mkdir -p "$stage_dir"
-  cp "$published" "$stage_dir/arcanum"
+  cp -a "$publish_dir/." "$stage_dir/"
+
+  local staged_host="$stage_dir/$(basename "$published")"
+  if [[ "$staged_host" != "$stage_dir/arcanum" ]]; then
+    mv "$staged_host" "$stage_dir/arcanum"
+  fi
   chmod +x "$stage_dir/arcanum"
   cp "$REPO_ROOT/docs/Arcanum.README.md" "$stage_dir/README.md"
+
+  require_staged_natives "$stage_dir" libe_sqlcipher.so libonigwrap.so
 
   echo "==> Creating $archive"
   tar -C "$WORK/stage" -czf "$archive" "arcanum-linux-${ARCH_SUFFIX}"

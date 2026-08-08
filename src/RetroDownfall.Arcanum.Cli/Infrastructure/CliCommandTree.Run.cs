@@ -64,33 +64,103 @@ internal static partial class CliCommandTree
 
         };
 
-        Option<string?> model = new("--model", "-m");
+        Option<string?> model = new("--model", "-m")
+        {
 
-        Option<bool> newSession = new("--new", "-n");
+            Description = "Use this configured model instead of the effective context or server default.",
 
-        Option<bool> unattended = new("--unattended");
+        };
 
-        Option<string?> campaign = new("--campaign", "-c");
+        Option<bool> newSession = new("--new", "-n")
+        {
 
-        Option<string?> workspace = new("--workspace", "-w");
+            Description = "Start without continuing the effective Session; wins over --session.",
 
-        Option<string?> session = new("--session", "-s");
+        };
 
-        Option<string?> temperature = new("--temperature");
+        Option<bool> unattended = new("--unattended")
+        {
 
-        Option<string?> topP = new("--top-p");
+            Description = "Apply unattended human-prompt and Ward behavior to the selected live route.",
 
-        Option<string?> maxTokens = new("--max-tokens");
+        };
 
-        Option<string?> seed = new("--seed");
+        Option<string?> campaign = new("--campaign", "-c")
+        {
 
-        Option<string[]> stop = new("--stop");
+            Description = "Use the selected Campaign GUID, exact name, or unique prefix.",
 
-        Option<string?> responseFormat = new("--response-format");
+        };
 
-        Option<string?> presencePenalty = new("--presence-penalty");
+        Option<string?> workspace = new("--workspace", "-w")
+        {
 
-        Option<string?> frequencyPenalty = new("--frequency-penalty");
+            Description = "Use the selected Workspace ID, name, or server-host path; also the base for relative --with paths.",
+
+        };
+
+        Option<string?> session = new("--session", "-s")
+        {
+
+            Description = "Continue the selected Session by GUID, exact title, or unique title prefix.",
+
+        };
+
+        Option<string?> temperature = new("--temperature")
+        {
+
+            Description = "Sampling temperature from 0 through 2.",
+
+        };
+
+        Option<string?> topP = new("--top-p")
+        {
+
+            Description = "Nucleus sampling cutoff from 0 through 1.",
+
+        };
+
+        Option<string?> maxTokens = new("--max-tokens")
+        {
+
+            Description = "Maximum Agent/Spell output tokens; research uses --token-budget.",
+
+        };
+
+        Option<string?> seed = new("--seed")
+        {
+
+            Description = "Optional signed 64-bit sampling seed; provider support varies.",
+
+        };
+
+        Option<string[]> stop = new("--stop")
+        {
+
+            Description = "Stop sequence; repeat the option to supply several sequences.",
+
+        };
+
+        Option<string?> responseFormat = new("--response-format")
+        {
+
+            Description = "Response format: text, json (alias of json_object), json_object, or json_schema.",
+
+        };
+
+        Option<string?> presencePenalty = new("--presence-penalty")
+        {
+
+            Description = "Presence penalty from -2 through 2.",
+
+        };
+
+        Option<string?> frequencyPenalty = new("--frequency-penalty")
+        {
+
+            Description = "Frequency penalty from -2 through 2.",
+
+        };
 
         Option<int?> sourceTarget = new("--sources")
         {

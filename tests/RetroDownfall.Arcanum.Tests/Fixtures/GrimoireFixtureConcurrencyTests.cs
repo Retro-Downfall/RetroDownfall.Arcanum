@@ -79,11 +79,7 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        string templatePath = Path.Combine(
-            Path.GetTempPath(),
-            "arcanum-tests",
-            "grimoire-template",
-            "template-remediation-v1.db");
+        string templatePath = GrimoireFixture.TemplatePath;
 
         string sidecarPath = templatePath + ".kdf";
 

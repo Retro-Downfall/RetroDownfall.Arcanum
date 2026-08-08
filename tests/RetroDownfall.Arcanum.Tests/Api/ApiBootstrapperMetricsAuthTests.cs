@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
+[Collection("ProcessEnvironment")]
 public sealed class ApiBootstrapperMetricsAuthTests : IDisposable
 {
 

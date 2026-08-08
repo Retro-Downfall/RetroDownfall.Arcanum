@@ -23,6 +23,8 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
     private const string MissingConfigurationFingerprint = "missing";
 
+    private const string UnreadableConfigurationFingerprintPrefix = "unreadable:";
+
     private static readonly TimeSpan WriteLockTimeout = TimeSpan.FromSeconds(5);
 
     private static readonly TimeSpan ExternalChangeDebounce = TimeSpan.FromMilliseconds(500);
@@ -179,12 +181,54 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
             return wrapper?.Arcanum ?? new ArcanumSettings();
 
         }
+        catch (OperationCanceledException)
+        {
+
+            throw;
+
+        }
         catch (JsonException ex)
         {
+
+            await AcknowledgeUnreadableAsync().ConfigureAwait(false);
 
             throw new InvalidOperationException(
                 $"Failed to parse {_filePath}: {ex.Message}",
                 ex);
+
+        }
+        catch (Exception)
+        {
+
+            await AcknowledgeUnreadableAsync().ConfigureAwait(false);
+
+            throw;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Records a fingerprint that can never match the on-disk bytes after a failed read, so a write
+    /// attempted over a configuration that was never loaded is rejected by the stale-file guard even if
+    /// the caller's own fail-closed gate is bypassed.
+    /// </summary>
+    private async Task AcknowledgeUnreadableAsync()
+    {
+
+        try
+        {
+
+            string fingerprint = await ReadCurrentFingerprintAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+
+            AcknowledgeFingerprint($"{UnreadableConfigurationFingerprintPrefix}{fingerprint}");
+
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+
+            AcknowledgeFingerprint(UnreadableConfigurationFingerprintPrefix);
 
         }
 
@@ -440,6 +484,18 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         string expectedFingerprint,
         CancellationToken cancellationToken)
     {
+
+        if (expectedFingerprint.StartsWith(
+            UnreadableConfigurationFingerprintPrefix,
+            StringComparison.Ordinal))
+        {
+
+            return new ConfigurationWriteResult(
+                false,
+                [],
+                "arcanum.json could not be read when it was loaded, so saving would replace it with default settings. Repair the file and reload the configuration before saving.");
+
+        }
 
         string currentFingerprint = await ReadCurrentFingerprintAsync(cancellationToken)
             .ConfigureAwait(false);

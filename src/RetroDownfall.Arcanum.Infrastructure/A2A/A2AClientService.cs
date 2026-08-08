@@ -321,7 +321,7 @@ public sealed class A2AClientService : IA2AClientService
         try
         {
 
-            card = await ResolveCardAsync(discoveryUrl, cancellationToken).ConfigureAwait(false);
+            card = await ResolveCardAsync(discoveryUrl, allowlist, cancellationToken).ConfigureAwait(false);
 
         }
         catch (Exception ex) when (ex is HttpRequestException or A2AException or InvalidOperationException)
@@ -374,7 +374,7 @@ public sealed class A2AClientService : IA2AClientService
 
         }
 
-        HttpClient httpClient = CreateOutboundClient(CredentialTargetForCard(card, discoveryUrl, allowlist));
+        HttpClient httpClient = CreateOutboundClient(CredentialTargetForCard(card, discoveryUrl, allowlist), allowlist);
 
         IA2AClient client;
 
@@ -948,7 +948,10 @@ public sealed class A2AClientService : IA2AClientService
     /// because Arcanum deliberately serves no unauthenticated <c>/.well-known/agent-card.json</c> — probing
     /// only the well-known path made one Arcanum unable to discover another at all (issue #12).
     /// </remarks>
-    private async Task<AgentCard> ResolveCardAsync(string discoveryUrl, CancellationToken cancellationToken)
+    private async Task<AgentCard> ResolveCardAsync(
+        string discoveryUrl,
+        string[] allowlist,
+        CancellationToken cancellationToken)
     {
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -970,8 +973,9 @@ public sealed class A2AClientService : IA2AClientService
             ? [path]
             : [WellKnownAgentCardPath, ArcanumRuntimeDefaults.Conclave.A2A.ServerPath + "/agent-card"];
 
-        // The operator typed this URL, so it is a vouched-for credential target.
-        HttpClient httpClient = CreateOutboundClient(discoveryUrl);
+        // agent_url is model-supplied on dispatch_sending, so discovery is credentialed only when the
+        // allowlist vouches for it. CreateOutboundClient owns that decision for every caller.
+        HttpClient httpClient = CreateOutboundClient(discoveryUrl, allowlist);
 
         Exception? lastFailure = null;
 
@@ -1049,19 +1053,24 @@ public sealed class A2AClientService : IA2AClientService
     }
 
     /// <summary>
-    /// Builds the outbound client, attaching the operator-configured peer credential when one is set and the
-    /// target is one the operator actually vouched for. The credential is read from the environment at
-    /// dispatch time and never stored in configuration.
+    /// Builds the outbound client, attaching the operator-configured peer credential only when the target
+    /// matches a non-empty <c>Arcanum:Integrations:A2A:AllowedRemoteAgents</c> entry. The credential is read
+    /// from the environment at dispatch time and never stored in configuration.
     /// </summary>
     /// <param name="credentialTarget">
     /// The URL this client will talk to, or <c>null</c> for a client that carries no credential.
     /// </param>
+    /// <param name="allowlist">The configured <c>AllowedRemoteAgents</c> entries.</param>
     /// <remarks>
-    /// The Agent Card is remote-controlled, so a hostile card could advertise an interface on a third-party
-    /// host. Sending the peer credential there would hand it to an attacker, so it travels only to the origin
-    /// the operator typed or to an explicitly allowlisted target.
+    /// The allowlist is the <em>only</em> thing that vouches for a credential target, and the rule is uniform
+    /// across callers. <c>agent_url</c> reaches this service verbatim from the model on the
+    /// <c>dispatch_sending</c> / <c>continue_sending</c> tools, so "the operator typed this URL" was never a
+    /// safe assumption: a prompt-injected Apprentice could otherwise name an attacker host and be handed a
+    /// peer Arcanum API key — an operator-equivalent credential (&#167;11.13) — during card discovery, before
+    /// any card-interface scoping runs. When nothing vouches for the target the Sending still goes out, just
+    /// unauthenticated.
     /// </remarks>
-    private HttpClient CreateOutboundClient(string? credentialTarget)
+    private HttpClient CreateOutboundClient(string? credentialTarget, string[] allowlist)
     {
 
         HttpClient httpClient = _httpClientFactory.CreateClient(OutboundHttpClientName);
@@ -1070,6 +1079,19 @@ public sealed class A2AClientService : IA2AClientService
 
         if (credentialTarget is null || string.IsNullOrWhiteSpace(a2a.OutboundCredentialEnvironmentVariable))
         {
+
+            return httpClient;
+
+        }
+
+        if (allowlist.Length == 0 || !IsAllowedAgent(credentialTarget, allowlist))
+        {
+
+            _logger.LogWarning(
+                "dispatch_sending: withholding the outbound peer credential from '{AgentUrl}' because it "
+                + "matches no Arcanum:Integrations:A2A:AllowedRemoteAgents entry. The Sending is dispatched "
+                + "unauthenticated; add the target to that setting to authenticate it.",
+                credentialTarget);
 
             return httpClient;
 

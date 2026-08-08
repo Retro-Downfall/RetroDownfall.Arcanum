@@ -1,14 +1,24 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Telemetry;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Operations;
 
+/// <param name="scopeFactory">
+/// Supplies one DI scope — and therefore one <c>ArcanumDbContext</c> and one SQLite connection — per
+/// concurrently recovered operation. The reconciler and its store are both scoped, so without this
+/// the fan-out below would run several workers' commands over a single <c>SqliteConnection</c>,
+/// which tracks its live commands in an unsynchronized list. When it is absent (direct construction
+/// outside DI) recovery runs one operation at a time, because sharing one connection is the only
+/// alternative and it is not safe.
+/// </param>
 public sealed class LongRunningOperationReconciler(
     ILongRunningOperationStore store,
     IEnumerable<ILongRunningOperationRecoveryHandler> handlers,
     TimeProvider timeProvider,
-    ILogger<LongRunningOperationReconciler> logger)
+    ILogger<LongRunningOperationReconciler> logger,
+    IServiceScopeFactory? scopeFactory = null)
 {
     private static readonly TimeSpan RecoveryLease = TimeSpan.FromMinutes(2);
 
@@ -84,7 +94,9 @@ public sealed class LongRunningOperationReconciler(
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
         int pageSize = Math.Clamp(maxOperations, 1, 1_000);
 
-        int boundedConcurrency = Math.Clamp(maxConcurrency, 1, 16);
+        // Concurrency needs a scope per worker. Without a scope factory every worker would share one
+        // DbContext connection, so the only correct fan-out is none.
+        int boundedConcurrency = scopeFactory is null ? 1 : Math.Clamp(maxConcurrency, 1, 16);
 
         int examined = 0;
 
@@ -96,6 +108,85 @@ public sealed class LongRunningOperationReconciler(
         int skipped = 0;
 
         HashSet<Guid> attempted = [];
+
+        async Task SettleAsync(
+            ILongRunningOperationStore operationStore,
+            IReadOnlyDictionary<string, ILongRunningOperationRecoveryHandler> operationHandlers,
+            LongRunningOperation operation,
+            CancellationToken ct)
+        {
+
+            LongRunningOperationLeaseResult lease = await operationStore.TryAcquireLeaseAsync(
+                operation.Id,
+                ownerId,
+                utcNow,
+                utcNow.Add(RecoveryLease),
+                ct).ConfigureAwait(false);
+
+            if (!lease.Acquired)
+            {
+
+                Interlocked.Increment(ref skipped);
+
+                RecordOutcome(operation.Kind, "lease_lost");
+
+                return;
+
+            }
+
+            Interlocked.Increment(ref claimed);
+
+            LongRunningOperationRecoveryResult result = await RecoverOneAsync(
+                operationHandlers,
+                lease.Operation,
+                ct).ConfigureAwait(false);
+
+            LongRunningOperation latest = await operationStore.GetAsync(
+                lease.Operation.Id,
+                ct).ConfigureAwait(false)
+                ?? lease.Operation;
+
+            bool transitioned = await operationStore.TryTransitionAsync(
+                lease.Operation.Id,
+                latest.Revision,
+                ownerId,
+                result.State,
+                timeProvider.GetUtcNow(),
+                result.ErrorCode,
+                ct).ConfigureAwait(false);
+
+            if (!transitioned)
+            {
+
+                Interlocked.Increment(ref skipped);
+
+                RecordOutcome(operation.Kind, "cas_lost");
+
+                return;
+
+            }
+
+            switch (result.State)
+            {
+                case LongRunningOperationState.Completed:
+                    Interlocked.Increment(ref completed);
+                    RecordOutcome(operation.Kind, "completed");
+                    break;
+                case LongRunningOperationState.Failed:
+                    Interlocked.Increment(ref failed);
+                    RecordOutcome(operation.Kind, "failed");
+                    break;
+                case LongRunningOperationState.Abandoned:
+                    Interlocked.Increment(ref abandoned);
+                    RecordOutcome(operation.Kind, "abandoned");
+                    break;
+                default:
+                    Interlocked.Increment(ref attention);
+                    RecordOutcome(operation.Kind, "attention");
+                    break;
+            }
+
+        }
 
         foreach (LongRunningOperationStartupPriority phase in StartupPhases)
         {
@@ -131,73 +222,26 @@ public sealed class LongRunningOperationReconciler(
                     async (operation, ct) =>
                     {
 
-                        LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(
-                            operation.Id,
-                            ownerId,
-                            utcNow,
-                            utcNow.Add(RecoveryLease),
-                            ct).ConfigureAwait(false);
-
-                        if (!lease.Acquired)
+                        if (scopeFactory is null)
                         {
 
-                            Interlocked.Increment(ref skipped);
-
-                            RecordOutcome(operation.Kind, "lease_lost");
+                            await SettleAsync(store, _handlers, operation, ct).ConfigureAwait(false);
 
                             return;
 
                         }
 
-                        Interlocked.Increment(ref claimed);
+                        await using AsyncServiceScope operationScope = scopeFactory.CreateAsyncScope();
 
-                        LongRunningOperationRecoveryResult result = await RecoverOneAsync(lease.Operation, ct)
-                            .ConfigureAwait(false);
+                        ILongRunningOperationStore scopedStore = operationScope.ServiceProvider
+                            .GetRequiredService<ILongRunningOperationStore>();
 
-                        LongRunningOperation latest = await store.GetAsync(
-                            lease.Operation.Id,
-                            ct).ConfigureAwait(false)
-                            ?? lease.Operation;
+                        Dictionary<string, ILongRunningOperationRecoveryHandler> scopedHandlers =
+                            operationScope.ServiceProvider
+                                .GetServices<ILongRunningOperationRecoveryHandler>()
+                                .ToDictionary(static handler => handler.Kind, StringComparer.Ordinal);
 
-                        bool transitioned = await store.TryTransitionAsync(
-                            lease.Operation.Id,
-                            latest.Revision,
-                            ownerId,
-                            result.State,
-                            timeProvider.GetUtcNow(),
-                            result.ErrorCode,
-                            ct).ConfigureAwait(false);
-
-                        if (!transitioned)
-                        {
-
-                            Interlocked.Increment(ref skipped);
-
-                            RecordOutcome(operation.Kind, "cas_lost");
-
-                            return;
-
-                        }
-
-                        switch (result.State)
-                        {
-                            case LongRunningOperationState.Completed:
-                                Interlocked.Increment(ref completed);
-                                RecordOutcome(operation.Kind, "completed");
-                                break;
-                            case LongRunningOperationState.Failed:
-                                Interlocked.Increment(ref failed);
-                                RecordOutcome(operation.Kind, "failed");
-                                break;
-                            case LongRunningOperationState.Abandoned:
-                                Interlocked.Increment(ref abandoned);
-                                RecordOutcome(operation.Kind, "abandoned");
-                                break;
-                            default:
-                                Interlocked.Increment(ref attention);
-                                RecordOutcome(operation.Kind, "attention");
-                                break;
-                        }
+                        await SettleAsync(scopedStore, scopedHandlers, operation, ct).ConfigureAwait(false);
 
                     }).ConfigureAwait(false);
 
@@ -216,10 +260,11 @@ public sealed class LongRunningOperationReconciler(
     }
 
     private async Task<LongRunningOperationRecoveryResult> RecoverOneAsync(
+        IReadOnlyDictionary<string, ILongRunningOperationRecoveryHandler> handlersForOperation,
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
-        if (!_handlers.TryGetValue(operation.Kind, out ILongRunningOperationRecoveryHandler? handler))
+        if (!handlersForOperation.TryGetValue(operation.Kind, out ILongRunningOperationRecoveryHandler? handler))
         {
             if (operation.RecoveryPolicy == LongRunningOperationRecoveryPolicy.AbandonSafely)
             {

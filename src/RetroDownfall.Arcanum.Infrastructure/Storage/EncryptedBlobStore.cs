@@ -24,6 +24,8 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
     private const int MaximumKeyIdLength = 64;
     private const int MinimumChunkSize = 16;
     private const int MaximumChunkSize = 16 * 1024 * 1024;
+    private const int LegacyAadSuffixLength = 8;
+    private const int LengthBoundAadSuffixLength = 17;
     private const string KeyDerivationLabel = "Arcanum.EncryptedBlob.v1:";
     private static ReadOnlySpan<byte> Magic => "ARCABLOB"u8;
 
@@ -163,7 +165,10 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             {
                 Mode = FileMode.Open,
                 Access = FileAccess.Read,
-                Share = FileShare.Read,
+                // FileShare.Delete is required: migration and key rotation replace this very path
+                // with File.Move(overwrite: true) while the reader is still open, and on Windows
+                // MOVEFILE_REPLACE_EXISTING needs DELETE access the destination handle must share.
+                Share = FileShare.Read | FileShare.Delete,
                 Options = FileOptions.Asynchronous | FileOptions.SequentialScan,
             });
 
@@ -342,6 +347,47 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         return header;
     }
 
+    /// <summary>
+    /// Builds the per-chunk associated data prefix. Header bytes 16..24 (the declared plaintext
+    /// length) are zeroed because the streaming writer back-patches that field once the total is
+    /// known; from <see cref="EncryptedBlobFormat.LengthBoundVersion2"/> onwards the length is bound
+    /// instead through the final-chunk suffix written by <see cref="WriteChunkAad"/>.
+    /// </summary>
+    private static byte[] CreateChunkAad(byte[] header)
+    {
+        byte[] aad = new byte[header.Length + AadSuffixLength(header[8])];
+        header.CopyTo(aad, 0);
+        aad.AsSpan(16, 8).Clear();
+        return aad;
+    }
+
+    private static int AadSuffixLength(byte version) =>
+        version >= EncryptedBlobFormat.LengthBoundVersion2
+            ? LengthBoundAadSuffixLength
+            : LegacyAadSuffixLength;
+
+    private static void WriteChunkAad(
+        byte[] aad,
+        int headerLength,
+        byte version,
+        uint chunkIndex,
+        int count,
+        bool isFinal,
+        long totalPlaintextLength)
+    {
+        BinaryPrimitives.WriteUInt32BigEndian(aad.AsSpan(headerLength, 4), chunkIndex);
+        BinaryPrimitives.WriteInt32BigEndian(aad.AsSpan(headerLength + 4, 4), count);
+        if (version < EncryptedBlobFormat.LengthBoundVersion2)
+        {
+            return;
+        }
+
+        aad[headerLength + 8] = isFinal ? (byte)1 : (byte)0;
+        BinaryPrimitives.WriteInt64BigEndian(
+            aad.AsSpan(headerLength + 9, 8),
+            isFinal ? totalPlaintextLength : 0L);
+    }
+
     private static async Task EncryptChunksAsync(
         Stream plaintext,
         Stream output,
@@ -350,13 +396,12 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         long plaintextLength,
         CancellationToken cancellationToken)
     {
+        byte version = header[8];
         int chunkSize = BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(12, 4));
         byte[] plainBuffer = new byte[chunkSize];
         byte[] cipherBuffer = new byte[chunkSize];
         byte[] tag = new byte[TagLength];
-        byte[] aad = new byte[header.Length + 8];
-        header.CopyTo(aad, 0);
-        aad.AsSpan(16, 8).Clear();
+        byte[] aad = CreateChunkAad(header);
         byte[] noncePrefix = header.AsSpan(25, NoncePrefixLength).ToArray();
         byte[] nonce = new byte[NonceLength];
         using AesGcm aes = new(purposeKey, TagLength);
@@ -379,8 +424,14 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
 
                 noncePrefix.CopyTo(nonce, 0);
                 BinaryPrimitives.WriteUInt32BigEndian(nonce.AsSpan(NoncePrefixLength), chunkIndex);
-                BinaryPrimitives.WriteUInt32BigEndian(aad.AsSpan(header.Length, 4), chunkIndex);
-                BinaryPrimitives.WriteInt32BigEndian(aad.AsSpan(header.Length + 4, 4), expected);
+                WriteChunkAad(
+                    aad,
+                    header.Length,
+                    version,
+                    chunkIndex,
+                    expected,
+                    isFinal: remaining - expected == 0,
+                    plaintextLength);
                 aes.Encrypt(
                     nonce,
                     plainBuffer.AsSpan(0, expected),
@@ -435,7 +486,7 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                 "The file is not an Arcanum encrypted blob. Legacy plaintext must be migrated; ciphertext is never treated as plaintext.");
         }
 
-        if (fixedHeader[8] != EncryptedBlobFormat.CurrentVersion)
+        if (!EncryptedBlobFormat.IsSupportedVersion(fixedHeader[8]))
         {
             throw new InvalidDataException(
                 $"Unsupported encrypted blob version {fixedHeader[8]}.");
@@ -582,9 +633,7 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             _aes = new AesGcm(_purposeKey, TagLength);
             _cipherBuffer = new byte[descriptor.ChunkSize];
             _plainBuffer = new byte[descriptor.ChunkSize];
-            _aad = new byte[header.Length + 8];
-            header.CopyTo(_aad, 0);
-            _aad.AsSpan(16, 8).Clear();
+            _aad = CreateChunkAad(header);
             _remaining = descriptor.PlaintextLength;
         }
 
@@ -657,8 +706,14 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             Span<byte> nonce = stackalloc byte[NonceLength];
             _noncePrefix.AsSpan().CopyTo(nonce);
             BinaryPrimitives.WriteUInt32BigEndian(nonce[NoncePrefixLength..], _chunkIndex);
-            BinaryPrimitives.WriteUInt32BigEndian(_aad.AsSpan(_header.Length, 4), _chunkIndex);
-            BinaryPrimitives.WriteInt32BigEndian(_aad.AsSpan(_header.Length + 4, 4), count);
+            WriteChunkAad(
+                _aad,
+                _header.Length,
+                Descriptor.Version,
+                _chunkIndex,
+                count,
+                isFinal: _remaining - count == 0,
+                Descriptor.PlaintextLength);
             _aes.Decrypt(
                 nonce,
                 _cipherBuffer.AsSpan(0, count),
@@ -764,9 +819,7 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             int chunkSize = BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(12, 4));
             _plainBuffer = new byte[chunkSize];
             _cipherBuffer = new byte[chunkSize];
-            _aad = new byte[header.Length + 8];
-            header.CopyTo(_aad, 0);
-            _aad.AsSpan(16, 8).Clear();
+            _aad = CreateChunkAad(header);
             header.AsSpan(25, NoncePrefixLength).CopyTo(_nonce);
         }
 
@@ -794,15 +847,20 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             EnsureWritable();
             while (!buffer.IsEmpty)
             {
+                // A full buffer is only sealed once more content arrives, so the chunk that turns
+                // out to be last is always encrypted by CompleteAsync with the final marker — even
+                // when the total length is an exact multiple of the chunk size.
+                if (_bufferCount == _plainBuffer.Length)
+                {
+                    await EncryptBufferedChunkAsync(isFinal: false, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
                 int copy = Math.Min(_plainBuffer.Length - _bufferCount, buffer.Length);
                 buffer[..copy].CopyTo(_plainBuffer.AsMemory(_bufferCount));
                 _bufferCount += copy;
                 _plaintextLength = checked(_plaintextLength + copy);
                 buffer = buffer[copy..];
-                if (_bufferCount == _plainBuffer.Length)
-                {
-                    await EncryptBufferedChunkAsync(cancellationToken).ConfigureAwait(false);
-                }
             }
         }
 
@@ -814,7 +872,8 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             {
                 if (_bufferCount > 0 || _plaintextLength == 0)
                 {
-                    await EncryptBufferedChunkAsync(cancellationToken).ConfigureAwait(false);
+                    await EncryptBufferedChunkAsync(isFinal: true, cancellationToken)
+                        .ConfigureAwait(false);
                 }
 
                 BinaryPrimitives.WriteInt64BigEndian(
@@ -840,18 +899,20 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             }
         }
 
-        private async Task EncryptBufferedChunkAsync(CancellationToken cancellationToken)
+        private async Task EncryptBufferedChunkAsync(bool isFinal, CancellationToken cancellationToken)
         {
             int count = _bufferCount;
             BinaryPrimitives.WriteUInt32BigEndian(
                 _nonce.AsSpan(NoncePrefixLength),
                 _chunkIndex);
-            BinaryPrimitives.WriteUInt32BigEndian(
-                _aad.AsSpan(_header.Length, 4),
-                _chunkIndex);
-            BinaryPrimitives.WriteInt32BigEndian(
-                _aad.AsSpan(_header.Length + 4, 4),
-                count);
+            WriteChunkAad(
+                _aad,
+                _header.Length,
+                _header[8],
+                _chunkIndex,
+                count,
+                isFinal,
+                _plaintextLength);
             _aes.Encrypt(
                 _nonce,
                 _plainBuffer.AsSpan(0, count),

@@ -355,8 +355,6 @@ internal sealed class BatchProcessingService(
                                 pendingProviderLines,
                                 maxConcurrentRequests,
                                 batch.Id,
-                                batches,
-                                intelligence,
                                 settings,
                                 batchAccounting,
                                 turnRunWriter,
@@ -936,12 +934,19 @@ internal sealed class BatchProcessingService(
     /// stops promptly instead of running every remaining line to completion first. Returns
     /// <see langword="true"/> when a mid-batch cancellation was observed.
     /// </summary>
+    /// <remarks>
+    /// Every unit of concurrent work here — the cancellation watcher and each parallel line — owns a
+    /// private DI scope, and therefore a private <c>ArcanumDbContext</c> and
+    /// <c>SqliteConnection</c>. <c>IBatchRepository</c> issues raw <c>DbCommand</c>s, so EF's
+    /// concurrency detector never fires and <c>SqliteBusyRetry</c> (BUSY/LOCKED only) does not
+    /// serialize; sharing the caller's one scoped repository across these tasks corrupts the
+    /// connection's internal command list even at the default concurrency of 1, where the watcher
+    /// alone races the single line worker.
+    /// </remarks>
     private async Task<bool> RunRequestLinesAsync(
         IReadOnlyList<PreparedBatchRequestLine> requestLines,
         int maxConcurrentRequests,
         Guid batchId,
-        IBatchRepository batches,
-        IArcanumIntelligenceProvider intelligence,
         ArcanumSettings settings,
         TurnAccountingHandle batchAccounting,
         ITurnRunWriter? turnRunWriter,
@@ -950,7 +955,7 @@ internal sealed class BatchProcessingService(
 
         using CancellationTokenSource linkedCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 
-        Task watcherTask = WatchForCancellationAsync(batchId, batches, linkedCts);
+        Task watcherTask = WatchForCancellationAsync(batchId, linkedCts);
 
         bool cancelledMidway = false;
 
@@ -962,6 +967,13 @@ internal sealed class BatchProcessingService(
                 new ParallelOptions { MaxDegreeOfParallelism = maxConcurrentRequests, CancellationToken = linkedCts.Token },
                 async (item, ct) =>
                 {
+                    await using AsyncServiceScope lineScope = scopeFactory.CreateAsyncScope();
+
+                    IBatchRepository lineBatches = lineScope.ServiceProvider.GetRequiredService<IBatchRepository>();
+
+                    IArcanumIntelligenceProvider lineIntelligence =
+                        lineScope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
+
                     TurnAccountingHandle lineAccounting = batchAccounting.CreateNestedOperationHandle();
                     using (TurnAccountingAmbient.Push(lineAccounting, turnRunWriter))
                     {
@@ -971,9 +983,9 @@ internal sealed class BatchProcessingService(
 
                             item,
 
-                            batches,
+                            lineBatches,
 
-                            intelligence,
+                            lineIntelligence,
 
                             settings,
 
@@ -1012,11 +1024,15 @@ internal sealed class BatchProcessingService(
 
     }
 
-    private static async Task WatchForCancellationAsync(Guid batchId, IBatchRepository batches, CancellationTokenSource linkedCts)
+    private async Task WatchForCancellationAsync(Guid batchId, CancellationTokenSource linkedCts)
     {
 
         try
         {
+
+            await using AsyncServiceScope watchScope = scopeFactory.CreateAsyncScope();
+
+            IBatchRepository batches = watchScope.ServiceProvider.GetRequiredService<IBatchRepository>();
 
             using PeriodicTimer watchTimer = new(CancelWatchInterval);
 

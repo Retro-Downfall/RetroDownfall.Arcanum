@@ -417,6 +417,106 @@ public sealed class OpenAiV1FilesEndpointTests
         Assert.False(OpenAiV1Endpoints.IsUploadSizeAllowed(maxUploadBytes + 1));
     }
 
+    [SkippableFact]
+    public async Task PostFiles_AboveTheFrameworkMultipartDefault_IsAcceptedNotRejectedDuringBinding()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // 129 MiB clears the framework's 128 MiB MultipartBodyLengthLimit default, which nothing in the
+        // app used to raise: IFormFile binding threw InvalidDataException and the caller saw an empty 400
+        // long before the handler's own 512 MiB envelope check could answer.
+        const long OneTwentyNineMebibytes = 129L * 1024L * 1024L;
+
+        Assert.True(OneTwentyNineMebibytes < OpenAiV1Endpoints.ResolveMaxUploadBytes());
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using MultipartFormDataContent form = new();
+
+        using ZeroStream payload = new(OneTwentyNineMebibytes);
+
+        StreamContent fileContent = new(payload);
+
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+
+        form.Add(fileContent, "file", "oversized.bin");
+
+        form.Add(new StringContent("batch"), "purpose");
+
+        HttpResponseMessage response = await client.PostAsync("/v1/files", form);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        OpenAiFileObject? uploaded = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiFileObject);
+
+        Assert.NotNull(uploaded);
+
+        Assert.Equal(OneTwentyNineMebibytes, uploaded.Bytes);
+
+        HttpResponseMessage deleted = await client.DeleteAsync($"/v1/files/{uploaded.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+
+    }
+
+    /// <summary>Streams a fixed number of zero bytes without materializing them.</summary>
+    private sealed class ZeroStream(long length) : Stream
+    {
+
+        private long _position;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => length;
+
+        public override long Position
+        {
+            get => _position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+
+            int take = (int)Math.Min(count, length - _position);
+
+            if (take <= 0)
+            {
+
+                return 0;
+
+            }
+
+            Array.Clear(buffer, offset, take);
+
+            _position += take;
+
+            return take;
+
+        }
+
+        public override void Flush()
+        {
+
+            // Read-only stream.
+
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    }
+
     private static async Task<OpenAiFileObject> UploadAsync(
         HttpClient client,
         string filename,

@@ -85,6 +85,13 @@ public static class JsonSchemaHelper
             return new ValidationResult(false, [ex.Message]);
 
         }
+        catch (Exception ex) when (ex is FormatException or OverflowException)
+        {
+            // Defence in depth: numeric accessors on JsonElement throw for out-of-range literals.
+            // Validate documents a ValidationResult return, so no numeric helper may escape it.
+            return new ValidationResult(false, [$"JSON value error: {ex.Message}"]);
+
+        }
 
     }
 
@@ -466,12 +473,32 @@ public static class JsonSchemaHelper
         {
 
             JsonValueKind.String => left.GetString() == right.GetString(),
-            JsonValueKind.Number => left.GetDecimal() == right.GetDecimal(),
+            JsonValueKind.Number => NumbersEqual(left, right),
             JsonValueKind.True or JsonValueKind.False => true,
             JsonValueKind.Null => true,
             _ => left.GetRawText() == right.GetRawText()
 
         };
+
+    }
+
+    /// <summary>
+    /// Compares two JSON numbers without throwing. <see cref="JsonElement.GetDecimal"/> raises
+    /// <see cref="FormatException"/> for magnitudes outside <see cref="decimal"/>'s range (for
+    /// example <c>1e30</c>), which would escape the documented <see cref="ValidationResult"/>
+    /// contract; out-of-range operands fall back to literal comparison instead.
+    /// </summary>
+    private static bool NumbersEqual(JsonElement left, JsonElement right)
+    {
+
+        if (left.TryGetDecimal(out decimal leftValue) && right.TryGetDecimal(out decimal rightValue))
+        {
+
+            return leftValue == rightValue;
+
+        }
+
+        return string.Equals(left.GetRawText(), right.GetRawText(), StringComparison.Ordinal);
 
     }
 

@@ -7,7 +7,6 @@ internal sealed record WorkspaceCheckEnvironmentPaths(
     string NuGetHttpCache,
     string Temp,
     string GlobalPackages,
-    string? SandboxApplicationGroupId = null,
     string? DotNetHostPath = null);
 
 /// <summary>
@@ -105,16 +104,9 @@ internal static class WorkspaceCheckEnvironmentBuilder
         result["TEMP"] = paths.Temp;
         result["TMP"] = paths.Temp;
 
-        if (!string.IsNullOrWhiteSpace(
-                paths.SandboxApplicationGroupId))
-        {
-
-            result["NETCOREAPP_SANDBOX_APPLICATION_GROUP_ID"] =
-                paths.SandboxApplicationGroupId;
-            result["DOTNET_SANDBOX_APPLICATION_GROUP_ID"] =
-                paths.SandboxApplicationGroupId;
-        }
-
+        // No DOTNET_SANDBOX_APPLICATION_GROUP_ID: macOS restricts ~/Library/Group Containers to
+        // entitled processes, so redirecting the PAL there fails closed. The child uses the shared
+        // /tmp/.dotnet PAL roots instead, granted to the jail explicitly (MacOsDotNetIpcRoots).
         return result;
     }
 

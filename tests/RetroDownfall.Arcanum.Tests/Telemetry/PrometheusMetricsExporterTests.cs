@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+using System.Globalization;
 
 using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 
@@ -179,6 +180,43 @@ public sealed class PrometheusMetricsExporterTests
         string result = await exporter.RenderMetricsAsync(activeSessions: 7);
 
         Assert.Contains("arcanum_sessions_active 7", result, StringComparison.Ordinal);
+
+    }
+
+
+    /// <summary>
+    /// The exporter is a process-lifetime singleton that never evicts a series, so an unbounded label
+    /// value would grow both RSS and the scrape body until the host dies. Unauthenticated 404 traffic
+    /// reached it through the HTTP middleware, so the ceiling is the last line of defence.
+    /// </summary>
+    [Fact]
+    public async Task RenderMetrics_caps_series_per_metric_and_counts_the_drops()
+    {
+
+        using Meter meter = new("Arcanum.Tests." + nameof(RenderMetrics_caps_series_per_metric_and_counts_the_drops));
+
+        Counter<long> counter = meter.CreateCounter<long>("arcanum_test_cardinality_total");
+
+        PrometheusMetricsExporter exporter = new();
+
+        for (int i = 0; i < 5000; i++)
+        {
+
+            counter.Add(1, new KeyValuePair<string, object?>("endpoint", "/unmatched-" + i.ToString(CultureInfo.InvariantCulture)));
+
+        }
+
+        string result = await exporter.RenderMetricsAsync();
+
+        int seriesCount = result
+            .Split('\n')
+            .Count(line => line.StartsWith("arcanum_test_cardinality_total{", StringComparison.Ordinal));
+
+        Assert.InRange(seriesCount, 1, 2100);
+
+        Assert.Contains("# TYPE arcanum_metrics_series_dropped_total counter", result, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("arcanum_metrics_series_dropped_total 0\n", result, StringComparison.Ordinal);
 
     }
 

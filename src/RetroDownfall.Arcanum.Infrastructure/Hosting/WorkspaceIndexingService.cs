@@ -822,24 +822,46 @@ internal sealed class WorkspaceIndexingService(
 
     }
 
+    /// <summary>
+    /// Raises the "there is watcher work pending" edge, coalescing concurrent signals into the single
+    /// permit <c>_watcherSignal</c> can hold.
+    /// </summary>
+    /// <remarks>
+    /// The <c>CurrentCount</c> probe is only a cheap fast path, never a guard: this runs on the pump
+    /// thread (<see cref="ProcessPendingWatcherEventsAsync"/>) and on every independent
+    /// <c>FileSystemWatcher</c> dispatch thread at once, so two callers can both observe <c>0</c> and both
+    /// call <c>Release</c> on a <c>SemaphoreSlim(0, 1)</c>. The loser gets
+    /// <see cref="SemaphoreFullException"/>, which — because the watcher callback chain has no exception
+    /// guard of its own — would escape onto a watcher-dispatch thread and take down indexing (or the
+    /// host). Swallowing it is exactly right: it means the signal the caller wanted to raise is already
+    /// raised.
+    /// </remarks>
     private void SignalWatcherWork()
     {
 
-        if (_watcherSignal.CurrentCount == 0)
+        if (_watcherSignal.CurrentCount != 0)
         {
 
-            try
-            {
+            return;
 
-                _watcherSignal.Release();
+        }
 
-            }
-            catch (ObjectDisposedException)
-            {
+        try
+        {
 
-                // Host shutdown raced the callback; the watcher is being disposed.
+            _watcherSignal.Release();
 
-            }
+        }
+        catch (SemaphoreFullException)
+        {
+
+            // A concurrent signaller won the race; the pending-work edge is already raised.
+
+        }
+        catch (ObjectDisposedException)
+        {
+
+            // Host shutdown raced the callback; the watcher is being disposed.
 
         }
 
@@ -1361,23 +1383,43 @@ internal sealed class WorkspaceIndexingService(
 
             int globalChunkIndex = 0;
 
+            // A high surrogate held back from the previous page, already sitting at buffer[0].
+            int carriedChars = 0;
+
             while (true)
             {
 
+                int requested = readPageCharacters - carriedChars;
+
                 int read = await reader
                     .ReadBlockAsync(
-                        buffer.AsMemory(0, readPageCharacters),
+                        buffer.AsMemory(carriedChars, requested),
                         cancellationToken)
                     .ConfigureAwait(false);
 
-                if (read == 0)
+                int available = carriedChars + read;
+
+                if (available == 0)
                 {
 
                     break;
 
                 }
 
-                string page = new(buffer, 0, read);
+                // ReadBlockAsync fills to a character count and knows nothing about UTF-16 pairs, so a
+                // non-BMP character straddling the page boundary would leave this page ending in a lone
+                // high surrogate and the next beginning with the orphaned low half. Both fragments would
+                // then be embedded and persisted with the character replaced by U+FFFD, so the stored
+                // chunk would no longer be the exact source slice. Holding the high surrogate back joins
+                // it to its partner on the next page. A short read means end of stream: a trailing high
+                // surrogate there is genuinely unpaired and is emitted rather than silently dropped.
+                bool endOfStream = read < requested;
+
+                int pageLength = !endOfStream && char.IsHighSurrogate(buffer[available - 1])
+                    ? available - 1
+                    : available;
+
+                string page = new(buffer, 0, pageLength);
 
                 WorkspaceCodeChunker.Chunk[] pageChunks =
                     WorkspaceCodeChunker.ChunkText(
@@ -1508,9 +1550,18 @@ internal sealed class WorkspaceIndexingService(
 
                 }
 
-                globalCharacterOffset += read;
+                globalCharacterOffset += pageLength;
 
                 globalLineOffset += page.Count(static character => character == '\n');
+
+                carriedChars = available - pageLength;
+
+                if (carriedChars == 1)
+                {
+
+                    buffer[0] = buffer[available - 1];
+
+                }
 
             }
 
@@ -1919,7 +1970,21 @@ internal sealed class WorkspaceIndexingService(
 
                 DbConnection connection = await OpenConnectionAsync(db, cancellationToken).ConfigureAwait(false);
 
+                // One transaction over the chunk row, its embedding, and the optional vec0 mirror — the
+                // shape TapestryStore.AppendNodesAsync already uses, for the same two reasons. A torn
+                // write can never leave a chunk row without its embedding: LoadExistingChunkIdsAsync
+                // reads only workspace_file_chunks, so such a row would count as already indexed forever
+                // while DivinationService, which joins outward from the embeddings table, could never
+                // return it — permanently unsearchable yet still counted by the index status endpoint.
+                // And a SQLITE_BUSY retry restarts from a clean transaction instead of replaying the
+                // chunk INSERT into a PRIMARY KEY violation, which is not retryable and aborts the file.
+                await using DbTransaction transaction = await connection
+                    .BeginTransactionAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
                 await using DbCommand chunkCmd = connection.CreateCommand();
+
+                chunkCmd.Transaction = transaction;
 
                 chunkCmd.CommandText =
                     """
@@ -1957,6 +2022,8 @@ internal sealed class WorkspaceIndexingService(
 
                 await using DbCommand embeddingCmd = connection.CreateCommand();
 
+                embeddingCmd.Transaction = transaction;
+
                 embeddingCmd.CommandText =
                     """
                     INSERT INTO "workspace_file_embeddings" ("ChunkId", "Embedding", "Dim")
@@ -1971,26 +2038,28 @@ internal sealed class WorkspaceIndexingService(
 
                 _ = await embeddingCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
-                if (!weaveIndexAvailability.IsVecAvailable)
+                if (weaveIndexAvailability.IsVecAvailable)
                 {
 
-                    return;
+                    await using DbCommand vecCmd = connection.CreateCommand();
+
+                    vecCmd.Transaction = transaction;
+
+                    vecCmd.CommandText =
+                        """
+                        INSERT OR REPLACE INTO "workspace_file_embeddings_vec" ("ChunkId", "Embedding")
+                        VALUES (@chunkId, @embedding)
+                        """;
+
+                    AddParameter(vecCmd, "@chunkId", chunkId);
+
+                    AddParameter(vecCmd, "@embedding", encoded);
+
+                    _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
                 }
 
-                await using DbCommand vecCmd = connection.CreateCommand();
-
-                vecCmd.CommandText =
-                    """
-                    INSERT OR REPLACE INTO "workspace_file_embeddings_vec" ("ChunkId", "Embedding")
-                    VALUES (@chunkId, @embedding)
-                    """;
-
-                AddParameter(vecCmd, "@chunkId", chunkId);
-
-                AddParameter(vecCmd, "@embedding", encoded);
-
-                _ = await vecCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             },
             cancellationToken);

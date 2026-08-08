@@ -374,7 +374,10 @@ public sealed class AskCommand(
                         _ = EphemeralReasoningRenderer.Flush(stderrConsole, streamContent, palette);
                         streamContent.AppendAnswer(chunk);
 
-                        AnsiConsole.Write(chunk);
+                        // Raw model text is payload, not presentation: Spectre renders a string as a
+                        // Text renderable and hard-wraps it at Profile.Width (80 when stdout is
+                        // redirected), which would inject newlines the model never produced.
+                        Console.Out.Write(chunk);
 
                         break;
 

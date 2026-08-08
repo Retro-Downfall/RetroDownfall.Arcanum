@@ -37,6 +37,8 @@ public static class LoggingBootstrapper
 
         string logFilePath = Path.Combine(logDirectory, "arcanum-api-.json");
 
+        InstallBootstrapStaticLogger();
+
         services.AddSerilog(
             (serviceProvider, loggerConfiguration) =>
             {
@@ -92,6 +94,54 @@ public static class LoggingBootstrapper
     }
 
     internal static string ResolveLogDirectory() => ArcanumPaths.LogDirectory;
+
+    private static int _bootstrapStaticLoggerInstalled;
+
+    /// <summary>
+    /// Returns <see cref="Log.Logger"/> to Serilog's silent default and re-arms the one-shot
+    /// bootstrap install, so a test can observe the pre-host window regardless of what an earlier
+    /// test in the same process left behind.
+    /// </summary>
+    internal static void ResetBootstrapStaticLoggerForTests()
+    {
+
+        Log.Logger = Serilog.Core.Logger.None;
+
+        _ = Interlocked.Exchange(ref _bootstrapStaticLoggerInstalled, 0);
+
+    }
+
+    /// <summary>
+    /// Gives Serilog's static <see cref="Log.Logger"/> a real destination for the pre-host window.
+    /// </summary>
+    /// <remarks>
+    /// <c>AddSerilog</c> assigns <see cref="Log.Logger"/> itself, but only when the DI logging graph
+    /// is first materialized — during host <c>Build()</c>. Diagnostics emitted before that reach
+    /// Serilog's silent default and vanish: <c>ArcanumMasterKeyBootstrapper</c> runs against its own
+    /// throwaway container ahead of <c>Build()</c> and reports a corrupt credential store, a
+    /// Grimoire/key mismatch that will abort startup, and a newly generated master key. This installs
+    /// a bootstrap logger for exactly that window; <c>AddSerilog</c> replaces it at <c>Build()</c>.
+    /// It writes to standard error only — the rolling JSON file must keep a single writer because
+    /// Serilog's file sink is not multi-writer safe.
+    /// </remarks>
+    private static void InstallBootstrapStaticLogger()
+    {
+
+        if (Interlocked.Exchange(ref _bootstrapStaticLoggerInstalled, 1) == 1)
+        {
+
+            return;
+
+        }
+
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Information()
+            .WriteTo.Console(
+                new CompactJsonFormatter(),
+                standardErrorFromLevel: LogEventLevel.Verbose)
+            .CreateLogger();
+
+    }
 
     private static bool IsTesting(IServiceProvider serviceProvider)
     {

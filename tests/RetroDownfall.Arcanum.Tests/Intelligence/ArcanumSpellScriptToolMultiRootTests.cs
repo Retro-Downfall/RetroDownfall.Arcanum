@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
+[Collection("ProcessEnvironment")]
 public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
 {
 

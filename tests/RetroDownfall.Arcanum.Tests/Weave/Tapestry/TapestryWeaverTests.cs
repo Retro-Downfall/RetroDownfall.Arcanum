@@ -1,11 +1,15 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 
@@ -122,6 +126,71 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
                 WorkspaceTreesEnabled = workspaceTrees,
             },
         };
+
+    [SkippableFact]
+    public async Task RunSweepAsync_DeletesSupersededGenerationsOnEverySweep()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedChunksAsync(
+            ("c00", "a.cs", "alpha body"),
+            ("c01", "b.cs", "bravo body"),
+            ("c02", "c.cs", "charlie body"));
+
+        EmbeddingSettings embeddings = Settings();
+
+        ServiceCollection services = new();
+
+        _ = services.AddSingleton<ITapestryStore>(_store!);
+
+        _ = services.AddSingleton(CreateWeaver());
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        TapestryWeavingService sweeper = new(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            NullLogger<TapestryWeavingService>.Instance);
+
+        _ = await sweeper.RunSweepAsync(embeddings, CancellationToken.None);
+
+        // Change the corpus so the next sweep publishes a new generation and supersedes the first.
+        await SeedChunksAsync(("c03", "d.cs", "delta body"));
+
+        _ = await sweeper.RunSweepAsync(embeddings, CancellationToken.None);
+
+        // Publishing only marks the predecessor Superseded; reconciliation is what deletes it. Doing
+        // that once per process would leave a full orphaned copy of the scope's nodes and node
+        // embeddings behind on every rebuild until restart.
+        Assert.Equal(0, await CountGenerationsWithStatusAsync("Superseded"));
+
+        Assert.Equal(1, await CountGenerationsWithStatusAsync("Complete"));
+
+    }
+
+    private async Task<int> CountGenerationsWithStatusAsync(string status)
+    {
+
+        System.Data.Common.DbConnection connection =
+            Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(_db!.Database);
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync();
+
+        }
+
+        await using System.Data.Common.DbCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT COUNT(*) FROM tapestry_generations WHERE Status = @status";
+
+        AddParameter(command, "@status", status);
+
+        return Convert.ToInt32(await command.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+
+    }
 
     private async Task SeedChunksAsync(params (string ChunkId, string Path, string Content)[] chunks)
     {
@@ -446,6 +515,41 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         Assert.Contains(
             summaries,
             static node => node.PartitionReason == TapestryPartitionReason.IdenticalVectorPartition);
+
+    }
+
+    [SkippableFact]
+    public async Task WeaveAsync_ByteIdenticalLeavesDoNotCollideOnNodeId()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _weave!.ConstantVector = UnitVector();
+
+        // Byte-identical content, so two summary clusters hash to the same child-membership hash. If
+        // that hash alone were the node's identity, the second INSERT would violate the tapestry_nodes
+        // primary key and fail the whole generation — permanently, since the corpus fingerprint never
+        // changes, re-billing every summary computed before the collision on every sweep.
+        await SeedChunksAsync(
+            [.. Enumerable.Range(0, 8).Select(index => ($"c{index:D2}", "same.cs", "identical body"))]);
+
+        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
+            Scope,
+            Settings(target: 2, maxChildren: 3),
+            CancellationToken.None);
+
+        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+
+        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        IReadOnlyList<TapestryNode> summaries = await _store.GetLayerNodesAsync(
+            current.GenerationId,
+            1,
+            CancellationToken.None);
+
+        Assert.True(summaries.Count >= 2, $"expected at least two layer-1 summaries, got {summaries.Count}.");
+
+        Assert.Equal(summaries.Count, summaries.Select(static node => node.NodeId).Distinct(StringComparer.Ordinal).Count());
 
     }
 

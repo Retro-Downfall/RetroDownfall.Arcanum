@@ -330,7 +330,7 @@ public sealed partial class McpConnectionManager
                     out Lazy<McpPartitionClients>? partitionLazy)
                 && partitionLazy.IsValueCreated)
             {
-                partitionLazy.Value.Clients.Remove(client);
+                _ = partitionLazy.Value.RemoveClient(client);
             }
         }
 
@@ -344,10 +344,9 @@ public sealed partial class McpConnectionManager
         string partitionKey = entry.ScopeWorkingDirectory is null ? GlobalPartitionKey : entry.ScopeWorkingDirectory;
 
         if (_partitionClients.TryGetValue(partitionKey, out Lazy<McpPartitionClients>? partitionLazy)
-            && partitionLazy.IsValueCreated
-            && partitionLazy.Value.Clients.Contains(client))
+            && partitionLazy.IsValueCreated)
         {
-            partitionLazy.Value.Clients.Remove(client);
+            _ = partitionLazy.Value.RemoveClient(client);
         }
     }
 
@@ -627,8 +626,6 @@ public sealed partial class McpConnectionManager
 
         McpClientGeneration? client = null;
 
-        List<IMcpClient> partitionClients = partition.Clients;
-
         bool attached = false;
 
         try
@@ -641,8 +638,11 @@ public sealed partial class McpConnectionManager
 
             IReadOnlyList<McpBridgeTool> tools = await client.GetToolsAsync(cancellationToken).ConfigureAwait(false);
 
-            partitionClients.Add(client);
-            partition.InternalClient = client;
+            McpClientGeneration attachedClient = client;
+
+            _ = partition.AddClientIfAbsent(attachedClient);
+
+            partition.InternalClient = attachedClient;
 
             client = null;
 
@@ -685,10 +685,10 @@ public sealed partial class McpConnectionManager
                     new LoadedMcpToolRow(
                         trustedTool,
                         InternalMcpServerConfig,
-                        partitionClients[^1]));
+                        attachedClient));
             }
 
-            partition.Servers.Add(new McpServerMetadata(
+            partition.UpsertServer(new McpServerMetadata(
                 "arcanum-internal",
                 "Online",
                 tools.Select(static t => t.Name).ToList(),

@@ -21,6 +21,19 @@ public sealed class SettingDescriptorCoverageTests
         "providers.models.promptCaching",
     ];
 
+    /// <summary>
+    /// docs/Compendium.README.md declares itself the sole complete reference for arcanum.json and states
+    /// the exact number of editable paths in <see cref="SettingDescriptors.All"/>. Pin the count so the
+    /// two cannot drift silently; update both together when a descriptor is added or removed.
+    /// </summary>
+    [Fact]
+    public void Editable_descriptor_count_matches_the_documented_total()
+    {
+
+        Assert.Equal(155, SettingDescriptors.All.Count);
+
+    }
+
     [Fact]
     public void Every_retained_public_choice_has_an_editable_descriptor()
     {

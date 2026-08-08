@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Operations;
 
 namespace RetroDownfall.Arcanum.Tests.Operations;
@@ -274,5 +275,148 @@ internal sealed class RecordingRecoveryHandler(
 
         return Task.FromResult(
             outcome?.Invoke(operation) ?? LongRunningOperationRecoveryResult.Completed());
+    }
+}
+
+/// <summary>
+/// The reconciler's outer scope may only page the expiry query. Every per-operation call throws so a
+/// regression that shares one store — and therefore one SQLite connection — across concurrent
+/// recovery workers fails the test instead of racing an unsynchronized command list.
+/// </summary>
+internal sealed class PagingOnlyOperationStore(ILongRunningOperationStore inner) : ILongRunningOperationStore
+{
+    public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
+        DateTimeOffset utcNow,
+        int limit,
+        CancellationToken cancellationToken = default) =>
+        inner.FindExpiredAsync(utcNow, limit, cancellationToken);
+
+    public Task<LongRunningOperation> CreateAsync(
+        LongRunningOperationCreateRequest request,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<LongRunningOperation?> TryStartSingleFlightAsync(
+        LongRunningOperationCreateRequest request,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<LongRunningOperation?> GetAsync(
+        Guid operationId,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
+        LongRunningOperationQuery query,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<bool> HeartbeatAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<bool> SaveCheckpointAsync(
+        Guid operationId,
+        string ownerId,
+        int expectedCheckpointVersion,
+        int checkpointVersion,
+        byte[]? checkpointPayload,
+        string? checkpointReference,
+        string publicSummary,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<bool> TryTransitionAsync(
+        Guid operationId,
+        long expectedRevision,
+        string? ownerId,
+        LongRunningOperationState state,
+        DateTimeOffset utcNow,
+        string? terminalErrorCode = null,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<bool> RequestCancellationAsync(
+        Guid operationId,
+        long expectedRevision,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<bool> ResetForRetryAsync(
+        Guid operationId,
+        long expectedRevision,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(
+        CancellationToken cancellationToken = default) =>
+        throw OutsideItsScope();
+
+    private static InvalidOperationException OutsideItsScope() =>
+        new("Per-operation recovery must run in its own DI scope, not the reconciler's own scope.");
+}
+
+/// <summary>
+/// Hands each recovered operation its own scope, and counts them so a test can assert the fan-out
+/// really is one scope per operation rather than one shared connection.
+/// </summary>
+internal sealed class RecordingServiceScopeFactory(
+    ILongRunningOperationStore store,
+    params ILongRunningOperationRecoveryHandler[] handlers) : IServiceScopeFactory
+{
+    private readonly ILongRunningOperationStore _store = store;
+
+    private readonly ILongRunningOperationRecoveryHandler[] _handlers = handlers;
+
+    private int _created;
+
+    private int _disposed;
+
+    public int Created => Volatile.Read(ref _created);
+
+    public int Disposed => Volatile.Read(ref _disposed);
+
+    public IServiceScope CreateScope()
+    {
+        _ = Interlocked.Increment(ref _created);
+
+        return new Scope(this);
+    }
+
+    private sealed class Scope(RecordingServiceScopeFactory owner) : IServiceScope, IServiceProvider
+    {
+        public IServiceProvider ServiceProvider => this;
+
+        public object? GetService(Type serviceType)
+        {
+            if (serviceType == typeof(ILongRunningOperationStore))
+            {
+                return owner._store;
+            }
+
+            return serviceType == typeof(IEnumerable<ILongRunningOperationRecoveryHandler>)
+                ? owner._handlers
+                : null;
+        }
+
+        public void Dispose() => Interlocked.Increment(ref owner._disposed);
     }
 }

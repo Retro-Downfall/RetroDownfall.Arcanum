@@ -39,6 +39,19 @@ def pct(covered: float, total: float) -> float:
     return (covered / total) * 100.0
 
 
+def declaring_type_name(name: str) -> str:
+    """Fold a Cobertura class name onto the short name of its declaring type.
+
+    Coverlet keeps async/iterator state machines as nested classes, e.g.
+    ``Namespace.OutboundUrlGuard/<EgressConnectCallbackAsync>d__17``. Matching on the
+    substring after the last '.' would yield ``OutboundUrlGuard/<...>d__17`` and skip
+    every async body, so strip the nested suffix before stripping the namespace.
+    """
+    outer = name.split("/", 1)[0]
+
+    return outer.rsplit(".", 1)[-1]
+
+
 def read_target(name: str, default: float) -> float:
     raw = os.environ.get(name)
 
@@ -91,20 +104,34 @@ def main(argv: list[str] | None = None) -> int:
     if branch_rate < branch_target:
         failures.append(f"branch coverage {branch_rate:.2f}% < {branch_target:g}%")
 
+    # One branch tally per security type, aggregated over the declaring class *and*
+    # every compiler-generated state machine nested inside it. Keyed by
+    # (source file, line number) so a line reported by both the synchronous shell and
+    # its async state machine is counted once, at its best observed condition coverage.
+    security_lines: dict[str, dict[tuple[str, str], tuple[int, int]]] = {}
+
+    security_class_rates: dict[str, list[float]] = {}
+
     for cls in root.findall(".//class"):
         name = cls.attrib.get("name", "")
 
-        short = name.rsplit(".", 1)[-1]
+        short = declaring_type_name(name)
 
         if short not in SECURITY_TYPES:
             continue
 
         seen_security_types.add(short)
 
+        filename = cls.attrib.get("filename", "")
+
+        line_branch_best = security_lines.setdefault(short, {})
+
+        security_class_rates.setdefault(short, []).append(
+            float(cls.attrib.get("branch-rate", "1")) * 100.0
+        )
+
         # Cobertura class branch-rate is a fraction; use lines with condition-coverage when present.
         lines = cls.findall(".//line")
-
-        line_branch_best: dict[str, tuple[int, int]] = {}
 
         for line in lines:
             cond = line.attrib.get("condition-coverage")
@@ -112,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
             if not cond or "(" not in cond:
                 continue
 
-            line_no = line.attrib.get("number", "")
+            key = (filename, line.attrib.get("number", ""))
 
             part = cond.split("(", 1)[1].split(")", 1)[0]
 
@@ -122,36 +149,33 @@ def main(argv: list[str] | None = None) -> int:
 
             total_i = int(total_s)
 
-            if line_no not in line_branch_best:
-                line_branch_best[line_no] = (covered_i, total_i)
+            if key not in line_branch_best:
+                line_branch_best[key] = (covered_i, total_i)
 
                 continue
 
-            prev_covered, prev_total = line_branch_best[line_no]
+            prev_covered, prev_total = line_branch_best[key]
 
             prev_rate = prev_covered / prev_total if prev_total else 1.0
 
             new_rate = covered_i / total_i if total_i else 1.0
 
             if new_rate > prev_rate:
-                line_branch_best[line_no] = (covered_i, total_i)
+                line_branch_best[key] = (covered_i, total_i)
+
+    for short in sorted(seen_security_types):
+        line_branch_best = security_lines[short]
 
         branch_covered = sum(c for c, _ in line_branch_best.values())
 
         branch_count = sum(t for _, t in line_branch_best.values())
 
         if branch_count == 0:
-            # Fall back to class branch-rate attribute.
-            rate = float(cls.attrib.get("branch-rate", "1")) * 100.0
-
-            if rate < SECURITY_BRANCH_TARGET:
-                failures.append(
-                    f"security type {short}: branch coverage {rate:.2f}% < {SECURITY_BRANCH_TARGET:.0f}%"
-                )
-
-            continue
-
-        rate = pct(branch_covered, branch_count)
+            # Fall back to the class branch-rate attributes; take the worst so a fully
+            # covered shell can never mask an uncovered state machine.
+            rate = min(security_class_rates[short])
+        else:
+            rate = pct(branch_covered, branch_count)
 
         if rate < SECURITY_BRANCH_TARGET:
             failures.append(

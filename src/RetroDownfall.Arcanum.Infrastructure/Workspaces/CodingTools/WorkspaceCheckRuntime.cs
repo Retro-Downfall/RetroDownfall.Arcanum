@@ -309,7 +309,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
         try
         {
 
-            if (directories.WritableRoots.Any(root =>
+            if (directories.SandboxWritableRoots.Any(root =>
                     WorkspaceRootPath.IsWithinOrEqual(
                         root,
                         request.WorkspaceRoot)))
@@ -370,7 +370,6 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                 directories.HttpCache,
                 directories.Temp,
                 packages.Snapshot.CanonicalPath,
-                directories.SandboxApplicationGroupId,
                 executable.Snapshot.CanonicalPath);
             System.Diagnostics.ProcessStartInfo startInfo =
                 WorkspaceCheckProcessStartInfoFactory.Create(
@@ -391,7 +390,7 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
                         sdk.Snapshot.SdkPath,
                         sdk.Snapshot.RuntimePath,
                     ],
-                    directories.WritableRoots,
+                    directories.SandboxWritableRoots,
                     directories.Root);
 
             WorkspaceCheckExecutableRevalidation executableRevalidation =
@@ -778,14 +777,10 @@ internal sealed class WorkspaceCheckRuntime : IWorkspaceCheckRuntime
     private static async Task TryDeleteRunDirectoriesAsync(
         WorkspaceCheckRunDirectories directories)
     {
+        // Only the per-run root is deleted. SharedIpcRoots are host-owned directories shared with the
+        // operator's other .NET processes (see MacOsDotNetIpcRoots) and must survive the run.
         await TryDeleteRunRootAsync(
             directories.Root).ConfigureAwait(false);
-
-        if (directories.SharedMemoryRoot is not null)
-        {
-            await TryDeleteRunRootAsync(
-                directories.SharedMemoryRoot).ConfigureAwait(false);
-        }
     }
 
     private static async Task TryDeleteRunRootAsync(

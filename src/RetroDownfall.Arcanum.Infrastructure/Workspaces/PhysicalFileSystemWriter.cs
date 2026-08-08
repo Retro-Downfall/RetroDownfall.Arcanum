@@ -498,10 +498,22 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         string identityPath = Path.GetFullPath(resolvedFinalPath ?? absolutePath);
 
-        if (!FileHandleIdentityInterop.TryGetPathIdentity(identityPath, out FileHandleIdentity expectedIdentity))
+        if (!FileHandleIdentityInterop.TryGetPathMetadata(identityPath, out FileHandleMetadata expectedMetadata))
         {
             return (null, new Error(ErrorCodes.Workspace.FileNotFound, FileNotFoundMessage));
         }
+
+        // Prove the object is a regular single-link file before opening it. A blocking open(2) on a
+        // FIFO planted in the workspace never returns until a writer appears, and this FileStream
+        // carries no CancellationToken, so the request would hang past RequestAborted and leak a
+        // thread-pool thread per call. Mirrors PhysicalFileSystemBrowser.ReadAsync's guard.
+        if (expectedMetadata.Kind != FileSystemObjectKind.RegularFile
+            || expectedMetadata.HardLinkCount != 1)
+        {
+            return (null, new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage));
+        }
+
+        FileHandleIdentity expectedIdentity = expectedMetadata.Identity;
 
         FileStream stream;
 

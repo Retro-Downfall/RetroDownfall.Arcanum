@@ -186,6 +186,48 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         Assert.True(tracker.IsHealthy(providerB.Name));
     }
 
+    // DESIGN §10.7.2: the turn seed is built once per logical run, and each provider gets an
+    // isolated attempt context. Re-seeding per candidate permanently duplicates the user Entry —
+    // interrupted-turn cleanup only discards the empty assistant row — and, for a session-less
+    // request, leaves an orphaned Session behind for every failed candidate.
+    [Fact]
+    public async Task ExecutePromptAsync_connectivity_fallback_begins_the_grimoire_turn_once()
+    {
+        ProviderSettings providerA = MakeProvider("provider-a");
+        ProviderSettings providerB = MakeProvider("provider-b");
+        ScriptingChatClient chatA = new();
+        chatA.EnqueueException(new HttpRequestException("connection refused during buffered inference"));
+        ScriptingChatClient chatB = new();
+        chatB.EnqueueText("answer from B");
+        RecordingChatClientFactory factory = new();
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+        ProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+        FakeGrimoireRepository grimoire = new();
+        WizardIntelligenceProvider wizard = CreateWizard(
+            factory,
+            tracker,
+            withHealthTracker: true,
+            grimoire,
+            providerA,
+            providerB);
+
+        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
+            BaseRequest(),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal([providerA.Name, providerB.Name], factory.CandidateCallOrder);
+
+        // One user Entry and one Session for the run, however many candidates were tried.
+        (Guid? requestedSessionId, string prompt) = Assert.Single(grimoire.BeginCalls);
+        Assert.Null(requestedSessionId);
+        Assert.Equal("hello", prompt);
+
+        // The surviving candidate finalized the seeded assistant row; nothing was discarded.
+        Assert.Empty(grimoire.DiscardedAssistantEntryIds);
+    }
+
     [Fact]
     public async Task ExecutePromptAsync_LeaseBuildFailure_NonConnectivity_DoesNotMarkProviderUnhealthy_OrRetry()
     {
@@ -854,6 +896,14 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IChatClientFactory factory,
         IProviderHealthTracker? healthTracker,
         bool withHealthTracker,
+        params ProviderSettings[] providers) =>
+        CreateWizard(factory, healthTracker, withHealthTracker, new FakeGrimoireRepository(), providers);
+
+    private static WizardIntelligenceProvider CreateWizard(
+        IChatClientFactory factory,
+        IProviderHealthTracker? healthTracker,
+        bool withHealthTracker,
+        FakeGrimoireRepository grimoire,
         params ProviderSettings[] providers)
     {
 
@@ -867,8 +917,6 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             Features = new FeatureSettings { Lexicon = false, ReasoningSummaries = true },
 
         };
-
-        FakeGrimoireRepository grimoire = new();
 
         FakeWard ward = new();
 
@@ -1333,18 +1381,38 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         public Task<Session?> GetSessionHeaderAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult<Session?>(null);
 
+        /// <summary>
+        /// Every begin writes a Session (when the request carries none), a user <c>Entry</c> and an
+        /// empty assistant <c>Entry</c>, so the call count is the count of persisted user turns.
+        /// </summary>
+        public List<(Guid? RequestedSessionId, string Prompt)> BeginCalls { get; } = [];
+
+        public List<Guid> DiscardedAssistantEntryIds { get; } = [];
+
         public Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
             Guid? sessionId,
             string prompt,
             string model,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult((sessionId ?? Guid.NewGuid(), Guid.NewGuid()));
+            CancellationToken cancellationToken = default)
+        {
+
+            BeginCalls.Add((sessionId, prompt));
+
+            return Task.FromResult((sessionId ?? Guid.NewGuid(), Guid.NewGuid()));
+
+        }
 
         public Task FinalizeAssistantEntryAsync(Guid assistantEntryId, string fullContent, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
-        public Task DiscardAssistantEntryAsync(Guid assistantEntryId, CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
+        public Task DiscardAssistantEntryAsync(Guid assistantEntryId, CancellationToken cancellationToken = default)
+        {
+
+            DiscardedAssistantEntryIds.Add(assistantEntryId);
+
+            return Task.CompletedTask;
+
+        }
 
         public Task AppendToolInteractionAsync(
             Guid sessionId,

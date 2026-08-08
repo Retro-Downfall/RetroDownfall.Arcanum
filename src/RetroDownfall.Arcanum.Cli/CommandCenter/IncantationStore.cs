@@ -353,27 +353,32 @@ internal sealed class IncantationStore
         ArgumentNullException.ThrowIfNull(lineAnchors);
 
         IncantationRecord[] snapshot = Snapshot().ToArray();
-        target.Clear();
-        lineAnchors.Clear();
+        List<string> lines = new();
+        List<string?> anchors = new();
 
         for (int i = 0; i < snapshot.Length; i++)
         {
             if (i > 0)
             {
                 string rule = IncantationFormatter.SeparatorLine(contentWidth);
-                target.Add(rule);
-                lineAnchors.Add(null);
+                lines.Add(rule);
+                anchors.Add(null);
             }
 
             IReadOnlyList<string> block = IncantationFormatter.FormatBlock(snapshot[i], contentWidth);
-            bool first = true;
             foreach (string line in block)
             {
-                target.Add(line);
-                lineAnchors.Add(first ? snapshot[i].CallId : snapshot[i].CallId);
-                first = false;
+                lines.Add(line);
+                anchors.Add(snapshot[i].CallId);
             }
         }
+
+        // Tail edit rather than Clear-then-re-Add: the bound list view rescans the whole collection on
+        // every change notification, so a full rebuild per streaming flush is quadratic in pane size.
+        _ = CommandCenterLineSync.ApplyTailEdit(target, lines);
+
+        lineAnchors.Clear();
+        lineAnchors.AddRange(anchors);
     }
 
     private IncantationRecord GetOrCreateUnlocked(string? callId, string? toolName)

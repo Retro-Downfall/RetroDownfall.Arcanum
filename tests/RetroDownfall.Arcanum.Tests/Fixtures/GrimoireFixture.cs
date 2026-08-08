@@ -18,6 +18,34 @@ public sealed class GrimoireFixture : IDisposable
 
     public const string TestApiKey = "test-key";
 
+    /// <summary>
+    /// Dedicated Grimoire encryption secret for the shared template. Production never keys a
+    /// sidecar-backed database from the master API key (<c>CreateNewDatabaseSecretAsync</c>,
+    /// <c>RekeyToPbkdf2Async</c>, and backup restore all pass a dedicated secret), and the
+    /// bootstrapper now fails closed rather than falling back to the API key, so the fixture must
+    /// model the same shape. <see cref="TestApiKeySecretStore"/> serves this value.
+    /// </summary>
+    public const string TestGrimoireSecret = "test-grimoire-encryption-secret";
+
+    /// <summary>
+    /// Directory holding the shared, cached template database.
+    /// </summary>
+    public static string TemplateDirectory { get; } =
+        Path.Combine(Path.GetTempPath(), "arcanum-tests", "grimoire-template");
+
+    /// <summary>
+    /// Path of the shared template database. Tests that reason about template remediation must read
+    /// it from here rather than repeating the file name — <c>GrimoireFixtureConcurrencyTests</c> once
+    /// hard-coded <c>v1</c> and silently stopped observing the fixture when the name moved to v2.
+    /// </summary>
+    /// <remarks>
+    /// v2: the template is keyed from the dedicated Grimoire secret rather than the master API key.
+    /// A distinct file name keeps a concurrently running older test process from thrashing the cached
+    /// template it can no longer open.
+    /// </remarks>
+    public static string TemplatePath { get; } =
+        Path.Combine(TemplateDirectory, "template-remediation-v2.db");
+
     public static bool SqlCipherAvailable { get; private set; }
 
     public static string SqlCipherUnavailableReason { get; private set; } = "SQLCipher not probed yet.";
@@ -47,7 +75,9 @@ public sealed class GrimoireFixture : IDisposable
             // a previous test process is still openable by a new process. The KDF sidecar tests
             // exercise random salt generation separately.
             _saltStatic = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-            _passphraseStatic = GrimoireKeyDerivation.DerivePassphraseFromApiKey(TestApiKey, _saltStatic);
+            _passphraseStatic = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(
+                TestGrimoireSecret,
+                _saltStatic);
 
             {
                 using SqliteConnection probe = new(new SqliteConnectionStringBuilder
@@ -96,11 +126,9 @@ public sealed class GrimoireFixture : IDisposable
 
         _passphrase = _passphraseStatic;
 
-        string dir = Path.Combine(Path.GetTempPath(), "arcanum-tests", "grimoire-template");
+        Directory.CreateDirectory(TemplateDirectory);
 
-        Directory.CreateDirectory(dir);
-
-        _templatePath = Path.Combine(dir, "template-remediation-v1.db");
+        _templatePath = TemplatePath;
 
         _templateSidecarPath = _templatePath + ".kdf";
 

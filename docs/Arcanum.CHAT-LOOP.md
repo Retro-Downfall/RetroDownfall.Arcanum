@@ -303,6 +303,18 @@ reuses the verified version with its currently detected kind, and returns the sa
 injection is queued and no default-model vision capability is required. Command Center reports Live
 only from that successful response.
 
+Rendering cost under streaming is bounded by coalescing at both ends of the UI channel. The streaming
+coalescer writes one `RefreshLog` signal when a token chunk contains a newline or the 50 ms flush
+interval has elapsed, and again before a non-token block, on the final result, on cancellation, and on
+dispose; it never mutates Terminal.Gui controls itself. The host UI pump then drains every update
+already queued on the channel with a non-blocking read and folds that batch before invoking
+`ApplyState`: consecutive refresh kinds collapse into a single apply, and a batch mixing different
+refresh kinds widens to `RefreshAll`, which is their superset. `FocusInput`, `FocusSessions`, and
+`FocusTranscript` are one-shot side effects — they are never coalesced away and keep their relative
+order against the refreshes around them. A burst of flushes therefore costs at most one pane rebuild
+per UI-thread pass, and that rebuild reuses each entry's cached wrapped lines whenever its text,
+streaming flag, and wrap width are unchanged.
+
 ## 7. Standalone lifecycle and turn entry
 
 `arcanum attachment add|reference|list|show|versions|refresh|pin|unpin|export|reveal` manages the

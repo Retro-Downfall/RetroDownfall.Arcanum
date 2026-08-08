@@ -80,6 +80,14 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
   safety/integrity denial, or deterministic repeated no-progress. Per-allocation, frame, page,
   concurrency, and post-cancellation cleanup bounds remain local protections; they are not total
   workflow ceilings.
+- `InvocationConfiguration.ProcessTerminationTimeout` is consistent with that: it is a finite
+  10-second post-SIGINT grace window (`CliApplicationFactory.ProcessTerminationGrace`), not a
+  total-duration cap. It bounds only how long a Ctrl+C waits for cooperative shutdown, so a command
+  that never observes the token can still be stopped from the keyboard; Arcanum still owns no total
+  duration for streaming commands. `chat` opts out entirely — timeout `null`, no
+  `ProcessTerminationHandler` installed — because it owns its own Ctrl+C contract, mapping the key to
+  "cancel this turn / clear this line" rather than teardown. `CliApplicationFactory.SelfManagedTerminationCommands`
+  is the extension point for any future command that does the same.
 
 ### 2.2 Current policy constraints
 
@@ -90,10 +98,11 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
 | Windows child execution | Per-invocation AppContainer filesystem jail with explicit allowed-root ACLs; Job Object assignment precedes untrusted target resume. Setup failure is fail-closed. |
 | Daemon concurrency | `Daemon:MaxConcurrentJobs` limits scheduled Unseen Servant jobs, not every on-demand run. |
 | macOS child network | Seatbelt is a filesystem jail only; child network remains available. |
+| macOS `workspace_check` IPC | macOS restricts `~/Library/Group Containers` to entitled processes, so the child cannot have a private .NET PAL root. The jail grants the two shared `/private/tmp/.dotnet` IPC roots instead (§11.7.1); the broad-temp-write prohibition is unchanged. |
 | Child environment | Secret/config and loader-hijack variables are scrubbed; there is no full per-binary environment allowlist. |
 | External MCP stdio | Operator-configured external processes are trusted and do not receive Arcanum's filesystem jail. |
 | A2A remote allowlist | An empty `AllowedRemoteAgents` list still permits SSRF-guarded public targets. Every interface the remote Agent Card advertises is re-checked against the allowlist and the outbound guard, not just the first. |
-| A2A peer credentials | Outbound Sendings present a credential only when `Arcanum:Integrations:A2A:OutboundCredentialEnvironmentVariable` names a set environment variable; without it only unauthenticated peers are reachable. The credential is scoped to the operator-supplied origin or an allowlisted target and withheld from card-chosen third-party hosts. Inbound A2A routes always require Arcanum's own API key. |
+| A2A peer credentials | Outbound Sendings present a credential only when `Arcanum:Integrations:A2A:OutboundCredentialEnvironmentVariable` names a set environment variable; without it only unauthenticated peers are reachable. The credential travels **only** to a target matching a non-empty `Arcanum:Integrations:A2A:AllowedRemoteAgents` entry — uniformly for every caller, and for Agent Card discovery as well as the post-discovery client. With an empty or non-matching allowlist the Sending is still dispatched, unauthenticated, and a Warning naming the setting is logged. Inbound A2A routes always require Arcanum's own API key. |
 | A2A delegation cycles | Broken by node-id cycle detection in A2A message metadata, not by a hop ceiling. A peer that drops the metadata declines the protection for itself; it cannot bypass Arcanum's own refusal. |
 | In-flight A2A tasks | The runtime task ↔ Apprentice index is process-local, but the correspondence is recorded durably in the `LongRunningOperations` ledger (§5.7.1.2): a restart cancels or explicitly abandons an orphaned remote task, and a peer `tasks/cancel` still reaches the real Apprentice. |
 | Comm Link authenticity | Webhooks are not HMAC-signed. |
@@ -115,6 +124,8 @@ See [Arcanum.README.md §Naming metaphor](Arcanum.README.md#naming-metaphor) for
 ### 3.1 `src/` per project
 
 Projects live under `src/` rather than the repository root for shorter CI paths, room for top-level folders (`build/`, `docs/`, `test/`, `tools/`), and alignment with common monorepo conventions.
+
+`dist/` is gitignored build output — packaging-script artifacts, never source — consistent with its classification as an ignored directory segment for workspace RAG indexing (§21.7). No release archive is tracked in the repository.
 
 ### 3.2 `Directory.Build.props`
 
@@ -154,6 +165,18 @@ then checks semantic relationships such as provider/model references, endpoints,
 and portable case-insensitively unique credential-reference names. Startup aborts before serving
 requests when either gate fails; `PUT /api/config` and `POST /api/config/validate` use the same
 schema and semantic validation.
+
+The CLI's `IOptions<ArcanumSettings>` snapshot is loaded by `ConfigurationBootstrapper.LoadArcanumSettings`
+— identical to `AddArcanumInfrastructure` — with the `IConfiguration` binder only as a missing-file
+fallback, so the CLI, `arcanum config show`, and the running host cannot diverge. The persisted file
+is the authority and is parsed through `ConfigurationJsonContext`; the binder cannot honour
+`ModelEntryJsonConverter` (bare-string model entries are silently dropped) and it appends to array
+defaults instead of replacing them, which is why it is the fallback rather than the source. A file
+that cannot be parsed at all degrades to defaults rather than taking down DI composition, since only
+configuration repair and diagnosis verbs get that far and they need a usable service graph to name
+the offending pointer. The consequence for test authors is that an in-memory `IConfiguration` entry
+under `Arcanum:…` does not change the CLI snapshot: write an `arcanum.json` under `ARCANUM_TEST_HOME`,
+or post-configure the options directly.
 
 The Native-AOT-safe CLI configuration surface is `arcanum config path|show|get|set|validate|edit|open`.
 `ConfigurationPathAccessor` resolves case-insensitive dot paths (including explicit collection
@@ -750,13 +773,23 @@ messages, paths, PII, API keys, or stack traces. JSON invocations receive a sour
 8. `ArcanumMasterKeyBootstrapper.EnsureMasterApiKeyExistsAsync` **before** `Build()`.
 9. `Build()` → `MapArcanumEndpoints()` → `RunAsync()`. `PidFileService` writes the PID file during host `StartAsync` (API §8.19). `Log.CloseAndFlush()` in `finally`.
 
+Serilog's static `Log.Logger` is assigned **twice by design**, because step 8 runs before step 9.
+`AddSerilog` assigns `Log.Logger` itself, but only when the DI logging graph is first materialized —
+during `Build()` — so a diagnostic emitted earlier would reach Serilog's silent default and vanish.
+`LoggingBootstrapper` therefore installs a bootstrap logger when `AddArcanumSerilog` is called,
+covering exactly the pre-`Build()` window in which `ArcanumMasterKeyBootstrapper` runs against its own
+throwaway container and reports a corrupt credential store, a Grimoire/key mismatch that will abort
+startup, or a newly generated master key. That bootstrap logger writes to **standard error only**, and
+`AddSerilog` replaces it at `Build()`. The rolling JSON file therefore keeps exactly one writer, which
+is required because Serilog's file sink is not multi-writer safe.
+
 ### 5.4 Grimoire persistence (Infrastructure + Api)
 
 **Role:** Local-first session history in an SQLCipher-encrypted SQLite file under `~/.config/arcanum/`.
 
 **Composition:**
 
-- **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and installs the complete embedded schema via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSchemaInstaller`** (raw SQLite, one transaction, no migration chain and no `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`. A key mismatch or unreadable dedicated secret throws the sanitized `GrimoireDatabaseUnavailableException`, so startup fails closed while host/test cleanup can unwind normally; it never terminates the embedding process with `Environment.FailFast`. Legacy databases are transparently re-encrypted to the new KDF on unlock. The same bootstrapper runs from the CLI (`run` / `ask` / `chat`) so host and CLI share one schema-install path (§10.5).
+- **`GrimoireDatabaseHostedService`** — initializes SQLCipher, resolves the DB passphrase from a dedicated Grimoire encryption secret using PBKDF2-HMAC-SHA256 (600,000 iterations) with a unique 16-byte salt stored in a `{grimoire.db}.kdf` sidecar, falls back to legacy API-key HKDF for databases without a sidecar, and installs the complete embedded schema via **`GrimoireDatabaseBootstrapper`** → **`GrimoireSchemaInstaller`** (raw SQLite, one transaction, no migration chain and no `__EFMigrationsHistory`; AOT-safe; no `MigrateAsync` on the host), then `IGrimoireDbReadiness.MarkReady()`. A key mismatch or unreadable dedicated secret throws the sanitized `GrimoireDatabaseUnavailableException`, so startup fails closed while host/test cleanup can unwind normally; it never terminates the embedding process with `Environment.FailFast`. Legacy databases are transparently re-encrypted to the new KDF on unlock; the new salt is durably staged to `{grimoire.db}.kdf.pending` before the irreversible `PRAGMA rekey` and promoted by atomic rename after it commits, so either side of that crash window is recoverable on the next start (§16.3). The same bootstrapper runs from the CLI (`run` / `ask` / `chat`) so host and CLI share one schema-install path (§10.5).
 - **`CampaignLoggerQueue` / `Loremaster`** — bounded `Channel<Guid>` (capacity 100 **session IDs**, not Entry rows) with **non-blocking `TryQueue`**: duplicate session ids coalesce via a pending-marker map; a full channel rejects with a warning log and clears the marker so the session remains eligible for a later sweep (internal sweeps fail-open). Explicit `POST /api/sessions/{id}/rest` returns **202** when accepted/coalesced and **503** + `Session.RestQueueFull` when rejected. Background service `Loremaster` (formerly `CampaignLoggerBackgroundService`) runs hybrid sweeps using **`Session.UnsummarizedEntryCount`** (incremented on every entry append — both the inference path and The Forge `POST /api/sessions/{id}/entries` path, each serialized per-session via **`SessionEntryPersistence`** / **`SessionWriteLock`** + **`SqliteBusyRetry`** so concurrent appends never lose an increment; reset on summarize) instead of full-table `Entries` aggregation. The consume path loads session headers via **`GetSessionHeaderAsync`** (no entry hydration). Headless summarization uses a stateless `PingRequest` with `SkipSpellRouting`, `DisableMcpTools`, `UnattendedMode`, optional `Arcanum:FastModel` (else `DefaultModel`); on success, `UpdateSessionCampaignRollupAsync` atomically sets `Session.Summary`, `LastSummarizedMessageAt`, and the remaining unsummarized count. On inference failure, the watermark is **not** advanced.
 - **`ArcanumDbContext`** — compiled model; SQLCipher passphrase from hosted service.
 - **`SessionRepository`** — implements **`ISessionRepository`** for Forge session CRUD, entry append, export, and analytics. Entry writes delegate shared invariants (lock, retry, per-entry validation, counter, UpdatedAt) to internal **`SessionEntryPersistence`**. **`AddEntryAsync`** returns **`Result<Entry>`** for expected domain outcomes (not found, archived, invalid or oversized entry); there is no total persisted-entry ceiling. **`UpdateSessionAsync`** patches Title/Status only — Grimoire-owned counters and rollups are never clobbered from caller-supplied `Session` rows.
@@ -972,14 +1005,23 @@ and cleanup removes an artifact only after identity revalidation.
 #### 5.4.6 Versioned authenticated blob storage
 
 `IEncryptedBlobStore` is the single storage boundary for session attachments, `/v1/files` uploads,
-and batch input/output/error artifacts. `EncryptedBlobStore` writes the version-1 `ARCABLOB`
+and batch input/output/error artifacts. `EncryptedBlobStore` writes the version-2 `ARCABLOB`
 envelope with an explicit format version, AES-256-GCM algorithm id, bounded chunk size, purpose,
 plaintext length, key id, random nonce prefix, and bounded authenticated metadata. Every plaintext
 chunk is authenticated independently with a 16-byte GCM tag and a nonce formed from the random
-per-file prefix plus a monotonically increasing chunk index. The canonical envelope header, chunk
-index, chunk length, and caller metadata are authenticated; the plaintext-length field is enforced
-by an exact monotonic envelope-length calculation so any alteration, truncation, or appended
-ciphertext is rejected.
+per-file prefix plus a monotonically increasing chunk index.
+
+Both supported versions bind, into every chunk's associated data, the canonical envelope header
+with the declared plaintext-length field zeroed — the streaming writer back-patches that field once
+the total is known — plus the chunk index and the chunk length. Version 2 additionally binds a
+final-chunk marker and, on the final chunk only, the total declared plaintext length. Binding the
+final chunk is what makes a coordinated boundary truncation fail: removing or appending whole
+chunks changes the associated data of whichever chunk becomes final, and AES-GCM authentication
+rejects it. The exact envelope-length calculation performed on open is a cheap self-consistency
+pre-check over header, plaintext length, chunk size, and tag count — not the authentication
+boundary. Version-1 envelopes bind neither the final-chunk marker nor the total length, so they are
+read but never written; envelopes already on disk are upgraded to version 2 only when a key rotation
+rewrites them, and not by `arcanum data encryption migrate`, which converts legacy plaintext.
 
 The store derives separate 256-bit keys for `SessionAttachment`, `UploadedFile`, and
 `BatchArtifact` with HKDF-SHA256 labels from one random 256-bit file-encryption master key. That
@@ -1036,7 +1078,9 @@ creates and durably saves the new active key before rewriting files, re-encrypts
 verifies every candidate, and retires an old key only when verification succeeds and no metadata row
 references it. The complete key-ring value is mirrored to `file-encryption-key.dat`, so local
 recovery can retain every active key during migration/rotation; the provider accepts either the
-legacy single-key value or the multi-key ring.
+legacy single-key value or the multi-key ring. The key-ring document is LF-delimited on every
+platform and is never written with `Environment.NewLine`; readers additionally tolerate a trailing
+CR on each line so rings written by older Windows builds still parse.
 
 First startup creates the master key only when the OS secret is missing and no encrypted blobs
 exist. If ciphertext already exists, missing/corrupt key state never generates a replacement.
@@ -1492,8 +1536,21 @@ outside the replaced tree.
 Commit is two directory renames — live → `previous/`, `staged/` → live — followed by moving the
 destination's own non-portable state (`keys/`, `backups/`) across. `backups/` is preserved
 deliberately: it holds the archive being restored from and every other recovery point. Any failure
-after commit reverses all three moves and reinstates the captured secrets, returning
-`RolledBack`. Any failure before commit returns `Rejected` with the installation untouched.
+before commit returns `Rejected` with the installation untouched.
+
+A failure after commit reverses all three moves and reinstates the captured secrets, and has two
+outcomes rather than one. The reversal is driven by filesystem evidence, not by how far the code
+believes it got, so a commit that failed partway through preserving `keys`/`backups` still carries
+the already-moved entries back out of the new tree — the same evidence `BackupRestoreRecovery` uses
+after a process death, so an in-process reversal and a restart reversal agree. A reversal is reported
+as `RolledBack` only when it can be verified, which means the displaced tree is gone because every
+part of it landed back in the live root. While the displaced tree is still inside staging the restore
+instead returns `ReconciliationRequired` with `backup.restore_reversal_incomplete`, naming the
+retained staging root; the journal is rewound to the `Commit` phase and neither the journal nor the
+staging root is deleted, so `BackupRestoreRecovery` resolves them at the next start. Retention of the
+displaced installation outranks staging cleanup: the displaced tree is the operator's only remaining
+copy of the installation, so an unverifiable reversal keeps the evidence rather than tidying it away
+and claiming a clean rollback.
 
 `BackupRestoreJournal` makes an interrupted commit deterministic. The journal file records the
 journal version, operation id, conflict mode, phase, live/staged/displaced roots, safety-backup path,
@@ -1544,7 +1601,7 @@ The **Unseen Servant** is a proactive background scheduler for headless inferenc
 
 #### 5.5.2 Adaptive initiative (dynamic polling)
 
-`IUnseenServantPacer` holds interval overrides keyed by `{Name}\0{TargetSpell}` (same composite as tracker) — **runtime cache with Grimoire write-through** on `adjust_initiative` / `POST /api/unseen-servant/jobs/{name}/initiative`. Hydrated from `UnseenServantWatermarks.EffectiveIntervalMinutes` at startup (§5.5.5). CLI: `arcanum daemon jobs|initiative|alert`. SSE: `DaemonEvent` started/completed/failed/intervalChanged on `GET /api/events/daemon`.
+`IUnseenServantPacer` holds interval overrides keyed by `{Name}\0{TargetSpell}` (same composite as tracker) — **runtime cache with Grimoire write-through** on `adjust_initiative` / `POST /api/unseen-servant/jobs/{name}/initiative`. Hydrated from `UnseenServantWatermarks.EffectiveIntervalMinutes` at startup (§5.5.5). `SetDynamicInterval` returns whether a configured job matched, and both callers surface a miss rather than silently no-opping: `adjust_initiative` fails with a `ToolError` naming `Arcanum:Daemon:Jobs`, and the HTTP sibling `POST /api/unseen-servant/jobs/{name}/initiative` returns **404** `Daemon.NotFound` for the same case, because reporting success with a fabricated status would tell the operator a typo had landed. CLI: `arcanum daemon jobs|initiative|alert`. SSE: `DaemonEvent` started/completed/failed/intervalChanged on `GET /api/events/daemon`.
 
 #### 5.5.3 Stateful memory (Lexicon auto-injection)
 
@@ -1660,7 +1717,7 @@ External door into The Conclave: A2A **server** (inbound → Apprentices) and **
 
 **Server:** mapped under `Arcanum:Integrations:A2A:ServerPath` on `/api` (API key required) — **no** unauthenticated `/.well-known/agent-card.json`. A configured path outside `/api` is **mounted under it** (`/conclave/a2a` → `/api/conclave/a2a`) rather than refused, so the security boundary holds without silently discarding the operator's configuration; the effective path is reported by `GET /api/conclave/status`, `GET /api/meta`, and `GET /api/health`. Handler mints an Apprentice via `ConclaveArchmage` and relays Chronicle to A2A task states. The Chronicle subscription is opened **before** `StartAsync` — the hub is live-only with no replay, so subscribing afterwards could lose a fast terminal event and strand the task in `Working`. Workspace fallback is `Arcanum:Integrations:A2A:DefaultWorkspace` → `Arcanum:Workspaces:DefaultRoot` → CWD; an empty `Arcanum:Security:CampaignRoots` still denies registration.
 
-**Client:** `dispatch_sending` validates the discovery URL **and every interface the returned Agent Card advertises** against the allowlist (if non-empty) and `OutboundUrlGuard` — the SDK selects an interface by protocol-binding preference, not position, so checking only the first entry would let a hostile card steer the connection. Discovery accepts an explicit Agent Card URL (`https://peer/api/conclave/a2a/agent-card`) and falls back for a bare origin to the SDK well-known path and then Arcanum's own card path, because Arcanum serves no unauthenticated well-known card. `Arcanum:Integrations:A2A:OutboundCredentialEnvironmentVariable` / `OutboundCredentialHeader` name the environment variable and header carrying the peer credential (default header `X-Arcanum-Key`), which is what makes one Arcanum reachable from another; the value never lives in configuration. The credential is **scoped**: it travels to the origin the operator typed, or to an explicitly allowlisted target, and is withheld when a remote card advertises an interface on some other host — otherwise a hostile card could simply ask for the operator's key. The `MaxConcurrentA2ATasks` semaphore bounds simultaneous outbound calls while excess work waits cancellably for a slot instead of returning `Sending.MaxTasksReached`. Chronicle: `sendingDispatched` → `sendingProgress`\* → `sendingCompleted`/`sendingFailed` on the caller's stream. Agent Card ("Heraldry") is built per request from settings.
+**Client:** `dispatch_sending` validates the discovery URL **and every interface the returned Agent Card advertises** against the allowlist (if non-empty) and `OutboundUrlGuard` — the SDK selects an interface by protocol-binding preference, not position, so checking only the first entry would let a hostile card steer the connection. Discovery accepts an explicit Agent Card URL (`https://peer/api/conclave/a2a/agent-card`) and falls back for a bare origin to the SDK well-known path and then Arcanum's own card path, because Arcanum serves no unauthenticated well-known card. `Arcanum:Integrations:A2A:OutboundCredentialEnvironmentVariable` / `OutboundCredentialHeader` name the environment variable and header carrying the peer credential (default header `X-Arcanum-Key`), which is what makes one Arcanum reachable from another; the value never lives in configuration. The credential is **scoped by the allowlist and nothing else**: it travels only to a target matching a non-empty `Arcanum:Integrations:A2A:AllowedRemoteAgents` entry, and that single rule governs both Agent Card discovery and the post-discovery client, uniformly for every caller — `POST /api/conclave/sendings`, `arcanum conclave dispatch`, and the model-callable `dispatch_sending` / `continue_sending` tools alike. On the tool path `agent_url` reaches the service verbatim from the model, so "the operator typed this URL" is never a safe assumption: a prompt-injected Apprentice could otherwise name an attacker host and be handed a peer Arcanum API key — an operator-equivalent credential (§11.13) — during card discovery, before any card-interface scoping runs. When the allowlist is empty or the target matches no entry, the Sending is still dispatched, unauthenticated, and a Warning naming the setting is logged. The `MaxConcurrentA2ATasks` semaphore bounds simultaneous outbound calls while excess work waits cancellably for a slot instead of returning `Sending.MaxTasksReached`. Chronicle: `sendingDispatched` → `sendingProgress`\* → `sendingCompleted`/`sendingFailed` on the caller's stream. Agent Card ("Heraldry") is built per request from settings.
 
 **Sending lifecycle:** the send uses `ReturnImmediately` so the remote task id is known before the work finishes, then polls with backoff (100 ms → 2 s) until the task **settles**. Settled means an A2A terminal state, or `input-required`/`auth-required` — neither is terminal in A2A, and what happens there depends on the dispatch mode:
 
@@ -1695,7 +1752,7 @@ Only `degraded` contributes to readiness; off and merely-configured are delibera
 1. **Enable.** Set `Arcanum:Features:A2AServer` (accept inbound Sendings), `Arcanum:Features:A2AClient` (dispatch outbound), or both. Either derives `Arcanum:Features:Conclave`. Configure `Arcanum:Security:CampaignRoots` (and optionally `Arcanum:Integrations:A2A:DefaultWorkspace`) or inbound Sendings have no workspace and the state reports `degraded`.
 2. **Identify.** Set `Arcanum:Integrations:A2A:AgentCardName` / `AgentCardDescription` (the Heraldry), `ServerPath`, and `AllowedRemoteAgents` for outbound targets. Optionally declare `Skills`, `InputModes`, and `OutputModes` to advertise more than the default single skill. All are exposed in Compendium under **Integrations → AI collaboration**.
 3. **Verify.** `arcanum conclave status` reports the state, the effective server and Agent Card paths, and the next action when something is missing. `GET {AgentCardPath}` returns the Heraldry (API key required).
-4. **Dispatch.** `arcanum conclave dispatch --agent-url <url> --goal "<goal>"` (or `POST /api/conclave/sendings`) delegates to a remote agent and blocks until it settles, then reports the remote task id, the remote cost (or "unknown"), and the elapsed remote wall-clock. Add `--continuable` when the remote may need to ask a question. To reach another Arcanum, point `--agent-url` at its Agent Card path and set `OutboundCredentialEnvironmentVariable` to an environment variable holding that instance's API key.
+4. **Dispatch.** `arcanum conclave dispatch --agent-url <url> --goal "<goal>"` (or `POST /api/conclave/sendings`) delegates to a remote agent and blocks until it settles, then reports the remote task id, the remote cost (or "unknown"), and the elapsed remote wall-clock. Add `--continuable` when the remote may need to ask a question. To reach another Arcanum, point `--agent-url` at its Agent Card path, set `OutboundCredentialEnvironmentVariable` to an environment variable holding that instance's API key, **and** add that target to `AllowedRemoteAgents` — the allowlist is the only thing that vouches for a credential target, so configuring the environment variable alone yields an unauthenticated dispatch.
 5. **Continue.** If a `--continuable` dispatch comes back needing input or authentication, answer it with `arcanum conclave continue <task-id> --agent-url <url> --message "…"` (or `POST /api/conclave/sendings/{taskId}/continue`). The remote task stays alive and resumes; nothing is re-run.
 6. **Observe.** An Apprentice's own `dispatch_sending` emits `sendingDispatched` → `sendingProgress`\* → `sendingCompleted` / `sendingFailed` on its Chronicle; follow with `arcanum watch apprentice`, which renders the four frames distinguishably including the remote response, the failure reason, the external cost, and the remote duration.
 7. **Accept.** An inbound Sending **is** an Apprentice, so `arcanum apprentice list/get`, `arcanum watch apprentice`, and `arcanum apprentice cancel` are the observe-and-cancel surfaces; Apprentice progress is relayed back to the peer as A2A task states.
@@ -1985,7 +2042,7 @@ Unseen Servant daemon jobs, and Apprentice step execution through the provider.
 
 **Purpose:** Persist text attachments and Scrying images across Command Center turns so conversations can list, Reveal, re-attach, and let the model re-attach — without storing blobs inside SQLCipher.
 
-**Ownership:** host-only `ISessionAttachmentStore` (serve process). CLI stages content via `PingRequest.AttachedFiles` / `ScryingFoci` / `AttachmentReferences`; the host re-validates and persists **before** inference (failure aborts the turn — the model never sees an attachment that did not persist). The standalone API creates an immutable snapshot with multipart `POST /api/sessions/{id}/attachments`, creates a refreshable server-workspace reference with JSON `POST /api/sessions/{id}/attachments/reference`, and streams one stored snapshot with `GET /api/sessions/{id}/attachments/{attachmentId}/content`. Listing: `GET /api/sessions/{id}/attachments` first revalidates every tracked source off the UI thread, persists its latest sanitized observations/status, and then returns **bound** rows only.
+**Ownership:** host-only `ISessionAttachmentStore` (serve process). CLI stages content via `PingRequest.AttachedFiles` / `ScryingFoci` / `AttachmentReferences`; the host re-validates and persists **before** inference (failure aborts the turn — the model never sees an attachment that did not persist). The standalone API creates an immutable snapshot with multipart `POST /api/sessions/{id}/attachments`, creates a refreshable server-workspace reference with JSON `POST /api/sessions/{id}/attachments/reference`, and streams one stored snapshot with `GET /api/sessions/{id}/attachments/{attachmentId}/content`. Listing: `GET /api/sessions/{id}/attachments` first revalidates every tracked source off the UI thread, persists its latest sanitized observations/status, and then returns **bound** rows only. Revalidation is a pure function of the row's stored source metadata plus the file's current state, so it runs once per **distinct stored source snapshot per request**, not once per historical version row — every version of one logical key names the same workspace file, and memoizing collapses the repeated open, containment check, and double SHA-256 into a single pass per file. The source columns are written back only when the revalidated metadata actually changed; the endpoint is driven by a debounced workspace watcher, so persisting byte-identical values once per version row per keystroke would be pure write amplification.
 
 Snapshot upload is intentionally broader than live reference: an authenticated CLI may read any
 client-local file or stdin and upload its bytes. That creates `SnapshotOnly` provenance and grants
@@ -2114,7 +2171,18 @@ Grimoire schema must recreate the database when installing the latest version.
 `SessionAttachmentPendingGcHostedService` reconciles once at startup. It removes stale Pending rows
 and matching pending directories after a code-owned retention window; removes Bound rows whose
 Session no longer exists before best-effort directory cleanup; deletes rows for missing/escaping
-files; and deletes unreferenced files under the attachment tree. Invalid `_pending` child names are
+files; and deletes unreferenced files under the attachment tree.
+
+Both of those last two sweeps run while the host is serving — at startup Kestrel is already accepting
+requests, and `POST /api/operations/reconcile` can drive reconciliation at any time — so each carries
+an explicit concurrency boundary rather than serializing attachment writes behind the sweep. A row
+deletion is conditional on the persisted row still naming the exact `State` and `RelativePath` the
+sweep observed, so an attachment promoted concurrently is an atomic no-op for the sweep and is never
+destroyed. "Unreferenced" is likewise evaluated against a moving target under two guards: nothing
+modified at or after the moment of the sweep's own path snapshot is touched, because an attachment
+write lands its ciphertext *before* it inserts its row (which also spares `EncryptedBlobStore`'s
+staging temporaries), and every candidate is re-checked against the live table immediately before
+unlinking, so a row committed since the snapshot keeps its bytes. Invalid `_pending` child names are
 warned and left untouched rather than passed to an identity-unsafe delete. The code-owned per-Session
 byte boundary rejects only measured storage overflow; there is no per-logical-key version-count cap.
 Bound files are not background-pruned.
@@ -2329,6 +2397,17 @@ fragmentation. `OpenAiSseProjection` shares reasoning/error characterization but
 production projection instance. SSE keep-alives are transport-only, and exact-byte replay capture
 stays in the HTTP writer/idempotency layer.
 
+Two invariants bind every SSE writer, because `IAsyncEnumerator<T>` is neither concurrent-safe nor
+disposable mid-move. First, only one `MoveNextAsync` may be outstanding at a time: a heartbeat races
+the *same* pending move task through `WhenAny` and never starts a second one. Second, a writer must
+never dispose a streaming enumerator while a `MoveNextAsync` is outstanding — a compiler-generated
+async iterator throws `NotSupportedException` from `DisposeAsync` in that state, which would surface
+an ordinary client disconnect as an unhandled streaming error instead of a clean abort. Both the
+native writer and the `/v1` writer therefore tear down through the shared
+`SseStreamWriter.QuiesceAndDisposeAsync`: cancel the stream CTS so the producer unwinds, observe the
+pending move, then dispose. Both also cancel the per-iteration heartbeat delay when a frame wins the
+race, so no heartbeat timer outlives its iteration.
+
 Semantic events are internal and non-durable. Every writer, including Ward and human-input
 observers, uses the bounded `TurnEventEmitter` channel; sequence numbers are strictly monotonic,
 request events are emitted before waiting, and the terminal guard suppresses everything after the
@@ -2418,7 +2497,21 @@ successful round does. After commitment, provider swapping and the no-tools comp
 are prohibited.
 
 `TurnContextSeed` is built once per logical run, while each provider receives an isolated
-`ProviderAttemptContext`. Context assembly is ordered:
+`ProviderAttemptContext`. The seed covers exactly two things, and the boundary is deliberate: the
+Grimoire turn handle — one Session, one user `Entry`, one in-flight assistant row — and the RAG query
+embedding, both built once and shared by every provider candidate, so a run that falls back from a
+dead provider neither duplicates the turn nor pays for the imprint twice. Everything else remains
+per-candidate because it depends on the candidate's chat client or on ambient per-attempt scopes:
+attachment preparation, spell routing, Saga/Lexicon/Tapestry retrieval, and the materialization
+ledger.
+
+The retry handoff follows from that. A candidate that fails with a connectivity error before
+committing output does **not** discard the empty assistant row — it hands the turn to the next
+candidate, because beginning the turn again would insert a second user `Entry` and, for a
+session-less request, a second orphaned Session. The final candidate always resolves the turn, so
+nothing is left dangling.
+
+Context assembly is ordered:
 
 1. Load the Session and bounded Entry window, or no thread for a stateless request.
 2. Begin the Grimoire turn by inserting an in-flight assistant Entry and capturing the
@@ -2498,7 +2591,7 @@ The terminal reason is explicit and projection-independent:
 | `explicit_budget` | The response reports the operator-owned token/cost policy and measured or reserved usage needed to change or resume it. |
 | `provider_or_context_boundary` | The response names the provider/model request fact or context admission boundary and the smaller-request, compaction, or model-selection action. |
 | `safety_or_integrity_boundary` | The response names the Ward, Sanctum, containment, protocol, or integrity owner and the safe operator action; it never silently bypasses the boundary. |
-| `no_progress` | The same normalized state recurred without new evidence. The trace records the progress signature so tests can reproduce the stop without sleeps. |
+| `no_progress` | A completed tool round produced the same calls and results as one of the last 8 rounds, so no new evidence arrived. Comparing against a fixed window rather than only the adjacent round terminates two- and three-round oscillations (A, B, A, B …) as well as exact adjacent repetition. The window is a fixed-size ring of digests, so productive loops still run unbounded on O(1) memory and there is still no round, duration, or model-call ceiling (§2.1). The trace records the recurring round signature — the first 8 bytes of the SHA-256 round digest, hex — through a warning log at the stop site, so tests can reproduce the stop without sleeps. |
 
 Buffered and streaming projections share this semantic loop and therefore stop for the same reason.
 A retained boundary error identifies the owner, the safe measured value and limit when applicable,
@@ -2641,14 +2734,19 @@ Checkpoint payloads and references remain inside SQLCipher. API/CLI responses pr
 
 Lifecycle writes use SQL compare-and-swap:
 
-- lease acquisition changes `Pending`, expired `Running`, or expired `Waiting` to `Running`,
-  records the owner/expiry, increments attempt and revision, and succeeds for only one worker;
+- lease acquisition changes `Pending`, expired `Running`, expired `Waiting`, or expired `Cancelling`
+  to `Running`, records the owner/expiry, increments attempt and revision, and succeeds for only one
+  worker;
 - heartbeats renew only a live lease still owned by that worker; operation authors use bounded
   leases (5 seconds through 15 minutes) and stop immediately after renewal failure;
 - checkpoints require the owner and exact previous checkpoint version, so duplicate/out-of-order
   writes cannot overwrite newer recovery state;
 - cancellation, retry, and terminal transitions require the exact row revision. Terminal and
-  repair-required transitions release the lease.
+  repair-required transitions release the lease. Retry returns `Failed`, `Abandoned`, and
+  `ReconciliationRequired` rows to `Pending` — all three have already released their lease — and
+  also a `Cancelling` row whose lease has lapsed, which is exactly the cancellation no owner will
+  ever observe. It never accepts a `Cancelling` row with a live lease, so an operator can back out
+  of an unobserved cancellation without yanking one still in progress.
 
 #### 10.8.1 The recovery matrix is executable
 
@@ -2693,9 +2791,15 @@ still be running rather than pretending it was stopped.
 
 #### 10.8.2 Reconciliation
 
-`LongRunningOperationReconciler` selects only expired `Running`/`Waiting` leases, acquires a fresh
-two-minute recovery lease, dispatches by bounded kind, and applies the handler result with the
-acquired revision.
+`LongRunningOperationReconciler` selects every row no live worker can still drive forward, acquires a
+fresh two-minute recovery lease, dispatches by bounded kind, and applies the handler result with the
+acquired revision. The discovery set is expired `Running`/`Waiting` leases; expired-or-unleased
+`Cancelling` rows, because the only kinds that settle their own cancellation are those that poll the
+flag and only while their lease is alive, so an unobserved cancellation would otherwise wedge its
+kind forever; `Pending` rows carrying a prior attempt, which is what `arcanum operation retry`
+produces; and the retention `ReconciliationRequired` carve-out. A `Pending` row at attempt zero is
+excluded deliberately: its creator leases it in the very next statement, so reconciling it would
+race the caller that just made it.
 
 - **Startup ordering.** Kinds whose descriptor is `BeforeStateWrites` — `backup-create` and
   `data-retention-factory-reset` — reconcile in a first pass, before any ordinary durable workload
@@ -2721,7 +2825,10 @@ acquired revision.
 
 Host startup runs reconciliation after Grimoire migration and before subsequently registered
 durable workloads. Recovery uses 100-operation query pages and concurrency 4; the page size is not
-a total scan ceiling. Startup waits up to 10 seconds for readiness. If work remains, startup
+a total scan ceiling. Each concurrently recovered operation runs in its own DI scope, and therefore
+resolves its own `ArcanumDbContext` and its own SQLite connection: a scoped store shared across four
+workers would issue commands over one `SqliteConnection`, whose live-command list is not
+synchronized. Only the sequential `FindExpiredAsync` paging call runs on the outer scope. Startup waits up to 10 seconds for readiness. If work remains, startup
 continues in explicit degraded mode and immediately keeps checkpointed reconciliation running on a
 periodic background loop until recovery completes or the host shuts down; it never claims deferred
 work completed. Manual `arcanum operation reconcile` processes every recoverable page with the same
@@ -2746,6 +2853,20 @@ Prometheus exposes `arcanum_operations{kind,state}` gauges and
 `arcanum_operation_reconciliation_total{kind,outcome}`. Kind/state/outcome labels come from closed
 vocabularies; operation IDs, summaries, and user content are never metric labels — the same rule
 governs the diagnostics detail string.
+
+**Bounded labels are the load-bearing guarantee.** `PrometheusMetricsExporter` is a process-lifetime
+singleton whose per-metric series map never evicts, so nothing but label boundedness keeps it — and
+the scrape body — from growing until the host dies. Every tag source is therefore bounded by
+construction, and any future one must be too. Concretely: a request that matched no route carries the
+fixed `endpoint` label `unmatched`, never the raw request path; Kestrel accepts any RFC 7230 token as
+a request method, so only the known verbs become the `method` label and everything else collapses to
+`other`; and only sanitized metric names under the `arcanum_`, `process_`, `dotnet_`, `http_server_`,
+and `kestrel_` prefixes are recorded at all, so a third-party meter loaded into the same process
+cannot leak noise into the scrape. Behind those rules sits a backstop rather than a substitute for
+them: a hard ceiling of 2000 distinct label sets per metric, with refusals counted in
+`arcanum_metrics_series_dropped_total`, and a 256-character cap on any single label value.
+`Arcanum.ConstraintInventory.json` classifies the per-label-value length; the series ceiling is
+code-owned.
 
 ---
 
@@ -2800,8 +2921,12 @@ resilience probes, and health reporting identically. A missing credential is a s
 local configuration, not an error; a corrupt one resolves as absent for run-time purposes while
 `arcanum key list` and `arcanum doctor` still report `corrupt` with fixed recovery guidance.
 
-Every mirror is written owner-only through `SecureFilePermissions` with atomic temp-plus-rename and
-read back through `SecureFileReader` as a no-follow single-link regular file under a 64 KiB ceiling.
+Every mirror is written through `SecureFilePermissions` with owner-only staging, a durable flush, and
+atomic replacement — the same guarantee the `.kdf` sidecar carries in §16.3, because a rename must
+never be able to outrun the bytes it publishes. That applies uniformly to `grimoire-key.dat`,
+`file-encryption-key.dat`, `security.dat`, and the inference-provider and web-research credential
+mirrors. Mirrors are read back through `SecureFileReader` as a no-follow single-link regular file
+under a 64 KiB ceiling.
 Reads prefer the OS store; a mirror that decrypts while the OS store is merely empty is promoted into
 the OS store once, and that promotion is idempotent. Repeated saves replace the prior value without
 accumulating state. A present-but-undecryptable mirror is `Corrupted` and never triggers silent
@@ -2832,7 +2957,7 @@ Failed authentication returns **`ApiResponse<string>`** at **401** with error co
 
 ### 11.4 CORS (serve host)
 
-`AddArcanumApiServices` registers a CORS policy named **`ArcanumCors`** whose **allowed origins are read from `Arcanum:Host:CorsAllowedOrigins`** at startup. Defaults to localhost loopback (`http://localhost:5001`, `http://127.0.0.1:5001`, `http://localhost:3000`, `http://127.0.0.1:3000`). Operators who need to allow any browser origin (for example LibreChat installations on arbitrary hosts) can set the property to `["*"]` — Arcanum then calls `AllowAnyOrigin` and adds the same `AllowAnyHeader` / `AllowAnyMethod` it always has. **When the effective host bind is all-interfaces** (`ListenAny` or `ARCANUM_HOST_ANY`), a configured `["*"]` origin is **downgraded** to the localhost defaults so wide-open CORS is not combined with a non-loopback listener. `UseArcanumCors` runs early in the pipeline so browser-based tools can preflight without endpoint contention. `AllowAnyHeader` / `AllowAnyMethod` are retained unconditionally because callers always present custom headers (`X-Arcanum-Key`) and use varied verbs.
+`AddArcanumApiServices` registers a CORS policy named **`ArcanumCors`** whose **allowed origins are read from `Arcanum:Host:CorsAllowedOrigins`** at startup. Defaults to localhost loopback (`http://localhost:5001`, `http://127.0.0.1:5001`, `http://localhost:3000`, `http://127.0.0.1:3000`). Operators who need to allow any browser origin (for example LibreChat installations on arbitrary hosts) can set the property to `["*"]` — Arcanum then calls `AllowAnyOrigin` and adds the same `AllowAnyHeader` / `AllowAnyMethod` it always has. **When the effective host bind is all-interfaces** (`ListenAny` or `ARCANUM_HOST_ANY`), a configured `["*"]` origin is **downgraded** to the localhost defaults so wide-open CORS is not combined with a non-loopback listener. `UseArcanumCors` runs early in the pipeline so browser-based tools can preflight without endpoint contention. `AllowAnyHeader` / `AllowAnyMethod` are retained unconditionally because callers always present custom headers (`X-Arcanum-Key`, `Idempotency-Key`) and use varied verbs. The policy additionally names an exposed-header set: `Access-Control-Expose-Headers` carries `X-Arcanum-Next-Cursor` and `X-Arcanum-Structured-Output-Warning`. Custom response headers are invisible to browser JavaScript unless exposed, so without this the documented cursor-pagination contract is unfollowable from a browser.
 
 ### 11.5 OpenAPI and Scalar
 
@@ -2844,7 +2969,7 @@ Failed authentication returns **`ApiResponse<string>`** at **401** with error co
 
 **Shared secure reads:** `SecureFileReader` opens once with link following disabled (`O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC` on supported Unix; reparse-point/overlapped open on Windows), proves from the opened handle that the object is a regular file with exactly one hard link, optionally matches the pre-open identity, and reads only from that handle. The nonblocking Unix open makes FIFO rejection bounded; FIFOs, devices, symlinks/reparse points, hard links, unknown metadata, and identity swaps fail closed. It reads at most `maxBytes + 1` through an incrementally grown `ArrayPool<byte>` buffer, revalidates handle identity/kind/link count after the read, strictly decodes UTF-8, and clears every rented buffer on return/disposal.
 
-`McpConnectionManager`/`TrustedMcpWorkspaceStore`, `SandboxedFileIo` (therefore `read_file_chunk` and `replace_text_block`), `PhysicalFileSystemBrowser.ReadAsync`, and AtomicFile's backup-source copy use this shared primitive where applicable. Sandboxed and workspace-browser reads additionally revalidate post-open workspace containment/current path identity. Atomic writes stage and fingerprint content, verify the moved destination, and restore only a backup whose captured identity **and content fingerprint** still match; the restored destination is fingerprinted again. Temporary/backup cleanup uses identity-owned deletion, not a blind path delete.
+`McpConnectionManager`/`TrustedMcpWorkspaceStore`, `SandboxedFileIo` (therefore `read_file_chunk` and `replace_text_block`), `PhysicalFileSystemBrowser.ReadAsync`, `PhysicalFileSystemWriter`'s replace-text-block read, and AtomicFile's backup-source copy use this shared primitive where applicable. The API writer path is covered by the same fail-closed assertion: it proves the target is a regular file with exactly one hard link **before** opening, because a blocking open of a FIFO planted in the workspace never returns until a writer appears and that read carries no cancellation token, so the request would hang past `RequestAborted` and leak a thread-pool thread per call. Sandboxed and workspace-browser reads additionally revalidate post-open workspace containment/current path identity. Atomic writes stage and fingerprint content, verify the moved destination, and restore only a backup whose captured identity **and content fingerprint** still match; the restored destination is fingerprinted again. Temporary/backup cleanup uses identity-owned deletion, not a blind path delete.
 
 `search_workspace`, the `apply_patch` planner/coordinator, direct file tools, spell scanning, and API workspace I/O all use this policy. A matching Campaign with `SanctumConfig.Enabled` adds its tool/path/network allowlist in `ToolExecutionPipeline`; no campaign or disabled Sanctum means only that additional gate is absent. Sanctum never replaces or weakens `WorkspacePathPolicy`.
 
@@ -2886,6 +3011,38 @@ projection boundary rather than an assertion that a complete command artifact ex
 
 **External MCP:** `McpBridgeTool` / `McpToolResultFormatter` apply the same **`ToolOutputCapBytes`** limit to bridged `tools/call` text results. `McpClient` bounds `tools/list` tool descriptions (8 KiB UTF-8) and input schemas (64 KiB UTF-8; oversized schemas fall back to an empty object schema).
 
+### 11.7.1 Shared .NET inter-process roots for `workspace_check` (macOS)
+
+A sandboxed SDK child cannot start without a writable .NET PAL root: the SDK takes a named `Mutex`
+(NuGet's migration runner) before any command executes, and the runtime resolves named synchronization
+objects under a hard-coded `/tmp/.dotnet/{shm,lockfiles}` — it does **not** honour `TMPDIR`.
+
+Arcanum previously redirected the PAL to a private per-run `~/Library/Group Containers/<id>` through
+`DOTNET_SANDBOX_APPLICATION_GROUP_ID`. macOS now restricts that directory to processes carrying the
+matching app-group entitlement, so creating one fails with `EPERM` even outside any sandbox, and every
+`workspace_check` invocation failed with `unavailable`/`output_root_unavailable` before it began. That
+redirect is removed.
+
+`MacOsDotNetIpcRoots` instead ensures `/private/tmp/.dotnet/shm` and `/private/tmp/.dotnet/lockfiles`
+exist and grants exactly those two subpaths to the Seatbelt profile. The **no broad `/tmp` write**
+invariant is unchanged — `MacOsSandboxExecProfileBuilder.AssertNoWholeVolumeFootguns` still rejects
+`(subpath "/tmp")`, `(subpath "/private/tmp")`, and `(subpath "/var/tmp")`; these are two named leaf
+directories, not the temp tree.
+
+These roots are host-owned and shared with the operator's other .NET processes. They are created once
+if absent, are never per-run state, and are **never** deleted with the run —
+`WorkspaceCheckRunDirectories.SandboxWritableRoots` (handed to the jail) is deliberately distinct from
+`WritableRoots` (created and deleted per run). The residual exposure is that a Ward-approved child can
+create, hold, or remove PAL synchronization entries shared with the operator's other .NET processes —
+a local denial-of-service or tampering surface inside the operator's own account, and the same access
+every unsandboxed .NET process on the host already has. It grants no read access to any other
+process's files or memory. This sits alongside the already-accepted residual risks in §11.15 (open
+network egress, best-effort detached-descendant cleanup) that operator Ward approval covers.
+
+`WorkspaceCheckCapabilityReporter` probes these roots as part of eligibility, so a host where they
+cannot be created does not advertise the tool, and `arcanum doctor` plus `GET /api/health` component
+`WorkspaceCheck` report the specific reason instead of failing only at invocation time.
+
 ### 11.9 Sanitized public error envelopes
 
 Inference-pipeline errors must not leak internal exception text to clients:
@@ -2895,6 +3052,18 @@ Inference-pipeline errors must not leak internal exception text to clients:
 - **`POST /v1/chat/completions`** — both buffered and SSE generic failures return exactly `"Inference failed. See server logs for details."`, and model-not-configured uses the same exact string as the native path; never the raw `Result.Error.Message`.
 - **`WebhookCommLinkDispatcher`** — outbound webhook exceptions return the public code `CommLink.WebhookException` with the generic message `"Comm Link webhook POST failed. See server logs for details."`; logs retain only host and exception type, never the secret URL or exception text. Responses are requested with `ResponseHeadersRead` and drained only through the existing capped reader, so an untrusted webhook cannot force full-body buffering.
 - **`PUT /api/config`** — validation failures return **`ApiResponse<bool>`** at **400** with code `Configuration.ValidationFailed` (user-facing validation messages). Write failures return **`ApiResponse<bool>`** at **500** with code `Configuration.WriteFailed` (exception detail is logged server-side; the envelope message is safe to display in Studio).
+
+The sanitization rule covers response **headers** as well as bodies: no model-, schema-, or
+tool-derived text may be written into a response header unsanitized. Header values have a stricter
+alphabet than a JSON body, and CR/LF is a header-injection sink, so an unsanitized value is both a
+correctness and a security problem — Kestrel's ASCII header validation throws on a non-ASCII value,
+which would turn an already-billed 200 completion into a 500. `X-Arcanum-Structured-Output-Warning`
+is the concrete contract: warning text quotes model- and schema-supplied JSON property names
+verbatim, so the emitted value is reduced to printable US-ASCII (`0x20`–`0x7E`, every other
+character becoming `?`), capped at 512 characters with a ` [truncated]` suffix when the joined
+warnings exceed it, and omitted entirely when the sanitized value is empty. The header is an
+advisory copy only; the `system_fingerprint` suffix `:arcanum:structured-output-warning` remains the
+authoritative signal (§22.1).
 
 Changed inference, attachment, tool, CLI-session, and TurnEngine failure paths log safe operation identifiers and exception **types** without attaching raw exception objects/messages where canary-bearing provider/file data could leak. Tests assert canary text is absent from both public payloads and captured log entries. See API §8.23 for the full `ErrorCodes` → HTTP status catalog used by `ArcanumErrorMapper` across native `/api` routes.
 
@@ -2911,7 +3080,7 @@ Changed inference, attachment, tool, CLI-session, and TurnEngine failure paths l
 - **`WebhookCommLinkDispatcher`** immediately before `POST`, after resolving the environment reference.
 - **`PUT /api/config`** and **`POST /api/config/validate`** via **`OutboundUrlGuard.ValidateArcanumSettingsAsync`** validate only public provider endpoints. CommLink's secret URL is intentionally unavailable until dispatch.
 
-**DNS-rebind pinning:** `OutboundUrlGuard.ResolveValidatedAddressesAsync` returns the validated address set for a hostname. Untrusted egress clients (`CommLinkWebhook`, `McpHttp`) wire `ConnectCallback` to resolve fresh at connect time, re-run `IsBlockedAddress` on the actually-dialed IP, and connect only to validated addresses. Provider inference and connectivity probes (`ChatClientFactory` endpoint cache, **`POST /api/providers/test`**) use **`OutboundUrlGuard.CreateProviderEgressHandler()`** — same connect-time pinning with **`allowPrivateAndLoopback: true`** so loopback/RFC1918 local backends remain reachable while link-local/metadata addresses stay blocked.
+**DNS-rebind pinning:** `OutboundUrlGuard.ResolveValidatedAddressesAsync` returns the validated address set for a hostname. Untrusted egress clients (`CommLinkWebhook`, `McpHttp`) wire `ConnectCallback` to resolve fresh at connect time, re-run `IsBlockedAddress` on the actually-dialed IP, and connect only to validated addresses. Provider inference and connectivity probes use **`OutboundUrlGuard.CreateProviderEgressHandler()`** as their primary handler: the named `OpenAiCompatibleProvider` `HttpClient` that `ChatClientFactory` and `EmbeddingGeneratorFactory` resolve for live inference and embedding traffic is configured with it, as is **`POST /api/providers/test`**. Without it a validated endpoint could 3xx-redirect or DNS-rebind to a link-local metadata address after the one-time `PUT /api/config` validation. The handler applies the same connect-time pinning with **`allowPrivateAndLoopback: true`**, so loopback/RFC1918 local backends remain reachable while link-local/metadata addresses stay blocked.
 
 ### 11.12 Kestrel limits and optional rate limiter
 
@@ -2991,7 +3160,7 @@ run `arcanum doctor --fix-permissions` to repair the checked paths.
 - **Known gap:** cgroups v2 covers the entire process subtree (grandchildren included), but the `ulimit`/setrlimit path only bounds the direct child — a grandchild spawned by a tool script is not rlimit-bound on macOS (or on Linux when cgroups fell back to setrlimit). On Windows, Job Objects cover the job's process tree once assigned, subject to the post-start assign race above.
 
 **OS filesystem jail (macOS-ARM beta posture):** The same **`CappedChildProcessRunner`** composes env scrub → resource limits → **filesystem jail** → cwd / output caps / cancellation. This is a **filesystem sandbox only** — it does **not** prevent network use by network-capable binaries. Sanctum network policy still applies to model-supplied network targets such as `read_url`; CommLink enforces its URL policy at dispatch. `execute_command` network behavior is **not** solved by the FS jail.
-- **macOS (active):** wraps the child with deprecated **`/usr/bin/sandbox-exec`** and an owner-only Seatbelt profile (deny-default + explicit allows). Access classes: workspace / Sanctum `AllowedPaths` → read+write; spell script roots (incl. global spells) → **read+execute** (no write unless also an AllowedPath/workspace); system runtime (`/bin`, `/usr`, `/System`, …) → read+execute, **no write**; per-invocation owner-only **`TMPDIR`** → read+write (no broad `/tmp`). Directory walk uses `(allow file-read* (vnode-type DIRECTORY))` for getcwd/dyld path resolution — **not** whole-volume file-content read. **Critical invariant:** no `(subpath "/")` / `(literal "/")` for file content. Network is explicitly allowed in the filesystem-only profile. Apple may remove the deprecated tool; absence or profile setup failure fail-closes unless `Arcanum:Security:AllowUnsandboxedToolChildren=true`. Distinct from the Linux internal helper argv `__sandbox-exec`.
+- **macOS (active):** wraps the child with deprecated **`/usr/bin/sandbox-exec`** and an owner-only Seatbelt profile (deny-default + explicit allows). Access classes: workspace / Sanctum `AllowedPaths` → read+write; spell script roots (incl. global spells) → **read+execute** (no write unless also an AllowedPath/workspace); system runtime (`/bin`, `/usr`, `/System`, …) → read+execute, **no write**; per-invocation owner-only **`TMPDIR`** → read+write (no broad `/tmp`); and, for `workspace_check` only, the two shared .NET PAL inter-process roots `/private/tmp/.dotnet/shm` and `/private/tmp/.dotnet/lockfiles` → read+write (see §11.7.1). Directory walk uses `(allow file-read* (vnode-type DIRECTORY))` for getcwd/dyld path resolution — **not** whole-volume file-content read. **Critical invariant:** no `(subpath "/")` / `(literal "/")` for file content. Network is explicitly allowed in the filesystem-only profile. Apple may remove the deprecated tool; absence or profile setup failure fail-closes unless `Arcanum:Security:AllowUnsandboxedToolChildren=true`. Distinct from the Linux internal helper argv `__sandbox-exec`.
 - **Linux (inactive for this beta):** Landlock / internal **`__sandbox-exec`** helper code remains **in-tree but is not invoked** (probe-first: not activated until Landlock-backed end-to-end wiring is validated). Default is fail-closed with the public message: *"Linux filesystem jail is not active in this beta. Set Arcanum:Security:AllowUnsandboxedToolChildren=true to run without FS confinement, or use macOS for sandboxed command tools."* Escape hatch runs unsandboxed with a warning; resource limits still apply where available. Do **not** conflate this helper with macOS `/usr/bin/sandbox-exec`.
 - **Windows (active AppContainer jail; ADR):** selected design is a fresh AppContainer profile/SID per invocation, explicit inherited ACL grants on canonical local-drive roots, and a trusted broker that launches the target suspended only after its Job membership is confirmed. Read/write is granted only to workspace/Sanctum allowed roots and the owner-only invocation temp directory; runtime and spell-script roots receive read/execute. UNC, device/extended paths, alternate data streams, traversal components, and reparse-point roots are rejected before ACL mutation. Original security descriptors are restored in reverse order and the profile/temp/config are removed on success, failure, or cancellation; a random non-reused SID limits residual authority after a host crash, where immediate ACL restoration cannot be guaranteed. AppContainer was chosen over (a) a restricted token plus a filesystem broker, which would require routing every filesystem operation and remains vulnerable to unbrokered runtime calls; (b) temporary ACLs alone, which do not remove the user's ambient access token; and (c) Windows Sandbox/WDAG or Hyper-V containers, which are heavyweight optional features unsuitable for per-tool local execution. Job Objects remain the process-tree/resource boundary and are not represented as filesystem isolation. Health/`arcanum doctor` report Healthy only when the live AppContainer API probe succeeds; otherwise command tools fail closed. `AllowUnsandboxedToolChildren` may permit a non-Sanctum invocation to run without confinement, but never overrides a Sanctum strict path-boundary requirement.
 - **Fail-closed:** when the jail cannot be applied and the escape hatch is false, the model-visible result is a clear expected denial (Linux beta message above, missing `/usr/bin/sandbox-exec`, profile setup failure, or Windows Sanctum denial) — **not** a Hub generic internal error / unhandled exception / provider failure.
@@ -3022,6 +3191,18 @@ macOS profile and per-invocation temp roots are created owner-only and captured 
 - **`search`**: substring on **`Title`** or any entry **`Content`**.
 - **`title`**, **`role`**, **`model`**, **`from`** / **`to`** on session **`UpdatedAt`**.
 - Cursor: **`beforeUpdatedAt`** + **`hasMore`**; the default **`limit`** is code-owned.
+
+**Ordering and the identity tie-breaker:** results order by `(UpdatedAt DESC, Id DESC)`, the same
+shape `/v1/batches` uses in §11.21. Without the `Id` component the sort is undefined among sessions
+sharing an `UpdatedAt` — a burst of creations, or a backup import replaying original timestamps
+verbatim — so a tie straddling a page boundary would order differently on each query and the keyset
+cursor could not reason about it. Because the wire cursor is a bare timestamp consumed as a strict
+`UpdatedAt <` predicate, pages are additionally cut at tie boundaries: every row sharing the first
+excluded row's timestamp is deferred to the next page, which the strict predicate then admits in
+full, so sessions sharing an `UpdatedAt` stay reachable. A page whose rows are all one timestamp is
+the degenerate case — cutting there would return nothing and leave the cursor where it started — so
+it widens to the complete tie group instead and may exceed the requested `limit`, but it is whole and
+the cursor still advances past it.
 
 **Entries:**
 - Inference turns append via the hub (`IGrimoireRepository`).
@@ -3086,7 +3267,7 @@ leave the source transcript selected.
 
 Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight side-effecting inference endpoints: **`POST /api/intelligence/ping`**, **`POST /api/intelligence/ping-stream`**, **`POST /v1/chat/completions`** (both buffered and streaming), **`POST /v1/embeddings`**, **`POST /api/spells/{name}/execute`**, **`POST /api/spells/{name}/execute-stream`**, **`POST /api/prompts/{id}/execute`**, and **`POST /api/prompts/{id}/execute-stream`**. Requests without an `Idempotency-Key` header are unaffected — the feature is entirely bypassed at effectively zero cost.
 
-**Claim key ≠ fingerprint:** claim identity is `SHA-256(principal + API version + HTTP method + normalized route + Idempotency-Key)`. Fingerprint is `SHA-256(canonical body + route + selected Content-Type)`. Same key with a different fingerprint → **409** `Security.IdempotencyConflict`. Only **terminal** Completed claims (writer-marked, within byte cap) are replayable; cancelled/partial/over-cap streams → Abandoned. Durable table: `IdempotencyClaims` (raw SQL); legacy `IdempotencyKeys` remains for TTL sweep compatibility.
+**Claim key ≠ fingerprint:** claim identity is `SHA-256(principal + API version + HTTP method + normalized route + Idempotency-Key)`. Fingerprint is `SHA-256(route + canonicalised query string + selected Content-Type + canonical body)`. Same key with a different fingerprint → **409** `Security.IdempotencyConflict`. The query string is material because `?workspace=` and `?version=` retarget spell and prompt execution, so two requests differing only there conflict rather than replaying each other's response; it is canonicalised as ordinal-sorted `key=value` pairs, so parameter **order** alone never changes the fingerprint while any differing name or value does. The claim key deliberately excludes the query, so that mismatch surfaces as one conflict rather than as two independent claims. The principal is a fixed installation marker and is **not** derived from the client-supplied `Host` header — a caller could otherwise partition its own claims (`localhost:5001` versus `127.0.0.1:5001`) and defeat replay protection. Only **terminal** Completed claims (writer-marked, within byte cap) are replayable; cancelled/partial/over-cap streams → Abandoned. Durable table: `IdempotencyClaims` (raw SQL); legacy `IdempotencyKeys` remains for TTL sweep compatibility.
 
 **Coordination and ownership:** an in-process `ConcurrentDictionary` local-flight coordinator is acquired **before** durable lookup/acquire, so same-process competitors wait for the leader's response completion and then re-read/replay instead of racing the handler. Durable owner IDs are `{process-instance-guid}:{execution-guid}`. A live orphan carrying this process-instance prefix can be retired and reclaimed; a live claim owned by another process is confirmed as cross-process work and returns **409** without invoking the handler: native `Security.IdempotencyInProgress`, or OpenAI `code: "idempotency_in_progress"` in the standard OpenAI error envelope. Completed same-fingerprint claims replay status/content type/body verbatim; fingerprint mismatch remains `Security.IdempotencyConflict` / OpenAI `idempotency_conflict`, also 409.
 
@@ -3096,7 +3277,7 @@ Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight
 - **`ForBoundArgument<TRequest>`** (`/api/intelligence/ping`, `/v1/embeddings`) — the already-model-bound request DTO is re-serialized through the same source-generated `JsonTypeInfo<TRequest>` used on the wire. No raw body re-read needed.
 - **`ForRawBody`** (`/api/intelligence/ping-stream`, `/v1/chat/completions`) — these handlers read `HttpContext.Request.Body` themselves, so the filter calls `Request.EnableBuffering()`, copies the raw bytes for hashing, then rewinds the stream to position 0 before invoking the handler.
 
-**Header validation:** an `Idempotency-Key` longer than 256 characters is rejected with **400** `Security.IdempotencyKeyTooLong` (`/api` `ApiResponse<string>` envelope, or `/v1` `invalid_request_error` envelope depending on route) *before* any body buffering or cache lookup — a fast, cheap rejection.
+**Header validation:** an `Idempotency-Key` longer than 256 characters is rejected with **400** `Security.IdempotencyKeyTooLong` (`/api` `ApiResponse<string>` envelope, or the `/v1` `invalid_request_error` envelope with `param: "idempotency_key"` and `code: "invalid_value"` depending on route) *before* any body buffering or cache lookup — a fast, cheap rejection. More than one `Idempotency-Key` header value is rejected the same way with **400** `Security.IdempotencyKeyAmbiguous`, and the handler does not run: ambiguity is a loud client error, never a silent downgrade to unprotected execution of a side-effecting handler while the caller still believes the header it sent is protecting it.
 
 **Cache hit:** the handler is **never invoked** — `IdempotencyEndpointFilters` short-circuits with a small `IdempotencyReplayResult` that writes the cached status code, content type, and body bytes verbatim.
 
@@ -3114,7 +3295,7 @@ Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight
 
 **Failure boundaries:** lookup/acquire/same-process-retirement failure occurs before handler execution and fails open through the still-held local flight, so that request executes the handler exactly once without durable replay. After handler execution starts, completion/abandon/failure-save faults are logged and the coordinator is released, but the handler is **never re-entered**. Partial, caller-aborted, unmarked-empty, and over-cap responses stay Abandoned/non-replayable; a later request may execute fresh. Empty explicitly terminal responses remain replayable as above.
 
-**Error codes:** `Security.IdempotencyKeyTooLong`, `Security.IdempotencyConflict`, `Security.IdempotencyInProgress`.
+**Error codes:** `Security.IdempotencyKeyTooLong`, `Security.IdempotencyKeyAmbiguous`, `Security.IdempotencyConflict`, `Security.IdempotencyInProgress`.
 
 **Key types:** `IIdempotencyClaimStore`, `IdempotencyClaimStore`, `IdempotencyEndpointFilters`, `IdempotencyReplayResult`, `IdempotencyBufferingStream` (Api, `Security`); legacy `IIdempotencyStore` retained for sweep.
 
@@ -3152,8 +3333,8 @@ authenticated-encryption envelope (§5.4.6). The original filename is retained o
 metadata (`UploadedFileRecord.Filename`), used for `Content-Disposition` on download and echoed back
 in the wire `file` object. `EncryptionVersion`, `EncryptionKeyId`, and `PlaintextSha256` identify
 and verify the envelope without exposing key material. During the supported migration window,
-version-zero rows use the mixed-mode rules in §5.4.6; new uploads always record version one, key id,
-length, and SHA-256.
+version-zero rows use the mixed-mode rules in §5.4.6; new uploads always record the written envelope
+version (currently two), key id, length, and SHA-256.
 
 **Linearizable publication:** upload and batch-artifact publishers write the encrypted envelope
 first, capture its no-follow owned regular-file identity before waiting for the SQLite writer, then
@@ -3200,7 +3381,7 @@ upload failures remain the sanitized **500** `internal_error` envelope.
 **Upload validation (in order — first failure wins):**
 1. `file` present and non-empty, `purpose` present and non-empty → else **400** `missing_required_parameter`.
 2. Filename must not exceed 255 characters, and (defense-in-depth; unreachable through any conformant HTTP client, whose header-quoting rejects embedded control characters before the request is even sent) must not contain an embedded null byte → else **400** `invalid_value`.
-3. Size must fit the code-owned upload envelope → else **413** `invalid_value`. The endpoint's Kestrel request-body limit is raised to the physical ceiling (`WithFileUploadRequestBody`) so the *handler* returns this structured JSON error instead of Kestrel aborting the connection first.
+3. Size must fit the code-owned 512 MiB upload envelope → else **413** `invalid_value`. The effective multipart ceiling is that envelope plus a 1 MiB allowance for multipart boundaries, part headers, and the sibling `purpose` field, applied through endpoint form-limits metadata (`WithFileUploadRequestBody` → `RequestFormLimitsAttribute`, an `IFormOptionsMetadata`). Sized this way, a file at the envelope still binds and the *handler* owns rejection with the structured 413 all the way up to the ceiling, while a body beyond it is cut off at the multipart layer as a framework **400** rather than being buffered to disk first. The endpoint's 10 GiB `RequestSizeLimit` is the transport ceiling only and never the rejection boundary.
 4. Extension/declared-Content-Type cross-check (`UploadedFileMimeValidator.IsExtensionMimeMismatch`) — a *known* extension (`.png`, `.jsonl`, etc.) paired with an unexpected declared type is rejected (**400** `invalid_value`); an *unrecognized* extension is always allowed through (nothing to cross-check against).
 5. If `Arcanum:Security:AllowedUploadMimeTypes` is non-empty, the declared type must be in that operator allowlist → else **400** `invalid_value`.
 
@@ -3390,7 +3571,12 @@ the key value.
 `OutboundUrlGuard.CreateUntrustedEgressHandler()`, so DNS-rebind, loopback, private, link-local, and
 CGNAT targets are rejected at connection time. `read_url` also validates the initial URL and every
 redirect before sending. `ToolExecutionPipeline` applies the campaign Sanctum network policy to
-model-supplied `read_url` targets and the legacy alias before egress.
+model-supplied `read_url` targets and the legacy alias before egress, and re-evaluates it on **every
+redirect hop** through the `WebReadOptions.RedirectEgressWard` the pipeline publishes for the turn.
+The outbound guard only classifies the resolved IP, so without the per-hop ward one 302 off an
+allowlisted host turns a contained Sanctum into arbitrary egress. A redirect target outside the
+campaign's allowed domains is blocked with `WebResearch.SsrfBlocked` and recorded as a
+`NetworkEgress` `SanctumBreach`, so it appears in the breaches audit rather than failing silently.
 
 **Deadlines and errors:** connection and idle I/O deadlines bound stalled transport work without
 putting a wall-clock ceiling around credential resolution, redirects, or bounded body streaming;
@@ -3489,6 +3675,20 @@ mutations use the nonparallel `ProcessEnvironment` collection; a suite that alre
 serialization and the same guarded test-home invariant. Tests never read, back up, rewrite, migrate,
 or delete the developer's real `~/.config/arcanum` files.
 
+That rule is **enforced for direct `Environment.SetEnvironmentVariable` callers**, not only for
+`ArcanumWebApplicationFactory` dependents. `EnvironmentIsolationContractTests` walks the IL of every
+method in the Arcanum test assembly, folds compiler-generated types back onto their outermost
+declaring test class (so lifted async and lambda state machines still attribute to the class that owns
+them), and closes over first-party helper scopes, so a class that mutates the environment indirectly
+through a helper — `HostProcessToolsEscapeHatchScope`, for instance — is caught as well. The factory
+itself is treated as mutating unconditionally because it repoints `HOME`/`USERPROFILE` from native
+code paths the IL walk cannot see through, and a self-check fails the suite if the walk stops
+resolving. The Compendium suite establishes the same fixture contract through `ArcanumTestHomeScope`,
+which sets `HOME`, `USERPROFILE`, `DOTNET_ENVIRONMENT=Testing`, `ASPNETCORE_ENVIRONMENT=Testing`, and
+`ARCANUM_TEST_HOME` and restores all of them on dispose — redirecting `HOME`/`USERPROFILE` alone is
+insufficient because .NET resolves Windows known folders through `SHGetKnownFolderPath` and ignores a
+post-start `USERPROFILE` assignment.
+
 ### 13.1 Commands and coverage authority
 
 From the repository root:
@@ -3524,6 +3724,23 @@ The security-critical set is `ApiKeyEndpointFilter`, `ApiKeyDigestCache`,
 `HostProcessToolPolicy`, `IdempotencyClaimStore`, `BudgetReservationService`, and `WardGate`. The
 Python and PowerShell gates hold the same set under a parity test, and both fail when a listed type
 is absent from the Cobertura report, so a rename or new exclusion cannot silently count as 100%.
+
+**How the security type is matched.** Coverlet emits every async and iterator body as a
+compiler-generated state machine nested under its declaring type
+(`Namespace.Type/<Method>d__N`). The gate folds each of those onto its declaring type — stripping the
+nested suffix *before* the namespace, since matching on the substring after the last `.` would yield
+`Type/<…>d__N` and skip every async body — and then aggregates condition coverage across the
+declaring class plus all of its nested state machines into one branch total per security type. Tallies
+are keyed by (source file, line) so a line reported by both the synchronous shell and its async state
+machine is counted once, at its best observed condition coverage, and a covered shell can never mask
+an uncovered state machine.
+
+**The gate is a requirement, not a description of the current report.** Against the checked-in
+Cobertura report the gate exits non-zero: `ApiKeyEndpointFilter` 92.50%, `DataProtectionSecretStore`
+64.29%, `OutboundUrlGuard` 90.57%, `SandboxedFileIo` 86.36%, and `TrustedMcpWorkspaceStore` 93.42%
+branch coverage. `./scripts/coverage.sh --threshold` fails until those five reach 100%; the remaining
+listed types clear it.
+
 Ubuntu executes a different
 set of OS-specific branches while the denominator still includes all shipping assemblies. Local and
 CI aggregate floors are therefore both 80% line coverage and 70% branch coverage; environment
@@ -3865,7 +4082,10 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   `/usr/bin/sandbox-exec` Seatbelt for a filesystem-only jail. Linux Landlock support is inactive and
   command tools fail closed unless the unsandboxed escape hatch is acknowledged. Windows uses a
   per-invocation AppContainer filesystem jail and a Job Object process-tree/resource boundary.
-  `workspace_check` is unavailable on Linux and Windows. No platform provides child-process network
+  `workspace_check` is unavailable on Linux and Windows. On macOS it additionally requires the two
+  shared .NET PAL inter-process roots described in §11.7.1, because macOS no longer permits a private
+  per-run group container; a Ward-approved child can therefore tamper with PAL synchronization entries
+  belonging to the operator's own other .NET processes. No platform provides child-process network
   isolation. Inspect `arcanum doctor` and the `ToolChildSandbox` / `WorkspaceCheck` health
   components before approving execution.
 - **The Weave's vector search has a managed fallback.** No sqlite-vec native asset ships by default.
@@ -3924,8 +4144,8 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 ### 16.3 Security and identity
 
 - No user identity, sessions, or OAuth. Loopback + API key only.
-- **Grimoire KDF:** New databases derive the SQLCipher passphrase via `GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret` using **PBKDF2-HMAC-SHA256** with **600,000 iterations** and a unique 16-byte salt stored in `{grimoire.db}.kdf`. The sidecar is accepted only from a no-follow single-link regular-file handle under a 4 KiB ceiling; writes use owner-only staging, a durable flush, and atomic replacement. Legacy databases (created before this change) are opened with the prior HKDF path and transparently re-encrypted to PBKDF2 on unlock. The dedicated encryption secret is stored alongside the master API key; rotating the API key alone does not break the Grimoire.
-- **API key rotation:** For **legacy** databases that were still encrypted with the master API key, rotating the key was destructive. For **new** databases, the Grimoire is independent of the API key, so rotating the key only invalidates API authentication. To rotate the key on a new database, run `arcanum key set` (or replace the OS credential + `security.dat` mirror) and restart; the Grimoire `.db` and `.kdf` files can stay in place. If the Grimoire encryption secret itself is lost, the database is unrecoverable — there is no automatic key recovery or backdoor. When `grimoire-key.dat` exists but Data Protection cannot decrypt it (missing `key-*.xml` under `~/.config/arcanum/keys/`), bootstrap throws a sanitized `GrimoireDatabaseUnavailableException` and does **not** fall back to the API key (that path previously produced a misleading “key verification failed”). The controlled startup failure stops the host/CLI operation while allowing `finally`/disposal paths to run. Same-machine protected-mirror recovery restores its matching Data Protection key; portable recovery instead runs `arcanum backup restore` against one verified `.arcbackup` generation (§5.4.9), which rebuilds local Data Protection wrapping from the archive's portable recovery material without needing the source machine's credential store. Without either, delete `arcanum.db` + `arcanum.db.kdf` + `grimoire-key.dat` and start fresh.
+- **Grimoire KDF:** New databases derive the SQLCipher passphrase via `GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret` using **PBKDF2-HMAC-SHA256** with **600,000 iterations** and a unique 16-byte salt stored in `{grimoire.db}.kdf`. The sidecar is accepted only from a no-follow single-link regular-file handle under a 4 KiB ceiling; writes use owner-only staging, a durable flush, and atomic replacement. Legacy databases are opened with the prior HKDF path and transparently re-encrypted to PBKDF2 on unlock. That upgrade is crash-safe on both sides of its window: the freshly generated salt is persisted durably to the pending sidecar `{grimoire.db}.kdf.pending` (same owner-only staging, durable flush, and atomic replacement) **before** the irreversible `PRAGMA rekey` is issued, and is promoted to `{grimoire.db}.kdf` by an atomic rename only after the rekey commits, so a sidecar write that fails on ENOSPC or EACCES aborts before the rekey rather than after it. On startup, when no committed sidecar exists but a pending one does, bootstrap derives with the pending salt: if that opens the database the rekey had committed and only the promotion was lost, so the sidecar is promoted; if it does not open, the pending salt is stale, the database is still legacy, and the upgrade is re-driven with a fresh salt. The dedicated encryption secret is stored alongside the master API key; rotating the API key alone does not break the Grimoire.
+- **API key rotation:** For **legacy** databases that were still encrypted with the master API key, rotating the key was destructive. For **new** databases, the Grimoire is independent of the API key, so rotating the key only invalidates API authentication. To rotate the key on a new database, run `arcanum key set` (or replace the OS credential + `security.dat` mirror) and restart; the Grimoire `.db` and `.kdf` files can stay in place. If the Grimoire encryption secret itself is lost, the database is unrecoverable — there is no automatic key recovery or backdoor. Bootstrap throws a sanitized `GrimoireDatabaseUnavailableException` and does **not** fall back to the API key in either failure mode: when `grimoire-key.dat` exists but Data Protection cannot decrypt it (missing `key-*.xml` under `~/.config/arcanum/keys/`), and when `grimoire-key.dat` is **missing** while a KDF sidecar exists. Every sidecar-backed database is keyed from the dedicated Grimoire secret, never from the master API key, so `PBKDF2(apiKey, salt)` can only produce a misleading “key verification failed”; the error names the file that is actually absent. The missing-file case is what a partial copy produces — `arcanum.db` and `arcanum.db.kdf` restored under `~/.config/arcanum` while `grimoire-key.dat`, which lives under the Application Support `arcanum` folder rather than beside the database, is left behind. The controlled startup failure stops the host/CLI operation while allowing `finally`/disposal paths to run. Same-machine protected-mirror recovery restores its matching Data Protection key; portable recovery instead runs `arcanum backup restore` against one verified `.arcbackup` generation (§5.4.9), which rebuilds local Data Protection wrapping from the archive's portable recovery material without needing the source machine's credential store. Without either, delete `arcanum.db` + `arcanum.db.kdf` + `grimoire-key.dat` and start fresh.
 - **`arcanum key show`** / **`arcanum key set`** read/write the master key via CLI DI (`ISecretStore` → OS keychain with `security.dat` fallback); no HTTP endpoint. Shared identity: `arcanum` / `master-api-key`. Linux requires `libsecret` and a running Secret Service for the primary path.
 - **Attachment/upload/batch key:** a separate random 256-bit master key lives primarily in OS key
   storage at `arcanum` / `file-encryption-master-key`; it is never derived from, displayed by, or
@@ -3966,7 +4186,11 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
 
 ### 16.5 CLI
 
-- **Line-counter for swap is naive.** Multi-cell glyphs and ANSI escapes are not measured; the swap may erase extra rows or leave stray lines. The renderer never throws.
+- **Swap erases every occupied row.** The Markdown swap renderer erases `linesPrinted + 1` rows, because the partially filled final row is on screen too, so the row counter and the screen agree.
+- **Line-counter for swap approximates width.** Multi-cell glyphs and ANSI escapes are not measured, so the swap may erase extra rows or leave stray lines on content that uses them. The renderer never throws. (§16.6 states the opposite for Command Center, whose panes measure display cells; this caveat is scoped to the Spectre swap renderer alone.)
+- **Raw text bypasses Spectre.** Raw model text and raw JSON payloads are written straight to `Console.Out`. Spectre renderables are reserved for diagnostics and the end-of-turn Markdown render, because `AnsiConsole.Write` word-wraps at `Profile.Width` — 80 when stdout is redirected — which both corrupts streamed text and desynchronizes the erase-row count from the real screen.
+- **The Live region owns the viewport exclusively.** While Spectre's `Live` region is active nothing may be written out of band: a raw line lands inside the region `Live` is repainting and offsets its remembered shape for the rest of the turn. Status events therefore render into the Tool activity pane rather than to stderr.
+- **Markdown construct coverage.** The Spectre Markdown renderer handles headings, paragraphs, code blocks, tables, links, blockquotes, thematic breaks, and nested lists, plus inline HTML, HTML entities, and autolinks. A construct with no dedicated arm degrades to its plain text, and an unknown inline node renders as nothing — never a CLR type name, which is what falling through to `object.ToString` on a Markdig node would print into the operator's answer.
 - **Status/tool diagnostics share the TTY.** Intermixed stderr/stdout lines can desynchronize the cursor count during tool-heavy turns.
 - **Direct MCP/tool administration is API-only.** `mcp` and `tool` commands share the bounded resource selector and tool-argument reader; direct commands never read MCP configuration or invoke an MCP transport locally.
 
@@ -3979,11 +4203,25 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   development/current-CLI fallbacks when a desktop application is unavailable.
 - **Frameless `run`/`ask`/`chat`:** Spectre input/output, effective-context resolution, and bounded file/image staging; live `run` sources use the normal host attachment pipeline while its dry-run is non-persistent. TTY/`NO_COLOR` theme gating and atomic owner-only `cli-context.json` plus the temporary `cli-session.txt` mirror remain shared CLI infrastructure.
 - **doctor:** themed panels + optional `--json` `DoctorReport`.
+- **Transcript refresh is incremental and cell-measured.** A streaming flush re-wraps only the
+  changed entry and edits only the changed tail lines; a burst of flushes coalesces to one rebuild.
+  `SessionLogBuffer` memoizes wrapped lines per entry, keyed by entry id, the exact text instance,
+  the streaming flag, and the wrap width, and `CommandCenterLineSync.ApplyTailEdit` mutates only the
+  differing suffix of the `ObservableCollection` bound to the Terminal.Gui `ListView`, because that
+  list wrapper rescans the whole collection on every change notification. Transcript and Incantations
+  refreshes therefore cost work proportional to the appended text, not `O(transcript)`.
+- **Command Center panes are cell-correct.** Transcript wrap, header/footer/thinking truncation, and
+  overlay wrap and width all measure terminal *display cells* and slice on grapheme boundaries
+  through the shared `CommandCenter/TerminalCellMetrics`, which `ComposerLayout` delegates to. CJK,
+  fullwidth, and emoji content therefore sizes correctly and no slice splits a surrogate pair.
+  (§16.5's naive line-counter caveat is scoped to the Spectre swap renderer and does not apply here.)
 
 ### 16.7 Reliability & Performance Hardening
 
 `EmbeddingBlobCodec` uses SIMD cosine; `/v1` SSE classifies disconnects; RAG chunking/truncation is
-surrogate-safe; SQLCipher contention uses `SqliteBusyRetry`; and
+surrogate-safe, and `SessionLogBuffer.ClampForKind` routes through
+`Utf8Truncation.SafeCharSliceLength` so Command Center transcript clamping is surrogate-safe too;
+SQLCipher contention uses `SqliteBusyRetry`; and
 `scripts/verify-aot-il-warnings.sh` gates first-party AOT purity.
 
 ### 16.8 Platform distribution
@@ -4325,13 +4563,23 @@ apps set matching `CFBundleName` / `CFBundleDisplayName`.
   `compendium-win-x64.zip`, optional `the-forge-win-x64.zip`, and `SHA256SUMS`. `-SkipForge`
   produces the Arcanum + Compendium set. `-Sign` enables Authenticode and requires
   `WINDOWS_CERT_PATH` plus `WINDOWS_CERT_PASSWORD`; otherwise outputs are unsigned.
+  `WINDOWS_CERT_PASSWORD` is consumed only to import the PFX into a transient
+  `Cert:\CurrentUser\My` entry, which the script's `finally` block removes; `signtool` is invoked
+  with `/sha1 <thumbprint>` and never receives the password on its command line, keeping the
+  packaging script inside the project's own "secrets never appear in argv" rule (§11.2.1, §11.7).
 - `scripts/packaging/linux/package-linux.sh` produces matching `linux-x64` or `linux-arm64`
   `.tar.gz` archives plus `SHA256SUMS`. It runs on Linux; cross-OS packaging uses GitHub Actions.
 - `.github/workflows/private-beta-release.yml` builds the complete Windows x64 and Linux x64 set.
   `.github/workflows/build-windows-x64.yml` builds Windows x64 Arcanum + Compendium only.
-- The Windows/Linux CLI is one self-contained Native AOT executable. The Forge and Compendium are
-  self-contained multi-file Avalonia folders and are not Native AOT. These channels are unsigned by
-  default.
+- The Windows/Linux CLI is the self-contained Native AOT host **plus the native sidecar files that
+  SQLitePCLRaw and onigwrap ship as shared libraries for these RIDs** — SQLitePCLRaw static-links
+  `e_sqlcipher` only for browser-wasm, so every desktop publish emits them beside the apphost:
+  `libe_sqlcipher.so` and `libonigwrap.so` on `linux-x64`/`linux-arm64`, `e_sqlcipher.dll` and
+  `libonigwrap.dll` on `win-x64`. The packaging scripts therefore stage the **whole publish
+  directory**, rename only the apphost to `arcanum` / `arcanum.exe`, and fail the build when those
+  sidecars are absent, because an archive without them produces a CLI that cannot open the Grimoire.
+  The Forge and Compendium are self-contained multi-file Avalonia folders and are not Native AOT.
+  These channels are unsigned by default.
 
 **macOS Apple Silicon distribution:**
 
@@ -4348,9 +4596,18 @@ apps set matching `CFBundleName` / `CFBundleDisplayName`.
   `CFBundleShortVersionString` is the numeric `MAJOR.MINOR.PATCH`, and `CFBundleVersion` is the
   GitHub run number.
 - `arcanum-osx-arm64.zip` contains the signed, folder-based self-contained CLI publish plus
-  `docs/Arcanum.README.md` packaged as `README.md`. The zip is notarized but cannot be stapled; the extracted executable is checked with `codesign` and
-  Gatekeeper. macOS currently does not use Native AOT because the supported linker/toolchain cannot
-  reliably link the full CLI closure.
+  `docs/Arcanum.README.md` packaged as `README.md`. macOS does not use Native AOT because the
+  supported linker/toolchain cannot reliably link the full CLI closure, so the macOS publish is a
+  self-contained **JIT CoreCLR folder publish**. It is therefore signed with the hardened runtime
+  **plus** the .NET JIT entitlements from `scripts/packaging/macos/entitlements.cli.plist` —
+  `com.apple.security.cs.allow-jit`, `allow-unsigned-executable-memory`, and
+  `disable-library-validation` — because the hardened runtime must be told to permit the RWX/`MAP_JIT`
+  mappings the runtime creates; without `allow-jit` the signed binary aborts before `Main` with
+  `Failed to create CoreCLR, HRESULT: 0x80070008`.
+- The zip is notarized but cannot be stapled; the extracted executable is checked with
+  `codesign --verify` and Gatekeeper `spctl --assess`. Both of those pass on an entitlement-less
+  binary that cannot start at all, so `build-arcanum.sh` additionally **launches** the extracted
+  signed binary with `--version` before the artifact is considered releasable.
 - `compendium-osx-arm64.dmg` and `the-forge-osx-arm64.dmg` contain signed, notarized, stapled
   `.app` bundles. Desktop publish is multi-file by default so native libraries can be signed
   individually.
@@ -4403,6 +4660,13 @@ All seven capabilities are implemented (§21.1–§21.2 foundation; §21.6–§2
 Per feature: durable **BLOB** table (always) + optional **`vec0`** virtual table (`distance_metric=cosine`) when extension loads. Both are declarative object files in the one schema tree (§5.4.5): the BLOB tables install with the durable schema, and the `vec0` files live under `Data/Schema/Accelerators/` where a `{{EmbeddingDimensions}}` token resolves at install from `Arcanum:Integrations:Embeddings:Dimensions`. Accelerators install outside the durable transaction and only when sqlite-vec loads; extension load failure → managed-only, never a startup failure.
 
 **Default: managed-only** (no sqlite-vec NuGet in-tree). vec0 is performance-only.
+
+**Managed scan shape.** The managed brute-force path scores directly off the stored BLOB and is
+therefore allocation-free per row: decoding into a fresh `float[]` would double the per-row
+allocation of a scan that reads every in-scope row on every retrieval, for a copy nothing outlives
+the iteration. The query vector is invariant across the scan, so its norm is computed once per scan
+rather than re-derived inside the SIMD loop for every candidate, and results are kept in a min-heap
+whose peek is the weakest of the current top-K. §16.7's SIMD claim for cosine applies to this loop.
 
 **Dimension mismatch:** bootstrap warns when `Arcanum:Integrations:Embeddings:Dimensions` differs from stored `Dim`; it **does not** auto-truncate — the operator must `POST /api/embeddings/reset?confirm=true` (+ optional `scope`) and then re-index.
 
@@ -4463,7 +4727,7 @@ disabled; Saga extraction is naive (no dedupe); pure spell-routing ties break by
 
 ### 21.6 Session Divination
 
-**Service:** `EntryWeavingService` (`BackgroundService`) — idle unless `Arcanum:Features:SessionSearch` is enabled; uses a code-owned cadence and embeds not-yet-imprinted non-empty `Entries` (SQL `LEFT JOIN`, empty filtered in SQL, batch upsert BLOB ± vec0). It is idempotent; failures retry next tick.
+**Service:** `EntryWeavingService` (`BackgroundService`) — idle unless `Arcanum:Features:SessionSearch` is enabled; uses a code-owned cadence and embeds not-yet-imprinted non-empty `Entries` (SQL `LEFT JOIN`, empty filtered in SQL, then a **per-row** upsert of BLOB ± vec0). The upsert stays per row deliberately, for idempotency and partial progress under WAL with `synchronous=NORMAL`. The tick rejects a provider response whose vector count does not match the request: `IWeaveService` guarantees no partial results on failure but not one vector per input, and indexing a short array against the request count would throw into the catch-all retry and re-issue the billable embedding call every second. A shape mismatch is a failed batch. It is idempotent; failures retry next tick.
 
 **API/CLI:** `POST /api/sessions/divine` + `arcanum session divine` — gates/errors in §4.3 / API §8.23. Filters `CampaignId` / `Status` (default `"active"`; invalid status → **400**). `HasMore`/`NextCursor` always false/null.
 
@@ -4471,9 +4735,13 @@ disabled; Saga extraction is naive (no dedupe); pure spell-routing ties break by
 
 **Service:** `WorkspaceIndexingService` — idle unless `Arcanum:Features:CodebaseRetrieval` is enabled. Workspace API registration and inference `WorkingDirectory` registration each request one recursive `FileSystemWatcher`; a code-owned `MaxWatchers` capacity bounds simultaneous native watchers and never creates one watcher per directory. Workspace update/unregister and host shutdown dispose obsolete watchers. Create/change/delete/rename callbacks enter a per-workspace, 4,096-path bounded coalescer. After the code-owned debounce window, final filesystem state wins: editor temporary-file rename replacement and out-of-order delete notifications become one target upsert, storms on one path become one action, deleted/renamed-away paths remove chunks and embeddings, and directory events request reconciliation.
 
-Watchers are latency hints, never a security or correctness boundary. Every incremental upsert repeats lexical containment, symlink-component resolution, stable path identity capture, opened-handle identity comparison, extension/ignored-folder checks, and stable-handle reading. A symlink replacement removes previously indexed content without embedding the outside target. Watcher error, native buffer overflow, or pending-path overflow marks the volatile status degraded/potentially stale, discards the lossy action set, and schedules a complete cancellable scan. Periodic polling remains active even with healthy watchers; when watchers cannot be created or internal watcher capacity is reached, reconciliation is the complete fallback. `IndexNowAsync` and `POST .../files/index` run the same reconciliation. Candidate discovery is lazy and a full walk visits every reachable eligible entry unless the caller cancels; it has no total-entry ceiling or aggregate candidate list. Each opened file streams through a pooled character page sized to eight embedding chunks, embeds/persists page chunks, then returns the buffer; there is no aggregate eligible-file-size ceiling or `ReadToEnd` allocation. The internal `MaxFilesToIndex` value bounds one embedding checkpoint only. Unchanged files do not consume it, later ticks continue changed work, and orphan cleanup runs only from a complete inventory. Extension, ignored-directory, cancellation, and symlink/handle-identity defenses remain mandatory.
+Watchers are latency hints, never a security or correctness boundary. Every `FileSystemWatcher` callback is wrapped so no consumer exception escapes onto a watcher-dispatch thread: those threads (inotify / FSEvents / `ReadDirectoryChangesW`) have no ambient exception handler, so an escaping exception terminates the process on Windows and silently kills the notification loop elsewhere. A failing consumer is reported through the error sink instead, and a failure of the sink itself drops the notification rather than throwing from the dispatch thread. The pending-work signal is race-free: concurrent signallers coalesce onto one raised edge rather than double-counting or losing it. Every incremental upsert repeats lexical containment, symlink-component resolution, stable path identity capture, opened-handle identity comparison, extension/ignored-folder checks, and stable-handle reading. A symlink replacement removes previously indexed content without embedding the outside target. Watcher error, native buffer overflow, or pending-path overflow marks the volatile status degraded/potentially stale, discards the lossy action set, and schedules a complete cancellable scan. Periodic polling remains active even with healthy watchers; when watchers cannot be created or internal watcher capacity is reached, reconciliation is the complete fallback. `IndexNowAsync` and `POST .../files/index` run the same reconciliation. Candidate discovery is lazy and a full walk visits every reachable eligible entry unless the caller cancels; it has no total-entry ceiling or aggregate candidate list. Each opened file streams through a pooled character page sized to eight embedding chunks, embeds/persists page chunks, then returns the buffer; there is no aggregate eligible-file-size ceiling or `ReadToEnd` allocation. The internal `MaxFilesToIndex` value bounds one embedding checkpoint only. Unchanged files do not consume it, later ticks continue changed work, and orphan cleanup runs only from a complete inventory. Extension, ignored-directory, cancellation, and symlink/handle-identity defenses remain mandatory.
 
-**Stable chunks:** `WorkspaceCodeChunker` preserves exact source slices, character offsets, and one-based line ranges; it prefers Markdown headings and common code declaration shapes without a reflection-heavy parser, falls back to bounded line-aware splits, and never separates a UTF-16 surrogate pair. `ChunkId` is deterministic from normalized workspace/path, chunk content, and repeated-content occurrence. A small edit embeds only newly identified chunks; unchanged IDs retain their BLOB/vec0 embeddings while positional/file-time metadata is refreshed. Rename to a different path rebuilds under the new identity and deletes the old path. Tables: canonical `workspace_file_chunks` includes `StartLine`/`EndLine`, with embedding BLOB/vec0 companions (§5.4.4).
+**Stable chunks:** `WorkspaceCodeChunker` preserves exact source slices, character offsets, and one-based line ranges; it prefers Markdown headings and common code declaration shapes without a reflection-heavy parser, falls back to bounded line-aware splits, and never separates a UTF-16 surrogate pair. That holds at **read-page boundaries** too: page reads fill to a character count and know nothing about UTF-16 pairs, so a page ending in a lone high surrogate holds it back and joins it to its partner on the next page, and a short read (end of stream) emits a genuinely unpaired high surrogate rather than dropping it. Without that carry, both halves would be embedded and persisted with the character replaced by U+FFFD, and the stored chunk would no longer be the exact source slice. `WeaveService.ChunkAsync` guards the window **start** as well as the tail, so no chunk begins with an orphaned low surrogate; the previous window already carried the whole character, so stepping past the low half loses no coverage.
+
+**Atomic per-chunk write:** the chunk row, its embedding BLOB, and the optional `vec0` mirror commit in **one transaction**, so a torn write can never leave a chunk row without its embedding, and a `SQLITE_BUSY` retry restarts from a clean transaction rather than replaying a partial one.
+
+`ChunkId` is deterministic from normalized workspace/path, chunk content, and repeated-content occurrence. A small edit embeds only newly identified chunks; unchanged IDs retain their BLOB/vec0 embeddings while positional/file-time metadata is refreshed. Rename to a different path rebuilds under the new identity and deletes the old path. Tables: canonical `workspace_file_chunks` includes `StartLine`/`EndLine`, with embedding BLOB/vec0 companions (§5.4.4).
 
 **Inference:** `RetrieveSemanticContextAsync` injects `### Semantic Context (Retrieved Codebase)` (DATA); failures → `null` (never fail turn).
 
@@ -4566,6 +4834,11 @@ K-Means with hard assignment**. Nothing here claims algorithmic equivalence with
   empty-cluster repair, and final cluster ordering all break ties on stable id. Centroid components
   accumulate single-threaded in stable member order; there is no nondeterministic parallel
   floating-point reduction.
+- **Seeding cost.** K-Means++ seeding is `O(k·n·d)`, not `O(k²·n·d)`: an incremental nearest-distance
+  array carries each point's nearest-centroid distance forward across rounds instead of rescanning
+  every previously chosen centroid. The selection weights are unchanged to the bit — a running minimum
+  is exact in floating point regardless of fold order, and the total is accumulated over the same
+  values in the same index order — so the determinism contract above still holds.
 - **Reproducibility contract (scoped honestly).** The same persisted vector bytes, algorithm version,
   settings, and runtime numeric contract produce the same **memberships, cluster ordering, and stable
   ids**. Bit-for-bit identical centroid components across every CPU and architecture are **not**
@@ -4628,11 +4901,25 @@ Trees are derived data with an immutable **generation** per build:
   reused only when its exact sorted child-membership hash, summarization recipe version, model
   identity, and input hashes all match a prior generation's. Deterministic clustering does not make
   model prose reproducible, so identity is the only safe basis for skipping a call.
+- **Cheap up-to-date check.** The corpus fingerprint is computed from a leaf enumeration that **omits
+  the embedding join** — it consumes only leaf ids and content hashes — so a sweep of a scope nobody
+  has touched never reads or decodes a single embedding BLOB. The full corpus, embeddings included, is
+  loaded only once a rebuild is known to be necessary, where one extra pass is lost in the noise of
+  clustering and model calls. The corpus can move between the two passes, so the generation records
+  the fingerprint of what is actually being woven; recording the earlier one would let an edit that
+  landed in between be mistaken for already-included and never rebuilt.
 - **Restart reconciliation, not a durable operation kind.** The staging + atomic-switch design already
   provides the restart guarantee, so tree builds are deliberately *not* registered as a §10.8 durable
   operation. The first sweep after startup calls `ReconcileGenerationsAsync` to drop whatever a killed
-  process left behind, and the corpus fingerprint drives a clean rebuild. There is no whole-build
-  deadline: the sweep checkpoints between scopes and layers and stays cancellable throughout.
+  process left behind, and the corpus fingerprint drives a clean rebuild. Publishing a generation only
+  *marks* its predecessor `Superseded`; reconciliation is what deletes it, so reconciliation also runs
+  at the **end of every sweep**. That costs one statement per sweep and is what makes `ITapestryStore`'s
+  contract — "`Superseded` rows exist only until reconciliation removes them" — hold in a long-running
+  process rather than accumulating one orphaned copy of a scope's nodes and node embeddings per rebuild
+  until restart. There is no whole-build
+  deadline: the sweep checkpoints between scopes and layers, and clustering observes the
+  `CancellationToken` once per K-Means++ seeding round and once per refinement iteration, so the sweep
+  stays cancellable throughout rather than only at scope and layer boundaries.
 
 #### Summarization
 
@@ -4734,7 +5021,7 @@ model-call or tool-round count, and their database transaction is never held acr
   and no calculated cost. Arcanum does not fabricate billable token counts from the admission
   estimate.
 - **Durable operation ordering.** Every completed provider call with reported usage is persisted as its own `BillableOperations` row before its cost enters the in-memory accumulator and before guardrails, structured-output checks, tool-loop finalization, or other post-processing can fail. Corrections and tool continuations therefore remain billable without a duplicate final aggregate row. Routing and extraction provider I/O remains request-cancelable, but once either call completes with usage, its ledger write uses `CancellationToken.None` so a cancellation at the provider/accounting boundary cannot release the reservation as unspent. A durable-write failure marks accounting failed, propagates the failure, and leaves the reservation conservatively outstanding rather than releasing or reconciling unverifiable spend. Session projections, success metrics, and final success audit records remain success-only.
-- **Reservation scope.** Context-window admission tracks reserved answer and reserved reasoning as separate rows and conservatively adds both to materialized input. **Dollar completion headroom is deliberately different:** per call it is `max(answer/output limit, reasoning budget)`, because reasoning is a subset of completion rather than additional completion tokens. When reasoning is priced above output, the reasoning portion inside that same headroom is priced at the reasoning rate and the remainder at the output rate; otherwise the higher output rate covers the whole headroom. Supplying materialized `ContextTokenBreakdown.InputTokens` changes only the input side of the estimate and never this completion formula. An owning turn acquires a reservation for the current provider call, then `TurnAccountingHandle.EnsureReservationForContextAsync` atomically raises (never lowers) the same reservation from the latest pre-call `ContextTokenBreakdown.InputTokens` before each main/tool-continuation call. `IBudgetReservationService.AdjustAsync` excludes the reservation's old amount and rechecks committed + outstanding spend inside `BEGIN IMMEDIATE`; a failed raise blocks provider I/O. No assumed model-call multiplier is used. Actual reconciliation always uses provider-reported counts and never rewrites the estimate. Batch reservations preparse valid JSONL lines and sum each line's resolved model pricing, output limit, and reasoning budget; nested concurrent lines do not independently replace that shared aggregate reservation. Batch lines remain single-call and no-tools. Concurrent lines share only the run, reservation, and thread-safe cost accumulator; provider work remains parallel while writes through the shared scoped `TurnRunWriter` are serialized by the accounting root. Embedding input is sanitized/truncated before reservation; each successful provider batch is recorded immediately so earlier spend survives a later batch failure, and the owning operation reconciles on every exit.
+- **Reservation scope.** Context-window admission tracks reserved answer and reserved reasoning as separate rows and conservatively adds both to materialized input. **Dollar completion headroom is deliberately different:** per call it is `max(answer/output limit, reasoning budget)`, because reasoning is a subset of completion rather than additional completion tokens. When reasoning is priced above output, the reasoning portion inside that same headroom is priced at the reasoning rate and the remainder at the output rate; otherwise the higher output rate covers the whole headroom. Supplying materialized `ContextTokenBreakdown.InputTokens` changes only the input side of the estimate and never this completion formula. An owning turn acquires a reservation for the current provider call, then `TurnAccountingHandle.EnsureReservationForContextAsync` atomically raises (never lowers) the same reservation from the latest pre-call `ContextTokenBreakdown.InputTokens` before each main/tool-continuation call. `IBudgetReservationService.AdjustAsync` excludes the reservation's old amount and rechecks committed + outstanding spend inside `BEGIN IMMEDIATE`; a failed raise blocks provider I/O. No assumed model-call multiplier is used. Actual reconciliation always uses provider-reported counts and never rewrites the estimate. Batch reservations preparse valid JSONL lines and sum each line's resolved model pricing, output limit, and reasoning budget; nested concurrent lines do not independently replace that shared aggregate reservation. Batch lines remain single-call and no-tools. Concurrent lines share only the run, reservation, and thread-safe cost accumulator. Each concurrent request line and the cancellation watcher own a **private DI scope**, and therefore a private `ArcanumDbContext` and `SqliteConnection`, so checkpoint writes never share a connection across parallel lines. `TurnAccountingHandle._writerGate` sits on top of that as the writer-versus-writer gate, serializing writes through the shared `TurnRunWriter` at the accounting root; provider work remains parallel. Embedding input is sanitized/truncated before reservation; each successful provider batch is recorded immediately so earlier spend survives a later batch failure, and the owning operation reconciles on every exit.
 - **Raw-SQL accounting boundary.** `BillableOperations.ReasoningTokens` is
   `INTEGER NOT NULL DEFAULT 0` in
   `20260721010000_AddInferenceAccountingAndIdempotencyClaims.sql`. `BillableOperations` has no EF

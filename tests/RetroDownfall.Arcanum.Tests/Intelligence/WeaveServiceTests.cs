@@ -381,6 +381,47 @@ public sealed class WeaveServiceTests
 
     }
 
+    [Fact]
+    public async Task ChunkAsync_NeverSplitsASurrogatePairAtEitherEndOfAWindow()
+    {
+
+        WeaveService service = CreateService(new ArcanumSettings());
+
+        int chunkSize = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
+            ArcanumRuntimeDefaults.Embeddings.ChunkSizeChars);
+
+        int overlap = ArcanumSettingClamps.EmbeddingsChunkOverlapChars(
+            ArcanumRuntimeDefaults.Embeddings.ChunkOverlapChars);
+
+        int step = chunkSize - overlap;
+
+        // An astral character straddling the second window's start index. The tail guard alone leaves
+        // that window opening on the orphaned low surrogate, which the embedding provider serializes as
+        // U+FFFD, so the chunk is no longer the exact source slice.
+        string text = new string('a', step) + "\U0001F600" + new string('b', chunkSize);
+
+        Result<(string Chunk, int Offset)[]> result = await service.ChunkAsync(text, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        foreach ((string chunk, int offset) in result.Value)
+        {
+
+            Assert.False(
+                chunk.Length > 0 && char.IsLowSurrogate(chunk[0]),
+                $"chunk at offset {offset} begins with an unpaired low surrogate.");
+
+            Assert.False(
+                chunk.Length > 0 && char.IsHighSurrogate(chunk[^1]) && offset + chunk.Length < text.Length,
+                $"chunk at offset {offset} ends with an unpaired high surrogate.");
+
+        }
+
+        // The emoji must survive intact in whichever chunk claims it.
+        Assert.Contains(result.Value, static entry => entry.Chunk.Contains("\U0001F600", StringComparison.Ordinal));
+
+    }
+
     private static ArcanumSettings EnabledSettings() =>
         new()
         {

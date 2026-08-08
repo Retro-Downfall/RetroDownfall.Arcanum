@@ -28,9 +28,10 @@
                    Foreground="{DynamicResource ForgeTextBrush}" />
 
         <Button Grid.Column="2"
+                x:Name="ReloadButton"
                 Content="Reload"
                 Command="{Binding #Root.RefreshCommand}"
-                IsVisible="{Binding #Root.HasExternalChange}" />
+                IsVisible="False" />
 
         <Button Grid.Column="3"
                 Content="Cancel"

@@ -230,9 +230,12 @@ jobs:
               echo
               echo "Signed with Developer ID Application and notarized for Gatekeeper. Publish this draft when ready."
             } >"$NOTES_FILE"
+            # bash 3.2 (the macOS runner shell) treats "${PRE_ARGS[@]}" as an unbound
+            # variable under `set -u` when the array is empty — which is exactly the case
+            # for a non-prerelease version. Use the same guard the shell scripts use.
             gh release create "$TAG" "${ASSETS[@]}" \
               --draft \
-              "${PRE_ARGS[@]}" \
+              ${PRE_ARGS[@]+"${PRE_ARGS[@]}"} \
               --title "$TAG" \
               --notes-file "$NOTES_FILE"
           fi

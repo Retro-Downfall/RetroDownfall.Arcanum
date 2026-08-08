@@ -190,8 +190,8 @@ public partial class GenericSettingsSectionView : UserControl
             SettingKind.Bool => CreateToggle(field),
             SettingKind.Int or SettingKind.Long or SettingKind.Float => CreateStepper(field, root),
             SettingKind.Enum => CreatePicker(field, root),
-            SettingKind.StringArray => CreateChips(field),
-            SettingKind.Dictionary => CreateDictionaryEditor(field),
+            SettingKind.StringArray => CreateChips(field, root),
+            SettingKind.Dictionary => CreateDictionaryEditor(field, root),
             SettingKind.Color => CreateColor(field, root),
             SettingKind.Secret => CreateEntry(field, root, isPassword: true),
             _ => CreateEntry(field, root, isPassword: false),
@@ -285,17 +285,23 @@ public partial class GenericSettingsSectionView : UserControl
 
     }
 
-    private static Control CreateChips(GenericSettingFieldViewModel field)
+    private static Control CreateChips(GenericSettingFieldViewModel field, ConfigurationViewModel root)
     {
 
         ChipsEditor chips = new()
         {
             Label = field.Descriptor.Label,
             Description = field.Descriptor.Description,
+            Key = field.Descriptor.Key,
             DataContext = field,
         };
 
         chips.Bind(ChipsEditor.TextProperty, new Binding(nameof(GenericSettingFieldViewModel.StringValue)));
+
+        chips.Bind(ChipsEditor.ValidationErrorsProperty, new Binding(nameof(ConfigurationViewModel.ValidationErrorsByPointer))
+        {
+            Source = root,
+        });
 
         return chips;
 
@@ -324,7 +330,7 @@ public partial class GenericSettingsSectionView : UserControl
 
     }
 
-    private static Control CreateDictionaryEditor(GenericSettingFieldViewModel field)
+    private static Control CreateDictionaryEditor(GenericSettingFieldViewModel field, ConfigurationViewModel root)
     {
 
         TextBox editor = new()
@@ -338,6 +344,18 @@ public partial class GenericSettingsSectionView : UserControl
         editor.Bind(
             TextBox.TextProperty,
             new Binding(nameof(GenericSettingFieldViewModel.StringValue)));
+
+        // Free-text JSON needs its own error surface; an unattributed parse failure at save time names
+        // neither the field nor the section.
+        ValidationMessageBlock validation = new()
+        {
+            Key = field.Descriptor.Key,
+        };
+
+        validation.Bind(ValidationMessageBlock.ValidationErrorsProperty, new Binding(nameof(ConfigurationViewModel.ValidationErrorsByPointer))
+        {
+            Source = root,
+        });
 
         return new StackPanel
         {
@@ -355,6 +373,7 @@ public partial class GenericSettingsSectionView : UserControl
                     TextWrapping = TextWrapping.Wrap,
                 },
                 editor,
+                validation,
             },
         };
 

@@ -281,4 +281,34 @@ public sealed class ProvingGroundsArbiterTests
 
     }
 
+
+    /// <summary>
+    /// The trial output is clamped before adjudication. A raw char slice can leave a lone high
+    /// surrogate at the boundary, and JsonDocument.Parse throws ArgumentException — not JsonException
+    /// — while transcoding invalid UTF-16, escaping AdjudicateJsonSchema's catch and losing the whole
+    /// trial run to a generic 500.
+    /// </summary>
+    [Fact]
+    public async Task Clamped_output_never_ends_on_a_split_surrogate_pair()
+    {
+
+        int maxOutputChars = ArcanumSettingClamps.MaxPingPromptChars(
+            ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars);
+
+        // Pad so the astral-plane character straddles the clamp boundary exactly.
+        string output = new string('a', maxOutputChars - 1) + "\U0001F600" + new string('b', 16);
+
+        ProvingGroundsArbiter arbiter = CreateArbiter(new FakeIntelligenceProvider());
+
+        IReadOnlyList<InquisitorVerdict> verdicts = await arbiter.AdjudicateAsync(
+            output,
+            [new JsonSchemaInquisitor(JsonDocument.Parse("""{"type":"object"}""").RootElement)],
+            judgeModel: null);
+
+        Assert.Single(verdicts);
+
+        Assert.False(verdicts[0].Passed);
+
+    }
+
 }

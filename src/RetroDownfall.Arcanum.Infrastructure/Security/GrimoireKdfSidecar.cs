@@ -39,12 +39,23 @@ public static partial class GrimoireKdfSidecarFile
 
     public static string GetSidecarPath(string databasePath) => databasePath + ".kdf";
 
+    /// <summary>
+    /// Staging path for a salt that has been generated but whose <c>PRAGMA rekey</c> has not yet
+    /// committed. It is written durably before the rekey so neither side of the crash window can
+    /// lose the only copy of the salt (DESIGN §5.4 legacy KDF upgrade).
+    /// </summary>
+    public static string GetPendingSidecarPath(string databasePath) => GetSidecarPath(databasePath) + ".pending";
+
     public static bool Exists(string databasePath) => File.Exists(GetSidecarPath(databasePath));
 
-    public static GrimoireKdfSidecar Read(string databasePath)
-    {
+    public static bool PendingExists(string databasePath) => File.Exists(GetPendingSidecarPath(databasePath));
 
-        string sidecarPath = GetSidecarPath(databasePath);
+    public static GrimoireKdfSidecar Read(string databasePath) => ReadFile(GetSidecarPath(databasePath));
+
+    public static GrimoireKdfSidecar ReadPending(string databasePath) => ReadFile(GetPendingSidecarPath(databasePath));
+
+    private static GrimoireKdfSidecar ReadFile(string sidecarPath)
+    {
 
         SecureFileOpenStatus openStatus = SecureFileReader.TryOpenRegularFile(
             sidecarPath,
@@ -116,10 +127,31 @@ public static partial class GrimoireKdfSidecarFile
 
     }
 
-    public static void Write(string databasePath, GrimoireKdfSidecar sidecar)
+    public static void Write(string databasePath, GrimoireKdfSidecar sidecar) =>
+        WriteFile(GetSidecarPath(databasePath), sidecar);
+
+    public static void WritePending(string databasePath, GrimoireKdfSidecar sidecar) =>
+        WriteFile(GetPendingSidecarPath(databasePath), sidecar);
+
+    /// <summary>
+    /// Promotes a pending salt to the committed sidecar with an atomic rename, so the sidecar is
+    /// either the old one or the new one and never a partial file.
+    /// </summary>
+    public static void PromotePending(string databasePath)
     {
 
+        string pendingPath = GetPendingSidecarPath(databasePath);
+
         string sidecarPath = GetSidecarPath(databasePath);
+
+        File.Move(pendingPath, sidecarPath, overwrite: true);
+
+        SecureFilePermissions.ApplyOwnerOnlyFile(sidecarPath);
+
+    }
+
+    private static void WriteFile(string sidecarPath, GrimoireKdfSidecar sidecar)
+    {
 
         string directory = Path.GetDirectoryName(sidecarPath)
             ?? throw new InvalidOperationException("Invalid Grimoire database path.");

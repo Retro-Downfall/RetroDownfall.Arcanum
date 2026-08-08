@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Primitives;
 
 namespace RetroDownfall.Arcanum.Api.Security;
 
@@ -28,17 +29,25 @@ internal static class IdempotencyIdentity
         return Sha256Hex(Encoding.UTF8.GetBytes(material));
     }
 
-    public static string ComputeFingerprintHash(byte[] bodyBytes, string normalizedRoute, string? contentType)
+    /// <summary>
+    /// Hashes everything that decides what the request does: route, canonical query, content type, and body.
+    /// The query string is material — <c>?workspace=</c> and <c>?version=</c> retarget spell and prompt
+    /// execution — so two requests that differ only there must collide into
+    /// <c>Security.IdempotencyConflict</c> rather than replay each other's response.
+    /// </summary>
+    public static string ComputeFingerprintHash(
+        byte[] bodyBytes,
+        string normalizedRoute,
+        string normalizedQuery,
+        string? contentType)
     {
-        byte[] routeBytes = Encoding.UTF8.GetBytes(normalizedRoute);
-        byte[] headerBytes = Encoding.UTF8.GetBytes(contentType ?? string.Empty);
-        byte[] combined = new byte[routeBytes.Length + 1 + headerBytes.Length + 1 + bodyBytes.Length];
+        byte[] prefixBytes = Encoding.UTF8.GetBytes(
+            normalizedRoute + "\n" + normalizedQuery + "\n" + (contentType ?? string.Empty) + "\n");
 
-        Buffer.BlockCopy(routeBytes, 0, combined, 0, routeBytes.Length);
-        combined[routeBytes.Length] = (byte)'\n';
-        Buffer.BlockCopy(headerBytes, 0, combined, routeBytes.Length + 1, headerBytes.Length);
-        combined[routeBytes.Length + 1 + headerBytes.Length] = (byte)'\n';
-        Buffer.BlockCopy(bodyBytes, 0, combined, routeBytes.Length + 1 + headerBytes.Length + 1, bodyBytes.Length);
+        byte[] combined = new byte[prefixBytes.Length + bodyBytes.Length];
+
+        Buffer.BlockCopy(prefixBytes, 0, combined, 0, prefixBytes.Length);
+        Buffer.BlockCopy(bodyBytes, 0, combined, prefixBytes.Length, bodyBytes.Length);
 
         return Sha256Hex(combined);
     }
@@ -46,10 +55,12 @@ internal static class IdempotencyIdentity
     public static string ResolvePrincipal(HttpContext httpContext)
     {
         // Single-user local installation identity — API key is not echoed; use a stable local marker.
-        // When multi-principal auth exists, replace with authenticated subject.
-        string? host = httpContext.Request.Host.Value;
+        // Deliberately NOT derived from the client-supplied Host header: a caller could otherwise
+        // partition its own claims (localhost:5001 vs 127.0.0.1:5001) and defeat replay protection.
+        // When multi-principal auth exists, replace with the authenticated subject.
+        _ = httpContext;
 
-        return string.IsNullOrWhiteSpace(host) ? "local" : "local:" + host;
+        return "local";
     }
 
     public static string NormalizeRoute(HttpContext httpContext)
@@ -57,6 +68,40 @@ internal static class IdempotencyIdentity
         PathString path = httpContext.Request.Path;
 
         return path.HasValue ? path.Value! : "/";
+    }
+
+    /// <summary>
+    /// Canonicalizes the query string as ordinal-sorted <c>key=value</c> pairs so that parameter order
+    /// alone never changes the fingerprint, while any differing name or value does.
+    /// </summary>
+    public static string NormalizeQuery(HttpContext httpContext)
+    {
+        IQueryCollection query = httpContext.Request.Query;
+
+        if (query.Count == 0)
+        {
+
+            return string.Empty;
+
+        }
+
+        List<string> pairs = [];
+
+        foreach (KeyValuePair<string, StringValues> entry in query)
+        {
+
+            foreach (string? value in entry.Value)
+            {
+
+                pairs.Add(entry.Key + "=" + (value ?? string.Empty));
+
+            }
+
+        }
+
+        pairs.Sort(StringComparer.Ordinal);
+
+        return string.Join('&', pairs);
     }
 
     private static string Sha256Hex(byte[] bytes)

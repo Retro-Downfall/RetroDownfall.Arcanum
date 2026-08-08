@@ -29,6 +29,7 @@ public sealed class OutboundUrlGuardTests : IDisposable
         fake.Add("127.0.0.1", IPAddress.Parse("127.0.0.1"));
         fake.Add("10.1.2.3", IPAddress.Parse("10.1.2.3"));
         fake.Add("127.0.0.1.nip.io", IPAddress.Parse("127.0.0.1"));
+        fake.Add("no-answer.example");
 
         OutboundUrlGuard.DnsResolver = fake;
 
@@ -602,6 +603,93 @@ public sealed class OutboundUrlGuardTests : IDisposable
         Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
 
         Assert.Equal("Redirect Location is not a valid absolute http or https URI.", result.Error.Message);
+
+    }
+
+    [Theory]
+    [InlineData("http:// /")]
+    [InlineData("https://　/resource")]
+    public async Task ValidateUntrustedUrlAsync_UnicodeWhitespaceHost_IsRejectedBeforeResolution(string url)
+    {
+
+        // Uri accepts U+00A0 / U+3000 as an authority, so the guard must reject a blank host itself
+        // rather than hand a whitespace authority to DNS.
+        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync(url);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
+
+        Assert.Equal("URL must include a host.", result.Error.Message);
+
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(" ")]
+    public async Task ResolveValidatedAddressesAsync_BlankHost_FailsClosedWithoutResolving(string? host)
+    {
+
+        Result<IReadOnlyList<IPAddress>> result = await OutboundUrlGuard.ResolveValidatedAddressesAsync(
+            host!,
+            allowPrivateAndLoopback: false);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
+
+        Assert.Equal("URL must include a host.", result.Error.Message);
+
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResolveValidatedAddressesAsync_ResolverReturnsNoAddresses_FailsClosed(bool allowPrivateAndLoopback)
+    {
+
+        // An empty DNS answer must not be treated as "nothing to validate"; there is no address to
+        // pin, so the guard has to refuse rather than let the caller connect by hostname.
+        Result<IReadOnlyList<IPAddress>> result = await OutboundUrlGuard.ResolveValidatedAddressesAsync(
+            "no-answer.example",
+            allowPrivateAndLoopback);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(OutboundUrlGuard.BlockedErrorCode, result.Error.Code);
+
+        Assert.Equal("Could not resolve host 'no-answer.example'.", result.Error.Message);
+
+    }
+
+    [Fact]
+    public async Task ValidateUntrustedUrlAsync_HostWithNoDnsAnswer_Fails()
+    {
+
+        Result result = await OutboundUrlGuard.ValidateUntrustedUrlAsync("https://no-answer.example/hook");
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains("Could not resolve host", result.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task ValidateArcanumSettingsAsync_NullProviders_SucceedsWithoutDereferencing()
+    {
+
+        // A settings document that omits "providers" binds the array as null; validation must treat
+        // that as "nothing to validate" instead of throwing and leaving the caller unvalidated.
+        ArcanumSettings settings = new()
+        {
+            Providers = null!,
+        };
+
+        Result result = await OutboundUrlGuard.ValidateArcanumSettingsAsync(settings);
+
+        Assert.True(result.IsSuccess);
 
     }
 

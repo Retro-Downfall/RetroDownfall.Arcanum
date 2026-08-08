@@ -150,6 +150,23 @@ public sealed class TapestryWeavingService(
 
         }
 
+        // Publishing a generation only marks its predecessor Superseded; reconciliation is what actually
+        // deletes it. Reconciling once per process left every rebuild after the first sweep with a full
+        // orphaned copy of that scope's nodes and node embeddings in the Grimoire until restart — an
+        // unbounded leak that nothing ever reads again, and one that contradicts ITapestryStore's
+        // documented promise that Superseded rows exist only until reconciliation removes them. Running
+        // it at the end of every sweep costs one statement per sweep and keeps that promise true.
+        int superseded = await store.ReconcileGenerationsAsync(cancellationToken).ConfigureAwait(false);
+
+        if (superseded > 0)
+        {
+
+            logger.LogDebug(
+                "Tapestry reconciliation removed {Count} superseded generation(s) after the sweep.",
+                superseded);
+
+        }
+
         return outcomes;
 
     }

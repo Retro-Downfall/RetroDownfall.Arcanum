@@ -1,3 +1,4 @@
+using System.CommandLine;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -694,4 +695,75 @@ public sealed class CliApplicationFactoryTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
     }
+
+    [Fact]
+    public void Every_option_and_argument_in_the_tree_carries_help_text()
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        services.AddSingleton<ICliEnvironment>(new FakeCliEnvironment(interactive: false, colorEnabled: false));
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
+        List<string> undescribed = new();
+
+        Walk(root, root.Name, undescribed);
+
+        Assert.True(
+            undescribed.Count == 0,
+            "Symbols reachable from the root command have no --help description: "
+                + string.Join(", ", undescribed));
+
+        static void Walk(Command command, string path, List<string> undescribed)
+        {
+
+            foreach (Option option in command.Options)
+            {
+
+                if (option.Name is "--help" or "--version")
+                {
+
+                    continue;
+
+                }
+
+                if (string.IsNullOrWhiteSpace(option.Description))
+                {
+
+                    undescribed.Add($"{path} {option.Name}");
+
+                }
+
+            }
+
+            foreach (Argument argument in command.Arguments)
+            {
+
+                if (string.IsNullOrWhiteSpace(argument.Description))
+                {
+
+                    undescribed.Add($"{path} <{argument.Name}>");
+
+                }
+
+            }
+
+            foreach (Command child in command.Subcommands)
+            {
+
+                Walk(child, $"{path} {child.Name}", undescribed);
+
+            }
+
+        }
+
+    }
+
 }

@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Cli.Services;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
+[Collection("ProcessEnvironment")]
 public sealed class ServeCommandAutoLaunchedModeTests
 {
 

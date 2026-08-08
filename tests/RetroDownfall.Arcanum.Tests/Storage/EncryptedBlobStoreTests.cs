@@ -227,6 +227,121 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         Assert.Equal(plaintext, roundTrip.ToArray());
     }
 
+    // The AEAD must bind the declared plaintext length. Truncating at an exact chunk boundary and
+    // rewriting the header length field keeps the envelope self-consistent, so without a final-chunk
+    // marker every surviving chunk still authenticates and the caller is handed a silently
+    // truncated document.
+    [Theory]
+    [InlineData(112, 32)]
+    [InlineData(96, 32)]
+    [InlineData(64, 32)]
+    public async Task Read_rejects_a_boundary_truncation_that_rewrites_the_declared_length(
+        int length,
+        int chunkSize)
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize);
+        string path = Path.Combine(_root, $"truncate-{length}");
+        byte[] plaintext = RandomNumberGenerator.GetBytes(length);
+        EncryptedBlobDescriptor descriptor = await store.WriteAsync(
+            path,
+            new MemoryStream(plaintext),
+            EncryptedBlobPurpose.UploadedFile,
+            Encoding.UTF8.GetBytes("record-id"));
+
+        byte[] envelope = await File.ReadAllBytesAsync(path);
+        byte[] truncated = envelope
+            .AsSpan(0, descriptor.HeaderLength + chunkSize + 16)
+            .ToArray();
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+            truncated.AsSpan(16, 8),
+            chunkSize);
+        await File.WriteAllBytesAsync(path, truncated);
+
+        await using Stream reader = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.UploadedFile);
+        using MemoryStream output = new();
+
+        await Assert.ThrowsAnyAsync<CryptographicException>(() => reader.CopyToAsync(output));
+    }
+
+    // The streaming writer discovers the length as it goes, so the chunk that turns out to be last
+    // must still carry the final marker — including when the total is an exact multiple of the
+    // chunk size, where the last full buffer would otherwise be sealed as a non-final chunk.
+    [Theory]
+    [InlineData(64, 32)]
+    [InlineData(96, 32)]
+    public async Task Streaming_writer_rejects_a_boundary_truncation_on_exact_chunk_multiples(
+        int length,
+        int chunkSize)
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize);
+        string path = Path.Combine(_root, $"streaming-truncate-{length}");
+        byte[] plaintext = RandomNumberGenerator.GetBytes(length);
+        EncryptedBlobDescriptor descriptor;
+        await using (EncryptedBlobWriter writer = await store.CreateWriterAsync(
+                         path,
+                         EncryptedBlobPurpose.BatchArtifact))
+        {
+            await writer.WriteAsync(plaintext);
+            descriptor = await writer.CompleteAsync();
+        }
+
+        Assert.Equal(length, descriptor.PlaintextLength);
+        await using (Stream verify = await store.OpenReadAsync(
+                         path,
+                         EncryptedBlobPurpose.BatchArtifact))
+        {
+            using MemoryStream roundTrip = new();
+            await verify.CopyToAsync(roundTrip);
+            Assert.Equal(plaintext, roundTrip.ToArray());
+        }
+
+        byte[] envelope = await File.ReadAllBytesAsync(path);
+        byte[] truncated = envelope
+            .AsSpan(0, descriptor.HeaderLength + chunkSize + 16)
+            .ToArray();
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+            truncated.AsSpan(16, 8),
+            chunkSize);
+        await File.WriteAllBytesAsync(path, truncated);
+
+        await using Stream reader = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.BatchArtifact);
+        using MemoryStream output = new();
+
+        await Assert.ThrowsAnyAsync<CryptographicException>(() => reader.CopyToAsync(output));
+    }
+
+    // Migration and key rotation replace the blob while a reader is still open on the same path.
+    // On Windows that rename needs FileShare.Delete on the read handle; without it every candidate
+    // fails and `arcanum data encryption migrate` / `rotate-key` can never complete.
+    [Fact]
+    public async Task Open_reader_does_not_block_replacing_the_same_path()
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 32);
+        string path = Path.Combine(_root, "replace-while-open");
+        byte[] original = RandomNumberGenerator.GetBytes(200);
+        await store.WriteAsync(
+            path,
+            new MemoryStream(original),
+            EncryptedBlobPurpose.SessionAttachment);
+
+        await using Stream reader = await store.OpenReadAsync(
+            path,
+            EncryptedBlobPurpose.SessionAttachment);
+
+        await store.WriteAsync(
+            path,
+            new MemoryStream(original),
+            EncryptedBlobPurpose.SessionAttachment);
+
+        using MemoryStream output = new();
+        await reader.CopyToAsync(output);
+        Assert.Equal(original, output.ToArray());
+    }
+
     private static EncryptedBlobStore CreateStore(int chunkSize, byte[]? key = null)
     {
         byte[] actualKey = key ?? Enumerable.Range(0, 32).Select(static value => (byte)value).ToArray();

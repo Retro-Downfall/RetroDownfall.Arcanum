@@ -40,6 +40,8 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
 
         SecureFileReader.AfterOpenForTests = null;
 
+        WorkspacePathPolicy.ResetTestSeams();
+
         if (File.Exists(_outsideFile))
         {
 
@@ -653,6 +655,253 @@ public sealed class SandboxedFileIoTests : IAsyncLifetime
         Assert.True(FileHandleIdentity.IdentitiesMatch(pathIdentity, handleIdentity));
 
     }
+
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_rejects_target_outside_workspace()
+    {
+
+        (bool success, McpToolsCallResultWire? error) =
+            await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                _workspace.Root,
+                _outsideFile,
+                "attacker content",
+                CancellationToken.None);
+
+        Assert.False(success);
+
+        AssertSandboxError(error);
+
+        Assert.Equal("outside secret", await File.ReadAllTextAsync(_outsideFile));
+
+    }
+
+    // The write path revalidates containment a second time after creating the parent directory,
+    // because directory creation is an observable pause an attacker can use to swap the parent for
+    // a symlink out of the workspace. That second revalidation must fail closed before any staging.
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_rejects_target_that_escapes_after_parent_directory_creation()
+    {
+
+        string target = Path.Combine(_workspace.Root, "escapes-after-mkdir.txt");
+
+        int relativePathCalls = 0;
+
+        WorkspacePathPolicy.SetRelativePathResolverForTests((root, candidate) =>
+        {
+
+            relativePathCalls++;
+
+            return relativePathCalls == 1
+                ? Path.GetRelativePath(root, candidate)
+                : "..";
+
+        });
+
+        try
+        {
+
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    _workspace.Root,
+                    target,
+                    "attacker content",
+                    CancellationToken.None);
+
+            Assert.False(success);
+
+            Assert.Equal(2, relativePathCalls);
+
+            AssertSandboxError(error);
+
+            Assert.False(File.Exists(target));
+
+        }
+        finally
+        {
+
+            WorkspacePathPolicy.ResetTestSeams();
+
+        }
+
+    }
+
+    // A path with no parent directory (a filesystem root) falls back to the workspace root when
+    // choosing the staging directory. The write must still be rejected: the destination is a
+    // directory, so nothing may be staged or replaced.
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_rejects_root_path_that_has_no_parent_directory()
+    {
+
+        string filesystemRoot = Path.GetPathRoot(_workspace.Root)!;
+
+        Assert.Null(Path.GetDirectoryName(filesystemRoot));
+
+        WorkspacePathPolicy.SetRelativePathResolverForTests((_, _) => string.Empty);
+
+        try
+        {
+
+            // Pins that containment revalidation passes, so the rejection below comes from the
+            // staging/replace step rather than from the pre-write containment check.
+            Assert.True(WorkspacePathPolicy.RevalidatePathBeforeIo(filesystemRoot, filesystemRoot));
+
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    filesystemRoot,
+                    filesystemRoot,
+                    "attacker content",
+                    CancellationToken.None);
+
+            Assert.False(success);
+
+            AssertSandboxError(error);
+
+            Assert.Empty(Directory.EnumerateFiles(filesystemRoot, ".arcanum-*.tmp"));
+
+        }
+        finally
+        {
+
+            WorkspacePathPolicy.ResetTestSeams();
+
+        }
+
+    }
+
+    // W3.4 Group C #7: when the post-move identity check fails AND the best-effort rollback cannot
+    // confirm the quarantined destination, the caller must be told the destination is unverified
+    // instead of receiving a success or a generic pre-move failure.
+    [Fact]
+    public async Task TryWriteAllTextAtomicallyAsync_reports_unverified_destination_when_rollback_cannot_confirm_quarantine()
+    {
+
+        string target = Path.Combine(_workspace.Root, "unverified-write.txt");
+
+        await File.WriteAllTextAsync(target, "original");
+
+        // Forces the post-move handle-identity check to fail: the identity captured before the
+        // move can never match the identity of the real moved file.
+        FileHandleIdentityInterop.TryGetPathIdentityForTests = _ => new FileHandleIdentity(7, 7);
+
+        // Everything else resolves normally except the quarantined copy, whose metadata cannot be
+        // read back, so the rollback cannot confirm the unverified content was contained.
+        FileHandleIdentityInterop.TryGetPathMetadataForTests = path =>
+            path.Contains(".arcanum-quarantine-", StringComparison.Ordinal)
+                ? null
+                : ResolveRealPathMetadata(path);
+
+        try
+        {
+
+            (bool success, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryWriteAllTextAtomicallyAsync(
+                    _workspace.Root,
+                    target,
+                    "replacement",
+                    CancellationToken.None);
+
+            Assert.False(success);
+
+            Assert.NotNull(error);
+
+            Assert.True(error!.IsError);
+
+            Assert.Contains(
+                "unverified",
+                Assert.Single(error.Content!).Text!,
+                StringComparison.OrdinalIgnoreCase);
+
+            string? destinationContent = File.Exists(target)
+                ? await File.ReadAllTextAsync(target)
+                : null;
+
+            Assert.NotEqual("replacement", destinationContent);
+
+        }
+        finally
+        {
+
+            FileHandleIdentityInterop.TryGetPathIdentityForTests = null;
+
+            FileHandleIdentityInterop.TryGetPathMetadataForTests = null;
+
+        }
+
+    }
+
+    [Fact]
+    public async Task TryReadAllTextAsync_returns_no_content_for_path_outside_workspace()
+    {
+
+        (string? content, McpToolsCallResultWire? error) =
+            await SandboxedFileIo.TryReadAllTextAsync(
+                _workspace.Root,
+                _outsideFile,
+                maxBytes: 1024,
+                CancellationToken.None);
+
+        Assert.Null(content);
+
+        AssertSandboxError(error);
+
+    }
+
+    // The handle is revalidated again after the bytes are read, so content read through a handle
+    // that no longer resolves inside the workspace is discarded rather than returned to the caller.
+    [Fact]
+    public async Task TryReadAllTextAsync_discards_content_when_post_read_revalidation_fails()
+    {
+
+        string target = Path.Combine(_workspace.Root, "escapes-after-read.txt");
+
+        await File.WriteAllTextAsync(target, "secret payload");
+
+        int relativePathCalls = 0;
+
+        WorkspacePathPolicy.SetRelativePathResolverForTests((root, candidate) =>
+        {
+
+            relativePathCalls++;
+
+            return relativePathCalls <= 3
+                ? Path.GetRelativePath(root, candidate)
+                : "..";
+
+        });
+
+        try
+        {
+
+            (string? content, McpToolsCallResultWire? error) =
+                await SandboxedFileIo.TryReadAllTextAsync(
+                    _workspace.Root,
+                    target,
+                    maxBytes: 1024,
+                    CancellationToken.None);
+
+            Assert.Null(content);
+
+            Assert.Equal(4, relativePathCalls);
+
+            AssertSandboxError(error);
+
+        }
+        finally
+        {
+
+            WorkspacePathPolicy.ResetTestSeams();
+
+        }
+
+    }
+
+    // Real metadata for paths the seam is not simulating. Resolved through the no-follow probe,
+    // which has its own seam, so this never has to unset (and race with) the seam it is called from.
+    // Every path in these tests is a regular file, where the two probes agree.
+    private static FileHandleMetadata? ResolveRealPathMetadata(string path) =>
+        FileHandleIdentityInterop.TryGetPathMetadataNoFollow(path, out FileHandleMetadata metadata)
+            ? metadata
+            : null;
 
     private static void AssertSandboxError(McpToolsCallResultWire? error)
     {

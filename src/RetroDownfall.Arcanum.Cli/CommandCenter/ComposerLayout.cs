@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -28,7 +27,7 @@ internal static class ComposerLayout
     /// <summary>Reserved column when content exceeds the visible content rows (vertical scrollbar).</summary>
     public const int ScrollbarReservation = 1;
 
-    public const int TabStop = 8;
+    public const int TabStop = TerminalCellMetrics.TabStop;
 
     /// <summary>
     /// Computes content rows and total pane height for the composer.
@@ -144,26 +143,11 @@ internal static class ComposerLayout
     }
 
     /// <summary>Total cell width of <paramref name="text"/> starting at column 0.</summary>
-    public static int MeasureCellWidth(string? text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return 0;
-        }
-
-        int col = 0;
-        var enumerator = StringInfo.GetTextElementEnumerator(text);
-        while (enumerator.MoveNext())
-        {
-            col += MeasureGraphemeCellWidth(enumerator.GetTextElement(), col);
-        }
-
-        return col;
-    }
+    public static int MeasureCellWidth(string? text) => TerminalCellMetrics.MeasureWidth(text);
 
     /// <summary>Cell width of one grapheme cluster at <paramref name="column"/>.</summary>
     public static int MeasureGraphemeCellWidth(string grapheme, int column) =>
-        MeasureGraphemeWidth(grapheme, column);
+        TerminalCellMetrics.MeasureGraphemeWidth(grapheme, column);
 
     private static int CountSoftWrappedRows(ReadOnlySpan<char> line, int width)
     {
@@ -178,7 +162,7 @@ internal static class ComposerLayout
         while (enumerator.MoveNext())
         {
             string element = enumerator.GetTextElement();
-            int w = MeasureGraphemeWidth(element, col);
+            int w = TerminalCellMetrics.MeasureGraphemeWidth(element, col);
             if (w <= 0)
             {
                 continue;
@@ -188,7 +172,7 @@ internal static class ComposerLayout
             {
                 rows++;
                 col = 0;
-                w = MeasureGraphemeWidth(element, col);
+                w = TerminalCellMetrics.MeasureGraphemeWidth(element, col);
             }
 
             while (w > width)
@@ -214,91 +198,6 @@ internal static class ComposerLayout
         return Math.Max(1, rows);
     }
 
-    private static int MeasureGraphemeWidth(string grapheme, int column)
-    {
-        if (string.IsNullOrEmpty(grapheme))
-        {
-            return 0;
-        }
-
-        if (grapheme == "\t")
-        {
-            int stop = TabStop - (column % TabStop);
-            return stop <= 0 ? TabStop : stop;
-        }
-
-        int width = 0;
-        foreach (Rune rune in grapheme.EnumerateRunes())
-        {
-            width += RuneCellWidth(rune);
-        }
-
-        // ZWJ / emoji sequences: if any wide rune present, treat the cluster as at least 2 when it looks emoji-like.
-        if (width < 2 && LooksLikeEmojiCluster(grapheme))
-        {
-            return 2;
-        }
-
-        return Math.Max(0, width);
-    }
-
-    private static bool LooksLikeEmojiCluster(string grapheme)
-    {
-        foreach (Rune rune in grapheme.EnumerateRunes())
-        {
-            int v = rune.Value;
-            if (v is >= 0x1F300 and <= 0x1FAFF)
-            {
-                return true;
-            }
-
-            if (v is 0x200D or >= 0xFE00 and <= 0xFE0F)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static int RuneCellWidth(Rune rune)
-    {
-        if (Rune.IsControl(rune) || rune.Value == 0)
-        {
-            return 0;
-        }
-
-        UnicodeCategory category = Rune.GetUnicodeCategory(rune);
-        if (category is UnicodeCategory.NonSpacingMark
-            or UnicodeCategory.EnclosingMark
-            or UnicodeCategory.SpacingCombiningMark
-            or UnicodeCategory.Format)
-        {
-            return 0;
-        }
-
-        int v = rune.Value;
-        if (IsWideCodePoint(v))
-        {
-            return 2;
-        }
-
-        return 1;
-    }
-
-    /// <summary>Best-effort East Asian Wide / Fullwidth / emoji ranges used by common terminals.</summary>
-    private static bool IsWideCodePoint(int v) =>
-        v is >= 0x1100 and <= 0x115F
-        || v is 0x2329 or 0x232A
-        || v is >= 0x2E80 and <= 0xA4CF
-        || v is >= 0xAC00 and <= 0xD7A3
-        || v is >= 0xF900 and <= 0xFAFF
-        || v is >= 0xFE10 and <= 0xFE19
-        || v is >= 0xFE30 and <= 0xFE6F
-        || v is >= 0xFF00 and <= 0xFF60
-        || v is >= 0xFFE0 and <= 0xFFE6
-        || v is >= 0x1F300 and <= 0x1FAFF
-        || v is >= 0x20000 and <= 0x3FFFD;
 }
 
 /// <summary>Result of <see cref="ComposerLayout.Measure"/>.</summary>

@@ -164,6 +164,7 @@ public static class IdempotencyEndpointFilters
         string fingerprintHash = IdempotencyIdentity.ComputeFingerprintHash(
             bodyBytes,
             route,
+            IdempotencyIdentity.NormalizeQuery(httpContext),
             httpContext.Request.ContentType);
 
         IIdempotencyClaimStore claimStore =
@@ -803,7 +804,19 @@ public static class IdempotencyEndpointFilters
 
         }
 
-        string? candidate = values.Count == 1 ? values[0] : null;
+        if (values.Count > 1)
+        {
+
+            // Ambiguity is a loud client error, never a silent downgrade to unprotected execution:
+            // falling through here would run the side-effecting handler with no claim and no fingerprint
+            // while the caller still believes the header it sent is protecting it.
+            error = BuildKeyRejectionError(httpContext, AmbiguousKeyMessage, ErrorCodes.Security.IdempotencyKeyAmbiguous);
+
+            return false;
+
+        }
+
+        string? candidate = values[0];
 
         if (string.IsNullOrEmpty(candidate))
         {
@@ -815,7 +828,7 @@ public static class IdempotencyEndpointFilters
         if (candidate.Length > ArcanumSettingClamps.SecurityIdempotencyKeyMaxChars)
         {
 
-            error = BuildKeyTooLongError(httpContext);
+            error = BuildKeyRejectionError(httpContext, KeyTooLongMessage, ErrorCodes.Security.IdempotencyKeyTooLong);
 
             return false;
 
@@ -841,10 +854,14 @@ public static class IdempotencyEndpointFilters
 
     }
 
-    private static IResult BuildKeyTooLongError(HttpContext httpContext)
-    {
+    private const string KeyTooLongMessage =
+        "Idempotency-Key header exceeds the maximum allowed length (256 characters).";
 
-        const string message = "Idempotency-Key header exceeds the maximum allowed length (256 characters).";
+    private const string AmbiguousKeyMessage =
+        "Idempotency-Key header was supplied more than once; send exactly one value.";
+
+    private static IResult BuildKeyRejectionError(HttpContext httpContext, string message, string nativeCode)
+    {
 
         if (httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
         {
@@ -862,7 +879,7 @@ public static class IdempotencyEndpointFilters
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         ApiResponse<string> body = ApiResponse<string>.FromResult(
-            Result<string>.Failure(new Error(ErrorCodes.Security.IdempotencyKeyTooLong, message)),
+            Result<string>.Failure(new Error(nativeCode, message)),
             traceId);
 
         return Results.Json(body, ArcanumJsonContext.Default.ApiResponseString, statusCode: StatusCodes.Status400BadRequest);

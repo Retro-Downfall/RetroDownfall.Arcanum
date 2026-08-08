@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Core.Hosting;
 
 namespace RetroDownfall.Arcanum.Tests.Hosting;
 
+[Collection("ProcessEnvironment")]
 public sealed class ArcanumLocalApiAddressTests : IDisposable
 {
 

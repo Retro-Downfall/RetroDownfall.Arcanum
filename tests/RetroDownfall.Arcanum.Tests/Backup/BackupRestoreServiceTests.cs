@@ -475,6 +475,153 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
+    /// <summary>
+    /// The commit preserves the destination's machine-local entries one at a time, so a fault on the
+    /// second one leaves the first already inside the new tree. Reversal must be driven by that
+    /// filesystem evidence rather than by the commit's own success flag — otherwise the key ring
+    /// rides into staging and the cleanup deletes the only copy of it.
+    /// </summary>
+    [Fact]
+    public async Task A_commit_that_fails_partway_through_preserving_still_returns_the_key_ring()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("partial-preserve.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        string keyRing = Path.Combine(_installation, "keys", "key-local.xml");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(keyRing)!);
+
+        await File.WriteAllTextAsync(keyRing, "<key/>");
+
+        string existingBackup = Path.Combine(_installation, "backups", "older.arcbackup");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(existingBackup)!);
+
+        await File.WriteAllTextAsync(existingBackup, "older");
+
+        bool faulted = false;
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore(),
+                new BackupRestoreServiceOptions
+                {
+
+                    BeforePreservedEntryMoveForTests = name =>
+                    {
+
+                        if (name == "backups" && !faulted)
+                        {
+
+                            faulted = true;
+
+                            throw new IOException("injected preserve fault");
+
+                        }
+
+                    },
+
+                })
+            .RestoreAsync(
+                new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.True(faulted);
+
+        Assert.Equal(BackupRestoreStatus.RolledBack, result.Status);
+
+        Assert.Equal("<key/>", await File.ReadAllTextAsync(keyRing));
+
+        Assert.Equal("older", await File.ReadAllTextAsync(existingBackup));
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(Path.Combine(_installation, "CODEX.md")));
+
+        Assert.Empty(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
+    }
+
+    /// <summary>
+    /// A rollback that cannot be verified must never be reported as clean, because the displaced
+    /// tree in staging is then the operator's only surviving installation. Retention of evidence
+    /// outranks tidiness: the journal and the staging root stay for startup recovery to resolve.
+    /// </summary>
+    [Fact]
+    public async Task A_reversal_that_cannot_complete_keeps_the_journal_and_the_displaced_installation()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("stranded.arcbackup");
+
+        await File.WriteAllTextAsync(
+            Path.Combine(_installation, "CODEX.md"),
+            "# the original codex");
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore(),
+                new BackupRestoreServiceOptions
+                {
+
+                    BeforePhaseForTests = phase =>
+                    {
+
+                        if (phase == BackupRestorePhase.Reconcile)
+                        {
+
+                            throw new IOException("injected post-commit fault");
+
+                        }
+
+                    },
+
+                    BeforeReversalRenameForTests =
+                        static () => throw new IOException("injected reversal fault"),
+
+                })
+            .RestoreAsync(
+                new BackupRestoreRequest(archive, Confirmed: true, CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        Assert.Contains(
+            result.Issues,
+            static issue => issue.Code == "backup.restore_reversal_incomplete");
+
+        string staging = Assert.Single(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
+        Assert.Contains(staging, result.Issues[0].Message, StringComparison.Ordinal);
+
+        BackupRestoreJournalRecord journal = Assert.IsType<BackupRestoreJournalRecord>(
+            BackupRestoreJournal.TryRead(staging));
+
+        // Rewound so startup recovery resolves the roots from evidence instead of reading a later
+        // phase as "the commit finished; only cleanup remained" and discarding the displaced tree.
+        Assert.Equal(BackupRestorePhase.Commit, journal.Phase);
+
+        Assert.Equal(
+            "# the original codex",
+            await File.ReadAllTextAsync(Path.Combine(journal.DisplacedRoot, "CODEX.md")));
+
+    }
+
     [Fact]
     public async Task A_new_profile_root_restore_leaves_the_current_installation_and_its_secrets_alone()
     {

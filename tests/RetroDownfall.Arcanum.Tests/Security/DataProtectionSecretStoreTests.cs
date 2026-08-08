@@ -235,6 +235,157 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task GetApiKeyAsync_CorruptStore_ReturnsNullRatherThanRawCiphertext()
+    {
+
+        using DataProtectionSecretStore store = CreateStore();
+
+        string path = ArcanumPaths.ApiKeyStoreFile;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        await File.WriteAllBytesAsync(path, [9, 8, 7, 6, 5]);
+
+        string? result = await store.GetApiKeyAsync();
+
+        Assert.Null(result);
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, (await store.GetApiKeyReadResultAsync()).Status);
+
+    }
+
+    [Fact]
+    public async Task GetApiKeyAsync_MissingStore_ReturnsNull()
+    {
+
+        using DataProtectionSecretStore store = CreateStore();
+
+        string? result = await store.GetApiKeyAsync();
+
+        Assert.Null(result);
+
+    }
+
+    [Fact]
+    public async Task GetGrimoireEncryptionSecretAsync_CorruptStore_ReturnsNullRatherThanRawCiphertext()
+    {
+
+        using DataProtectionSecretStore store = CreateStore();
+
+        string path = ArcanumPaths.GrimoireKeyStoreFile;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        await File.WriteAllBytesAsync(path, [4, 3, 2, 1]);
+
+        string? result = await store.GetGrimoireEncryptionSecretAsync();
+
+        Assert.Null(result);
+
+        Assert.Equal(
+            SecretStoreReadStatus.Corrupted,
+            (await store.GetGrimoireEncryptionSecretReadResultAsync()).Status);
+
+    }
+
+    [Fact]
+    public async Task GetGrimoireEncryptionSecretAsync_MissingStore_ReturnsNull()
+    {
+
+        using DataProtectionSecretStore store = CreateStore();
+
+        string? result = await store.GetGrimoireEncryptionSecretAsync();
+
+        Assert.Null(result);
+
+    }
+
+    [Fact]
+    public async Task GetApiKeyReadResultAsync_ZeroLengthFile_FailsClosedAsCorrupted()
+    {
+
+        using DataProtectionSecretStore store = CreateStore();
+
+        string path = ArcanumPaths.ApiKeyStoreFile;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        await File.WriteAllBytesAsync(path, []);
+
+        SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Contains("security.dat", result.Message, StringComparison.Ordinal);
+
+        Assert.Null(result.Value);
+
+        Assert.Null(await store.GetApiKeyAsync());
+
+    }
+
+    [Fact]
+    public async Task GetGrimoireEncryptionSecretReadResultAsync_ZeroLengthFile_FailsClosedAsCorrupted()
+    {
+
+        using DataProtectionSecretStore store = CreateStore();
+
+        string path = ArcanumPaths.GrimoireKeyStoreFile;
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        await File.WriteAllBytesAsync(path, []);
+
+        SecretStoreReadResult result = await store.GetGrimoireEncryptionSecretReadResultAsync();
+
+        Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+        Assert.Null(result.Value);
+
+    }
+
+    [Fact]
+    public async Task WriteProtectedAsync_PathWithNoParentDirectory_RefusesToWrite()
+    {
+
+        IDataProtector protector = DataProtectionProvider
+            .Create(new DirectoryInfo(_storeDir), _ => { })
+            .CreateProtector("Arcanum.Tests.RootPathGuard");
+
+        string rootPath = Path.GetPathRoot(Path.GetFullPath(_storeDir))!;
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => DataProtectionSecretStore.WriteProtectedForTestsAsync(rootPath, "secret", protector));
+
+        Assert.Contains("Invalid secret store path", exception.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task SaveApiKeyAsync_WhenAtomicReplaceFails_LeavesNoStagedCiphertextBehind()
+    {
+
+        using DataProtectionSecretStore store = CreateStore();
+
+        string path = ArcanumPaths.ApiKeyStoreFile;
+
+        // A directory squatting on the store path lets the temp file be staged and written, then
+        // fails the atomic replace, which is the only way the cleanup arm of the finally runs.
+        Directory.CreateDirectory(path);
+
+        await Assert.ThrowsAnyAsync<IOException>(() => store.SaveApiKeyAsync("super-secret-key"));
+
+        string[] leftovers = Directory.GetFiles(
+            ArcanumPaths.SecretStoreDirectory,
+            "security.dat.tmp.*");
+
+        Assert.Empty(leftovers);
+
+        Assert.True(Directory.Exists(path));
+
+    }
+
+    [Fact]
     public async Task SaveApiKeyAsync_InvalidatesDigestCache()
     {
 

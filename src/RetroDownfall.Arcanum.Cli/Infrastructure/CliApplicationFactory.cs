@@ -33,12 +33,39 @@ namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 internal static class CliApplicationFactory
 {
 
+    /// <summary>
+    /// The persisted file is the authority, parsed through <c>ConfigurationJsonContext</c> exactly as
+    /// the host does (<c>AddArcanumInfrastructure</c>). The configuration binder is a missing-file
+    /// fallback only: it cannot honour <c>ModelEntryJsonConverter</c> (bare-string model entries are
+    /// silently dropped) and it appends to array defaults instead of replacing them. A file that
+    /// cannot be parsed at all degrades to defaults rather than taking down DI composition —
+    /// <c>Program.Main</c> has already reported it, and only configuration repair and diagnosis verbs
+    /// get this far; they need a usable service graph to name the offending pointer.
+    /// </summary>
+    private static ArcanumSettings LoadSettingsSnapshot(IConfiguration configuration)
+    {
+
+        try
+        {
+
+            return ConfigurationBootstrapper.LoadArcanumSettings(
+                () => configuration.GetSection("Arcanum").Get<ArcanumSettings>() ?? new ArcanumSettings());
+
+        }
+        catch (Exception exception) when (
+            exception is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+
+            return configuration.GetSection("Arcanum").Get<ArcanumSettings>() ?? new ArcanumSettings();
+
+        }
+
+    }
+
     public static void ConfigureCliServices(IServiceCollection services, IConfiguration configuration)
     {
 
-        ArcanumSettings settingsSnapshot =
-            configuration.GetSection("Arcanum").Get<ArcanumSettings>()
-            ?? ConfigurationBootstrapper.LoadArcanumSettings();
+        ArcanumSettings settingsSnapshot = LoadSettingsSnapshot(configuration);
 
         services.Configure<ArcanumSettings>(settings =>
             ConfigurationBootstrapper.CopySettings(settingsSnapshot, settings));
@@ -419,7 +446,7 @@ internal static class CliApplicationFactory
                 System.CommandLine.InvocationConfiguration config = new()
                 {
                     EnableDefaultExceptionHandler = false,
-                    ProcessTerminationTimeout = Timeout.InfiniteTimeSpan,
+                    ProcessTerminationTimeout = ResolveProcessTerminationTimeout(parseResult),
                     Output = Console.Out,
                     Error = Console.Error,
                 };
@@ -496,6 +523,46 @@ internal static class CliApplicationFactory
             CliJsonContext.Default.CliTextPayload);
 
         output.WriteLine(json);
+
+    }
+
+    /// <summary>
+    /// Grace window System.CommandLine allows a command to observe SIGINT and unwind before the
+    /// process is terminated. This is not a duration cap on the command itself (DESIGN 2.1 — Arcanum
+    /// owns no total duration); it only bounds how long a Ctrl+C waits for cooperative shutdown, so
+    /// a command that never observes the token can still be stopped from the keyboard.
+    /// </summary>
+    internal static readonly TimeSpan ProcessTerminationGrace = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Commands that install their own <see cref="Console.CancelKeyPress"/> contract and must never
+    /// be torn down by System.CommandLine's process-termination handler. <c>chat</c> maps Ctrl+C to
+    /// "cancel this turn / clear this line", so a termination handler would kill the REPL instead.
+    /// </summary>
+    private static readonly string[] SelfManagedTerminationCommands = ["chat"];
+
+    internal static TimeSpan? ResolveProcessTerminationTimeout(ParseResult parseResult) =>
+        OwnsCancelKeyPress(parseResult) ? null : ProcessTerminationGrace;
+
+    private static bool OwnsCancelKeyPress(ParseResult parseResult)
+    {
+
+        for (SymbolResult? current = parseResult.CommandResult;
+            current is not null;
+            current = current.Parent)
+        {
+
+            if (current is CommandResult commandResult
+                && SelfManagedTerminationCommands.Contains(commandResult.Command.Name, StringComparer.Ordinal))
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
 
     }
 

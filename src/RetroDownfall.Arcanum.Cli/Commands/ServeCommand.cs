@@ -163,7 +163,9 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
             }
             else
             {
-                AnsiConsole.WriteLine(newApiKey);
+                // Raw stdout: the key is a credential, not presentation, and must never be wrapped
+                // at Spectre's profile width.
+                Console.Out.WriteLine(newApiKey);
 
                 AnsiConsole.MarkupLine(
                     themePalette.HighlightMarkup(

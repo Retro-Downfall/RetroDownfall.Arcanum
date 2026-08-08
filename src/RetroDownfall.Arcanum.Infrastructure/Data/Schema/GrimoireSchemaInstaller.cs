@@ -242,30 +242,45 @@ internal static class GrimoireSchemaInstaller
         CancellationToken cancellationToken)
     {
 
-        await using SqliteCommand command = connection.CreateCommand();
-
-        // tableName is one of the fixed internal constants passed above, never user input — the same
-        // trust model the schema object files themselves rely on.
-        command.CommandText = $"""SELECT "Dim" FROM "{tableName}" LIMIT 1;""";
-
-        object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-
-        if (result is null or DBNull)
+        try
         {
 
-            return;
+            await using SqliteCommand command = connection.CreateCommand();
+
+            // tableName is one of the fixed internal constants passed above, never user input — the same
+            // trust model the schema object files themselves rely on.
+            command.CommandText = $"""SELECT "Dim" FROM "{tableName}" LIMIT 1;""";
+
+            object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+            if (result is null or DBNull)
+            {
+
+                return;
+
+            }
+
+            long existingDimensions = Convert.ToInt64(result, CultureInfo.InvariantCulture);
+
+            if (existingDimensions != configuredDimensions)
+            {
+
+                logger?.LogWarning(
+                    "Embedding dimension changed from {OldDimensions} to {NewDimensions} in {TableName}. Existing embeddings are stale. Reset the affected embedding scope and re-index to use the new dimension.",
+                    existingDimensions,
+                    configuredDimensions,
+                    tableName);
+
+            }
 
         }
-
-        long existingDimensions = Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
-        if (existingDimensions != configuredDimensions)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
+            // Best-effort diagnostic (§5.4.5): a locked database or an older table shape must degrade
+            // to a logged warning, never fail the install and abort host startup.
             logger?.LogWarning(
-                "Embedding dimension changed from {OldDimensions} to {NewDimensions} in {TableName}. Existing embeddings are stale. Reset the affected embedding scope and re-index to use the new dimension.",
-                existingDimensions,
-                configuredDimensions,
+                ex,
+                "The embedding dimension probe for {TableName} failed; skipping the dimension-mismatch check.",
                 tableName);
 
         }

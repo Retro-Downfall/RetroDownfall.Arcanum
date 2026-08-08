@@ -87,10 +87,35 @@ if ($branchRate -lt $branchTarget) {
     $failures.Add(("branch coverage {0:F2}% < {1:G}%" -f $branchRate, $branchTarget))
 }
 
+# Fold a Cobertura class name onto the short name of its declaring type. Coverlet keeps
+# async/iterator state machines as nested classes, e.g.
+# Namespace.OutboundUrlGuard/<EgressConnectCallbackAsync>d__17. Matching on the substring
+# after the last "." would yield "OutboundUrlGuard/<...>d__17" and skip every async body,
+# so strip the nested suffix before stripping the namespace.
+function Resolve-DeclaringTypeName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Name
+    )
+
+    $outer = $Name.Split("/")[0]
+
+    return $outer.Substring($outer.LastIndexOf(".") + 1)
+}
+
+# One branch tally per security type, aggregated over the declaring class *and* every
+# compiler-generated state machine nested inside it. Keyed by "file|line" so a line
+# reported by both the synchronous shell and its async state machine is counted once, at
+# its best observed condition coverage.
+$securityLines = @{}
+
+$securityClassRates = @{}
+
 foreach ($class in $document.SelectNodes("//class")) {
     $name = [string] $class.GetAttribute("name")
 
-    $shortName = $name.Substring($name.LastIndexOf(".") + 1)
+    $shortName = Resolve-DeclaringTypeName -Name $name
 
     if (-not $securityTypes.Contains($shortName)) {
         continue
@@ -98,7 +123,22 @@ foreach ($class in $document.SelectNodes("//class")) {
 
     $null = $seenSecurityTypes.Add($shortName)
 
-    $bestByLine = @{}
+    $fileName = [string] $class.GetAttribute("filename")
+
+    if (-not $securityLines.ContainsKey($shortName)) {
+        $securityLines[$shortName] = @{}
+
+        $securityClassRates[$shortName] = [System.Collections.Generic.List[double]]::new()
+    }
+
+    $bestByLine = $securityLines[$shortName]
+
+    $securityClassRates[$shortName].Add(
+        [double]::Parse(
+            [string] $class.GetAttribute("branch-rate"),
+            [System.Globalization.CultureInfo]::InvariantCulture
+        ) * 100.0
+    )
 
     foreach ($line in $class.SelectNodes(".//line")) {
         $conditionCoverage = [string] $line.GetAttribute("condition-coverage")
@@ -107,7 +147,7 @@ foreach ($class in $document.SelectNodes("//class")) {
             continue
         }
 
-        $lineNumber = [string] $line.GetAttribute("number")
+        $lineKey = "{0}|{1}" -f $fileName, [string] $line.GetAttribute("number")
 
         $covered = [int] $Matches[1]
 
@@ -115,14 +155,18 @@ foreach ($class in $document.SelectNodes("//class")) {
 
         $rate = if ($total -eq 0) { 1.0 } else { $covered / $total }
 
-        if (-not $bestByLine.ContainsKey($lineNumber) -or $rate -gt $bestByLine[$lineNumber].Rate) {
-            $bestByLine[$lineNumber] = @{
+        if (-not $bestByLine.ContainsKey($lineKey) -or $rate -gt $bestByLine[$lineKey].Rate) {
+            $bestByLine[$lineKey] = @{
                 Covered = $covered
                 Total = $total
                 Rate = $rate
             }
         }
     }
+}
+
+foreach ($shortName in ($seenSecurityTypes | Sort-Object)) {
+    $bestByLine = $securityLines[$shortName]
 
     $branchCovered = 0
 
@@ -135,10 +179,9 @@ foreach ($class in $document.SelectNodes("//class")) {
     }
 
     if ($branchCount -eq 0) {
-        $securityRate = [double]::Parse(
-            [string] $class.GetAttribute("branch-rate"),
-            [System.Globalization.CultureInfo]::InvariantCulture
-        ) * 100.0
+        # Fall back to the class branch-rate attributes; take the worst so a fully covered
+        # shell can never mask an uncovered state machine.
+        $securityRate = ($securityClassRates[$shortName] | Measure-Object -Minimum).Minimum
     }
     else {
         $securityRate = ($branchCovered / $branchCount) * 100.0

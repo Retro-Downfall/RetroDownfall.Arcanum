@@ -158,6 +158,11 @@ public sealed class GrimoireRepository : IGrimoireRepository
             UpdatedAt = now,
             Status = "active",
             Title = TruncateTitle(prompt),
+
+            // Seeded on the inserted row rather than bumped by a follow-up statement, so the counter
+            // and the two entries land in the same SQLite transaction. A crash between the two
+            // statements would otherwise leave a session the Campaign Logger never summarizes.
+            UnsummarizedEntryCount = 2,
         });
         _db.Entries.Add(new Entry
         {
@@ -180,8 +185,6 @@ public sealed class GrimoireRepository : IGrimoireRepository
             Sequence = 2L,
         });
         await _entryPersistence.SaveChangesWithRetryAsync(cancellationToken).ConfigureAwait(false);
-
-        await _entryPersistence.IncrementUnsummarizedEntryCountIfKnownAsync(newSessionId, 2, cancellationToken).ConfigureAwait(false);
 
         return (newSessionId, assistantEntryId);
     }

@@ -249,21 +249,28 @@ internal static partial class CliCommandTree
 
     }
 
-    private static bool TryParseScope(
+    internal static bool TryParseScope(
         string? value,
         out CliContextScope scope)
     {
 
+        scope = CliContextScope.All;
+
         if (string.IsNullOrWhiteSpace(value))
         {
-
-            scope = CliContextScope.All;
 
             return true;
 
         }
 
-        return Enum.TryParse(value, ignoreCase: true, out scope)
+        // Letters only: Enum.TryParse otherwise accepts numeric ordinals ("1"), comma-separated
+        // flag lists ("campaign,workspace") and undefined ordinals ("5"), each of which would clear
+        // a scope the operator never named — and report success.
+        string normalized = value.Trim();
+
+        return normalized.All(char.IsLetter)
+            && Enum.TryParse(normalized, ignoreCase: true, out scope)
+            && Enum.IsDefined(scope)
             && scope != CliContextScope.All;
 
     }

@@ -262,6 +262,12 @@ public sealed class TelemetryService : ISubagentTelemetrySink, IDisposable
             case "arcanum_web_research_search_queries_total":
                 Interlocked.Add(ref _webSearchQueries, measurement);
                 break;
+
+            default:
+                // The listener is attached to the process-wide ArcanumMetrics meter, so it also
+                // observes instruments this service does not roll up. Raising an identical snapshot
+                // for them makes SnapshotUpdated fire without anything having changed.
+                return;
         }
 
         RaiseSnapshotUpdated();
@@ -302,6 +308,11 @@ public sealed class TelemetryService : ISubagentTelemetrySink, IDisposable
                 }
 
                 break;
+
+            default:
+                // See OnLongMeasurement: an unrelated instrument on the shared meter must not
+                // publish a snapshot.
+                return;
 
         }
 

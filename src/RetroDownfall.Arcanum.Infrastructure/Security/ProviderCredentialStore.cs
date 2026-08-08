@@ -424,6 +424,10 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
 
+                // Durable flush before the atomic replace so an unclean power loss cannot leave a
+                // present-but-empty mirror behind the committed rename.
+                stream.Flush(flushToDisk: true);
+
             }
 
             File.Move(tempPath, path, overwrite: true);

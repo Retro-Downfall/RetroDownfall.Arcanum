@@ -134,6 +134,114 @@ public sealed class SseStreamWriterTests
 
     }
 
+    // A client that disconnects while the source is idle is detected by the keep-alive write, at
+    // which point the enumerator's MoveNextAsync is still in flight. Disposing a compiler-generated
+    // async iterator in that state throws NotSupportedException out of the SSE endpoint (the
+    // handler only catches OperationCanceledException), turning an ordinary disconnect into an
+    // unhandled-exception log on a response that has already started. StreamAsync must unwind the
+    // producer and observe the outstanding move before disposing it.
+    [Fact]
+    public async Task StreamAsync_keep_alive_disconnect_while_a_move_is_pending_does_not_throw()
+    {
+
+        ThrowingStream body = new();
+
+        DefaultHttpContext httpContext = new();
+
+        httpContext.Response.Body = body;
+
+        body.ThrowOnNextWrite = true;
+
+        await SseStreamWriter.StreamAsync(
+            httpContext,
+            IdleSourceAsync(),
+            static (_, _) => Task.CompletedTask,
+            heartbeatInterval: TimeSpan.FromMilliseconds(20),
+            CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, body.WritesAttempted);
+
+    }
+
+    // Same hazard, isolated on the shared helper: an async-iterator state machine suspended inside
+    // MoveNextAsync must be cancelled and observed before DisposeAsync is allowed to run.
+    [Fact]
+    public async Task QuiesceAndDisposeAsync_disposes_an_enumerator_with_an_in_flight_move()
+    {
+
+        using CancellationTokenSource unwind = new();
+
+        IAsyncEnumerator<string> enumerator = IdleSourceAsync().GetAsyncEnumerator(unwind.Token);
+
+        Task<bool> pendingMove = enumerator.MoveNextAsync().AsTask();
+
+        Assert.False(pendingMove.IsCompleted);
+
+        await SseStreamWriter
+            .QuiesceAndDisposeAsync(enumerator, pendingMove, unwind)
+            .AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(pendingMove.IsCompleted);
+
+    }
+
+    // Every iteration arms a heartbeat timer; a frame that wins the race must release it instead of
+    // leaving one TimerQueueTimer (and one registration on the request-linked CTS) alive for the
+    // whole heartbeat interval — 30s by default, which at a busy log frame rate is thousands.
+    [Fact]
+    public async Task StreamAsync_releases_the_heartbeat_timer_of_every_delivered_frame()
+    {
+
+        DefaultHttpContext httpContext = new();
+
+        httpContext.Response.Body = new MemoryStream();
+
+        const int frameCount = 200;
+
+        long timersBefore = Timer.ActiveCount;
+
+        await SseStreamWriter.StreamAsync(
+            httpContext,
+            ManyFramesAsync(frameCount),
+            static (_, _) => Task.CompletedTask,
+            heartbeatInterval: TimeSpan.FromMinutes(10),
+            CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        long retained = Timer.ActiveCount - timersBefore;
+
+        Assert.True(
+            retained < frameCount / 4,
+            $"Expected abandoned heartbeat timers to be released; {retained.ToString(System.Globalization.CultureInfo.InvariantCulture)} remained active.");
+
+    }
+
+    private static async IAsyncEnumerable<string> IdleSourceAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+
+        await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
+
+        yield return "never-reached";
+
+    }
+
+    private static async IAsyncEnumerable<string> ManyFramesAsync(int count)
+    {
+
+        await Task.CompletedTask.ConfigureAwait(false);
+
+        for (int index = 0; index < count; index++)
+        {
+
+            yield return $"frame-{index.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+
+        }
+
+    }
+
     private sealed class ConcurrentMoveGuardEnumerable : IAsyncEnumerable<string>
     {
 

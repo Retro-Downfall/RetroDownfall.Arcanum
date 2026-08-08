@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -68,6 +69,13 @@ internal sealed class SessionLogBuffer
     private readonly object _gate = new();
 
     private readonly List<SessionLogEntry> _entries = new();
+
+    /// <summary>
+    /// Wrapped display lines per entry, keyed by entry id and invalidated by the exact text instance,
+    /// streaming flag and wrap width. A streaming flush therefore re-wraps only the entry whose text
+    /// actually changed instead of re-formatting the whole transcript at 20 frames per second.
+    /// </summary>
+    private readonly Dictionary<Guid, WrappedEntryLines> _wrapCache = new();
 
     public SessionLogBuffer(
         int maxEntries = DefaultMaxEntries,
@@ -177,8 +185,11 @@ internal sealed class SessionLogBuffer
     {
         lock (_gate)
         {
-            return _entries.RemoveAll(static e =>
+            int removed = _entries.RemoveAll(static e =>
                 e.Kind == SessionLogEntryKind.Status && IsEphemeralGeneratingStatus(e.Text));
+            PruneWrapCacheUnlocked();
+
+            return removed;
         }
     }
 
@@ -187,6 +198,7 @@ internal sealed class SessionLogBuffer
         lock (_gate)
         {
             _entries.Clear();
+            _wrapCache.Clear();
         }
     }
 
@@ -217,6 +229,7 @@ internal sealed class SessionLogBuffer
         lock (_gate)
         {
             _entries.Clear();
+            _wrapCache.Clear();
 
             if (showOlderMessagesMarker)
             {
@@ -315,6 +328,9 @@ internal sealed class SessionLogBuffer
     /// <summary>
     /// Copies transcript lines excluding <see cref="SessionLogEntryKind.Tool"/>.
     /// When <paramref name="lineAnchors"/> is provided, each line is tagged with the source entry id.
+    /// Unchanged entries reuse their cached wrapped lines and <paramref name="target"/> is edited in
+    /// place from the first differing line, so a streaming append costs work proportional to the
+    /// appended text rather than to the whole transcript.
     /// </summary>
     public void CopyLinesTo(
         ObservableCollection<string> target,
@@ -323,63 +339,104 @@ internal sealed class SessionLogBuffer
     {
         ArgumentNullException.ThrowIfNull(target);
 
-        List<(Guid Id, string Line)> expanded = new();
+        List<string> lines = new();
+        List<Guid?> anchors = new();
         lock (_gate)
         {
-            bool emittedAnyEntry = false;
-            foreach (SessionLogEntry e in _entries)
-            {
-                if (e.Kind == SessionLogEntryKind.Tool)
-                {
-                    continue;
-                }
-
-                IEnumerable<string> raw = FormatEntry(e).Replace("\r\n", "\n", StringComparison.Ordinal)
-                    .Split('\n');
-                IEnumerable<string> lines = wrapWidth > 1
-                    ? raw.SelectMany(line => WrapLine(line, wrapWidth))
-                    : raw;
-
-                List<string> entryLines = lines.ToList();
-                if (entryLines.Count == 0)
-                {
-                    continue;
-                }
-
-                if (emittedAnyEntry)
-                {
-                    // One blank line between transcript entries (collapsed further below if needed).
-                    expanded.Add((e.Id, string.Empty));
-                }
-
-                foreach (string line in entryLines)
-                {
-                    expanded.Add((e.Id, line));
-                }
-
-                emittedAnyEntry = true;
-            }
+            BuildDisplayLinesUnlocked(wrapWidth, lines, anchors);
         }
 
-        target.Clear();
-        lineAnchors?.Clear();
-        bool previousBlank = false;
-        foreach ((Guid id, string line) in expanded)
-        {
-            bool blank = line.Length == 0;
-            if (blank && previousBlank)
-            {
-                // At most one blank line between content (model/markdown often emits \n\n\n).
-                continue;
-            }
+        _ = CommandCenterLineSync.ApplyTailEdit(target, lines);
 
-            target.Add(line);
-            lineAnchors?.Add(id);
-            previousBlank = blank;
+        if (lineAnchors is not null)
+        {
+            lineAnchors.Clear();
+            lineAnchors.AddRange(anchors);
         }
     }
 
-    /// <summary>Soft-wrap a single line to <paramref name="width"/> columns (word-aware).</summary>
+    private void BuildDisplayLinesUnlocked(int wrapWidth, List<string> lines, List<Guid?> anchors)
+    {
+        bool emittedAnyEntry = false;
+        bool previousBlank = false;
+        foreach (SessionLogEntry e in _entries)
+        {
+            if (e.Kind == SessionLogEntryKind.Tool)
+            {
+                continue;
+            }
+
+            string[] entryLines = GetWrappedLinesUnlocked(e, wrapWidth);
+            if (entryLines.Length == 0)
+            {
+                continue;
+            }
+
+            if (emittedAnyEntry && !previousBlank)
+            {
+                // One blank line between transcript entries.
+                lines.Add(string.Empty);
+                anchors.Add(e.Id);
+                previousBlank = true;
+            }
+
+            foreach (string line in entryLines)
+            {
+                bool blank = line.Length == 0;
+                if (blank && previousBlank)
+                {
+                    // At most one blank line between content (model/markdown often emits \n\n\n).
+                    continue;
+                }
+
+                lines.Add(line);
+                anchors.Add(e.Id);
+                previousBlank = blank;
+            }
+
+            emittedAnyEntry = true;
+        }
+    }
+
+    private string[] GetWrappedLinesUnlocked(SessionLogEntry entry, int wrapWidth)
+    {
+        if (_wrapCache.TryGetValue(entry.Id, out WrappedEntryLines? cached)
+            && cached.WrapWidth == wrapWidth
+            && cached.Streaming == entry.Streaming
+            && ReferenceEquals(cached.SourceText, entry.Text))
+        {
+            return cached.Lines;
+        }
+
+        IEnumerable<string> raw = FormatEntry(entry).Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n');
+        string[] lines = (wrapWidth > 1
+            ? raw.SelectMany(line => WrapLine(line, wrapWidth))
+            : raw).ToArray();
+
+        _wrapCache[entry.Id] = new WrappedEntryLines(entry.Text, entry.Streaming, wrapWidth, lines);
+
+        return lines;
+    }
+
+    private void PruneWrapCacheUnlocked()
+    {
+        if (_wrapCache.Count <= _entries.Count)
+        {
+            return;
+        }
+
+        HashSet<Guid> live = new(_entries.Select(static e => e.Id));
+        foreach (Guid id in _wrapCache.Keys.ToArray())
+        {
+            if (!live.Contains(id))
+            {
+                _ = _wrapCache.Remove(id);
+            }
+        }
+    }
+
+    /// <summary>Soft-wrap a single line to <paramref name="width"/> display cells (word-aware).</summary>
     public static IEnumerable<string> WrapLine(string line, int width)
     {
         if (width < 2)
@@ -394,8 +451,8 @@ internal sealed class SessionLogBuffer
             yield break;
         }
 
-        // Fast path: already fits.
-        if (line.Length <= width)
+        // Fast path: printable ASCII that already fits needs no grapheme walk.
+        if (line.Length <= width && TerminalCellMetrics.IsSimpleNarrow(line))
         {
             yield return line;
             yield break;
@@ -404,15 +461,16 @@ internal sealed class SessionLogBuffer
         int index = 0;
         while (index < line.Length)
         {
-            int remaining = line.Length - index;
-            if (remaining <= width)
+            // Width is a terminal column budget, so the window ends where the cells run out — a CJK
+            // ideograph or emoji consumes two of them even though it is one or two UTF-16 units.
+            CellSlice window = TerminalCellMetrics.TakeCells(line, index, width);
+            if (window.ReachedEnd)
             {
                 yield return line[index..];
                 yield break;
             }
 
-            int take = width;
-            int sliceEnd = index + take;
+            int sliceEnd = window.EndIndex;
 
             // Prefer breaking on whitespace within the window.
             int breakAt = -1;
@@ -436,7 +494,7 @@ internal sealed class SessionLogBuffer
             }
             else
             {
-                // Hard break for unbroken tokens longer than width.
+                // Hard break for unbroken tokens longer than width, on a grapheme boundary.
                 yield return line[index..sliceEnd];
                 index = sliceEnd;
             }
@@ -483,7 +541,10 @@ internal sealed class SessionLogBuffer
             ? ReasoningTruncationMarker
             : TruncationMarker;
         int keep = Math.Max(0, max - marker.Length);
-        return text[..keep] + marker;
+
+        // A character-count cutoff can land between the halves of a surrogate pair; the shared helper
+        // nudges the boundary back so an astral-plane glyph is kept or dropped whole.
+        return text[..Utf8Truncation.SafeCharSliceLength(text, keep)] + marker;
     }
 
     private void TrimUnlocked()
@@ -492,5 +553,14 @@ internal sealed class SessionLogBuffer
         {
             _entries.RemoveAt(0);
         }
+
+        PruneWrapCacheUnlocked();
     }
+
+    /// <summary>Cached wrapped display lines for one entry at one wrap width.</summary>
+    private sealed record WrappedEntryLines(
+        string SourceText,
+        bool Streaming,
+        int WrapWidth,
+        string[] Lines);
 }

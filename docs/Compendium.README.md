@@ -151,10 +151,10 @@ service directly and does not implement the wizard's other steps.
 
 ## Complete configuration reference
 
-This is the sole complete documentation reference for `arcanum.json`. All 143 editable paths in
-`SettingDescriptors.All` appear below. Six additional `providers.models.reasoning.*` capability
-declarations are documented because they remain part of the public configuration contract even
-though Compendium treats those provider facts as read-and-preserve rather than editable choices.
+This is the sole complete documentation reference for `arcanum.json`. All 155 editable paths in
+`SettingDescriptors.All` appear below, and that total is pinned by
+`SettingDescriptorCoverageTests.Editable_descriptor_count_matches_the_documented_total`, so a
+descriptor change updates the code, the test, and this page together.
 Each key uses the exact camel-case dot path; `providers.models.*` applies to every model in every
 provider, and `daemon.jobs.*` applies to every job. JSON nests these paths beneath an exact
 top-level `"Arcanum"` object.
@@ -195,19 +195,23 @@ secret values use only the dedicated environment references documented below.
 | `providers.credentialEnvironmentVariable` | `string?`, `null` | portable, case-insensitively unique environment name | Exact API-key reference; omission derives `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY`. |
 | `providers.models.name` | `string`, `""` | nonblank; unique within provider | Provider-advertised model ID. A bare string model entry is also accepted. |
 | `providers.models.supportsVision` | `bool`, `false` | — | Declares image-content support. |
-| `providers.models.reasoning.controlSupport` | enum `"none"` | `none`, `effort`, `budget`, `effortAndBudget` | Explicit supported reasoning controls. |
-| `providers.models.reasoning.supportsSummary` | `bool`, `false` | — | Declares client-safe summary output. |
-| `providers.models.reasoning.supportsFull` | `bool`, `false` | — | Declares client-safe full output; never authorizes protected-reasoning disclosure. |
-| `providers.models.reasoning.supportsStreaming` | `bool`, `false` | — | Declares incremental client-safe reasoning output. |
-| `providers.models.reasoning.reportsReasoningTokens` | `bool`, `false` | — | Usage reports reasoning as a completion-token subset. |
-| `providers.models.reasoning.allowsClientOutput` | `bool`, `false` | — | Permits projection of declared client-safe reasoning. |
 | `providers.models.reasoning.wireDialect` | enum `"standard"` | `standard`, `openRouter`, `topLevelReasoningBudget`, `anthropicThinking` | Exact request shape; never inferred from names. |
-| `providers.models.reasoning.maxBudgetTokens` | `int?`, `null` | 1–2,097,152 | Optional numeric-budget ceiling; requires budget support and a compatible nonstandard dialect. |
+| `providers.models.reasoning.maxBudgetTokens` | `int?`, `null` | 1–2,097,152 | Optional numeric-budget ceiling; the adapter requires a nonstandard dialect for it and rejects a numeric budget under `standard`. |
 | `providers.contextWindowLimit` | `int`, `8192` | 256–2,097,152 | Factual provider context capacity. |
 
 `providers` defaults to `[]`; a usable configuration supplies at least one
 valid provider and model. A model's optional `reasoning` object defaults to
 `null`.
+
+A model's `reasoning` block carries exactly the two keys above.
+`providers.models.reasoning.controlSupport`, `.supportsSummary`, `.supportsFull`,
+`.supportsStreaming`, `.reportsReasoningTokens`, and `.allowsClientOutput` are not part of the
+configuration contract: `ModelReasoningSettings` has no such members, the `ModelEntry` JSON
+converter skips them on read and never writes them, and the host aborts startup on a file that
+declares any of them (`ConfigurationStartupValidator` via `ConfigurationValidator.RejectObsoleteKeys`).
+Compendium loads such a file without complaint and drops the keys on the next save, so a file that
+still carries them must be edited before the host will start. Arcanum derives the corresponding
+behaviour from the declared wire dialect and budget instead.
 
 ### Security and workspaces
 
@@ -622,6 +626,14 @@ archive and reports the plan without touching the installation.
 
 ## Saving and validation
 
+Descriptor validation runs in the editor as values change and blocks Save: an out-of-bounds,
+malformed, or otherwise rejected value is rendered inline beneath its own control, Save is
+unavailable while any field is invalid, and an attempt to save anyway names every offending
+descriptor key in an `Invalid settings` dialog. No invalid field is silently dropped from the
+written file. The JSON dictionary editors — pricing model overrides and custom profiles — parse
+their text against the source-generated configuration context before Save and report a per-field
+parse error in the same place.
+
 Save runs `ConfigurationValidator`, rejects configuration files larger than the code-owned 10 MiB
 ceiling before JSON parsing, then takes the same current-user cross-process configuration
 transaction as preset and CLI writers. Inside that transaction, its existing local save lock
@@ -629,10 +641,22 @@ serializes the owner-only temporary write, durable flush, atomic `arcanum.json` 
 fingerprint acknowledgement, and staging cleanup. Host/API loading performs a
 source-generated fail-closed walk before binding, grouping all unknown paths
 while preserving pricing and workspace-check dictionary keys. Validation
-pointers use the same dot paths as descriptors.
+pointers use the same dot paths as descriptors, and the pointer-keyed error surface is the union of
+the editor's field errors and the errors returned by the last write attempt. Every unsuccessful save
+raises a dialog and leaves its message in the SaveBar, including a write refused by the fingerprint
+check, so nothing fails silently behind the unsaved-changes text.
 
-Cancel restores the in-memory snapshot. Reload re-reads disk after confirmation
-when local edits exist. A file watcher reports external changes and blocks
+A read that fails leaves the editor bound to fabricated defaults rather than the operator's values,
+so it fails closed: Save is disabled, the section tabs are disabled, and the SaveBar shows a
+persistent `Could not read arcanum.json - repair the file or Reload.` banner with Reload always
+reachable. The store independently records an unreadable fingerprint, so a write over a
+never-successfully-loaded configuration is refused at the store layer with a message explaining that
+saving would replace the file with default settings.
+
+Cancel restores the in-memory snapshot and discards local edits; it does not clear an on-disk-change
+block, which only a Reload resolves. Reload re-reads disk after confirmation when local edits exist,
+and closing the window with unsaved edits — close button, `Cmd+W`, or `File > Exit` — prompts
+`Discard` or `Keep editing` in the same way. A file watcher reports external changes and blocks
 overwriting them until reload. Each successful read or ordinary Save acknowledges a SHA-256
 fingerprint of the exact configuration bytes it loaded or wrote. A delayed watcher event matching
 that fingerprint is therefore recognized as the same edit—including a preset transaction followed

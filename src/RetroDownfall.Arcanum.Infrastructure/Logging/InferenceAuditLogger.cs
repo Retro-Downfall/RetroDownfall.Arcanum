@@ -295,13 +295,27 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
     private void PrepareForNewDate(string directory, string dateStamp)
     {
 
+        try
+        {
+
+            Directory.CreateDirectory(directory);
+
+            SecureFilePermissions.ApplyOwnerOnlyDirectory(directory);
+
+        }
+        catch (Exception ex)
+        {
+            // Leave the date unmarked so the next turn retries preparation once the transient cause
+            // clears, rather than silently dropping the rest of the UTC day's audit trail.
+            _logger.LogError(ex, "Failed to create or secure inference audit log directory {Directory}; audit entries for {DateStamp} will be dropped.", directory, dateStamp);
+
+            return;
+
+        }
+
         _lastPreparedDateStamp = dateStamp;
 
         _sizeCapWarnedForCurrentDate = false;
-
-        Directory.CreateDirectory(directory);
-
-        SecureFilePermissions.ApplyOwnerOnlyDirectory(directory);
 
     }
 

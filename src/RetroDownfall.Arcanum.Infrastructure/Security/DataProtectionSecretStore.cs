@@ -223,6 +223,14 @@ public sealed class DataProtectionSecretStore(
 
     }
 
+    /// <summary>
+    /// Test seam for <see cref="WriteProtectedAsync"/>. Production callers only ever pass paths built
+    /// by <see cref="ArcanumPaths"/>, which always name a file inside the secret store directory, so
+    /// the rooted-path guard on the directory cannot be driven from the public surface.
+    /// </summary>
+    internal static Task WriteProtectedForTestsAsync(string path, string plainText, IDataProtector protector) =>
+        WriteProtectedAsync(path, plainText, protector);
+
     private static async Task WriteProtectedAsync(string path, string plainText, IDataProtector protector)
     {
 
@@ -248,6 +256,11 @@ public sealed class DataProtectionSecretStore(
                 await stream.WriteAsync(cipher).ConfigureAwait(false);
 
                 await stream.FlushAsync().ConfigureAwait(false);
+
+                // FlushAsync only drains the managed buffer to the OS. grimoire-key.dat has no
+                // OS-credential copy, so the rename must not be able to outrun the data: fsync
+                // before the atomic replace, matching GrimoireKdfSidecarFile.Write.
+                stream.Flush(flushToDisk: true);
 
             }
 

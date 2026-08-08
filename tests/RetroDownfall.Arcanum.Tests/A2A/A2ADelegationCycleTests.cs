@@ -472,9 +472,7 @@ public sealed class A2ADelegationCycleTests
     private sealed class StubPacer : IUnseenServantPacer
     {
 
-        public void SetDynamicInterval(string jobName, int intervalMinutes)
-        {
-        }
+        public bool SetDynamicInterval(string jobName, int intervalMinutes) => true;
 
         public int GetEffectiveInterval(UnseenServantJob job) => job.IntervalMinutes;
 

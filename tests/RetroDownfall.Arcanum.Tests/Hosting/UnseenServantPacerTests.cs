@@ -121,4 +121,44 @@ public sealed class UnseenServantPacerTests
 
     }
 
+
+    /// <summary>
+    /// The pacer cannot apply an override for a name absent from Arcanum:Daemon:Jobs, so it must say
+    /// so — <c>adjust_initiative</c> reported success for a job it never touched.
+    /// </summary>
+    [Fact]
+    public void SetDynamicInterval_reports_failure_for_a_job_not_in_configuration()
+    {
+
+        FakeEventBus bus = new();
+
+        UnseenServantPacer pacer = new(bus, new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()), CreateScopeFactory(), NullLogger<UnseenServantPacer>.Instance);
+
+        Assert.False(pacer.SetDynamicInterval("unconfigured", intervalMinutes: 15));
+
+    }
+
+    [Fact]
+    public void SetDynamicInterval_reports_success_for_a_configured_job()
+    {
+
+        FakeEventBus bus = new();
+
+        ArcanumSettings settings = new()
+        {
+            Daemon = new DaemonSettings
+            {
+                Jobs =
+                [
+                    new UnseenServantJob { Name = "watch", TargetSpell = "patrol" },
+                ],
+            },
+        };
+
+        UnseenServantPacer pacer = new(bus, new TestOptionsMonitor<ArcanumSettings>(settings), CreateScopeFactory(), NullLogger<UnseenServantPacer>.Instance);
+
+        Assert.True(pacer.SetDynamicInterval("watch", intervalMinutes: 15));
+
+    }
+
 }

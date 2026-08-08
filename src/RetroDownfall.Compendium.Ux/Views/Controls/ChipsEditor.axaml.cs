@@ -17,6 +17,15 @@ public partial class ChipsEditor : UserControl
     public static readonly StyledProperty<string> TextProperty =
         AvaloniaProperty.Register<ChipsEditor, string>(nameof(Text), defaultValue: string.Empty, defaultBindingMode: Avalonia.Data.BindingMode.TwoWay);
 
+    public static readonly StyledProperty<string> ValidationMessageProperty =
+        AvaloniaProperty.Register<ChipsEditor, string>(nameof(ValidationMessage));
+
+    public static readonly StyledProperty<string> KeyProperty =
+        AvaloniaProperty.Register<ChipsEditor, string>(nameof(Key));
+
+    public static readonly StyledProperty<IReadOnlyDictionary<string, string>?> ValidationErrorsProperty =
+        AvaloniaProperty.Register<ChipsEditor, IReadOnlyDictionary<string, string>?>(nameof(ValidationErrors));
+
     public string Label
     {
 
@@ -44,10 +53,57 @@ public partial class ChipsEditor : UserControl
 
     }
 
+    public string ValidationMessage
+    {
+
+        get => GetValue(ValidationMessageProperty);
+
+        set => SetValue(ValidationMessageProperty, value);
+
+    }
+
+    public string Key
+    {
+
+        get => GetValue(KeyProperty);
+
+        set => SetValue(KeyProperty, value);
+
+    }
+
+    public IReadOnlyDictionary<string, string>? ValidationErrors
+    {
+
+        get => GetValue(ValidationErrorsProperty);
+
+        set => SetValue(ValidationErrorsProperty, value);
+
+    }
+
     static ChipsEditor()
     {
 
         TextProperty.Changed.AddClassHandler<ChipsEditor>((control, _) => control.RenderChips());
+
+        KeyProperty.Changed.AddClassHandler<ChipsEditor>((control, _) => control.RefreshValidation());
+
+        ValidationErrorsProperty.Changed.AddClassHandler<ChipsEditor>((control, _) => control.RefreshValidation());
+
+    }
+
+    private void RefreshValidation()
+    {
+
+        if (string.IsNullOrEmpty(Key) || ValidationErrors is null)
+        {
+
+            ValidationMessage = string.Empty;
+
+            return;
+
+        }
+
+        ValidationMessage = ValidationErrors.TryGetValue(Key, out string? message) ? message : string.Empty;
 
     }
 
@@ -63,7 +119,8 @@ public partial class ChipsEditor : UserControl
     private void OnNewItemKeyDown(object? sender, KeyEventArgs e)
     {
 
-        if (e.Key == Key.Enter)
+        // Fully qualified: the descriptor Key property shadows the Avalonia.Input.Key enum here.
+        if (e.Key == Avalonia.Input.Key.Enter)
 
         {
 

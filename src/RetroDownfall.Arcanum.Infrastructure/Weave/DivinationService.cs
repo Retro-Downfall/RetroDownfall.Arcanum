@@ -307,6 +307,10 @@ internal sealed class DivinationService(
 
         int take = Math.Max(0, maxResults);
 
+        // The query vector is invariant across the whole scan, so its norm is computed once here rather
+        // than re-derived inside the SIMD loop for every candidate row.
+        double queryNormSquared = EmbeddingBlobCodec.NormSquared(queryVector);
+
         // Min-heap by similarity: when full, the peek is the weakest of the current top-K.
         PriorityQueue<string, float> topK = new();
 
@@ -319,9 +323,13 @@ internal sealed class DivinationService(
 
             byte[] blob = (byte[])reader[1];
 
-            float[] candidate = EmbeddingBlobCodec.Decode(blob);
-
-            float similarity = EmbeddingBlobCodec.CosineSimilarity(queryVector, candidate);
+            // Scored straight off the BLOB. Decoding into a fresh float[] would double the per-row
+            // allocation of a scan that reads every in-scope row on every retrieval, for a copy nothing
+            // outlives this iteration.
+            float similarity = EmbeddingBlobCodec.CosineSimilarity(
+                queryVector,
+                queryNormSquared,
+                EmbeddingBlobCodec.AsVector(blob));
 
             if (similarity < similarityThreshold || take == 0)
             {

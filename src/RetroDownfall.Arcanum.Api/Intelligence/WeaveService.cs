@@ -319,20 +319,28 @@ public sealed class WeaveService(
         for (int offset = 0; offset < text.Length; offset += step)
         {
 
-            int length = Math.Min(chunkSizeChars, text.Length - offset);
+            // Never begin a chunk on an orphaned low surrogate either. Window starts land on multiples
+            // of `step`, which is computed from the settings and knows nothing about the text, so an
+            // astral character straddling that index would otherwise open the next chunk with half a
+            // character — serialized as U+FFFD by the embedding provider. The previous window already
+            // carried the whole character (its own tail guard kept the pair intact), so stepping past
+            // the low half loses no coverage.
+            int start = offset > 0 && char.IsLowSurrogate(text[offset]) ? offset + 1 : offset;
 
-            bool isFinalChunk = offset + length >= text.Length;
+            if (start >= text.Length)
+            {
+                break;
+
+            }
 
             // Never end a non-final chunk on a lone high surrogate — the next window (offset + step,
             // computed independently of this chunk's length) still covers the full character, so
             // shaving one char off this chunk's tail cannot create a coverage gap in the overall scan.
-            if (!isFinalChunk && length > 0 && char.IsHighSurrogate(text[offset + length - 1]))
-            {
-                length--;
+            int length = Utf8Truncation.SafeCharSliceLength(text.AsSpan(start), chunkSizeChars);
 
-            }
+            bool isFinalChunk = start + length >= text.Length;
 
-            chunks.Add((text.Substring(offset, length), offset));
+            chunks.Add((text.Substring(start, length), start));
 
             if (isFinalChunk)
             {

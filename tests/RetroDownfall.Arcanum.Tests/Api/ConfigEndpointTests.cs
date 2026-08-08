@@ -395,6 +395,77 @@ public sealed class ConfigEndpointTests
     }
 
     [SkippableFact]
+    public async Task PostConfigValidate_WithSemanticValidationFailure_ReturnsBadRequest()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // Blank provider name plus an empty model list clears the raw-tree gate and fails only in
+        // ConfigurationValidator.Validate — the branch that used to answer 200 with isSuccess:false, so
+        // status-code-driven scripts (curl -f, raise_for_status) treated invalid config as validated.
+        const string payload =
+            """
+            {
+              "providers": [
+                {
+                  "name": "",
+                  "type": "OpenAICompatible",
+                  "models": []
+                }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/config/validate",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("Configuration.ValidationFailed", json, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+    public async Task PostConfigValidate_WithValidSettings_ReturnsOk()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        const string payload =
+            """
+            {
+              "providers": [
+                {
+                  "name": "local",
+                  "type": "OpenAICompatible",
+                  "endpoint": "http://localhost:11434/v1",
+                  "models": ["mistral"]
+                }
+              ]
+            }
+            """;
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/config/validate",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Contains(
+            "\"isSuccess\":true",
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
     public async Task PostConfigValidate_WithLlamaCppServerType_ReturnsMigrationValidationFailed()
     {
 

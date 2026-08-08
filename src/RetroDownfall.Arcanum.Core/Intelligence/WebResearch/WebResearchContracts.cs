@@ -42,6 +42,14 @@ public sealed record WebReadOptions
     public int MaxLinkUrlChars { get; init; } = 2_048;
 
     public int MaxRedirects { get; init; } = 5;
+
+    /// <summary>
+    /// Optional per-hop egress ward evaluated against every redirect target before it is dialed.
+    /// The campaign Sanctum allowed-domain list is otherwise checked only on the initial model-supplied
+    /// URL, so one <c>302</c> from an allowlisted host would convert a contained campaign into arbitrary
+    /// outbound egress. <c>null</c> leaves redirects bounded by the SSRF guard alone.
+    /// </summary>
+    public Func<Uri, CancellationToken, ValueTask<bool>>? RedirectEgressWard { get; init; }
 }
 
 /// <summary>Provider-supported Perplexity models exposed through public configuration.</summary>

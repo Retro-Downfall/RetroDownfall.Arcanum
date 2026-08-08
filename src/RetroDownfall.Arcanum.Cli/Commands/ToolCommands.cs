@@ -158,7 +158,9 @@ public sealed class ToolCommands(
 
         }
 
-        AnsiConsole.WriteLine(result.Value.Result.GetRawText());
+        // Raw stdout: Spectre would render the document as a Text renderable and hard-wrap it at the
+        // profile width, putting literal newlines inside JSON string literals.
+        Console.Out.WriteLine(result.Value.Result.GetRawText());
 
         return 0;
 
