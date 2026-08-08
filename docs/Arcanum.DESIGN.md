@@ -679,6 +679,92 @@ Auto-launched processes do not expose `arcanum serve stop` or `daemon stop`.
 
 **MSBuild:** `PublishAot` (the shipping native image on non-macOS RIDs), `IsAotCompatible`, `EnableConfigurationBindingGenerator`. `System.CommandLine 2.0.10` and `System.CommandLine 2.0.10.Abstractions` are analyzer/source-generator packages with no runtime DLL reference, so no `TrimmerRootAssembly`, `[DynamicDependency]`, or IL-warning suppression is needed for CLI parsing. **Terminal.Gui** is referenced only from `Cli`; first-party AOT IL for the Command Center bootstrap is gated by `./scripts/verify-aot-il-warnings.sh` (method-level suppressions on `CommandCenterApp` only — no project-level blanket suppress). Transitive vulnerable packages: `dotnet list package --vulnerable --include-transitive` on the Cli project.
 
+### 4.4.2 Subsystem diagnostics and safe repairs (`arcanum doctor`)
+
+`arcanum doctor` is a registry, not a switchboard. Two contracts in
+`Core/Cli/DoctorDiagnostics.cs` carry the whole surface:
+
+- **`IDoctorCheck`** — `Id`, `Name`, `Subsystem`, `RequiresNetwork`, and
+  `InspectAsync` returning a `DoctorFinding(DoctorOutcome, Detail, Remedies)`. Implementations must
+  be **strictly read-only**: not creating a directory, not taking a lock, not opening a database for
+  write. The one place this is subtle is the maintenance lock — `ArcanumMaintenanceLock.IsHeld`
+  answers by *acquiring*, which creates the file, so `runtime.maintenance_lock` opens the existing
+  path with `FileShare.None` instead and treats a sharing violation as held.
+- **`IDoctorRepair`** — `Id`, `Subsystem`, `DetectorIds`, `Description`, and a side-effect-free
+  `PlanAsync` separate from `ApplyAsync`. Diagnosis, repair planning, and repair application are
+  three distinct steps; only an explicit `--apply` reaches the third.
+
+**Outcome vocabulary.** `Skipped < Healthy < Unavailable < Degraded < Unhealthy`, ordered so
+aggregation is a plain maximum. `Skipped` sorts below `Healthy` because a check whose precondition is
+absent is not evidence of a fault. The pre-#33 `ok`/`warn`/`fail` string survives as
+`DoctorCheck.Status`, now *derived* from the outcome by `DoctorOutcomes.ToLegacyStatus`, so the
+published `--json` shape is extended rather than replaced and existing consumers are unaffected.
+
+**Id namespace.** Every id is `subsystem.snake_case`, and `DoctorDiagnosticRunner` enforces that the
+prefix matches the declared `DoctorSubsystem` at construction, alongside id uniqueness and the rule
+that every repair's `DetectorIds` name registered checks. A miswired registration therefore fails on
+the first `arcanum doctor` rather than silently omitting a subsystem from the report. The same
+namespace is what `--only`/`--skip` resolve against, so `--only grimoire` and
+`--only grimoire.integrity` share one vocabulary.
+
+**Containment.** A check registered on the runner that throws becomes an `Unavailable` finding naming
+only the exception *type*. Both halves matter: doctor is the command an operator runs because the
+installation is already broken, so one failing probe must not take down the other twenty-odd; and an
+exception message is an uncontrolled string that may carry a path, a response body, or a credential.
+Operator cancellation is the sole exception and always propagates. The twelve pre-#33 checks are
+composed by `DoctorCommand` outside the runner and still catch their own exceptions individually, as
+they always did — several of them put the exception *message* into their detail, which is why new
+checks belong on the runner.
+
+**Repair contract.** Every repair is narrow, has a matching read-only detector, produces a no-change
+dry-run plan, and converges — a second successful apply reports `AlreadyConverged` with no steps.
+Repairs only ever narrow permissions, create a missing managed directory, or delete verified crash
+residue. Nothing regenerates a key over existing ciphertext, deletes user rows, or rewrites a corrupt
+encrypted database; those states fail closed with restore guidance (§5.4.6, §5.4.9). Safety
+preconditions are re-evaluated at apply time, not trusted from the plan: `runtime.remove_stale_pid`
+re-reads the PID file and refuses while any process holds that id, because
+`Process.GetProcessById` proves liveness but cannot prove identity against a recycled id.
+
+**Non-billable network.** `providers.reachability` reuses `SetupProviderProbe` — one guarded
+`GET {endpoint}/models` per provider, never a completion — and is the only check that leaves the
+machine, so it is gated behind `--include-network`. Perplexity has no non-billable endpoint, so
+web research is diagnosed by credential status only. Endpoint URLs are never printed.
+
+**Host relay over re-implementation.** `host.health_components` surfaces the full
+`HealthComponentDto[]` from `GET /api/health` rather than re-deriving Grimoire, MCP, provider,
+embedding, sandbox, workspace, and Conclave verdicts CLI-side, where several of those services are
+not even registered. An unreachable host is `Unavailable`, never a failure.
+
+**Placement.** Contracts, the runner, the outcome algebra, and the remediation-command catalog live
+in `Core/Cli`; filesystem, configuration, credential, Grimoire, and operation checks and every repair
+live in `Infrastructure/Diagnostics`; the checks that need CLI-owned services
+(`ISetupProviderProbe`, `ArcanumHealthProbe`) live in `Cli/Diagnostics`. All of those are inside the
+coverage denominator.
+
+The twelve pre-#33 checks are the exception: they remain inline in `DoctorCommand`, which is
+`[ExcludeFromCodeCoverage]` and therefore outside it. They were left in place because rewriting a
+published `--json` surface and expanding it in one change would make any regression impossible to
+attribute; `LegacyDoctorChecks` gives them an id, subsystem, outcome, and remedy without touching
+their behavior. They resolve `--only`/`--skip` themselves rather than being filtered after the fact,
+because several of them probe the network, load the tokenizer, or scan encrypted blob storage —
+filtering results after paying for them is not filtering. Migrating them onto `IDoctorCheck` is the
+natural follow-up.
+
+**Outcome derivation runs in both directions.** A registry check reports a `DoctorOutcome` and the
+runner derives `Status` from it. A legacy check reports the `ok`/`warn`/`fail` string and
+`LegacyDoctorChecks.Enrich` back-derives the outcome, which cannot recover `Unavailable` or
+`Skipped` — both collapse into the legacy vocabulary. One case is corrected explicitly: an optional
+`arcanum.json` or `mcp.json` that simply is not there reports `warn`, and projecting that onto
+`Degraded` would make `--strict` fail every default installation, so it is mapped to `Skipped` and
+its status restated as `ok`.
+
+**Remediation commands are contract-tested.** `DoctorRemedyCommands` holds every command a
+`DoctorRemedy` may name, and `DoctorRemedyCommandContractTests` parses each against the real command
+tree. This exists because the pre-#33 guidance pointed at `arcanum config set-key`, a verb this tree
+has never had; a renamed or removed verb is now a build failure rather than shipped bad advice. The
+legacy checks' *prose* detail still embeds a few command names inline (`arcanum setup`,
+`arcanum key show`) that the catalog does not cover — those move under it when those checks migrate.
+
 ### 4.5 `RetroDownfall.Arcanum.Api.DevHost` (console executable, debug-only)
 
 Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Core`, and `Infrastructure`; mirrors `ServeCommand` wiring. Not the production entrypoint. To catch AOT issues during F5, the project sets `PublishAot`, `IsAotCompatible`, and `EnableConfigurationBindingGenerator` as **analysis signals** (not a shipped native image). On first run generates an API key and prints it to stdout.
@@ -3118,6 +3204,15 @@ including preset provenance/rollback/recovery state, is group/other-readable on 
 to `Everyone`/`Users` on Windows. Pre-existing files are not modified automatically — operators can
 run `arcanum doctor --fix-permissions` to repair the checked paths.
 
+The same inventory is exposed read-only by `SecureFilePermissions.InspectOwnerOnlyPosture`, which
+reports `(Path, IsDirectory, Exists, IsOwnerOnly)` per path without creating or modifying anything,
+and is widened by the caller with the per-provider credential mirrors this installation actually
+uses. That is the detector behind the `permissions.posture` diagnostic and the plan behind the
+`permissions.apply_owner_only` repair (§4.4.2); a path that does not exist reports owner-only, since
+a secret that was never written is not a permission fault. `--fix-permissions` is now an alias for
+that repair with `--apply` and no longer short-circuits the diagnostic, though it retains its
+no-prompt automation contract.
+
 ### 11.14 Wards (Forbidden Arts)
 
 **Purpose:** Gate high-risk tool invocations (**Forbidden Arts**) until an operator explicitly allows or denies them. Separate from the `ask_human` MCP tool (information gathering).
@@ -3971,6 +4066,8 @@ reinstall.
 | Lexicon internal-tool tests | Enabled tools-list advertisement, disabled omission of Lexicon and legacy Lore tools, service-backed create/delete, and disabled tool error. |
 | `SemanticRouterTests` / `LexiconEntityExtractor` cases | Spell+entities result, every distinct parsed entity preserved beyond the former eight total, entities surviving `NONE`, missing→empty, fenced/malformed JSON, no-call empty prompt, and case-insensitive deduplication. |
 | `CliContractTests` / `DoctorCommandJsonTests` | Recursive global flag placement; stdout/stderr separation; ANSI stripping; one-document JSON wrapping; fail-closed redirected confirmation and `--yes`; closed exit codes; redacted network/unhandled failures; typed doctor JSON. |
+| `DoctorDiagnosticRunnerTests` | Legacy status derived from outcome; aggregation takes the most severe finding while `Skipped` never worsens it; failure requires `Unhealthy` unless `--strict`; id/subsystem projection; network checks skipped without `--include-network`; `--only`/`--skip` by id and by subsystem; unrecognized selector fails naming `arcanum doctor list`; a throwing check degrades to `Unavailable` without leaking its message; operator cancellation is never swallowed; repairs plan without applying, apply exactly once, fail closed, and are rejected when `--apply` names none; duplicate ids, mis-namespaced ids, and unregistered detectors are rejected at construction. |
+| `PermissionPostureTests` / `DoctorDiagnosticsCommandTests` / `DoctorRemedyCommandContractTests` | Owner-only inventory including per-provider mirrors; inspection creates nothing; a missing path is not a fault; plan lists only differing paths and changes nothing; apply converges on the second run; no repair step records file contents. End-to-end: every check carries a stable namespaced id, subsystem, and outcome; the aggregate outcome matches the findings; unrecognized ids and `--apply` without `--repair` exit `2`; network probes stay skipped by default; `doctor list`/`explain` emit one typed document; a declined repair is a success that changed nothing; `--fix-permissions --json` emits the typed report; no credential value reaches stdout or stderr. Every remediation command parses against the real command tree, closing the obsolete-`config set-key` class of defect. |
 | `CliJsonContextCoverageTests` | Convention-discovered `*Payload` types are all reachable from a source-generated context; property metadata resolves without reflection; camelCase casing; one compact document; optional members present as explicit `null`; enums as stable names, not ordinals; fixed two-field error envelope; a serialization failure emits that envelope instead of a partial document; the dispatcher exposes no reflection-serialization entry point. |
 | `ProviderCredentialStoreTests` / `ProviderCredentialIdentityParityTests` / `ProviderApiKeyResolutionTests` / `KeyCommandTests` | Per-provider OS-store plus encrypted-mirror round trips with no plaintext at rest; provider isolation; unavailable-store mirror fallback and one-time OS promotion; fail-closed corrupt mirror with no silent regeneration; idempotent repeated saves and safe delete; presence/status without disclosure; empty-credential rejection; account/environment normalization parity and mirror paths confined to the secret-store directory; environment-reference-before-secure-store resolution reaching chat, embeddings, the health probe, and health reporting; credential-inventory kinds, statuses, and recovery guidance with no value in `--json`. |
 | `SetupStateMachineTests` / `SetupProviderProbeTests` / `SetupPlannerTests` (via `SetupCommandTests`) / `SetupCommandTests` / `SetupInteractiveTests` | Documented step order, back/re-enter, and rejection of an unknown step; probe classification for reachable, model-absent, empty-model-list, authentication-failed, other-status, malformed, TLS, DNS/connection, timeout, and guard-rejected endpoints, non-billable `/models`-only request, bearer-token handling, five-second budget, and endpoint-class derivation; plan-writes-nothing with a precise masked diff and full completion summary; ordered commit of credential → configuration → preset → context; blocked commit on failed validation and explicit override; configuration restore plus new-credential deletion on preset failure; actionable partial-commit report when an existing credential was replaced; idempotent re-run and preservation of unowned settings; no secret in argv, stdout, stderr, or JSON, including `SetupDraft.ToString()`; abort at every step index and on declining the final plan leaves configuration, credentials, and context untouched. |
@@ -4202,7 +4299,9 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   selector, passes only server-owned identifiers in a versioned one-argument envelope, and keeps
   development/current-CLI fallbacks when a desktop application is unavailable.
 - **Frameless `run`/`ask`/`chat`:** Spectre input/output, effective-context resolution, and bounded file/image staging; live `run` sources use the normal host attachment pipeline while its dry-run is non-persistent. TTY/`NO_COLOR` theme gating and atomic owner-only `cli-context.json` plus the temporary `cli-session.txt` mirror remain shared CLI infrastructure.
-- **doctor:** themed panels + optional `--json` `DoctorReport`.
+- **doctor:** themed panels per subsystem finding, a repair plan/apply panel, and a summary; optional
+  `--json` `DoctorReport` and `--json` `DoctorCatalog` for `doctor list`/`doctor explain`. The
+  diagnostic registry, outcome vocabulary, and repair plan/apply contract are §4.4.2.
 - **Transcript refresh is incremental and cell-measured.** A streaming flush re-wraps only the
   changed entry and edits only the changed tail lines; a burst of flushes coalesces to one rebuild.
   `SessionLogBuffer` memoizes wrapped lines per entry, keyed by entry id, the exact text instance,

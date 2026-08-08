@@ -37,7 +37,8 @@ public sealed record HealthProbeResult(
     int? StatusCode,
     TimeSpan Latency,
     string? Error,
-    string? DurableOperationsDetail = null);
+    string? DurableOperationsDetail = null,
+    IReadOnlyList<HealthComponentDto>? Components = null);
 
 /// <summary>
 /// Authenticated probe of <c>GET /api/health</c>. Distinguishes auth failure from
@@ -85,7 +86,7 @@ internal static class ArcanumHealthProbe
 
             if (response.IsSuccessStatusCode)
             {
-                string? durableOperations = await TryReadDurableOperationsDetailAsync(
+                IReadOnlyList<HealthComponentDto>? components = await TryReadComponentsAsync(
                     response,
                     cts.Token).ConfigureAwait(false);
                 return new HealthProbeResult(
@@ -93,7 +94,10 @@ internal static class ArcanumHealthProbe
                     statusCode,
                     sw.Elapsed,
                     null,
-                    durableOperations);
+                    components
+                        ?.FirstOrDefault(static component => component.Name == "DurableOperations")
+                        ?.Detail,
+                    components);
             }
 
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -126,7 +130,13 @@ internal static class ArcanumHealthProbe
 
     }
 
-    private static async Task<string?> TryReadDurableOperationsDetailAsync(
+    /// <summary>
+    /// The whole component array, not just the durable-operations row. The host already computes a
+    /// per-subsystem verdict for Grimoire, MCP, providers, embeddings, file encryption, the tool-child
+    /// sandbox, workspace checks, and Conclave; surfacing it lets <c>arcanum doctor</c> report those
+    /// subsystems without a second, divergent CLI-side implementation of each one.
+    /// </summary>
+    private static async Task<IReadOnlyList<HealthComponentDto>?> TryReadComponentsAsync(
         HttpResponseMessage response,
         CancellationToken cancellationToken)
     {
@@ -139,9 +149,7 @@ internal static class ArcanumHealthProbe
                 stream,
                 ArcanumJsonContext.Default.ApiResponseHealthReportDto,
                 cancellationToken).ConfigureAwait(false);
-            return envelope?.Data?.Components
-                .FirstOrDefault(static component => component.Name == "DurableOperations")
-                ?.Detail;
+            return envelope?.Data?.Components;
         }
         catch (JsonException)
         {
