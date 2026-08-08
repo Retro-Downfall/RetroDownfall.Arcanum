@@ -28,7 +28,7 @@ public sealed class ProvingGroundsArbiter(
         int maxOutputChars = ArcanumSettingClamps.MaxPingPromptChars(
             ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars);
 
-        string boundedOutput = output.Length > maxOutputChars ? output[..maxOutputChars] : output;
+        string boundedOutput = output[..Utf8Truncation.SafeCharSliceLength(output, maxOutputChars)];
 
         List<InquisitorVerdict> verdicts = new(inquisitors.Count);
 
@@ -322,7 +322,7 @@ public sealed class ProvingGroundsArbiter(
             return value;
         }
 
-        return value[..maxLength] + "...";
+        return value[..Utf8Truncation.SafeCharSliceLength(value, maxLength)] + "...";
     }
 
 }

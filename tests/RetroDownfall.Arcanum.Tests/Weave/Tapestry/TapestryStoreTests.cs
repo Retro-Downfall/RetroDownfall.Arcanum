@@ -540,6 +540,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         IReadOnlyList<TapestryLeafSource> leaves = await _store!.EnumerateLeafSourcesAsync(
             WorkspaceScope,
             TestDimensions,
+            includeEmbeddings: true,
             CancellationToken.None);
 
         TapestryLeafSource leaf = Assert.Single(leaves);
@@ -590,6 +591,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         IReadOnlyList<TapestryLeafSource> leaves = await _store!.EnumerateLeafSourcesAsync(
             WorkspaceScope,
             TestDimensions,
+            includeEmbeddings: true,
             CancellationToken.None);
 
         Assert.Null(Assert.Single(leaves).ExistingEmbedding);

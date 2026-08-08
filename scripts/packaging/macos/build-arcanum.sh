@@ -113,8 +113,17 @@ if [[ "$SKIP_SIGN" -eq 0 ]]; then
   require_cmd xcrun
   require_signing_env
 
-  echo "==> Signing publish tree Mach-Os (Developer ID Application, hardened runtime)"
-  sign_publish_dir "$STAGE_DIR"
+  # The macOS CLI is a JIT CoreCLR publish, not Native AOT, so the hardened runtime needs the
+  # .NET JIT entitlements. Signing without them still passes `codesign --verify` and
+  # `spctl --assess` but the binary aborts before Main.
+  ENTITLEMENTS="$SCRIPT_DIR/entitlements.cli.plist"
+  if [[ ! -f "$ENTITLEMENTS" ]]; then
+    echo "error: entitlements plist not found: $ENTITLEMENTS" >&2
+    exit 1
+  fi
+
+  echo "==> Signing publish tree Mach-Os (Developer ID Application, hardened runtime + JIT entitlements)"
+  sign_publish_dir "$STAGE_DIR" "$ENTITLEMENTS"
 else
   echo "==> --skip-sign: skipping codesign/notarization (local smoke only)"
 fi
@@ -140,6 +149,11 @@ if [[ "$SKIP_SIGN" -eq 0 ]]; then
   spctl --assess --type execute --verbose=4 "$BINARY" || {
     echo "warning: spctl --assess returned non-zero; notarization was accepted — check local Gatekeeper policy" >&2
   }
+
+  # Both checks above pass on a hardened-runtime binary that cannot start at all (a missing
+  # JIT entitlement aborts CoreCLR before Main), so actually launch the signed artifact.
+  echo "==> Launching signed binary (--version) as a release smoke"
+  "$BINARY" --version
 fi
 
 echo "==> Wrote $ZIP_PATH"

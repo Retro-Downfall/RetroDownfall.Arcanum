@@ -56,6 +56,24 @@ public static class ApiBootstrapper
     /// <summary>Fixed <c>endpoint</c> label for requests that matched no route, keeping metric cardinality bounded.</summary>
     internal const string UnmatchedRouteMetricLabel = "unmatched";
 
+    internal const string OtherMethodMetricLabel = "other";
+
+    /// <summary>
+    /// Kestrel accepts any RFC 7230 token as a request method, so the raw method is attacker-chosen
+    /// and unbounded. Only these known verbs become the <c>method</c> metric label; everything else
+    /// collapses to <see cref="OtherMethodMetricLabel"/>.
+    /// </summary>
+    private static readonly HashSet<string> KnownHttpMethodMetricLabels =
+        new(StringComparer.Ordinal)
+        {
+            "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT",
+        };
+
+    internal static string ResolveMethodMetricLabel(string? method) =>
+        method is not null && KnownHttpMethodMetricLabels.Contains(method)
+            ? method
+            : OtherMethodMetricLabel;
+
     private static readonly string[] DefaultCorsAllowedOrigins = new HostSettings().CorsAllowedOrigins;
 
     private static void RegisterRateLimiter(IServiceCollection services, IConfiguration configuration)
@@ -493,7 +511,7 @@ public static class ApiBootstrapper
             ArcanumMetrics.HttpRequestsTotal.Add(
                 1,
                 new KeyValuePair<string, object?>("endpoint", routeLabel),
-                new KeyValuePair<string, object?>("method", context.Request.Method),
+                new KeyValuePair<string, object?>("method", ResolveMethodMetricLabel(context.Request.Method)),
                 new KeyValuePair<string, object?>("status_code", context.Response.StatusCode.ToString(CultureInfo.InvariantCulture)));
 
         });

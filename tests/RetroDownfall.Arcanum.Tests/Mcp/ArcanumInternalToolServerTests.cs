@@ -2244,8 +2244,15 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The pacer cannot apply an override for a name absent from Arcanum:Daemon:Jobs — the default,
+    /// since DaemonSettings.Jobs is empty, the tool is advertised unconditionally, and no MCP tool
+    /// lets the model enumerate configured job names. Reporting success there told the model the
+    /// interval had changed while the daemon kept its old cadence, with nothing in the Chronicle, the
+    /// SSE DaemonEvent stream, or the transcript to contradict it.
+    /// </summary>
     [Fact]
-    public async Task ToolsCall_adjust_initiative_clamps_interval()
+    public async Task ToolsCall_adjust_initiative_fails_for_an_unconfigured_job_name()
     {
 
         await using TestMcpSession session = await CreateSessionAsync();
@@ -2256,11 +2263,11 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
         McpToolsCallResultWire result = await session.CallToolAsync("adjust_initiative", arguments);
 
-        Assert.False(result.IsError);
+        Assert.True(result.IsError);
 
         Assert.Contains("summarize", result.Content![0].Text!, StringComparison.Ordinal);
 
-        Assert.Contains("minutes", result.Content![0].Text!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Arcanum:Daemon:Jobs", result.Content![0].Text!, StringComparison.Ordinal);
 
     }
 

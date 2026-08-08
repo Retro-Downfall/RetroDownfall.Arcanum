@@ -12,6 +12,7 @@ namespace RetroDownfall.Arcanum.Tests.Process;
 /// access classes, Linux fail-closed, Windows NoFilesystemJail / Sanctum deny.
 /// Runtime macOS cases require a host where sandbox-exec can apply (not a nested agent sandbox).
 /// </summary>
+[Collection("ProcessEnvironment")]
 public sealed class ChildProcessFilesystemJailTests : IDisposable
 {
 

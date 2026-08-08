@@ -2,6 +2,7 @@ using RetroDownfall.Arcanum.Core.Environment;
 
 namespace RetroDownfall.Arcanum.Tests.Environment;
 
+[Collection("ProcessEnvironment")]
 public sealed class ArcanumEnvironmentTests : IDisposable
 {
 

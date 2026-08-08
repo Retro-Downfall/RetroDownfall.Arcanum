@@ -10,7 +10,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 public interface IUnseenServantPacer
 {
 
-    void SetDynamicInterval(string jobName, int intervalMinutes);
+    /// <summary>
+    /// Applies a polling-interval override for a job configured under <c>Arcanum:Daemon:Jobs</c>.
+    /// </summary>
+    /// <returns>
+    /// <see langword="true"/> when a configured job matched and the override was applied;
+    /// <see langword="false"/> when no such job is configured, in which case nothing was changed and
+    /// the caller must report the failure rather than claiming success.
+    /// </returns>
+    bool SetDynamicInterval(string jobName, int intervalMinutes);
 
     int GetEffectiveInterval(UnseenServantJob job);
 

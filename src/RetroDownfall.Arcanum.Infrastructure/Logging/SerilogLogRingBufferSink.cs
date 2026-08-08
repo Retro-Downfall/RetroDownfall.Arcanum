@@ -33,32 +33,24 @@ public sealed class SerilogLogRingBufferSink(
                 ? (sourceContext as ScalarValue)?.Value as string ?? "Unknown"
                 : "Unknown";
 
-            Dictionary<string, string> properties;
+            // The two ambient keys below are surfaced as first-class LogEntry fields, so they are
+            // filtered out of the structured bag. Everything else is preserved verbatim: a
+            // count-based shortcut would drop real properties whenever CorrelationId is absent,
+            // which is the common case outside an enriched daemon/request scope.
+            Dictionary<string, string> properties =
+                new(logEvent.Properties.Count, StringComparer.Ordinal);
 
-            if (logEvent.Properties.Count <= 2)
+            foreach (KeyValuePair<string, LogEventPropertyValue> property in logEvent.Properties)
             {
 
-                properties = [];
-
-            }
-            else
-            {
-
-                properties = new Dictionary<string, string>(logEvent.Properties.Count, StringComparer.Ordinal);
-
-                foreach (KeyValuePair<string, LogEventPropertyValue> property in logEvent.Properties)
+                if (property.Key is "SourceContext" or "CorrelationId")
                 {
 
-                    if (property.Key is "SourceContext" or "CorrelationId")
-                    {
-
-                        continue;
-
-                    }
-
-                    properties[property.Key] = property.Value.ToString(null, null) ?? string.Empty;
+                    continue;
 
                 }
+
+                properties[property.Key] = property.Value.ToString(null, null) ?? string.Empty;
 
             }
 

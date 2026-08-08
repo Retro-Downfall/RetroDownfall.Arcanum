@@ -1091,6 +1091,105 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// ProcessBatchAsync created ONE scope and shared its <c>IBatchRepository</c> — and therefore the
+    /// one <c>SqliteConnection</c> owned by that scope's DbContext — between the fire-and-forget
+    /// cancellation watcher and every parallel line worker. <c>IBatchRepository</c> issues raw
+    /// DbCommands, so EF's concurrency detector never fires, and SqliteBusyRetry only retries
+    /// BUSY/LOCKED; it does not serialize. Each unit of concurrent work must own its scope.
+    /// </summary>
+    [SkippableFact]
+    public async Task ProcessBatchAsync_gives_the_watcher_and_every_request_line_its_own_scope()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeIntelligenceProvider intelligence = new() { NextText = "ok", NextFinishReason = "stop" };
+
+        ServiceProvider root = BuildServiceProvider(intelligence);
+
+        CountingScopeFactory scopes = new(root.GetRequiredService<IServiceScopeFactory>());
+
+        ArcanumSettings settings = new()
+        {
+            Execution = new ExecutionSettings
+            {
+                MaxConcurrentBatches = 3,
+                MaxConcurrentRequestsPerBatch = 4,
+            },
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "test",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "http://localhost",
+                    Models = [new ModelEntry("m")],
+                },
+            ],
+        };
+
+        BatchProcessingService service = new(
+            scopes,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            root,
+            NullLogger<BatchProcessingService>.Instance);
+
+        const int lineCount = 4;
+
+        const string lineTemplate =
+            """{"custom_id":"req-#","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}""";
+
+        string jsonl = string.Concat(
+            Enumerable.Range(1, lineCount).Select(i =>
+                lineTemplate.Replace("#", i.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal) + "\n"));
+
+        Guid inputFileId = await SeedInputFileAsync(jsonl);
+
+        BatchRecord batch = new(Guid.NewGuid(), inputFileId, "/v1/chat/completions", BatchStatuses.Validating, DateTimeOffset.UtcNow, null, null, null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        int scopesBefore = scopes.Created;
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        BatchRecord? finished = await _batches.GetByIdAsync(batch.Id, CancellationToken.None);
+
+        Assert.Equal(BatchStatuses.Completed, finished!.Status);
+
+        if (finished.OutputFileId is Guid outputFileId)
+        {
+
+            _createdFilePaths.Add(UploadedFileStorage.ResolvePath(outputFileId));
+
+        }
+
+        // One outer scope, one for the cancellation watcher, and one per request line.
+        Assert.True(
+            scopes.Created - scopesBefore >= lineCount + 2,
+            $"expected at least {lineCount + 2} scopes, saw {scopes.Created - scopesBefore}");
+
+    }
+
+    private sealed class CountingScopeFactory(IServiceScopeFactory inner) : IServiceScopeFactory
+    {
+
+        private int _created;
+
+        public int Created => Volatile.Read(ref _created);
+
+        public IServiceScope CreateScope()
+        {
+
+            _ = Interlocked.Increment(ref _created);
+
+            return inner.CreateScope();
+
+        }
+
+    }
+
     private BatchProcessingService CreateService(
         IArcanumIntelligenceProvider intelligence,
         ITurnRunWriter? turnRunWriter = null,

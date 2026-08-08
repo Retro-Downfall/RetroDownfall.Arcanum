@@ -14,9 +14,7 @@ public sealed class HttpsConfigurationTests : IDisposable
     private const string CertificatePasswordVariable =
         "ARCANUM_TEST_COMPENDIUM_CERT_PASSWORD";
 
-    private readonly string _originalHome;
-
-    private readonly string _originalUserProfile;
+    private readonly ArcanumTestHomeScope _home;
 
     private readonly string? _originalCertificatePassword;
 
@@ -25,20 +23,12 @@ public sealed class HttpsConfigurationTests : IDisposable
     public HttpsConfigurationTests()
     {
 
-        _originalHome = Environment.GetEnvironmentVariable("HOME") ?? string.Empty;
-
-        _originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE") ?? string.Empty;
-
         _originalCertificatePassword =
             Environment.GetEnvironmentVariable(CertificatePasswordVariable);
 
-        _tempRoot = Path.Combine(Path.GetTempPath(), $"compendium-https-{Guid.NewGuid():N}");
+        _home = new ArcanumTestHomeScope("compendium-https");
 
-        _ = Directory.CreateDirectory(_tempRoot);
-
-        Environment.SetEnvironmentVariable("HOME", _tempRoot);
-
-        Environment.SetEnvironmentVariable("USERPROFILE", _tempRoot);
+        _tempRoot = _home.Root;
 
         Environment.SetEnvironmentVariable(CertificatePasswordVariable, null);
 
@@ -232,13 +222,11 @@ public sealed class HttpsConfigurationTests : IDisposable
     public void Dispose()
     {
 
-        Environment.SetEnvironmentVariable("HOME", _originalHome);
-
-        Environment.SetEnvironmentVariable("USERPROFILE", _originalUserProfile);
-
         Environment.SetEnvironmentVariable(
             CertificatePasswordVariable,
             _originalCertificatePassword);
+
+        _home.Dispose();
 
         try
         {

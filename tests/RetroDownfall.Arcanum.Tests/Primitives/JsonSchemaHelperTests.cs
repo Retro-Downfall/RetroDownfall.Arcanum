@@ -393,4 +393,56 @@ public sealed class JsonSchemaHelperTests
 
     }
 
+
+    /// <summary>
+    /// A client-supplied structured-output schema can contain a numeric enum, and the model can
+    /// return a magnitude outside <see cref="decimal"/>'s range. Comparing with GetDecimal threw
+    /// FormatException straight out of Validate's documented ValidationResult contract.
+    /// </summary>
+    [Fact]
+    public void Validate_NumericEnum_WithOutOfDecimalRangePayload_ReturnsResultInsteadOfThrowing()
+    {
+
+        using JsonDocument schema = JsonDocument.Parse("""
+            {
+              "type": "object",
+              "properties": { "score": { "type": "number", "enum": [0.5, 1.0] } }
+            }
+            """);
+
+        Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(parsed.IsSuccess);
+
+        ValidationResult result = JsonSchemaHelper.Validate("""{"score": 1e30}""", parsed.Value);
+
+        Assert.False(result.IsValid);
+
+    }
+
+    /// <summary>
+    /// The schema side is equally client-controlled: an out-of-range enum literal must not throw
+    /// when compared against an ordinary payload value.
+    /// </summary>
+    [Fact]
+    public void Validate_OutOfDecimalRangeEnumLiteral_ReturnsResultInsteadOfThrowing()
+    {
+
+        using JsonDocument schema = JsonDocument.Parse("""
+            {
+              "type": "number",
+              "enum": [1e30]
+            }
+            """);
+
+        Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(parsed.IsSuccess);
+
+        Assert.False(JsonSchemaHelper.Validate("1", parsed.Value).IsValid);
+
+        Assert.True(JsonSchemaHelper.Validate("1e30", parsed.Value).IsValid);
+
+    }
+
 }

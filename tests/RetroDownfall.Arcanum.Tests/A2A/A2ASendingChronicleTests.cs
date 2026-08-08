@@ -385,9 +385,7 @@ public sealed class A2ASendingChronicleTests
     private sealed class NoOpPacer : IUnseenServantPacer
     {
 
-        public void SetDynamicInterval(string jobName, int intervalMinutes)
-        {
-        }
+        public bool SetDynamicInterval(string jobName, int intervalMinutes) => true;
 
         public int GetEffectiveInterval(UnseenServantJob job) => job.IntervalMinutes;
 

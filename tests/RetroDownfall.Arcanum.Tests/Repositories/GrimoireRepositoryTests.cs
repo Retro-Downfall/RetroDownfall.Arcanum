@@ -300,6 +300,43 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The new-session branch committed the Session and its two Entries, then bumped the counter in a
+    /// second, untransacted statement. A crash between the two left the session durable with
+    /// UnsummarizedEntryCount = 0, so GetSessionsNeedingSummarizationAsync — which selects purely on
+    /// that counter — never picked it up and the Campaign Logger silently never summarized it.
+    /// Seeding the counter on the inserted row puts both in one SQLite transaction, which the change
+    /// tracker (never refreshed from the database) observes; ExecuteUpdateAsync bypasses it.
+    /// </summary>
+    [SkippableFact]
+    public async Task New_session_reply_writes_the_unsummarized_counter_in_the_insert_transaction()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        (Guid sessionId, _) = await repository.BeginAssistantReplyAsync(
+            sessionId: null,
+            prompt: "atomic counter test",
+            model: "test-model",
+            cancellationToken: CancellationToken.None);
+
+        Session tracked = _db!.ChangeTracker
+            .Entries<Session>()
+            .Select(entry => entry.Entity)
+            .Single(session => session.Id == sessionId);
+
+        Assert.Equal(2, tracked.UnsummarizedEntryCount);
+
+        Session persisted = await _db.Sessions
+            .AsNoTracking()
+            .FirstAsync(session => session.Id == sessionId, CancellationToken.None);
+
+        Assert.Equal(2, persisted.UnsummarizedEntryCount);
+
+    }
+
     [SkippableFact]
     public async Task UnsummarizedEntryCount_increments_on_begin_and_resets_on_rollup()
     {

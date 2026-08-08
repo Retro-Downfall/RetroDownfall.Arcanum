@@ -186,7 +186,15 @@ public sealed class SessionRepository(
             sqlBuilder.Append(string.Join(" AND ", conditions));
         }
 
-        sqlBuilder.Append($" ORDER BY \"UpdatedAt\" DESC LIMIT {Bind(limit + 1)}");
+        // Snapshotted before the LIMIT parameter is bound, so the tie-completion query below can reuse
+        // exactly the filter placeholders and nothing else.
+        List<object> conditionParameters = [.. parameters];
+
+        // "Id" is the identity tie-breaker. Without it the sort is undefined among sessions sharing an
+        // "UpdatedAt" (a burst of creations, or a backup import that replays original timestamps
+        // verbatim), so a tie straddling a page boundary would be ordered differently on each query and
+        // the keyset cursor below could not reason about it at all.
+        sqlBuilder.Append($" ORDER BY \"UpdatedAt\" DESC, \"Id\" DESC LIMIT {Bind(limit + 1)}");
 
         List<Session> page = await db.Sessions
             .FromSqlRaw(sqlBuilder.ToString(), parameters.ToArray())
@@ -198,7 +206,23 @@ public sealed class SessionRepository(
 
         if (hasMore)
         {
-            page = page.Take(limit).ToList();
+            // The cursor this method hands back is a bare timestamp consumed as a strict
+            // "UpdatedAt" < @before, so any session sharing the boundary timestamp with the last row of
+            // this page would be excluded from the next page and become permanently unreachable. Rather
+            // than widen the wire contract, the page is cut at a tie boundary: every row sharing the
+            // first excluded row's timestamp is deferred to the next page, which the strict predicate
+            // then admits in full.
+            DateTimeOffset boundary = page[limit].UpdatedAt;
+
+            List<Session> kept = page.Take(limit).Where(s => s.UpdatedAt != boundary).ToList();
+
+            // Degenerate case: the entire page is one timestamp, so cutting at the tie boundary would
+            // return nothing and leave the cursor exactly where it started. Widen to the complete tie
+            // group instead — the page exceeds the requested limit, but it is whole and the cursor still
+            // advances past it.
+            page = kept.Count > 0
+                ? kept
+                : await LoadTieGroupAsync(conditions, conditionParameters, boundary, ct).ConfigureAwait(false);
         }
 
         Guid[] sessionIds = page.Select(s => s.Id).ToArray();
@@ -208,16 +232,17 @@ public sealed class SessionRepository(
         if (sessionIds.Length > 0)
         {
 
-            List<Guid> entrySessionIds = await db.Entries
+            // Aggregated server-side: EF translates this to a single GROUP BY covered by
+            // IX_Entries_SessionId_CreatedAt, returning one row per session. Counting in managed memory
+            // instead would stream one Guid per Entry of every listed session — work proportional to the
+            // sessions' whole transcript history rather than to the page size.
+            entryCounts = await db.Entries
                 .AsNoTracking()
                 .Where(e => sessionIds.Contains(e.SessionId))
-                .Select(e => e.SessionId)
-                .ToListAsync(ct)
+                .GroupBy(e => e.SessionId)
+                .Select(g => new { SessionId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.SessionId, x => x.Count, ct)
                 .ConfigureAwait(false);
-
-            entryCounts = entrySessionIds
-                .GroupBy(id => id)
-                .ToDictionary(g => g.Key, g => g.Count());
 
         }
 
@@ -236,6 +261,45 @@ public sealed class SessionRepository(
         DateTimeOffset? nextBefore = hasMore && page.Count > 0 ? page[^1].UpdatedAt : null;
 
         return new SessionQueryResult(summaries, nextBefore, hasMore);
+    }
+
+    /// <summary>
+    /// Loads every session matching the current list filters whose <c>UpdatedAt</c> is exactly
+    /// <paramref name="boundary"/>, so a page can never be cut through the middle of a group of sessions
+    /// sharing one timestamp.
+    /// </summary>
+    /// <remarks>
+    /// Only reached when a whole page turned out to be a single timestamp, which the bare-timestamp
+    /// cursor cannot express a position inside of. Returning the complete group costs one extra query in
+    /// that rare case and guarantees the strict <c>"UpdatedAt" &lt; @before</c> cursor advances past it
+    /// without skipping a sibling.
+    /// </remarks>
+    private async Task<List<Session>> LoadTieGroupAsync(
+        List<string> conditions,
+        List<object> parameters,
+        DateTimeOffset boundary,
+        CancellationToken ct)
+    {
+        List<object> tieParameters = [.. parameters];
+
+        List<string> tieConditions =
+        [
+            .. conditions,
+            $"\"UpdatedAt\" = {{{tieParameters.Count.ToString(CultureInfo.InvariantCulture)}}}",
+        ];
+
+        tieParameters.Add(boundary.ToUniversalTime());
+
+        string sql =
+            "SELECT * FROM \"Sessions\" WHERE "
+            + string.Join(" AND ", tieConditions)
+            + " ORDER BY \"UpdatedAt\" DESC, \"Id\" DESC";
+
+        return await db.Sessions
+            .FromSqlRaw(sql, tieParameters.ToArray())
+            .AsNoTracking()
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
     }
 
     public async Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct)
@@ -387,9 +451,29 @@ public sealed class SessionRepository(
 
         // Maintain the unsummarized-entry counter so The Forge append path no longer drifts
         // it (the inference path already does this). -1 means "unknown legacy"; leave it.
-        await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+        // Both statements share one transaction so a crash between them cannot leave the entry
+        // durable with the counter unbumped — the shape every sibling append path already uses.
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
+            await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
 
-        await _entryPersistence.IncrementUnsummarizedEntryCountIfKnownAsync(sessionId, 1, ct).ConfigureAwait(false);
+        try
+        {
+
+            await _entryPersistence.SaveChangesWithRetryAsync(ct).ConfigureAwait(false);
+
+            await _entryPersistence.IncrementUnsummarizedEntryCountIfKnownAsync(sessionId, 1, ct).ConfigureAwait(false);
+
+            await tx.CommitAsync(ct).ConfigureAwait(false);
+
+        }
+        catch
+        {
+
+            await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+
+            throw;
+
+        }
 
         return Result<Entry>.Success(entry);
     }

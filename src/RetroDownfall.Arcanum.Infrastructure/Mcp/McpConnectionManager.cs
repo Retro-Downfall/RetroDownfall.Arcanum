@@ -943,7 +943,7 @@ public sealed partial class McpConnectionManager(
         if (_partitionClients.TryGetValue(GlobalPartitionKey, out Lazy<McpPartitionClients>? globalPartitionLazy)
             && globalPartitionLazy.IsValueCreated)
         {
-            foreach (McpServerMetadata meta in globalPartitionLazy.Value.Servers)
+            foreach (McpServerMetadata meta in globalPartitionLazy.Value.SnapshotServers())
             {
                 result.Add(ToStatusDto(meta));
             }
@@ -957,7 +957,7 @@ public sealed partial class McpConnectionManager(
         if (_partitionClients.TryGetValue(workspaceKey, out Lazy<McpPartitionClients>? workspacePartitionLazy)
             && workspacePartitionLazy.IsValueCreated)
         {
-            foreach (McpServerMetadata meta in workspacePartitionLazy.Value.Servers)
+            foreach (McpServerMetadata meta in workspacePartitionLazy.Value.SnapshotServers())
             {
                 if (string.Equals(
                         meta.ServerName,
@@ -1031,7 +1031,7 @@ public sealed partial class McpConnectionManager(
                     continue;
                 }
 
-                foreach (IMcpClient client in partitionLazy.Value.Clients)
+                foreach (IMcpClient client in partitionLazy.Value.SnapshotClients())
                 {
                     try
                     {
@@ -1120,19 +1120,19 @@ public sealed partial class McpConnectionManager(
 
             McpPartitionClients partition = partitionLazy.Value;
 
-            for (int i = partition.Clients.Count - 1; i >= 0; i--)
+            IMcpClient[] drained = partition.DrainClients();
+
+            for (int i = drained.Length - 1; i >= 0; i--)
             {
                 try
                 {
-                    await partition.Clients[i].DisposeAsync().ConfigureAwait(false);
+                    await drained[i].DisposeAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "Error disposing MCP client instance.");
                 }
             }
-
-            partition.Clients.Clear();
         }
 
         await AwaitRetiredPartitionDisposalsAsync()

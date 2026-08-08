@@ -334,6 +334,41 @@ public sealed class GrimoireSchemaInstallerTests
 
     }
 
+    /// <summary>
+    /// The embedding-dimension mismatch check is a best-effort post-install diagnostic (§5.4.5): it
+    /// must log and continue. It ran unguarded and outside SqliteBusyRetry, so a probe failure —
+    /// an older table shape, a locked database — escaped InstallAsync and aborted host startup with a
+    /// raw SqliteException, not even the sanitized GrimoireDatabaseUnavailableException.
+    /// </summary>
+    [Fact]
+    public async Task InstallAsync_survives_a_failing_embedding_dimension_probe()
+    {
+
+        await using SqliteConnection connection = new("Data Source=:memory:");
+
+        await connection.OpenAsync(CancellationToken.None);
+
+        // CREATE TABLE IF NOT EXISTS leaves this pre-existing shape untouched, so the probe's
+        // SELECT "Dim" raises 'no such column'.
+        await using (SqliteCommand seed = connection.CreateCommand())
+        {
+
+            seed.CommandText = """CREATE TABLE "entry_embeddings" ("EntryId" TEXT NOT NULL);""";
+
+            _ = await seed.ExecuteNonQueryAsync(CancellationToken.None);
+
+        }
+
+        _ = await GrimoireSchemaInstaller.InstallAsync(
+            connection,
+            Dimensions,
+            logger: null,
+            CancellationToken.None);
+
+        Assert.True(await TableExistsAsync(connection, "Sessions"));
+
+    }
+
     private static async Task<SqliteConnection> InstallAsync()
     {
 

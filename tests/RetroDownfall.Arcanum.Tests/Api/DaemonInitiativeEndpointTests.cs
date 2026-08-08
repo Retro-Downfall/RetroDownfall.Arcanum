@@ -174,8 +174,14 @@ public sealed class DaemonInitiativeEndpointTests
 
         public List<(string JobName, int IntervalMinutes)> Applied { get; } = [];
 
-        public void SetDynamicInterval(string jobName, int intervalMinutes) =>
+        public bool SetDynamicInterval(string jobName, int intervalMinutes)
+        {
+
             Applied.Add((jobName, intervalMinutes));
+
+            return true;
+
+        }
 
         public int GetEffectiveInterval(UnseenServantJob job) => job.IntervalMinutes;
 

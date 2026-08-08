@@ -2604,6 +2604,101 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task ReconcileAsync_keeps_a_row_promoted_after_the_missing_file_snapshot()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string pendingTurnId = "race-" + Guid.NewGuid().ToString("N");
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid entryId = Guid.NewGuid();
+
+        byte[] bytes = Encoding.UTF8.GetBytes("promoted-during-reconcile");
+
+        SessionAttachmentRecord pending = await _store!.PersistNewAsync(
+            sessionId: null,
+            pendingTurnId,
+            entryId: null,
+            "notes.txt",
+            "notes.txt",
+            bytes,
+            "text/plain",
+            SessionAttachmentKind.Text);
+
+        // The sweep snapshots every row with no gate held; the promotion then rewrites the row and
+        // unlinks the old pending file. The snapshot the sweep is about to evaluate therefore names a
+        // path that no longer exists, even though the attachment is alive and bound.
+        _store.AfterMissingFileSnapshotForTesting = async _ =>
+        {
+
+            await _store.PromotePendingAsync(pendingTurnId, sessionId, entryId);
+
+            _store.AfterMissingFileSnapshotForTesting = null;
+
+        };
+
+        await _store.ReconcileAsync(TimeSpan.FromDays(365));
+
+        SessionAttachmentRecord? survivor = await _store.GetByIdAsync(pending.Id);
+
+        Assert.NotNull(survivor);
+
+        Assert.Equal(SessionAttachmentState.Bound, survivor!.State);
+
+        Assert.Equal(sessionId, survivor.SessionId);
+
+        Assert.True(File.Exists(Path.Combine(_attachmentsRoot, survivor.RelativePath)));
+
+        ReadOnlyMemory<byte> loaded = await _store.ReadBytesAsync(survivor);
+
+        Assert.Equal(bytes, loaded.ToArray());
+
+    }
+
+    [SkippableFact]
+    public async Task ReconcileAsync_spares_an_unreferenced_file_written_after_the_sweep_started()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string liveDirectory = Path.Combine(_attachmentsRoot, Guid.NewGuid().ToString("N"), "in-flight.txt", "v1");
+
+        string inFlight = Path.Combine(liveDirectory, "in-flight.txt");
+
+        string abandonedDirectory = Path.Combine(_attachmentsRoot, Guid.NewGuid().ToString("N"), "abandoned.txt", "v1");
+
+        Directory.CreateDirectory(abandonedDirectory);
+
+        string abandoned = Path.Combine(abandonedDirectory, "abandoned.txt");
+
+        await File.WriteAllTextAsync(abandoned, "ciphertext");
+
+        // An attachment write lands its ciphertext before it inserts its row, so a write that starts
+        // after the sweep snapshotted the referenced paths owns a file the snapshot cannot name. The
+        // seam stays installed because a reconcile runs the orphan sweep more than once, and the point
+        // is that each pass spares what appeared after its own snapshot.
+        _store!.AfterOrphanPathSnapshotForTesting = async _ =>
+        {
+
+            Directory.CreateDirectory(liveDirectory);
+
+            await File.WriteAllTextAsync(inFlight, "ciphertext");
+
+        };
+
+        await _store.ReconcileAsync(TimeSpan.FromDays(365));
+
+        _store.AfterOrphanPathSnapshotForTesting = null;
+
+        Assert.True(File.Exists(inFlight), "the sweep unlinked ciphertext for an attachment write still in flight.");
+
+        Assert.False(File.Exists(abandoned), "the sweep left a genuinely unreferenced file behind.");
+
+    }
+
     private sealed class TestWorkspaceContext(string workspacePath) : IHostWorkspaceContext
     {
         public string? WorkspacePath { get; } = workspacePath;

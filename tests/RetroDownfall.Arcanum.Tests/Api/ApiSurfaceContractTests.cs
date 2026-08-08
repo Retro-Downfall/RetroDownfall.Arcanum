@@ -27,6 +27,7 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// negotiate against, the pinned provider egress handler, the bounded metric label for unmatched routes,
 /// the multipart ceiling on <c>POST /v1/files</c>, and idempotency header/fingerprint identity.
 /// </summary>
+[Collection("ProcessEnvironment")]
 public sealed class ApiSurfaceContractTests : IDisposable
 {
 
@@ -212,6 +213,90 @@ public sealed class ApiSurfaceContractTests : IDisposable
         Assert.DoesNotContain(scannedPath, observed);
 
         Assert.Contains(ApiBootstrapper.UnmatchedRouteMetricLabel, observed);
+
+    }
+
+    /// <summary>
+    /// Kestrel accepts any RFC 7230 token as a request method, so the raw method is attacker-chosen
+    /// and unbounded — a second, unauthenticated way to grow the singleton exporter's series map.
+    /// </summary>
+    [Fact]
+    public async Task Unknown_request_methods_record_a_fixed_method_label_not_the_raw_verb()
+    {
+
+        const string unknownMethod = "ARCANUMPROBE";
+
+        List<string> methodLabels = [];
+
+        using MeterListener listener = new();
+
+        listener.InstrumentPublished = static (instrument, activeListener) =>
+        {
+
+            if (string.Equals(instrument.Name, "arcanum_http_requests_total", StringComparison.Ordinal))
+            {
+
+                activeListener.EnableMeasurementEvents(instrument);
+
+            }
+
+        };
+
+        listener.SetMeasurementEventCallback<long>(
+            (_, _, tags, _) =>
+            {
+
+                foreach (KeyValuePair<string, object?> tag in tags)
+                {
+
+                    if (string.Equals(tag.Key, "method", StringComparison.Ordinal))
+                    {
+
+                        lock (methodLabels)
+                        {
+
+                            methodLabels.Add(tag.Value?.ToString() ?? string.Empty);
+
+                        }
+
+                    }
+
+                }
+
+            });
+
+        listener.Start();
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        await using WebApplication app = builder.Build();
+
+        app.UseArcanumMetrics();
+
+        await app.StartAsync();
+
+        using HttpClient client = app.GetTestClient();
+
+        using HttpRequestMessage request = new(new HttpMethod(unknownMethod), "/api/does-not-exist");
+
+        _ = await client.SendAsync(request);
+
+        await app.StopAsync();
+
+        string[] observed;
+
+        lock (methodLabels)
+        {
+
+            observed = [.. methodLabels];
+
+        }
+
+        Assert.DoesNotContain(unknownMethod, observed);
+
+        Assert.Contains(ApiBootstrapper.OtherMethodMetricLabel, observed);
 
     }
 

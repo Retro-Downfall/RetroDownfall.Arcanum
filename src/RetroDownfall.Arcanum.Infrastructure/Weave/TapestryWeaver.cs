@@ -41,6 +41,12 @@ internal sealed class TapestryWeaver(
     /// </summary>
     private const int MaxSplitDepth = 8;
 
+    /// <summary>
+    /// ASCII unit separator (U+001F), the delimiter between the fields of a summary node's stable key.
+    /// It cannot occur inside a layer number or a hex hash, so the key stays unambiguous.
+    /// </summary>
+    private const char StableKeyFieldSeparator = (char)0x1F;
+
     public async Task<TapestryWeaveOutcome> WeaveAsync(
         TapestryScope scope,
         EmbeddingSettings embeddings,
@@ -51,18 +57,23 @@ internal sealed class TapestryWeaver(
 
         Bounds bounds = Bounds.From(embeddings);
 
-        IReadOnlyList<TapestryLeafSource> leaves = await store
-            .EnumerateLeafSourcesAsync(scope, bounds.Dimensions, cancellationToken)
+        // Fingerprint pass first, without the embedding join. The fingerprint decides whether this scope
+        // needs anything done at all, and it consumes only leaf ids and content hashes — so on the
+        // unchanged path (every sweep of a scope nobody has touched) this never reads or decodes a single
+        // embedding BLOB. The full corpus, embeddings included, is loaded below only once a rebuild is
+        // known to be necessary, where one extra pass is lost in the noise of clustering and model calls.
+        IReadOnlyList<TapestryLeafSource> fingerprintLeaves = await store
+            .EnumerateLeafSourcesAsync(scope, bounds.Dimensions, includeEmbeddings: false, cancellationToken)
             .ConfigureAwait(false);
 
-        if (leaves.Count == 0)
+        if (fingerprintLeaves.Count == 0)
         {
 
             return new TapestryWeaveOutcome(TapestryWeaveStatus.NoCorpus);
 
         }
 
-        string corpusFingerprint = TapestryHash.OfCorpus(leaves);
+        string corpusFingerprint = TapestryHash.OfCorpus(fingerprintLeaves);
 
         string settingsFingerprint = TapestryHash.OfSettings(
             bounds.MaxTreeDepth,
@@ -94,7 +105,7 @@ internal sealed class TapestryWeaver(
         // A corpus that needs any abstraction at all needs a summary model. Publishing a leaves-only
         // tree instead would add nothing over flat retrieval while still competing for the turn's
         // context budget, so the honest degradation is to contribute nothing.
-        if (summaryModel is null && leaves.Count > 1)
+        if (summaryModel is null && fingerprintLeaves.Count > 1)
         {
 
             logger.LogDebug(
@@ -112,6 +123,24 @@ internal sealed class TapestryWeaver(
             return new TapestryWeaveOutcome(TapestryWeaveStatus.EmbeddingUnavailable);
 
         }
+
+        // A rebuild is now certain, so pay for the full corpus — the same rows again, this time carrying
+        // each leaf's already-imprinted embedding so only genuinely new leaves cost an embedding call.
+        IReadOnlyList<TapestryLeafSource> leaves = await store
+            .EnumerateLeafSourcesAsync(scope, bounds.Dimensions, includeEmbeddings: true, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (leaves.Count == 0)
+        {
+
+            return new TapestryWeaveOutcome(TapestryWeaveStatus.NoCorpus);
+
+        }
+
+        // The corpus can move between the two passes, so the generation records the fingerprint of what
+        // is actually being woven. Recording the earlier one would let an edit that landed in between be
+        // mistaken for already-included and never rebuilt.
+        corpusFingerprint = TapestryHash.OfCorpus(leaves);
 
         string generationId = await store
             .BeginGenerationAsync(
@@ -272,7 +301,7 @@ internal sealed class TapestryWeaver(
 
             }
 
-            LayerPlan layerPlan = PlanLayer(scope, working, layer, bounds);
+            LayerPlan layerPlan = PlanLayer(scope, working, layer, bounds, cancellationToken);
 
             List<ClusterPlan> plans = layerPlan.Clusters;
 
@@ -531,19 +560,24 @@ internal sealed class TapestryWeaver(
         TapestryScope scope,
         List<WorkingNode> working,
         int layer,
-        Bounds bounds)
+        Bounds bounds,
+        CancellationToken cancellationToken)
     {
 
         Dictionary<string, WorkingNode> byKey = working.ToDictionary(
             static node => node.StableKey,
             StringComparer.Ordinal);
 
+        // Clustering one large layer is a long stretch of uninterrupted synchronous CPU work with no
+        // await inside it, so the token has to reach the algorithm itself for the sweep's documented
+        // "stays cancellable throughout" guarantee to hold during host shutdown.
         SphericalKMeansResult result = SphericalKMeans.ClusterLayer(
             [.. working.Select(static node => new SphericalKMeansPoint(node.StableKey, node.Embedding))],
             bounds.TargetChildrenPerSummary,
             bounds.MaxClustersPerLayer,
             TapestrySeed.Derive(SphericalKMeans.AlgorithmVersion, scope.Kind, scope.Id, layer),
-            bounds.Dimensions);
+            bounds.Dimensions,
+            cancellationToken: cancellationToken);
 
         List<PlanCandidate> candidates = [];
 
@@ -552,7 +586,14 @@ internal sealed class TapestryWeaver(
 
             List<WorkingNode> members = [.. cluster.MemberIds.Select(id => byKey[id])];
 
-            candidates.AddRange(SplitUntilBounded(scope, members, layer, bounds, TapestryPartitionReason.None, 0));
+            candidates.AddRange(SplitUntilBounded(
+                scope,
+                members,
+                layer,
+                bounds,
+                TapestryPartitionReason.None,
+                0,
+                cancellationToken));
 
         }
 
@@ -609,7 +650,8 @@ internal sealed class TapestryWeaver(
         int layer,
         Bounds bounds,
         TapestryPartitionReason inheritedReason,
-        int depth)
+        int depth,
+        CancellationToken cancellationToken)
     {
 
         bool withinChildCount = members.Count <= bounds.MaxChildrenPerSummary;
@@ -643,7 +685,8 @@ internal sealed class TapestryWeaver(
                 scope.Kind,
                 $"{scope.Id}\u001fsplit\u001f{members[0].StableKey}\u001f{depth}",
                 layer),
-            bounds.Dimensions);
+            bounds.Dimensions,
+            cancellationToken: cancellationToken);
 
         if (split.Clusters.Count < 2)
         {
@@ -667,7 +710,8 @@ internal sealed class TapestryWeaver(
                 layer,
                 bounds,
                 TapestryPartitionReason.OversizedSplit,
-                depth + 1));
+                depth + 1,
+                cancellationToken));
 
         }
 
@@ -804,6 +848,23 @@ internal sealed class TapestryWeaver(
             summarizer.ResolveSummaryModel());
 
         string stableKey = $"L{layer}\u001f{membershipHash}";
+
+        // membershipHash is deliberately content-only, because summary reuse must match across
+        // generations whenever the same text is summarized by the same recipe and model. Content alone
+        // is not an identity, though: a scope holding two clusters of byte-identical leaves (2x
+        // MaxChildrenPerSummary generated files sharing one licence-header chunk is enough) hashes to
+        // the same membershipHash twice, hence the same NodeId, and the second plain INSERT into
+        // tapestry_nodes (NodeId PRIMARY KEY) fails the whole generation. It then fails identically on
+        // every later sweep, because the corpus fingerprint has not changed, re-billing every summary
+        // computed before the collision. Folding the members' stable keys — unique within a layer by
+        // induction, since a leaf carries its source id and every summary carries this key — into the
+        // node's stable key restores per-node uniqueness while leaving the reuse identity untouched.
+        string identityHash = TapestryHash.OfChildMembership(
+            members.Select(static member => member.StableKey),
+            TapestryHash.SummaryRecipeVersion,
+            summarizer.ResolveSummaryModel());
+
+        stableKey = $"{stableKey}{StableKeyFieldSeparator}{identityHash}";
 
         string nodeId = NodeId(generationId, stableKey);
 

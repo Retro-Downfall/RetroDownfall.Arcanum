@@ -125,18 +125,141 @@ public sealed partial class McpConnectionManager
     }
 
 
+    /// <summary>
+    /// Per-partition registry of live MCP clients and their advertised server metadata. Both
+    /// collections are mutated under three disjoint locks — the per-workspace merge lock, the global
+    /// init lock, and a per-entry gate on the fire-and-forget transport-ended path — and were read
+    /// with no lock at all by the status surface. They therefore own their own gate instead of
+    /// relying on any caller's, and every reader takes a snapshot inside it.
+    /// </summary>
     private sealed class McpPartitionClients
     {
 
-        public List<IMcpClient> Clients { get; } = [];
+        private readonly object _gate = new();
+
+        private readonly List<IMcpClient> _clients = [];
+
+        private readonly List<McpServerMetadata> _servers = [];
 
         public IMcpClient? InternalClient { get; set; }
-
-        public List<McpServerMetadata> Servers { get; } = [];
 
         public bool InternalServerStarted { get; set; }
 
         public IReadOnlyList<LoadedMcpToolRow>? CachedInternalTools { get; set; }
+
+        public bool AddClientIfAbsent(IMcpClient client)
+        {
+
+            lock (_gate)
+            {
+
+                if (_clients.Contains(client))
+                {
+
+                    return false;
+
+                }
+
+                _clients.Add(client);
+
+                return true;
+
+            }
+
+        }
+
+        public bool RemoveClient(IMcpClient client)
+        {
+
+            lock (_gate)
+            {
+
+                return _clients.Remove(client);
+
+            }
+
+        }
+
+        public IMcpClient[] SnapshotClients()
+        {
+
+            lock (_gate)
+            {
+
+                return [.. _clients];
+
+            }
+
+        }
+
+        /// <summary>
+        /// Removes and returns every client so shutdown can dispose them outside the gate.
+        /// </summary>
+        public IMcpClient[] DrainClients()
+        {
+
+            lock (_gate)
+            {
+
+                IMcpClient[] snapshot = [.. _clients];
+
+                _clients.Clear();
+
+                return snapshot;
+
+            }
+
+        }
+
+        public void UpsertServer(McpServerMetadata metadata)
+        {
+
+            lock (_gate)
+            {
+
+                int existingIndex = _servers.FindIndex(
+                    m => string.Equals(m.ServerName, metadata.ServerName, StringComparison.Ordinal));
+
+                if (existingIndex >= 0)
+                {
+
+                    _servers[existingIndex] = metadata;
+
+                }
+                else
+                {
+
+                    _servers.Add(metadata);
+
+                }
+
+            }
+
+        }
+
+        public void RemoveServer(string serverName)
+        {
+
+            lock (_gate)
+            {
+
+                _ = _servers.RemoveAll(m => string.Equals(m.ServerName, serverName, StringComparison.Ordinal));
+
+            }
+
+        }
+
+        public McpServerMetadata[] SnapshotServers()
+        {
+
+            lock (_gate)
+            {
+
+                return [.. _servers];
+
+            }
+
+        }
 
     }
 

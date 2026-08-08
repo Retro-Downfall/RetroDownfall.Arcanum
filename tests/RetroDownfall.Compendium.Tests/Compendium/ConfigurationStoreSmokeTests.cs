@@ -11,26 +11,16 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 public sealed class ConfigurationStoreSmokeTests : IDisposable
 {
 
-    private readonly string _originalHome;
-
-    private readonly string _originalUserProfile;
+    private readonly ArcanumTestHomeScope _home;
 
     private readonly string _tempRoot;
 
     public ConfigurationStoreSmokeTests()
     {
 
-        _originalHome = global::System.Environment.GetEnvironmentVariable("HOME") ?? string.Empty;
+        _home = new ArcanumTestHomeScope("compendium-smoke");
 
-        _originalUserProfile = global::System.Environment.GetEnvironmentVariable("USERPROFILE") ?? string.Empty;
-
-        _tempRoot = Path.Combine(Path.GetTempPath(), $"compendium-smoke-{Guid.NewGuid():N}");
-
-        _ = Directory.CreateDirectory(_tempRoot);
-
-        global::System.Environment.SetEnvironmentVariable("HOME", _tempRoot);
-
-        global::System.Environment.SetEnvironmentVariable("USERPROFILE", _tempRoot);
+        _tempRoot = _home.Root;
 
     }
 
@@ -449,28 +439,6 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
 
     }
 
-    public void Dispose()
-    {
-
-        try
-
-        {
-
-            Directory.Delete(_tempRoot, recursive: true);
-
-        }
-        catch
-
-        {
-
-            // Best-effort cleanup.
-
-        }
-
-        global::System.Environment.SetEnvironmentVariable("HOME", _originalHome);
-
-        global::System.Environment.SetEnvironmentVariable("USERPROFILE", _originalUserProfile);
-
-    }
+    public void Dispose() => _home.Dispose();
 
 }

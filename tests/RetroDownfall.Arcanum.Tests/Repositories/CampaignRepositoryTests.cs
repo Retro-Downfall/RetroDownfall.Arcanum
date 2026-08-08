@@ -360,8 +360,13 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         Campaign duplicate = NewCampaign("duplicate-name");
 
-        _ = await Assert.ThrowsAsync<DbUpdateException>(
-            () => repository.AddAsync(duplicate, CancellationToken.None));
+        // The unique index is the authority: the loser of a check-then-act race must come back as a
+        // domain failure the endpoint renders as 400, not as a DbUpdateException that becomes a 500.
+        Result<Campaign> second = await repository.AddAsync(duplicate, CancellationToken.None);
+
+        Assert.True(second.IsFailure);
+
+        Assert.Equal("Campaign.DuplicateName", second.Error.Code);
 
         Assert.Equal(EntityState.Detached, _db!.Entry(duplicate).State);
 

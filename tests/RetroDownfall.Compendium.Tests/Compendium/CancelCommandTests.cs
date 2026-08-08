@@ -14,26 +14,16 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 public sealed class CancelCommandTests : IDisposable
 {
 
-    private readonly string _originalHome;
-
-    private readonly string _originalUserProfile;
+    private readonly ArcanumTestHomeScope _home;
 
     private readonly string _tempRoot;
 
     public CancelCommandTests()
     {
 
-        _originalHome = Environment.GetEnvironmentVariable("HOME") ?? string.Empty;
+        _home = new ArcanumTestHomeScope("compendium-cancel");
 
-        _originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE") ?? string.Empty;
-
-        _tempRoot = Path.Combine(Path.GetTempPath(), $"compendium-cancel-{Guid.NewGuid():N}");
-
-        _ = Directory.CreateDirectory(_tempRoot);
-
-        Environment.SetEnvironmentVariable("HOME", _tempRoot);
-
-        Environment.SetEnvironmentVariable("USERPROFILE", _tempRoot);
+        _tempRoot = _home.Root;
 
     }
 
@@ -131,30 +121,7 @@ public sealed class CancelCommandTests : IDisposable
 
     }
 
-    public void Dispose()
-    {
-
-        Environment.SetEnvironmentVariable("HOME", _originalHome);
-
-        Environment.SetEnvironmentVariable("USERPROFILE", _originalUserProfile);
-
-        try
-        {
-
-            if (Directory.Exists(_tempRoot))
-            {
-
-                Directory.Delete(_tempRoot, recursive: true);
-
-            }
-
-        }
-        catch
-        {
-            // best-effort cleanup
-        }
-
-    }
+    public void Dispose() => _home.Dispose();
 
     private sealed class NoopDialogService : IDialogService
     {

@@ -95,10 +95,17 @@ internal sealed partial class ArcanumInternalToolServer
 
         int clamped = ArcanumSettingClamps.UnseenServantIntervalMinutes(args.IntervalMinutes);
 
-        _pacer.SetDynamicInterval(jobName, args.IntervalMinutes);
+        if (!_pacer.SetDynamicInterval(jobName, args.IntervalMinutes))
+        {
+            return Task.FromResult(
+                ToolError(
+                    $"adjust_initiative: no Unseen Servant job named '{jobName}' is configured under Arcanum:Daemon:Jobs; "
+                    + "list the configured jobs on the daemon surface before retrying."));
+        }
 
-        string text =
-            $"Unseen Servant job '{jobName}' polling interval set to {clamped} minutes (clamped to allowed range).";
+        string text = clamped == args.IntervalMinutes
+            ? $"Unseen Servant job '{jobName}' polling interval set to {clamped} minutes."
+            : $"Unseen Servant job '{jobName}' polling interval set to {clamped} minutes (clamped to the allowed range from {args.IntervalMinutes}).";
 
         return Task.FromResult(
             new McpToolsCallResultWire
@@ -636,16 +643,37 @@ internal sealed partial class ArcanumInternalToolServer
 
         Guid apprenticeId = caller.ApprenticeId;
 
-        return new Progress<A2ASendingProgress>(update => hub.Publish(apprenticeId, new ApprenticeEvent
-        {
-            Type = ApprenticeEventType.SendingProgress,
-            ApprenticeId = apprenticeId,
-            Timestamp = update.Timestamp,
-            Description = update.AgentUrl,
-            Summary = update.TaskId,
-            SendingState = update.RemoteState,
-            SendingDirection = update.Direction == A2ASendingDirection.Inbound ? "inbound" : "outbound",
-        }));
+        return new OrderedSendingProgress(hub, apprenticeId);
+
+    }
+
+    /// <summary>
+    /// Publishes Sending transitions onto a Chronicle in the exact order they were reported.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not <see cref="Progress{T}"/>. With no synchronization context — every server-side
+    /// tool path — <see cref="Progress{T}"/> queues each <c>Report</c> as an independent thread-pool
+    /// work item and guarantees no ordering between them, so two rapid transitions can surface on the
+    /// operator's Chronicle reversed (<c>working</c> before <c>submitted</c>). A Sending's state
+    /// timeline is the whole point of the frames, so it is published inline instead;
+    /// <see cref="ChronicleHub.Publish"/> is a non-blocking bounded-channel write.
+    /// </remarks>
+    private sealed class OrderedSendingProgress(
+        ChronicleHub hub,
+        Guid apprenticeId) : IProgress<A2ASendingProgress>
+    {
+
+        public void Report(A2ASendingProgress update) =>
+            hub.Publish(apprenticeId, new ApprenticeEvent
+            {
+                Type = ApprenticeEventType.SendingProgress,
+                ApprenticeId = apprenticeId,
+                Timestamp = update.Timestamp,
+                Description = update.AgentUrl,
+                Summary = update.TaskId,
+                SendingState = update.RemoteState,
+                SendingDirection = update.Direction == A2ASendingDirection.Inbound ? "inbound" : "outbound",
+            });
 
     }
 

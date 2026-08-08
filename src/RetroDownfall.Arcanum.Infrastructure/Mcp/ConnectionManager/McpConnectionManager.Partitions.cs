@@ -260,20 +260,7 @@ public sealed partial class McpConnectionManager
             entry.Tools.ToList(),
             entry.ErrorMessage);
 
-        int existingIndex = partition.Servers.FindIndex(m => string.Equals(m.ServerName, entry.Name, StringComparison.Ordinal));
-
-        if (existingIndex >= 0)
-        {
-
-            partition.Servers[existingIndex] = metadata;
-
-        }
-        else
-        {
-
-            partition.Servers.Add(metadata);
-
-        }
+        partition.UpsertServer(metadata);
 
     }
 
@@ -290,7 +277,7 @@ public sealed partial class McpConnectionManager
 
         }
 
-        partitionLazy.Value.Servers.RemoveAll(m => string.Equals(m.ServerName, entry.Name, StringComparison.Ordinal));
+        partitionLazy.Value.RemoveServer(entry.Name);
 
     }
 

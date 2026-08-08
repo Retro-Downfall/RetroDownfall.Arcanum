@@ -479,7 +479,16 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
     readable, that trusted MCP metadata is withheld with a reason, and that `Host:ListenAny` is
     `false` in the restored configuration. Inject a fault at the `Reconcile` phase and confirm the
     result is `RolledBack`, the original tree is back with its original bytes, and no staging root
-    survives; inject one at `Validate` and confirm `Rejected` with the installation untouched. Then
+    survives. Keep that post-commit fault and fault the reversal itself — throw from
+    `BackupRestoreService.Reverse()` before its renames — and confirm nothing is deleted: the result
+    is `ReconciliationRequired` carrying `backup.restore_reversal_incomplete` naming the staging
+    root, the journal survives rewound to the `Commit` phase so a later phase cannot be misread as a
+    finished commit whose staging is safe to discard, and `previous/` still holds the original
+    bytes. `BackupRestoreRecovery.Resolve()` then settles that staging root from filesystem evidence
+    at the next start: it moves `previous/` back and reports rollback when the live root was already
+    swapped out, and otherwise leaves the committed generation alone and reports
+    reconciliation-required, naming the preserved `previous/`. Inject one at `Validate` and confirm
+    `Rejected` with the installation untouched. Then
     reproduce each commit boundary by hand — journal phase before `Commit`; live and staged present;
     live missing with `previous/` present; staged gone with live and `previous/` both present — and
     confirm `BackupRestoreRecovery.Resolve()` maps each to discard, rollback, rollback, and

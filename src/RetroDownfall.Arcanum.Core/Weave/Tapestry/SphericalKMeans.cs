@@ -142,20 +142,27 @@ public static class SphericalKMeans
     /// independent of the caller's enumeration order). Non-finite, zero-norm, and
     /// dimension-mismatched vectors are quarantined into
     /// <see cref="SphericalKMeansResult.Rejected"/> and never truncated, padded, or clustered.
+    ///
+    /// <paramref name="cancellationToken"/> is observed once per seeding round and once per refinement
+    /// iteration. Clustering a large layer is minutes of uninterrupted CPU otherwise, which would make
+    /// the Tapestry sweep's documented "stays cancellable throughout" guarantee false during host
+    /// shutdown. This is caller-driven cancellation, not a work ceiling — an uncancelled call still runs
+    /// the layer to completion however long that takes.
     /// </summary>
     public static SphericalKMeansResult Cluster(
         IReadOnlyList<SphericalKMeansPoint> points,
         int k,
         ulong seed,
         int? expectedDimensions = null,
-        int maxIterations = MaxIterations)
+        int maxIterations = MaxIterations,
+        CancellationToken cancellationToken = default)
     {
 
         ArgumentNullException.ThrowIfNull(points);
 
         Prepared prepared = Prepare(points, expectedDimensions);
 
-        return ClusterPrepared(prepared, k, seed, maxIterations);
+        return ClusterPrepared(prepared, k, seed, maxIterations, cancellationToken);
 
     }
 
@@ -171,7 +178,8 @@ public static class SphericalKMeans
         int maxClustersPerLayer,
         ulong seed,
         int? expectedDimensions = null,
-        int maxIterations = MaxIterations)
+        int maxIterations = MaxIterations,
+        CancellationToken cancellationToken = default)
     {
 
         ArgumentNullException.ThrowIfNull(points);
@@ -184,7 +192,7 @@ public static class SphericalKMeans
             maxClustersPerLayer,
             prepared.DistinctVectors);
 
-        return ClusterPrepared(prepared, k, seed, maxIterations);
+        return ClusterPrepared(prepared, k, seed, maxIterations, cancellationToken);
 
     }
 
@@ -253,7 +261,8 @@ public static class SphericalKMeans
         Prepared prepared,
         int k,
         ulong seed,
-        int maxIterations)
+        int maxIterations,
+        CancellationToken cancellationToken)
     {
 
         List<string> usableIds = prepared.Ids;
@@ -275,7 +284,7 @@ public static class SphericalKMeans
 
         int clusterCount = Math.Clamp(k, 1, Math.Min(usableIds.Count, prepared.DistinctVectors));
 
-        float[][] centroids = InitializeCentroids(usableVectors, clusterCount, seed);
+        float[][] centroids = InitializeCentroids(usableVectors, clusterCount, seed, cancellationToken);
 
         int[] assignments = new int[usableIds.Count];
 
@@ -289,6 +298,8 @@ public static class SphericalKMeans
 
         for (; iterations < cap;)
         {
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             iterations++;
 
@@ -461,11 +472,19 @@ public static class SphericalKMeans
     /// probability proportional to its squared Euclidean distance from the nearest chosen centroid
     /// (on unit vectors that is <c>2 - 2·cos</c>). All weighted-selection boundary cases fall back to
     /// the lowest-index (therefore lowest stable id) candidate that is not already a centroid.
+    ///
+    /// <c>squaredDistances</c> carries each point's nearest-centroid distance forward across rounds
+    /// instead of being recomputed against every previously chosen centroid, which is what makes
+    /// seeding <c>O(k·n·d)</c> rather than <c>O(k²·n·d)</c>. The selection weights are unchanged to the
+    /// bit: a running minimum is exact in floating point regardless of the order the candidates are
+    /// folded in, and <c>total</c> is still accumulated over the same values in the same index order —
+    /// so the deterministic-reproducibility contract holds.
     /// </summary>
     private static float[][] InitializeCentroids(
         IReadOnlyList<float[]> vectors,
         int clusterCount,
-        ulong seed)
+        ulong seed,
+        CancellationToken cancellationToken)
     {
 
         TapestryDeterministicRandom random = new(seed);
@@ -480,33 +499,32 @@ public static class SphericalKMeans
 
         double[] squaredDistances = new double[vectors.Count];
 
+        Array.Fill(squaredDistances, double.MaxValue);
+
         for (int chosen = 1; chosen < clusterCount; chosen++)
         {
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Only the centroid picked by the previous round is new, so folding it into the running
+            // minimum reproduces exactly the value a full rescan of centroids[0..chosen) would give.
+            float[] newest = centroids[chosen - 1];
 
             double total = 0;
 
             for (int index = 0; index < vectors.Count; index++)
             {
 
-                double nearest = double.MaxValue;
+                double distance = Math.Max(0, 2.0 - (2.0 * Dot(vectors[index], newest)));
 
-                for (int centroid = 0; centroid < chosen; centroid++)
+                if (distance < squaredDistances[index])
                 {
 
-                    double distance = Math.Max(0, 2.0 - (2.0 * Dot(vectors[index], centroids[centroid])));
-
-                    if (distance < nearest)
-                    {
-
-                        nearest = distance;
-
-                    }
+                    squaredDistances[index] = distance;
 
                 }
 
-                squaredDistances[index] = nearest;
-
-                total += nearest;
+                total += squaredDistances[index];
 
             }
 

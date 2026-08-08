@@ -658,6 +658,50 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A FIFO planted in the workspace satisfies File.Exists, so the replace-text-block read reached a
+    /// plain blocking FileStream: open(2) on a FIFO never returns until a writer appears, and the
+    /// constructor takes no CancellationToken, so the request hung past RequestAborted and leaked a
+    /// thread-pool thread per call. The sibling read paths already prove Kind == RegularFile first.
+    /// </summary>
+    [SkippableFact]
+    public async Task ReplaceTextBlockAsync_rejects_a_fifo_instead_of_blocking_forever()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
+
+        string fifoPath = Path.Combine(_workspace.Root, "pipe");
+
+        using (System.Diagnostics.Process? mkfifo = System.Diagnostics.Process.Start("mkfifo", fifoPath))
+        {
+
+            Skip.If(mkfifo is null, "mkfifo is unavailable on this host.");
+
+            await mkfifo!.WaitForExitAsync();
+
+            Skip.If(mkfifo.ExitCode != 0, "mkfifo failed on this host.");
+
+        }
+
+        Assert.True(File.Exists(fifoPath));
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Task<Result<TextBlockReplaceResult>> replace = writer.ReplaceTextBlockAsync(
+            workspace, "pipe", "a", "b", null, CancellationToken.None);
+
+        Task completed = await Task.WhenAny(replace, Task.Delay(TimeSpan.FromSeconds(10)));
+
+        Assert.Same(replace, completed);
+
+        Result<TextBlockReplaceResult> result = await replace;
+
+        Assert.True(result.IsFailure);
+
+    }
+
     private static PhysicalFileSystemWriter CreateWriter() =>
         CreateWriter(new ArcanumSettings { Workspaces = new WorkspaceSettings { EnableFileWrite = true } });
 

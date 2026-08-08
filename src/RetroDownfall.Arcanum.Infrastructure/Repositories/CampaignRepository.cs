@@ -254,6 +254,19 @@ public sealed class CampaignRepository : ICampaignRepository
                     exception);
             }
 
+            // The unique indexes on NameLower and Path are the authority: the endpoint's pre-check is
+            // check-then-act, so the loser of a concurrent registration lands here. That is an
+            // ordinary domain outcome, not an infrastructure fault, and must not surface as a 500.
+            if (IsUniqueConstraintViolation(exception))
+            {
+                if (_db.Entry(campaign).State != EntityState.Detached)
+                {
+                    _db.Entry(campaign).State = EntityState.Detached;
+                }
+
+                return await MapDuplicateCampaignAsync(campaign, cancellationToken).ConfigureAwait(false);
+            }
+
             throw;
         }
         finally
@@ -311,6 +324,60 @@ public sealed class CampaignRepository : ICampaignRepository
 
     public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
         _db.Campaigns.CountAsync(cancellationToken);
+
+    /// <summary>
+    /// True when <paramref name="exception"/> (or anything it wraps) is a SQLite uniqueness
+    /// violation. <c>SqliteBusyRetry</c> deliberately matches only BUSY/LOCKED, so a constraint
+    /// failure reaches the caller unretried.
+    /// </summary>
+    private static bool IsUniqueConstraintViolation(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is SqliteException sqlite && sqlite.SqliteErrorCode == 19) // SQLITE_CONSTRAINT
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Re-reads the conflicting row after a uniqueness violation and returns the domain error the
+    /// endpoint's pre-check would have produced had it won the race.
+    /// </summary>
+    private async Task<Result<Campaign>> MapDuplicateCampaignAsync(
+        Campaign campaign,
+        CancellationToken cancellationToken)
+    {
+        string nameLower = campaign.Name.Trim().ToLowerInvariant();
+
+        bool nameTaken = await _db.Campaigns
+            .AsNoTracking()
+            .AnyAsync(c => c.NameLower == nameLower, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (nameTaken)
+        {
+            return Result<Campaign>.Failure(
+                new Error("Campaign.DuplicateName", "A campaign with this name already exists."));
+        }
+
+        bool pathTaken = await _db.Campaigns
+            .AsNoTracking()
+            .AnyAsync(c => c.Path == campaign.Path, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (pathTaken)
+        {
+            return Result<Campaign>.Failure(
+                new Error("Campaign.DuplicatePath", "A campaign with this path already exists."));
+        }
+
+        return Result<Campaign>.Failure(
+            new Error("Campaign.DuplicateName", "A campaign with this name or path already exists."));
+    }
 
     private static async Task<bool> TryRollbackAsync(IDbContextTransaction transaction)
     {

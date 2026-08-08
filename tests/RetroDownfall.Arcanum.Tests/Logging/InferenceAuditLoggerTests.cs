@@ -603,6 +603,48 @@ public sealed class InferenceAuditLoggerTests : IDisposable
 
     }
 
+    /// <summary>
+    /// PrepareForNewDate marked the UTC day prepared before creating the directory, so one transient
+    /// failure made every later turn that day take the "already prepared" fast path and die in
+    /// AppendAllTextAsync — the whole day's audit trail lost with no retry. The sibling
+    /// GuardrailAuditLogger assigns the flag only after success.
+    /// </summary>
+    [Fact]
+    public async Task LogAsync_retries_directory_preparation_after_a_transient_failure()
+    {
+
+        string blockedDirectory = Path.Combine(_tempDirectory, "blocked");
+
+        // A file where the audit directory belongs makes Directory.CreateDirectory throw.
+        await File.WriteAllTextAsync(blockedDirectory, "blocker");
+
+        ArcanumSettings settings = new()
+        {
+            Host = new HostSettings
+            {
+                AuditLog = new HostAuditPolicySettings { Enabled = true },
+            },
+        };
+
+        InferenceAuditLogger logger = new(
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<InferenceAuditLogger>.Instance,
+            Path.Combine(blockedDirectory, "audit.jsonl"));
+
+        await logger.LogAsync(MakeRecord("blocked"), CancellationToken.None);
+
+        Assert.False(Directory.Exists(blockedDirectory));
+
+        File.Delete(blockedDirectory);
+
+        await logger.LogAsync(MakeRecord("recovered"), CancellationToken.None);
+
+        Assert.True(Directory.Exists(blockedDirectory));
+
+        Assert.NotEmpty(Directory.EnumerateFiles(blockedDirectory));
+
+    }
+
     private InferenceAuditLogger CreateLogger(
         bool enabled,
         bool redactToolArguments = true,

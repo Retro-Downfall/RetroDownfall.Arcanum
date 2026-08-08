@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -1049,6 +1050,47 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         }
 
         return results;
+
+    }
+
+    [SkippableFact]
+    public async Task IndexWorkspaceAsync_NeverSplitsASurrogatePairAcrossReadPages()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        int chunkSize = ArcanumSettingClamps.EmbeddingsChunkSizeChars(
+            ArcanumRuntimeDefaults.Embeddings.ChunkSizeChars);
+
+        // The file is paged eight chunks at a time; ReadBlockAsync fills to a character count and knows
+        // nothing about UTF-16 pairs, so an astral character whose first code unit is the last of a page
+        // is split in half, and both fragments are persisted with the character replaced by U+FFFD.
+        int readPageCharacters = chunkSize * 8;
+
+        _workspace.WriteFile(
+            "emoji.md",
+            new string('a', readPageCharacters - 1) + "\U0001F600" + new string('b', 200));
+
+        FakeWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out EmbeddingSettings embeddings);
+
+        await service.IndexWorkspaceAsync(_workspace.Root, embeddings, CancellationToken.None);
+
+        List<string> chunks = await GetChunkContentsAsync("emoji.md");
+
+        Assert.NotEmpty(chunks);
+
+        foreach (string chunk in chunks)
+        {
+
+            Assert.DoesNotContain(
+                '�',
+                Encoding.UTF8.GetString(Encoding.UTF8.GetBytes(chunk)));
+
+        }
+
+        Assert.Contains(chunks, static chunk => chunk.Contains("\U0001F600", StringComparison.Ordinal));
 
     }
 

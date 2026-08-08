@@ -1122,6 +1122,160 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task QueryAsync_paginates_every_session_that_shares_an_updated_at()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset newest = new(2025, 6, 1, 9, 0, 0, TimeSpan.Zero);
+
+        // Three sessions share one UpdatedAt, so with limit=2 the tie straddles the page boundary. A
+        // bare "UpdatedAt < cursor" cursor would skip the siblings that never made it onto page one.
+        DateTimeOffset tied = newest.AddMinutes(-10);
+
+        Guid s1 = Guid.NewGuid();
+
+        Guid s2 = Guid.NewGuid();
+
+        Guid s3 = Guid.NewGuid();
+
+        Guid s4 = Guid.NewGuid();
+
+        _db!.Sessions.Add(NewSession(s1, "newest", newest));
+
+        _db.Sessions.Add(NewSession(s2, "tied-a", tied));
+
+        _db.Sessions.Add(NewSession(s3, "tied-b", tied));
+
+        _db.Sessions.Add(NewSession(s4, "tied-c", tied));
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
+
+        List<Guid> seen = [];
+
+        DateTimeOffset? cursor = null;
+
+        for (int page = 0; page < 10; page++)
+        {
+
+            SessionQueryResult result = await repository.QueryAsync(
+                new SessionQueryRequest(Limit: 2, BeforeUpdatedAt: cursor),
+                CancellationToken.None);
+
+            seen.AddRange(result.Summaries.Select(x => x.Id));
+
+            if (!result.HasMore)
+            {
+
+                break;
+
+            }
+
+            cursor = result.NextBeforeUpdatedAt;
+
+        }
+
+        Assert.Equal(4, seen.Count);
+
+        Assert.Equal(new HashSet<Guid> { s1, s2, s3, s4 }, seen.ToHashSet());
+
+    }
+
+    [SkippableFact]
+    public async Task QueryAsync_paginates_when_a_whole_page_shares_one_updated_at()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset tied = new(2025, 6, 1, 9, 0, 0, TimeSpan.Zero);
+
+        Guid s1 = Guid.NewGuid();
+
+        Guid s2 = Guid.NewGuid();
+
+        Guid s3 = Guid.NewGuid();
+
+        _db!.Sessions.Add(NewSession(s1, "tied-a", tied));
+
+        _db.Sessions.Add(NewSession(s2, "tied-b", tied));
+
+        _db.Sessions.Add(NewSession(s3, "older", tied.AddMinutes(-5)));
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
+
+        // limit=1 cannot express a position inside a tie group, so the page widens to the whole group
+        // rather than skipping a sibling or stalling the cursor.
+        List<Guid> seen = [];
+
+        DateTimeOffset? cursor = null;
+
+        for (int page = 0; page < 10; page++)
+        {
+
+            SessionQueryResult result = await repository.QueryAsync(
+                new SessionQueryRequest(Limit: 1, BeforeUpdatedAt: cursor),
+                CancellationToken.None);
+
+            seen.AddRange(result.Summaries.Select(x => x.Id));
+
+            if (!result.HasMore)
+            {
+
+                break;
+
+            }
+
+            cursor = result.NextBeforeUpdatedAt;
+
+        }
+
+        Assert.Equal(new HashSet<Guid> { s1, s2, s3 }, seen.ToHashSet());
+
+    }
+
+    [SkippableFact]
+    public async Task QueryAsync_reports_entry_counts_per_session()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        DateTimeOffset baseline = new(2025, 7, 1, 9, 0, 0, TimeSpan.Zero);
+
+        Guid busy = Guid.NewGuid();
+
+        Guid quiet = Guid.NewGuid();
+
+        _db!.Sessions.Add(NewSession(busy, "busy", baseline.AddMinutes(10)));
+
+        _db.Sessions.Add(NewSession(quiet, "quiet", baseline));
+
+        _db.Entries.Add(NewEntry(Guid.NewGuid(), busy, "one", baseline));
+
+        _db.Entries.Add(NewEntry(Guid.NewGuid(), busy, "two", baseline));
+
+        _db.Entries.Add(NewEntry(Guid.NewGuid(), busy, "three", baseline));
+
+        _db.Entries.Add(NewEntry(Guid.NewGuid(), quiet, "solo", baseline));
+
+        await _db.SaveChangesAsync(CancellationToken.None);
+
+        SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor());
+
+        SessionQueryResult result = await repository.QueryAsync(
+            new SessionQueryRequest(Limit: 10),
+            CancellationToken.None);
+
+        Assert.Equal(3, result.Summaries.Single(x => x.Id == busy).EntryCount);
+
+        Assert.Equal(1, result.Summaries.Single(x => x.Id == quiet).EntryCount);
+
+    }
+
     private static Session NewSession(Guid id, string title, DateTimeOffset updatedAt, string status = "active") =>
         new()
         {

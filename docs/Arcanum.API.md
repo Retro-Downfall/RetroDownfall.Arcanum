@@ -122,7 +122,7 @@ test, and documentation citations remain stable.
 | GET | `/api/campaigns` | List Grimoire-backed campaigns (`ApiResponse<ListPageResult<CampaignDto>>`; optional `?type=`; DESIGN §19). |
 | GET | `/api/campaigns/by-path` | Lookup campaign by filesystem path (`ApiResponse<CampaignDto>`; required `?path=`; **404** `Campaign.NotFound`; DESIGN §19). |
 | GET | `/api/campaigns/{id}` | Campaign detail (`ApiResponse<CampaignDto>`; **404** when missing; DESIGN §19). |
-| POST | `/api/campaigns` | Register campaign directory (`ApiResponse<CampaignDto>`; **201** + `Location`; creates `.arcanum/`; DESIGN §19). |
+| POST | `/api/campaigns` | Register campaign directory (`ApiResponse<CampaignDto>`; **201** + `Location`; creates `.arcanum/`; DESIGN §19). Name and path uniqueness is pre-checked and then enforced by the database unique index: a registration that loses a concurrent race is rejected by the index and `CampaignRepository.AddAsync` re-reads the conflicting row to return the same **400** `Campaign.DuplicateName` or `Campaign.DuplicatePath` the pre-check would have produced. |
 | PUT | `/api/campaigns/{id}` | Update campaign (`ApiResponse<CampaignDto>`; DESIGN §19). |
 | DELETE | `/api/campaigns/{id}` | Remove campaign (**204**; DESIGN §19). |
 | GET | `/api/campaigns/{id}/spells` | Spells scoped to a campaign, merging built-ins with campaign spells shadowing them (`ApiResponse<SpellSummary[]>`; `?q=`, `?tag=`, `?tool=`; **404** `Campaign.NotFound`; DESIGN §19). |
@@ -190,7 +190,7 @@ test, and documentation citations remain stable.
 | GET | `/api/workspaces/{id}/files/index/status` | Read-only indexing status for a workspace (`ApiResponse<WorkspaceIndexStatusDto>`): vector mode/diagnostic, `IndexingEnabled`, durable file/chunk counts, and volatile `Watching`/`Degraded`/`Overflowed`/`Reconciling` plus last-event/last-success timestamps. |
 | GET | `/api/workspaces/{id}/files/chunks` | Bounded, paginated chunk previews for a workspace (`ApiResponse<WorkspaceFileChunkPage>`; optional `relativePath` filter, clamped) including character offsets and one-based source line ranges. |
 | GET | `/api/unseen-servant/jobs` | List Unseen Servant jobs with base and effective polling intervals (**canonical** Unseen Servant pacer API; §8.15). |
-| POST | `/api/unseen-servant/jobs/{name}/initiative` | Set adaptive initiative (dynamic interval) for a job by name; returns updated status. |
+| POST | `/api/unseen-servant/jobs/{name}/initiative` | Set adaptive initiative (dynamic interval) for a job by name; returns updated status (`ApiResponse<UnseenServantJobStatusDto>`). **400** `Validation.InvalidBody` when `intervalMinutes` is outside **1..10080**; **404** `Daemon.NotFound` when `{name}` is not configured under `Arcanum:Daemon:Jobs` (§8.4). |
 | GET | `/api/daemons` | List registered daemon jobs (`ApiResponse<DaemonJobInfo[]>`; **plural** `daemons` — registry; §8.15). |
 | GET | `/api/daemons/{id}` | Daemon job metadata (`ApiResponse<DaemonJobInfo>`; **404** when missing). |
 | POST | `/api/daemons/{id}/run` | Run a daemon job on demand; returns `ApiResponse<DaemonExecutionSummary>` with execution id (**400** when not found, disabled, or already running on-demand). |
@@ -283,6 +283,7 @@ public sealed record ApiResponse<T>(T? Data, bool IsSuccess, Error? Error, strin
 - `Error?` is literal `null` on success. `TraceId` from `Activity.Current?.Id ?? HttpContext.TraceIdentifier`.
 - `ApiResponse<T>.FromResult` is the single mapping point from `Result<T>` to wire envelope.
 - **404 bodies:** JSON routes under `/api` return an `ApiResponse<T>` envelope on **404** (for example `Campaign.NotFound`, `Session.NotFound`) — not an empty body. Use `Results.Json(..., ArcanumJsonContext.Default.ApiResponse…, statusCode: 404)` or `Results.NotFound(envelope)` so clients always receive `isSuccess`, `error`, and `traceId`.
+- **Media type:** JSON routes that read the request body themselves go through `ApiRequestJson.ReadAsync`, which requires a JSON `Content-Type` before reading. A missing or non-JSON media type is a **415** `ApiResponse<T>` failure envelope carrying `Validation.UnsupportedMediaType` and the message `Request body must be sent with 'Content-Type: application/json'.`, not an unhandled framework `InvalidOperationException` surfacing as **500** `Hub.Unhandled`. A JSON-typed but unparsable body remains **400** `Validation.InvalidBody` (`Request body could not be parsed as valid JSON.`), and a well-formed body that deserializes to null remains **400** `Validation.InvalidBody`.
 
 ### 8.2 `ArcanumJsonContext` — source-generated, public
 
@@ -301,6 +302,8 @@ Successful endpoints use `Results.Ok(ApiResponse<T>.FromResult(result, traceId))
 - **`POST /api/intelligence/ping`** — `ApiResponse<PromptResponseDto>` on every path: **400** for request/reasoning validation, **200** on success, and shared `ArcanumErrorMapper` status for inference failures (for example 404/403/400/503/500 by stable code). The payload contract is detailed in §8.10.
 
 - **`POST /api/intelligence/human-response`** — **400** validation (including the code-owned answer UTF-8 byte limit); **404** + `ApiResponse<bool>` failure when no waiter exists for `promptId` (`Intelligence.HumanPromptNotFound`); **200** + `ApiResponse<bool>` with `Data: true` when the answer is accepted.
+
+- **`POST /api/unseen-servant/jobs/{name}/initiative`** — `ApiResponse<UnseenServantJobStatusDto>` on every path. **400** `Validation.InvalidBody` for a missing or unparsable body and for an `intervalMinutes` outside the inclusive range **1..10080**; **400** `Validation.InvalidJobName` for a blank route name; **404** `Daemon.NotFound` when no job of that trimmed name is configured under `Arcanum:Daemon:Jobs`, with a message naming `arcanum daemon jobs` as the way to list the configured names; **200** with the recomputed job status once the dynamic interval is applied. `UnseenServantPacer.SetDynamicInterval` is a no-op for an unconfigured name, so the **404** is what keeps a mistyped name from reading as an applied change.
 
 - **`POST /api/mcp/reload`** and **`POST /api/intelligence/arsenal`** — Optional JSON body **`OptionalWorkspaceRequest`** (`{ "workingDirectory": "..." }` only). Responses remain `ApiResponse<T>` as today.
 
@@ -463,6 +466,10 @@ fields. Other non-retention runtime consumers remain bound to the process-start 
 a host restart to adopt configuration changes; referenced secret environment values are resolved
 only at provider/certificate use. Status: **400** `Configuration.ValidationFailed`,
 `Config.UnresolvedMask`, or `Security.BlockedOutboundUrl`; **500** `Configuration.WriteFailed`.
+`POST /api/config/validate` answers **200** with `isSuccess: true` and `data: true` only when the
+merged document clears residual-mask, outbound, and semantic validation; every failure — semantic
+included — is a **400** failure envelope, so a status-code-driven probe cannot read an invalid
+configuration as validated.
 
 ### 8.13 MCP server event SSE bus (`GET /api/events/mcp`)
 
@@ -790,10 +797,11 @@ mappers and tests.
 | Codes (grouped) | HTTP | Semantics |
 |-----------------|------|-----------|
 | `Validation.InvalidPrompt`, `InvalidBody`, `InvalidQuery`, `InvalidProviderType`, `AttachedFiles` | 400 | Request shape / bounds validation |
+| `Validation.UnsupportedMediaType` | 415 | Missing or non-JSON `Content-Type` on a JSON body route (status set by `ApiRequestJson`, not the mapper; §8.1) |
 | `Hub.Model` | 404 | Model not in any provider `models` |
 | `Hub.Error` | 500 | Generic inference failure (mapper default arm) |
 | `Campaign.NotFound`; `Session.NotFound` / `EntryNotFound`; `Attachment.NotFound` / `SourceNotFound`; `Grimoire.LoreNotFound`; `Apprentice.NotFound`; `Workspace.NotFound` / `FileNotFound`; `Spell.NotFound`; `Prompt.NotFound`; `Intelligence.HumanPromptNotFound`; `Mcp.ServerNotFound` / `ToolNotFound`; `Daemon.NotFound`; `Files.NotFound`; `Batches.NotFound` / `InputFileNotFound`; `Saga.NotFound`; `ProvingGrounds.SpellNotFound` / `PromptNotFound`; `Workspace.ReplacementNotFound` | 404 | Missing resource |
-| `Campaign.InvalidPath` / `MaxReached`; `Session.Archived` / `InvalidStatus` / `TooManyEntries` / `EntryTooLarge` / `MemoryManagementDisabled` / `EmptyContent`; `Attachment.InvalidRequest` / `InvalidContent` / `InvalidReference` / `SourceUnavailable`; `Apprentice.Disabled` / `PendingQueueFull` / `InvalidGuidance` / `InvalidPlan` / `InvalidGoal` / `InvalidWorkspace`; `Workspace.NameEmpty` / `SymbolicLinkEscape` / `PathTraversal` / `DirectoryNotEmpty` / `ReplacementAmbiguous` / `PathIsDirectory` / `PathIsFile`; `Spell.NoWorkspace` / `InvalidWorkspace` / `InvalidName` / `NameCollision` / `BuiltinReadOnly` / `DuplicateVersion` / `InvalidVersion`; `Prompt.CodexPathNotContained` / `DuplicateVersion` / `InvalidName` / `InvalidVersion` / `InvalidRequest`; `Mcp.AmbiguousServer` / `MissingWorkspace` / `ServerNotRunning` / `AmbiguousTool` / `ToolError`; `Sending.TaskRejected`; `Security.BlockedOutboundUrl` / `IdempotencyKeyTooLong`; `Files.InvalidMimeType`; `Batches.InvalidEndpoint`; `Embeddings.ConfirmationRequired`; `ProvingGrounds.InvalidTrial` / `WorkspaceNotAllowed`; `Saga.NotEmpty`; `Scrying.VisionNotSupported` / `TooManyImages` / `UnsupportedMimeType`; `WebBrowsing.TooLarge` (reserved; today truncates) / `InvalidUrl`; `ClientTools.Disabled` / `TooMany` / `InvalidSchema`; `Guardrails.PiiDetected` / `Blocked`; `StructuredOutput.ValidationFailed` / `SchemaInvalid` | 400 | Domain validation / policy refusal (non-auth) |
+| `Campaign.InvalidPath` / `DuplicateName` / `DuplicatePath`; `Session.Archived` / `InvalidStatus` / `TooManyEntries` / `EntryTooLarge` / `MemoryManagementDisabled` / `EmptyContent`; `Attachment.InvalidRequest` / `InvalidContent` / `InvalidReference` / `SourceUnavailable`; `Apprentice.Disabled` / `PendingQueueFull` / `InvalidGuidance` / `InvalidPlan` / `InvalidGoal` / `InvalidWorkspace`; `Workspace.NameEmpty` / `SymbolicLinkEscape` / `PathTraversal` / `DirectoryNotEmpty` / `ReplacementAmbiguous` / `PathIsDirectory` / `PathIsFile`; `Spell.NoWorkspace` / `InvalidWorkspace` / `InvalidName` / `NameCollision` / `BuiltinReadOnly` / `DuplicateVersion` / `InvalidVersion`; `Prompt.CodexPathNotContained` / `DuplicateVersion` / `InvalidName` / `InvalidVersion` / `InvalidRequest`; `Mcp.AmbiguousServer` / `MissingWorkspace` / `ServerNotRunning` / `AmbiguousTool` / `ToolError`; `Sending.TaskRejected`; `Security.BlockedOutboundUrl` / `IdempotencyKeyTooLong`; `Files.InvalidMimeType`; `Batches.InvalidEndpoint`; `Embeddings.ConfirmationRequired`; `ProvingGrounds.InvalidTrial` / `WorkspaceNotAllowed`; `Saga.NotEmpty`; `Scrying.VisionNotSupported` / `TooManyImages` / `UnsupportedMimeType`; `WebBrowsing.TooLarge` (reserved; today truncates) / `InvalidUrl`; `ClientTools.Disabled` / `TooMany` / `InvalidSchema`; `Guardrails.PiiDetected` / `Blocked`; `StructuredOutput.ValidationFailed` / `SchemaInvalid` | 400 | Domain validation / policy refusal (non-auth) |
 | `Campaign.PathNotAllowed`; `Workspace.PathNotAllowed` / `AccessDenied` / `FileWriteDisabled`; `Spell.PathNotAllowed`; `Sending.Disabled` / `AgentNotAllowed`; `Mcp.WorkspaceNotTrusted` / `DiagnosticBlocked`; `Scrying.FeatureDisabled`; `Attachment.Disabled`; `WebBrowsing.SsrfBlocked` | 403 | Path/network/feature deny |
 | `Security.MissingApiKey` | 401 | Missing/invalid API key |
 | `Data.InvalidRequest` / `ConfirmationRequired` | 400 | Invalid data-lifecycle operation, rule, scope, or required factory-reset confirmation |

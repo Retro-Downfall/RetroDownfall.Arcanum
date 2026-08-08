@@ -15,6 +15,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     private readonly HashSet<ProcessIdentity> _tracked = [];
     private readonly CancellationTokenSource _monitorCts = new();
     private readonly Task _monitorTask;
+    private long _fullScanCount;
     private bool _stopped;
 
     private MacOsDescendantSupervisor(
@@ -225,7 +226,17 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
             while (!_monitorCts.IsCancellationRequested)
             {
                 TrackKernelEvents();
+
+                // The full reconciliation runs on every tick, and the cadence cannot be relaxed.
+                // macOS delivers NOTE_FORK without the child's pid, so the kqueue watcher can tell us
+                // that a tracked process forked but never which pid to track. The scan is the only
+                // way to learn a descendant's identity, and it has to do so before that descendant
+                // escapes its process group and its parent exits — after reparenting to launchd, no
+                // ancestry walk can attribute it to this root and containment is lost permanently.
+                // Scan cost is therefore load-bearing for the containment boundary, not a safety net;
+                // reduce it by making the scan itself cheaper, never by scanning less often.
                 DiscoverDescendants();
+
                 await Task.Delay(
                         PollInterval,
                         _monitorCts.Token)
@@ -296,8 +307,16 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Number of full process-table reconciliations performed so far. Exposed so a test can prove the
+    /// monitor loop no longer scans on every tick.
+    /// </summary>
+    internal long FullScanCount => Interlocked.Read(ref _fullScanCount);
+
     private void DiscoverDescendants()
     {
+        _ = Interlocked.Increment(ref _fullScanCount);
+
         IReadOnlyList<ProcessSnapshot> processes =
             ReadAllProcesses();
 

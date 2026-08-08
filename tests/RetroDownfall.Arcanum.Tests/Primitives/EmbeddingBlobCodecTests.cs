@@ -243,6 +243,74 @@ public sealed class EmbeddingBlobCodecTests
 
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(7)]
+    [InlineData(8)]
+    [InlineData(17)]
+    [InlineData(768)]
+    public void CosineSimilarity_WithHoistedQueryNorm_IsBitIdentical(int length)
+    {
+
+        // The managed brute-force scan hoists the invariant query vector's norm out of the per-row loop.
+        // That is only legitimate if it changes nothing, so this asserts exact equality — not tolerance.
+        float[] query = BuildVector(length, seed: 11);
+
+        float[] candidate = BuildVector(length, seed: 29);
+
+        double queryNormSquared = EmbeddingBlobCodec.NormSquared(query);
+
+        Assert.Equal(
+            EmbeddingBlobCodec.CosineSimilarity(query, candidate),
+            EmbeddingBlobCodec.CosineSimilarity(query, queryNormSquared, candidate));
+
+    }
+
+    [Fact]
+    public void AsVector_ViewsTheBlobWithoutCopying()
+    {
+
+        float[] vector = [1.5f, -2.25f, 0.125f, 4f];
+
+        byte[] encoded = EmbeddingBlobCodec.Encode(vector);
+
+        Assert.True(EmbeddingBlobCodec.AsVector(encoded).SequenceEqual(vector));
+
+        // Same validation as Decode: a partial trailing float is a corrupt row, not a short vector.
+        _ = Assert.Throws<InvalidOperationException>(() => _ = EmbeddingBlobCodec.AsVector(encoded.AsSpan(0, 5)).Length);
+
+    }
+
+    [Fact]
+    public void NormSquared_MatchesTheSelfSimilarityPath()
+    {
+
+        float[] vector = BuildVector(768, seed: 7);
+
+        // A vector is exactly similar to itself, which only holds if NormSquared accumulates the way
+        // CosineSimilarity does internally.
+        AssertApproximatelyEqual(
+            1f,
+            EmbeddingBlobCodec.CosineSimilarity(vector, EmbeddingBlobCodec.NormSquared(vector), vector));
+
+    }
+
+    private static float[] BuildVector(int length, int seed)
+    {
+
+        float[] vector = new float[length];
+
+        for (int index = 0; index < length; index++)
+        {
+
+            vector[index] = MathF.Sin((index + seed) * 0.37f) * (index % 5 == 0 ? 2.5f : 1f);
+
+        }
+
+        return vector;
+
+    }
+
     private static void AssertApproximatelyEqual(float expected, float actual)
     {
 

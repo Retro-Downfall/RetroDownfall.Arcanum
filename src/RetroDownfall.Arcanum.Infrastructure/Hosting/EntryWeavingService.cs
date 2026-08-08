@@ -171,6 +171,24 @@ internal sealed class EntryWeavingService(
 
         Embedding<float>[] generated = embedResult.Value;
 
+        if (generated.Length != pending.Count)
+        {
+
+            // IWeaveService guarantees "never throws" and "no partial results on failure" — it does not
+            // guarantee one vector per input, and EmbedOneBatchAsync sizes its array straight from the
+            // provider's response. Indexing generated[i] against pending.Count would throw
+            // IndexOutOfRangeException, which ExecuteAsync's catch-all turns into a one-second retry loop
+            // that re-issues the billable embedding call every second, forever. A shape mismatch is a
+            // failed batch, the same call every sibling EmbedBatchAsync consumer makes.
+            logger.LogWarning(
+                "Entry Weaving: embedding provider returned {ActualCount} vector(s) for {ExpectedCount} entry/entries; skipping this batch.",
+                generated.Length,
+                pending.Count);
+
+            return;
+
+        }
+
         for (int i = 0; i < pending.Count; i++)
         {
 

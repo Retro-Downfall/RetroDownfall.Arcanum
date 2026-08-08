@@ -6,6 +6,7 @@ using SysEnv = System.Environment;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
+[Collection("ProcessEnvironment")]
 public sealed class HostProcessToolPolicyTests
 {
 

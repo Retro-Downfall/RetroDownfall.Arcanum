@@ -19,7 +19,7 @@ internal sealed class UnseenServantPacer(
     private readonly ConcurrentDictionary<string, int> _overrides = new(StringComparer.Ordinal);
 
     /// <inheritdoc />
-    public void SetDynamicInterval(string jobName, int intervalMinutes)
+    public bool SetDynamicInterval(string jobName, int intervalMinutes)
     {
 
         string trimmedName = jobName.Trim();
@@ -27,7 +27,7 @@ internal sealed class UnseenServantPacer(
         if (trimmedName.Length == 0)
         {
 
-            return;
+            return false;
         }
 
         UnseenServantJob? configured = (optionsMonitor.CurrentValue.Daemon?.Jobs ?? [])
@@ -37,8 +37,9 @@ internal sealed class UnseenServantPacer(
         {
 
             // Composite keys require a TargetSpell, which only a configured job has. Setting
-            // initiative for a name not present in Arcanum:Daemon:Jobs is a no-op.
-            return;
+            // initiative for a name not present in Arcanum:Daemon:Jobs cannot be applied, and the
+            // caller is told so rather than being allowed to report a phantom success.
+            return false;
         }
 
         string composite = UnseenServantJobTracker.JobTrackingKey(configured);
@@ -48,7 +49,7 @@ internal sealed class UnseenServantPacer(
         if (_overrides.TryGetValue(composite, out int previous) && previous == clamped)
         {
 
-            return;
+            return true;
         }
 
         _overrides[composite] = clamped;
@@ -62,6 +63,8 @@ internal sealed class UnseenServantPacer(
             Message: clamped.ToString()));
 
         _ = PersistIntervalAsync(composite, clamped);
+
+        return true;
     }
 
     /// <inheritdoc />

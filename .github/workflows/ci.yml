@@ -120,6 +120,11 @@ jobs:
             --no-restore \
             --filter "FullyQualifiedName~Macos_ci_requires_real_workspace_check_production_surface|FullyQualifiedName~MacOsSandbox_DeniesLaunchServicesBrokerEscape|FullyQualifiedName~Real_dotnet_build_uses_seeded_assets|FullyQualifiedName~Real_dotnet_lint_uses_seeded_project_state|FullyQualifiedName~Real_dotnet_test_uses_seeded_assets|FullyQualifiedName~Ci_has_packaged_sqlcipher_native_asset"
 
+      # verify-aot-il-warnings.sh fails closed without ripgrep, which the runner image does
+      # not ship. Install it explicitly rather than letting the gate refuse to run.
+      - name: Install ripgrep
+        run: command -v rg >/dev/null 2>&1 || brew install ripgrep
+
       - name: Verify macOS AOT IL warnings and search regex smoke
         run: ./scripts/verify-aot-il-warnings.sh
 
@@ -143,6 +148,11 @@ jobs:
             **/*.csproj
             **/Directory.Packages.props
             .config/dotnet-tools.json
+
+      # verify-aot-il-warnings.sh fails closed without ripgrep, which the runner image does
+      # not ship. Install it explicitly rather than letting the gate refuse to run.
+      - name: Install ripgrep
+        run: command -v rg >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y ripgrep)
 
       - name: Verify AOT IL warnings and regex smoke (host RID)
         run: ./scripts/verify-aot-il-warnings.sh

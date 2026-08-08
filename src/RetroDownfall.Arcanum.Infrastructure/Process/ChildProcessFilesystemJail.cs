@@ -234,7 +234,7 @@ internal static class ChildProcessFilesystemJail
             if (config is not null) cleanup.Add(config.Value);
             if (temp is not null) cleanup.Add(temp.Value);
             CleanupTempPaths(cleanup);
-            logger?.LogError(ex.GetType().Name, "Failed to prepare Windows AppContainer broker.");
+            logger?.LogError(ex, "Failed to prepare Windows AppContainer broker.");
             return WindowsFailClosedOrEscape(request, logger, "Windows AppContainer setup failed.");
         }
 

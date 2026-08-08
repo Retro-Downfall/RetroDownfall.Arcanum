@@ -74,6 +74,18 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         AfterWriterLockBeforeBlobValidationForTesting
     { get; set; }
 
+    /// <summary>
+    /// Test seam: runs inside the missing-file sweep, after it has snapshotted the rows but before it
+    /// evaluates any of them. Used to drive the promote-versus-sweep race deterministically.
+    /// </summary>
+    internal Func<CancellationToken, Task>? AfterMissingFileSnapshotForTesting { get; set; }
+
+    /// <summary>
+    /// Test seam: runs inside the orphan-file sweep, after it has snapshotted the referenced paths but
+    /// before it walks the attachment tree. Used to drive a concurrent attachment write deterministically.
+    /// </summary>
+    internal Func<CancellationToken, Task>? AfterOrphanPathSnapshotForTesting { get; set; }
+
     internal int BoundRecordPageReadCountForTesting =>
         Volatile.Read(ref _boundRecordPageReadCountForTesting);
 
@@ -2211,10 +2223,32 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
     }
 
+    /// <summary>
+    /// Unlinks files under the attachment tree that no row claims.
+    /// </summary>
+    /// <remarks>
+    /// This runs while the host is serving — at startup Kestrel is already accepting requests, and
+    /// <c>POST /api/operations/reconcile</c> can drive it at any time — so "unreferenced" has to be
+    /// evaluated against a moving target. Two guards make that safe without serialising every attachment
+    /// write behind the sweep. First, nothing modified at or after the moment the row snapshot was taken
+    /// is touched: an attachment write lands its ciphertext before it inserts its row, so a file missing
+    /// from the snapshot but newer than it belongs to a write still in flight, and that also spares
+    /// <c>EncryptedBlobStore</c>'s staging temporaries. Second, a file that is about to be unlinked is
+    /// re-checked against the live table, so a row committed since the snapshot keeps its bytes.
+    /// </remarks>
     private async Task SweepOrphanAttachmentFilesAsync(CancellationToken cancellationToken)
     {
 
+        DateTime snapshotTakenUtc = DateTime.UtcNow;
+
         HashSet<string> knownPaths = await ListAllRelativePathsAsync(cancellationToken).ConfigureAwait(false);
+
+        if (AfterOrphanPathSnapshotForTesting is not null)
+        {
+
+            await AfterOrphanPathSnapshotForTesting(cancellationToken).ConfigureAwait(false);
+
+        }
 
         if (!Directory.Exists(_attachmentsRoot))
         {
@@ -2237,7 +2271,19 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             }
 
-            if (absolute.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+            if (IsModifiedAtOrAfter(absolute, snapshotTakenUtc))
+            {
+
+                continue;
+
+            }
+
+            // Promotion stages as `destination + ".tmp"`, but EncryptedBlobStore stages as
+            // `"." + fileName + ".tmp." + guid`, which no suffix test can match — hence the infix check.
+            string fileName = Path.GetFileName(absolute);
+
+            if (fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
+                || fileName.Contains(".tmp.", StringComparison.OrdinalIgnoreCase))
             {
 
                 TryDeleteFile(absolute);
@@ -2255,9 +2301,63 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             }
 
+            if (await RelativePathIsClaimedAsync(relative, cancellationToken).ConfigureAwait(false))
+            {
+
+                continue;
+
+            }
+
             TryDeleteFile(absolute);
 
         }
+
+    }
+
+    /// <summary>
+    /// Whether <paramref name="absolutePath"/> was last written at or after <paramref name="threshold"/>.
+    /// An unreadable timestamp is reported as "yes", so an unexpected filesystem error can never be the
+    /// reason a live attachment's ciphertext is unlinked.
+    /// </summary>
+    private static bool IsModifiedAtOrAfter(string absolutePath, DateTime threshold)
+    {
+
+        try
+        {
+
+            return File.GetLastWriteTimeUtc(absolutePath) >= threshold;
+
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+
+            return true;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Re-reads the live table for one relative path, so a row committed since the sweep's snapshot
+    /// still protects its bytes.
+    /// </summary>
+    private async Task<bool> RelativePathIsClaimedAsync(string relativePath, CancellationToken cancellationToken)
+    {
+
+        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using DbCommand cmd = connection.CreateCommand();
+
+        cmd.CommandText =
+            """
+            SELECT 1 FROM "SessionAttachments" WHERE "RelativePath" = @relativePath LIMIT 1
+            """;
+
+        AddParameter(cmd, "@relativePath", relativePath);
+
+        object? found = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+        return found is not null and not DBNull;
 
     }
 

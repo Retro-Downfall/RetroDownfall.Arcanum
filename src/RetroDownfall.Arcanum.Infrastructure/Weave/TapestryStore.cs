@@ -119,6 +119,7 @@ internal sealed class TapestryStore(
     public async Task<IReadOnlyList<TapestryLeafSource>> EnumerateLeafSourcesAsync(
         TapestryScope scope,
         int expectedDimensions,
+        bool includeEmbeddings,
         CancellationToken cancellationToken)
     {
 
@@ -128,37 +129,66 @@ internal sealed class TapestryStore(
 
         // Each corpus joins its own already-imprinted embedding table so an unchanged leaf costs no
         // embedding call on rebuild. A missing or wrong-dimension companion simply yields NULL and the
-        // builder embeds that leaf itself.
-        command.CommandText = scope.Kind switch
-        {
-            TapestryScopeKind.Workspace =>
-                """
-                SELECT c."ChunkId", c."RelativePath", c."Content", e."Embedding", e."Dim"
-                FROM "workspace_file_chunks" c
-                LEFT JOIN "workspace_file_embeddings" e ON e."ChunkId" = c."ChunkId"
-                WHERE c."WorkspacePath" = @scopeId
-                ORDER BY c."ChunkId"
-                """,
+        // builder embeds that leaf itself. The fingerprint-only variant drops that join: it reads no
+        // BLOBs and decodes no vectors, which is the whole cost of answering "is this scope current?".
+        command.CommandText = includeEmbeddings
+            ? scope.Kind switch
+            {
+                TapestryScopeKind.Workspace =>
+                    """
+                    SELECT c."ChunkId", c."RelativePath", c."Content", e."Embedding", e."Dim"
+                    FROM "workspace_file_chunks" c
+                    LEFT JOIN "workspace_file_embeddings" e ON e."ChunkId" = c."ChunkId"
+                    WHERE c."WorkspacePath" = @scopeId
+                    ORDER BY c."ChunkId"
+                    """,
 
-            TapestryScopeKind.SessionAttachment =>
-                """
-                SELECT c."ChunkId", c."OriginalFileName", c."Content", e."Embedding", e."Dim"
-                FROM "session_attachment_chunks" c
-                LEFT JOIN "session_attachment_embeddings" e ON e."ChunkId" = c."ChunkId"
-                WHERE c."SessionId" = @scopeId AND c."RetrievalScope" IS NOT NULL
-                ORDER BY c."ChunkId"
-                """,
+                TapestryScopeKind.SessionAttachment =>
+                    """
+                    SELECT c."ChunkId", c."OriginalFileName", c."Content", e."Embedding", e."Dim"
+                    FROM "session_attachment_chunks" c
+                    LEFT JOIN "session_attachment_embeddings" e ON e."ChunkId" = c."ChunkId"
+                    WHERE c."SessionId" = @scopeId AND c."RetrievalScope" IS NOT NULL
+                    ORDER BY c."ChunkId"
+                    """,
 
-            _ =>
-                """
-                SELECT n."Id", n."Role", n."Content", e."Embedding", e."Dim"
-                FROM "Entries" n
-                LEFT JOIN "entry_embeddings" e ON e."EntryId" = n."Id"
-                WHERE n."SessionId" = @scopeId
-                  AND n."Content" IS NOT NULL AND trim(n."Content") <> ''
-                ORDER BY n."Id"
-                """,
-        };
+                _ =>
+                    """
+                    SELECT n."Id", n."Role", n."Content", e."Embedding", e."Dim"
+                    FROM "Entries" n
+                    LEFT JOIN "entry_embeddings" e ON e."EntryId" = n."Id"
+                    WHERE n."SessionId" = @scopeId
+                      AND n."Content" IS NOT NULL AND trim(n."Content") <> ''
+                    ORDER BY n."Id"
+                    """,
+            }
+            : scope.Kind switch
+            {
+                TapestryScopeKind.Workspace =>
+                    """
+                    SELECT c."ChunkId", c."RelativePath", c."Content"
+                    FROM "workspace_file_chunks" c
+                    WHERE c."WorkspacePath" = @scopeId
+                    ORDER BY c."ChunkId"
+                    """,
+
+                TapestryScopeKind.SessionAttachment =>
+                    """
+                    SELECT c."ChunkId", c."OriginalFileName", c."Content"
+                    FROM "session_attachment_chunks" c
+                    WHERE c."SessionId" = @scopeId AND c."RetrievalScope" IS NOT NULL
+                    ORDER BY c."ChunkId"
+                    """,
+
+                _ =>
+                    """
+                    SELECT n."Id", n."Role", n."Content"
+                    FROM "Entries" n
+                    WHERE n."SessionId" = @scopeId
+                      AND n."Content" IS NOT NULL AND trim(n."Content") <> ''
+                    ORDER BY n."Id"
+                    """,
+            };
 
         AddParameter(command, "@scopeId", scope.Id);
 
@@ -180,7 +210,8 @@ internal sealed class TapestryStore(
 
             float[]? embedding = null;
 
-            if (!reader.IsDBNull(3)
+            if (includeEmbeddings
+                && !reader.IsDBNull(3)
                 && !reader.IsDBNull(4)
                 && Convert.ToInt32(reader.GetValue(4), CultureInfo.InvariantCulture) == expectedDimensions)
             {
