@@ -52,6 +52,9 @@ public sealed class EnvironmentIsolationContractTests
     private static readonly Lazy<IReadOnlyList<Type>> EnvironmentMutatingTestClasses =
         new(LoadEnvironmentMutatingTestClasses);
 
+    private static readonly Lazy<IReadOnlyList<Type>> ProcessGlobalSeamMutatingTestClasses =
+        new(LoadProcessGlobalSeamMutatingTestClasses);
+
     /// <summary>
     /// Covers constructor-injected fixtures, plain fields, and — because the compiler lifts async
     /// locals and captured variables into nested state-machine and closure types — classes that
@@ -141,6 +144,77 @@ public sealed class EnvironmentIsolationContractTests
             + $"'{ProcessEnvironmentCollectionName.Value}' collection (or another "
             + "DisableParallelization collection): "
             + string.Join("; ", offenders));
+    }
+
+    /// <summary>
+    /// The same invariant for every other process-global seam.
+    ///
+    /// Environment variables were the only shared resource anything enforced, but they are not the
+    /// only one. Production code exposes static <c>…ForTests</c> hooks that fake filesystem
+    /// identity, file permissions, backup inventories, and session locking, and Serilog routes every
+    /// log record through one static logger. A test that installs any of those is changing
+    /// behaviour for every test running beside it, and a test that asserts over what it captured is
+    /// measuring the whole suite. Both read as an unrelated test failing intermittently.
+    /// </summary>
+    [Fact]
+    public void Every_test_class_that_mutates_a_process_global_seam_is_serialized()
+    {
+
+        IReadOnlyDictionary<string, bool> serialized = CollectionParallelism.Value;
+
+        List<string> offenders = [];
+
+        foreach (Type type in ProcessGlobalSeamMutatingTestClasses.Value)
+        {
+
+            string? collection = AttributeName<CollectionAttribute>(type);
+
+            if (collection is null)
+            {
+
+                offenders.Add($"{type.FullName} declares no [Collection]");
+
+                continue;
+            }
+
+            if (!serialized.TryGetValue(collection, out bool disablesParallelization)
+                || !disablesParallelization)
+            {
+
+                offenders.Add(
+                    $"{type.FullName} is in collection '{collection}', which is not "
+                    + "DisableParallelization");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "Static test seams on production code and Serilog's static Log.Logger are read by every "
+            + "test in the process, so every test class that assigns one must run in a "
+            + "DisableParallelization collection: "
+            + string.Join("; ", offenders));
+    }
+
+    /// <summary>
+    /// Guards the scanner above the same way the environment scanner is guarded: if the predicate
+    /// stopped matching, the offender list would be empty and the contract would pass vacuously.
+    /// </summary>
+    [Fact]
+    public void The_process_global_seam_scan_finds_the_known_seam_using_test_classes()
+    {
+
+        string[] found =
+        [
+            .. ProcessGlobalSeamMutatingTestClasses.Value
+                .Select(static type => type.Name),
+        ];
+
+        Assert.NotEmpty(found);
+
+        Assert.Contains("UploadedFileRepositoryTests", found);
+
+        Assert.Contains("DataRetentionServiceTests", found);
+
     }
 
     /// <summary>
@@ -261,19 +335,36 @@ public sealed class EnvironmentIsolationContractTests
     /// calls into a first-party helper that does (one closure pass covers scopes such as
     /// <c>HostProcessToolsEscapeHatchScope</c> and the web-application factory).
     /// </summary>
-    private static IReadOnlyList<Type> LoadEnvironmentMutatingTestClasses()
+    private static IReadOnlyList<Type> LoadEnvironmentMutatingTestClasses() =>
+        LoadMutatingTestClasses(
+            IsEnvironmentMutation,
+            // The web-application factory repoints HOME/USERPROFILE from native code paths the IL
+            // walk cannot see through; treat it as mutating so its users are covered here too.
+            typeof(ArcanumWebApplicationFactory));
+
+    private static IReadOnlyList<Type> LoadProcessGlobalSeamMutatingTestClasses() =>
+        LoadMutatingTestClasses(IsProcessGlobalSeamMutation);
+
+    /// <summary>
+    /// Walks every method in the assembly for a call matching <paramref name="mutates"/>, then
+    /// closes over same-assembly callees so a class that reaches the mutation through a helper is
+    /// caught too.
+    /// </summary>
+    private static IReadOnlyList<Type> LoadMutatingTestClasses(
+        Func<MethodBase, bool> mutates,
+        params Type[] seeds)
     {
 
         Dictionary<Type, HashSet<Type>> callees = [];
 
-        HashSet<Type> mutating = [];
+        HashSet<Type> mutating = [.. seeds];
 
         foreach (Type type in AssemblyTypes.Value)
         {
 
             HashSet<Type> referenced = [];
 
-            bool mutates = false;
+            bool found = false;
 
             foreach (MethodBase method in DeclaredMethods(type))
             {
@@ -281,10 +372,10 @@ public sealed class EnvironmentIsolationContractTests
                 foreach (MethodBase called in CalledMethods(method))
                 {
 
-                    if (IsEnvironmentMutation(called))
+                    if (mutates(called))
                     {
 
-                        mutates = true;
+                        found = true;
 
                         continue;
                     }
@@ -300,16 +391,12 @@ public sealed class EnvironmentIsolationContractTests
 
             callees[type] = referenced;
 
-            if (mutates)
+            if (found)
             {
 
                 _ = mutating.Add(type);
             }
         }
-
-        // The web-application factory repoints HOME/USERPROFILE from native code paths the IL walk
-        // cannot see through; treat it as mutating so its users are covered here too.
-        _ = mutating.Add(typeof(ArcanumWebApplicationFactory));
 
         bool grew = true;
 
@@ -520,6 +607,53 @@ public sealed class EnvironmentIsolationContractTests
             method.Name,
             nameof(global::System.Environment.SetEnvironmentVariable),
             StringComparison.Ordinal);
+
+    /// <summary>
+    /// Assignment to a process-global seam that production code reads.
+    ///
+    /// Two shapes qualify. The first is a static <c>…ForTests</c>/<c>…ForTesting</c> property setter
+    /// on production code — the deliberate test seams in <c>FileHandleIdentityInterop</c>,
+    /// <c>SecureFileReader</c>, <c>SecureFilePermissions</c>, <c>SessionWriteLock</c>,
+    /// <c>SessionEntryPersistence</c>, <c>BackupService</c>, and <c>BackupDatabaseSnapshotter</c>.
+    /// Each is a single static field that every caller in the process observes, so a test that
+    /// installs one is faking behaviour for every concurrently-running test as well as its own. The
+    /// second is Serilog's static <c>Log.Logger</c>, which routes every log record in the process,
+    /// so a test that swaps it and then asserts over what its sink captured is measuring the whole
+    /// suite rather than itself.
+    /// </summary>
+    private static bool IsProcessGlobalSeamMutation(MethodBase method)
+    {
+
+        if (method.DeclaringType is not { } declaring)
+        {
+
+            return false;
+
+        }
+
+        // Production assemblies only: a test helper's own static seam is not shared with the code
+        // under test, and the tests' own assembly is where the callers legitimately live.
+        if (declaring.Assembly == typeof(EnvironmentIsolationContractTests).Assembly)
+        {
+
+            return false;
+
+        }
+
+        if (string.Equals(declaring.FullName, "Serilog.Log", StringComparison.Ordinal)
+            && string.Equals(method.Name, "set_Logger", StringComparison.Ordinal))
+        {
+
+            return true;
+
+        }
+
+        return method.IsStatic
+            && method.Name.StartsWith("set_", StringComparison.Ordinal)
+            && (method.Name.EndsWith("ForTests", StringComparison.Ordinal)
+                || method.Name.EndsWith("ForTesting", StringComparison.Ordinal));
+
+    }
 
     private static bool IsTestClass(
         Type type) =>

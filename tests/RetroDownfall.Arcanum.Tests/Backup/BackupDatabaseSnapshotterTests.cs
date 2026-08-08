@@ -27,10 +27,6 @@ public sealed class BackupDatabaseSnapshotterTests : IDisposable
     public void Dispose()
     {
 
-        BackupDatabaseSnapshotter.AfterSourceIdentityCapturedForTests = null;
-
-        BackupDatabaseSnapshotter.AfterTemporaryCreatedForTests = null;
-
         SqliteConnection.ClearAllPools();
 
         if (Directory.Exists(_root))
@@ -202,11 +198,10 @@ public sealed class BackupDatabaseSnapshotterTests : IDisposable
 
         int remainingPagesAfterFirstStep = 0;
 
-        BackupDatabaseSnapshotter.AfterTemporaryCreatedForTests = path =>
-            temporaryPath = path;
-
         BackupDatabaseSnapshotter snapshotter = new()
         {
+
+            AfterTemporaryCreatedForTests = path => temporaryPath = path,
 
             AfterBackupStepForTests = (remainingPages, totalPages) =>
             {
@@ -281,18 +276,30 @@ public sealed class BackupDatabaseSnapshotterTests : IDisposable
 
         }
 
-        BackupDatabaseSnapshotter.AfterSourceIdentityCapturedForTests = path =>
+        bool sourceReplaced = false;
+
+        BackupDatabaseSnapshotter snapshotter = new()
         {
 
-            BackupDatabaseSnapshotter.AfterSourceIdentityCapturedForTests = null;
+            AfterSourceIdentityCapturedForTests = path =>
+            {
 
-            File.Move(path, movedPath);
+                if (sourceReplaced)
+                {
 
-            File.CreateSymbolicLink(path, replacementPath);
+                    return;
+
+                }
+
+                sourceReplaced = true;
+
+                File.Move(path, movedPath);
+
+                File.CreateSymbolicLink(path, replacementPath);
+
+            },
 
         };
-
-        BackupDatabaseSnapshotter snapshotter = new();
 
         await Assert.ThrowsAsync<IOException>(
             () => snapshotter.CreateAsync(
@@ -331,20 +338,32 @@ public sealed class BackupDatabaseSnapshotterTests : IDisposable
 
         string? replacementPath = null;
 
-        BackupDatabaseSnapshotter.AfterTemporaryCreatedForTests = path =>
+        bool temporaryReplaced = false;
+
+        BackupDatabaseSnapshotter snapshotter = new()
         {
 
-            BackupDatabaseSnapshotter.AfterTemporaryCreatedForTests = null;
+            AfterTemporaryCreatedForTests = path =>
+            {
 
-            File.Move(path, path + ".owned");
+                if (temporaryReplaced)
+                {
 
-            File.WriteAllText(path, "replacement-must-survive");
+                    return;
 
-            replacementPath = path;
+                }
+
+                temporaryReplaced = true;
+
+                File.Move(path, path + ".owned");
+
+                File.WriteAllText(path, "replacement-must-survive");
+
+                replacementPath = path;
+
+            },
 
         };
-
-        BackupDatabaseSnapshotter snapshotter = new();
 
         await Assert.ThrowsAsync<IOException>(
             () => snapshotter.CreateAsync(

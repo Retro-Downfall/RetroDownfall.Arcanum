@@ -27,7 +27,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 public sealed class BackupService : IBackupService
 {
 
-    internal static Action<BackupInventory>? AfterInventoryBuiltForTests { get; set; }
+    // Instance member, matching BackupRestoreServiceOptions.BeforePhaseForTests. As a settable
+    // static this single-shot hook could be consumed by a different test's CreateAsync, which both
+    // stole the callback and mutated the owning test's tree before its own inventory was built.
+    internal Action<BackupInventory>? AfterInventoryBuiltForTests { get; init; }
 
     private static readonly BackupComponent[] DatabaseBackedComponents =
     [

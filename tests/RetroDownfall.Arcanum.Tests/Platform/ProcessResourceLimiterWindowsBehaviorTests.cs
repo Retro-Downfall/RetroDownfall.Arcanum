@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Infrastructure.Platform;
 
 namespace RetroDownfall.Arcanum.Tests.Platform;
 
+[Collection("ChildProcess")]
 public sealed class ProcessResourceLimiterWindowsBehaviorTests
 {
 

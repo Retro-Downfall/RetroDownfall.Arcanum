@@ -14,6 +14,7 @@ namespace RetroDownfall.Arcanum.Tests.Telemetry;
 /// a unique marker value and filters captured measurements down to that marker rather than asserting on
 /// the full captured set.
 /// </summary>
+[Collection("Telemetry")]
 public sealed class ArcanumMetricsTests
 {
 

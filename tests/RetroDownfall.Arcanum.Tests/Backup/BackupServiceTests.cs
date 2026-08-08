@@ -28,8 +28,6 @@ public sealed class BackupServiceTests : IDisposable
     public void Dispose()
     {
 
-        BackupService.AfterInventoryBuiltForTests = null;
-
         if (Directory.Exists(_root))
         {
 
@@ -529,20 +527,28 @@ public sealed class BackupServiceTests : IDisposable
 
         await File.WriteAllTextAsync(configurationPath, "{\"a\":1}");
 
-        BackupService.AfterInventoryBuiltForTests = _ =>
-        {
-
-            BackupService.AfterInventoryBuiltForTests = null;
-
-            File.Move(configurationPath, originalPath);
-
-            File.WriteAllText(configurationPath, "{\"b\":2}");
-
-        };
+        bool replaced = false;
 
         BackupService service = CreateService(
             paths,
-            new CountingSecretReader());
+            new CountingSecretReader(),
+            _ =>
+            {
+
+                if (replaced)
+                {
+
+                    return;
+
+                }
+
+                replaced = true;
+
+                File.Move(configurationPath, originalPath);
+
+                File.WriteAllText(configurationPath, "{\"b\":2}");
+
+            });
 
         string archive = Path.Combine(_root, "replaced.arcbackup");
 
@@ -634,18 +640,26 @@ public sealed class BackupServiceTests : IDisposable
 
         await File.WriteAllTextAsync(configurationPath, "{\"a\":1}");
 
-        BackupService.AfterInventoryBuiltForTests = _ =>
-        {
-
-            BackupService.AfterInventoryBuiltForTests = null;
-
-            File.WriteAllText(configurationPath, "{\"b\":2}");
-
-        };
+        bool mutated = false;
 
         BackupService service = CreateService(
             paths,
-            new CountingSecretReader());
+            new CountingSecretReader(),
+            _ =>
+            {
+
+                if (mutated)
+                {
+
+                    return;
+
+                }
+
+                mutated = true;
+
+                File.WriteAllText(configurationPath, "{\"b\":2}");
+
+            });
 
         string archive = Path.Combine(_root, "mutated.arcbackup");
 
@@ -675,7 +689,8 @@ public sealed class BackupServiceTests : IDisposable
 
     private static BackupService CreateService(
         BackupStatePaths paths,
-        IBackupSecretSnapshotReader secrets) =>
+        IBackupSecretSnapshotReader secrets,
+        Action<BackupInventory>? afterInventoryBuilt = null) =>
         new(
             paths,
             new BackupInventoryPlanner(paths),
@@ -689,7 +704,12 @@ public sealed class BackupServiceTests : IDisposable
 
             }),
             secrets,
-            TimeProvider.System);
+            TimeProvider.System)
+        {
+
+            AfterInventoryBuiltForTests = afterInventoryBuilt,
+
+        };
 
     private static async Task CreateMissingAttachmentDatabaseAsync(
         string path,

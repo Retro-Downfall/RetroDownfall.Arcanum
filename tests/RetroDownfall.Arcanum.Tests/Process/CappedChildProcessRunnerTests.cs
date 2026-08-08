@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Tests.ProcessExecution;
 
+[Collection("ChildProcess")]
 public sealed class CappedChildProcessRunnerTests
 {
 

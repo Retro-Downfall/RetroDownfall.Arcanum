@@ -348,7 +348,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
                         StringComparison.Ordinal))
                 {
 
-                    return null;
+                    // Pass foreign paths through rather than returning null. The seam is
+                    // process-global, so null here means "this file cannot be stat'ed" for every
+                    // concurrently running test as well, for as long as a real PlanAsync/ApplyAsync
+                    // takes — which fails whichever unrelated test happens to touch the filesystem
+                    // in that window.
+                    return ReadActualNoFollowMetadata(path);
 
                 }
 
@@ -3669,32 +3674,17 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
-    private static FileHandleMetadata? ReadActualNoFollowMetadata(string path)
-    {
-
-        Func<string, FileHandleMetadata?>? seam =
-            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests;
-
-        FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = null;
-
-        try
-        {
-
-            return FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
-                path,
-                out FileHandleMetadata metadata)
-                ? metadata
-                : null;
-
-        }
-        finally
-        {
-
-            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = seam;
-
-        }
-
-    }
+    /// <summary>
+    /// Answers honestly for paths this test is not faking, without writing the process-global seam
+    /// from whichever thread happens to ask. See the matching helper in
+    /// <c>UploadedFileRepositoryTests</c>.
+    /// </summary>
+    private static FileHandleMetadata? ReadActualNoFollowMetadata(string path) =>
+        FileHandleIdentityInterop.TryGetPathMetadataNoFollowIgnoringTestSeam(
+            path,
+            out FileHandleMetadata metadata)
+            ? metadata
+            : null;
 
     private sealed class SequencedRetentionPolicyStore(
         RetentionSettings initial,

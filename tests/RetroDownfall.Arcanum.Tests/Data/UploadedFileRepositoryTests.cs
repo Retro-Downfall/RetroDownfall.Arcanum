@@ -620,31 +620,19 @@ public sealed class UploadedFileRepositoryTests : IAsyncLifetime
 
     }
 
-    private static FileHandleMetadata? ReadActualMetadata(string path)
-    {
-
-        Func<string, FileHandleMetadata?>? seam =
-            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests;
-
-        FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = null;
-
-        try
-        {
-
-            return FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
-                path,
-                out FileHandleMetadata metadata)
-                ? metadata
-                : null;
-
-        }
-        finally
-        {
-
-            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = seam;
-
-        }
-
-    }
+    /// <summary>
+    /// Answers honestly for paths this test is not faking.
+    ///
+    /// This used to null the process-global seam, call back in, and restore it. That write ran on
+    /// whichever thread asked — including concurrently running tests — so this test could observe
+    /// its own seam missing mid-flight, and two interleaved calls could clear it permanently. Going
+    /// straight to the platform lookup keeps the global untouched.
+    /// </summary>
+    private static FileHandleMetadata? ReadActualMetadata(string path) =>
+        FileHandleIdentityInterop.TryGetPathMetadataNoFollowIgnoringTestSeam(
+            path,
+            out FileHandleMetadata metadata)
+            ? metadata
+            : null;
 
 }

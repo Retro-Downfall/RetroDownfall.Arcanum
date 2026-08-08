@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
 
+[Collection("ChildProcess")]
 public sealed class MacOsDescendantSupervisorTests
 {
 

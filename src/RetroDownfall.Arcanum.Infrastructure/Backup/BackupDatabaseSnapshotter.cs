@@ -11,9 +11,13 @@ public sealed class BackupDatabaseSnapshotter
 
     private const int PagesPerBackupStep = 64;
 
-    internal static Action<string>? AfterSourceIdentityCapturedForTests { get; set; }
+    // Instance members, matching AfterBackupStepForTests below. As settable statics these were
+    // shared by every snapshotter in the process, so a test's destructive hook fired on whichever
+    // caller reached the invoke point first — moving and symlinking another concurrently running
+    // test's live database or temp snapshot rather than its own.
+    internal Action<string>? AfterSourceIdentityCapturedForTests { get; init; }
 
-    internal static Action<string>? AfterTemporaryCreatedForTests { get; set; }
+    internal Action<string>? AfterTemporaryCreatedForTests { get; init; }
 
     internal Action<int, int>? AfterBackupStepForTests { get; init; }
 

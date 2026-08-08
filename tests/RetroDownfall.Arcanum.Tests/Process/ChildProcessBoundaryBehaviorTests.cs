@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Process;
 
+[Collection("ChildProcess")]
 public sealed class ChildProcessBoundaryBehaviorTests
 {
 

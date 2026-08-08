@@ -20,7 +20,7 @@ public sealed class ClientToolForwardingTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
             {
@@ -98,7 +98,7 @@ public sealed class ClientToolForwardingTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ArcanumWebApplicationFactory factory = new();
+        await using ArcanumWebApplicationFactory factory = new();
 
         HttpClient client = factory.CreateAuthenticatedClient();
 
@@ -142,7 +142,7 @@ public sealed class ClientToolForwardingTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
             {
@@ -193,7 +193,7 @@ public sealed class ClientToolForwardingTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
             {
@@ -243,7 +243,7 @@ public sealed class ClientToolForwardingTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
             {
@@ -294,7 +294,7 @@ public sealed class ClientToolForwardingTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
             {

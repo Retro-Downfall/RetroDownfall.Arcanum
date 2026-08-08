@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Core.Telemetry;
 
 namespace RetroDownfall.Arcanum.Tests.Telemetry;
 
+[Collection("Telemetry")]
 public sealed class WebResearchMetricsTests
 {
     [Fact]

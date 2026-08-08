@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Tests.Platform;
 
+[Collection("ChildProcess")]
 public sealed class WindowsJobObjectSessionTests
 {
 

@@ -21,7 +21,7 @@ public sealed class GuardrailsAuditEndpointTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ArcanumWebApplicationFactory factory = new();
+        await using ArcanumWebApplicationFactory factory = new();
 
         HttpClient client = factory.CreateAuthenticatedClient();
 
@@ -49,7 +49,7 @@ public sealed class GuardrailsAuditEndpointTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ArcanumWebApplicationFactory factory = new();
+        await using ArcanumWebApplicationFactory factory = new();
 
         HttpClient client = factory.CreateAuthenticatedClient();
 
@@ -73,7 +73,7 @@ public sealed class GuardrailsAuditEndpointTests
 
         logger.Records.Add(MakeRecord("newest"));
 
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
 
             ServiceOverrides = services =>

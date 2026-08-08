@@ -200,7 +200,7 @@ public sealed class OpenAiV1EndpointTests
 
         
 
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
             {
@@ -258,7 +258,7 @@ public sealed class OpenAiV1EndpointTests
 
         
 
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
             {
@@ -323,7 +323,7 @@ public sealed class OpenAiV1EndpointTests
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
             {
@@ -476,7 +476,7 @@ public sealed class OpenAiV1EndpointTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
             {
@@ -530,7 +530,7 @@ public sealed class OpenAiV1EndpointTests
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ArcanumWebApplicationFactory factory = new()
+        await using ArcanumWebApplicationFactory factory = new()
         {
             SettingsOverride = settings => settings with
             {

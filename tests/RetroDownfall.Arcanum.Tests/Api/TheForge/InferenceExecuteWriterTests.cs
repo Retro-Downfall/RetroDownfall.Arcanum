@@ -14,6 +14,7 @@ using Serilog.Events;
 
 namespace RetroDownfall.Arcanum.Tests.Api.TheForge;
 
+[Collection("ProcessGlobalSeam")]
 public sealed class InferenceExecuteWriterTests
 {
 

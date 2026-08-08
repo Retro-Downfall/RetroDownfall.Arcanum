@@ -296,6 +296,27 @@ internal static partial class FileHandleIdentityInterop
             return true;
         }
 
+        return TryGetPathMetadataNoFollowIgnoringTestSeam(
+            path,
+            out metadata);
+    }
+
+    /// <summary>
+    /// The real platform lookup, bypassing <see cref="TryGetPathMetadataNoFollowForTests"/>.
+    ///
+    /// A test seam that fakes one path still has to answer honestly for every other path, and the
+    /// only way to do that used to be to null the seam, call back in, and restore it. That is a
+    /// write to process-global state performed on whichever thread happened to ask — so a
+    /// concurrently running test could observe the seam missing, and two such calls could interleave
+    /// their save/restore and clear it permanently. Both showed up as an unrelated test failing
+    /// intermittently. Seam implementations call this instead and never touch the global.
+    /// </summary>
+    internal static bool TryGetPathMetadataNoFollowIgnoringTestSeam(
+        string path,
+        out FileHandleMetadata metadata)
+    {
+        metadata = default;
+
         if (OperatingSystem.IsWindows())
         {
             return TryGetWindowsPathMetadataNoFollow(
