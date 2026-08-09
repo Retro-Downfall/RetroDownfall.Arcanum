@@ -67,6 +67,95 @@ public sealed class CliSuggestionTests
 
     }
 
+    /// <summary>
+    /// The mistyped verb is almost never the last word typed — `arcanum campain list` is the shape
+    /// operators actually produce. Suggesting against the final token asked whether `list` was a
+    /// root command, found nothing, and dropped the whole invocation into System.CommandLine's
+    /// help dump. The failing token is the first one the parser could not match, wherever it sits.
+    /// </summary>
+    [Theory]
+    [InlineData(new[] { "campain", "list" }, "campaign")]
+    [InlineData(new[] { "sesion", "show" }, "session")]
+    [InlineData(new[] { "workspac", "list" }, "workspace")]
+    [InlineData(new[] { "spel", "list" }, "spell")]
+    [InlineData(new[] { "campain", "show", "abc" }, "campaign")]
+    public void A_mistyped_command_is_named_even_when_more_words_follow(
+        string[] arguments,
+        string expected)
+    {
+
+        CliTestResult result = CliTestHarness.Run(CreateServices(), arguments);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains($"Did you mean `arcanum {expected}`", result.Error, StringComparison.Ordinal);
+
+        // The suggestion must still be the whole answer, not a preface to the default rendering.
+        Assert.DoesNotContain(
+            "Unrecognized command or argument",
+            result.Output + result.Error,
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Global options are accepted before the verb. Scanning argv for the command path stopped at
+    /// the first dash, so `arcanum --json campain` reported only "the command line is invalid" and
+    /// never named the command the operator meant.
+    /// </summary>
+    [Theory]
+    [InlineData("--plain")]
+    [InlineData("--json")]
+    [InlineData("-v")]
+    public void A_global_option_before_the_verb_does_not_suppress_the_suggestion(string option)
+    {
+
+        CliTestResult result = CliTestHarness.Run(CreateServices(), option, "campain", "list");
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains(
+            "Did you mean `arcanum campaign`",
+            result.Output + result.Error,
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A removed spelling must be recognized by the path the operator typed, not by position, so a
+    /// leading global option cannot hide it either.
+    /// </summary>
+    [Fact]
+    public void A_removed_spelling_is_recognized_behind_a_global_option()
+    {
+
+        CliTestResult result = CliTestHarness.Run(CreateServices(), "--plain", "session", "get");
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("arcanum session show", result.Error, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// A parse that failed for a reason other than an unknown verb — a missing argument, a value
+    /// outside a closed set — must keep System.CommandLine's own message, which names the argument
+    /// or enumerates every legal value instead of offering one guess.
+    /// </summary>
+    [Theory]
+    [InlineData("key", "provider", "set")]
+    [InlineData("help", "sessons")]
+    [InlineData("completion", "bogus")]
+    public void A_failure_that_is_not_a_misspelled_command_gets_no_suggestion(
+        params string[] arguments)
+    {
+
+        CliTestResult result = CliTestHarness.Run(CreateServices(), arguments);
+
+        Assert.DoesNotContain("Did you mean", result.Error, StringComparison.Ordinal);
+
+    }
+
     [Fact]
     public void A_suggestion_is_never_executed_automatically()
     {

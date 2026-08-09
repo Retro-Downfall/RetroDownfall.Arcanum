@@ -129,7 +129,11 @@ Command-specific refinements:
   keystroke, so an unavailable host yields no suggestions rather than an error.
 - `help <topic>` returns `0`, or `2` for an unknown topic.
 - A removed or mistyped command exits `2` with a diagnostic naming the canonical replacement or the
-  nearest command. A suggestion is printed only; it is never executed.
+  nearest command. A suggestion is printed only; it is never executed. The mistyped verb is located
+  by the parser rather than by position, so `arcanum campain list` names `campaign` and a leading
+  global option (`arcanum --json campain`) does not hide the diagnostic. A parse that failed for any
+  other reason — a missing argument, or a value outside a closed set such as `help <topic>` — keeps
+  System.CommandLine's own message, which names the argument or lists every legal value.
 - `doctor --fix-permissions` returns `0` unless the permission repair itself failed, matching its
   pre-existing contract; the diagnostic it now prints alongside does not change its exit code.
 - `doctor` returns `0` when every diagnostic is `Healthy` or `Skipped`, and also when one is

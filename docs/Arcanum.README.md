@@ -1181,7 +1181,9 @@ Every runnable command's `--help` ends with an `Examples:` section. Those exampl
 against the live tree, so they cannot go stale; a command with no safe example says why instead.
 
 A mistyped or removed command exits `2` naming the canonical replacement or the nearest command. It
-is only printed — Arcanum never runs a suggestion for you.
+is only printed — Arcanum never runs a suggestion for you. The failing verb is found by the parser
+rather than by position, so `arcanum campain list` still names `campaign`, and a global option typed
+before the verb does not suppress the diagnostic.
 
 ### Safe resource selection
 

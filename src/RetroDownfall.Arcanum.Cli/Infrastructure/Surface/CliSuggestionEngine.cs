@@ -53,30 +53,37 @@ internal static class CliSuggestionEngine
 
         ArgumentNullException.ThrowIfNull(arguments);
 
-        string[] verbs =
-        [
-            .. arguments.TakeWhile(static argument => !argument.StartsWith('-')),
-        ];
+        // The parser decides which token failed, not a scan of the raw arguments. Reading argv
+        // directly cannot tell a verb from an option's value, and any dash-prefixed token ends the
+        // scan — so `arcanum --json campain` produced no suggestion at all, and taking the *last*
+        // verb meant `arcanum campain list` asked whether `list` was a root command instead of
+        // whether `campain` was. Both fell through to System.CommandLine's full help dump, which
+        // this diagnostic exists to replace.
+        // An unknown option is not a naming problem this engine can answer, so only bare tokens are
+        // considered; if nothing but options went unmatched there is no command to suggest.
+        string? unrecognized = parseResult.UnmatchedTokens
+            .FirstOrDefault(static token => !token.StartsWith('-'));
 
-        if (verbs.Length == 0)
+        if (unrecognized is null)
         {
 
+            // Every verb the operator typed is real. The parse failed for some other reason — a
+            // missing argument, a rejected value — and System.CommandLine's own message names it
+            // better than a spelling guess could.
             return null;
 
         }
 
-        // Longest path first: `session get` must win over a bare `get` lookup.
-        for (int length = verbs.Length; length > 0; length--)
+        string matched = MatchedPath(parseResult);
+
+        string typed = matched.Length == 0
+            ? unrecognized
+            : $"{matched} {unrecognized}";
+
+        if (Removed.TryGetValue(typed, out string? replacement))
         {
 
-            string path = string.Join(' ', verbs.Take(length));
-
-            if (Removed.TryGetValue(path, out string? replacement))
-            {
-
-                return $"`arcanum {path}` was removed. Use {replacement} instead.";
-
-            }
+            return $"`arcanum {typed}` was removed. Use {replacement} instead.";
 
         }
 
@@ -91,35 +98,64 @@ internal static class CliSuggestionEngine
 
         }
 
-        Command resolved = parseResult.CommandResult.Command;
-
-        string unrecognized = verbs[^1];
-
-        // A token that really is a child of the resolved command was not the problem; the parse
-        // failed for some other reason, and System.CommandLine's own message is the better one.
-        if (resolved.Subcommands.Any(
-                command => string.Equals(command.Name, unrecognized, StringComparison.Ordinal)))
-        {
-
-            return null;
-
-        }
-
         // The resolved command is the deepest one that parsed, so its children are exactly the
-        // candidates that were valid where the operator's token failed.
-        string? suggestion = Nearest(
-            unrecognized,
-            [.. resolved.Subcommands.Where(static command => !command.Hidden).Select(static command => command.Name)]);
+        // candidates that were valid where the operator's token failed. A closed positional value
+        // set is deliberately not added: a value rejected by AcceptOnlyFromAmong never reaches here
+        // as an unmatched token, and System.CommandLine's own error already lists every legal
+        // value — a better answer than one nearest guess.
+        string? suggestion = Nearest(unrecognized, Candidates(parseResult.CommandResult.Command));
 
-        string prefix = resolved.Name == RootName(parseResult)
+        string prefix = matched.Length == 0
             ? "arcanum"
-            : $"arcanum {string.Join(' ', verbs.Take(verbs.Length - 1))}";
+            : $"arcanum {matched}";
 
         return suggestion is null
             ? null
             : $"`{unrecognized}` is not an {prefix} command. Did you mean `{prefix} {suggestion}`?";
 
     }
+
+    /// <summary>
+    /// The canonical path of the deepest command that actually parsed, which is also the prefix the
+    /// operator typed correctly. Built by walking up from the resolved command; the root's own
+    /// result is the one with no parent and its name is the executable, not part of a command path.
+    /// </summary>
+    private static string MatchedPath(ParseResult parseResult)
+    {
+
+        List<string> names = [];
+
+        for (SymbolResult? current = parseResult.CommandResult;
+            current is not null;
+            current = current.Parent)
+        {
+
+            if (current is CommandResult commandResult && commandResult.Parent is not null)
+            {
+
+                names.Add(commandResult.Command.Name);
+
+            }
+
+        }
+
+        names.Reverse();
+
+        return string.Join(' ', names);
+
+    }
+
+    /// <summary>
+    /// What could legitimately have stood where the operator's token failed. Hidden commands are
+    /// excluded so completion-plumbing verbs such as <c>completion resolve</c> are never suggested
+    /// to a human.
+    /// </summary>
+    private static IReadOnlyList<string> Candidates(Command command) =>
+        [
+            .. command.Subcommands
+                .Where(static child => !child.Hidden)
+                .Select(static child => child.Name),
+        ];
 
     /// <summary>
     /// Removed spellings are still named when help is requested — the replacement is the answer to
@@ -129,9 +165,6 @@ internal static class CliSuggestionEngine
     private static bool RequestsHelp(IReadOnlyList<string> arguments) =>
         arguments.Any(static argument =>
             argument is "--help" or "-h" or "-?" or "/?" or "/h");
-
-    private static string RootName(ParseResult parseResult) =>
-        parseResult.RootCommandResult.Command.Name;
 
     /// <summary>
     /// Bounded Damerau-Levenshtein over the candidates valid at this level. The ceiling scales with
