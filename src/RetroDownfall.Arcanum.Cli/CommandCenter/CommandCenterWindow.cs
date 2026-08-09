@@ -132,6 +132,21 @@ internal sealed class CommandCenterWindow : Window
         };
         HeaderPane.Add(Header);
 
+        // Shares the header's single status row rather than claiming one of its own: the fixed
+        // viewport has no spare rows, and a control that reflowed the layout would push the
+        // transcript or the composer around every time it appeared.
+        ModelSelector = new Label
+        {
+            Text = string.Empty,
+            CanFocus = true,
+            X = 0,
+            Y = CommandCenterBrandBanner.BrandedContentRows,
+            Width = 0,
+            Height = 1,
+            SchemeName = CommandCenterTheme.HeaderScheme,
+        };
+        HeaderPane.Add(ModelSelector);
+
         SessionsPane = new FrameView
         {
             Title = "Sessions",
@@ -364,6 +379,9 @@ internal sealed class CommandCenterWindow : Window
 
     public Label Header { get; }
 
+    /// <summary>The header model drop-down. Hidden — and out of the Tab cycle — on a narrow terminal.</summary>
+    public Label ModelSelector { get; }
+
     public Label ThinkingLabel { get; }
 
     public FrameView SessionsPane { get; }
@@ -405,6 +423,12 @@ internal sealed class CommandCenterWindow : Window
 
     public bool SidebarVisible { get; private set; } = true;
 
+    /// <summary>
+    /// Whether the model drop-down is on screen. Below the width threshold it is hidden and
+    /// selection degrades to <c>/model &lt;name&gt;</c>, which never went away.
+    /// </summary>
+    public bool ModelSelectorVisible { get; private set; }
+
     public bool FollowTail => _followTail;
 
     public bool IncantationsFollowTail => _incantationsFollowTail;
@@ -442,6 +466,11 @@ internal sealed class CommandCenterWindow : Window
         if (IncantationsView.HasFocus)
         {
             return CommandCenterFocusRegion.Incantations;
+        }
+
+        if (ModelSelector.HasFocus)
+        {
+            return CommandCenterFocusRegion.Model;
         }
 
         return null;
@@ -578,8 +607,9 @@ internal sealed class CommandCenterWindow : Window
                 or CommandCenterUiUpdateKind.RefreshHeader
                 or CommandCenterUiUpdateKind.RefreshFooter)
             {
-                Header.Text = TruncateToWidth(state.HeaderText, Math.Max(8, _cols - 4));
+                Header.Text = TruncateToWidth(state.HeaderText, Math.Max(8, Header.Frame.Width - 2));
                 Footer.Text = TruncateToWidth(state.FooterHints, Math.Max(8, _cols - 2));
+                UpdateModelSelector(state);
                 UpdateThinkingLabel(state);
             }
 
@@ -969,6 +999,142 @@ internal sealed class CommandCenterWindow : Window
         _overlayShowFilter = false;
         _overlayHumanPrompt = false;
         _overlayLines.Clear();
+    }
+
+    /// <summary>
+    /// Opens the model drop-down as a filterable list, the same shape the Sessions picker uses —
+    /// the only overlay form in this codebase that is genuinely keyboard-navigable.
+    /// </summary>
+    public void ShowModelPickerOverlay(CommandCenterState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        _overlayHumanPrompt = false;
+        OverlayAnswer.Visible = false;
+        try
+        {
+            OverlayAnswer.Text = string.Empty;
+        }
+        catch
+        {
+        }
+
+        OverlayPane.Title = "Models";
+        OverlayPane.Visible = true;
+        _overlayShowFilter = true;
+        OverlayBody.Visible = false;
+        OverlayBody.Text = string.Empty;
+        OverlayFilter.Visible = true;
+        try
+        {
+            OverlayFilter.Text = string.Empty;
+        }
+        catch
+        {
+        }
+
+        OverlayList.Visible = true;
+        OverlayList.Y = 1;
+        OverlayList.Height = Dim.Fill(1);
+        RefreshModelList(state);
+        ApplyAbsoluteLayout(_cols, _rows);
+        OverlayFilter.SetFocus();
+    }
+
+    /// <summary>
+    /// Refills the overlay rows from the current filter and highlights the active model, so opening
+    /// the drop-down starts on the model prompts are already going to.
+    /// </summary>
+    public void RefreshModelList(CommandCenterState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        IReadOnlyList<ModelPickerItem> visible = state.FilteredModels;
+
+        _overlayLines.Clear();
+
+        foreach (string line in CommandCenterModelPicker.Render(visible, state.Model))
+        {
+            _overlayLines.Add(line);
+        }
+
+        int active = visible
+            .Select(static (item, index) => (item, index))
+            .Where(pair => string.Equals(pair.item.Model, state.Model, StringComparison.OrdinalIgnoreCase))
+            .Select(static pair => pair.index)
+            .DefaultIfEmpty(0)
+            .First();
+
+        state.SelectedModelIndex = visible.Count == 0 ? 0 : Math.Clamp(active, 0, visible.Count - 1);
+
+        try
+        {
+            OverlayList.SelectedItem = _overlayLines.Count > 0 ? state.SelectedModelIndex : 0;
+            OverlayList.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// Moves the model selection. Separate from <see cref="MoveSessionSelection"/> on purpose: that
+    /// one clamps to the sessions list, and sharing it would bound one list by the other's length.
+    /// </summary>
+    public void MoveModelSelection(int delta, CommandCenterState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        IReadOnlyList<ModelPickerItem> list = state.FilteredModels;
+        if (list.Count == 0)
+        {
+            return;
+        }
+
+        int current = Math.Clamp(OverlayList.SelectedItem ?? 0, 0, list.Count - 1);
+        int next = Math.Clamp(current + delta, 0, list.Count - 1);
+        state.SelectedModelIndex = next;
+        try
+        {
+            OverlayList.SelectedItem = next;
+            OverlayList.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
+    public void FocusModelSelector(IApplication? app = null)
+    {
+        _ = app;
+
+        if (!ModelSelectorVisible)
+        {
+            FocusInput();
+            return;
+        }
+
+        HideOverlayVisual();
+        ModelSelector.CanFocus = true;
+        if (!ModelSelector.HasFocus)
+        {
+            ModelSelector.SetFocus();
+        }
+    }
+
+    private void UpdateModelSelector(CommandCenterState state)
+    {
+        if (!ModelSelectorVisible)
+        {
+            ModelSelector.Text = string.Empty;
+            return;
+        }
+
+        bool focused = state.FocusRegion == CommandCenterFocusRegion.Model || ModelSelector.HasFocus;
+
+        ModelSelector.Text = TruncateToWidth(
+            CommandCenterModelPicker.RenderSelector(state.Model, focused),
+            Math.Max(8, ModelSelector.Frame.Width));
     }
 
     public void ShowSessionPickerOverlay()
@@ -1371,6 +1537,37 @@ internal sealed class CommandCenterWindow : Window
         }
 
         Header.Height = 1;
+
+        // The selector needs room for a model id without crowding the status line out; below that
+        // it is hidden entirely rather than rendered truncated to uselessness.
+        const int ModelSelectorMinCols = 72;
+
+        const int ModelSelectorWidth = 30;
+
+        ModelSelectorVisible = _cols >= ModelSelectorMinCols;
+
+        ModelSelector.Visible = ModelSelectorVisible;
+
+        ModelSelector.CanFocus = ModelSelectorVisible;
+
+        ModelSelector.Y = Header.Y;
+
+        if (ModelSelectorVisible)
+        {
+            int selectorX = Math.Max(0, _cols - ModelSelectorWidth - 3);
+
+            ModelSelector.Width = ModelSelectorWidth;
+
+            ModelSelector.X = selectorX;
+
+            Header.Width = Math.Max(8, selectorX - 1);
+        }
+        else
+        {
+            ModelSelector.Width = 0;
+
+            Header.Width = Dim.Fill();
+        }
 
         int bodyH = Math.Max(ComposerLayout.MinBodyHeight, _rows - headerH - inputH - footerH);
         // If body ate into composer due to MinBodyHeight, shrink composer content further.

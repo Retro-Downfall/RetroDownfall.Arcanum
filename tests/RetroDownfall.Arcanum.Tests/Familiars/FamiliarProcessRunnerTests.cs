@@ -1,0 +1,386 @@
+using RetroDownfall.Arcanum.Infrastructure.Familiars;
+
+namespace RetroDownfall.Arcanum.Tests.Familiars;
+
+/// <summary>
+/// The runner is the security boundary for calling a Familiar: it decides what the child inherits,
+/// how it is torn down, and how a refused invocation is reported. These facts pin the boundary
+/// against a real child process rather than a mock, because the properties that matter — argv never
+/// becoming a shell string, secrets never reaching the environment, a wedged CLI never holding a
+/// turn — are properties of the spawn, not of the abstraction over it.
+/// </summary>
+[Collection("ChildProcess")]
+public sealed class FamiliarProcessRunnerTests
+{
+
+    private readonly FamiliarProcessRunner _runner = new();
+
+    [Fact]
+    public async Task Lines_are_streamed_in_order()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(["one", "two", "three"]);
+
+        List<string> lines = await CollectAsync(stub);
+
+        Assert.Equal(["one", "two", "three"], lines);
+
+    }
+
+    [Fact]
+    public async Task Blank_lines_are_skipped_so_a_trailing_newline_is_not_a_frame()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(["one", "", "  ", "two"]);
+
+        List<string> lines = await CollectAsync(stub);
+
+        Assert.Equal(["one", "two"], lines);
+
+    }
+
+    /// <summary>
+    /// The prompt goes in on stdin, so nothing about the conversation can be mistaken for an option
+    /// and no argv length limit applies.
+    /// </summary>
+    [Fact]
+    public async Task The_prompt_is_written_to_standard_input_and_the_stream_is_closed()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
+
+        _ = await CollectAsync(stub, standardInput: "the prompt\nsecond line");
+
+        Assert.Equal("the prompt\nsecond line", stub.ReadRecordedStandardInput().TrimEnd('\r', '\n'));
+
+    }
+
+    /// <summary>
+    /// Arguments are handed over as a list. A value containing spaces, quotes, or a leading dash
+    /// must arrive as exactly one argument — this is the "dependency mess turns into a security
+    /// mess" vector, and the only defence is never building a command string in the first place.
+    /// </summary>
+    [Fact]
+    public async Task Arguments_are_passed_as_a_list_so_a_hostile_value_stays_one_argument()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
+
+        string[] arguments =
+        [
+            "--model",
+            "a model; rm -rf / \"$(whoami)\" --allow-dangerously-skip-permissions",
+        ];
+
+        _ = await CollectAsync(stub, arguments: arguments);
+
+        Assert.Equal(arguments, stub.ReadRecordedArgv());
+
+    }
+
+    [Fact]
+    public async Task Arcanum_environment_variables_never_reach_the_child()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
+
+        using EnvironmentVariableScope scope = new();
+
+        scope.Set("ARCANUM_PROVIDER_TEST_API_KEY", "super-secret");
+
+        scope.Set("ARCANUM_GRIMOIRE_DEV_KEY", "another-secret");
+
+        _ = await CollectAsync(stub);
+
+        string[] childEnvironment = [.. stub.ReadRecordedEnvironment()];
+
+        Assert.DoesNotContain(childEnvironment, static line => line.StartsWith("ARCANUM_", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(childEnvironment, static line => line.Contains("super-secret", StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+    public async Task Loader_hijack_variables_never_reach_the_child()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
+
+        using EnvironmentVariableScope scope = new();
+
+        scope.Set("NODE_OPTIONS", "--require /tmp/evil.js");
+
+        scope.Set("LD_PRELOAD", "/tmp/evil.so");
+
+        _ = await CollectAsync(stub);
+
+        string[] childEnvironment = [.. stub.ReadRecordedEnvironment()];
+
+        Assert.DoesNotContain(childEnvironment, static line => line.StartsWith("NODE_OPTIONS=", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(childEnvironment, static line => line.StartsWith("LD_PRELOAD=", StringComparison.Ordinal));
+
+    }
+
+    /// <summary>
+    /// A provider key configured for an HTTP provider is Arcanum's secret to hold, not the
+    /// Familiar's to receive — even when the operator named it something without an ARCANUM_ prefix.
+    /// </summary>
+    [Fact]
+    public async Task Configured_provider_credential_variables_are_stripped_by_name()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
+
+        using EnvironmentVariableScope scope = new();
+
+        scope.Set("MY_OPENAI_KEY", "sk-should-not-leak");
+
+        _ = await CollectAsync(stub, deniedEnvironmentVariables: ["MY_OPENAI_KEY"]);
+
+        string[] childEnvironment = [.. stub.ReadRecordedEnvironment()];
+
+        Assert.DoesNotContain(childEnvironment, static line => line.StartsWith("MY_OPENAI_KEY=", StringComparison.Ordinal));
+
+    }
+
+    /// <summary>
+    /// PATH and HOME stay: the CLI is the operator's install, and it finds its own runtime and its
+    /// own auth store the same way their shell does. Arcanum invokes; it does not relocate.
+    /// </summary>
+    [Fact]
+    public async Task Path_survives_the_scrub_so_the_operators_own_install_still_resolves()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(["done"]);
+
+        _ = await CollectAsync(stub);
+
+        string[] childEnvironment = [.. stub.ReadRecordedEnvironment()];
+
+        Assert.Contains(childEnvironment, static line => line.StartsWith("PATH=", StringComparison.OrdinalIgnoreCase));
+
+    }
+
+    [Fact]
+    public async Task A_missing_binary_fails_closed_as_not_installed()
+    {
+
+        FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
+            async () =>
+            {
+
+                await foreach (string _ in _runner.RunLinesAsync(
+                    new FamiliarProcessRequest { FileName = StubFamiliarCli.MissingExecutablePath() },
+                    CancellationToken.None))
+                {
+                }
+
+            });
+
+        Assert.Equal(FamiliarProcessFailure.NotInstalled, failure.Failure);
+
+    }
+
+    /// <summary>
+    /// A non-zero exit is surfaced after the frames that did arrive, so a CLI that streams a partial
+    /// answer and then fails cannot look like a clean short completion.
+    /// </summary>
+    [Fact]
+    public async Task A_non_zero_exit_faults_the_stream_after_the_frames_it_did_emit()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(
+            ["partial"],
+            stderr: "the familiar refused",
+            exitCode: 3);
+
+        List<string> received = [];
+
+        FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
+            async () =>
+            {
+
+                await foreach (string line in RunAsync(stub))
+                {
+                    received.Add(line);
+                }
+
+            });
+
+        Assert.Equal(["partial"], received);
+
+        Assert.Equal(FamiliarProcessFailure.NonZeroExit, failure.Failure);
+
+        Assert.Equal(3, failure.ExitCode);
+
+        Assert.Contains("the familiar refused", failure.StandardError, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task A_wedged_familiar_is_torn_down_by_its_deadline()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(
+            ["one", "two", "three", "four", "five"],
+            perLineDelayMilliseconds: 2000);
+
+        FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
+            async () =>
+            {
+
+                await foreach (string _ in RunAsync(stub, timeout: TimeSpan.FromMilliseconds(750)))
+                {
+                }
+
+            });
+
+        Assert.Equal(FamiliarProcessFailure.TimedOut, failure.Failure);
+
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_stops_the_stream_without_a_transport_failure()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(
+            ["one", "two", "three", "four", "five"],
+            perLineDelayMilliseconds: 1000);
+
+        using CancellationTokenSource cts = new();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () =>
+            {
+
+                await foreach (string _ in RunAsync(stub, cancellationToken: cts.Token))
+                {
+                    await cts.CancelAsync();
+                }
+
+            });
+
+    }
+
+    [Fact]
+    public async Task Run_to_completion_reports_exit_code_and_both_streams_without_throwing()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(
+            ["{\"loggedIn\":false}"],
+            stderr: "not signed in",
+            exitCode: 1);
+
+        FamiliarProcessOutput output = await _runner.RunToCompletionAsync(
+            new FamiliarProcessRequest
+            {
+                FileName = stub.FileName,
+                Arguments = stub.Arguments,
+            },
+            CancellationToken.None);
+
+        Assert.Equal(FamiliarProcessFailure.NonZeroExit, output.Failure);
+
+        Assert.Equal(1, output.ExitCode);
+
+        Assert.Contains("loggedIn", output.StandardOutput, StringComparison.Ordinal);
+
+        Assert.Contains("not signed in", output.StandardError, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The probe has to tell "you have not installed it" apart from "it is installed but refused",
+    /// so a missing binary is a classified outcome rather than an exception it must catch.
+    /// </summary>
+    [Fact]
+    public async Task Run_to_completion_classifies_a_missing_binary_as_not_installed()
+    {
+
+        FamiliarProcessOutput output = await _runner.RunToCompletionAsync(
+            new FamiliarProcessRequest { FileName = StubFamiliarCli.MissingExecutablePath() },
+            CancellationToken.None);
+
+        Assert.Equal(FamiliarProcessFailure.NotInstalled, output.Failure);
+
+    }
+
+    private async Task<List<string>> CollectAsync(
+        StubFamiliarCli stub,
+        IReadOnlyList<string>? arguments = null,
+        string? standardInput = null,
+        IReadOnlyList<string>? deniedEnvironmentVariables = null)
+    {
+
+        List<string> lines = [];
+
+        await foreach (string line in RunAsync(
+            stub,
+            arguments,
+            standardInput,
+            deniedEnvironmentVariables))
+        {
+            lines.Add(line);
+        }
+
+        return lines;
+
+    }
+
+    private IAsyncEnumerable<string> RunAsync(
+        StubFamiliarCli stub,
+        IReadOnlyList<string>? arguments = null,
+        string? standardInput = null,
+        IReadOnlyList<string>? deniedEnvironmentVariables = null,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+
+        return _runner.RunLinesAsync(
+            new FamiliarProcessRequest
+            {
+
+                FileName = stub.FileName,
+
+                Arguments = [.. stub.Arguments, .. arguments ?? []],
+
+                StandardInput = standardInput,
+
+                DeniedEnvironmentVariables = deniedEnvironmentVariables ?? [],
+
+                Timeout = timeout ?? TimeSpan.FromMinutes(2),
+
+            },
+            cancellationToken);
+
+    }
+
+    /// <summary>Sets process environment variables and restores them, so tests stay independent.</summary>
+    private sealed class EnvironmentVariableScope : IDisposable
+    {
+
+        private readonly List<(string Name, string? Original)> _saved = [];
+
+        public void Set(string name, string? value)
+        {
+
+            _saved.Add((name, System.Environment.GetEnvironmentVariable(name)));
+
+            System.Environment.SetEnvironmentVariable(name, value);
+
+        }
+
+        public void Dispose()
+        {
+
+            foreach ((string name, string? original) in _saved)
+            {
+                System.Environment.SetEnvironmentVariable(name, original);
+            }
+
+        }
+
+    }
+
+}

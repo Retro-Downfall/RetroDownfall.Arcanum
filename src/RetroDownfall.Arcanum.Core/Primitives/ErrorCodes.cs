@@ -447,6 +447,14 @@ public static class ErrorCodes
 
     }
 
+    /// <summary>Provider rows in <c>Arcanum:Providers</c>.</summary>
+    public static class Provider
+    {
+
+        public const string NotFound = "Provider.NotFound";
+
+    }
+
     /// <summary>ProvingGrounds — spell/prompt/plan validation trials.</summary>
     public static class ProvingGrounds
     {

@@ -76,4 +76,11 @@ namespace RetroDownfall.Arcanum.Core.Serialization;
 [JsonSerializable(typeof(List<ModelPricingEntry>))]
 [JsonSerializable(typeof(Dictionary<string, ModelPricingEntry>))]
 
+// Familiar readiness. Registered on the Core context, not just the Api one, because Compendium
+// reads this envelope over HTTP and cannot see Api's context.
+[JsonSerializable(typeof(FamiliarProbeStatus))]
+[JsonSerializable(typeof(FamiliarModelEnumeration))]
+[JsonSerializable(typeof(FamiliarProbeResult))]
+[JsonSerializable(typeof(ApiResponse<FamiliarProbeResult>))]
+
 public partial class ConfigurationJsonContext : JsonSerializerContext;

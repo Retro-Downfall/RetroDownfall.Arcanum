@@ -36,6 +36,7 @@ using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
+using RetroDownfall.Arcanum.Infrastructure.Familiars;
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
@@ -7424,6 +7425,19 @@ public sealed partial class WizardIntelligenceProvider(
         if (ex is TaskCanceledException { InnerException: TimeoutException })
         {
             return true;
+        }
+
+        // A Familiar has no socket, so its transport failures arrive as a typed transport exception
+        // rather than an HTTP one. The same distinction applies: an unreachable transport (binary
+        // missing, spawn refused, deadline passed) is a connectivity-class failure and may fall back
+        // to the next candidate, while the CLI answering and refusing — a rejected model name, a
+        // rate limit — is a provider verdict that must stand.
+        if (ex is Familiars.FamiliarTransportException familiar)
+        {
+            return familiar.Failure
+                is FamiliarProcessFailure.NotInstalled
+                or FamiliarProcessFailure.StartFailed
+                or FamiliarProcessFailure.TimedOut;
         }
 
         if (ex is OperationCanceledException)

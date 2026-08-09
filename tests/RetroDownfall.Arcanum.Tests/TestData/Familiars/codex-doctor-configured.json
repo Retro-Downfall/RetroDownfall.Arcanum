@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "1786301000s since unix epoch",
+  "overallStatus": "ok",
+  "codexVersion": "0.147.0",
+  "checks": {
+    "auth.credentials": {
+      "id": "auth.credentials",
+      "category": "auth",
+      "status": "ok",
+      "summary": "auth is configured",
+      "details": {
+        "auth file": "/Users/operator/.codex/auth.json",
+        "auth storage mode": "File",
+        "stored API key": "false",
+        "stored ChatGPT tokens": "true",
+        "stored agent identity": "false",
+        "stored auth mode": "chatgpt"
+      },
+      "remediation": null,
+      "durationMs": 0
+    },
+    "config.load": {
+      "id": "config.load",
+      "category": "config",
+      "status": "ok",
+      "summary": "config loaded",
+      "details": {
+        "CODEX_HOME": "/Users/operator/.codex",
+        "config.toml": "/Users/operator/.codex/config.toml",
+        "config.toml parse": "ok",
+        "cwd": "/private/tmp",
+        "enabled feature flags": "shell_tool, view_image, unified_exec, shell_snapshot, code_mode_host, terminal_resize_reflow, sqlite, hooks, enable_request_compression, multi_agent, apps, tool_search_always_defer_mcp_tools, tool_suggest, plugins, in_app_browser, in_app_updates, browser_use, browser_use_full_cdp_access, browser_use_external, computer_use, remote_plugin, plugin_sharing, image_generation, resize_all_images, item_ids, skill_mcp_dependency_install, skill_search, mentions_v2, steer, guardian_approval, goals, collaboration_modes, tool_call_mcp_elicitation, auth_elicitation, personality, fast_mode, tui_app_server, remote_compaction_v2, workspace_dependencies",
+        "feature flag overrides": "none",
+        "feature flags enabled": "39",
+        "log dir": "/Users/operator/.codex/log",
+        "mcp servers": "2",
+        "model": "gpt-5.6-sol",
+        "model provider": "openai",
+        "sqlite home": "/Users/operator/.codex"
+      },
+      "remediation": null,
+      "durationMs": 0
+    },
+    "installation": {
+      "id": "installation",
+      "category": "install",
+      "status": "ok",
+      "summary": "installation looks consistent",
+      "details": {
+        "PATH codex #1": "/opt/homebrew/bin/codex",
+        "current executable": "/opt/homebrew/bin/codex",
+        "install context": "brew (package /opt/homebrew/Caskroom/codex/0.147.0, bin /opt/homebrew/Caskroom/codex/0.147.0/bin, resources /opt/homebrew/Caskroom/codex/0.147.0/codex-resources, path /opt/homebrew/Caskroom/codex/0.147.0/codex-path)",
+        "managed by bun": "false",
+        "managed by npm": "false",
+        "managed by pnpm": "false",
+        "managed package root": "not set"
+      },
+      "remediation": null,
+      "durationMs": 3
+    }
+  }
+}

@@ -226,7 +226,58 @@ public sealed class CommandCenterFocusCycleTests
         bool forward,
         CommandCenterFocusRegion expected)
     {
-        Assert.Equal(expected, CommandCenterFocusCycle.Next(current, forward, sidebar));
+        Assert.Equal(
+            expected,
+            CommandCenterFocusCycle.Next(current, forward, sidebar, modelSelectorVisible: false));
+    }
+
+    /// <summary>
+    /// The model drop-down is a real focus region, so Tab has to reach it — otherwise it is a mouse
+    /// affordance in a keyboard-only surface.
+    /// </summary>
+    [Theory]
+    [InlineData(true, CommandCenterFocusRegion.Incantations, true, CommandCenterFocusRegion.Model)]
+    [InlineData(true, CommandCenterFocusRegion.Model, true, CommandCenterFocusRegion.Composer)]
+    [InlineData(true, CommandCenterFocusRegion.Composer, false, CommandCenterFocusRegion.Model)]
+    [InlineData(false, CommandCenterFocusRegion.Incantations, true, CommandCenterFocusRegion.Model)]
+    internal void Next_includes_the_model_selector_when_it_is_on_screen(
+        bool sidebar,
+        CommandCenterFocusRegion current,
+        bool forward,
+        CommandCenterFocusRegion expected)
+    {
+        Assert.Equal(
+            expected,
+            CommandCenterFocusCycle.Next(current, forward, sidebar, modelSelectorVisible: true));
+    }
+
+    /// <summary>
+    /// Below the width threshold the drop-down is not rendered, and Tab must not strand focus on a
+    /// control the operator cannot see.
+    /// </summary>
+    [Fact]
+    internal void Next_skips_the_model_selector_when_the_viewport_is_too_narrow()
+    {
+        Assert.Equal(
+            CommandCenterFocusRegion.Composer,
+            CommandCenterFocusCycle.Next(
+                CommandCenterFocusRegion.Incantations,
+                forward: true,
+                sidebarVisible: false,
+                modelSelectorVisible: false));
+    }
+
+    /// <summary>A region that just went off screen restarts the cycle rather than trapping focus.</summary>
+    [Fact]
+    internal void A_hidden_model_region_falls_back_to_the_start_of_the_cycle()
+    {
+        Assert.Equal(
+            CommandCenterFocusRegion.Composer,
+            CommandCenterFocusCycle.Next(
+                CommandCenterFocusRegion.Model,
+                forward: true,
+                sidebarVisible: true,
+                modelSelectorVisible: false));
     }
 
     [Fact]
@@ -234,10 +285,18 @@ public sealed class CommandCenterFocusCycleTests
     {
         Assert.Equal(
             CommandCenterFocusRegion.Composer,
-            CommandCenterFocusCycle.Next(CommandCenterFocusRegion.Overlay, forward: true, sidebarVisible: true));
+            CommandCenterFocusCycle.Next(
+                CommandCenterFocusRegion.Overlay,
+                forward: true,
+                sidebarVisible: true,
+                modelSelectorVisible: false));
         Assert.Equal(
             CommandCenterFocusRegion.Incantations,
-            CommandCenterFocusCycle.Next(CommandCenterFocusRegion.Overlay, forward: false, sidebarVisible: false));
+            CommandCenterFocusCycle.Next(
+                CommandCenterFocusRegion.Overlay,
+                forward: false,
+                sidebarVisible: false,
+                modelSelectorVisible: false));
     }
 }
 

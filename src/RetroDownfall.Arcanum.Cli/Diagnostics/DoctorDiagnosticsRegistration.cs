@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Core.Cli;
 using RetroDownfall.Arcanum.Infrastructure.Diagnostics;
+using RetroDownfall.Arcanum.Infrastructure.Familiars;
 
 namespace RetroDownfall.Arcanum.Cli.Diagnostics;
 
@@ -21,6 +23,13 @@ public static class DoctorDiagnosticsRegistration
     {
 
         ArgumentNullException.ThrowIfNull(services);
+
+        // The Familiar check needs the host-side probe. `arcanum doctor` runs on the lightweight CLI
+        // container rather than full Infrastructure DI, so the probe is registered here too —
+        // TryAdd, so a host process that already wired it keeps its own instance.
+        services.TryAddSingleton<IFamiliarProcessRunner, FamiliarProcessRunner>();
+
+        services.TryAddSingleton<IFamiliarProbe, FamiliarProbe>();
 
         // Filesystem and configuration: no I/O beyond stat, and no dependency on the database or host.
         services.AddTransient<IDoctorCheck, ManagedDirectoriesCheck>();
@@ -62,8 +71,11 @@ public static class DoctorDiagnosticsRegistration
 
         services.AddTransient<IDoctorCheck, DiskSpaceCheck>();
 
-        // Outward-facing last: the host relay, then the one network-gated probe.
+        // Outward-facing last: the host relay, then the local Familiar probe (no packet leaves this
+        // machine), then the one genuinely network-gated probe.
         services.AddTransient<IDoctorCheck, HostHealthComponentsCheck>();
+
+        services.AddTransient<IDoctorCheck, FamiliarReadinessCheck>();
 
         services.AddTransient<IDoctorCheck, ProviderReachabilityCheck>();
 

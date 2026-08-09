@@ -35,7 +35,9 @@ The codebase is organized as a **multi-project solution**: `Core` (domain primit
 
 Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSON design (§8), intelligence pipeline with MCP tool integration (§10), local API security (§11), and Eye of the World situational awareness (§15).
 
-**Provider support (canonical):** Arcanum currently supports OpenAI-compatible HTTP providers only. Ollama is supported through its OpenAI-compatible `/v1` endpoint when configured as `type: "OpenAICompatible"`. Arcanum-managed local inference is removed: no managed local provider kind, no local inference process lifecycle, no local weight-file downloads/cache, no local-model management UI, and no dedicated local-model HTTP or CLI control plane.
+**Provider support (canonical):** Arcanum supports two provider shapes. **OpenAI-compatible HTTP providers** (`type: "OpenAICompatible"`) are the metered, key-based path; Ollama is supported through its OpenAI-compatible `/v1` endpoint. **Familiars** (`type: "ClaudeCodeCli"` or `"CodexCli"`) are an opt-in transport over a vendor CLI the operator has already installed and signed in to, so inference runs against their existing subscription instead of a second metered API key (§10.9).
+
+A Familiar is a transport, not a managed runtime, and the distinction is load-bearing. Arcanum-managed local inference stays removed: no managed local provider kind, no local weight-file downloads or cache, no local-model management UI, and no dedicated local-model HTTP or CLI control plane. Arcanum never installs, updates, configures, or signs into a Familiar; subscription identity, auth storage, rate limits, and usage tracking remain entirely owned by the operator's CLI installation. The only process lifecycle Arcanum owns is one short-lived child per inference turn, spawned with a fixed Arcanum-authored argument list — the same shape as an operator-configured MCP stdio server, and nothing the model can direct.
 
 ---
 
@@ -111,6 +113,7 @@ Key subsystems described in later sections: hybrid hosting model (§5), HTTP JSO
 | Native CLI diagnostics | Authenticated clients receive bounded tool-result diagnostics. |
 | Provider probes | Loopback/LAN provider endpoints are allowed; link-local/metadata targets remain blocked. |
 | Readiness | Provider failures yield overall Degraded/HTTP 200; Grimoire Unhealthy is the primary HTTP 503 gate. Durable-operation reconciliation that is deferred or requires operator repair yields Degraded/HTTP 200. |
+| Familiar probes | `GET /api/providers/{name}/familiar-probe` and the background health probe stay on this machine: they resolve the binary on PATH and read the CLI's own status surface. No completion is requested, so nothing is spent; no credential store is read, copied, or proxied. |
 | Constraint ownership | [`Arcanum.ConstraintInventory.json`](Arcanum.ConstraintInventory.json) is the canonical machine-reviewable classification of Arcanum and Compendium limits; [`Arcanum.ConstraintReduction.20260803.md`](Arcanum.ConstraintReduction.20260803.md) records the issue #55 reductions. Every new public numeric/time setting and public clamp must be classified there. Forge is outside this audit. |
 
 ### 2.3 Naming conventions
@@ -400,9 +403,10 @@ failure there is reported rather than rolled back.
 The non-interactive form is `--plan` (compute and print, write nothing) and `--apply` (commit without
 prompting); they are mutually exclusive. Secrets never appear in argv: a credential may only arrive on
 redirected stdin (`--provider-key-stdin`, then `--research-key-stdin`) or as an environment-variable
-reference (`--provider-key-env`, `--research-key-env`). Arcanum supports OpenAI-compatible providers
-only, so the wizard presents OpenAI, Local/Ollama, and custom endpoint templates and does not offer a
-provider kind the inference engine cannot serve.
+reference (`--provider-key-env`, `--research-key-env`). The wizard presents OpenAI, Local/Ollama, and
+custom endpoint templates, and does not offer a provider kind the inference engine cannot serve. It
+authors OpenAI-compatible rows only: a Familiar has no endpoint and no credential to collect, so
+adding one is a Compendium or hand-edit operation rather than a wizard step.
 
 #### 3.4.3 Degraded-mode fallback matrix
 
@@ -2005,7 +2009,7 @@ The intelligence layer follows a **provider pattern**: `Core` defines `IArcanumI
 - **`IModelTokenEstimator` / `ModelTokenEstimator`** — resolves a typed `ModelTokenizationProfile` by model override → provider default → built-in canonical model → conservative fallback, then produces one immutable `ContextTokenBreakdown` from the actual `ChatMessage` / `ChatOptions` payload. Rows distinguish history, system/Codex/Spell, tools (including full JSON schemas and call/result framing), Lexicon/Saga, workspace RAG, attachment RAG, explicit attachments, refreshed files, current prompt, structured output, provider framing, safety margin, reserved answer, and reserved reasoning. The wire/audit shape also exposes `HistoryTokens`, `ExplicitAttachmentTokens`, `RefreshedFileTokens`, `AttachmentRagTokens`, and `WorkspaceRagTokens` as direct attribution fields. The session-attachment metadata index is system context, not retrieved attachment RAG. Ledger pressure evictions add attachment/workspace dropped-chunk and estimated-token counters without changing the admitted component totals.
 - **`IModelCallExecutor`** (Core contract; Api implementation) — sole chat-provider invocation boundary (`ExecuteBufferedAsync` / `ExecuteStreamingAsync`) with `ModelCallPurpose` tagging and no counter gate. A supplied `ModelCallContext` carries the already finalized breakdown from admission; the executor validates provider/model/profile, separate reserves, totals, and a SHA-256 payload fingerprint before reusing that single object (or computes one when an auxiliary caller has none). A stale payload is rejected before I/O rather than silently recounted after reservation. The executor also rejects context/cost overflow, emits estimate metrics, and reconciles provider input usage without overwriting the estimate. This applies to tool continuations, compatibility retries, structured-output corrections, routing, and Lexicon extraction. On Microsoft.Extensions.AI **10.8.1**, it also classifies `TextContent` as answer and `TextReasoningContent` as reasoning, preserves raw provider content for same-provider continuation, and surfaces `UsageDetails.ReasoningTokenCount` without reconstructing hidden reasoning.
 - **`ProviderResolver`** (`Core.Configuration`) maps `PingRequest.Model` (or `ArcanumSettings.DefaultModel`, or the first configured model) to a `ProviderSettings` row and canonical model id — no hard-coded default model literals. Internal callers (Campaign Logger) supply an explicit `PingRequest.Model` from **`Arcanum:FastModel`** when set, else **`Arcanum:DefaultModel`**, before falling back to the first configured model.
-- **`IChatClientFactory`** (`ChatClientFactory`, singleton) resolves `AiProviderKind.OpenAICompatible` (including Ollama via its own `/v1` endpoint) via **`Microsoft.Extensions.AI.OpenAI`** / OpenAI .NET `ChatClient` + `IHttpClientFactory` + custom `endpoint` + `AsIChatClient()` with `OpenAiRequestAugmentingHandler`. A second overload, `ResolveClientAsync(ProviderSettings, string, CancellationToken)`, builds a lease for an explicit (provider, model) pair — bypassing `ProviderResolver` selection entirely — so the resilience fallback loop (below) can target a specific candidate.
+- **`IChatClientFactory`** (`ChatClientFactory`, singleton) resolves `AiProviderKind.OpenAICompatible` (including Ollama via its own `/v1` endpoint) via **`Microsoft.Extensions.AI.OpenAI`** / OpenAI .NET `ChatClient` + `IHttpClientFactory` + custom `endpoint` + `AsIChatClient()` with `OpenAiRequestAugmentingHandler`, and resolves `AiProviderKind.ClaudeCodeCli` / `AiProviderKind.CodexCli` to a Familiar adapter over `IFamiliarProcessRunner` (§10.9). A second overload, `ResolveClientAsync(ProviderSettings, string, CancellationToken)`, builds a lease for an explicit (provider, model) pair — bypassing `ProviderResolver` selection entirely — so the resilience fallback loop (below) can target a specific candidate.
 - **Microsoft.Extensions.AI** provides the shared `IChatClient` surface for routing, tools, and streaming.
 - **`ProviderResolver.ResolveCandidates(ArcanumSettings, string?, IProviderHealthTracker?)`** (Core) is the fallback-aware counterpart to `TryResolveProviderForModel`. It resolves the same target model (request model → `DefaultModel` → first provider's first advertised model) and returns the providers advertising it in configured order. With a health tracker, it excludes providers reported unhealthy; if that would leave zero candidates, every compatible match is returned so stale health state cannot collapse fallback to one provider. A null tracker retains the single-candidate behavior used by isolated callers/tests.
 - **Provider health tracking** (`Core.Resilience` / `Infrastructure.Resilience`): `IProviderHealthTracker` is an in-memory, `ConcurrentDictionary`-backed singleton recording `ProviderHealthStatus` (name, `IsHealthy`, `LastChecked`, `ConsecutiveFailures`) per provider. Providers not yet observed are assumed healthy. `MarkFailed`/`MarkHealthy` are called both reactively (by the hub on a connectivity failure) and periodically (by `ProviderHealthProbeService`, a `BackgroundService` that probes every configured provider via `GET /models`). Code-owned probe intervals, timeout, and failure threshold determine health transitions. State is in-memory only — a host restart starts every provider Healthy. `HealthChanged` fires on transitions but has no subscribers yet (reserved for future SSE observability).
@@ -2383,7 +2387,7 @@ neither set it nor change which historical entries compression retains.
 
 ### 10.3 Registration lifetimes
 
-`IArcanumIntelligenceProvider` / `WizardIntelligenceProvider` are **scoped** (one instance per request scope). `IChatClientFactory` is **singleton**; each call to **`ResolveClientAsync`** returns a **`ChatClientLease`** that owns a fresh `IChatClient` for that inference turn over the named OpenAI-compatible `HttpClient` pipeline.
+`IArcanumIntelligenceProvider` / `WizardIntelligenceProvider` are **scoped** (one instance per request scope). `IChatClientFactory` is **singleton**; each call to **`ResolveClientAsync`** returns a **`ChatClientLease`** that owns a fresh `IChatClient` for that inference turn — over the named OpenAI-compatible `HttpClient` pipeline for an HTTP provider, or over one short-lived child process for a Familiar. The lease lifetime is the process lifetime, so there is no long-lived CLI to leak or wedge between turns.
 
 ### 10.4 Telemetry and observability
 
@@ -2605,11 +2609,20 @@ Before any inference provider call, both response modes execute these gates in o
    budget is `Budget.Exceeded` / HTTP 429, and alert deduplication is once per threshold per UTC day.
 
 Caller/host cancellation then flows unchanged into lease resolution, model calls, tools, and
-persistence cleanup. Arcanum adds no hidden turn deadline.
+persistence cleanup. Arcanum adds no hidden turn deadline to an HTTP provider call. A Familiar is
+the one exception, and a necessary one: a spawned CLI that wedges has no socket to time out, so the
+process runner enforces a code-owned wall-clock ceiling (§10.9) and kills the process tree rather
+than holding the request open forever.
 
 `ChatClientFactory` resolves an OpenAI-compatible client (including Ollama through `/v1`) over the
-named HTTP pipeline; the returned `ChatClientLease` owns that attempt's `IChatClient`. Prompt caching
+named HTTP pipeline, or a Familiar adapter over a spawned CLI (§10.9); the returned `ChatClientLease`
+owns that attempt's `IChatClient`. Prompt caching
 never skips model I/O and is emitted only for exact built-in capability-catalog matches (§22.3).
+A Familiar has no socket, so its transport failures arrive as `FamiliarTransportException` rather
+than an HTTP exception. `IsConnectivityFailure` classifies them the same way it classifies HTTP ones:
+an unreachable transport (binary missing, spawn refused, deadline passed) is connectivity-class and
+may fall back to the next candidate, while the CLI answering and refusing — a rejected model name, a
+rate limit — is a provider verdict that stands.
 
 With `IProviderHealthTracker`, each distinct compatible provider candidate is tried once in
 configured order. Only connectivity-class failures (including connection/socket failures and
@@ -2993,6 +3006,93 @@ them: a hard ceiling of 2000 distinct label sets per metric, with refusals count
 code-owned.
 
 ---
+
+### 10.9 Familiars — subscription-backed CLI transports
+
+A **Familiar** is a vendor CLI the operator has already installed and signed in to, which Arcanum
+calls on for inference instead of dialing a metered HTTP endpoint. Two kinds ship:
+`AiProviderKind.ClaudeCodeCli` (`claude`) and `AiProviderKind.CodexCli` (`codex`). The feature is off
+until an operator adds a provider row of one of those kinds to `arcanum.json`.
+
+**Ground rules.** Arcanum invokes; it does not manage. It never installs, updates, configures, or
+signs into a Familiar, and never reads, copies, reflects, or proxies the CLI's auth store
+(`~/.claude`, `~/.codex/auth.json`, keychain entries). No vendor SDK and no new NuGet package is
+involved — the CLI is a user-installed sibling binary reached through `ProcessStartInfo`.
+
+**Layering.** `Core` owns the enum values, `ProviderSettings.Command` / `ProviderSettings.HiddenModels`,
+and the `FamiliarProviders` helpers. `Infrastructure` owns `IFamiliarProcessRunner` (the only place
+Arcanum spawns a Familiar), `FamiliarExecutableResolver` (PATH resolution), and `IFamiliarProbe`.
+`Api` owns the `IChatClient` adapters and the source-generated wire contexts. Nothing above
+`IChatClientFactory` changes: `WizardIntelligenceProvider`, `TurnEngine`, `IModelCallExecutor`,
+streaming projections, Wards, Sanctum, and accounting are untouched.
+
+**Spawn discipline**, shared with `execute_command` but implemented separately because that runner
+exists for code the *model* chose and therefore jails, rlimits, and rewrites the process image:
+
+- `ProcessStartInfo.ArgumentList` only. There is no command-string path anywhere in the contract.
+- The prompt travels on stdin, which is then closed. Nothing about the conversation can be re-parsed
+  as an option, and no argv length limit applies.
+- Environment scrub via `ChildProcessEnvironmentProfile.Familiar`: `ARCANUM_*` and loader/runtime
+  hijack variables are stripped, and the caller additionally names every configured provider
+  credential variable (both the explicit reference and the derived `ARCANUM_PROVIDER_*` default).
+  `PATH` and `HOME` survive — the CLI finds its own runtime and its own auth store the way the
+  operator's shell does. Vendor credential variables already in the environment are the operator's
+  own configuration and are deliberately left alone.
+- A bounded wall-clock deadline, and kill-tree teardown on cancellation or deadline.
+
+**Edition gating.** A Familiar is *not* gated by `HostProcessToolPolicy`. That policy exists for
+tools where the model picks the binary and the arguments (`execute_command`, `run_spell_script`).
+Here the operator fixes the binary and Arcanum fixes the argument list, which is the shape of an
+operator-configured MCP stdio server — already ungated on the Local edition. The capability is still
+explicit: it does nothing until a provider row exists.
+
+**Wire mapping.** Claude Code runs as
+`claude --print --output-format stream-json --verbose --include-partial-messages --model <m> --tools "" --disable-slash-commands --strict-mcp-config --no-session-persistence`,
+with system messages passed as `--system-prompt`. Codex runs as
+`codex exec --json --sandbox read-only --skip-git-repo-check --ephemeral -C <temp> -m <m> -`. Both
+CLIs' own agent loops are switched off: Arcanum owns the tool loop, and delegating into a CLI's agent
+loop is an explicit non-goal. A Familiar therefore serves text completions — `ChatOptions.Tools` is
+ignored, and a tool-using turn degrades to text rather than failing.
+
+Frames are bound through `FamiliarWireJsonContext` (source-generated, snake_case) with every member
+optional, so an unknown frame from a newer CLI is skipped rather than fatal. Claude Code's terminal
+frame is keyed on `is_error`, **not** `subtype` — a rejected model still arrives as
+`subtype: "success"`. A stream that ends without a terminal frame fails closed: a truncated answer is
+never presented as a short one.
+
+**Model inventory is subtractive.** For an OpenAI-compatible provider, `models[]` is an
+operator-authored allow list. For a Familiar the vendor owns the catalogue, so nothing configured
+means everything the CLI offers is available, and the only control is `hiddenModels` — a display
+filter over listings and pickers. A model name no row declares is passed to the first Familiar in
+configured order, verbatim, and the CLI decides whether it exists; a newly released model therefore
+works with no `arcanum.json` edit. **Hidden is not blocked**: `ProviderResolver` never reads the hide
+list, so an explicitly named model still resolves. Arcanum caches no discovered inventory in
+`arcanum.json` — writing one would defeat the automatic availability the kind exists for.
+
+**Readiness.** `IFamiliarProbe` reads each CLI's own status surface — `claude auth status --json` plus
+`claude --version`, or `codex doctor --json` — and reports `NotInstalled` / `NotConfigured` /
+`Configured` with a version and a remediation command the *operator* runs. Redaction is structural:
+the bound DTOs have no field for the account e-mail, organisation identifiers, or local paths those
+commands print, so that material cannot reach a payload or a log. Model enumeration is typed
+`Discovered` / `OperatorDeclared` / `Unknown`; neither CLI publishes a machine-readable catalogue
+today, so `Unknown` is the ordinary outcome and every surface works in it. Scraping `--help` for model
+names is explicitly not an enumeration surface.
+
+**Context window.** `contextWindowLimit` is a factual provider fact for a Familiar exactly as it is
+for an HTTP provider, and its 8,192 default suits neither CLI's models. Read-time compression and the
+Mana bar both measure against it, so an operator adding a Familiar should set it to the vendor's
+figure for the models they intend to use.
+
+**Sampling controls.** Neither CLI exposes `temperature`, `top_p`, `max_output_tokens`, penalties,
+`seed`, or stop sequences headlessly, so those `ChatOptions` members are not applied on a Familiar
+turn (§16.1). `ResponseFormat` is the exception and *is* applied — Claude Code takes the schema
+inline through `--json-schema`, Codex through `--output-schema`, so a structured-output turn comes
+back well-formed instead of failing validation and burning a retry.
+
+**Cost.** A Familiar's spend is the operator's subscription, not a metered per-token charge Arcanum
+can price. Provider-reported token usage is surfaced when the CLI emits it; when it emits none, usage
+stays absent rather than being flattened to zero, so an unreported turn reads as unknown rather than
+free.
 
 ## 11. Local API security
 
@@ -4137,7 +4237,7 @@ retain their normal skip behavior when the native asset is absent.
 1. **New HTTP routes:** Add in `MapArcanumEndpoints`. Return `ApiResponse<T>` via `FromResult`. Extend `ArcanumJsonContext` for new payload types. Use `.WithName(...)` for OpenAPI.
 2. **New domain operations:** Return `Result` / `Result<T>`; rely on implicit conversions.
 3. **New CLI verbs:** Add the handler under `Cli/Commands` and wire it in `CliCommandTree`; register constructor dependencies in `ConfigureCliServices`. Route requested payloads through `IConsoleDispatcher`, diagnostics through its stderr path, confirmations through `IConfirmationPrompt`, and structured values through an explicit source-generated `JsonTypeInfo`. Return only `CliExitCode` values. Lightweight verbs should use `AddArcanumEyeOfTheWorld()` rather than `AddArcanumInfrastructure`.
-4. **New intelligence providers:** Implement `IArcanumIntelligenceProvider` in `Api`. Follow the `WizardIntelligenceProvider` + `IChatClientFactory` pattern (or extend the factory for new `AiProviderKind` values).
+4. **New intelligence providers:** Implement `IArcanumIntelligenceProvider` in `Api`. Follow the `WizardIntelligenceProvider` + `IChatClientFactory` pattern (or extend the factory for new `AiProviderKind` values). A transport that is not OpenAI-compatible HTTP — a Familiar, say — is still only an `AiProviderKind` plus an `IChatClient` adapter: nothing above the factory changes, and nothing below it may bypass `ProviderResolver`.
 5. **Domain logic:** Place in `Core`; keep `Api` free of business orchestration.
 6. **Breaking JSON contracts:** Treat all wire types as versioned contracts. Property casing is fixed at the context level.
 7. **Situational perception:** Keep `Core.Pattern` free of filesystem references. Put implementations in `Infrastructure.Pattern`.
@@ -4211,6 +4311,19 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   and batches are implemented; moderation, image-generation/editing, and audio routes return
   `501 not_supported`. Batch processing supports `/v1/chat/completions` only and forces all tools
   off for every line.
+- **A Familiar serves text completions only.** Arcanum's tool loop is not available through a
+  `ClaudeCodeCli` / `CodexCli` transport: handing the tool set to the CLI would mean delegating into
+  that CLI's own agent loop, which is a separate and larger design decision (§10.9). A turn that
+  requests tools degrades to text rather than failing.
+- **A Familiar ignores sampling controls.** Neither CLI exposes `temperature`, `top_p`,
+  `max_output_tokens`, presence/frequency penalties, `seed`, or stop sequences headlessly, so those
+  request parameters have no effect on a Familiar turn. Structured output is the exception and is
+  applied through each CLI's own schema flag.
+- **A Familiar has no model catalogue to enumerate.** Neither CLI publishes a machine-readable
+  list-models surface, so pickers show what the operator declared and fall back to free text
+  otherwise. Any model name still passes through to the CLI verbatim.
+- **A Familiar's spend is not priced.** Its cost is the operator's subscription; Arcanum reports the
+  token usage the CLI emits and reports nothing when it emits none, rather than claiming $0.00.
 - **Ollama context window size:** When using Ollama via its OpenAI-compatible `/v1` endpoint, Arcanum can no longer inject `num_ctx` to control the context window size (the OpenAI Chat Completions API has no such parameter). Operators must configure Ollama's context size on the Ollama side (e.g. the `OLLAMA_NUM_CTX` environment variable). `ContextWindowLimit` in provider config still feeds Arcanum's read-time compression threshold and the CLI mana bar — set it to match Ollama's effective context size for accurate compression.
 - **Tokenizer coverage:** exact local text counting ships for built-in verified `o200k_base` profiles. Other provider/model combinations use a visibly estimated, safety-margined fallback; operator tokenization profiles are not part of the public configuration contract. Iterative history compression beyond one summary swap plus complete-tool-exchange trimming is not implemented.
 - **Tool-child confinement is platform-dependent.** macOS uses deprecated
@@ -4530,7 +4643,7 @@ link is present.
   `OptionalWorkspaceRequest`, and diagnostic `ToolInvokeRequest`/`ToolInvokeResponse` whose
   arguments/result are `JsonElement`. There is no blanket `JsonStringEnumConverter`;
   per-type converters preserve the server wire, including integer `HealthStatus`.
-- `POST /api/providers/test` accepts `AiProviderKind.OpenAICompatible` only.
+- `POST /api/providers/test` accepts `AiProviderKind.OpenAICompatible` only — it is an endpoint connectivity probe, and a Familiar has no endpoint. Familiar readiness is `GET /api/providers/{name}/familiar-probe` instead.
   `POST /api/intelligence/arsenal` accepts an optional `OptionalWorkspaceRequest` and returns
   `WorkspaceArsenalDto`.
 - `WardDto.WardId` is a string and expiry is `ExpiresAt`. Allow/deny uses one
@@ -4800,7 +4913,7 @@ All seven capabilities are implemented (§21.1–§21.2 foundation; §21.6–§2
 
 **`IWeaveService`:** `IsAvailable` from live `IOptionsMonitor` (`Enabled` + Provider + Model). Disabled → `Embeddings.FeatureDisabled` (no HTTP). Provider failure → sanitized `Embeddings.ProviderUnavailable`. Embedding batches have no Arcanum whole-operation deadline: the caller cancellation token propagates directly through generator resolution and `GenerateAsync`. `EmbedBatchAsync` remains sequential by `BatchSize`, with provider request/chunk bounds and explicit reservation/usage reconciliation. General embedding inputs retain `ChunkAsync` sliding windows; workspace files use the deterministic line-preserving `WorkspaceCodeChunker` described in §21.7.
 
-**Factory:** resolves `Arcanum:Integrations:Embeddings:Provider`/`Model` as `OpenAICompatible` (including Ollama `/v1`); leases are cached for the process lifetime.
+**Factory:** resolves `Arcanum:Integrations:Embeddings:Provider`/`Model` as `OpenAICompatible` (including Ollama `/v1`); leases are cached for the process lifetime. A Familiar cannot serve embeddings — it exposes chat completions only — so naming one here is a validation error.
 
 **`IDivinationService.SearchAsync`:** callers pass vec0 table name + PK/embedding columns. If `WeaveIndexAvailability.IsVecAvailable`, vec0 KNN; else strip `_vec` and stream managed cosine over every matching BLOB-companion row (`EmbeddingBlobCodec`, bounded top-K heap, caller cancellation, no total row budget). Never throws — sanitized `Result` failure.
 

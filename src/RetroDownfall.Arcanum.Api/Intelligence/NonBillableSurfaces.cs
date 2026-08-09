@@ -14,4 +14,10 @@ internal static class NonBillableSurfaces
 
     public const string ManaPreflight = "POST /api/intelligence/mana";
 
+    /// <summary>
+    /// Familiar readiness. Asks the operator's CLI for its own status, never for a completion, so it
+    /// spends nothing against their subscription.
+    /// </summary>
+    public const string FamiliarProbe = "GET /api/providers/{name}/familiar-probe";
+
 }

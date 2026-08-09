@@ -27,6 +27,10 @@ internal static class ServiceCollectionConfigurator
 
         services.AddSingleton<IUiDispatcher, AvaloniaUiDispatcher>();
 
+        // The only thing Compendium asks the host for. Configuration persistence stays exactly as it
+        // is — direct, atomic, transactional writes through ArcanumConfigurationStore.
+        services.AddSingleton<IFamiliarProbeClient, FamiliarProbeClient>();
+
         services.AddSingleton<ConfigurationViewModel>();
 
         services.AddTransient<MainWindow>();

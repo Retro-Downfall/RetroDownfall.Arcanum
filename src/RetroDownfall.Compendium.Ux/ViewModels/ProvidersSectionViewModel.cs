@@ -1,7 +1,10 @@
 using System.Collections.ObjectModel;
+using System.Threading;
+using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Compendium.Ux.Services;
 
 namespace RetroDownfall.Compendium.Ux.ViewModels;
@@ -17,9 +20,15 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
     private readonly IDialogService _dialogService;
 
-    public ProvidersSectionViewModel(IDialogService dialogService)
+    private readonly IFamiliarProbeClient? _probeClient;
+
+    public ProvidersSectionViewModel(
+        IDialogService dialogService,
+        IFamiliarProbeClient? probeClient = null)
     {
         _dialogService = dialogService;
+
+        _probeClient = probeClient;
     }
 
     public void LoadFrom(
@@ -37,7 +46,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         foreach (ProviderSettings provider in providers)
         {
 
-            Providers.Add(new ProviderViewModel(provider, _dialogService));
+            Providers.Add(new ProviderViewModel(provider, _dialogService, _probeClient));
 
         }
 
@@ -48,7 +57,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
     [RelayCommand]
     private void AddProvider() =>
-        Providers.Add(new ProviderViewModel(new ProviderSettings(), _dialogService));
+        Providers.Add(new ProviderViewModel(new ProviderSettings(), _dialogService, _probeClient));
 
     [RelayCommand]
     private async Task RemoveProviderAsync(ProviderViewModel? provider)
@@ -91,20 +100,150 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private int _contextWindowLimit;
 
+        /// <summary>
+        /// Optional path to the subscription CLI. Blank resolves the kind's default name on PATH.
+        /// </summary>
+        [ObservableProperty] private string _command = string.Empty;
+
+        /// <summary>
+        /// Comma-separated model ids left out of listings and pickers. Subtractive: empty means every
+        /// model the CLI offers is available, which is how a newly released model becomes usable with
+        /// no edit here. Hidden is not blocked — an explicitly named model still runs.
+        /// </summary>
+        [ObservableProperty] private string _hiddenModels = string.Empty;
+
+        /// <summary>One line of readiness from the host probe, or why there is none.</summary>
+        [ObservableProperty] private string _probeStatus = string.Empty;
+
+        /// <summary>What the operator should do next; empty when there is nothing to do.</summary>
+        [ObservableProperty] private string _probeRemediation = string.Empty;
+
+        /// <summary>A command the operator runs themselves — Arcanum never signs in for them.</summary>
+        [ObservableProperty] private string _probeRemediationCommand = string.Empty;
+
+        [ObservableProperty] private bool _isProbing;
+
         public ObservableCollection<ModelEntryViewModel> Models { get; } = [];
+
+        /// <summary>
+        /// Whether this row describes a subscription CLI. Drives which fields the page shows: a
+        /// Familiar has no endpoint and no credential reference, and rendering them blank-but-present
+        /// would read as "required, and you have not filled them in".
+        /// </summary>
+        public bool IsFamiliar => FamiliarProviders.IsFamiliar(Type);
+
+        public bool IsHttpProvider => !IsFamiliar;
+
+        public bool HasProbeRemediation => !string.IsNullOrWhiteSpace(ProbeRemediation);
+
+        public bool HasProbeRemediationCommand => !string.IsNullOrWhiteSpace(ProbeRemediationCommand);
 
         private ProviderSettings _snapshot;
 
         private readonly IDialogService _dialogService;
 
-        public ProviderViewModel(ProviderSettings snapshot, IDialogService dialogService)
+        private readonly IFamiliarProbeClient? _probeClient;
+
+        public ProviderViewModel(
+            ProviderSettings snapshot,
+            IDialogService dialogService,
+            IFamiliarProbeClient? probeClient = null)
         {
 
             _snapshot = snapshot;
 
             _dialogService = dialogService;
 
+            _probeClient = probeClient;
+
             LoadFrom(snapshot);
+
+        }
+
+        partial void OnTypeChanged(AiProviderKind value)
+        {
+
+            _ = value;
+
+            OnPropertyChanged(nameof(IsFamiliar));
+
+            OnPropertyChanged(nameof(IsHttpProvider));
+
+        }
+
+        partial void OnProbeRemediationChanged(string value)
+        {
+
+            _ = value;
+
+            OnPropertyChanged(nameof(HasProbeRemediation));
+
+        }
+
+        partial void OnProbeRemediationCommandChanged(string value)
+        {
+
+            _ = value;
+
+            OnPropertyChanged(nameof(HasProbeRemediationCommand));
+
+        }
+
+        /// <summary>
+        /// Asks the running host whether this Familiar is ready. A host that is not running is a
+        /// state with an instruction, not a spinner and not an error dialog — and the hide list stays
+        /// editable throughout, because none of it depends on the probe succeeding.
+        /// </summary>
+        [RelayCommand]
+        private async Task ProbeAsync(CancellationToken cancellationToken)
+        {
+
+            if (_probeClient is null || !IsFamiliar)
+            {
+
+                return;
+
+            }
+
+            IsProbing = true;
+
+            try
+            {
+
+                Result<FamiliarProbeResult> probed = await _probeClient
+                    .ProbeAsync(Name, cancellationToken)
+                    .ConfigureAwait(true);
+
+                if (probed.IsFailure)
+                {
+
+                    ProbeStatus = probed.Error.Message;
+
+                    ProbeRemediation = string.Empty;
+
+                    ProbeRemediationCommand = string.Empty;
+
+                    return;
+
+                }
+
+                FamiliarProbeResult result = probed.Value!;
+
+                ProbeStatus = result.Version is { Length: > 0 } version
+                    ? $"{result.Status}: {result.Summary} (version {version})"
+                    : $"{result.Status}: {result.Summary}";
+
+                ProbeRemediation = result.Remediation;
+
+                ProbeRemediationCommand = result.RemediationCommand ?? string.Empty;
+
+            }
+            finally
+            {
+
+                IsProbing = false;
+
+            }
 
         }
 
@@ -123,6 +262,10 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
                 snapshot.CredentialEnvironmentVariable ?? string.Empty;
 
             ContextWindowLimit = snapshot.ContextWindowLimit;
+
+            Command = snapshot.Command ?? string.Empty;
+
+            HiddenModels = string.Join(", ", snapshot.HiddenModels ?? []);
 
             Models.Clear();
 
@@ -146,14 +289,22 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
                     $"Provider '{Name}': {envVarError}");
             }
 
+            bool familiar = FamiliarProviders.IsFamiliar(Type);
+
             return _snapshot with
             {
                 Name = Name,
                 Type = Type,
-                Endpoint = Endpoint,
-                CredentialEnvironmentVariable =
-                    NullIfWhiteSpace(CredentialEnvironmentVariable),
+                // A Familiar has no endpoint and no credential of its own — persisting a leftover
+                // value from a row that used to be OpenAI-compatible would fail validation and imply
+                // Arcanum holds a key it never reads.
+                Endpoint = familiar ? string.Empty : Endpoint,
+                CredentialEnvironmentVariable = familiar
+                    ? null
+                    : NullIfWhiteSpace(CredentialEnvironmentVariable),
+                Command = familiar ? NullIfWhiteSpace(Command) : null,
                 Models = [.. Models.Select(static model => model.Build())],
+                HiddenModels = familiar ? SplitList(HiddenModels) : [],
                 ContextWindowLimit = ContextWindowLimit,
             };
         }
@@ -267,5 +418,12 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
         string.IsNullOrWhiteSpace(value)
             ? null
             : value;
+
+    /// <summary>
+    /// Splits the chips editor's comma-separated text, matching how every other
+    /// <c>SettingKind.StringArray</c> field round-trips.
+    /// </summary>
+    private static string[] SplitList(string value) =>
+        value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
 }

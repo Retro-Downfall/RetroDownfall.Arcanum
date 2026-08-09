@@ -4,8 +4,10 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using OpenAI;
 using OpenAI.Chat;
+using RetroDownfall.Arcanum.Api.Intelligence.Familiars;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Familiars;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -32,12 +34,16 @@ public interface IChatClientFactory
 public sealed class ChatClientFactory(
     IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
-    IProviderApiKeyResolver? apiKeyResolver = null) : IChatClientFactory
+    IProviderApiKeyResolver? apiKeyResolver = null,
+    IFamiliarProcessRunner? familiarProcessRunner = null) : IChatClientFactory
 {
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
 
     private const string KeylessOpenAiPlaceholder = "no-key";
+
+    private readonly IFamiliarProcessRunner _familiarProcessRunner =
+        familiarProcessRunner ?? new FamiliarProcessRunner();
 
     private readonly IProviderApiKeyResolver _apiKeyResolver =
         apiKeyResolver ?? EnvironmentOnlyProviderApiKeyResolver.Instance;
@@ -63,10 +69,17 @@ public sealed class ChatClientFactory(
     public async Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken)
     {
 
+        if (FamiliarProviders.IsFamiliar(provider))
+        {
+
+            return CreateFamiliarLease(provider, resolvedModel);
+
+        }
+
         if (provider.Type != AiProviderKind.OpenAICompatible)
         {
             throw new InvalidOperationException(
-                $"Unsupported provider type '{provider.Type}' for provider '{provider.Name}'. Only {nameof(AiProviderKind.OpenAICompatible)} is supported.");
+                $"Unsupported provider type '{provider.Type}' for provider '{provider.Name}'.");
 
         }
 
@@ -75,6 +88,36 @@ public sealed class ChatClientFactory(
             .ConfigureAwait(false);
 
         return CreateOpenAiCompatibleLease(provider, resolvedModel, resolvedApiKey);
+
+    }
+
+    /// <summary>
+    /// A Familiar lease owns a spawn plan rather than an <see cref="HttpClient"/>. The lease
+    /// lifetime is still one inference turn, which is exactly the process lifetime — there is no
+    /// long-lived CLI to leak or wedge between turns.
+    /// </summary>
+    private ChatClientLease CreateFamiliarLease(ProviderSettings provider, string resolvedModel)
+    {
+
+        // Read once, here: the deny list is derived from the current provider table, and a Familiar
+        // must never inherit a key configured for some other provider.
+        IReadOnlyList<string> denied = FamiliarEnvironmentDenyList.Build(optionsMonitor.CurrentValue);
+
+        IChatClient client = provider.Type switch
+        {
+
+            AiProviderKind.ClaudeCodeCli =>
+                new ClaudeCodeCliChatClient(_familiarProcessRunner, provider, resolvedModel, denied),
+
+            AiProviderKind.CodexCli =>
+                new CodexCliChatClient(_familiarProcessRunner, provider, resolvedModel, denied),
+
+            _ => throw new InvalidOperationException(
+                $"Unsupported Familiar type '{provider.Type}' for provider '{provider.Name}'."),
+
+        };
+
+        return new ChatClientLease(client, provider, resolvedModel, ownedHttpClient: null);
 
     }
 

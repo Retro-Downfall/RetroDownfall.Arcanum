@@ -28,4 +28,13 @@ public enum ChildProcessEnvironmentProfile
     /// </summary>
     WorkspaceCheck,
 
+    /// <summary>
+    /// A Familiar (the operator's installed <c>claude</c> / <c>codex</c> CLI): same scrub as
+    /// <see cref="ToolExec"/> — strip <c>ARCANUM_*</c> secrets and loader/runtime hijack variables —
+    /// keeping PATH and HOME, because the CLI resolves its own runtime and reads its own auth store
+    /// exactly the way the operator's shell does. The caller additionally names any configured
+    /// provider credential variables to strip.
+    /// </summary>
+    Familiar,
+
 }

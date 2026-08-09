@@ -28,7 +28,7 @@ Arcanum is a local-first AI host and command-line application built on .NET 10. 
 
 Its main jobs are:
 
-- send prompts to configured OpenAI-compatible providers;
+- send prompts to configured OpenAI-compatible providers, or — if you opt in — through the Claude Code or Codex CLI you already have installed;
 - preserve sessions and related data in an encrypted local Grimoire;
 - expose native and OpenAI-compatible HTTP contracts;
 - run a progress-driven model/tool loop with explicit security gates;
@@ -36,8 +36,11 @@ Its main jobs are:
 - manage Campaigns, Spells, Prompts, Wards, Trials, Apprentices, and long-running operations;
 - support CLI, Command Center, Compendium, and The Forge clients through server-owned contracts.
 
-Arcanum does not manage a local inference runtime. Ollama is supported only through its
-OpenAI-compatible `/v1` endpoint.
+Arcanum does not manage a local inference runtime. Ollama is supported through its
+OpenAI-compatible `/v1` endpoint. A **Familiar** — the Claude Code or Codex CLI you installed and
+signed in to yourself — is a transport, not a runtime: Arcanum runs it for one turn and reads its
+answer. It never installs it, never updates it, never signs in for you, and never looks at where that
+CLI keeps your credentials. Nothing happens until you add a provider of that kind to `arcanum.json`.
 
 ## 3. The shape of the solution
 
@@ -608,7 +611,7 @@ For concrete breakpoints and recipes, use
 
 Keep these boundaries in mind:
 
-- provider support is OpenAI-compatible HTTP only;
+- provider support is OpenAI-compatible HTTP, plus an opt-in transport over an installed Claude Code or Codex CLI (text completions only — Arcanum's tool loop does not run through it);
 - one request contains one user prompt; a session supplies multi-turn history;
 - routing selects one model, with bounded provider fallback only before response commitment;
 - there is no cross-provider load balancing;

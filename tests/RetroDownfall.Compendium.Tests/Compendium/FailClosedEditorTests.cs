@@ -14,6 +14,7 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 /// saved over, an invalid field may not be dropped while Save reports success, and a save that failed
 /// for a non-validation reason must reach the operator.
 /// </summary>
+[Collection("AvaloniaBinding")]
 public sealed class FailClosedEditorTests
 {
 

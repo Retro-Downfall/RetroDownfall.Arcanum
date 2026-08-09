@@ -30,6 +30,17 @@ internal static class ChildProcessEnvironmentScrubber
 
                 break;
 
+            case ChildProcessEnvironmentProfile.Familiar:
+
+                // A Familiar authenticates itself against the operator's own subscription, so it
+                // needs PATH and HOME and must never receive an Arcanum secret. The caller strips
+                // configured provider credential variables by name on top of this.
+                RemoveArcanumSecretVariables(startInfo.Environment);
+
+                RemoveHijackableEnvironmentVariables(startInfo.Environment);
+
+                break;
+
             case ChildProcessEnvironmentProfile.McpChild:
 
                 // MCP builds an explicit env block via BuildMcpChildEnvironment before start.

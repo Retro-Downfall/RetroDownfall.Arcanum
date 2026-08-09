@@ -2,12 +2,14 @@ using System.Net.Http.Headers;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Resilience;
 using RetroDownfall.Arcanum.Core.Security;
+using RetroDownfall.Arcanum.Infrastructure.Familiars;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Resilience;
 
 /// <summary>
 /// Connectivity probe used by <see cref="ProviderHealthProbeService"/>. OpenAI-compatible
-/// providers are probed via a short-lived, non-pooled HTTP call to <c>{endpoint}/models</c>.
+/// providers are probed via a short-lived, non-pooled HTTP call to <c>{endpoint}/models</c>; a
+/// Familiar has no endpoint and is probed by resolving its binary.
 /// </summary>
 internal sealed class ProviderHealthProbe(
     IHttpClientFactory httpFactory,
@@ -21,6 +23,19 @@ internal sealed class ProviderHealthProbe(
 
     public async Task<bool> ProbeAsync(ProviderSettings provider, CancellationToken cancellationToken)
     {
+
+        ArgumentNullException.ThrowIfNull(provider);
+
+        // A Familiar is healthy when its binary is where the operator said it would be. Deliberately
+        // a filesystem check and not a spawn: this runs on a background interval, it must cost
+        // nothing, and whether the CLI is *signed in* is a question for the status probe — which the
+        // operator asks on demand and which returns actionable remediation rather than a boolean.
+        if (FamiliarProviders.IsFamiliar(provider))
+        {
+
+            return FamiliarExecutableResolver.TryResolve(FamiliarProviders.ResolveCommand(provider), out _);
+
+        }
 
         // Defensive only — config validation owns invalid-endpoint messaging. Empty endpoints must
         // not construct a relative "/models" URL or throw from the background probe.

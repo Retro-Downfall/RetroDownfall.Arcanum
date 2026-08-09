@@ -752,6 +752,12 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton<IProviderHealthProbe, ProviderHealthProbe>();
 
+        // Familiars: one runner for every spawn, and the status probe that reads each CLI's own
+        // health surface. Both are inert until an operator configures a Familiar provider.
+        services.TryAddSingleton<Familiars.IFamiliarProcessRunner, Familiars.FamiliarProcessRunner>();
+
+        services.TryAddSingleton<Familiars.IFamiliarProbe, Familiars.FamiliarProbe>();
+
         services.AddHttpClient(
             ProviderHealthProbe.HttpClientName,
             (sp, client) =>

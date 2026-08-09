@@ -116,14 +116,29 @@ public sealed class CliInferenceContextResolver(
                 .SelectModelAsync(request.Model, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (!TrySelected(model, out ModelInfoDto? selected, out string? error))
+            if (TrySelected(model, out ModelInfoDto? selected, out string? error))
+            {
+
+                explicitModel = selected!.Model;
+
+            }
+            else if (model.Status == ResourceSelectionStatus.Cancelled)
             {
 
                 return SelectionFailure(model.Status, error);
 
             }
+            else
+            {
 
-            explicitModel = selected!.Model;
+                // A name the listing does not contain is not necessarily wrong. The listing omits
+                // models the operator hid, and a Familiar's catalogue belongs to the vendor rather
+                // than to arcanum.json — so gating here would refuse exactly the two cases the
+                // hide-list and pass-through rules exist to allow. The host is the authority: it
+                // resolves the name, or answers Hub.Model with the reason it could not.
+                explicitModel = request.Model.Trim();
+
+            }
 
         }
 

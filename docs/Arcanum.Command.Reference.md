@@ -209,6 +209,22 @@ probe, three seconds for an already-listening unhealthy host, and 20 seconds aft
 timeout never kills the spawned host; retry, run `arcanum doctor`, verify `arcanum key show`, or
 inspect `~/.config/arcanum/logs/auto-serve-bootstrap.log`.
 
+### The model drop-down
+
+`/model <name>` needs you to know the model id before you can type it. That is fine for models you
+wrote into `arcanum.json` yourself, but a Familiar's catalogue belongs to the vendor and changes
+without a configuration edit, so Command Center also carries a model control in the header.
+
+It is a full focus region: `Tab` / `Shift+Tab` reach it alongside Composer, Sessions, Transcript, and
+Incantations. `Enter`, `Space`, or `↓` opens it; typing narrows by model name or provider name;
+`↑`/`↓` (or `k`/`j`) move; `Enter` selects; `Esc` cancels back to the composer. No mouse anywhere.
+
+The list is `GET /api/models`, so it spans every provider kind, groups by provider, marks the model
+prompts currently go to, and already excludes anything on a Familiar's `hiddenModels` list. Selecting
+sets exactly the session model `/model <name>` sets — the two cannot disagree. On a terminal under 72
+columns the control is not rendered and drops out of the `Tab` cycle; `/model <name>` is unchanged,
+and so is `-m` / `--model` on `arcanum run`.
+
 ### Slash commands
 
 One registry defines every slash command, its help text, and the canonical replacement for each
@@ -227,7 +243,7 @@ only where the capability has no Claude analog at all.
 | `/cost` | Show token and spend totals for the current session. |
 | `/memory` | Show the compressed Campaign Summary for this session. |
 | `/config` | Show the effective configuration summary and its file path. |
-| `/model [<name>]` | With no name, list configured models; with a name, select it for this session. |
+| `/model [<name>]` | With no name, list configured models; with a name, select it for this session. The header model drop-down sets the same session model — see below. |
 | `/provider list` | List configured providers. |
 | `/mcp [reload]` | Show MCP server status, or reload MCP configuration. |
 | `/tools` | Show native tools. |
@@ -316,9 +332,11 @@ registry unchanged. The wizard composes the existing authorities (canonical conf
 reader/validator/atomic writer, outbound endpoint guard, OS-backed credential stores, preset engine,
 CLI context store); it does not introduce a second configuration model.
 
-Arcanum supports OpenAI-compatible provider endpoints only, including Ollama and other local model
+The wizard authors OpenAI-compatible provider endpoints, including Ollama and other local model
 servers through their own `/v1` endpoint. The provider templates are OpenAI, Local/Ollama, and a
-custom endpoint you supply.
+custom endpoint you supply. A Familiar (`ClaudeCodeCli` / `CodexCli`) has no endpoint and no
+credential to collect, so add one in Compendium or by editing `arcanum.json`; `arcanum doctor` then
+reports whether it is installed and signed in.
 
 Live validation performs one guarded `GET {endpoint}/models` with a strict five-second timeout. It is
 non-billable — no completion is requested, so validation never spends inference tokens — and it runs
@@ -608,6 +626,7 @@ Outcomes, least to most severe:
 | `mcp.global_config` | Mcp | Global `mcp.json` syntax and server-entry count. Optional, so absence is `Skipped`. | `arcanum mcp list` |
 | `host.api_health` | Host | Authenticated reachability of the local API. | `arcanum serve` |
 | `host.health_components` | Host | The running host's own per-subsystem verdicts, relayed rather than re-implemented. No answer at all is `Unavailable`, never a failure; a host that answers and reports itself unhealthy is `Unhealthy`. | `arcanum serve`, `arcanum lore` |
+| `providers.familiars` | Providers | Whether each configured `ClaudeCodeCli`/`CodexCli` provider is installed and signed in. Local only — it resolves the binary on `PATH` and reads the CLI's own status surface, so it needs no `--include-network` and spends nothing. Account e-mail, organisation identifiers, and local paths are never printed. | `claude auth login`, `codex login`, `arcanum config edit` |
 | `providers.reachability` | Providers | One non-billable model listing per configured provider. **Requires `--include-network`.** Endpoints are never printed. | `arcanum key provider set <provider>`, `arcanum config edit`, `arcanum model list` |
 
 #### Repairs
@@ -914,7 +933,7 @@ before they adopt a configuration change.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
-| `arcanum model list` | List configured models across all providers (GET /api/models). | None beyond global or inherited family options. |
+| `arcanum model list` | List configured models across all providers (GET /api/models). Models on a Familiar provider's `hiddenModels` list are omitted; hiding is a display preference, so a hidden model still runs when you name it with `-m`. | None beyond global or inherited family options. |
 | `arcanum model show [<model>]` | Show a configured model without exposing its endpoint. | None beyond global or inherited family options. |
 
 ### `arcanum provider`
@@ -927,7 +946,7 @@ restart before they adopt a configuration change.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
-| `arcanum provider list` | List configured providers with redacted secrets (GET /api/providers). | None beyond global or inherited family options. |
+| `arcanum provider list` | List configured providers with redacted secrets (GET /api/providers). A Familiar reports no endpoint and no credential reference — it signs in through its own CLI. | None beyond global or inherited family options. |
 | `arcanum provider show [<provider>]` | Show a configured provider without exposing endpoint or credential details. | None beyond global or inherited family options. |
 
 ### `arcanum workspace`

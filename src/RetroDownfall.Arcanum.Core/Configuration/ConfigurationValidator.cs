@@ -980,34 +980,51 @@ public sealed class ConfigurationValidator(
                     "Provider Name must not be blank."));
             }
 
-            // Missing Type defaults to OpenAICompatible (enum zero). Reject undefined numeric leftovers
-            // and any defined non-OpenAICompatible value; do not require Type to be present.
-            if (!Enum.IsDefined(provider.Type) || provider.Type != AiProviderKind.OpenAICompatible)
+            // Missing Type defaults to OpenAICompatible (enum zero). Reject undefined numeric
+            // leftovers; do not require Type to be present.
+            if (!Enum.IsDefined(provider.Type))
             {
 
                 errors.Add(new ConfigurationValidationError(
                     $"{providerPointer}.type",
-                    $"Provider '{provider.Name}' type must be OpenAICompatible (Ollama via http://localhost:11434/v1)."));
+                    $"Provider '{provider.Name}' type must be OpenAICompatible (Ollama via http://localhost:11434/v1), ClaudeCodeCli, or CodexCli."));
 
             }
 
+            bool isFamiliar = FamiliarProviders.IsFamiliar(provider.Type);
+
             IReadOnlyList<ModelEntry> models = provider.Models ?? [];
 
-            ValidateOptionalEnvironmentVariableName(
-                provider.CredentialEnvironmentVariable,
-                $"{providerPointer}.credentialEnvironmentVariable",
-                errors);
-            AddEnvironmentVariableReference(
-                EnvironmentCredentialResolver.GetProviderApiKeyEnvironmentVariableName(provider),
-                $"{providerPointer}.credentialEnvironmentVariable",
-                environmentReferences);
-
-            if (models.Count == 0)
+            if (isFamiliar)
             {
 
-                errors.Add(new ConfigurationValidationError(
-                    providerPointer,
-                    $"Provider '{provider.Name}' has no configured models."));
+                ValidateFamiliarProvider(provider, providerPointer, errors);
+
+            }
+            else
+            {
+
+                ValidateHttpProviderOnlyFields(provider, providerPointer, errors);
+
+                ValidateOptionalEnvironmentVariableName(
+                    provider.CredentialEnvironmentVariable,
+                    $"{providerPointer}.credentialEnvironmentVariable",
+                    errors);
+                AddEnvironmentVariableReference(
+                    EnvironmentCredentialResolver.GetProviderApiKeyEnvironmentVariableName(provider),
+                    $"{providerPointer}.credentialEnvironmentVariable",
+                    environmentReferences);
+
+                // A Familiar's catalogue belongs to the vendor, not to arcanum.json — requiring a
+                // models array here would defeat the automatic availability the kind exists for.
+                if (models.Count == 0)
+                {
+
+                    errors.Add(new ConfigurationValidationError(
+                        providerPointer,
+                        $"Provider '{provider.Name}' has no configured models."));
+
+                }
 
             }
 
@@ -1683,7 +1700,7 @@ public sealed class ConfigurationValidator(
 
                 errors.Add(new ConfigurationValidationError(
                     "integrations.embeddings.provider",
-                    $"Arcanum:Integrations:Embeddings:Provider '{embeddings.Provider}' must be type OpenAICompatible (Ollama embeddings via /v1 with exact model names)."));
+                    $"Arcanum:Integrations:Embeddings:Provider '{embeddings.Provider}' must be type OpenAICompatible (Ollama embeddings via /v1 with exact model names). A Familiar serves chat completions only and has no embedding surface."));
 
             }
 
@@ -1761,6 +1778,123 @@ public sealed class ConfigurationValidator(
                 $"{pointer}.wireDialect",
                 "A numeric reasoning budget requires an explicitly configured nonstandard wire dialect."));
         }
+    }
+
+    /// <summary>
+    /// A Familiar carries no endpoint and no credential reference — there is nothing for Arcanum to
+    /// hold, because the CLI authenticates itself against the operator's own subscription. Both are
+    /// rejected rather than ignored so a row copied from an HTTP provider fails loudly at startup
+    /// instead of quietly implying Arcanum is using a key it never reads.
+    /// </summary>
+    private static void ValidateFamiliarProvider(
+        ProviderSettings provider,
+        string providerPointer,
+        List<ConfigurationValidationError> errors)
+    {
+
+        string kind = provider.Type.ToString();
+
+        if (!string.IsNullOrWhiteSpace(provider.Endpoint))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                $"{providerPointer}.endpoint",
+                $"Provider '{provider.Name}' is a {kind} provider, which is invoked as a local command and has no endpoint. Remove endpoint."));
+
+        }
+
+        if (!string.IsNullOrWhiteSpace(provider.CredentialEnvironmentVariable))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                $"{providerPointer}.credentialEnvironmentVariable",
+                $"Provider '{provider.Name}' is a {kind} provider, which signs in through its own CLI. Arcanum never reads its credentials, so remove credentialEnvironmentVariable and run `{FamiliarProviders.SignInCommand(provider.Type)}` instead."));
+
+        }
+
+        if (provider.Command is not null && string.IsNullOrWhiteSpace(provider.Command))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                $"{providerPointer}.command",
+                $"Provider '{provider.Name}' command must name the {FamiliarProviders.DisplayName(provider.Type)} binary, or be omitted to resolve `{FamiliarProviders.DefaultCommand(provider.Type)}` on PATH."));
+
+        }
+
+        ValidateHiddenModels(provider, providerPointer, errors);
+
+    }
+
+    /// <summary>
+    /// <c>command</c> and <c>hiddenModels</c> describe a Familiar and mean nothing to an HTTP
+    /// provider — an HTTP row hides a model by deleting its <c>models</c> entry. Accepting them
+    /// silently would let an operator believe a hide list was in force where none can apply.
+    /// </summary>
+    private static void ValidateHttpProviderOnlyFields(
+        ProviderSettings provider,
+        string providerPointer,
+        List<ConfigurationValidationError> errors)
+    {
+
+        if (provider.Command is not null)
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                $"{providerPointer}.command",
+                $"Provider '{provider.Name}' is an OpenAICompatible provider, which is reached over HTTP rather than spawned. Remove command."));
+
+        }
+
+        if (provider.HiddenModels is { Length: > 0 })
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                $"{providerPointer}.hiddenModels",
+                $"Provider '{provider.Name}' is an OpenAICompatible provider, whose models array is already the operator's own list. Remove the models entry instead of hiding it."));
+
+        }
+
+    }
+
+    private static void ValidateHiddenModels(
+        ProviderSettings provider,
+        string providerPointer,
+        List<ConfigurationValidationError> errors)
+    {
+
+        string[] hidden = provider.HiddenModels ?? [];
+
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        for (int i = 0; i < hidden.Length; i++)
+        {
+
+            string pointer = $"{providerPointer}.hiddenModels[{i}]";
+
+            string entry = hidden[i] ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(entry))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    $"Provider '{provider.Name}' hiddenModels entries must name a model; blank entries hide nothing."));
+
+                continue;
+
+            }
+
+            if (!seen.Add(entry.Trim()))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    $"Provider '{provider.Name}' hides '{entry}' more than once; matching is case-insensitive."));
+
+            }
+
+        }
+
     }
 
     private static void ValidateOptionalEnvironmentVariableName(
@@ -2091,6 +2225,17 @@ public sealed class ConfigurationValidator(
 
     }
 
+    /// <summary>
+    /// Whether a configured provider can serve this model name at startup.
+    /// </summary>
+    /// <remarks>
+    /// A Familiar answers yes to any name. Its catalogue belongs to the vendor, so the whole point of
+    /// the kind is that a newly released model works without an <c>arcanum.json</c> edit — validating
+    /// <c>defaultModel</c> against a declared list would reject exactly the configuration the feature
+    /// exists to support, and would contradict <c>ProviderResolver</c>, which resolves the same name
+    /// by pass-through. The CLI is the authority on whether the model exists, and it says so at turn
+    /// time with an actionable message.
+    /// </remarks>
     private static bool ModelExists(ArcanumSettings settings, string model)
     {
 
@@ -2098,6 +2243,13 @@ public sealed class ConfigurationValidator(
 
         for (int i = 0; i < providers.Length; i++)
         {
+
+            if (FamiliarProviders.IsFamiliar(providers[i]))
+            {
+
+                return true;
+
+            }
 
             foreach (string configured in ProviderResolver.EnumerateAdvertisedModels(providers[i]))
             {

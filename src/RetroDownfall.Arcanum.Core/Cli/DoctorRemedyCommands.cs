@@ -29,6 +29,14 @@ public static class DoctorRemedyCommands
     public const string KeyProviderSetPerplexity =
         "arcanum key provider set perplexity --kind web-research";
 
+    /// <summary>
+    /// A Familiar signs in through its own CLI. Arcanum prints the command and stops there — it never
+    /// authenticates on the operator's behalf, so these are the only remedies it can offer.
+    /// </summary>
+    public const string ClaudeCodeSignIn = "claude auth login";
+
+    public const string CodexSignIn = "codex login";
+
     public const string BackupRestore = "arcanum backup restore <archive>";
 
     public const string BackupCreateGrimoire = "arcanum backup create --scope grimoire";

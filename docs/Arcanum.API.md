@@ -38,8 +38,9 @@ test, and documentation citations remain stable.
 | GET | `/api/config` | Read the latest successfully persisted `ArcanumSettings`; provider endpoints remain redacted, while secret environment-variable references are returned without resolving their values (`ApiResponse<ArcanumSettings>`; §8.12). |
 | PUT | `/api/config` | Validate and write a full settings snapshot to `arcanum.json` (`ApiResponse<bool>`; §8.12). |
 | POST | `/api/config/validate` | Validate settings without writing (`ApiResponse<bool>`; §8.12). |
-| GET | `/api/models` | Flatten models from the latest successfully persisted provider snapshot (`ApiResponse<ModelInfoDto[]>`; endpoint redacted as `"***"`; read-only, no connectivity checks; §8.12). |
-| GET | `/api/providers` | List the latest successfully persisted providers with `apiKey`/`endpoint` redacted (`ApiResponse<ProviderInfoDto[]>`; read-only; §8.12). |
+| GET | `/api/models` | Flatten models from the latest successfully persisted provider snapshot (`ApiResponse<ModelInfoDto[]>`; endpoint redacted as `"***"`; models on a Familiar provider's `hiddenModels` list are omitted; read-only, no connectivity checks; §8.12). |
+| GET | `/api/providers` | List the latest successfully persisted providers with `apiKey`/`endpoint` redacted (`ApiResponse<ProviderInfoDto[]>`; `models` excludes the hide list and `hiddenModels` reports it; a Familiar reports an empty `endpoint` and `credentialEnvironmentVariable`; read-only; §8.12). |
+| GET | `/api/providers/{name}/familiar-probe` | Familiar readiness for one `ClaudeCodeCli`/`CodexCli` provider (`ApiResponse<FamiliarProbeResult>`; asks the CLI for its own status, never for a completion, so it is non-billable; never reads the CLI's credential store and carries no account material; **404** `Provider.NotFound`, **400** `Validation.InvalidProviderType` for an OpenAI-compatible row; §8.12.1). |
 | GET | `/api/perception/look` | Eye of the World snapshot (optional `directory` query; requires `Arcanum:Security:PerceptionWorkspaceRoots`; **403** when unset). |
 | POST | `/api/intelligence/ping` | Buffered inference. |
 | POST | `/api/intelligence/ping-stream` | NDJSON streaming inference (same `PingRequest` extensions as buffered ping). |
@@ -471,6 +472,25 @@ merged document clears residual-mask, outbound, and semantic validation; every f
 included — is a **400** failure envelope, so a status-code-driven probe cannot read an invalid
 configuration as validated.
 
+#### 8.12.1 Familiar readiness (`GET /api/providers/{name}/familiar-probe`)
+
+Answers whether a subscription-backed CLI provider is ready, without asking it for a completion. Runs
+host-side next to the process runner so Compendium — an editor that does not spawn processes — can ask
+over HTTP instead of growing a second implementation. Non-billable (ADR 0002 /
+`NonBillableSurfaces.FamiliarProbe`), alongside `GET /v1/models`.
+
+`FamiliarProbeResult` carries `providerName`, `providerType`, `status`
+(`NotInstalled` | `NotConfigured` | `Configured`), `version` when the CLI reports one, a one-line
+`summary`, `remediation` text, a copyable `remediationCommand` the **operator** runs, `enumeration`
+(`Discovered` | `OperatorDeclared` | `Unknown`), `models`, and `hiddenModels`.
+
+Redaction is structural rather than a filtering pass: the bound DTOs have no field for the account
+e-mail, organisation identifiers, or local paths that `claude auth status --json` and
+`codex doctor --json` print, so that material cannot reach this payload or a log. Arcanum never
+authenticates — `remediationCommand` is text the operator runs themselves. `enumeration: "Unknown"` is
+the ordinary outcome, because neither CLI publishes a machine-readable model list; clients fall back
+to free-text model entry and everything still works.
+
 ### 8.13 MCP server event SSE bus (`GET /api/events/mcp`)
 
 `McpConnectionManager` publishes `McpServerEvent` on state changes. Same SSE back-pressure/caps/auth as §8.11.
@@ -817,6 +837,9 @@ mappers and tests.
 | `Data.ReconciliationFailed` | 500 | Data-lifecycle apply failed or post-delete reconciliation requires operator review |
 
 **Ollama:** providers use the `OpenAICompatible` contract and surface failures as `Hub.Error`.
+**Familiars:** `ClaudeCodeCli`/`CodexCli` providers surface a missing binary, a refused spawn, a
+deadline, or a non-zero exit as `Hub.Error` carrying the CLI's own message. `Provider.NotFound`
+maps to **404**.
 
 ### 8.24 OpenAI embeddings (`POST /v1/embeddings`)
 

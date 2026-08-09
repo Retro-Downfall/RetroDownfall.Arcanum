@@ -34,6 +34,19 @@ public static class EnvironmentCredentialResolver
             : ProviderPrefix + NormalizeProviderName(provider.Name) + ProviderSuffix;
     }
 
+    /// <summary>
+    /// The deterministic provider-name-derived default, regardless of whether an explicit reference
+    /// replaced it. Callers that must guarantee a name never reaches somewhere — a Familiar's child
+    /// environment, say — need both spellings, because a stale derived variable can still be set in
+    /// the operator's shell after they switched to an explicit reference.
+    /// </summary>
+    public static string GetDerivedProviderApiKeyEnvironmentVariableName(ProviderSettings provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+
+        return ProviderPrefix + NormalizeProviderName(provider.Name) + ProviderSuffix;
+    }
+
     public static string? ResolveProviderApiKey(ProviderSettings provider) =>
         ReadEnvironmentVariable(GetProviderApiKeyEnvironmentVariableName(provider));
 

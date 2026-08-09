@@ -52,15 +52,52 @@
                                         ItemsSource="{Binding $parent[UserControl].((vm:ConfigurationViewModel)DataContext).ProviderKinds}"
                                         SelectedItem="{Binding Type, Mode=TwoWay}" />
 
+<!-- Endpoint and credential are hidden rather than blanked for a subscription CLI: it has
+                     neither, and rendering them empty-but-present reads as "required, and you have
+                     not filled them in". -->
                 <controls:LabeledEntry Label="Endpoint"
                                        Description="OpenAI-compatible base endpoint."
                                        Text="{Binding Endpoint, Mode=TwoWay}"
+                                       IsVisible="{Binding IsHttpProvider}"
                                        Placeholder="https://api.openai.com/v1" />
 
                 <controls:LabeledEntry Label="Credential environment variable"
                                        Description="Exact variable containing the API key. Leave blank to derive one from the provider name, such as ARCANUM_PROVIDER_OPENAI_API_KEY."
                                        Text="{Binding CredentialEnvironmentVariable, Mode=TwoWay}"
+                                       IsVisible="{Binding IsHttpProvider}"
                                        Placeholder="OPENAI_API_KEY" />
+
+                <StackPanel Spacing="8" IsVisible="{Binding IsFamiliar}">
+
+                  <controls:LabeledEntry Label="Command"
+                                         Description="The CLI to run. Leave blank to find it on your PATH. Arcanum never installs, updates, or signs into it."
+                                         Text="{Binding Command, Mode=TwoWay}"
+                                         Placeholder="/opt/homebrew/bin/claude" />
+
+                  <TextBlock Text="{Binding ProbeStatus}"
+                             TextWrapping="Wrap"
+                             IsVisible="{Binding ProbeStatus, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
+                  <TextBlock Text="{Binding ProbeRemediation}"
+                             TextWrapping="Wrap"
+                             Foreground="{DynamicResource ForgeErrorBrush}"
+                             IsVisible="{Binding HasProbeRemediation}" />
+
+                  <SelectableTextBlock Text="{Binding ProbeRemediationCommand}"
+                                       FontFamily="{DynamicResource ForgeMonospaceFontFamily}"
+                                       IsVisible="{Binding HasProbeRemediationCommand}" />
+
+                  <Button Content="Re-probe"
+                          HorizontalAlignment="Left"
+                          IsEnabled="{Binding !IsProbing}"
+                          Command="{Binding ProbeCommand}" />
+
+                  <controls:LabeledEntry Label="Hidden models"
+                                         Description="Comma-separated model names to leave out of lists and pickers. Empty means every model the CLI offers is available, including ones released after you set this up. Hiding is a tidiness preference: a hidden model still runs if you name it directly."
+                                         Text="{Binding HiddenModels, Mode=TwoWay}"
+                                         Placeholder="claude-3-haiku-legacy" />
+
+                </StackPanel>
 
                 <controls:LabeledStepper Label="Context window limit"
                                          Description="Factual provider context-window capacity."

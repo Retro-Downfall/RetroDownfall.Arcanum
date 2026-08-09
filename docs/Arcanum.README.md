@@ -17,7 +17,8 @@ runs either as the long-lived HTTP host (`arcanum serve`) or as thin terminal cl
 self-contained Native AOT executable; the current macOS arm64 release is a signed, notarized,
 folder-based self-contained publish because of the supported linker/toolchain limitation. Arcanum
 exposes an **OpenAI Chat Completions compatibility subset**, routes inference across OpenAI-compatible
-HTTP providers (including Ollama through `/v1`), and persists state in an encrypted SQLCipher store.
+HTTP providers (including Ollama through `/v1`) and — opt in — across the Claude Code and Codex CLIs
+you already have installed, and persists state in an encrypted SQLCipher store.
 
 Arcanum's default product posture is an unrestricted coding harness: let the agent keep working,
 using tools, and reporting progress until the task completes or the operator cancels. Arcanum does
@@ -72,8 +73,8 @@ Arcanum exposes a **Chat Completions compatibility subset** so common OpenAI cli
 
 Inference flows through one hub behind a single `IChatClient` abstraction. See [DESIGN.md §10](Arcanum.DESIGN.md#10-intelligence-pipeline); the exact turn order is [§10.7](Arcanum.DESIGN.md#107-end-to-end-turn-lifecycle-and-chat-loop).
 
-- **`WizardIntelligenceProvider`** + **`ToolExecutionPipeline`** + **`IChatClientFactory`**; providers are **`OpenAICompatible` only** (including Ollama via `/v1`). No managed local inference.
-- **`TurnEngine` is a progress-driven semantic shell** over Wizard's `ITurnPipelineRunner`; Wizard still owns the one mode-parameterized model/tool loop. There is no Arcanum-owned total turn duration or fixed model-call, tool-round, correction, or retry count. Work continues while evidence changes and stops for completion, cancellation, explicit token/cost policy, a provider/model boundary, a required safety/integrity denial, or deterministic repeated no-progress. The primary loop can call native `delegate_task` to start a fresh buffered child TurnEngine with a sterile stateless context, any number of explicit file values that fit the retained per-file/parent/provider boundaries, and a delegated token or cost ceiling. Child tools are disabled, so recursive delegation is unavailable by construction. Only the child summary or structured failure returns to the parent.
+- **`WizardIntelligenceProvider`** + **`ToolExecutionPipeline`** + **`IChatClientFactory`**; providers are **`OpenAICompatible`** (including Ollama via `/v1`) or a **Familiar** — `ClaudeCodeCli` / `CodexCli`, your own installed CLI on your own subscription. Still no managed local inference: a Familiar is a transport Arcanum invokes, never a runtime it installs, configures, or signs into.
+- **`TurnEngine` is a progress-driven semantic shell** over Wizard's `ITurnPipelineRunner`; Wizard still owns the one mode-parameterized model/tool loop. There is no Arcanum-owned total turn duration or fixed model-call, tool-round, correction, or retry count — with one exception: a Familiar is a spawned process rather than a socket, so its runner enforces a code-owned wall-clock ceiling and kills the process tree instead of holding a request open forever. Work continues while evidence changes and stops for completion, cancellation, explicit token/cost policy, a provider/model boundary, a required safety/integrity denial, or deterministic repeated no-progress. The primary loop can call native `delegate_task` to start a fresh buffered child TurnEngine with a sterile stateless context, any number of explicit file values that fit the retained per-file/parent/provider boundaries, and a delegated token or cost ceiling. Child tools are disabled, so recursive delegation is unavailable by construction. Only the child summary or structured failure returns to the parent.
 - **`ProviderResolver`** maps model → provider from `Arcanum:Providers` (no hard-coded model names).
 - Agentic layers: MCP tool loops, semantic spell routing, read-time context compression, Wards, Sanctum.
 - **Session attachment retrieval:** when `Arcanum:Features:AttachmentRetrieval` is enabled, supported UTF-8 text/Markdown/source/JSON/YAML/XML/CSV/log attachments and allocation-safe visible HTML are indexed per version and retrieved only inside their owning session. One per-turn materialization ledger deduplicates current attachments, references, pins, model attach/refresh calls, attachment/workspace RAG, Saga, and The Tapestry; explicit whole files suppress equivalent semantic chunks, and refreshes replace stale versions before continuation. Provider context remains the final per-request authority; indexing uses internal slices and reconciliation rather than public retry/timeout/count knobs. Latest Bound versions are preferred; historical provenance is retained; PDFs, Office files, binaries, and images remain unindexed. Queue/provider failures never fail the turn.
@@ -215,7 +216,7 @@ These are the recurring shapes. Matching them is what makes a change "fit."
 - **Result flow.** Domain ops return `Result` / `Result<T>` and rely on implicit conversions; the endpoint is the single place that turns a `Result` into an envelope + status code.
 - **New endpoint checklist:** add to `MapArcanumEndpoints` → return `ApiResponse<T>` (or documented streaming shape) → register every new payload type on `ArcanumJsonContext` → `.WithName(...)` for OpenAPI → use explicit `JsonTypeInfo` on failable `Results.Json` → update DESIGN.md §4.3 + this README's API map.
 - **New CLI verb:** add the handler under `Cli/Commands` and wire it in `CliCommandTree`; use `IConsoleDispatcher` for stdout payloads/stderr diagnostics, `IConfirmationPrompt` for destructive approval, an explicit source-generated `JsonTypeInfo` for structured output, and a defined `CliExitCode`. Prefer `AddArcanumEyeOfTheWorld()` over full infrastructure for lightweight verbs.
-- **New inference provider:** add an `AiProviderKind` and extend `IChatClientFactory`; keep the `WizardIntelligenceProvider` contract intact.
+- **New inference provider:** add an `AiProviderKind` and extend `IChatClientFactory`; keep the `WizardIntelligenceProvider` contract intact. This holds even for a transport that is not OpenAI-compatible HTTP — the Familiar kinds are exactly this pattern and change nothing above the factory. External CLI wire types may carry vendor-chosen names through a source-generated naming policy, the same exception `/v1` and MCP JSON-RPC types get.
 - **New MCP tool:** implement on `ArcanumInternalToolServer` with a hand-authored JSON schema via `McpJsonSerializerContext`; honor unconditional `WorkspacePathPolicy` containment and treat `ToolOutputCapBytes` as one response/page allocation, adding an attuned continuation when complete useful output can exceed it; decide whether it belongs in `ToolRiskClassifier.IntrinsicWardToolNames`. Do not treat campaign Sanctum as the primary filesystem boundary.
 - **Treat all wire types as versioned contracts.** Casing is fixed at the context level; don't add `[JsonPropertyName]` except on OpenAI `/v1` and MCP JSON-RPC types (see [API §8.2](Arcanum.API.md#82-arcanumjsoncontext--source-generated-public)).
 - **Register long-running work.** Use the scoped `ILongRunningOperationCoordinator`; add the kind
@@ -266,6 +267,7 @@ Arcanum maps domain concepts onto a D&D fantasy metaphor. Universal terms with n
 | Agent-directed entity memory | **The Lexicon** | `scribe_lexicon` / `delete_lexicon` MCP tools; see [DESIGN.md §10.6](Arcanum.DESIGN.md#106-the-lexicon--agent-directed-entity-memory) |
 | Operator alert channel | **Comm Link** | `/api/commlink/send` |
 | Primary agent / inference orchestrator | **Master** | **`WizardIntelligenceProvider`** (implementation class; implements **`IArcanumIntelligenceProvider`**) |
+| An installed, already-authenticated vendor CLI Arcanum calls on for inference | **Familiar** | `AiProviderKind.ClaudeCodeCli` / `CodexCli`; `IFamiliarProcessRunner`, `IFamiliarProbe`; `GET /api/providers/{name}/familiar-probe` (see [DESIGN.md §10.9](Arcanum.DESIGN.md#109-familiars--subscription-backed-cli-transports)) |
 | Scratchpad / instructions | **Codex** | `CODEX.md`, `/api/codex` |
 | Multi-turn chat thread | **Session** (rows = **Entry**) | `/api/sessions` |
 | Spell/prompt/plan validation | **The Proving Grounds** (Trials, Inquisitors) | `POST /api/proving-grounds/trials/run` |
@@ -294,7 +296,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 | Durable operations | `/api/operations*` | Safe list/show plus CAS cancel/retry and bounded manual reconciliation; checkpoint bytes/references never leave SQLCipher |
 | Data lifecycle | `/api/data/*` | Authenticated retained-data status, typed retention settings, dry-run plans, durable apply, explicit session/attachment deletion, scoped memory reset, and factory reset |
 | Config | `/api/config`, `/config/validate` | GET redacts secrets; PUT preserves `"***"` placeholders |
-| Models / providers | `GET /api/models`, `/providers`, `/providers/test` | Listings + connectivity probe (no persist) |
+| Models / providers | `GET /api/models`, `/providers`, `/providers/test`, `/providers/{name}/familiar-probe` | Listings, HTTP connectivity probe, and Familiar readiness (all read-only, no persist) |
 | Inference (native) | `/api/intelligence/ping(-stream)`, `/human-response`, `/arsenal`, `/mana`, `/context/inspect` | Buffered / NDJSON `IntelligenceEvent`; model-aware Mana/source breakdown and read-only effective-turn preview |
 | Inference (OpenAI) | `POST /v1/chat/completions`, `GET /v1/models`, `POST /v1/embeddings` | OpenAI JSON/SSE; Scrying gates images; client tools opt-in |
 | OpenAI stubs | `/v1/moderations`, `/images/*`, `/audio/*` | Always 501 `not_supported` |
@@ -319,7 +321,7 @@ Default base `http://localhost:5001`. **All `/api` and `/v1` routes require the 
 
 Summaries only — full contracts live in DESIGN.
 
-- **Providers:** `Arcanum:Providers[]` keeps provider name/type/endpoint, optional credential environment-variable reference, factual model inventory/capabilities, and context capacity. Tokenization and prompt-cache behavior are code-owned: the built-in catalog selects verified behavior, and unknown endpoints/models emit no cache directives or cached-usage claim.
+- **Providers:** `Arcanum:Providers[]` keeps provider name/type/endpoint, optional credential environment-variable reference, factual model inventory/capabilities, and context capacity. A **Familiar** row (`ClaudeCodeCli` / `CodexCli`) instead keeps an optional `command` override and a subtractive `hiddenModels` list: it has no endpoint and no credential, its `models[]` is optional because the vendor owns the catalogue, and a model name nothing declares passes through to the CLI verbatim — so a newly released model works with no edit. Hidden is not blocked: a hidden model is left out of listings and pickers but still resolves when named. Tokenization and prompt-cache behavior are code-owned: the built-in catalog selects verified behavior, and unknown endpoints/models emit no cache directives or cached-usage claim.
 - **Model-aware context accounting:** `IModelTokenEstimator` resolves the built-in verified official-OpenAI exact `o200k_base` families or a conservative fallback (at least UTF-8 bytes plus margin). Every provider call accounts for messages, complete tool schemas, structured-output schema, RAG/memory/attachments, provider framing, and separate answer/reasoning reserves. `/api/intelligence/mana`, the read-only `/api/intelligence/context/inspect` preview, native `context` frames, successful audit records, Command Center `/mana`, the Command Center Context pane, and Prometheus expose quality/source/variance plus direct history, explicit-attachment, refreshed-file, attachment-RAG, and workspace-RAG token fields; the metadata-only attachment index does not inflate retrieved-RAG totals. The pane switches its total from `estimated` to valid provider-reported input labeled `billed`. Admission drops Tapestry, Saga, workspace RAG, then attachment RAG before complete tool exchanges, records attachment/workspace/Tapestry semantic drop counts for the pane warning, and never silently drops accepted explicit files. The footer aggregates attachment indexing as pending, completed, or failed and refreshes while pending work runs.
 - **First-class reasoning:** native requests use `reasoning:{effort?,budgetTokens?,output?}` where effort is `none|minimal|low|medium|high|extraHigh`, output is `none|summary|full`, and effort/budget are mutually exclusive. OpenAI requests use `reasoning_effort` (`xhigh` maps to native `extraHigh`), additive `reasoning_budget`, and `reasoning_output`. `reasoning_output` is an Arcanum-local exposure preference plus a Microsoft.Extensions.AI best-effort hint, not a guaranteed provider wire control; Arcanum never invents an unsupported provider field. When output is omitted, a full-capable model defaults to `full`, otherwise a summary-only model defaults to `summary` (subject to `allowsClientOutput`, and `supportsStreaming` on streams). Reasoning and capability/dialect enums are string-only; numeric or unknown enum JSON fails strict binding. Model objects opt in with `reasoning:{controlSupport,supportsSummary,supportsFull,supportsStreaming,reportsReasoningTokens,allowsClientOutput,wireDialect,maxBudgetTokens?}`; control support is `none|effort|budget|effortAndBudget`, and the closed dialects are `standard|openRouter|topLevelReasoningBudget|anthropicThinking`. No dialect is inferred from provider/model names.
 - **OpenAI reasoning errors:** semantic validation is identical for buffered and `stream:true` requests and returns HTTP 400, `type:"invalid_request_error"`, `param:"reasoning"`, with `invalid_reasoning_options`, `invalid_reasoning_budget`, `unsupported_reasoning_control`, `reasoning_budget_exceeds_model_limit`, or `unsupported_reasoning_output`. Unknown enum strings and defined/undefined integer enum values fail earlier as strict JSON binding: HTTP 400, code `invalid_json`, no `param`.
@@ -510,6 +512,12 @@ are summarized in
           }
         ],
         "contextWindowLimit": 128000
+      },
+      {
+        "name": "ClaudeCode-subscription",
+        "type": "ClaudeCodeCli",
+        "contextWindowLimit": 200000,
+        "hiddenModels": []
       }
     ]
   }
@@ -1023,8 +1031,9 @@ leaves configuration, credentials, CLI context, and the workspace registry uncha
 and accepting the current values is a no-op, not a reset: the wizard owns only `edition`,
 `host.listenAny`, `defaultModel`, `workspaces.defaultRoot`, and the selected provider entry.
 
-Arcanum speaks to OpenAI-compatible endpoints only, including Ollama and other local model servers
-through their own `/v1` endpoint. Validation is one guarded `GET {endpoint}/models` with a strict
+The wizard authors OpenAI-compatible endpoints, including Ollama and other local model servers
+through their own `/v1` endpoint. A Familiar has no endpoint and no credential to collect, so add one
+in Compendium or by hand instead. Validation is one guarded `GET {endpoint}/models` with a strict
 five-second timeout: non-billable, in-process, and usable before `arcanum serve` has ever started. It
 tells you which dependency failed — endpoint rejected, TLS failure, authentication failure, model
 absent, malformed response, timeout, or unreachable.

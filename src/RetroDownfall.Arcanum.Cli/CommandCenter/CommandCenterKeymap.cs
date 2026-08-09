@@ -8,6 +8,13 @@ internal enum CommandCenterFocusRegion
     Sessions,
     Overlay,
     Incantations,
+
+    /// <summary>
+    /// The header model drop-down. A real focus region rather than a mouse affordance: the whole
+    /// point is that a model can be chosen without knowing its id in advance, and Command Center is
+    /// keyboard-only.
+    /// </summary>
+    Model,
 }
 
 /// <summary>Logical actions produced by the Command Center keymap.</summary>
@@ -51,6 +58,10 @@ internal enum CommandCenterAction
     PageIncantationsDown,
     JumpIncantationsHome,
     JumpIncantationsEnd,
+    OpenModelPicker,
+    ModelSelectUp,
+    ModelSelectDown,
+    SelectModel,
 }
 
 /// <summary>
@@ -64,7 +75,8 @@ internal static class CommandCenterKeymap
         bool isStreaming,
         bool composerHasText,
         bool overlayOpen,
-        KeyChord chord)
+        KeyChord chord,
+        CommandCenterOverlayKind overlayKind = CommandCenterOverlayKind.None)
     {
         if (chord.IsF1)
         {
@@ -128,7 +140,9 @@ internal static class CommandCenterKeymap
                 return CommandCenterAction.CancelTurn;
             }
 
-            if (focus is CommandCenterFocusRegion.Transcript or CommandCenterFocusRegion.Sessions)
+            if (focus is CommandCenterFocusRegion.Transcript
+                or CommandCenterFocusRegion.Sessions
+                or CommandCenterFocusRegion.Model)
             {
                 return CommandCenterAction.CloseOverlayOrFocusComposer;
             }
@@ -193,9 +207,37 @@ internal static class CommandCenterKeymap
             }
         }
 
+        // The header model drop-down. Enter, Space, or Down opens it; the rest of the region is
+        // deliberately inert so a stray key never changes the model prompts go to.
+        if (focus == CommandCenterFocusRegion.Model)
+        {
+            if (chord.IsEnter || chord.IsDown || chord.IsSpace)
+            {
+                return CommandCenterAction.OpenModelPicker;
+            }
+
+            return CommandCenterAction.None;
+        }
+
         // Overlay Enter is routed via MapOverlayEnter(OverlayKind) — never ResumeSelected by default.
         if (focus == CommandCenterFocusRegion.Overlay)
         {
+            // Selection movement is list-typed: the sessions picker and the model picker keep their
+            // own selection, and sharing one movement action would clamp one list to the other's
+            // length.
+            if (overlayKind == CommandCenterOverlayKind.ModelPicker)
+            {
+                if (chord.IsUp || (chord.IsBareLetter && chord.IsK))
+                {
+                    return CommandCenterAction.ModelSelectUp;
+                }
+
+                if (chord.IsDown || (chord.IsBareLetter && chord.IsJ))
+                {
+                    return CommandCenterAction.ModelSelectDown;
+                }
+            }
+
             if (chord.IsUp || (chord.IsBareLetter && chord.IsK))
             {
                 return CommandCenterAction.SessionSelectUp;
@@ -319,6 +361,7 @@ internal static class CommandCenterKeymap
             CommandCenterOverlayKind.Help => CommandCenterAction.CloseOverlayOrFocusComposer,
             CommandCenterOverlayKind.SessionPicker => CommandCenterAction.ResumeSelectedSession,
             CommandCenterOverlayKind.CommandPalette => CommandCenterAction.ExecutePaletteItem,
+            CommandCenterOverlayKind.ModelPicker => CommandCenterAction.SelectModel,
             CommandCenterOverlayKind.QuitConfirm or CommandCenterOverlayKind.DiscardConfirm
                 or CommandCenterOverlayKind.WardConfirm
                 => CommandCenterAction.ConfirmPending,
@@ -352,5 +395,6 @@ internal readonly record struct KeyChord(
     bool IsHome = false,
     bool IsEnd = false,
     bool IsJ = false,
+    bool IsSpace = false,
     bool IsK = false,
     bool IsBareLetter = false);

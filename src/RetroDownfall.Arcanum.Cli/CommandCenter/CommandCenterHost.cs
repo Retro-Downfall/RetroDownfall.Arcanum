@@ -301,7 +301,8 @@ internal sealed class CommandCenterHost(
                         state.IsStreaming,
                         window.ComposerHasText,
                         overlayOpen,
-                        ToChord(e));
+                        ToChord(e),
+                        state.Overlay);
                     if (tabAction is CommandCenterAction.CycleFocusNext or CommandCenterAction.CycleFocusPrev)
                     {
                         HandleAction(tabAction);
@@ -417,19 +418,52 @@ internal sealed class CommandCenterHost(
                         return;
                     }
 
+                    bool modelPicker = state.Overlay == CommandCenterOverlayKind.ModelPicker;
+
                     if (e == Key.CursorUp || e == Key.CursorDown)
                     {
                         e.Handled = true;
-                        window.MoveSessionSelection(e == Key.CursorUp ? -1 : 1, state);
+                        int delta = e == Key.CursorUp ? -1 : 1;
+
+                        if (modelPicker)
+                        {
+                            window.MoveModelSelection(delta, state);
+                        }
+                        else
+                        {
+                            window.MoveSessionSelection(delta, state);
+                        }
+
                         return;
                     }
 
                     // Typing filters; refresh after KeyDown so Text is current — schedule refresh.
                     app.Invoke(() =>
                     {
-                        state.SessionFilter = window.OverlayFilter.Text?.ToString() ?? string.Empty;
-                        window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshSidebar);
+                        string typed = window.OverlayFilter.Text?.ToString() ?? string.Empty;
+
+                        if (modelPicker)
+                        {
+                            state.ModelFilter = typed;
+                            window.RefreshModelList(state);
+                        }
+                        else
+                        {
+                            state.SessionFilter = typed;
+                            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshSidebar);
+                        }
                     });
+                };
+
+                window.ModelSelector.KeyDown += (_, e) =>
+                {
+                    if (e == Key.Tab || e == Key.Tab.WithShift)
+                    {
+                        HandleTabChord(e);
+                        return;
+                    }
+
+                    _ = TryMapAndHandle(e, CommandCenterFocusRegion.Model, state, window, HandleAction);
                 };
 
                 void OnOverlayKeyDown(object? _, Key e)
@@ -590,7 +624,8 @@ internal sealed class CommandCenterHost(
                         state.IsStreaming,
                         window.ComposerHasText,
                         state.Overlay != CommandCenterOverlayKind.None,
-                        chord);
+                        chord,
+                        state.Overlay);
 
                     if (action == CommandCenterAction.None && !chord.IsEsc)
                     {
@@ -918,6 +953,27 @@ internal sealed class CommandCenterHost(
 
             case CommandCenterAction.SessionSelectDown:
                 window.MoveSessionSelection(1, state);
+                break;
+
+            case CommandCenterAction.OpenModelPicker:
+                if (BlockAuxiliaryWhileHardModal(state, window, app))
+                {
+                    break;
+                }
+
+                await OpenModelPickerAsync(state, window, app, linked.Token).ConfigureAwait(false);
+                break;
+
+            case CommandCenterAction.ModelSelectUp:
+                window.MoveModelSelection(-1, state);
+                break;
+
+            case CommandCenterAction.ModelSelectDown:
+                window.MoveModelSelection(1, state);
+                break;
+
+            case CommandCenterAction.SelectModel:
+                ApplySelectedModel(state, window, app);
                 break;
 
             case CommandCenterAction.LoadOlderSessionPage:
@@ -1467,7 +1523,8 @@ internal sealed class CommandCenterHost(
                     "Ctrl+O Sessions",
                     "Ctrl+N New session",
                     "Ctrl+R / F5 Refresh",
-                    "Tab / Shift+Tab Cycle focus (Composer→Sessions→Transcript→Incantations)",
+                    "Tab / Shift+Tab Cycle focus (Composer→Sessions→Transcript→Incantations→Model)",
+                    "Enter/Space     Open the model drop-down when the Model header control has focus",
                     "Ctrl+Enter Send (composer)",
                     "Enter Newline (composer)",
                     "Enter Resume (sessions)",
@@ -1490,6 +1547,69 @@ internal sealed class CommandCenterHost(
                 showFilter: false);
             window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
         });
+    }
+
+    /// <summary>
+    /// Opens the model drop-down, loading the offered models first. The list comes from the API, so
+    /// it reflects the hide list and every provider kind without Command Center knowing about either.
+    /// </summary>
+    private async Task OpenModelPickerAsync(
+        CommandCenterState state,
+        CommandCenterWindow window,
+        IApplication app,
+        CancellationToken cancellationToken)
+    {
+        Result<ModelInfoDto[]> models = await apiClient
+            .GetModelsAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (models.IsFailure)
+        {
+            // The host being down is a first-class state, not a spinner: say so and leave `/model`
+            // working, since it fails the same way and tells the operator the same thing.
+            state.Log.Append(SessionLogEntryKind.Error, models.Error.Message);
+
+            app.Invoke(() => window.ApplyState(state, forceFollowTail: true));
+
+            return;
+        }
+
+        state.ModelChoices = CommandCenterModelPicker.Build(models.Value ?? []);
+        state.ModelFilter = string.Empty;
+        state.Overlay = CommandCenterOverlayKind.ModelPicker;
+        state.FocusRegion = CommandCenterFocusRegion.Overlay;
+
+        app.Invoke(() =>
+        {
+            window.ShowModelPickerOverlay(state);
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);
+        });
+    }
+
+    /// <summary>
+    /// Commits the highlighted model into the same session slot <c>/model &lt;name&gt;</c> sets, so
+    /// the drop-down and the slash command can never disagree about the current model.
+    /// </summary>
+    private static void ApplySelectedModel(
+        CommandCenterState state,
+        CommandCenterWindow window,
+        IApplication app)
+    {
+        string? selected = CommandCenterModelPicker.Resolve(
+            state.FilteredModels,
+            state.SelectedModelIndex);
+
+        if (selected is not null)
+        {
+            state.Model = selected;
+            state.Log.Append(
+                SessionLogEntryKind.Status,
+                $"Model set to {selected} for this session.");
+        }
+
+        CloseOverlayAndFocusInput(state, window, app);
+
+        app.Invoke(() => window.ApplyState(state, forceFollowTail: true));
     }
 
     private void ShowPalette(CommandCenterState state, CommandCenterWindow window, IApplication app)
@@ -1654,7 +1774,8 @@ internal sealed class CommandCenterHost(
         CommandCenterFocusRegion desired = CommandCenterFocusCycle.Next(
             state.FocusRegion,
             forward,
-            window.SidebarVisible);
+            window.SidebarVisible,
+            window.ModelSelectorVisible);
         state.FocusRegion = desired;
         state.FooterHint = null;
         app.Invoke(() =>
@@ -1683,6 +1804,9 @@ internal sealed class CommandCenterHost(
                 break;
             case CommandCenterFocusRegion.Incantations:
                 window.FocusIncantations();
+                break;
+            case CommandCenterFocusRegion.Model:
+                window.FocusModelSelector();
                 break;
             default:
                 window.FocusInput();
@@ -2085,7 +2209,8 @@ internal sealed class CommandCenterHost(
             state.IsStreaming,
             window.ComposerHasText,
             state.Overlay != CommandCenterOverlayKind.None || window.OverlayPane.Visible,
-            chord);
+            chord,
+            state.Overlay);
 
         if (action == CommandCenterAction.None)
         {
@@ -2201,6 +2326,7 @@ internal sealed class CommandCenterHost(
             IsEnd: key == Key.End,
             IsJ: !ctrl && ch is 'j' or 'J',
             IsK: !ctrl && ch is 'k' or 'K',
+            IsSpace: !ctrl && !key.IsAlt && ch is ' ',
             IsBareLetter: !ctrl && !key.IsAlt && isLetter);
     }
 

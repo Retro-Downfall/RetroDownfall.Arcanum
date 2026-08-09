@@ -147,6 +147,18 @@ public sealed class KeyCommands(
 
             }
 
+            // A Familiar has no credential for Arcanum to inventory: its CLI signs in against the
+            // operator's own subscription and Arcanum never reads that store. Listing one here would
+            // invent a derived ARCANUM_PROVIDER_*_API_KEY reference and report it perpetually
+            // missing, sending the operator to `arcanum key provider set` for a key that must not
+            // exist. `arcanum doctor` reports Familiar readiness instead.
+            if (FamiliarProviders.IsFamiliar(provider))
+            {
+
+                continue;
+
+            }
+
             entries.Add(
                 await BuildInferenceProviderEntryAsync(provider, cancellationToken)
                     .ConfigureAwait(false));
@@ -425,9 +437,15 @@ public sealed class KeyCommands(
 
     }
 
+    /// <summary>
+    /// Finds a provider that can actually hold a credential. A Familiar is deliberately invisible
+    /// here so `arcanum key provider set &lt;familiar&gt;` reports an unknown provider rather than
+    /// storing a key nothing will ever read.
+    /// </summary>
     private ProviderSettings? FindProvider(string name) =>
         (settings.Value.Providers ?? []).FirstOrDefault(candidate =>
-            string.Equals(candidate.Name, name.Trim(), StringComparison.OrdinalIgnoreCase));
+            !FamiliarProviders.IsFamiliar(candidate)
+            && string.Equals(candidate.Name, name.Trim(), StringComparison.OrdinalIgnoreCase));
 
     private async Task<CredentialInventoryEntryPayload> BuildMasterEntryAsync(
         CancellationToken cancellationToken)

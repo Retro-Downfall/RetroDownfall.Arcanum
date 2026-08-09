@@ -10,6 +10,7 @@ using Xunit;
 
 namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 
+[Collection("AvaloniaBinding")]
 public sealed class GenericSettingsSectionViewTests
 {
     [Fact]

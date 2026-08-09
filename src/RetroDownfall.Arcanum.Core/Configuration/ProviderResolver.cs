@@ -39,6 +39,30 @@ public static class ProviderResolver
     }
 
     /// <summary>
+    /// The advertised models this provider offers for display — the same set as
+    /// <see cref="EnumerateAdvertisedModels"/> minus anything on the operator's hide list.
+    /// </summary>
+    /// <remarks>
+    /// Listings and pickers read this; resolution reads <see cref="EnumerateAdvertisedModels"/>.
+    /// Keeping the two apart is what makes "hidden is not blocked" true: a hide list is a
+    /// decluttering preference, and Arcanum already has Wards and edition gating for policy.
+    /// </remarks>
+    public static IEnumerable<string> EnumerateVisibleModels(ProviderSettings provider)
+    {
+
+        ArgumentNullException.ThrowIfNull(provider);
+
+        foreach (string model in EnumerateAdvertisedModels(provider))
+        {
+            if (!FamiliarProviders.IsHidden(provider, model))
+            {
+                yield return model;
+            }
+        }
+
+    }
+
+    /// <summary>
     /// Resolves whether <paramref name="modelName"/> declares Scrying (vision) support on any
     /// configured provider's <see cref="ModelEntry.SupportsVision"/>. Capability is declared
     /// exclusively through <see cref="ModelEntry"/>.
@@ -152,7 +176,7 @@ public static class ProviderResolver
                 return true;
             }
 
-            return false;
+            return TryPassThroughToFamiliar(providers, needle, out provider, out resolvedModel);
 
         }
 
@@ -165,15 +189,19 @@ public static class ProviderResolver
                 return true;
             }
 
-            return false;
+            return TryPassThroughToFamiliar(providers, needle, out provider, out resolvedModel);
 
         }
 
-        if (providers.Length > 0)
+        // Nothing was named anywhere, so fall back to the first advertised model in configured
+        // order. Scanning past a provider that advertises nothing matters now that a Familiar row is
+        // legally model-less: stopping at providers[0] would make a leading Familiar hide a default
+        // that a later provider does declare.
+        for (int i = 0; i < providers.Length; i++)
         {
-            foreach (string model in EnumerateAdvertisedModels(providers[0]))
+            foreach (string model in EnumerateAdvertisedModels(providers[i]))
             {
-                provider = providers[0];
+                provider = providers[i];
 
                 resolvedModel = model;
 
@@ -214,6 +242,13 @@ public static class ProviderResolver
         List<(ProviderSettings Provider, string CanonicalModelId)> matches = needle is not null
             ? CollectAllMatchingProviders(providers, needle)
             : CollectFirstProviderDefaultModel(providers);
+
+        if (matches.Count == 0
+            && needle is not null
+            && TryPassThroughToFamiliar(providers, needle, out ProviderSettings? familiar, out string passThroughModel))
+        {
+            matches.Add((familiar!, passThroughModel));
+        }
 
         if (matches.Count == 0)
         {
@@ -269,22 +304,63 @@ public static class ProviderResolver
 
     }
 
+    /// <summary>
+    /// Hands a model name no configured row declares to the first Familiar in configured order, and
+    /// lets the CLI be the authority on whether it exists.
+    /// </summary>
+    /// <remarks>
+    /// This is the point of the Familiar kind: the vendor ships models on its own schedule, and an
+    /// operator paying for a subscription expects a newly released model to work without editing
+    /// <c>arcanum.json</c>. Gating the name against a cached inventory would put that friction back.
+    /// Configured order breaks a tie between two Familiars — the same rule
+    /// <see cref="CollectAllMatchingProviders"/> already applies to duplicate declarations — and an
+    /// operator who wants a different answer declares the model on the row they mean. A wrong guess
+    /// is not silent: the CLI rejects the name and the transport fails closed with its message.
+    /// </remarks>
+    private static bool TryPassThroughToFamiliar(
+        ProviderSettings[] providers,
+        string modelName,
+        out ProviderSettings? provider,
+        out string resolvedModel)
+    {
+
+        for (int i = 0; i < providers.Length; i++)
+        {
+            if (FamiliarProviders.IsFamiliar(providers[i]))
+            {
+                provider = providers[i];
+
+                resolvedModel = modelName;
+
+                return true;
+            }
+        }
+
+        provider = null;
+
+        resolvedModel = string.Empty;
+
+        return false;
+
+    }
+
     private static List<(ProviderSettings Provider, string CanonicalModelId)> CollectFirstProviderDefaultModel(
         ProviderSettings[] providers)
     {
 
         List<(ProviderSettings Provider, string CanonicalModelId)> matches = [];
 
-        if (providers.Length == 0)
+        // First advertised model in configured order — scanning past providers that advertise
+        // nothing, because a Familiar row is legally model-less and must not hide a later default.
+        for (int i = 0; i < providers.Length; i++)
         {
-            return matches;
-        }
+            foreach (string model in EnumerateAdvertisedModels(providers[i]))
+            {
+                matches.Add((providers[i], model));
 
-        foreach (string model in EnumerateAdvertisedModels(providers[0]))
-        {
-            matches.Add((providers[0], model));
+                return matches;
 
-            break;
+            }
 
         }
 

@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Familiars;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.Configuration;
@@ -230,10 +231,17 @@ internal static class ConfigurationEndpoints
                     p.Name,
                     p.Type.ToString(),
                     RedactRequired(p.Endpoint),
-                    EnvironmentCredentialResolver
-                        .GetProviderApiKeyEnvironmentVariableName(p),
-                    p.Models.Select(static m => m.Name).ToArray(),
-                    p.ContextWindowLimit))
+                    // A Familiar signs in through its own CLI, so there is no credential reference
+                    // to report — and reporting a derived one would imply Arcanum holds a key it
+                    // never reads.
+                    FamiliarProviders.IsFamiliar(p)
+                        ? string.Empty
+                        : EnvironmentCredentialResolver.GetProviderApiKeyEnvironmentVariableName(p),
+                    // Offered models only. The hide list itself travels beside them so an operator
+                    // can still see what they hid.
+                    [.. ProviderResolver.EnumerateVisibleModels(p)],
+                    p.ContextWindowLimit,
+                    [.. p.HiddenModels ?? []]))
                 .ToArray();
 
             ApiResponse<ProviderInfoDto[]> response = ApiResponse<ProviderInfoDto[]>.FromResult(
@@ -243,6 +251,57 @@ internal static class ConfigurationEndpoints
             return Results.Ok(response);
         })
         .WithName("GetProviders");
+
+        // Read-only, spends nothing, and is registered on NonBillableSurfaces beside GET /v1/models.
+        // Host-side on purpose: Compendium asks over HTTP rather than growing a second process-spawn
+        // implementation of its own.
+        apiGroup.MapGet("/providers/{name}/familiar-probe", async (
+            string name,
+            ConfigurationWriter writer,
+            IOptionsSnapshot<ArcanumSettings> settings,
+            IFamiliarProbe probe,
+            HttpContext httpContext,
+            CancellationToken cancellationToken) =>
+        {
+            string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+            ArcanumSettings current = ResolveCurrentSettings(writer, settings);
+
+            if (!ProviderResolver.TryResolveProviderByName(current, name, out ProviderSettings? provider)
+                || provider is null)
+            {
+                return Results.Json(
+                    ApiResponse<FamiliarProbeResult>.FromResult(
+                        Result<FamiliarProbeResult>.Failure(
+                            new Error(ErrorCodes.Provider.NotFound, "No provider is configured with that name.")),
+                        traceId),
+                    ArcanumJsonContext.Default.ApiResponseFamiliarProbeResult,
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+
+            if (!FamiliarProviders.IsFamiliar(provider))
+            {
+                return Results.Json(
+                    ApiResponse<FamiliarProbeResult>.FromResult(
+                        Result<FamiliarProbeResult>.Failure(
+                            new Error(
+                                ErrorCodes.Validation.InvalidProviderType,
+                                $"Provider '{provider.Name}' is an {provider.Type} provider. Only ClaudeCodeCli and CodexCli providers have a Familiar to probe.")),
+                        traceId),
+                    ArcanumJsonContext.Default.ApiResponseFamiliarProbeResult,
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            FamiliarProbeResult result = await probe
+                .ProbeAsync(provider, cancellationToken)
+                .ConfigureAwait(false);
+
+            return Results.Ok(
+                ApiResponse<FamiliarProbeResult>.FromResult(
+                    Result<FamiliarProbeResult>.Success(result),
+                    traceId));
+        })
+        .WithName("GetFamiliarProbe");
 
         return apiGroup;
     }

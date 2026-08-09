@@ -3026,6 +3026,21 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Whether a Familiar provider's CLI is installed and signed in. Read-only and non-billable: the
+    /// host asks the CLI for its own status, never for a completion.
+    /// </summary>
+    public Task<Result<FamiliarProbeResult>> GetFamiliarProbeAsync(
+        string providerName,
+        CancellationToken cancellationToken = default) =>
+        SendRequestAsync(
+            HttpMethod.Get,
+            $"api/providers/{Uri.EscapeDataString(providerName)}/familiar-probe",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseFamiliarProbeResult,
+            cancellationToken);
+
     #endregion
 
     #region Spell (The Forge)

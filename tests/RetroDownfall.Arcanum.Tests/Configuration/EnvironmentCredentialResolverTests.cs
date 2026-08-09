@@ -13,9 +13,15 @@ public sealed class EnvironmentCredentialResolverTests : IDisposable
     {
         Assert.Equal(
             [
+                // Command and HiddenModels are Familiar facts: which binary the operator installed,
+                // and which of the vendor's models they would rather not see offered. Both are
+                // deployment/provider facts under the strict inclusion rule (DESIGN §3.4); neither
+                // is or references a secret, because a Familiar has no credential to hold.
+                nameof(ProviderSettings.Command),
                 nameof(ProviderSettings.ContextWindowLimit),
                 nameof(ProviderSettings.CredentialEnvironmentVariable),
                 nameof(ProviderSettings.Endpoint),
+                nameof(ProviderSettings.HiddenModels),
                 nameof(ProviderSettings.Models),
                 nameof(ProviderSettings.Name),
                 nameof(ProviderSettings.Type),

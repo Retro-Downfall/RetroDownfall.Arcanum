@@ -8,6 +8,13 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// <c>GET /v1/models</c> (OpenAI-compatible, enriched with capability fields) so the
 /// two surfaces never drift out of sync.
 /// </summary>
+/// <remarks>
+/// This is also where a Familiar's hide list is applied, and it is applied exactly here so that
+/// every listing surface — <c>/api/models</c>, <c>/v1/models</c>, <c>arcanum model list</c>, the
+/// Command Center drop-down, The Forge's Arsenal — inherits it from one place. Resolution does not
+/// come through here, which is what keeps a hidden model resolvable by explicit name: hiding is a
+/// decluttering preference, not a policy control.
+/// </remarks>
 internal static class ModelInfoBuilder
 {
 
@@ -25,6 +32,13 @@ internal static class ModelInfoBuilder
             {
 
                 if (string.IsNullOrWhiteSpace(model.Name))
+                {
+
+                    continue;
+
+                }
+
+                if (FamiliarProviders.IsHidden(provider, model.Name))
                 {
 
                     continue;

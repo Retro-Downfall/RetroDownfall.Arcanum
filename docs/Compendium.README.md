@@ -73,7 +73,18 @@ The navigation is intentionally limited to:
    inference-audit policy, and buffered-log level.
 4. **Providers & Models** — `DefaultModel`, `FastModel`, provider endpoint and
    credential environment-variable reference, model inventory, vision, context
-   capacity, and factual reasoning capabilities/wire dialect.
+   capacity, and factual reasoning capabilities/wire dialect. A **Familiar** row
+   (`ClaudeCodeCli` / `CodexCli`) hides the endpoint and credential fields —
+   it has neither — and shows a command override, a readiness line with a
+   **Re-probe** button, and the hidden-models list instead.
+
+   Readiness comes from the running host over
+   `GET /api/providers/{name}/familiar-probe`; Compendium does not spawn
+   processes. When the host is not running, the page says so and names
+   `arcanum serve` rather than spinning, and the hidden-models list stays fully
+   editable — nothing about editing depends on the probe. Compendium never
+   offers to sign in: remediation is a command you run yourself, and Arcanum
+   never reads the CLI's credential store.
 5. **Security** — Ward and guardrail policy, unsafe-process acknowledgement,
    metrics authentication, distinct Perception/Spell/Campaign roots, and upload
    and image MIME allowlists.
@@ -151,7 +162,7 @@ service directly and does not implement the wizard's other steps.
 
 ## Complete configuration reference
 
-This is the sole complete documentation reference for `arcanum.json`. All 155 editable paths in
+This is the sole complete documentation reference for `arcanum.json`. All 157 editable paths in
 `SettingDescriptors.All` appear below, and that total is pinned by
 `SettingDescriptorCoverageTests.Editable_descriptor_count_matches_the_documented_total`, so a
 descriptor change updates the code, the test, and this page together.
@@ -190,14 +201,16 @@ secret values use only the dedicated environment references documented below.
 | `defaultModel` | `string?`, `null` | configured exact model name | Default when a request omits a model. |
 | `fastModel` | `string?`, `null` | configured exact model name | Optional model for eligible internal work. |
 | `providers.name` | `string`, `""` | nonblank; unique case-insensitively | Human-readable provider identity. |
-| `providers.type` | enum `"OpenAICompatible"` | `OpenAICompatible` | Provider wire contract; Ollama uses its OpenAI-compatible `/v1` endpoint. |
-| `providers.endpoint` | `string`, `""` | absolute HTTP(S) endpoint | OpenAI-compatible base endpoint. |
-| `providers.credentialEnvironmentVariable` | `string?`, `null` | portable, case-insensitively unique environment name | Exact API-key reference; omission derives `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY`. |
-| `providers.models.name` | `string`, `""` | nonblank; unique within provider | Provider-advertised model ID. A bare string model entry is also accepted. |
+| `providers.type` | enum `"OpenAICompatible"` | `OpenAICompatible`, `ClaudeCodeCli`, `CodexCli` | Provider wire contract. Ollama uses its OpenAI-compatible `/v1` endpoint. The two CLI kinds are **Familiars**: a vendor CLI you already installed and signed in to, invoked on your own subscription. |
+| `providers.endpoint` | `string`, `""` | absolute HTTP(S) endpoint; **rejected** on a Familiar | OpenAI-compatible base endpoint. N/A for a Familiar, which is spawned rather than dialled. |
+| `providers.credentialEnvironmentVariable` | `string?`, `null` | portable, case-insensitively unique environment name; **rejected** on a Familiar | Exact API-key reference; omission derives `ARCANUM_PROVIDER_<NORMALIZED_NAME>_API_KEY`. N/A for a Familiar, which signs in through its own CLI — Arcanum never reads that credential store. |
+| `providers.command` | `string?`, `null` | nonblank when present; Familiar kinds only | Path to (or alternate name for) the Familiar binary. Omit to resolve `claude` or `codex` on `PATH`. |
+| `providers.hiddenModels` | `string[]`, `[]` | nonblank entries, de-duplicated case-insensitively; Familiar kinds only | Model IDs left out of listings and pickers for this provider. Empty — the default — means every model the CLI offers is available, including models released after you set this up. **Hidden is not blocked:** an explicitly named model still resolves, so this is a decluttering preference and not a policy control. An entry naming a model that is not currently offered is retained, not pruned. |
+| `providers.models.name` | `string`, `""` | nonblank; unique within provider | Provider-advertised model ID. A bare string model entry is also accepted. Required for an OpenAI-compatible provider; optional for a Familiar, whose catalogue belongs to the vendor. |
 | `providers.models.supportsVision` | `bool`, `false` | — | Declares image-content support. |
 | `providers.models.reasoning.wireDialect` | enum `"standard"` | `standard`, `openRouter`, `topLevelReasoningBudget`, `anthropicThinking` | Exact request shape; never inferred from names. |
 | `providers.models.reasoning.maxBudgetTokens` | `int?`, `null` | 1–2,097,152 | Optional numeric-budget ceiling; the adapter requires a nonstandard dialect for it and rejects a numeric budget under `standard`. |
-| `providers.contextWindowLimit` | `int`, `8192` | 256–2,097,152 | Factual provider context capacity. |
+| `providers.contextWindowLimit` | `int`, `8192` | 256–2,097,152 | Factual provider context capacity. Set it on a Familiar row too: the default suits neither CLI's models, and read-time compression and the Mana bar both measure against it. |
 
 `providers` defaults to `[]`; a usable configuration supplies at least one
 valid provider and model. A model's optional `reasoning` object defaults to

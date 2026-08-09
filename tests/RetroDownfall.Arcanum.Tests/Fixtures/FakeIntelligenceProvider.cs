@@ -1,3 +1,4 @@
+using System.Threading;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -42,11 +43,25 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
 
     public bool StreamCancellationObserved { get; private set; }
 
-    /// <summary>Number of times <see cref="ExecutePromptAsync"/> has been invoked — lets idempotency-replay tests assert the handler was not re-executed on a cache hit.</summary>
-    public int ExecutePromptCallCount { get; private set; }
+    private int _executePromptCallCount;
+
+    private int _streamPromptCallCount;
+
+    /// <summary>
+    /// Number of times <see cref="ExecutePromptAsync"/> has been invoked — lets idempotency-replay
+    /// tests assert the handler was not re-executed on a cache hit.
+    /// </summary>
+    /// <remarks>
+    /// Incremented with <see cref="Interlocked"/> because batch processing fans out over
+    /// <c>Parallel.ForEachAsync</c> with <c>MaxConcurrentRequestsPerBatch</c> workers. A plain
+    /// <c>++</c> loses updates under that contention, which surfaced as a count one short of the
+    /// request total only when the full suite was loading the machine — the classic
+    /// "unrelated test is flaky" shape.
+    /// </remarks>
+    public int ExecutePromptCallCount => Volatile.Read(ref _executePromptCallCount);
 
     /// <summary>Number of times <see cref="StreamPromptAsync"/> has been invoked — see <see cref="ExecutePromptCallCount"/>.</summary>
-    public int StreamPromptCallCount { get; private set; }
+    public int StreamPromptCallCount => Volatile.Read(ref _streamPromptCallCount);
 
     /// <summary>
     /// When set, <see cref="StreamPromptAsync"/> yields one <see cref="IntelligenceEventType.ToolCall"/>
@@ -74,7 +89,7 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
         InferenceAuditContext? auditContext = null)
     {
 
-        ExecutePromptCallCount++;
+        _ = Interlocked.Increment(ref _executePromptCallCount);
 
         ExecuteEntered?.TrySetResult();
 
@@ -162,7 +177,7 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
         InferenceAuditContext? auditContext = null)
     {
 
-        StreamPromptCallCount++;
+        _ = Interlocked.Increment(ref _streamPromptCallCount);
 
         LastRequest = request;
 

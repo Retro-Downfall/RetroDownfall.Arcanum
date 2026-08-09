@@ -976,7 +976,8 @@ internal sealed class ShellCommandDispatcher(
                 "  Ctrl+O        Sessions (sidebar or picker)",
                 "  Ctrl+N        New session",
                 "  Ctrl+R / F5   Refresh sessions",
-                "  Tab/S-Tab     Cycle focus (Composer→Sessions→Transcript→Incantations)",
+                "  Tab/S-Tab     Cycle focus (Composer→Sessions→Transcript→Incantations→Model)",
+                "  Enter/Space   Open the model drop-down (Model header control)",
                 "  Enter         Newline (composer) / resume selected session",
                 "  Ctrl+Enter    Send (composer)",
                 "  ↑↓ / j k      Move session selection",
@@ -1154,33 +1155,26 @@ internal sealed class ShellCommandDispatcher(
             return ShellDispatchResult.Continue;
         }
 
+        // The listing is used only to echo a provider's canonical casing back. It is deliberately not
+        // a gate: it omits models the operator hid, and a Familiar's catalogue belongs to the vendor
+        // rather than to arcanum.json, so refusing an unlisted name here would break both "hidden is
+        // not blocked" and "a new vendor model works with no configuration edit". The host resolves
+        // the name at turn time and says why if it cannot.
         Result<ModelInfoDto[]> result = await apiClient
             .GetModelsAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        if (result.IsFailure)
-        {
-            state.Log.Append(SessionLogEntryKind.Error, result.Error.Message);
+        ModelInfoDto? listed = result.IsSuccess
+            ? Array.Find(
+                result.Value!,
+                candidate => string.Equals(candidate.Model, model, StringComparison.OrdinalIgnoreCase))
+            : null;
 
-            return ShellDispatchResult.Continue;
-        }
+        string chosen = listed?.Model ?? model.Trim();
 
-        ModelInfoDto? selected = Array.Find(
-            result.Value!,
-            candidate => string.Equals(candidate.Model, model, StringComparison.OrdinalIgnoreCase));
+        state.Model = chosen;
 
-        if (selected is null)
-        {
-            state.Log.Append(
-                SessionLogEntryKind.Error,
-                $"`{model}` is not a configured model. Run `/model` to list the configured models.");
-
-            return ShellDispatchResult.Continue;
-        }
-
-        state.Model = selected.Model;
-
-        state.Log.Append(SessionLogEntryKind.Status, $"Model set to {selected.Model} for this session.");
+        state.Log.Append(SessionLogEntryKind.Status, $"Model set to {chosen} for this session.");
 
         return ShellDispatchResult.Continue;
     }

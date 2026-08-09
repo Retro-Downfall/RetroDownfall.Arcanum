@@ -117,6 +117,21 @@ internal sealed class CommandCenterState
 
     public string SessionFilter { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Models offered by the drop-down, fetched from <c>GET /api/models</c> — which is where the
+    /// operator's hide list is already applied, so nothing hidden reaches this list.
+    /// </summary>
+    public IReadOnlyList<ModelPickerItem> ModelChoices { get; set; } = [];
+
+    /// <summary>Type-ahead text narrowing <see cref="ModelChoices"/>.</summary>
+    public string ModelFilter { get; set; } = string.Empty;
+
+    /// <summary>Row the model drop-down has highlighted, within <see cref="FilteredModels"/>.</summary>
+    public int SelectedModelIndex { get; set; }
+
+    public IReadOnlyList<ModelPickerItem> FilteredModels =>
+        CommandCenterModelPicker.Filter(ModelChoices, ModelFilter);
+
     public Guid? SelectedSessionId { get; set; }
 
     public Guid? SelectedTranscriptEntryId { get; set; }
@@ -211,6 +226,10 @@ internal sealed class CommandCenterState
                     => "↑↓ scroll · PgUp/PgDn · Ctrl+PgUp/PgDn load adjacent page · Home/End · Esc composer · Tab focus · F1 help",
                 CommandCenterFocusRegion.Incantations
                     => "↑↓ scroll Incantations · PgUp/PgDn · Home/End · Esc composer · Tab focus · F1 help",
+                CommandCenterFocusRegion.Model
+                    => "Enter/Space open models · Esc composer · Tab focus · /model <name> also works",
+                CommandCenterFocusRegion.Overlay when Overlay == CommandCenterOverlayKind.ModelPicker
+                    => "↑↓/jk select · Enter use model · type to filter · Esc cancel",
                 _
                     => "Ctrl+Enter send · Enter newline · Ctrl+K commands · Ctrl+O sessions · Ctrl+N new · Ctrl+R refresh · Ctrl+C cancel · Ctrl+Q quit · F1 · Tab",
             };
@@ -390,6 +409,7 @@ internal enum CommandCenterOverlayKind
     DiscardConfirm,
     WardConfirm,
     HumanPrompt,
+    ModelPicker,
 }
 
 internal enum CommandCenterUiUpdateKind
