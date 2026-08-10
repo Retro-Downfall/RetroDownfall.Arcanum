@@ -518,6 +518,189 @@ public sealed class RunCommandTests
 
     }
 
+    /// <summary>
+    /// The prompt is a <c>ZeroOrMore</c> positional, so System.CommandLine binds every remaining
+    /// token to it — a mistyped flag included. <c>arcanum run --dryrun "Rewrite every file under
+    /// src"</c> therefore parsed cleanly, carried <c>--dryrun</c> into the prompt text, and ran a
+    /// live, billed turn with real tool calls precisely when the operator was asking for a preview.
+    /// A dash-led token before the terminator is a command-line error, not prompt text.
+    /// </summary>
+    [Fact]
+
+    public async Task Run_parser_refuses_a_mistyped_option_rather_than_prompting_with_it()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("Rewrite every file under src", null));
+
+        FakeRunExecutionDispatcher execution = new();
+
+        ServiceCollection services = ConfigureRunParserServices(
+            input,
+            execution: execution);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [
+                "run",
+                "--dryrun",
+                "Rewrite every file under src",
+            ]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("--dryrun", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("--dry-run", result.Error, StringComparison.Ordinal);
+
+        Assert.Null(execution.Request);
+
+    }
+
+    /// <summary>
+    /// An unknown flag with no near spelling is refused just the same, and a valid flag standing
+    /// beside it does not launder it into the prompt.
+    /// </summary>
+    [Fact]
+
+    public async Task Run_parser_refuses_an_unknown_option_beside_a_valid_one()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("hi", null));
+
+        FakeRunExecutionDispatcher execution = new();
+
+        ServiceCollection services = ConfigureRunParserServices(
+            input,
+            execution: execution);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [
+                "run",
+                "--bogusflag",
+                "--dry-run",
+                "hi",
+            ]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("--bogusflag", result.Error, StringComparison.Ordinal);
+
+        Assert.Null(execution.Request);
+
+    }
+
+    /// <summary>
+    /// Automation reads stdout, so the refusal owes it the same single typed document every other
+    /// invalid command line writes.
+    /// </summary>
+    [Fact]
+
+    public async Task Run_parser_writes_typed_json_when_it_refuses_a_mistyped_option()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("hi", null));
+
+        FakeRunExecutionDispatcher execution = new();
+
+        ServiceCollection services = ConfigureRunParserServices(
+            input,
+            execution: execution);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            ["--json", "run", "--dryrun", "hi"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        CliErrorPayload? error = JsonSerializer.Deserialize(
+            result.Output,
+            CliJsonContext.Default.CliErrorPayload);
+
+        Assert.NotNull(error);
+
+        Assert.Equal(result.ExitCode, error.ExitCode);
+
+        Assert.Contains("--dryrun", error.Error, StringComparison.Ordinal);
+
+        Assert.Null(execution.Request);
+
+    }
+
+    /// <summary>
+    /// The terminator stays the escape hatch, including when the very first word of the prompt is
+    /// dash-led — otherwise refusing mistyped flags would make that prompt untypeable.
+    /// </summary>
+    [Fact]
+
+    public async Task Run_parser_accepts_dash_led_prompt_text_after_the_option_terminator()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("--dryrun is the typo", null));
+
+        FakeRunExecutionDispatcher execution = new();
+
+        ServiceCollection services = ConfigureRunParserServices(
+            input,
+            execution: execution);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [
+                "run",
+                "--",
+                "--dryrun",
+                "is",
+                "the",
+                "typo",
+            ]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Equal("--dryrun is the typo", input.PositionalInstruction);
+
+        Assert.NotNull(execution.Request);
+
+    }
+
+    /// <summary>
+    /// A prompt that opens with a negative number is ordinary text, not an option spelling, and
+    /// must not need the terminator.
+    /// </summary>
+    [Fact]
+
+    public async Task Run_parser_accepts_a_prompt_that_opens_with_a_negative_number()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("-40 degrees in Fahrenheit?", null));
+
+        FakeRunExecutionDispatcher execution = new();
+
+        ServiceCollection services = ConfigureRunParserServices(
+            input,
+            execution: execution);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [
+                "run",
+                "-40",
+                "degrees",
+                "in",
+                "Fahrenheit?",
+            ]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.NotNull(execution.Request);
+
+    }
+
     [Fact]
 
     public async Task Run_parser_stop_option_does_not_consume_the_positional_prompt()

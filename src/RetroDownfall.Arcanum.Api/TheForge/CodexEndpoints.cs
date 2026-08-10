@@ -10,12 +10,22 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 namespace RetroDownfall.Arcanum.Api.TheForge;
 
 internal static class CodexEndpoints
 {
+
+    /// <summary>
+    /// A campaign root is frequently an untrusted repository the operator cloned, and a repository can
+    /// ship <c>CODEX.md</c> as a symbolic link. Both the read and the write follow that link, so the
+    /// codex path is contained against its own root before either touches the file.
+    /// </summary>
+    private static readonly Error CodexPathNotContained = new(
+        "Codex.PathNotContained",
+        "The CODEX.md path resolves outside its campaign or Grimoire directory.");
 
     public static RouteGroupBuilder MapCodexEndpoints(this RouteGroupBuilder apiGroup)
     {
@@ -38,10 +48,14 @@ internal static class CodexEndpoints
                         statusCode: StatusCodes.Status404NotFound);
                 }
 
-                CodexContentDto dto = await ReadCodexDtoAsync(Path.Combine(campaign.Path, "CODEX.md"), settings, ctx.RequestAborted)
+                Result<CodexContentDto> codex = await ReadCodexDtoAsync(
+                    campaign.Path,
+                    Path.Combine(campaign.Path, "CODEX.md"),
+                    settings,
+                    ctx.RequestAborted)
                     .ConfigureAwait(false);
 
-                return Results.Ok(ApiResponse<CodexContentDto>.FromResult(Result<CodexContentDto>.Success(dto), traceId));
+                return ToCodexResponse(codex, traceId);
             })
         .WithName("GetCampaignCodex");
 
@@ -80,6 +94,7 @@ internal static class CodexEndpoints
                 string codexPath = Path.Combine(campaign.Path, "CODEX.md");
 
                 IResult? writeResult = await WriteCodexAsync(
+                    campaign.Path,
                     codexPath,
                     body.Content,
                     settings,
@@ -92,9 +107,14 @@ internal static class CodexEndpoints
                     return writeResult;
                 }
 
-                CodexContentDto dto = await ReadCodexDtoAsync(codexPath, settings, ctx.RequestAborted).ConfigureAwait(false);
+                Result<CodexContentDto> codex = await ReadCodexDtoAsync(
+                    campaign.Path,
+                    codexPath,
+                    settings,
+                    ctx.RequestAborted)
+                    .ConfigureAwait(false);
 
-                return Results.Ok(ApiResponse<CodexContentDto>.FromResult(Result<CodexContentDto>.Success(dto), traceId));
+                return ToCodexResponse(codex, traceId);
             })
         .WithName("PutCampaignCodex")
         .WithLargeRequestBody();
@@ -136,9 +156,14 @@ internal static class CodexEndpoints
 
                 string globalPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "CODEX.md");
 
-                CodexContentDto dto = await ReadCodexDtoAsync(globalPath, settings, ctx.RequestAborted).ConfigureAwait(false);
+                Result<CodexContentDto> codex = await ReadCodexDtoAsync(
+                    ArcanumPaths.GrimoireDirectory,
+                    globalPath,
+                    settings,
+                    ctx.RequestAborted)
+                    .ConfigureAwait(false);
 
-                return Results.Ok(ApiResponse<CodexContentDto>.FromResult(Result<CodexContentDto>.Success(dto), traceId));
+                return ToCodexResponse(codex, traceId);
             })
         .WithName("GetGlobalCodex");
 
@@ -158,7 +183,13 @@ internal static class CodexEndpoints
 
                 string globalPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "CODEX.md");
 
-                IResult? writeResult = await WriteCodexAsync(globalPath, body.Content, settings, traceId, ctx.RequestAborted)
+                IResult? writeResult = await WriteCodexAsync(
+                    ArcanumPaths.GrimoireDirectory,
+                    globalPath,
+                    body.Content,
+                    settings,
+                    traceId,
+                    ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (writeResult is not null)
@@ -166,9 +197,14 @@ internal static class CodexEndpoints
                     return writeResult;
                 }
 
-                CodexContentDto dto = await ReadCodexDtoAsync(globalPath, settings, ctx.RequestAborted).ConfigureAwait(false);
+                Result<CodexContentDto> codex = await ReadCodexDtoAsync(
+                    ArcanumPaths.GrimoireDirectory,
+                    globalPath,
+                    settings,
+                    ctx.RequestAborted)
+                    .ConfigureAwait(false);
 
-                return Results.Ok(ApiResponse<CodexContentDto>.FromResult(Result<CodexContentDto>.Success(dto), traceId));
+                return ToCodexResponse(codex, traceId);
             })
         .WithName("PutGlobalCodex")
         .WithLargeRequestBody();
@@ -191,12 +227,58 @@ internal static class CodexEndpoints
         return apiGroup;
     }
 
-    private static async Task<CodexContentDto> ReadCodexDtoAsync(
+    private static IResult ToCodexResponse(Result<CodexContentDto> codex, string traceId)
+    {
+        if (codex.IsFailure)
+        {
+            return Results.Json(
+                ApiResponse<CodexContentDto>.FromResult(codex, traceId),
+                ArcanumJsonContext.Default.ApiResponseCodexContentDto,
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        return Results.Ok(ApiResponse<CodexContentDto>.FromResult(codex, traceId));
+    }
+
+    /// <summary>
+    /// Fails closed unless <paramref name="codexFullPath"/> still resolves under
+    /// <paramref name="containmentRoot"/> once every existing component — including a <c>CODEX.md</c>
+    /// symbolic link at the leaf — has been resolved. <see cref="Path.GetFullPath(string)"/> is purely
+    /// lexical and never observes the link.
+    /// </summary>
+    private static bool IsCodexPathContained(string containmentRoot, string codexFullPath)
+    {
+        if (string.IsNullOrWhiteSpace(containmentRoot))
+        {
+            return false;
+        }
+
+        string normalizedRoot;
+
+        try
+        {
+            normalizedRoot = Path.GetFullPath(containmentRoot.Trim());
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            return false;
+        }
+
+        return WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(normalizedRoot, codexFullPath, out _);
+    }
+
+    internal static async Task<Result<CodexContentDto>> ReadCodexDtoAsync(
+        string containmentRoot,
         string path,
         IOptionsSnapshot<ArcanumSettings> settings,
         CancellationToken cancellationToken)
     {
         string fullPath = Path.GetFullPath(path);
+
+        if (!IsCodexPathContained(containmentRoot, fullPath))
+        {
+            return Result<CodexContentDto>.Failure(CodexPathNotContained);
+        }
 
         long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(settings.Value);
 
@@ -204,10 +286,11 @@ internal static class CodexEndpoints
 
         bool exists = File.Exists(fullPath);
 
-        return new CodexContentDto(fullPath, content ?? string.Empty, exists);
+        return Result<CodexContentDto>.Success(new CodexContentDto(fullPath, content ?? string.Empty, exists));
     }
 
-    private static async Task<IResult?> WriteCodexAsync(
+    internal static async Task<IResult?> WriteCodexAsync(
+        string containmentRoot,
         string path,
         string content,
         IOptionsSnapshot<ArcanumSettings> settings,
@@ -237,6 +320,16 @@ internal static class CodexEndpoints
         if (!string.IsNullOrWhiteSpace(parent))
         {
             Directory.CreateDirectory(parent);
+        }
+
+        if (!IsCodexPathContained(containmentRoot, fullPath))
+        {
+            return Results.Json(
+                ApiResponse<CodexContentDto>.FromResult(
+                    Result<CodexContentDto>.Failure(CodexPathNotContained),
+                    traceId),
+                ArcanumJsonContext.Default.ApiResponseCodexContentDto,
+                statusCode: StatusCodes.Status400BadRequest);
         }
 
         await File.WriteAllTextAsync(fullPath, content, cancellationToken).ConfigureAwait(false);

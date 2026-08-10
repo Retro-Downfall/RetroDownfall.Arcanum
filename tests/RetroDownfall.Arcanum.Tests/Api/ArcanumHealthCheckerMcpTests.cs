@@ -37,6 +37,89 @@ public sealed class ArcanumHealthCheckerMcpTests
     }
 
     [Fact]
+    public async Task BuildReportAsync_on_demand_mcp_server_stopped_is_healthy()
+    {
+
+        // alwaysOn: false servers are deliberately never started at bootstrap (DESIGN §1800), so a
+        // correctly configured on-demand server sitting in Stopped must not drag health down.
+        ArcanumHealthChecker checker = new(
+            new ReadyGrimoire(),
+            new AlwaysOkLiveness(),
+            new StubMcpManager(
+            [
+                Server("lazy", alwaysOn: false, McpServerState.Stopped),
+            ]),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            new WeaveIndexAvailability(),
+            new AlwaysHealthyTracker());
+
+        HealthReportDto report = await checker.BuildReportAsync(CancellationToken.None);
+
+        HealthComponentDto mcp = Assert.Single(report.Components, static c => c.Name == "MCP");
+
+        Assert.Equal(HealthStatus.Healthy, mcp.Status);
+
+        // Overall must not be Unhealthy: HealthEndpoints maps Unhealthy to 503, so an on-demand
+        // server would otherwise make readiness probes treat the host as dead forever.
+        Assert.NotEqual(HealthStatus.Unhealthy, report.Status);
+
+        Assert.Contains("on-demand", mcp.Detail, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task BuildReportAsync_mixed_mcp_scope_counts_always_on_only()
+    {
+
+        ArcanumHealthChecker checker = new(
+            new ReadyGrimoire(),
+            new AlwaysOkLiveness(),
+            new StubMcpManager(
+            [
+                Server("eager", alwaysOn: true, McpServerState.Running),
+                Server("lazy", alwaysOn: false, McpServerState.Stopped),
+            ]),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            new WeaveIndexAvailability(),
+            new AlwaysHealthyTracker());
+
+        HealthReportDto report = await checker.BuildReportAsync(CancellationToken.None);
+
+        HealthComponentDto mcp = Assert.Single(report.Components, static c => c.Name == "MCP");
+
+        Assert.Equal(HealthStatus.Healthy, mcp.Status);
+
+        Assert.Contains("1/1 always-on running", mcp.Detail, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task BuildReportAsync_failed_always_on_mcp_server_is_unhealthy_despite_on_demand_peers()
+    {
+
+        ArcanumHealthChecker checker = new(
+            new ReadyGrimoire(),
+            new AlwaysOkLiveness(),
+            new StubMcpManager(
+            [
+                Server("eager", alwaysOn: true, McpServerState.Error, "boom"),
+                Server("lazy", alwaysOn: false, McpServerState.Stopped),
+            ]),
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
+            new WeaveIndexAvailability(),
+            new AlwaysHealthyTracker());
+
+        HealthReportDto report = await checker.BuildReportAsync(CancellationToken.None);
+
+        HealthComponentDto mcp = Assert.Single(report.Components, static c => c.Name == "MCP");
+
+        Assert.Equal(HealthStatus.Unhealthy, mcp.Status);
+
+        Assert.Contains("eager: boom", mcp.Detail, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public async Task BuildReportAsync_includes_tool_child_sandbox_component()
     {
 
@@ -95,6 +178,24 @@ public sealed class ArcanumHealthCheckerMcpTests
             workspaceCheck.Detail,
             StringComparison.Ordinal);
     }
+
+    private static McpServerInfo Server(
+        string name,
+        bool alwaysOn,
+        McpServerState state,
+        string? errorMessage = null) =>
+        new(
+            name,
+            null,
+            McpServerTransport.Stdio,
+            alwaysOn,
+            "noop",
+            [],
+            null,
+            state,
+            errorMessage,
+            [],
+            null);
 
     private sealed class ReadyGrimoire : IGrimoireDbReadiness
     {
@@ -183,6 +284,51 @@ public sealed class ArcanumHealthCheckerMcpTests
                     [],
                     null),
             ]);
+
+        public Task InitializeAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task StopAllAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<Result> StartAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<Result> StopAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<Result> RestartAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<McpServerInfo?> GetStatusAsync(string name, string? workingDirectory, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<IReadOnlyList<Microsoft.Extensions.AI.AITool>> GetAvailableToolsAsync(string? workingDirectory, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<Microsoft.Extensions.AI.AIFunction?> GetToolAsync(
+            string serverName,
+            string toolName,
+            string? workingDirectory,
+            CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task<List<McpServerStatusDto>> GetServerStatusesAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+        public Task ReloadAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<Result> TrustWorkspaceAsync(string workingDirectory, CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
+
+    }
+
+    private sealed class StubMcpManager(McpServerInfo[] servers) : IMcpConnectionManager
+    {
+
+        public Task<McpServerInfo[]> GetAllStatusesAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(servers);
 
         public Task InitializeAsync(CancellationToken cancellationToken = default) =>
             Task.CompletedTask;

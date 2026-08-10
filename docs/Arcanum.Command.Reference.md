@@ -17,7 +17,11 @@ credential write, an irreversible deletion, an OS-service registration — says 
 of appearing to have been forgotten.
 
 Use the standard `--` end-of-options marker before positional text that begins with a hyphen; for
-example, `arcanum run -- --explain-this` treats `--explain-this` as the prompt.
+example, `arcanum run -- --explain-this` treats `--explain-this` as the prompt. Without it, an
+option-shaped word in the free-text prompt of `run` or `context inspect|tools|sources|cost` is a
+command-line error (exit 2) rather than prompt text — a mistyped `--dry-run` must not quietly
+become a live turn. A word that merely starts with a digit after the dash, such as `-40 degrees in
+Fahrenheit?`, is ordinary prompt text and needs no marker.
 
 Options marked repeatable may be supplied more than once. System.CommandLine response-file
 expansion is disabled: an `@filename` value is application syntax only where this reference says
@@ -1440,6 +1444,9 @@ Default targets, all under the operator's own home directory:
 | zsh | `~/.zfunc/_arcanum` |
 | fish | `~/.config/fish/completions/arcanum.fish` |
 | powershell | `~/.config/powershell/arcanum.completion.ps1` |
+
+The fish script gates each path on `test "$(__arcanum_path)" = "<path>"`, so it needs fish 3.4 or
+newer — that is the release where `$(…)` substitutes inside double quotes.
 
 **Dynamic completion.** Where a symbol names a live resource — models, providers, Campaigns,
 Workspaces, Sessions, Spells, Prompts, Apprentices, and visible MCP servers — the generated script

@@ -465,9 +465,15 @@ internal static class CliCompletionScriptWriter
         foreach (CompletionNode node in Flatten(map))
         {
 
+            // fish substitutes a command only outside double quotes or through the `$(…)` form
+            // (3.4+). Written as `test "(__arcanum_path)" = "…"` the left side is the literal text
+            // `(__arcanum_path)`, so every condition below the root is false and the installed
+            // script silently offers nothing. Quoting is not optional either: a path is a
+            // multi-word string, and an unquoted substitution of an empty path leaves `test` with
+            // no left operand at all.
             string condition = node.Path.Length == 0
                 ? "test -z (__arcanum_path)"
-                : $"test \"(__arcanum_path)\" = \"{node.Path}\"";
+                : $"test \"$(__arcanum_path)\" = \"{node.Path}\"";
 
             foreach (string child in node.Children)
             {

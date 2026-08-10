@@ -80,4 +80,103 @@ public sealed class MacOsDescendantSupervisorTests
 
     }
 
+    /// <summary>
+    /// Disposal releases the kqueue descriptor and the unmanaged kevent buffer. The monitor loop
+    /// hands that same buffer to <c>kevent(2)</c> on every tick, so the kernel writes into it after
+    /// the free unless disposal first proves the loop has stopped. The runner always calls
+    /// <c>StopKillAndVerifyAsync</c> before <c>DisposeAsync</c>, which trips the <c>_stopped</c>
+    /// short-circuit and leaves disposal with no wait at all — its own bounded wait is best effort
+    /// and is skipped entirely on that path. Disposal must therefore wait for the loop itself.
+    /// </summary>
+    [SkippableFact]
+    public async Task Disposal_waits_for_an_in_flight_monitor_tick_before_releasing_the_kqueue_buffer()
+    {
+
+        Skip.IfNot(OperatingSystem.IsMacOS(), "The descendant supervisor is a macOS primitive.");
+
+        using System.Diagnostics.Process child = new();
+
+        child.StartInfo = new ProcessStartInfo("/bin/sleep", "30")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        _ = child.Start();
+
+        TaskCompletionSource parked = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        MacOsDescendantSupervisor? supervisor = MacOsDescendantSupervisor.TryStart(
+            child.Id,
+            () =>
+            {
+
+                _ = parked.TrySetResult();
+
+                return release.Task;
+
+            });
+
+        Skip.If(supervisor is null, "The supervisor could not attach to the child on this host.");
+
+        Task? disposal = null;
+
+        try
+        {
+
+            // The loop is now inside a tick, exactly where it would be when a loaded host delays its
+            // resumption past the bounded wait.
+            await parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            // Production order: the runner stops the supervisor first, then disposes it.
+            _ = await supervisor!.StopKillAndVerifyAsync(
+                TimeSpan.FromMilliseconds(50));
+
+            disposal = supervisor.DisposeAsync().AsTask();
+
+            Task first = await Task.WhenAny(
+                disposal,
+                Task.Delay(TimeSpan.FromSeconds(2)));
+
+            Assert.False(
+                ReferenceEquals(first, disposal),
+                "DisposeAsync returned while a monitor tick was still in flight. It then frees the "
+                + "kevent buffer and closes the kqueue, so the next kevent(2) call in that tick "
+                + "writes kernel records into freed heap.");
+
+        }
+        finally
+        {
+
+            _ = release.TrySetResult();
+
+            if (disposal is not null)
+            {
+
+                await disposal.WaitAsync(TimeSpan.FromSeconds(30));
+
+            }
+            else
+            {
+
+                await supervisor!.DisposeAsync();
+
+            }
+
+            if (!child.HasExited)
+            {
+
+                child.Kill(entireProcessTree: true);
+
+            }
+
+        }
+
+    }
+
 }

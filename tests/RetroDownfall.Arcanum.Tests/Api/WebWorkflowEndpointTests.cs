@@ -634,6 +634,76 @@ public sealed class WebWorkflowEndpointTests
 
     }
 
+    /// <summary>
+    /// The NDJSON research stream must always end on a frame. Once the first frame is flushed the
+    /// response has started, so <c>ArcanumExceptionHandler</c> can no longer produce an envelope and
+    /// an escaping exception aborts the chunked body — the caller sees a stream that simply stops,
+    /// after the billable search and synthesis passes have already been paid for.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_orchestration_failure_ends_the_stream_with_a_sanitized_error_frame()
+
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new() { ThrowOnSearchCall = 2 };
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            intelligence);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "What changed?",
+
+                    SourceTarget = 2,
+
+                    TokenBudget = 1_200,
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string ndjson = await response.Content.ReadAsStringAsync();
+
+        string[] lines = ndjson.Split(
+            '\n',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        WebResearchStreamFrame? terminal = JsonSerializer.Deserialize(
+            lines[^1],
+            ArcanumJsonContext.Default.WebResearchStreamFrame);
+
+        Assert.Equal(WebResearchStreamFrameType.Error, terminal?.Type);
+
+        // Sanitized: the operator gets a stable public message, never the exception's own text.
+        Assert.DoesNotContain(
+            "citation index exploded",
+            ndjson,
+            StringComparison.OrdinalIgnoreCase);
+
+    }
+
     [SkippableFact]
 
     public async Task Research_resolves_campaign_only_context_before_search_and_synthesis()
@@ -806,6 +876,9 @@ public sealed class WebWorkflowEndpointTests
 
         public int ChangingCitationRounds { get; init; }
 
+        /// <summary>1-based search call that throws instead of returning, or 0 to never throw.</summary>
+        public int ThrowOnSearchCall { get; init; }
+
         public int SearchCalls { get; private set; }
 
         public int ReadCalls { get; private set; }
@@ -827,6 +900,13 @@ public sealed class WebWorkflowEndpointTests
             SearchCalls++;
 
             LastSearchOptions = options;
+
+            if (ThrowOnSearchCall == SearchCalls)
+            {
+
+                throw new InvalidOperationException("citation index exploded");
+
+            }
 
             int citationNumber = ChangingCitationRounds > 0
                 ? Math.Min(SearchCalls, ChangingCitationRounds)

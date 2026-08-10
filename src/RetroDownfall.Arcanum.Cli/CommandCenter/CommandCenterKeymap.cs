@@ -42,6 +42,8 @@ internal enum CommandCenterAction
     LoadOlderSessionPage,
     LoadNewerSessionPage,
     ResumeSelectedSession,
+    PaletteSelectUp,
+    PaletteSelectDown,
     ExecutePaletteItem,
     ConfirmPending,
     ScrollTranscriptUp,
@@ -238,14 +240,32 @@ internal static class CommandCenterKeymap
                 }
             }
 
-            if (chord.IsUp || (chord.IsBareLetter && chord.IsK))
+            if (overlayKind == CommandCenterOverlayKind.CommandPalette)
             {
-                return CommandCenterAction.SessionSelectUp;
+                if (chord.IsUp || (chord.IsBareLetter && chord.IsK))
+                {
+                    return CommandCenterAction.PaletteSelectUp;
+                }
+
+                if (chord.IsDown || (chord.IsBareLetter && chord.IsJ))
+                {
+                    return CommandCenterAction.PaletteSelectDown;
+                }
             }
 
-            if (chord.IsDown || (chord.IsBareLetter && chord.IsJ))
+            // Only the sessions picker lists sessions. Every other overlay leaves the session
+            // selection alone rather than clamping its own movement to the sessions list.
+            if (overlayKind is CommandCenterOverlayKind.SessionPicker or CommandCenterOverlayKind.None)
             {
-                return CommandCenterAction.SessionSelectDown;
+                if (chord.IsUp || (chord.IsBareLetter && chord.IsK))
+                {
+                    return CommandCenterAction.SessionSelectUp;
+                }
+
+                if (chord.IsDown || (chord.IsBareLetter && chord.IsJ))
+                {
+                    return CommandCenterAction.SessionSelectDown;
+                }
             }
 
             if (chord.IsEnter)

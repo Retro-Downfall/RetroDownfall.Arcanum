@@ -30,7 +30,10 @@ public sealed record SanctumConfig
         // List<string> and mutate the sandbox allow-list after construction.
         get => _allowedPaths.AsReadOnly();
 
-        init => _allowedPaths = new List<string>(value);
+        // A null value is not an error: System.Text.Json's generated object-initializer creator
+        // assigns every init-only member on each deserialization, passing null for members the
+        // payload omits. Degrade to the empty (most restrictive) allow-list rather than throwing.
+        init => _allowedPaths = value is null ? [] : new List<string>(value);
 
     }
 
@@ -43,7 +46,7 @@ public sealed record SanctumConfig
 
         get => _allowedDomains.AsReadOnly();
 
-        init => _allowedDomains = new List<string>(value);
+        init => _allowedDomains = value is null ? [] : new List<string>(value);
 
     }
 
@@ -56,7 +59,7 @@ public sealed record SanctumConfig
 
         get => _disabledTools.AsReadOnly();
 
-        init => _disabledTools = new List<string>(value);
+        init => _disabledTools = value is null ? [] : new List<string>(value);
 
     }
 

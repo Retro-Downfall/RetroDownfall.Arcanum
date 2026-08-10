@@ -364,6 +364,24 @@ internal sealed class WorkspaceIndexingService(
 
                     logger.LogError(ex, "Workspace Indexing tick failed; continuing.");
 
+                    // nextReconciliation is only stamped after the reconciliation loop completes, so a
+                    // tick that throws (e.g. a locked or corrupt Grimoire) leaves the due time in the
+                    // past and the next iteration would reconcile again immediately. Back off before
+                    // retrying — otherwise a persistent failure spins, flooding logs and burning CPU
+                    // until the underlying problem is fixed. Mirrors EntryWeavingService.
+                    try
+                    {
+
+                        await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
+
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+
+                        break;
+
+                    }
+
                 }
 
             }

@@ -14,6 +14,7 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
     private readonly object _gate = new();
     private readonly HashSet<ProcessIdentity> _tracked = [];
     private readonly CancellationTokenSource _monitorCts = new();
+    private readonly Func<Task>? _monitorTickHold;
     private readonly Task _monitorTask;
     private long _fullScanCount;
     private long _monitorTickCount;
@@ -23,18 +24,26 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         int rootPid,
         ProcessIdentity rootIdentity,
         int kernelQueue,
-        IntPtr eventBuffer)
+        IntPtr eventBuffer,
+        Func<Task>? monitorTickHold)
     {
         _rootPid = rootPid;
         _rootIdentity = rootIdentity;
         _kernelQueue = kernelQueue;
         _eventBuffer = eventBuffer;
+        _monitorTickHold = monitorTickHold;
         _tracked.Add(rootIdentity);
         _monitorTask = MonitorAsync();
     }
 
+    /// <param name="monitorTickHold">
+    /// Always <c>null</c> in production. A test supplies it to park the monitor loop inside a tick
+    /// and prove that disposal waits for the loop to finish before releasing the kqueue buffer; the
+    /// window is a scheduling race that no wall-clock test could reproduce reliably.
+    /// </param>
     internal static MacOsDescendantSupervisor? TryStart(
-        int rootPid)
+        int rootPid,
+        Func<Task>? monitorTickHold = null)
     {
         if (!OperatingSystem.IsMacOS()
             || !TryReadProcess(rootPid, out ProcessSnapshot root))
@@ -89,7 +98,8 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                 rootPid,
                 root.Identity,
                 queue,
-                events);
+                events,
+                monitorTickHold);
         }
         catch
         {
@@ -197,6 +207,21 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
         _ = await StopKillAndVerifyAsync(
                 TimeSpan.FromSeconds(2))
             .ConfigureAwait(false);
+
+        // The monitor loop hands _eventBuffer and _kernelQueue to kevent(2) on every tick, so both
+        // must outlive the loop: freeing them first lets the kernel write records into freed heap.
+        // StopKillAndVerifyAsync's own wait cannot stand in for this — it is bounded and swallows
+        // its timeout, and the runner's earlier call has already set _stopped, so the call above
+        // short-circuits and waits for nothing. The loop is cancelled and every syscall it makes is
+        // bounded, so waiting for it to actually finish terminates.
+        try
+        {
+            await _monitorTask.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+        }
+
         _monitorCts.Dispose();
         if (_eventBuffer != IntPtr.Zero)
         {
@@ -239,6 +264,11 @@ internal sealed partial class MacOsDescendantSupervisor : IAsyncDisposable
                 // Scan cost is therefore load-bearing for the containment boundary, not a safety net;
                 // reduce it by making the scan itself cheaper, never by scanning less often.
                 DiscoverDescendants();
+
+                if (_monitorTickHold is not null)
+                {
+                    await _monitorTickHold().ConfigureAwait(false);
+                }
 
                 await Task.Delay(
                         PollInterval,

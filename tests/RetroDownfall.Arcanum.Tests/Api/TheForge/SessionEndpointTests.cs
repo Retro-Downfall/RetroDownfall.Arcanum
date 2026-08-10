@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -16,6 +17,7 @@ using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -214,6 +216,54 @@ public sealed class SessionEndpointTests
             Assert.Equal(ErrorCodes.Session.EntryNotFound, body.Error?.Code);
 
         }
+
+    }
+
+    [SkippableFact]
+    public async Task GetStream_ReplayFailure_ReleasesTheSessionEventHubSubscription()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        factory.ServiceOverrides = services =>
+        {
+            services.RemoveAll<ISessionRepository>();
+
+            services.AddScoped<ISessionRepository, ReplayFailingSessionRepository>();
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = ReplayFailingSessionRepository.SessionId;
+
+        try
+        {
+
+            using HttpResponseMessage response = await client.GetAsync(
+                $"/api/sessions/{sessionId:D}/stream",
+                HttpCompletionOption.ResponseContentRead);
+
+            Assert.NotEqual(HttpStatusCode.NotFound, response.StatusCode);
+
+        }
+        catch (Exception)
+        {
+            // The replay fault may surface as a transport failure rather than a status code; either
+            // way the endpoint has finished and the pump subscription must be gone.
+        }
+
+        SessionEventHub hub = factory.Services.GetRequiredService<SessionEventHub>();
+
+        for (int attempt = 0; attempt < 100 && hub.GetSubscriberCount(sessionId) > 0; attempt++)
+        {
+
+            await Task.Delay(50);
+
+        }
+
+        Assert.Equal(0, hub.GetSubscriberCount(sessionId));
 
     }
 
@@ -1370,6 +1420,69 @@ public sealed class SessionEndpointTests
             .Select(entry => entry.Id)
 
             .ToArrayAsync();
+
+    }
+
+    /// <summary>
+    /// A session repository whose Grimoire replay read faults. Everything the stream endpoint needs
+    /// before the replay succeeds, so the fault lands squarely inside the replay region of
+    /// <c>GET /api/sessions/{id}/stream</c>.
+    /// </summary>
+    private sealed class ReplayFailingSessionRepository : ISessionRepository
+    {
+
+        public static readonly Guid SessionId = Guid.Parse("6f1b7d4c-5e4a-4a1b-9f2d-8c7b6a5d4e3f");
+
+        public Task<Session?> GetByIdAsync(Guid id, CancellationToken ct) =>
+            Task.FromResult<Session?>(
+                id == SessionId
+                    ? new Session { Id = SessionId, Title = "replay-failure" }
+                    : null);
+
+        public Task<List<Entry>> GetEntriesAscendingAsync(Guid sessionId, int takeLast, CancellationToken ct = default) =>
+            throw new InvalidOperationException("Grimoire replay read failed.");
+
+        public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<Result<SessionExportResult>> ExportAsync(Guid id, SessionExportFormat format, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<Result<Entry>> AddEntryAsync(Guid sessionId, Entry entry, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<Result<Session>> ForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<List<Entry>> GetEntriesAfterAsync(Guid sessionId, long afterSequence, int limit, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<Entry?> GetEntryAsync(Guid sessionId, Guid entryId, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<List<Entry>> GetEntriesAsync(
+            Guid sessionId,
+            int offset = 0,
+            int limit = 100,
+            DateTimeOffset? beforeCreatedAt = null,
+            Guid? beforeId = null,
+            CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> GetEntryCountAsync(Guid sessionId, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task UpdateSessionAsync(Session session, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task ArchiveAsync(Guid id, CancellationToken ct) =>
+            throw new NotSupportedException();
 
     }
 

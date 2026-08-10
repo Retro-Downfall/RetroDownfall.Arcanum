@@ -505,6 +505,38 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ExecuteAsync_ReconciliationThrowsRepeatedly_BacksOffInsteadOfTightLooping()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("spin.txt", "the failing reconciliation never gets this far");
+
+        FailingScopeFactory scopes = new();
+
+        WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, scopeFactory: scopes);
+
+        service.RegisterWorkspace(_workspace.Root);
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+
+        await hosted.StopAsync(CancellationToken.None);
+
+        // A Grimoire failure raised outside IndexWorkspaceAsync's per-file try/catch (opening the
+        // scope, the one-query FileLastWriteTime load, or orphaned-chunk cleanup) unwinds the whole
+        // tick before it can stamp the next reconciliation time, so without a backoff the loop
+        // re-reconciles as fast as the CPU allows — thousands of attempts inside 300ms.
+        Assert.True(
+            scopes.ScopeCount <= 2,
+            $"Expected at most 2 reconciliation attempts within 300ms given a 1s backoff after failure; got {scopes.ScopeCount}.");
+
+    }
+
+    [SkippableFact]
     public void RegisterWorkspace_IsThreadSafe_UnderConcurrentCalls()
     {
 
@@ -932,12 +964,13 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         FakeWeaveService weave,
         out EmbeddingSettings embeddings,
         string[]? campaignAllowedRoots = null,
-        FakeWorkspaceFileWatcherFactory? watcherFactory = null)
+        FakeWorkspaceFileWatcherFactory? watcherFactory = null,
+        IServiceScopeFactory? scopeFactory = null)
     {
 
         embeddings = ArcanumRuntimeDefaults.Embeddings;
 
-        IServiceScopeFactory scopeFactory = BuildScopeFactory();
+        IServiceScopeFactory scopes = scopeFactory ?? BuildScopeFactory();
 
         ArcanumSettings settings = new()
         {
@@ -966,7 +999,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
             new TestOptionsMonitor<ArcanumSettings>(settings),
             weave,
             new WeaveIndexAvailability(),
-            scopeFactory,
+            scopes,
             watcherFactory ?? new FakeWorkspaceFileWatcherFactory(),
             NullLogger<WorkspaceIndexingService>.Instance);
 
@@ -1247,6 +1280,29 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             Task.FromResult(Result<(string Chunk, int Offset)[]>.Success(
                 string.IsNullOrEmpty(text) ? [] : [(text, 0)]));
+
+    }
+
+    /// <summary>
+    /// Fails every reconciliation the way an unavailable Grimoire would — the failure is raised
+    /// outside <c>IndexWorkspaceAsync</c>'s per-file try/catch, so it unwinds the whole tick — while
+    /// counting attempts so a test can tell a backed-off retry from a tight spin.
+    /// </summary>
+    private sealed class FailingScopeFactory : IServiceScopeFactory
+    {
+
+        private int _scopeCount;
+
+        public int ScopeCount => Volatile.Read(ref _scopeCount);
+
+        public IServiceScope CreateScope()
+        {
+
+            Interlocked.Increment(ref _scopeCount);
+
+            throw new InvalidOperationException("Simulated Grimoire failure during workspace reconciliation.");
+
+        }
 
     }
 

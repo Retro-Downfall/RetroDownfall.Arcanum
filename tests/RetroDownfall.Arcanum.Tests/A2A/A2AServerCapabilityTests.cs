@@ -226,6 +226,10 @@ public sealed class A2AServerCapabilityTests
 
         Assert.Equal([parked], harness.Runtime.CancelledApprenticeIds);
 
+        // ExecuteAsync already returned when the task parked, so no relay survives to drive the terminal
+        // transition. Cancelling the Apprentice without it leaves the peer's task at input-required forever.
+        Assert.Equal(TaskState.Canceled, await DrainStateAsync(cancelQueue));
+
     }
 
     // ── #62 durable task correspondence ────────────────────────────────────────────────────────────

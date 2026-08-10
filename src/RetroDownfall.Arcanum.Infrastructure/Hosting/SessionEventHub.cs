@@ -79,6 +79,13 @@ public sealed class SessionEventHub
         }
     }
 
+    /// <summary>
+    /// Live subscriber count for a session, or zero when no hub exists. Test-visible so a leaked
+    /// subscription — a stream request that unwinds before its pump token is cancelled — is assertable.
+    /// </summary>
+    internal int GetSubscriberCount(Guid sessionId) =>
+        _hubs.TryGetValue(sessionId, out PerSessionHub? hub) ? hub.SubscriberCount : 0;
+
     private PerSessionHub GetOrCreateHub(Guid sessionId)
     {
         int capacity = ArcanumSettingClamps.ChronicleChannelCapacity(
@@ -96,6 +103,8 @@ public sealed class SessionEventHub
         {
             _inner = new ScryingPool<Entry>(capacity);
         }
+
+        public int SubscriberCount => _inner.SubscriberCount;
 
         public int Publish(Entry entry) => _inner.Publish(entry);
 

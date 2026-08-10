@@ -294,4 +294,34 @@ public sealed partial class McpConnectionManager
 
     }
 
+    /// <summary>
+    /// Drops a partition that is about to have its in-process <c>arcanum-internal</c> client
+    /// disposed, so the caller's rebuild starts a fresh one. Leaving it registered would let
+    /// <see cref="EnsurePartitionInternalToolsAsync"/> short-circuit on its cached internal tool
+    /// rows and hand every later caller a surface bound to a retired client generation.
+    /// </summary>
+    private void UnregisterPartition(
+        string partitionKey,
+        McpPartitionClients partition)
+    {
+
+        // Identity-checked so a replacement created concurrently under the same key is never dropped.
+        if (!_partitionClients.TryGetValue(
+                partitionKey,
+                out Lazy<McpPartitionClients>? registered)
+            || !registered.IsValueCreated
+            || !ReferenceEquals(registered.Value, partition))
+        {
+
+            return;
+
+        }
+
+        _ = _partitionClients.TryRemove(
+            new KeyValuePair<string, Lazy<McpPartitionClients>>(
+                partitionKey,
+                registered));
+
+    }
+
 }

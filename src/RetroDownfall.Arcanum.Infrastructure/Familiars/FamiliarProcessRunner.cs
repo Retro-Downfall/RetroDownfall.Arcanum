@@ -23,6 +23,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Familiars;
 public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger = null) : IFamiliarProcessRunner
 {
 
+    /// <summary>
+    /// Both CLIs speak UTF-8 on every platform, so the transport pins it rather than inheriting the
+    /// host's console code page — which on Windows is CP437 on a default console and CP_ACP with no
+    /// console at all, and would silently mangle every non-ASCII prompt and answer. No preamble: a
+    /// byte-order mark is three stray bytes in front of the prompt.
+    /// </summary>
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     public async IAsyncEnumerable<string> RunLinesAsync(
         FamiliarProcessRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken)
@@ -134,7 +142,24 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         ArgumentNullException.ThrowIfNull(request);
 
-        using Process process = CreateProcess(request);
+        Process created;
+
+        try
+        {
+
+            // A command PATH cannot resolve fails here rather than at the spawn, so the probe still
+            // gets a classification instead of an exception it would have to catch.
+            created = CreateProcess(request);
+
+        }
+        catch (FamiliarProcessException ex)
+        {
+
+            return new FamiliarProcessOutput(ex.Failure, ExitCode: 0, string.Empty, ex.Message);
+
+        }
+
+        using Process process = created;
 
         using CancellationTokenSource deadline = CreateDeadline(request, cancellationToken);
 
@@ -208,22 +233,37 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
     }
 
-    private static Process CreateProcess(FamiliarProcessRequest request)
+    private static Process CreateProcess(FamiliarProcessRequest request) =>
+        new() { StartInfo = BuildStartInfo(request) };
+
+    /// <summary>
+    /// Builds the spawn exactly as <see cref="CreateProcess"/> will run it. Internal so the spawn
+    /// boundary can be asserted directly: the properties that matter here — argv never becoming a
+    /// command string, the streams never being decoded with the host's code page — are properties of
+    /// the <see cref="ProcessStartInfo"/>, and on a Unix test host the defaults happen to be right,
+    /// so only the start info itself pins them for every platform Arcanum ships on.
+    /// </summary>
+    internal static ProcessStartInfo BuildStartInfo(FamiliarProcessRequest request)
     {
 
         // ArgumentList only. A single command string would let any value Arcanum interpolates —
         // a model name, a path — be re-parsed as further arguments by the OS or a shell.
-        // Spawn the file resolution found, not the bare name. On Windows the resolver applies
-        // PATHEXT, so a CLI installed as `claude.cmd` resolves as installed but would never start
-        // from a bare `claude` — the probe would report ready for something that cannot run.
-        string fileName = FamiliarExecutableResolver.TryResolve(request.FileName, out string? resolved)
-            ? resolved!
-            : request.FileName;
+        // Spawn the file resolution found, and nothing else. Falling back to the bare name would
+        // hand resolution back to the OS, whose search order — CreateProcess on Windows, and .NET's
+        // deliberately matching walk on Unix — reaches the application directory and the caller's
+        // current directory before PATH, so a repository Arcanum happened to be started in could
+        // supply the binary. A resolver miss means PATH has no answer, and the operator needs to
+        // hear exactly that. On Windows the resolver applies PATHEXT, so a CLI installed as
+        // `claude.cmd` starts from the path that resolved rather than from a bare `claude`.
+        if (!FamiliarExecutableResolver.TryResolve(request.FileName, out string? fileName))
+        {
+            throw NotInstalled(request);
+        }
 
         ProcessStartInfo startInfo = new()
         {
 
-            FileName = fileName,
+            FileName = fileName!,
 
             UseShellExecute = false,
 
@@ -232,6 +272,12 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             RedirectStandardOutput = true,
 
             RedirectStandardError = true,
+
+            StandardInputEncoding = Utf8NoBom,
+
+            StandardOutputEncoding = Utf8NoBom,
+
+            StandardErrorEncoding = Utf8NoBom,
 
             CreateNoWindow = true,
 
@@ -267,7 +313,7 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         }
 
-        return new Process { StartInfo = startInfo };
+        return startInfo;
 
     }
 

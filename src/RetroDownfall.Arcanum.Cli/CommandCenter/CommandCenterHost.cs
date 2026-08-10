@@ -319,6 +319,7 @@ internal sealed class CommandCenterHost(
                             or CommandCenterFocusRegion.Transcript
                             or CommandCenterFocusRegion.Incantations
                             or CommandCenterFocusRegion.Overlay
+                            or CommandCenterFocusRegion.Model
                             ? state.FocusRegion
                             : CommandCenterFocusRegion.Composer;
 
@@ -953,6 +954,14 @@ internal sealed class CommandCenterHost(
 
             case CommandCenterAction.SessionSelectDown:
                 window.MoveSessionSelection(1, state);
+                break;
+
+            case CommandCenterAction.PaletteSelectUp:
+                window.MovePaletteSelection(-1);
+                break;
+
+            case CommandCenterAction.PaletteSelectDown:
+                window.MovePaletteSelection(1);
                 break;
 
             case CommandCenterAction.OpenModelPicker:

@@ -57,7 +57,8 @@ public sealed class BlobEncryptionLifecycleService(
             {
                 reconciliation++;
             }
-            else if (result.Issue != BlobEncryptionVerificationIssue.LegacyPlaintext)
+            else if (result.Issue is not (BlobEncryptionVerificationIssue.None
+                or BlobEncryptionVerificationIssue.LegacyPlaintext))
             {
                 invalid++;
             }

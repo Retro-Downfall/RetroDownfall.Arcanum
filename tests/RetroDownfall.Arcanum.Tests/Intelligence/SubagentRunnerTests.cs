@@ -24,7 +24,8 @@ public sealed class SubagentRunnerTests
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry);
+            telemetry,
+            TimeProvider.System);
         AttachedFileDto explicitFile = new("src/A.cs", "sealed class A {}");
 
         SubagentRunResult result = await runner.RunAsync(
@@ -99,7 +100,8 @@ public sealed class SubagentRunnerTests
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
-            telemetry);
+            telemetry,
+            TimeProvider.System);
 
         SubagentRunResult result = await runner.RunAsync(
             new SubagentRunRequest(
@@ -121,14 +123,136 @@ public sealed class SubagentRunnerTests
         Assert.Equal(1_001, telemetry.Event?.Tokens);
     }
 
+    /// <summary>
+    /// The subagent lease is taken at the coordinator's 15-minute maximum, and a delegated child on
+    /// local inference can easily run longer. Without renewal the reconciler claims the expired lease
+    /// and abandons the operation under a new owner, so the child's finished summary is discarded and
+    /// the parent model is told the subagent failed — after the delegated tokens were already billed.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_ChildOutlivesTheLease_RenewsItAndStillCompletesOnTheCurrentRevision()
+    {
+        ManualTimeProvider time = new();
+        TaskCompletionSource childGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        CapturingTurnFacade facade = new(
+            Result<PromptTurnResult>.Success(
+                new PromptTurnResult("child summary", null)))
+        {
+            Gate = childGate.Task,
+        };
+        FakeOperationCoordinator operations = new();
+        CapturingTelemetry telemetry = new();
+        SubagentRunner runner = new(
+            new Lazy<ITurnExecutionFacade>(() => facade),
+            operations,
+            telemetry,
+            time);
+
+        Task<SubagentRunResult> run = runner.RunAsync(
+            new SubagentRunRequest(
+                "Long child task.",
+                null,
+                [],
+                MaxTokens: 1_000,
+                MaxCostUsd: null),
+            CancellationToken.None);
+
+        await facade.Entered.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Push the child well past the 15-minute lease ceiling one simulated minute at a time,
+        // giving each renewal a chance to arm its next delay.
+        Assert.True(
+            await WaitForAsync(
+                () =>
+                {
+                    time.Advance(TimeSpan.FromMinutes(1));
+
+                    return operations.HeartbeatCalls >= 3;
+                },
+                TimeSpan.FromSeconds(10)),
+            $"expected at least three lease renewals, saw {operations.HeartbeatCalls}");
+
+        childGate.SetResult();
+
+        SubagentRunResult result = await run.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(result.Success);
+        Assert.Equal("child summary", result.Summary);
+        Assert.Equal(1, operations.CompleteCalls);
+        Assert.Equal(0, operations.FailCalls);
+
+        // The heartbeats bumped the stored revision; Complete has to address the current one.
+        Assert.Equal(1L + operations.HeartbeatCalls, operations.LastCompleteRevision);
+        Assert.Equal(SubagentRunOutcome.Completed, telemetry.Event?.Outcome);
+    }
+
+    /// <summary>
+    /// A refused <c>CompleteAsync</c> means another owner already moved the row. The runner still owes
+    /// the ledger a terminal transition attempt rather than walking away silently.
+    /// </summary>
+    [Fact]
+    public async Task RunAsync_WhenCompleteIsRefused_FailsTheOperationBeforeReportingFailure()
+    {
+        CapturingTurnFacade facade = new(
+            Result<PromptTurnResult>.Success(
+                new PromptTurnResult("child summary", null)));
+        FakeOperationCoordinator operations = new() { RefuseComplete = true };
+        CapturingTelemetry telemetry = new();
+        SubagentRunner runner = new(
+            new Lazy<ITurnExecutionFacade>(() => facade),
+            operations,
+            telemetry,
+            TimeProvider.System);
+
+        SubagentRunResult result = await runner.RunAsync(
+            new SubagentRunRequest(
+                "Contended task.",
+                null,
+                [],
+                MaxTokens: 1_000,
+                MaxCostUsd: null),
+            CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(SubagentFailureCodes.ChildFailed, result.FailureCode);
+        Assert.Equal(1, operations.CompleteCalls);
+        Assert.Equal(1, operations.FailCalls);
+        Assert.Equal(SubagentFailureCodes.ChildFailed, operations.FailureCode);
+    }
+
+    private static async Task<bool> WaitForAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.Add(timeout);
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return true;
+            }
+
+            await Task.Delay(10);
+        }
+
+        return condition();
+    }
+
     private sealed class CapturingTurnFacade(
         Result<PromptTurnResult> result) : ITurnExecutionFacade
     {
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public PingRequest? Request { get; private set; }
 
         public Action? OnExecute { get; init; }
 
-        public Task<Result<PromptTurnResult>> ExecuteBufferedAsync(
+        /// <summary>Held open to model a child turn that outlives the durable lease.</summary>
+        public Task? Gate { get; init; }
+
+        public Task Entered => _entered.Task;
+
+        public async Task<Result<PromptTurnResult>> ExecuteBufferedAsync(
             PingRequest request,
             bool hasIdempotencyKey,
             CancellationToken executionToken,
@@ -139,7 +263,14 @@ public sealed class SubagentRunnerTests
             executionToken.ThrowIfCancellationRequested();
             Request = request;
             OnExecute?.Invoke();
-            return Task.FromResult(result);
+            _ = _entered.TrySetResult();
+
+            if (Gate is not null)
+            {
+                await Gate.ConfigureAwait(false);
+            }
+
+            return result;
         }
 
         public IAsyncEnumerable<IntelligenceEvent> ExecuteIntelligenceStreamAsync(
@@ -161,6 +292,8 @@ public sealed class SubagentRunnerTests
 
     private sealed class FakeOperationCoordinator : ILongRunningOperationCoordinator
     {
+        private int _heartbeatCalls;
+
         public LongRunningOperationCreateRequest? StartRequest { get; private set; }
 
         public int CompleteCalls { get; private set; }
@@ -168,6 +301,17 @@ public sealed class SubagentRunnerTests
         public int FailCalls { get; private set; }
 
         public string? FailureCode { get; private set; }
+
+        public long Revision { get; private set; } = 1;
+
+        public int HeartbeatCalls => Volatile.Read(ref _heartbeatCalls);
+
+        public long? LastCompleteRevision { get; private set; }
+
+        public long? LastFailRevision { get; private set; }
+
+        /// <summary>Models a row another owner already claimed and moved.</summary>
+        public bool RefuseComplete { get; init; }
 
         public Task<LongRunningOperationLeaseResult> StartAsync(
             LongRunningOperationCreateRequest request,
@@ -209,6 +353,10 @@ public sealed class SubagentRunnerTests
                 new LongRunningOperationLeaseResult(true, operation));
         }
 
+        /// <summary>
+        /// Mirrors <c>LongRunningOperationStore</c>: every accepted transition — heartbeat included —
+        /// bumps the revision, and a transition addressed at a stale revision is refused.
+        /// </summary>
         public Task<bool> CompleteAsync(
             Guid operationId,
             string ownerId,
@@ -217,9 +365,16 @@ public sealed class SubagentRunnerTests
         {
             _ = operationId;
             _ = ownerId;
-            _ = expectedRevision;
             cancellationToken.ThrowIfCancellationRequested();
             CompleteCalls++;
+            LastCompleteRevision = expectedRevision;
+
+            if (RefuseComplete || expectedRevision != Revision)
+            {
+                return Task.FromResult(false);
+            }
+
+            Revision++;
             return Task.FromResult(true);
         }
 
@@ -232,10 +387,17 @@ public sealed class SubagentRunnerTests
         {
             _ = operationId;
             _ = ownerId;
-            _ = expectedRevision;
             cancellationToken.ThrowIfCancellationRequested();
             FailCalls++;
             FailureCode = errorCode;
+            LastFailRevision = expectedRevision;
+
+            if (expectedRevision != Revision)
+            {
+                return Task.FromResult(false);
+            }
+
+            Revision++;
             return Task.FromResult(true);
         }
 
@@ -243,8 +405,21 @@ public sealed class SubagentRunnerTests
             Guid operationId,
             string ownerId,
             TimeSpan leaseDuration,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            _ = operationId;
+            _ = ownerId;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (leaseDuration < TimeSpan.FromSeconds(5) || leaseDuration > TimeSpan.FromMinutes(15))
+            {
+                throw new ArgumentOutOfRangeException(nameof(leaseDuration));
+            }
+
+            Interlocked.Increment(ref _heartbeatCalls);
+            Revision++;
+            return Task.FromResult(true);
+        }
 
         public Task<bool> CheckpointAsync(
             Guid operationId,
@@ -256,6 +431,140 @@ public sealed class SubagentRunnerTests
             string publicSummary,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// A clock whose timers fire only when the test advances it, so a five-minute renewal interval
+    /// can be exercised without waiting five minutes.
+    /// </summary>
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private readonly Lock _gate = new();
+
+        private readonly List<ManualTimer> _timers = [];
+
+        private DateTimeOffset _now = DateTimeOffset.UnixEpoch;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            lock (_gate)
+            {
+                return _now;
+            }
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            ManualTimer timer = new(this, callback, state, dueTime, period);
+
+            lock (_gate)
+            {
+                _timers.Add(timer);
+            }
+
+            return timer;
+        }
+
+        public void Advance(TimeSpan delta)
+        {
+            ManualTimer[] due;
+
+            lock (_gate)
+            {
+                _now = _now.Add(delta);
+                due = [.. _timers];
+            }
+
+            foreach (ManualTimer timer in due)
+            {
+                timer.Advance(delta);
+            }
+        }
+
+        private void Remove(ManualTimer timer)
+        {
+            lock (_gate)
+            {
+                _ = _timers.Remove(timer);
+            }
+        }
+
+        private sealed class ManualTimer(
+            ManualTimeProvider owner,
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period) : ITimer
+        {
+            private readonly Lock _gate = new();
+
+            private TimeSpan _remaining = dueTime;
+
+            private TimeSpan _period = period;
+
+            private bool _disposed;
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                lock (_gate)
+                {
+                    _remaining = dueTime;
+                    _period = period;
+                }
+
+                return true;
+            }
+
+            public void Advance(TimeSpan delta)
+            {
+                while (true)
+                {
+                    lock (_gate)
+                    {
+                        if (_disposed || _remaining == Timeout.InfiniteTimeSpan)
+                        {
+                            return;
+                        }
+
+                        _remaining -= delta;
+
+                        if (_remaining > TimeSpan.Zero)
+                        {
+                            return;
+                        }
+
+                        _remaining = _period == Timeout.InfiniteTimeSpan || _period <= TimeSpan.Zero
+                            ? Timeout.InfiniteTimeSpan
+                            : _remaining + _period;
+                    }
+
+                    callback(state);
+
+                    delta = TimeSpan.Zero;
+                }
+            }
+
+            public void Dispose()
+            {
+                lock (_gate)
+                {
+                    _disposed = true;
+                }
+
+                owner.Remove(this);
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 
     private sealed class CapturingTelemetry : ISubagentTelemetrySink

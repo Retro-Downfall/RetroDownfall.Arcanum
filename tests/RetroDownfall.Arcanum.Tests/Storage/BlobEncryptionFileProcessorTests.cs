@@ -88,6 +88,35 @@ public sealed class BlobEncryptionFileProcessorTests : IDisposable
             (await processor.VerifyAsync(corrupt)).Issue);
     }
 
+    // A corrupted declared plaintext length is just another corrupt envelope. It has to arrive here
+    // as one, because `RunDurableAsync` only catches IOException/InvalidDataException/
+    // CryptographicException per candidate — anything else escapes the Parallel.ForEachAsync body
+    // and aborts the whole `data encryption migrate` / `rotate-key` run instead of failing one file.
+    [Fact]
+    public async Task Verify_classifies_an_overflowing_declared_length_as_a_corrupt_envelope()
+    {
+        InMemoryKeyRing keys = new();
+        EncryptedBlobStore blobs = new(keys);
+        FailingMetadataStore metadata = new();
+        BlobEncryptionFileProcessor processor = new(metadata, blobs);
+        string path = Path.Combine(_root, "overflow");
+        await blobs.WriteAsync(
+            path,
+            new MemoryStream("legacy"u8.ToArray()),
+            EncryptedBlobPurpose.UploadedFile);
+
+        byte[] envelope = await File.ReadAllBytesAsync(path);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+            envelope.AsSpan(16, 8),
+            long.MaxValue);
+        await File.WriteAllBytesAsync(path, envelope);
+
+        BlobEncryptionVerificationResult result = await processor.VerifyAsync(
+            Candidate(path, encryptionVersion: EncryptedBlobFormat.CurrentVersion));
+
+        Assert.Equal(BlobEncryptionVerificationIssue.CorruptEnvelope, result.Issue);
+    }
+
     private static BlobEncryptionCandidate Candidate(string path, int encryptionVersion) =>
         new(
             BlobEncryptionRecordKind.UploadedFile,

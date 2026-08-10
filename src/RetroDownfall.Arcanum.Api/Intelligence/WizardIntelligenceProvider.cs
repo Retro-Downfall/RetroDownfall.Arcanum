@@ -1189,8 +1189,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             IntelligenceEvent firstEvent = enumerator.Current;
 
-            // Pre-commit events (Status / SessionBound / ConversationBound) must not close the
-            // fallback window (ADR 0004: commit from ModelCallUpdate / tool proposal / empty
+            // Pre-commit events (Status / SessionBound / ConversationBound / Context) must not close
+            // the fallback window (ADR 0004: commit from ModelCallUpdate / tool proposal / empty
             // success — tracked on classification.ProviderCommitted).
             List<IntelligenceEvent> preCommitBuffer = [];
 
@@ -1399,10 +1399,18 @@ public sealed partial class WizardIntelligenceProvider(
         && !classification.ProviderCommitted
         && streamedLength == 0;
 
+    /// <summary>
+    /// Frames a candidate can emit before it has committed anything. <c>Context</c> belongs here:
+    /// <c>ModelCallExecutor</c> yields the token-accounting frame before the provider socket is
+    /// dialled at all, so every streaming turn emits one ahead of a connectivity error. Leaving it
+    /// out closed the fallback window on that frame, the gate never reached the terminal
+    /// <c>error</c>, and streaming fallback never advanced to the next candidate.
+    /// </summary>
     private static bool IsPreCommitStreamingEvent(IntelligenceEvent evt) =>
         evt.Type is IntelligenceEventType.Status
             or IntelligenceEventType.SessionBound
-            or IntelligenceEventType.ConversationBound;
+            or IntelligenceEventType.ConversationBound
+            or IntelligenceEventType.Context;
 
     // CS8425: intentionally no [EnumeratorCancellation] parameter — every caller (StreamPromptAsync)
     // passes inferenceToken/callerToken as ordinary arguments and drives the enumerator manually via
@@ -2378,6 +2386,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                             MaxIndexBytes = streamMaxIndexBytes,
 
+                            ScryingFoci = streamContextRequest.ScryingFoci,
+
                         });
 
                 bool RemoveSemanticForAttachmentAdmission(ContextMaterializationEntry removed)
@@ -2601,6 +2611,7 @@ public sealed partial class WizardIntelligenceProvider(
                             SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
                             MaxIndexItems = streamMaxIndexItems,
                             MaxIndexBytes = streamMaxIndexBytes,
+                            ScryingFoci = streamContextRequest.ScryingFoci,
                         });
                 chatMessages = preparedMessages;
                 streamingContextPrepared = true;

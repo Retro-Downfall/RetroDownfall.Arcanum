@@ -13,15 +13,18 @@ public sealed record PricingSettings
     /// <summary>
     /// Per-model pricing keyed by model name (e.g. <c>gpt-4o</c>, <c>mistral:latest</c>). A provider's
     /// resolved model name is the lookup key; if no entry exists, <see cref="DefaultPricing"/> is used.
+    /// An explicit JSON <c>null</c> clears the map rather than throwing out of the config loader.
     /// </summary>
     public Dictionary<string, ModelPricingEntry> ModelPricing
     {
 
         get => _modelPricing;
 
-        set => _modelPricing = new Dictionary<string, ModelPricingEntry>(
-            value,
-            StringComparer.OrdinalIgnoreCase);
+        set => _modelPricing = value is null
+            ? new Dictionary<string, ModelPricingEntry>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, ModelPricingEntry>(
+                value,
+                StringComparer.OrdinalIgnoreCase);
 
     }
 

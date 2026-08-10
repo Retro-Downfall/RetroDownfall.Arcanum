@@ -300,6 +300,57 @@ public sealed class WorkspaceCommandTests
 
     [Fact]
 
+    public void Workspace_read_emits_file_content_verbatim_without_console_reflow()
+    {
+
+        string content = string.Join(
+            "\n",
+            new string('a', 100),
+            "{ \"key\": \"" + new string('b', 120) + "\" }",
+            "short\tline\twith\ttabs")
+            + "\r\ncrlf tail\r\n";
+
+        RecordingHandler handler = new(request =>
+        {
+
+            if (request.RequestUri!.AbsolutePath.EndsWith(
+                "/files/contents",
+                StringComparison.Ordinal))
+            {
+
+                FileReadResult read = new(
+                    "src/App.cs",
+                    content,
+                    "utf-8",
+                    content.Length,
+                    DateTimeOffset.Parse("2026-07-31T12:00:00Z"));
+
+                return CreateResponse(
+                    new ApiResponse<FileReadResult>(read, true, null),
+                    ArcanumJsonContext.Default.ApiResponseFileReadResult);
+
+            }
+
+
+            return CreateWorkspaceApiResponse(request);
+
+        });
+
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["workspace", "read", "src/App.cs", "--workspace", "ws-demo"]);
+
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains(content, result.Output, StringComparison.Ordinal);
+
+    }
+
+
+    [Fact]
+
     public void Workspace_current_reports_independent_campaign_and_workspace_mapping()
     {
 

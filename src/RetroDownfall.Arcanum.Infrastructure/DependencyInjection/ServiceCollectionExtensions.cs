@@ -175,6 +175,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISessionContextPinStore, SessionContextPinStore>();
         services.AddScoped<IAttachmentSourceResolver, AttachmentSourceResolver>();
 
+        // AttachmentSourceResolver requires the host workspace context; without it the whole
+        // chronosync graph (IChronosyncEngine, used by the ordinary `arcanum run` route) fails to
+        // activate in the CLI container.
+        services.TryAddSingleton<IHostWorkspaceContext, HostWorkspaceContext>();
+
         services.AddScoped<IGrimoireRepository, GrimoireRepository>();
 
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();
@@ -626,6 +631,11 @@ public static class ServiceCollectionExtensions
         // Durable record of in-flight A2A correspondences, so a restart can cancel an orphaned remote
         // task and a peer's tasks/cancel still reaches the real Apprentice (issue #62).
         services.AddScoped<IA2ASendingLedger, A2ASendingLedger>();
+        // A Sending has no deadline, so its ledger lease has to be renewed while this process holds it.
+        // Unrenewed, background reconciliation reclaimed every Sending that ran past 15 minutes and
+        // cancelled the peer's task out from under the call that was still awaiting it.
+        services.AddSingleton<A2ASendingLeaseRenewer>();
+        services.AddHostedService(static sp => sp.GetRequiredService<A2ASendingLeaseRenewer>());
         // Delegated spend is read from those same durable records, so the day's external cost survives
         // the process that spent it and is never confused with local spend (issue #69).
         services.AddScoped<IExternalSpendLedger, A2AExternalSpendLedger>();

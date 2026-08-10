@@ -205,14 +205,44 @@ internal sealed class BatchProcessingService(
 
         IArcanumIntelligenceProvider intelligence = scope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
 
-        await batches.UpdateStatusAsync(batch.Id, BatchStatuses.InProgress, null, batch.OutputFileId, batch.ErrorFileId, stoppingToken).ConfigureAwait(false);
+        // Claim the row instead of overwriting it: TickAsync read this record before queueing the
+        // worker, so an operator cancel (validating → cancelled) can have committed in the meantime.
+        // A losing CAS means the batch is no longer ours to run — leave the durable status alone.
+        bool claimed = await batches.TryCompareAndSetStatusAsync(
+                batch.Id,
+                BatchStatuses.Validating,
+                BatchStatuses.InProgress,
+                completedAt: null,
+                batch.OutputFileId,
+                batch.ErrorFileId,
+                stoppingToken)
+            .ConfigureAwait(false);
+
+        if (!claimed)
+        {
+
+            logger.LogInformation(
+                "Batch {BatchId} was no longer validating when the worker claimed it; leaving its durable status untouched.",
+                batch.Id);
+
+            return;
+
+        }
 
         string inputPath = UploadedFileStorage.ResolvePath(batch.InputFileId);
 
         if (!File.Exists(inputPath))
         {
 
-            await batches.UpdateStatusAsync(batch.Id, BatchStatuses.Failed, DateTimeOffset.UtcNow, null, null, CancellationToken.None).ConfigureAwait(false);
+            _ = await batches.TryCompareAndSetStatusAsync(
+                    batch.Id,
+                    BatchStatuses.InProgress,
+                    BatchStatuses.Failed,
+                    DateTimeOffset.UtcNow,
+                    null,
+                    null,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
 
             return;
 
@@ -223,8 +253,9 @@ internal sealed class BatchProcessingService(
             .ConfigureAwait(false);
         if (inputFile is null)
         {
-            await batches.UpdateStatusAsync(
+            _ = await batches.TryCompareAndSetStatusAsync(
                     batch.Id,
+                    BatchStatuses.InProgress,
                     BatchStatuses.Failed,
                     DateTimeOffset.UtcNow,
                     null,

@@ -233,6 +233,205 @@ public sealed class CliCompletionTests
 
     }
 
+    /// <summary>
+    /// fish runs a command substitution only outside double quotes or through the <c>$(…)</c> form,
+    /// so a path condition written as <c>test "(__arcanum_path)" = "session list"</c> compares the
+    /// literal text <c>(__arcanum_path)</c> and can never hold — the script installs cleanly and
+    /// then silently offers nothing below the root. Asserted against a model of fish's substitution
+    /// and <c>test</c> semantics rather than the condition's wording, so a future rewrite of the
+    /// idiom is judged on what it does.
+    /// </summary>
+    [Theory]
+    [InlineData("", "session")]
+    [InlineData("session", "list")]
+    [InlineData("session list", "output-format")]
+    [InlineData("session list", "json text")]
+    public void Fish_completes_the_path_the_operator_has_already_typed(string path, string expected)
+    {
+
+        Assert.Contains(expected, FishOffers(path), StringComparer.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The other half of the same guarantee: a condition that always holds would "fix" the dead
+    /// completions by offering every path's words at every path.
+    /// </summary>
+    [Fact]
+    public void Fish_does_not_offer_a_root_command_below_the_root()
+    {
+
+        Assert.DoesNotContain("doctor", FishOffers("session list"), StringComparer.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The words a fish shell would offer for <c>arcanum &lt;path&gt; &lt;TAB&gt;</c>: the payload
+    /// of every generated <c>complete</c> line whose condition holds for that command path.
+    /// </summary>
+    private static IReadOnlyList<string> FishOffers(string path)
+    {
+
+        string script = CliCompletionScriptWriter.Write(
+            CliCompletionShells.Fish,
+            CliSurfaceTests.BuildMap());
+
+        List<string> offers = [];
+
+        foreach (string line in script.Split('\n'))
+        {
+
+            if (!line.StartsWith("complete ", StringComparison.Ordinal))
+            {
+
+                continue;
+
+            }
+
+            if (!FishConditionHolds(Quoted(line, " -n "), path))
+            {
+
+                continue;
+
+            }
+
+            foreach (string flag in (string[])[" -a ", " -l "])
+            {
+
+                if (line.Contains(flag, StringComparison.Ordinal))
+                {
+
+                    offers.Add(Quoted(line, flag));
+
+                }
+
+            }
+
+        }
+
+        return offers;
+
+    }
+
+    /// <summary>
+    /// The single-quoted value that follows <paramref name="flag"/> on a generated
+    /// <c>complete</c> line. Nothing the generator emits contains a single quote.
+    /// </summary>
+    private static string Quoted(string line, string flag)
+    {
+
+        int start = line.IndexOf(flag, StringComparison.Ordinal) + flag.Length + 1;
+
+        return line[start..line.IndexOf('\'', start)];
+
+    }
+
+    /// <summary>
+    /// Evaluates one generated condition the way fish would, including the rule these tests exist
+    /// for: <c>(cmd)</c> and <c>$(cmd)</c> run the command, while <c>"(cmd)"</c> inside double
+    /// quotes is literal text. An unquoted substitution that produced nothing contributes no word,
+    /// which is why the root's <c>test -z (__arcanum_path)</c> holds on an empty path.
+    /// </summary>
+    private static bool FishConditionHolds(string condition, string path)
+    {
+
+        List<string> words = [];
+
+        foreach ((string text, bool quoted) in FishWords(condition))
+        {
+
+            string substituted = text.Replace("$(__arcanum_path)", path, StringComparison.Ordinal);
+
+            if (!quoted)
+            {
+
+                substituted = substituted.Replace("(__arcanum_path)", path, StringComparison.Ordinal);
+
+            }
+
+            if (!quoted && substituted.Length == 0 && text.Length > 0)
+            {
+
+                continue;
+
+            }
+
+            words.Add(substituted);
+
+        }
+
+        return words switch
+        {
+            ["test", "-z", string subject] => subject.Length == 0,
+            ["test", "-z"] => true,
+            ["test", string left, "=", string right] => string.Equals(left, right, StringComparison.Ordinal),
+            _ => throw new InvalidOperationException($"Unmodelled generated fish condition: {condition}"),
+        };
+
+    }
+
+    /// <summary>
+    /// Splits a condition into shell words, recording whether each was written inside double
+    /// quotes — the distinction the substitution rule turns on.
+    /// </summary>
+    private static IReadOnlyList<(string Text, bool Quoted)> FishWords(string condition)
+    {
+
+        List<(string Text, bool Quoted)> words = [];
+
+        System.Text.StringBuilder current = new();
+
+        bool inQuotes = false;
+
+        bool quoted = false;
+
+        foreach (char character in condition)
+        {
+
+            if (character == '"')
+            {
+
+                inQuotes = !inQuotes;
+
+                quoted = true;
+
+                continue;
+
+            }
+
+            if (character == ' ' && !inQuotes)
+            {
+
+                if (current.Length > 0 || quoted)
+                {
+
+                    words.Add((current.ToString(), quoted));
+
+                    current.Clear();
+
+                    quoted = false;
+
+                }
+
+                continue;
+
+            }
+
+            current.Append(character);
+
+        }
+
+        if (current.Length > 0 || quoted)
+        {
+
+            words.Add((current.ToString(), quoted));
+
+        }
+
+        return words;
+
+    }
+
     [Fact]
     public void An_unsupported_shell_is_a_command_line_error()
     {

@@ -337,6 +337,71 @@ public sealed class FamiliarChatClientTests
     }
 
     /// <summary>
+    /// A composed Arcanum system prompt carries attached-file bodies and resonant spell text, so it
+    /// routinely runs past the OS argument ceilings — 32,767 characters for a whole Windows command
+    /// line, 128 KiB for a single Linux argument. Putting it on argv makes <c>Process.Start</c> fail
+    /// and the turn falls back to another provider with "check that it is executable", so an
+    /// oversized prompt travels on stdin, which has no such limit.
+    /// </summary>
+    [Fact]
+    public async Task Claude_folds_an_oversized_system_prompt_into_standard_input()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
+
+        using IChatClient client = CreateClaude(runner, "claude-sonnet");
+
+        string systemPrompt = "ATTACHED FILE BODY " + new string('x', 200 * 1024);
+
+        _ = await client.GetResponseAsync(
+            [
+                new ChatMessage(ChatRole.System, systemPrompt),
+                new ChatMessage(ChatRole.User, "hi"),
+            ],
+            cancellationToken: CancellationToken.None);
+
+        FamiliarProcessRequest request = runner.LastRequest;
+
+        Assert.DoesNotContain("--system-prompt", request.Arguments);
+
+        Assert.All(request.Arguments, static argument => Assert.True(argument.Length <= 8192));
+
+        Assert.True(request.Arguments.Sum(static argument => argument.Length + 1) < 16_384);
+
+        Assert.Contains("ATTACHED FILE BODY", request.StandardInput, StringComparison.Ordinal);
+
+        Assert.Contains("hi", request.StandardInput, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The same ceiling applies to <c>--json-schema</c>. Arcanum validates structured output and
+    /// retries a mismatch, so losing the hint costs a retry; losing the spawn costs the turn.
+    /// </summary>
+    [Fact]
+    public async Task Claude_keeps_an_oversized_output_schema_off_the_command_line()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
+
+        using IChatClient client = CreateClaude(runner, "claude-sonnet");
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            new ChatOptions { ResponseFormat = OversizedSchemaFormat() },
+            CancellationToken.None);
+
+        Assert.All(
+            runner.LastRequest.Arguments,
+            static argument => Assert.True(argument.Length <= 8192));
+
+    }
+
+    /// <summary>
     /// A one-shot process has no session to resume, so the earlier turns have to travel in the
     /// prompt. Role labels appear only when there is more than one message to disambiguate.
     /// </summary>
@@ -843,6 +908,15 @@ public sealed class FamiliarChatClientTests
         ChatResponseFormat.ForJsonSchema(
             JsonSerializer.Deserialize<JsonElement>(
                 "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"),
+            "answer",
+            schemaDescription: string.Empty);
+
+    private static ChatResponseFormat OversizedSchemaFormat() =>
+        ChatResponseFormat.ForJsonSchema(
+            JsonSerializer.Deserialize<JsonElement>(
+                "{\"type\":\"object\",\"description\":\""
+                + new string('d', 64 * 1024)
+                + "\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"),
             "answer",
             schemaDescription: string.Empty);
 

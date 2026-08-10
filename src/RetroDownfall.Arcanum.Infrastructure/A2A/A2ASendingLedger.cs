@@ -232,16 +232,18 @@ public readonly record struct A2AOutboundCallback(
 internal sealed class A2ASendingLedger(
     ILongRunningOperationStore store,
     TimeProvider timeProvider,
-    ILogger<A2ASendingLedger> logger) : IA2ASendingLedger
+    ILogger<A2ASendingLedger> logger,
+    A2ASendingLeaseRenewer? leases = null) : IA2ASendingLedger
 {
 
     internal const int CheckpointVersion = 1;
 
     /// <summary>
-    /// A Sending has no whole-operation deadline (#55), so the lease is renewed by reconciliation rather
-    /// than sized to the work. It exists to mark ownership, not to time the Sending out.
+    /// A Sending has no whole-operation deadline (#55), so the lease marks ownership rather than sizing
+    /// the work: <see cref="A2ASendingLeaseRenewer"/> renews it for as long as this process is holding
+    /// the Sending, and it lapses when the process does.
     /// </summary>
-    private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan LeaseDuration = A2ASendingLeaseRenewer.LeaseDuration;
 
     private static readonly string OwnerId = $"a2a-{Environment.ProcessId}";
 
@@ -352,6 +354,9 @@ internal sealed class A2ASendingLedger(
 
         }
 
+        // Settled: renewing a closed row's lease would keep it out of every later reconciliation pass.
+        leases?.Forget(entry);
+
         try
         {
 
@@ -428,6 +433,10 @@ internal sealed class A2ASendingLedger(
             return;
 
         }
+
+        // Waiting on a peer is not work: a parked Sending stops being renewed so reconciliation can flag
+        // it 'a2a.inbound_parked_awaiting_answer', which is what keeps it answerable after a restart.
+        leases?.Forget(entry);
 
         try
         {
@@ -537,10 +546,15 @@ internal sealed class A2ASendingLedger(
                 .TryAcquireLeaseAsync(match.Id, OwnerId, now, now.Add(LeaseDuration), cancellationToken)
                 .ConfigureAwait(false);
 
-            return new A2AParkedSending(
-                apprenticeId,
-                record.ContextId,
-                lease.Acquired ? new A2ASendingLedgerEntry(match.Id, OwnerId) : default);
+            A2ASendingLedgerEntry resumed = lease.Acquired
+                ? new A2ASendingLedgerEntry(match.Id, OwnerId)
+                : default;
+
+            // The answer restarts the relay, so the row is this process's work again and needs renewing
+            // for as long as the resumed Apprentice runs.
+            leases?.Track(resumed);
+
+            return new A2AParkedSending(apprenticeId, record.ContextId, resumed);
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -901,7 +915,14 @@ internal sealed class A2ASendingLedger(
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            return new A2ASendingLedgerEntry(operation.Id, OwnerId);
+            A2ASendingLedgerEntry entry = new(operation.Id, OwnerId);
+
+            // Held from here until the Sending settles or parks. Without the renewal the 15-minute lease
+            // lapses under any longer Sending and background reconciliation recovers the row out from
+            // under the live call.
+            leases?.Track(entry);
+
+            return entry;
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

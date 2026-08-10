@@ -35,9 +35,14 @@
 
   </PropertyGroup>
 
-  <PropertyGroup>
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != '' and !$(RuntimeIdentifier.StartsWith('osx'))">
 
-    <!-- Keep the Native AOT object file small where AOT is still used. -->
+    <!-- Keep the Native AOT object file small where AOT is still used. Gated on exactly the RIDs
+         that run ILC (see PublishAot above): the SDK emits every one of these as a runtimeconfig
+         configProperty on the sole condition that the property is set, so an unguarded group also
+         reaches plain `dotnet build` / `dotnet run` and the untrimmed macOS publish. There
+         UseSystemResourceKeys=true has no trimmer to justify it and simply degrades every BCL
+         exception message to a bare resource key ("Arg_NullReferenceException"). -->
     <OptimizationPreference>Size</OptimizationPreference>
 
     <StackTraceSupport>false</StackTraceSupport>

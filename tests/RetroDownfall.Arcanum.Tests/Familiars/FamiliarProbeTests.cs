@@ -323,6 +323,80 @@ public sealed class FamiliarProbeTests
 
     }
 
+    /// <summary>
+    /// A status spawn is still a spawn. Both CLIs read project state out of their working root —
+    /// Claude Code's <c>.claude/settings.json</c>, whose <c>hooks</c> block runs shell commands, and
+    /// Codex's <c>AGENTS.md</c> and execpolicy <c>.rules</c> — so inheriting the host's current
+    /// directory would let whatever repository the operator ran <c>arcanum serve</c> or
+    /// <c>arcanum doctor</c> from steer the probe. The inference path already creates a private
+    /// directory per turn for exactly this reason; readiness gets the same containment.
+    /// </summary>
+    [Theory]
+    [InlineData(AiProviderKind.ClaudeCodeCli)]
+    [InlineData(AiProviderKind.CodexCli)]
+    public async Task Every_probe_spawn_runs_in_a_private_directory_never_the_hosts_own(
+        AiProviderKind kind)
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create([]);
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.SetBufferedOutput(new FamiliarProcessOutput(
+            FamiliarProcessFailure.None,
+            0,
+            FamiliarFixtures.ReadText(
+                kind == AiProviderKind.ClaudeCodeCli
+                    ? FamiliarFixtures.ClaudeAuthStatusConfigured
+                    : FamiliarFixtures.CodexDoctorConfigured),
+            string.Empty));
+
+        _ = await Probe(runner, kind, stub.FileName);
+
+        Assert.NotEmpty(runner.Requests);
+
+        string hostDirectory = Path.GetFullPath(Directory.GetCurrentDirectory());
+
+        Assert.All(
+            runner.Requests,
+            request =>
+            {
+
+                Assert.False(string.IsNullOrWhiteSpace(request.WorkingDirectory));
+
+                Assert.NotEqual(hostDirectory, Path.GetFullPath(request.WorkingDirectory!));
+
+            });
+
+    }
+
+    /// <summary>
+    /// One directory for the whole probe, not one per spawn: the version read and the status read
+    /// are the same question asked twice, and a root that outlives both is what makes the probe
+    /// cheap enough to run on the background health interval.
+    /// </summary>
+    [Fact]
+    public async Task The_probes_spawns_share_one_private_directory()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create([]);
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.SetBufferedOutput(new FamiliarProcessOutput(
+            FamiliarProcessFailure.None,
+            0,
+            FamiliarFixtures.ReadText(FamiliarFixtures.ClaudeAuthStatusConfigured),
+            string.Empty));
+
+        _ = await Probe(runner, AiProviderKind.ClaudeCodeCli, stub.FileName);
+
+        Assert.Equal(2, runner.Requests.Count);
+
+        Assert.Single(runner.Requests.Select(static request => request.WorkingDirectory).Distinct());
+
+    }
+
     private static Task<FamiliarProbeResult> Probe(
         IFamiliarProcessRunner runner,
         AiProviderKind kind,

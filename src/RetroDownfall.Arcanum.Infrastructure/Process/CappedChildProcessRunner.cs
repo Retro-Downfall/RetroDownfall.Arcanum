@@ -825,6 +825,13 @@ internal static class CappedChildProcessRunner
                     .ConfigureAwait(false);
             }
 
+            // The child is gone by now, killed with TerminateProcess on every abnormal path, so the
+            // Windows broker's own restore never ran. Replay its undo log before the log itself is
+            // deleted below, or the granted AppContainer ACE outlives the run permanently.
+            _ = ChildProcessFilesystemJail.RestoreWindowsAppContainerState(
+                sandboxResult,
+                logger);
+
             await CleanupSandboxTempPathsAsync(
                     sandboxResult,
                     getCleanupTimeRemaining,

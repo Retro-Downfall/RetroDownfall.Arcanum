@@ -393,7 +393,10 @@ public sealed class WorkspaceCommands(
 
         }
 
-        AnsiConsole.Write(new Text(result.Value.Content));
+        // Raw stdout: Spectre would render the file as a Text renderable and hard-wrap it at the
+        // profile width (80 when stdout is redirected), and normalize CRLF to LF, so redirected
+        // output would no longer match the file the server read.
+        Console.Out.Write(result.Value.Content);
 
         return 0;
 

@@ -23,6 +23,20 @@ internal sealed class ClaudeCodeCliChatClient(
     : FamiliarChatClient(runner, provider, resolvedModel, deniedEnvironmentVariables)
 {
 
+    /// <summary>
+    /// The largest value Arcanum will put on this CLI's command line. Windows caps a whole command
+    /// line at 32,767 characters and Linux caps one argument at 128 KiB (<c>MAX_ARG_STRLEN</c>), and
+    /// a composed Arcanum system prompt carries attached-file bodies plus resonant spell text
+    /// (<c>SpellSettings.MaxResonantBytes</c> alone defaults to 131,072). Overshooting makes
+    /// <c>Process.Start</c> fail, which the pipeline reads as a connectivity failure and silently
+    /// falls back from — so anything larger goes on stdin instead, where no limit applies.
+    /// </summary>
+    private const int MaxInlineArgumentLength = 8 * 1024;
+
+    private const string FoldedSystemPromptHeader = "=== SYSTEM INSTRUCTIONS ===";
+
+    private const string FoldedConversationHeader = "=== CONVERSATION ===";
+
     protected override FamiliarProcessRequest BuildRequest(FamiliarPrompt prompt, string? jsonSchema)
     {
 
@@ -60,23 +74,42 @@ internal sealed class ClaudeCodeCliChatClient(
             "--no-session-persistence",
         ];
 
+        string standardInput = prompt.Text;
+
         if (prompt.SystemPrompt is { Length: > 0 } systemPrompt)
         {
 
-            arguments.Add("--system-prompt");
+            if (systemPrompt.Length <= MaxInlineArgumentLength)
+            {
 
-            arguments.Add(systemPrompt);
+                arguments.Add("--system-prompt");
+
+                arguments.Add(systemPrompt);
+
+            }
+            else
+            {
+
+                // Too large for argv, so it rides in on stdin the way Codex's instructions already
+                // do. The headers are what keeps the model from reading the instructions as part of
+                // the operator's question.
+                standardInput =
+                    $"{FoldedSystemPromptHeader}\n{systemPrompt}\n\n{FoldedConversationHeader}\n{standardInput}";
+
+            }
 
         }
 
-        if (jsonSchema is { Length: > 0 })
+        if (jsonSchema is { Length: > 0 } schema && schema.Length <= MaxInlineArgumentLength)
         {
 
             // The CLI validates the answer against the schema itself, so a structured-output turn
-            // does not have to survive Arcanum's retry loop to come back well-formed.
+            // does not have to survive Arcanum's retry loop to come back well-formed. A schema too
+            // large for argv is dropped rather than fatal: Arcanum still validates the answer and
+            // retries a mismatch, which costs a turn where a failed spawn costs the whole request.
             arguments.Add("--json-schema");
 
-            arguments.Add(jsonSchema);
+            arguments.Add(schema);
 
         }
 
@@ -87,7 +120,7 @@ internal sealed class ClaudeCodeCliChatClient(
 
             Arguments = arguments,
 
-            StandardInput = prompt.Text,
+            StandardInput = standardInput,
 
             WorkingDirectory = WorkingDirectory,
 

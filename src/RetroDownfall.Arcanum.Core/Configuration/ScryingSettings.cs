@@ -32,9 +32,9 @@ public sealed record ScryingSettings
     public int MaxImagesPerRequest { get; set; } = 10;
 
     /// <summary>
-    /// Allowed image MIME types. Non-matching types are rejected. Only enforced for
-    /// <c>data:</c>-URI images (CLI <c>ScryingFoci</c> and inline data URIs) where the MIME type is
-    /// present in the payload; not enforced for <c>http(s)</c> URLs.
+    /// Allowed image MIME types. Non-matching types are rejected, as is a missing or blank MIME
+    /// type. Only enforced for <c>data:</c>-URI images (CLI <c>ScryingFoci</c> and inline data
+    /// URIs); not enforced for <c>http(s)</c> URLs.
     /// </summary>
     public string[] AllowedMimeTypes { get; set; } =
     [

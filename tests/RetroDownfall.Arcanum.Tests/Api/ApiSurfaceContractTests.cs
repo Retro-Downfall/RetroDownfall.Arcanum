@@ -18,7 +18,9 @@ using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Telemetry;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -30,6 +32,8 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ProcessEnvironment")]
 public sealed class ApiSurfaceContractTests : IDisposable
 {
+
+    private const string GatedHostApiKey = "api-surface-contract-key";
 
     private readonly string _tempHome;
 
@@ -395,6 +399,96 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
     }
 
+    /// <summary>
+    /// DESIGN §11.3: a request without the key is answered with 401 and nothing else happens. Minimal
+    /// API endpoint filters run <em>after</em> parameter binding, so gating on
+    /// <c>ApiKeyEndpointFilter</c> alone let every anonymous POST have its body read, buffered and
+    /// deserialized first — on <c>POST /v1/files</c> that is a 513 MiB multipart envelope spooled to
+    /// the temp filesystem by an unauthenticated caller.
+    /// </summary>
+    [Fact]
+    public async Task Unauthenticated_requests_are_rejected_before_the_request_body_is_read()
+    {
+
+        (WebApplication app, ExecutionProbe probe) = await CreateApiKeyGatedHostAsync();
+
+        await using (app)
+        {
+
+            using HttpClient client = app.GetTestClient();
+
+            HttpResponseMessage response = await client.SendAsync(BuildProbeRequest());
+
+            _ = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+            Assert.Equal(0, probe.Executions);
+
+            Assert.Equal(0, probe.RequestBodyBytesRead);
+
+            await app.StopAsync();
+
+        }
+
+    }
+
+    /// <summary>
+    /// The same ordering defect surfaced as a status-code leak: binding failed before the key was ever
+    /// checked, so an anonymous caller got a body-parse 400 instead of the documented 401.
+    /// </summary>
+    [Fact]
+    public async Task Unauthenticated_requests_with_an_unparsable_body_still_return_401()
+    {
+
+        (WebApplication app, ExecutionProbe probe) = await CreateApiKeyGatedHostAsync();
+
+        await using (app)
+        {
+
+            using HttpClient client = app.GetTestClient();
+
+            HttpResponseMessage response = await client.SendAsync(BuildMalformedProbeRequest());
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+            Assert.Equal(0, probe.Executions);
+
+            await app.StopAsync();
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Authenticated_requests_still_bind_the_body_and_reach_the_handler()
+    {
+
+        (WebApplication app, ExecutionProbe probe) = await CreateApiKeyGatedHostAsync();
+
+        await using (app)
+        {
+
+            using HttpClient client = app.GetTestClient();
+
+            HttpRequestMessage request = BuildProbeRequest();
+
+            request.Headers.Add(ArcanumApiHeaders.ApiKey, GatedHostApiKey);
+
+            HttpResponseMessage response = await client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            Assert.Equal(1, probe.Executions);
+
+            Assert.True(probe.RequestBodyBytesRead > 0);
+
+            await app.StopAsync();
+
+        }
+
+    }
+
     [Fact]
     public void Fingerprint_covers_the_query_string()
     {
@@ -478,6 +572,16 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
     }
 
+    private static HttpRequestMessage BuildMalformedProbeRequest()
+    {
+
+        return new HttpRequestMessage(HttpMethod.Post, "/api/probe")
+        {
+            Content = new StringContent("""{"prompt":""", Encoding.UTF8, "application/json"),
+        };
+
+    }
+
     private static async Task<(WebApplication App, ExecutionProbe Probe)> CreateIdempotencyProbeHostAsync()
     {
 
@@ -508,6 +612,67 @@ public sealed class ApiSurfaceContractTests : IDisposable
                 })
             .AddEndpointFilter(
                 IdempotencyEndpointFilters.ForBoundArgument(0, ArcanumJsonContext.Default.PingRequest));
+
+        await app.StartAsync();
+
+        return (app, probe);
+
+    }
+
+    /// <summary>
+    /// Builds the API-key-gated pipeline the way <c>MapArcanumEndpoints</c> builds it, plus a
+    /// test-owned stream wrapper installed ahead of the gate that counts every byte anything pulls
+    /// from the request body.
+    /// </summary>
+    private static async Task<(WebApplication App, ExecutionProbe Probe)> CreateApiKeyGatedHostAsync()
+    {
+
+        ExecutionProbe probe = new();
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        builder.Services.AddSingleton(probe);
+
+        builder.Services.AddSingleton<ISecretStore>(new StubSecretStore(GatedHostApiKey));
+
+        builder.Services.AddSingleton<IApiKeyDigestCache>(new ApiKeyDigestCache(TimeProvider.System));
+
+        builder.Services.AddSingleton<ApiKeyAuthenticator>();
+
+        builder.Services.ConfigureHttpJsonOptions(static options =>
+            options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
+
+        WebApplication app = builder.Build();
+
+        app.Use(async (HttpContext context, Func<Task> next) =>
+        {
+
+            context.Request.Body = new CountingRequestBodyStream(
+                context.Request.Body,
+                context.RequestServices.GetRequiredService<ExecutionProbe>());
+
+            await next().ConfigureAwait(false);
+
+        });
+
+        app.UseArcanumApiKeyAuthentication();
+
+        RouteGroupBuilder apiGroup = app.MapGroup("/api").RequireArcanumApiKey();
+
+        apiGroup.MapPost(
+            "/probe",
+            (PingRequest body, ExecutionProbe executionProbe) =>
+            {
+
+                _ = body;
+
+                executionProbe.Record();
+
+                return Results.Ok();
+
+            });
 
         await app.StartAsync();
 
@@ -559,9 +724,87 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
         private int _executions;
 
+        private long _requestBodyBytesRead;
+
         public int Executions => Volatile.Read(ref _executions);
 
+        public long RequestBodyBytesRead => Interlocked.Read(ref _requestBodyBytesRead);
+
         public void Record() => Interlocked.Increment(ref _executions);
+
+        public void RecordRequestBodyBytes(int count) => Interlocked.Add(ref _requestBodyBytesRead, count);
+
+    }
+
+    /// <summary>
+    /// Read-only pass-through that tallies every byte the pipeline pulls from the request body, so a
+    /// test can prove authentication ran before anything buffered, spooled, or deserialized it.
+    /// </summary>
+    private sealed class CountingRequestBodyStream(Stream inner, ExecutionProbe probe) : Stream
+    {
+
+        public override bool CanRead => inner.CanRead;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() => inner.Flush();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+
+            int read = inner.Read(buffer, offset, count);
+
+            probe.RecordRequestBodyBytes(read);
+
+            return read;
+
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+
+            int read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+            probe.RecordRequestBodyBytes(read);
+
+            return read;
+
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    }
+
+    private sealed class StubSecretStore(string apiKey) : ISecretStore
+    {
+
+        public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            Task.FromResult(SecretStoreReadResult.Ok(apiKey));
+
+        public Task SaveApiKeyAsync(string key) => Task.CompletedTask;
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
 
     }
 

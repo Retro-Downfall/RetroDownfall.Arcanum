@@ -314,6 +314,42 @@ public sealed class EncryptedBlobStoreTests : IDisposable
         await Assert.ThrowsAnyAsync<CryptographicException>(() => reader.CopyToAsync(output));
     }
 
+    // The declared plaintext length and chunk size are unauthenticated until a chunk decrypts, so
+    // bit rot or a hostile edit can drive the cheap envelope-length pre-check into arithmetic
+    // overflow. That must fail closed as invalid data: every corruption handler in the migrate,
+    // rotate-key, and doctor call chain filters on InvalidDataException, and an escaping
+    // OverflowException aborts the whole durable operation instead of failing one candidate.
+    [Theory]
+    [InlineData(long.MaxValue, 0)]
+    [InlineData(5_000_000_000_000_000_000, 16)]
+    public async Task Read_rejects_a_corrupt_header_whose_length_metadata_overflows(
+        long declaredLength,
+        int corruptedChunkSize)
+    {
+        EncryptedBlobStore store = CreateStore(chunkSize: 32);
+        string path = Path.Combine(_root, $"overflow-{declaredLength}-{corruptedChunkSize}");
+        await store.WriteAsync(
+            path,
+            new MemoryStream(RandomNumberGenerator.GetBytes(64)),
+            EncryptedBlobPurpose.UploadedFile);
+
+        byte[] envelope = await File.ReadAllBytesAsync(path);
+        if (corruptedChunkSize != 0)
+        {
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(
+                envelope.AsSpan(12, 4),
+                corruptedChunkSize);
+        }
+
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
+            envelope.AsSpan(16, 8),
+            declaredLength);
+        await File.WriteAllBytesAsync(path, envelope);
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => store.OpenReadAsync(path, EncryptedBlobPurpose.UploadedFile));
+    }
+
     // Migration and key rotation replace the blob while a reader is still open on the same path.
     // On Windows that rename needs FileShare.Delete on the read handle; without it every candidate
     // fails and `arcanum data encryption migrate` / `rotate-key` can never complete.

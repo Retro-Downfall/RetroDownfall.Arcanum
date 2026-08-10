@@ -143,6 +143,55 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A symlinked ancestor plus a not-yet-existing leaf skips the resolver's symlink check, so the
+    /// containment revalidation must run *before* the parent directories are created: mkdir(2) follows
+    /// symlinks in the path prefix, and creating them first leaves an orphaned directory tree outside
+    /// the workspace even though the write itself is rejected.
+    /// </summary>
+    [Fact]
+    public async Task WriteFileAsync_does_not_create_parent_directories_outside_workspace_through_a_symlinked_ancestor()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        string outsideDir = Path.Combine(Path.GetTempPath(), $"arcanum-outside-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(outsideDir);
+
+        try
+        {
+
+            Directory.CreateSymbolicLink(Path.Combine(_workspace.Root, "escape-dir"), outsideDir);
+
+            PhysicalFileSystemWriter writer = CreateWriter();
+
+            WorkspaceInfo workspace = MakeWorkspace();
+
+            Result<FileWriteResult> result = await writer.WriteFileAsync(
+                workspace, "escape-dir/injected/deeper/payload.txt", "hello", CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal("Workspace.SymbolicLinkEscape", result.Error.Code);
+
+            Assert.False(Directory.Exists(Path.Combine(outsideDir, "injected")));
+
+            Assert.False(File.Exists(Path.Combine(outsideDir, "injected", "deeper", "payload.txt")));
+
+        }
+        finally
+        {
+
+            Directory.Delete(outsideDir, recursive: true);
+
+        }
+
+    }
+
     [Fact]
     public async Task WriteFileAsync_rejects_content_exceeding_MaxFileWriteSizeBytes()
     {

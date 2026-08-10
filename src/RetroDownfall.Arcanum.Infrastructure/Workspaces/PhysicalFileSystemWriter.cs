@@ -364,8 +364,10 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
     /// Atomically replaces <paramref name="absolutePath"/> with <paramref name="contentBytes"/>, creating parent
     /// directories as needed. Mirrors the tier-2 handle-identity TOCTOU pattern used by the MCP sandboxed file
     /// tools (<c>SandboxedFileIo.TryWriteAllTextAtomicallyAsync</c>): the destination is revalidated for workspace
-    /// containment immediately before the temp file is created and again (via post-move handle identity) after
-    /// the atomic rename, closing the window between path resolution and the actual write.
+    /// containment before the parent directories are created (mkdir follows symlinks in the path prefix, so a
+    /// symlinked ancestor would otherwise let a rejected write leave directories outside the root), again
+    /// immediately before the temp file is created, and again (via post-move handle identity) after the atomic
+    /// rename, closing the window between path resolution and the actual write.
     /// </summary>
     private static async Task<Result> WriteAtomicallyAsync(
         string workspaceRoot,
@@ -373,6 +375,11 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
         byte[] contentBytes,
         CancellationToken ct)
     {
+
+        if (!WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRoot, absolutePath))
+        {
+            return new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage);
+        }
 
         string? parentDir = Path.GetDirectoryName(absolutePath);
 

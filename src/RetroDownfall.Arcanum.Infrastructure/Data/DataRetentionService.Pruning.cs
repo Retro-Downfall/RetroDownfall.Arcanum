@@ -3661,43 +3661,56 @@ internal sealed partial class DataRetentionService
 
                 earliestSkippedIndex ??= index;
 
+            }
+            else
+            {
+
+                rowsDeleted += deleted.Rows;
+
+                filesDeleted += deleted.Files;
+
+                bytesDeleted += deleted.Bytes;
+
+                derivedDeleted += deleted.Derived;
+
+            }
+
+            int nextIndex = index + 1;
+
+            if (!saveCheckpoints
+                || (nextIndex % checkpointInterval != 0
+                    && nextIndex != plan.CandidateIds.Length))
+            {
+
                 continue;
 
             }
 
-            rowsDeleted += deleted.Rows;
+            // The lease is renewed on every checkpoint boundary, including boundaries the cursor
+            // cannot advance past. A preserved candidate or a journal-bearing one must not silence
+            // renewal for the rest of the sweep: an expired lease lets the background reconciler
+            // adopt this operation and run a second concurrent prune under the same plan.
+            DateTimeOffset now = timeProvider.GetUtcNow();
 
-            filesDeleted += deleted.Files;
+            bool heartbeat = await operations.HeartbeatAsync(
+                operationId,
+                ownerId,
+                now,
+                now.Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration),
+                cancellationToken).ConfigureAwait(false);
 
-            bytesDeleted += deleted.Bytes;
-
-            derivedDeleted += deleted.Derived;
-
-            int nextIndex = index + 1;
-
-            if (saveCheckpoints
-                && pendingJournal is null
-                && earliestSkippedIndex is null
-                && (nextIndex % checkpointInterval == 0
-                    || nextIndex == plan.CandidateIds.Length))
+            if (!heartbeat)
             {
 
-                DateTimeOffset now = timeProvider.GetUtcNow();
+                throw new InvalidOperationException(
+                    "The retention operation lost its durable lease while checkpointing.");
 
-                bool heartbeat = await operations.HeartbeatAsync(
-                    operationId,
-                    ownerId,
-                    now,
-                    now.Add(DataRetentionLeaseMaintainer.DefaultLeaseDuration),
-                    cancellationToken).ConfigureAwait(false);
+            }
 
-                if (!heartbeat)
-                {
-
-                    throw new InvalidOperationException(
-                        "The retention operation lost its durable lease while checkpointing.");
-
-                }
+            // A journal-bearing candidate already wrote its own cursor above, and an earlier
+            // preserved candidate pins the resume point, so neither may advance it here.
+            if (pendingJournal is null && earliestSkippedIndex is null)
+            {
 
                 currentCheckpointVersion = await SavePruneCheckpointAsync(
                     operationId,

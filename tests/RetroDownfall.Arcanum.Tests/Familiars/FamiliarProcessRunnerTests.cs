@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Text;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
 
 namespace RetroDownfall.Arcanum.Tests.Familiars;
@@ -162,6 +164,45 @@ public sealed class FamiliarProcessRunnerTests
 
     }
 
+    /// <summary>
+    /// Both CLIs emit UTF-8 unconditionally, and the prompt Arcanum sends them is UTF-16 text that
+    /// has to arrive byte-exact. Left unset, Windows encodes stdin with the console input code page
+    /// and decodes stdout and stderr with the console output code page — CP437 on a default en-US
+    /// console, CP_ACP when `arcanum serve` runs as a service with no console at all — so an accented
+    /// name goes in as '?' and a curly quote comes back as mojibake that still parses as JSON. The
+    /// corruption is silent, so the encodings have to be pinned on the start info rather than left to
+    /// the host.
+    /// </summary>
+    [Fact]
+    public void Child_streams_are_decoded_as_utf8_never_as_the_hosts_console_code_page()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create([]);
+
+        ProcessStartInfo startInfo = FamiliarProcessRunner.BuildStartInfo(
+            new FamiliarProcessRequest { FileName = stub.FileName });
+
+        Encoding?[] streamEncodings =
+        [
+            startInfo.StandardInputEncoding,
+            startInfo.StandardOutputEncoding,
+            startInfo.StandardErrorEncoding,
+        ];
+
+        Assert.All(
+            streamEncodings,
+            static encoding =>
+            {
+
+                Assert.Equal(Encoding.UTF8.CodePage, encoding?.CodePage);
+
+                // A byte-order mark on stdin is a stray three bytes in front of the prompt.
+                Assert.Empty(encoding!.GetPreamble());
+
+            });
+
+    }
+
     [Fact]
     public async Task A_missing_binary_fails_closed_as_not_installed()
     {
@@ -291,6 +332,55 @@ public sealed class FamiliarProcessRunnerTests
     }
 
     /// <summary>
+    /// The resolver is the one auditable place a Familiar's name becomes a path. Spawning the bare
+    /// name when PATH has no answer hands resolution back to the OS, whose search order — CreateProcess
+    /// on Windows, and .NET's deliberately matching walk on Unix — reaches the application directory
+    /// and the caller's current directory <em>before</em> PATH. `arcanum serve` started inside a cloned
+    /// repository that happens to contain a file called `claude` would then run that file, unscrubbed
+    /// of the operator's privileges. When PATH cannot answer, the honest outcome is the one the
+    /// operator can act on.
+    /// </summary>
+    [Fact]
+    public async Task A_command_PATH_cannot_resolve_never_falls_through_to_the_current_directory()
+    {
+
+        using CurrentDirectoryExecutable planted = CurrentDirectoryExecutable.Plant();
+
+        FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
+            async () =>
+            {
+
+                await foreach (string _ in _runner.RunLinesAsync(
+                    new FamiliarProcessRequest { FileName = planted.Name },
+                    CancellationToken.None))
+                {
+                }
+
+            });
+
+        Assert.Equal(FamiliarProcessFailure.NotInstalled, failure.Failure);
+
+        Assert.False(planted.WasExecuted);
+
+    }
+
+    [Fact]
+    public async Task Run_to_completion_also_refuses_a_command_PATH_cannot_resolve()
+    {
+
+        using CurrentDirectoryExecutable planted = CurrentDirectoryExecutable.Plant();
+
+        FamiliarProcessOutput output = await _runner.RunToCompletionAsync(
+            new FamiliarProcessRequest { FileName = planted.Name },
+            CancellationToken.None);
+
+        Assert.Equal(FamiliarProcessFailure.NotInstalled, output.Failure);
+
+        Assert.False(planted.WasExecuted);
+
+    }
+
+    /// <summary>
     /// The probe has to tell "you have not installed it" apart from "it is installed but refused",
     /// so a missing binary is a classified outcome rather than an exception it must catch.
     /// </summary>
@@ -353,6 +443,87 @@ public sealed class FamiliarProcessRunnerTests
 
             },
             cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Plants a runnable file in the host's current directory under a name PATH cannot resolve, and
+    /// reports whether anything executed it. Stands in for the repository an operator happened to
+    /// start Arcanum from — the directory the OS would reach before PATH.
+    /// </summary>
+    private sealed class CurrentDirectoryExecutable : IDisposable
+    {
+
+        private readonly string _path;
+
+        private readonly string _markerPath;
+
+        private CurrentDirectoryExecutable(string name, string path, string markerPath)
+        {
+
+            Name = name;
+
+            _path = path;
+
+            _markerPath = markerPath;
+
+        }
+
+        /// <summary>The bare command name — deliberately absent from PATH.</summary>
+        public string Name { get; }
+
+        public bool WasExecuted => File.Exists(_markerPath);
+
+        public static CurrentDirectoryExecutable Plant()
+        {
+
+            string name = "arcanum-familiar-cwd-" + Guid.NewGuid().ToString("N");
+
+            string path = Path.Combine(Directory.GetCurrentDirectory(), name);
+
+            string markerPath = path + ".ran";
+
+            File.WriteAllText(path, $"#!/bin/sh\necho ran > '{markerPath}'\n");
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                File.SetUnixFileMode(
+                    path,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            }
+
+            return new CurrentDirectoryExecutable(name, path, markerPath);
+
+        }
+
+        public void Dispose()
+        {
+
+            Delete(_path);
+
+            Delete(_markerPath);
+
+        }
+
+        private static void Delete(string path)
+        {
+
+            try
+            {
+
+                File.Delete(path);
+
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+
+                // A leftover temp file is not worth failing a test over.
+
+            }
+
+        }
 
     }
 

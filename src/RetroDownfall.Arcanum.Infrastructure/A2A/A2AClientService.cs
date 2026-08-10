@@ -695,6 +695,8 @@ public sealed class A2AClientService : IA2AClientService
             // The remote accepted the task and then the transport failed. The work may still be running
             // there, so report the task id rather than letting an exception escape as an opaque tool error.
             // The ledger entry deliberately stays open: reconciliation will try to cancel it.
+            StopRenewing(ledgerEntry);
+
             _logger.LogWarning(ex, "dispatch_sending: lost contact with the remote agent while polling task {TaskId}.", task.Id);
 
             return Result<A2ADispatchResult>.Failure(new Error(
@@ -725,6 +727,14 @@ public sealed class A2AClientService : IA2AClientService
         {
 
             await SettleLedgerAsync(ledgerEntry, cost).ConfigureAwait(false);
+
+        }
+        else
+        {
+
+            // Left open on purpose so the Mage can answer it, which also means this dispatch has stopped
+            // holding it: the lease must lapse rather than be renewed for the host's lifetime.
+            StopRenewing(ledgerEntry);
 
         }
 
@@ -1027,6 +1037,30 @@ public sealed class A2AClientService : IA2AClientService
             return default;
 
         }
+
+    }
+
+    /// <summary>
+    /// Stops renewing a still-open record this dispatch has let go of.
+    /// </summary>
+    /// <remarks>
+    /// A record left open for reconciliation — contact lost mid-poll, or a continuation deliberately kept
+    /// alive — is no longer this process's to hold. Renewing its lease anyway would keep it out of every
+    /// reconciliation pass for the host's lifetime, which is the opposite of leaving it open.
+    /// </remarks>
+    private void StopRenewing(A2ASendingLedgerEntry entry)
+    {
+
+        if (!entry.IsRecorded || _scopeFactory is null)
+        {
+
+            return;
+
+        }
+
+        using IServiceScope scope = _scopeFactory.CreateScope();
+
+        scope.ServiceProvider.GetService<A2ASendingLeaseRenewer>()?.Forget(entry);
 
     }
 

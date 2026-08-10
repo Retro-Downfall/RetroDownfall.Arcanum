@@ -11,9 +11,17 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 internal sealed class SubagentRunner(
     Lazy<ITurnExecutionFacade> turnCoordinator,
     ILongRunningOperationCoordinator operations,
-    ISubagentTelemetrySink telemetry) : ISubagentRunner
+    ISubagentTelemetrySink telemetry,
+    TimeProvider timeProvider) : ISubagentRunner
 {
     private static readonly TimeSpan OperationLease = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// How often the lease is renewed while the child turn runs. Comfortably inside
+    /// <see cref="OperationLease"/> — which is the coordinator's hard maximum — so a slow local
+    /// model cannot outlive the lease and have the reconciler abandon a run that is still going.
+    /// </summary>
+    private static readonly TimeSpan LeaseRenewalInterval = TimeSpan.FromMinutes(5);
 
     private const string IsolatedSystemInstruction =
         "You are an isolated subagent. Work only from this system message, the child task prompt, "
@@ -33,6 +41,7 @@ internal sealed class SubagentRunner(
         Stopwatch stopwatch = Stopwatch.StartNew();
         SubagentRunOutcome outcome = SubagentRunOutcome.Failed;
         LongRunningOperationLeaseResult? operationLease = null;
+        long operationRevision = 0;
         string ownerId = $"subagent:{Environment.ProcessId}:{childRunId:N}";
 
         try
@@ -58,16 +67,40 @@ internal sealed class SubagentRunner(
                     SubagentFailureCodes.DurableStartFailed);
             }
 
+            operationRevision = operationLease.Operation.Revision;
+
             using IDisposable isolation = SubagentExecutionAmbient.EnterChild(tracker);
 
             PingRequest childRequest = BuildIsolatedRequest(request);
 
-            Result<PromptTurnResult> result = await turnCoordinator.Value
-                .ExecuteBufferedAsync(
-                    childRequest,
-                    hasIdempotencyKey: false,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            // The lease is taken at the coordinator's 15-minute maximum, and a delegated child on
+            // local inference can outrun it. Renew for as long as the child runs, or the reconciler
+            // claims the row, abandons it under a new owner, and the finished answer is discarded.
+            using CancellationTokenSource renewalStop = new();
+
+            Task<long> renewal = RenewLeaseWhileRunningAsync(
+                operationLease.Operation.Id,
+                ownerId,
+                operationRevision,
+                renewalStop.Token);
+
+            Result<PromptTurnResult> result;
+
+            try
+            {
+                result = await turnCoordinator.Value
+                    .ExecuteBufferedAsync(
+                        childRequest,
+                        hasIdempotencyKey: false,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                await renewalStop.CancelAsync().ConfigureAwait(false);
+
+                operationRevision = await renewal.ConfigureAwait(false);
+            }
 
             if (tracker.GetUsage().Exhausted)
             {
@@ -76,6 +109,7 @@ internal sealed class SubagentRunner(
                 await FailOperationAsync(
                         operationLease,
                         ownerId,
+                        operationRevision,
                         SubagentFailureCodes.BudgetExhausted)
                     .ConfigureAwait(false);
 
@@ -90,6 +124,7 @@ internal sealed class SubagentRunner(
                 await FailOperationAsync(
                         operationLease,
                         ownerId,
+                        operationRevision,
                         SubagentFailureCodes.ChildFailed)
                     .ConfigureAwait(false);
 
@@ -103,12 +138,21 @@ internal sealed class SubagentRunner(
                 .CompleteAsync(
                     operationLease.Operation.Id,
                     ownerId,
-                    operationLease.Operation.Revision,
+                    operationRevision,
                     CancellationToken.None)
                 .ConfigureAwait(false);
 
             if (!completed)
             {
+                // Somebody else moved the row. Still owe the ledger a terminal transition attempt
+                // from this owner rather than leaving the operation dangling.
+                await FailOperationAsync(
+                        operationLease,
+                        ownerId,
+                        operationRevision,
+                        SubagentFailureCodes.ChildFailed)
+                    .ConfigureAwait(false);
+
                 return Failure(
                     childRunId,
                     tracker,
@@ -133,6 +177,7 @@ internal sealed class SubagentRunner(
                 await FailOperationAsync(
                         operationLease,
                         ownerId,
+                        operationRevision,
                         SubagentFailureCodes.BudgetExhausted)
                     .ConfigureAwait(false);
             }
@@ -151,6 +196,7 @@ internal sealed class SubagentRunner(
                 await FailOperationAsync(
                         operationLease,
                         ownerId,
+                        operationRevision,
                         SubagentFailureCodes.Cancelled)
                     .ConfigureAwait(false);
             }
@@ -164,6 +210,7 @@ internal sealed class SubagentRunner(
                 await FailOperationAsync(
                         operationLease,
                         ownerId,
+                        operationRevision,
                         SubagentFailureCodes.ChildFailed)
                     .ConfigureAwait(false);
             }
@@ -224,13 +271,54 @@ internal sealed class SubagentRunner(
     private async Task FailOperationAsync(
         LongRunningOperationLeaseResult lease,
         string ownerId,
+        long expectedRevision,
         string failureCode) =>
         _ = await operations
             .FailAsync(
                 lease.Operation.Id,
                 ownerId,
-                lease.Operation.Revision,
+                expectedRevision,
                 failureCode,
                 CancellationToken.None)
             .ConfigureAwait(false);
+
+    /// <summary>
+    /// Holds the durable lease for as long as the child turn runs, and reports the revision the row
+    /// reached. Every accepted heartbeat bumps the stored revision by exactly one and requires this
+    /// owner still holds an unexpired lease, so counting successful renewals locally keeps the
+    /// subsequent <c>CompleteAsync</c>/<c>FailAsync</c> addressed at the current row. A refused
+    /// renewal means the lease is gone — there is nothing left to renew, so the loop stops and the
+    /// terminal transition is left to fail its compare-and-set.
+    /// </summary>
+    private async Task<long> RenewLeaseWhileRunningAsync(
+        Guid operationId,
+        string ownerId,
+        long startingRevision,
+        CancellationToken stopToken)
+    {
+        long revision = startingRevision;
+
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(LeaseRenewalInterval, timeProvider, stopToken).ConfigureAwait(false);
+
+                if (!await operations
+                        .HeartbeatAsync(operationId, ownerId, OperationLease, stopToken)
+                        .ConfigureAwait(false))
+                {
+                    break;
+                }
+
+                revision++;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The child finished, failed, or was cancelled. Outliving it was the loop's only job.
+        }
+
+        return revision;
+    }
 }

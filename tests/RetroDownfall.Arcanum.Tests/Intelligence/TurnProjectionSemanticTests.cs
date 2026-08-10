@@ -200,6 +200,47 @@ public sealed class TurnProjectionSemanticTests
         Assert.Empty(openAi.Map(refreshed));
     }
 
+    /// <summary>
+    /// A Ward asks the operator to approve a Forbidden Art. The tool name alone is not informed
+    /// consent — the arguments are what says which command runs against which path, and they carry
+    /// the <c>_arcanumRiskDisclosure</c> DESIGN §11.14 mandates. Dropping them from the wire frame
+    /// leaves every client (Command Center included) approving blind.
+    /// </summary>
+    [Fact]
+    public void IntelligenceEventProjection_Warded_CarriesTheToolArgumentsOntoTheFrame()
+    {
+        ApprovalRequested approval = new(
+            Correlation(1),
+            "ward-7",
+            "execute_command",
+            """{"command":"rm -rf build","_arcanumRiskDisclosure":"Runs a shell command."}""");
+
+        IntelligenceEvent frame = Assert.Single(IntelligenceEventProjection.Map(approval));
+        Assert.Equal(IntelligenceEventType.Warded, frame.Type);
+        Assert.Equal("ward-7", frame.WardId);
+        Assert.Equal("execute_command", frame.WardToolName);
+
+        JsonElement arguments = Assert.IsType<JsonElement>(frame.WardArguments);
+        Assert.Equal("rm -rf build", arguments.GetProperty("command").GetString());
+        Assert.Equal(
+            "Runs a shell command.",
+            arguments.GetProperty("_arcanumRiskDisclosure").GetString());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not json at all")]
+    public void IntelligenceEventProjection_Warded_OmitsUnusableArgumentsRatherThanFailing(string argumentsJson)
+    {
+        IntelligenceEvent frame = Assert.Single(
+            IntelligenceEventProjection.Map(
+                new ApprovalRequested(Correlation(1), "ward-8", "workspace_check", argumentsJson)));
+
+        Assert.Equal(IntelligenceEventType.Warded, frame.Type);
+        Assert.Null(frame.WardArguments);
+    }
+
     [Fact]
     public void IntelligenceEventProjection_NonTransportSemanticEvents_AreFiltered()
     {

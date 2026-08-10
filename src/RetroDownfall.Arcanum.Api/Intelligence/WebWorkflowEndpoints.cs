@@ -8,9 +8,17 @@ using Microsoft.AspNetCore.Http;
 
 using Microsoft.AspNetCore.Routing;
 
+using Microsoft.Extensions.DependencyInjection;
+
+using Microsoft.Extensions.Logging;
+
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Api.Models;
 
 using RetroDownfall.Arcanum.Api.Serialization;
+
+using RetroDownfall.Arcanum.Api.Streaming;
 
 using RetroDownfall.Arcanum.Api.TheForge;
 
@@ -20,6 +28,13 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 internal static class WebWorkflowEndpoints
 {
+
+    /// <summary>
+    /// What the operator sees when the research orchestration faults. Sanitized per DESIGN §11.9 —
+    /// the exception's own text never reaches the wire.
+    /// </summary>
+    private const string PublicResearchFailureMessage =
+        "The research stream failed unexpectedly. Check the host logs for details.";
 
     internal static void MapWebWorkflowEndpoints(
         this RouteGroupBuilder group)
@@ -123,30 +138,111 @@ internal static class WebWorkflowEndpoints
 
         httpContext.Response.ContentType = "application/x-ndjson";
 
+        httpContext.Response.Headers.CacheControl = "no-cache";
+
+        httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
+
         WebResearchWorkflowRequest effective = request ?? new();
 
-        await foreach (WebResearchStreamFrame frame in service
-            .ResearchAsync(effective, cancellationToken)
-            .ConfigureAwait(false))
+        // Once the first frame is flushed the response has started, and ArcanumExceptionHandler can
+        // no longer produce an envelope — it logs and returns false, aborting the chunked body. A
+        // caller would see a stream that simply stops, with the billable search and synthesis passes
+        // already paid for. Every exit therefore lands on a frame.
+        try
         {
 
-            byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-                frame,
-                ArcanumJsonContext.Default.WebResearchStreamFrame);
+            await foreach (WebResearchStreamFrame frame in service
+                .ResearchAsync(effective, cancellationToken)
+                .ConfigureAwait(false))
+            {
 
-            await httpContext.Response.Body
-                .WriteAsync(json, cancellationToken)
-                .ConfigureAwait(false);
+                await WriteFrameAsync(httpContext, frame, cancellationToken).ConfigureAwait(false);
 
-            await httpContext.Response.Body
-                .WriteAsync("\n"u8.ToArray(), cancellationToken)
-                .ConfigureAwait(false);
-
-            await httpContext.Response.Body
-                .FlushAsync(cancellationToken)
-                .ConfigureAwait(false);
+            }
 
         }
+        catch (Exception exception) when (ClientDisconnect.IsClientDisconnect(exception, httpContext))
+        {
+
+            // The socket is gone; there is nowhere left to write a terminal frame.
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            // Cooperative cancellation that did not abort the request. Nothing to report.
+
+        }
+        catch (Exception exception)
+        {
+
+            ResolveLogger(httpContext).LogError(
+                exception,
+                "Web research stream failed after {TraceId} started; emitting a terminal error frame.",
+                httpContext.TraceIdentifier);
+
+            try
+            {
+
+                await WriteFrameAsync(
+                        httpContext,
+                        new WebResearchStreamFrame
+                        {
+
+                            Type = WebResearchStreamFrameType.Error,
+
+                            Code = ErrorCodes.Hub.Error,
+
+                            Message = PublicResearchFailureMessage,
+
+                        },
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+
+            }
+            catch (Exception writeException)
+                when (ClientDisconnect.IsClientDisconnect(writeException, httpContext))
+            {
+
+            }
+
+        }
+
+    }
+
+    private static async Task WriteFrameAsync(
+        HttpContext httpContext,
+        WebResearchStreamFrame frame,
+        CancellationToken cancellationToken)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            frame,
+            ArcanumJsonContext.Default.WebResearchStreamFrame);
+
+        await httpContext.Response.Body
+            .WriteAsync(json, cancellationToken)
+            .ConfigureAwait(false);
+
+        await httpContext.Response.Body
+            .WriteAsync("\n"u8.ToArray(), cancellationToken)
+            .ConfigureAwait(false);
+
+        await httpContext.Response.Body
+            .FlushAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    private static ILogger ResolveLogger(HttpContext httpContext)
+    {
+
+        string category = typeof(WebWorkflowEndpoints).FullName ?? nameof(WebWorkflowEndpoints);
+
+        return httpContext.RequestServices
+                ?.GetService<ILoggerFactory>()
+                ?.CreateLogger(category)
+            ?? NullLoggerFactory.Instance.CreateLogger(category);
 
     }
 

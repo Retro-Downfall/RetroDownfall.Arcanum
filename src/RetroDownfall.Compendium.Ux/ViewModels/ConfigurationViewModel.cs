@@ -89,7 +89,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         IUiDispatcher uiDispatcher,
         ILogger<ConfigurationViewModel> logger,
         LocalCertificateGenerator? certificateGenerator = null,
-        IConfigurationPresetService? presetService = null)
+        IConfigurationPresetService? presetService = null,
+        IFamiliarProbeClient? probeClient = null)
     {
 
         _store = store;
@@ -101,7 +102,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         _logger = logger;
 
         // Initialize view models with dialog service for confirmation dialogs
-        Providers = new ProvidersSectionViewModel(dialogService);
+        Providers = new ProvidersSectionViewModel(dialogService, probeClient);
         Daemon = new DaemonSectionViewModel(dialogService);
         Host.AttachServices(certificateGenerator ?? new LocalCertificateGenerator(), dialogService);
 

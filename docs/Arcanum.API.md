@@ -131,11 +131,11 @@ test, and documentation citations remain stable.
 | GET | `/api/campaigns/{id}/sessions` | Sessions scoped to a campaign (`ApiResponse<SessionQueryResult>`; `?status=`, `?search=`, `?limit=`, `?beforeUpdatedAt=`; **404** `Campaign.NotFound`; DESIGN §19). |
 | POST | `/api/campaigns/{id}/export` | Export spells + prompts + settings (`ApiResponse<CampaignExportDto>`; DESIGN §19). |
 | POST | `/api/campaigns/{id}/import` | Import portable campaign bundle (`ApiResponse<CampaignImportResultDto>`; DESIGN §19). |
-| GET | `/api/campaigns/{id}/codex` | Read campaign `CODEX.md` (`ApiResponse<CodexContentDto>`; `exists: false` when file absent; **404** `Campaign.NotFound`; DESIGN §19). |
-| PUT | `/api/campaigns/{id}/codex` | Create or overwrite campaign `CODEX.md` (`ApiResponse<CodexContentDto>`; body `{ "content": "..." }`; **400** when over the code-owned CODEX size limit; DESIGN §19). |
-| DELETE | `/api/campaigns/{id}/codex` | Delete campaign `CODEX.md` (**204**; DESIGN §19). |
-| GET | `/api/codex` | Read global `~/.config/arcanum/CODEX.md` (`ApiResponse<CodexContentDto>`; DESIGN §19). |
-| PUT | `/api/codex` | Create or overwrite global CODEX (`ApiResponse<CodexContentDto>`; DESIGN §19). |
+| GET | `/api/campaigns/{id}/codex` | Read campaign `CODEX.md` (`ApiResponse<CodexContentDto>`; `exists: false` when file absent; **404** `Campaign.NotFound`; **400** `Codex.PathNotContained` when `CODEX.md` is a link resolving outside the campaign root; DESIGN §19). |
+| PUT | `/api/campaigns/{id}/codex` | Create or overwrite campaign `CODEX.md` (`ApiResponse<CodexContentDto>`; body `{ "content": "..." }`; **400** when over the code-owned CODEX size limit or `Codex.PathNotContained`; DESIGN §19). |
+| DELETE | `/api/campaigns/{id}/codex` | Delete campaign `CODEX.md` (**204**; unlinks the entry itself, so a link is removed rather than followed; DESIGN §19). |
+| GET | `/api/codex` | Read global `~/.config/arcanum/CODEX.md` (`ApiResponse<CodexContentDto>`; **400** `Codex.PathNotContained` when the file resolves outside the Grimoire directory; DESIGN §19). |
+| PUT | `/api/codex` | Create or overwrite global CODEX (`ApiResponse<CodexContentDto>`; same size and containment failures as the campaign route; DESIGN §19). |
 | DELETE | `/api/codex` | Delete global CODEX (**204**; DESIGN §19). |
 | GET | `/api/campaigns/{campaignId}/sanctum` | Campaign Sanctum config (`ApiResponse<SanctumConfig>`; default `Enabled: false`; DESIGN §11.15). |
 | PUT | `/api/campaigns/{campaignId}/sanctum` | Update Sanctum config (`ApiResponse<SanctumConfig>`; body `SanctumConfig`). |
@@ -269,7 +269,7 @@ Envelope-payload specifics:
 
 **Daemon route families:** **`/api/unseen-servant/*`** manages Unseen Servant job **configuration** and runtime scheduling intervals (`GET /api/unseen-servant/jobs`, `POST /api/unseen-servant/jobs/{name}/initiative`). **`/api/daemons/*`** and **`/api/executions/*`** are the daemon job **registry** and **execution history** API for all registered `IDaemonJob` types (§8.15).
 
-The `/api` and `/v1` groups are protected by `ApiKeyEndpointFilter` (DESIGN §11), including the OpenAPI document and Scalar reference UI on `/api` (`MapOpenApi` / `MapScalarApiReference` are registered on the same keyed group, so browsers need a valid API key like any other `/api` caller).
+The `/api` and `/v1` groups are protected by the API key (DESIGN §11.3), including the OpenAPI document and Scalar reference UI on `/api` (`MapOpenApi` / `MapScalarApiReference` are registered on the same keyed group, so browsers need a valid API key like any other `/api` caller). The check runs as **middleware, before parameter binding**, so an unauthenticated request is answered **401 `Auth.Unauthorized` regardless of its body**: the body is never read, buffered, or deserialized first, and a malformed body no longer yields a binding `400` ahead of the `401`. Endpoint **matching** still precedes the key check, so `404` (no route), `405` (wrong method), and `415` (`Content-Type` the route does not accept) remain reachable without a key — none of them touch the body. `ApiKeyEndpointFilter` remains attached to the same routes as defence in depth.
 
 ---
 

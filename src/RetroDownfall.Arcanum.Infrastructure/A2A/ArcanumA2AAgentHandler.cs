@@ -461,24 +461,28 @@ public sealed class ArcanumA2AAgentHandler(
 
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
-        // A task parked at input-required is still ours to stop: the peer giving up on the question must
-        // cancel the Apprentice waiting for it, not just abandon the mapping (issue #64).
+        // Only the live index means an ExecuteAsync relay is still enumerating this Apprentice's Chronicle
+        // and will drive the terminal transition off ApprenticeCancelled. Knowing which Apprentice serves
+        // the task is a different fact: every other path below has to emit that transition itself.
         bool live = _taskToApprentice.TryGetValue(context.TaskId, out Guid apprenticeId);
 
+        bool needsTerminalTransition = false;
+
+        // A task parked at input-required is still ours to stop: the peer giving up on the question must
+        // cancel the Apprentice waiting for it, not just abandon the mapping (issue #64). Its relay ended
+        // when the escalation parked it, so this path owes the peer the terminal transition.
         if (!live && _awaitingContinuation.TryRemove(context.TaskId, out A2AParkedSending parked))
         {
 
             apprenticeId = parked.ApprenticeId;
 
-            live = true;
+            needsTerminalTransition = true;
 
             await ReleaseInboundAsync(scope.ServiceProvider, parked.Ledger).ConfigureAwait(false);
 
         }
 
-        bool recoveredFromLedger = false;
-
-        if (!live)
+        if (!live && !needsTerminalTransition)
         {
 
             // The in-memory index dies with the process, but the durable record does not: a peer that
@@ -493,13 +497,13 @@ public sealed class ArcanumA2AAgentHandler(
 
                 apprenticeId = recoveredId;
 
-                recoveredFromLedger = true;
+                needsTerminalTransition = true;
 
             }
 
         }
 
-        if (!live && !recoveredFromLedger)
+        if (!live && !needsTerminalTransition)
         {
 
             // Overriding IAgentHandler.CancelAsync replaces the SDK's own Canceled transition, so returning
@@ -521,10 +525,10 @@ public sealed class ArcanumA2AAgentHandler(
 
         IApprenticeRuntime runtime = scope.ServiceProvider.GetRequiredService<IApprenticeRuntime>();
 
-        // Best-effort: this triggers Apprentice cancellation, which ExecuteAsync's own Chronicle
-        // subscription (still running as the SDK's background task for this same A2A task) will
-        // observe as ApprenticeCancelled and use to drive the terminal TaskUpdater.CancelAsync
-        // transition itself. We do not call updater.CancelAsync here too, to avoid racing two
+        // Best-effort: for a genuinely live task this triggers Apprentice cancellation, which ExecuteAsync's
+        // own Chronicle subscription (still running as the SDK's background task for this same A2A task)
+        // will observe as ApprenticeCancelled and use to drive the terminal TaskUpdater.CancelAsync
+        // transition itself. In that case we do not call updater.CancelAsync here too, to avoid racing two
         // terminal-state transitions on the same task from two different call paths.
         Result<string> cancelResult = await runtime.CancelAsync(apprenticeId, cancellationToken).ConfigureAwait(false);
 
@@ -539,12 +543,12 @@ public sealed class ArcanumA2AAgentHandler(
 
         }
 
-        if (recoveredFromLedger)
+        if (needsTerminalTransition)
         {
 
-            // Recovered from the durable record after a restart: no ExecuteAsync relay is running for
-            // this task, so nothing else will ever drive its terminal transition. The peer would wait
-            // forever otherwise.
+            // Parked at input-required, or recovered from the durable record after a restart: either way
+            // no ExecuteAsync relay is running for this task, so nothing else will ever drive its terminal
+            // transition. The peer would wait forever otherwise.
             await RunTerminalTransitionAsync(
                 ct => new TaskUpdater(eventQueue, context.TaskId, context.ContextId).CancelAsync(ct).AsTask(),
                 cancellationToken).ConfigureAwait(false);

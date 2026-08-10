@@ -728,4 +728,82 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A FIFO named SPELL.md is yielded by the walk (Directory.EnumerateFiles returns FIFOs and the lexical
+    /// containment check passes because the path really is inside the root) and TryGetFileLength reports 0 for
+    /// it, so the size gate let it through to a blocking open(2) that never returns until a writer appears.
+    /// ScanMetadataAsync coalesces through SingleFlight, so one planted FIFO wedged the spell catalog for every
+    /// concurrent caller of that workspace — permanently, because the shared task never completes.
+    /// </summary>
+    [SkippableFact]
+    public async Task ScanMetadataAsync_skips_a_fifo_spell_file_instead_of_blocking_forever()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
+
+        await CreateFifoAsync("spells/piped/SPELL.md");
+
+        // Offloaded so a regression blocks a pool thread rather than wedging the whole test run.
+        Task<IReadOnlyList<SpellMetadata>> scan = Task.Run(
+            () => SpellScanner.ScanMetadataAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+        Task completed = await Task.WhenAny(scan, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        Assert.Same(scan, completed);
+
+        IReadOnlyList<SpellMetadata> metadata = await scan;
+
+        Assert.Contains(metadata, m => m.Name == "fireball");
+
+        Assert.DoesNotContain(metadata, m => m.Name == "piped");
+
+    }
+
+    /// <summary>
+    /// The full-parse walk reaches the same FIFO through File.ReadAllTextAsync, which both blocks on the open
+    /// and — once any writer attaches — reads to EOF with no cap, because the size check only runs after the
+    /// whole payload is already materialized in memory.
+    /// </summary>
+    [SkippableFact]
+    public async Task ScanAsync_skips_a_fifo_spell_file_instead_of_blocking_forever()
+    {
+
+        Skip.If(OperatingSystem.IsWindows(), "mkfifo is a POSIX primitive.");
+
+        await CreateFifoAsync("spells/piped/SPELL.md");
+
+        Task<IReadOnlyList<ParsedSpell>> scan = Task.Run(
+            () => SpellScanner.ScanAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+        Task completed = await Task.WhenAny(scan, Task.Delay(TimeSpan.FromSeconds(20)));
+
+        Assert.Same(scan, completed);
+
+        IReadOnlyList<ParsedSpell> spells = await scan;
+
+        Assert.Contains(spells, s => s.Name == "fireball");
+
+        Assert.DoesNotContain(spells, s => s.Name == "piped");
+
+    }
+
+    private async Task CreateFifoAsync(string relativePath)
+    {
+
+        string fifoPath = Path.Combine(_workspace.Root, relativePath);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(fifoPath)!);
+
+        using System.Diagnostics.Process? mkfifo = System.Diagnostics.Process.Start("mkfifo", fifoPath);
+
+        Skip.If(mkfifo is null, "mkfifo is unavailable on this host.");
+
+        await mkfifo!.WaitForExitAsync();
+
+        Skip.If(mkfifo.ExitCode != 0, "mkfifo failed on this host.");
+
+        Assert.True(File.Exists(fifoPath));
+
+    }
+
 }

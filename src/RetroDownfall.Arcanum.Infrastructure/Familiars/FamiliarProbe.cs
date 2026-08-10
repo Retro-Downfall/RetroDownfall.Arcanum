@@ -71,15 +71,21 @@ public sealed class FamiliarProbe(
 
         string executable = resolvedPath ?? command;
 
+        // A status spawn is still a spawn. Both CLIs read project state out of their working root —
+        // Claude Code's `.claude/settings.json` hooks, Codex's `AGENTS.md` and `.rules` — so the
+        // probe gets the same private root the inference path gives every turn. Inheriting the host's
+        // current directory would let whatever repository the operator started Arcanum in steer it.
+        using FamiliarWorkingDirectory root = FamiliarWorkingDirectory.Create();
+
         return provider.Type switch
         {
 
             AiProviderKind.ClaudeCodeCli =>
-                await ProbeClaudeAsync(provider, executable, enumeration, models, cancellationToken)
+                await ProbeClaudeAsync(provider, executable, root.Path, enumeration, models, cancellationToken)
                     .ConfigureAwait(false),
 
             AiProviderKind.CodexCli =>
-                await ProbeCodexAsync(provider, executable, enumeration, models, cancellationToken)
+                await ProbeCodexAsync(provider, executable, root.Path, enumeration, models, cancellationToken)
                     .ConfigureAwait(false),
 
             _ => Build(
@@ -99,12 +105,13 @@ public sealed class FamiliarProbe(
     private async Task<FamiliarProbeResult> ProbeClaudeAsync(
         ProviderSettings provider,
         string command,
+        string workingDirectory,
         FamiliarModelEnumeration enumeration,
         string[] models,
         CancellationToken cancellationToken)
     {
 
-        string? version = await ReadVersionAsync(command, ["--version"], cancellationToken)
+        string? version = await ReadVersionAsync(command, ["--version"], workingDirectory, cancellationToken)
             .ConfigureAwait(false);
 
         FamiliarProcessOutput output = await runner.RunToCompletionAsync(
@@ -112,6 +119,7 @@ public sealed class FamiliarProbe(
             {
                 FileName = command,
                 Arguments = ["auth", "status", "--json"],
+                WorkingDirectory = workingDirectory,
                 DeniedEnvironmentVariables = DeniedEnvironmentVariables(),
                 Timeout = FamiliarProcessLimits.ProbeTimeout,
             },
@@ -157,6 +165,7 @@ public sealed class FamiliarProbe(
     private async Task<FamiliarProbeResult> ProbeCodexAsync(
         ProviderSettings provider,
         string command,
+        string workingDirectory,
         FamiliarModelEnumeration enumeration,
         string[] models,
         CancellationToken cancellationToken)
@@ -167,6 +176,7 @@ public sealed class FamiliarProbe(
             {
                 FileName = command,
                 Arguments = ["doctor", "--json"],
+                WorkingDirectory = workingDirectory,
                 DeniedEnvironmentVariables = DeniedEnvironmentVariables(),
                 Timeout = FamiliarProcessLimits.ProbeTimeout,
             },
@@ -230,6 +240,7 @@ public sealed class FamiliarProbe(
     private async Task<string?> ReadVersionAsync(
         string command,
         IReadOnlyList<string> arguments,
+        string workingDirectory,
         CancellationToken cancellationToken)
     {
 
@@ -238,6 +249,7 @@ public sealed class FamiliarProbe(
             {
                 FileName = command,
                 Arguments = arguments,
+                WorkingDirectory = workingDirectory,
                 DeniedEnvironmentVariables = DeniedEnvironmentVariables(),
                 Timeout = FamiliarProcessLimits.ProbeTimeout,
             },

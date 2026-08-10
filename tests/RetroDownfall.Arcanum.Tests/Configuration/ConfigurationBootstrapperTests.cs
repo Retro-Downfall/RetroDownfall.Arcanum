@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Configuration;
@@ -160,6 +162,51 @@ public sealed class ConfigurationBootstrapperTests : IAsyncLifetime
         Assert.Equal(1.25m, pricing.InputPer1M);
         Assert.Equal(2.5m, pricing.OutputPer1M);
         Assert.Equal(0.25m, pricing.CachedPer1M);
+    }
+
+    [Fact]
+    public void LoadArcanumSettingsFile_TreatsAnExplicitNullModelPricingMapAsEmpty()
+    {
+        string path = Path.Combine(_workspace.Root, "null-model-pricing-arcanum.json");
+        File.WriteAllText(
+            path,
+            """{"Arcanum":{"cost":{"pricing":{"modelPricing":null}}}}""");
+
+        ArcanumSettings settings =
+            ConfigurationBootstrapper.LoadArcanumSettingsFile(path);
+
+        Assert.Empty(settings.Cost.Pricing.ModelPricing);
+        Assert.Same(
+            settings.Cost.Pricing.DefaultPricing,
+            settings.Cost.Pricing.ResolveForModel("mistral:latest"));
+    }
+
+    [Fact]
+    public void LoadArcanumSettingsFile_AcceptsTheDocumentedTapestryRetrievalModeName()
+    {
+        string path = Path.Combine(_workspace.Root, "tapestry-retrieval-mode-arcanum.json");
+        File.WriteAllText(
+            path,
+            """
+            {
+              "Arcanum": {
+                "integrations": {
+                  "embeddings": {
+                    "tapestry": {
+                      "retrievalMode": "TreeTraversal"
+                    }
+                  }
+                }
+              }
+            }
+            """);
+
+        ArcanumSettings settings =
+            ConfigurationBootstrapper.LoadArcanumSettingsFile(path);
+
+        Assert.Equal(
+            TapestryRetrievalMode.TreeTraversal,
+            settings.Integrations.Embeddings.Tapestry.RetrievalMode);
     }
 
     [Fact]

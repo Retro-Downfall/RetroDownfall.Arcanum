@@ -535,6 +535,88 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     [SkippableFact]
 
+    public async Task ProcessBatchAsync_CancelledBeforeClaim_LeavesBatchCancelledAndDispatchesNothing()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeIntelligenceProvider provider = new()
+
+        {
+
+            NextText = "must-never-run",
+
+            NextFinishReason = "stop",
+
+        };
+
+        BatchProcessingService service = CreateService(
+
+            provider,
+
+            maxConcurrentRequestsPerBatch: 1);
+
+        Guid inputFileId = await SeedInputFileAsync(
+
+            """{"custom_id":"cancelled-before-claim","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
+
+            + "\n");
+
+        BatchRecord batch = new(
+
+            Guid.NewGuid(),
+
+            inputFileId,
+
+            "/v1/chat/completions",
+
+            BatchStatuses.Validating,
+
+            DateTimeOffset.UtcNow,
+
+            null,
+
+            null,
+
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        DateTimeOffset cancelledAt = DateTimeOffset.UtcNow;
+
+        Assert.True(await _batches.TryCompareAndSetStatusAsync(
+
+            batch.Id,
+
+            BatchStatuses.Validating,
+
+            BatchStatuses.Cancelled,
+
+            cancelledAt,
+
+            outputFileId: null,
+
+            errorFileId: null,
+
+            CancellationToken.None));
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Cancelled, finished.Status);
+
+        Assert.NotNull(finished.CompletedAt);
+
+        Assert.Equal(0, provider.ExecutePromptCallCount);
+
+    }
+
+    [SkippableFact]
+
     public async Task ProcessBatchAsync_CancelRace_PreservesCancelledStatusAndCompletedLineOutput()
 
     {

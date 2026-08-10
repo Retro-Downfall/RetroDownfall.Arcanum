@@ -317,6 +317,44 @@ public sealed class CommandCenterKeymapTests
                 overlayOpen: false,
                 new KeyChord(IsEnter: true)));
     }
+
+    /// <summary>
+    /// The palette is not the sessions list: driving the session selection from it clamps movement
+    /// to the session count, hides every entry past it, and silently repoints the resume target.
+    /// </summary>
+    [Theory]
+    [InlineData(true, false, nameof(CommandCenterAction.PaletteSelectUp))]
+    [InlineData(false, true, nameof(CommandCenterAction.PaletteSelectDown))]
+    internal void Palette_arrows_move_the_palette_not_the_session_selection(
+        bool up,
+        bool down,
+        string expected)
+    {
+        Assert.Equal(
+            Enum.Parse<CommandCenterAction>(expected),
+            CommandCenterKeymap.Map(
+                CommandCenterFocusRegion.Overlay,
+                false,
+                false,
+                overlayOpen: true,
+                new KeyChord(IsUp: up, IsDown: down),
+                CommandCenterOverlayKind.CommandPalette));
+    }
+
+    /// <summary>An overlay with no selectable rows must not move somebody else's selection either.</summary>
+    [Fact]
+    internal void Help_overlay_arrows_do_not_move_the_session_selection()
+    {
+        Assert.Equal(
+            CommandCenterAction.None,
+            CommandCenterKeymap.Map(
+                CommandCenterFocusRegion.Overlay,
+                false,
+                false,
+                overlayOpen: true,
+                new KeyChord(IsDown: true),
+                CommandCenterOverlayKind.Help));
+    }
 }
 
 public sealed class StreamingUiCoalescerTests

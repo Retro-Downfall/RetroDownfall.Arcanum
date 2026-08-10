@@ -1675,50 +1675,56 @@ internal static class SessionEndpoints
 
                 Task pumpTask = PumpSessionLiveAsync(id, eventHub, liveBuffer.Writer, pumpCts.Token);
 
-                HashSet<Guid> replayIds = [];
-
-                SessionSettings sessionSettings = options.CurrentValue.ResolveSessions();
-
-                int replayLimit = ArcanumSettingClamps.SessionStreamReplayLimit(
-                    sessionSettings.MaxStreamReplayEntries);
-
-                if (sinceEntry is not null)
-                {
-                    List<Entry> catchUp = await repo
-                        .GetEntriesAfterAsync(id, sinceEntry.Sequence, replayLimit, httpContext.RequestAborted)
-                        .ConfigureAwait(false);
-
-                    foreach (Entry entry in catchUp)
-                    {
-                        replayIds.Add(entry.Id);
-
-                        await WriteEntrySseAsync(httpContext, entry, httpContext.RequestAborted).ConfigureAwait(false);
-                    }
-                }
-                else
-                {
-                    List<Entry> replay = await repo
-                        .GetEntriesAscendingAsync(id, replayLimit, httpContext.RequestAborted)
-                        .ConfigureAwait(false);
-
-                    replayIds = replay.Select(e => e.Id).ToHashSet();
-
-                    foreach (Entry entry in replay)
-                    {
-                        await WriteEntrySseAsync(httpContext, entry, httpContext.RequestAborted).ConfigureAwait(false);
-                    }
-                }
-
-                await httpContext.Response.Body.WriteAsync(SseLiveSentinel, httpContext.RequestAborted).ConfigureAwait(false);
-
-                await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
-
-                TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
-                    ArcanumSettingClamps.EventBusHeartbeatSeconds(
-                        options.CurrentValue.ResolveEventBus().HeartbeatSeconds));
-
+                // The pump owns a SessionEventHub subscription that only its own cancellation
+                // releases, so everything from here on must sit inside the try whose finally cancels
+                // pumpCts. Leaving the Grimoire replay outside it let a fault there unwind through
+                // `using pumpCts` — disposing the linked source without cancelling it, which unlinks
+                // it from RequestAborted for good and strands the pump, its subscriber channel, and
+                // the per-session hub entry.
                 try
                 {
+
+                    HashSet<Guid> replayIds = [];
+
+                    SessionSettings sessionSettings = options.CurrentValue.ResolveSessions();
+
+                    int replayLimit = ArcanumSettingClamps.SessionStreamReplayLimit(
+                        sessionSettings.MaxStreamReplayEntries);
+
+                    if (sinceEntry is not null)
+                    {
+                        List<Entry> catchUp = await repo
+                            .GetEntriesAfterAsync(id, sinceEntry.Sequence, replayLimit, httpContext.RequestAborted)
+                            .ConfigureAwait(false);
+
+                        foreach (Entry entry in catchUp)
+                        {
+                            replayIds.Add(entry.Id);
+
+                            await WriteEntrySseAsync(httpContext, entry, httpContext.RequestAborted).ConfigureAwait(false);
+                        }
+                    }
+                    else
+                    {
+                        List<Entry> replay = await repo
+                            .GetEntriesAscendingAsync(id, replayLimit, httpContext.RequestAborted)
+                            .ConfigureAwait(false);
+
+                        replayIds = replay.Select(e => e.Id).ToHashSet();
+
+                        foreach (Entry entry in replay)
+                        {
+                            await WriteEntrySseAsync(httpContext, entry, httpContext.RequestAborted).ConfigureAwait(false);
+                        }
+                    }
+
+                    await httpContext.Response.Body.WriteAsync(SseLiveSentinel, httpContext.RequestAborted).ConfigureAwait(false);
+
+                    await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
+
+                    TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
+                        ArcanumSettingClamps.EventBusHeartbeatSeconds(
+                            options.CurrentValue.ResolveEventBus().HeartbeatSeconds));
 
                     while (liveBuffer.Reader.TryRead(out Entry? buffered) && buffered is not null)
                     {
@@ -1738,6 +1744,14 @@ internal static class SessionEndpoints
                         (entry, ct) => WriteEntrySseAsync(httpContext, entry, ct),
                         heartbeatInterval,
                         httpContext.RequestAborted).ConfigureAwait(false);
+
+                }
+                catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+                {
+
+                    // The client went away during replay, the buffered drain, or the live stream.
+                    // Break silently — no DONE frame to a dead socket. Mirrors the Chronicle stream
+                    // in ApprenticeEndpoints; the finally still cancels the pump CTS.
 
                 }
                 catch (OperationCanceledException)

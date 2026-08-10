@@ -46,6 +46,8 @@ public enum RetentionDataClass
 
     SessionEntryEmbeddings,
 
+    Tapestry,
+
     AuditLogs,
 
     GuardrailLogs,

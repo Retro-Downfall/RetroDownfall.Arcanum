@@ -965,6 +965,50 @@ public sealed class BackupRestoreServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task A_pre_restore_safety_backup_that_does_not_complete_stops_the_restore_before_the_destructive_step()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("safety-incomplete.arcbackup");
+
+        string sentinel = Path.Combine(_installation, "only-in-the-live-tree.md");
+
+        await File.WriteAllTextAsync(sentinel, "the operator's only copy");
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret },
+                safetyBackups: new IncompleteBackupService())
+            .RestoreAsync(
+                new BackupRestoreRequest(archive, Confirmed: true),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.True(File.Exists(sentinel));
+
+        Assert.True(File.Exists(Path.Combine(_installation, "arcanum.db")));
+
+        Assert.Equal(BackupRestoreStatus.Rejected, result.Status);
+
+        Assert.Contains(
+            result.Issues,
+            static issue => issue.Code == "backup.restore_safety_backup_failed");
+
+        Assert.Contains(
+            result.Issues,
+            static issue => issue.Code == "backup.safety_inventory_incomplete");
+
+        Assert.Null(result.SafetyBackupPath);
+
+        Assert.Empty(
+            Directory.GetDirectories(
+                Path.GetDirectoryName(_installation)!,
+                ".arcanum-restore-*",
+                SearchOption.TopDirectoryOnly));
+
+    }
+
+    [Fact]
     public async Task A_migrated_archive_is_rewritten_at_the_current_format_without_touching_the_source()
     {
 
@@ -1291,6 +1335,64 @@ public sealed class BackupRestoreServiceTests : IDisposable
                 Task.FromResult(SecretStoreReadResult.Ok("archived-master-key"));
 
         }
+
+    }
+
+    /// <summary>
+    /// A safety-backup service whose create reports <see cref="BackupCreateStatus.Incomplete"/>
+    /// without throwing — the graceful outcome the real <see cref="BackupService"/> returns when a
+    /// required component cannot be inventoried or a required secret cannot be read.
+    /// </summary>
+    private sealed class IncompleteBackupService : IBackupService
+    {
+
+        public Task<BackupPlan> PlanAsync(
+            BackupPlanRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<BackupCreateResult> CreateAsync(
+            BackupCreateRequest request,
+            ReadOnlyMemory<char> recoveryPassphrase,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(
+                new BackupCreateResult(
+                    BackupCreateStatus.Incomplete,
+                    ArchivePath: null,
+                    ArchiveBytes: 0,
+                    Guid.NewGuid(),
+                    Manifest: null,
+                    new BackupPlan(
+                        DateTimeOffset.UnixEpoch,
+                        BackupScope.Full,
+                        SessionId: null,
+                        [],
+                        0,
+                        0,
+                        [],
+                        []),
+                    [
+                        new BackupVerifyIssue(
+                            "backup.safety_inventory_incomplete",
+                            "A required component could not be inventoried."),
+                    ]));
+
+        public Task<BackupInspectResult> InspectAsync(
+            string archivePath,
+            ReadOnlyMemory<char>? recoveryPassphrase,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<BackupVerifyResult> VerifyAsync(
+            string archivePath,
+            ReadOnlyMemory<char> recoveryPassphrase,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<BackupListItem>> ListAsync(
+            string? directory,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
 
     }
 

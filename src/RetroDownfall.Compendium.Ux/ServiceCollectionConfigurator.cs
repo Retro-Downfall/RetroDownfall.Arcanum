@@ -1,6 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Compendium.Ux.Services;
 using RetroDownfall.Compendium.Ux.ViewModels;
 using RetroDownfall.Compendium.Ux.Views;
@@ -26,6 +29,12 @@ internal static class ServiceCollectionConfigurator
         services.AddSingleton<IDialogService, DialogService>();
 
         services.AddSingleton<IUiDispatcher, AvaloniaUiDispatcher>();
+
+        // The probe authenticates to the host with the master API key, so the secret store travels
+        // with it. Nothing here opens the Grimoire — this is the key read and nothing more.
+        services.TryAddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
+
+        services.AddArcanumSecretStore();
 
         // The only thing Compendium asks the host for. Configuration persistence stays exactly as it
         // is — direct, atomic, transactional writes through ArcanumConfigurationStore.

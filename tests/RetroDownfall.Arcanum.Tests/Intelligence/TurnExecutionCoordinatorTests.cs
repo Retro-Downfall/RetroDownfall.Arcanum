@@ -215,6 +215,77 @@ public sealed class TurnExecutionCoordinatorTests
         Assert.False(timeout.IsCancellationRequested);
     }
 
+    /// <summary>
+    /// A client that disconnects mid-stream disposes this iterator at its <c>yield return</c>. The
+    /// producer is still unwinding the whole turn pipeline, whose finally blocks finalize the
+    /// Grimoire entry, reconcile the budget reservation, and close the InferenceRun against
+    /// request-scoped services on <c>CancellationToken.None</c>. Returning without joining it hands
+    /// those writes a scope ASP.NET is about to dispose.
+    /// </summary>
+    [Fact]
+    public async Task ExecuteIntelligenceStreamAsync_ConsumerBreaksEarly_JoinsProducerCleanup()
+    {
+        CleanupTrackingTurnEventSource source = new();
+        TurnExecutionCoordinator coordinator = new(source);
+
+        await foreach (IntelligenceEvent frame in coordinator
+            .ExecuteIntelligenceStreamAsync(
+                new PingRequest("prompt"),
+                hasIdempotencyKey: false,
+                CancellationToken.None)
+            .WithCancellation(CancellationToken.None))
+        {
+            Assert.Equal(IntelligenceEventType.Status, frame.Type);
+            break;
+        }
+
+        Assert.True(source.CleanupCompleted);
+    }
+
+    [Fact]
+    public async Task ExecuteIntelligenceStreamAsync_ConsumerCancels_JoinsProducerCleanup()
+    {
+        CleanupTrackingTurnEventSource source = new();
+        TurnExecutionCoordinator coordinator = new(source);
+        using CancellationTokenSource cancellation = new();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (IntelligenceEvent _ in coordinator
+                .ExecuteIntelligenceStreamAsync(
+                    new PingRequest("prompt"),
+                    hasIdempotencyKey: false,
+                    cancellation.Token)
+                .WithCancellation(CancellationToken.None))
+            {
+                await cancellation.CancelAsync();
+            }
+        }).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(source.CleanupCompleted);
+    }
+
+    [Fact]
+    public async Task ExecuteOpenAiSseAsync_ConsumerBreaksEarly_JoinsProducerCleanup()
+    {
+        CleanupTrackingTurnEventSource source = new(new TextDelta(Correlation(1), "partial"));
+        TurnExecutionCoordinator coordinator = new(source);
+
+        await foreach (OpenAiChatChunk _ in coordinator
+            .ExecuteOpenAiSseAsync(
+                new PingRequest("prompt"),
+                hasIdempotencyKey: false,
+                completionId: "chatcmpl-disconnect",
+                model: "test-model",
+                CancellationToken.None)
+            .WithCancellation(CancellationToken.None))
+        {
+            break;
+        }
+
+        Assert.True(source.CleanupCompleted);
+    }
+
     [Fact]
     public async Task ExecuteOpenAiSseAsync_CompletedTurn_StreamsReasoningTextAndTerminalUsage()
     {
@@ -390,6 +461,39 @@ public sealed class TurnExecutionCoordinatorTests
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// Emits one frame, then blocks until the producer's own token is cancelled, and records that
+    /// its cleanup ran. Stands in for the Wizard pipeline's finally blocks, which do their durable
+    /// work on <see cref="CancellationToken.None"/> and therefore keep running after the turn's
+    /// execution token is gone.
+    /// </summary>
+    private sealed class CleanupTrackingTurnEventSource(TurnEvent? first = null) : ITurnEventSource
+    {
+        private readonly TurnEvent _first = first ?? new TurnStatusChanged(Correlation(1), "working");
+
+        public bool CleanupCompleted { get; private set; }
+
+        public async IAsyncEnumerable<TurnEvent> RunTurnAsync(
+            TurnExecutionRequest request,
+            [EnumeratorCancellation] CancellationToken executionToken)
+        {
+            try
+            {
+                yield return _first;
+
+                // Bounded so an orphaned producer cannot outlive the test run.
+                await Task.Delay(TimeSpan.FromSeconds(10), executionToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(25), CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                CleanupCompleted = true;
+            }
+        }
     }
 
     private sealed class ScriptedTurnEventSource(params TurnEvent[] events) : ITurnEventSource

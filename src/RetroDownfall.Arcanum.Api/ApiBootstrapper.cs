@@ -271,6 +271,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<Microsoft.AspNetCore.Hosting.IStartupFilter, ConfigurationStartupValidator>();
 
+        services.AddSingleton<ApiKeyAuthenticator>();
+
         services.AddSingleton<ApiKeyEndpointFilter>();
 
         services.AddCors(options =>
@@ -517,15 +519,77 @@ public static class ApiBootstrapper
         });
     }
 
+    /// <summary>
+    /// Enforces the API key after routing has matched an endpoint but <b>before</b> the endpoint
+    /// delegate — and therefore before parameter binding — runs. Minimal-API endpoint filters run
+    /// after binding, so gating on <see cref="ApiKeyEndpointFilter"/> alone let an unauthenticated
+    /// caller have its body read, buffered and deserialized first: <c>POST /v1/files</c> raises the
+    /// multipart ceiling to the 513 MiB upload envelope, so anonymous requests spooled that much to
+    /// the temp filesystem before the 401, and a malformed body produced a binding 400 instead of the
+    /// 401 DESIGN §11.3 specifies. Installed from <see cref="MapArcanumEndpoints"/> rather than left
+    /// to each host so the gate cannot be forgotten by a composition root; it lands between the
+    /// framework's implicit <c>UseRouting</c> and <c>UseEndpoints</c>, and inside
+    /// <see cref="UseArcanumMetrics"/> so 401s still carry the matched route label.
+    /// </summary>
+    internal static void UseArcanumApiKeyAuthentication(this WebApplication app)
+    {
+        app.Use(static async (HttpContext context, Func<Task> next) =>
+        {
+
+            if (context.GetEndpoint()?.Metadata.GetMetadata<ApiKeyRequirementMetadata>() is null)
+            {
+
+                await next().ConfigureAwait(false);
+
+                return;
+
+            }
+
+            ApiKeyAuthenticator authenticator = context.RequestServices.GetRequiredService<ApiKeyAuthenticator>();
+
+            if (await authenticator.IsAuthorizedAsync(context).ConfigureAwait(false))
+            {
+
+                await next().ConfigureAwait(false);
+
+                return;
+
+            }
+
+            await ApiKeyAuthenticator.Unauthorized(context).ExecuteAsync(context).ConfigureAwait(false);
+
+        });
+    }
+
+    /// <summary>
+    /// Attaches both halves of the API-key gate — the metadata marker the pre-binding middleware reads
+    /// and <see cref="ApiKeyEndpointFilter"/> as defence in depth — so a route can never carry one
+    /// without the other.
+    /// </summary>
+    internal static RouteGroupBuilder RequireArcanumApiKey(this RouteGroupBuilder group)
+        => group
+            .AddEndpointFilter<ApiKeyEndpointFilter>()
+            .WithMetadata(ApiKeyRequirementMetadata.Instance);
+
+    /// <inheritdoc cref="RequireArcanumApiKey(RouteGroupBuilder)"/>
+    internal static RouteHandlerBuilder RequireArcanumApiKey(this RouteHandlerBuilder route)
+        => route
+            .AddEndpointFilter<ApiKeyEndpointFilter>()
+            .WithMetadata(ApiKeyRequirementMetadata.Instance);
+
     public static void MapArcanumEndpoints(this WebApplication app)
     {
         // TelemetryService owns the MeterListener that projects process metrics
         // into live snapshots. Resolve it before any endpoint can emit metrics.
         _ = app.Services.GetRequiredService<TelemetryService>();
 
+        // Must be installed before the endpoints it guards can be reached; see the method's remarks
+        // for why the key cannot be checked by an endpoint filter alone.
+        app.UseArcanumApiKeyAuthentication();
+
         bool rateLimitEnabled = IsRateLimitEnabled(app.Configuration);
 
-        RouteGroupBuilder openAiV1 = app.MapGroup("/v1").AddEndpointFilter<ApiKeyEndpointFilter>();
+        RouteGroupBuilder openAiV1 = app.MapGroup("/v1").RequireArcanumApiKey();
 
         if (rateLimitEnabled)
         {
@@ -548,7 +612,7 @@ public static class ApiBootstrapper
 
         openAiV1.MapOpenAiV1Batches();
 
-        var apiGroup = app.MapGroup("/api").AddEndpointFilter<ApiKeyEndpointFilter>();
+        var apiGroup = app.MapGroup("/api").RequireArcanumApiKey();
 
         if (rateLimitEnabled)
         {
@@ -556,13 +620,13 @@ public static class ApiBootstrapper
         }
 
         // Canonical path stays GET /metrics (not /api/metrics). Auth is attached via
-        // ApiKeyEndpointFilter when RequireApiKey is effective (default true; false only on loopback).
+        // RequireArcanumApiKey when RequireApiKey is effective (default true; false only on loopback).
         RouteHandlerBuilder metrics = app.MapMetricsEndpoint();
 
         if (IsMetricsRequireApiKeyEffective(app.Configuration))
         {
 
-            metrics.AddEndpointFilter<ApiKeyEndpointFilter>();
+            metrics.RequireArcanumApiKey();
 
             if (rateLimitEnabled)
             {

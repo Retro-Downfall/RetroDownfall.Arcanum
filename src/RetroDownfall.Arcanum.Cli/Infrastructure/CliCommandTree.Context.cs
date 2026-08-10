@@ -82,19 +82,21 @@ internal static partial class CliCommandTree
 
         context.Add(current);
 
-        context.Add(BuildContextPreview(handler, "inspect", ContextPreviewView.Inspect));
+        context.Add(BuildContextPreview(serviceProvider, handler, "inspect", ContextPreviewView.Inspect));
 
-        context.Add(BuildContextPreview(handler, "tools", ContextPreviewView.Tools));
+        context.Add(BuildContextPreview(serviceProvider, handler, "tools", ContextPreviewView.Tools));
 
-        context.Add(BuildContextPreview(handler, "sources", ContextPreviewView.Sources));
+        context.Add(BuildContextPreview(serviceProvider, handler, "sources", ContextPreviewView.Sources));
 
-        context.Add(BuildContextPreview(handler, "cost", ContextPreviewView.Cost));
+        context.Add(BuildContextPreview(serviceProvider, handler, "cost", ContextPreviewView.Cost));
 
         return context;
 
     }
 
     private static Command BuildContextPreview(
+
+        IServiceProvider serviceProvider,
 
         ContextCommands handler,
 
@@ -190,7 +192,9 @@ internal static partial class CliCommandTree
 
             async (ParseResult parseResult, CancellationToken cancellationToken) =>
 
-                await handler.Preview(
+                RejectedPromptOption(serviceProvider, parseResult, prompt)
+
+                ?? await handler.Preview(
 
                     view,
 

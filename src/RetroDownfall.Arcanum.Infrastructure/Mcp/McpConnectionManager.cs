@@ -723,6 +723,9 @@ public sealed partial class McpConnectionManager(
                     when (generation != Volatile.Read(
                         ref _toolSurfaceGeneration))
                 {
+                    UnregisterPartition(
+                        workspaceKey,
+                        partition);
                     TrackRetiredPartitionDisposal(
                         partition);
                     continue;
@@ -731,6 +734,7 @@ public sealed partial class McpConnectionManager(
                 if (generation != Volatile.Read(
                         ref _toolSurfaceGeneration))
                 {
+                    UnregisterPartition(workspaceKey, partition);
                     TrackRetiredPartitionDisposal(partition);
                     continue;
                 }
