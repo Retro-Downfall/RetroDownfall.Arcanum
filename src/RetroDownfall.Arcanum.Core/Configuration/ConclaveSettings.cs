@@ -121,4 +121,16 @@ public sealed record ConclaveA2ASettings
     /// <summary>Advertised outbound media types. Empty (default) means <c>text/plain</c>.</summary>
     public string[] OutputModes { get; set; } = [];
 
+    /// <summary>
+    /// Whether the A2A push-notification surface is enabled in either direction. Default <c>false</c>;
+    /// the Agent Card advertises <c>pushNotifications</c> only when this is on (issue #67).
+    /// </summary>
+    public bool PushNotificationsEnabled { get; set; }
+
+    /// <summary>
+    /// Externally reachable base URL peers post outbound-Sending callbacks to. Empty (default) means
+    /// callback mode is unavailable — this instance cannot tell a peer where to reach it.
+    /// </summary>
+    public string PushCallbackBaseUrl { get; set; } = string.Empty;
+
 }

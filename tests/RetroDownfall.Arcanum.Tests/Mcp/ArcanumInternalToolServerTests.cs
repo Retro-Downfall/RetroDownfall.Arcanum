@@ -2581,7 +2581,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking) =>
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null) =>
             Task.FromResult(respond(goal, name, agentUrl));
 
         public Task<Result<A2ADispatchResult>> ContinueSendingAsync(
@@ -2591,7 +2592,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking) =>
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null) =>
             Task.FromResult(respond(message, null, agentUrl));
 
         public Task<Result> CancelRemoteTaskAsync(
@@ -2616,7 +2618,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking) => throw new NotSupportedException();
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null) => throw new NotSupportedException();
 
         public Task<Result<A2ADispatchResult>> ContinueSendingAsync(
             string agentUrl,
@@ -2625,7 +2628,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking)
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null)
         {
 
             Observed = (agentUrl, taskId, message);
@@ -2657,7 +2661,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking)
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null)
         {
 
             Called = true;
@@ -2676,7 +2681,8 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking) =>
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null) =>
             throw new NotSupportedException();
 
         public Task<Result> CancelRemoteTaskAsync(

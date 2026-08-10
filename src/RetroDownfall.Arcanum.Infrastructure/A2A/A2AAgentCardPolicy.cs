@@ -145,6 +145,102 @@ public static class A2AAgentCardPolicy
 
     }
 
+    /// <summary>
+    /// Checks what an outbound dispatch will accept back against what the peer's Agent Card says it can
+    /// produce, before the remote task exists.
+    /// </summary>
+    /// <param name="a2a">This instance's A2A settings, which supply the default accepted output modes.</param>
+    /// <param name="card">The peer's resolved Agent Card. Every value on it is remote-controlled.</param>
+    /// <param name="options">Per-dispatch preferences, or <c>null</c> for "whatever this instance consumes".</param>
+    /// <returns>
+    /// Success carrying the modes to put on the wire and the mode the peer will answer in, or a failure
+    /// naming both sides — the same shape the inbound rejection uses, so a mismatch reads identically
+    /// whichever direction it is discovered in.
+    /// </returns>
+    /// <remarks>
+    /// Silence is not refusal. A card with no <c>DefaultOutputModes</c>, an empty list, or no skills at
+    /// all is dispatched to exactly as before this check existed (issue #65) — most agents in the wild
+    /// advertise nothing, and treating that as a mismatch would break every working Sending.
+    /// </remarks>
+    public static Result<A2AOutboundModality> ValidateOutboundModes(
+        ConclaveA2ASettings a2a,
+        AgentCard card,
+        A2ASendingOptions? options)
+    {
+
+        ArgumentNullException.ThrowIfNull(card);
+
+        // "What this instance can consume" is the operator's own inbound declaration: an Arcanum that
+        // accepts only JSON inbound has no way to read a text-only peer's answer either.
+        string[] requested = Normalize(options?.AcceptedOutputModes) is { Length: > 0 } stated
+            ? stated
+            : ResolveInputModes(a2a);
+
+        string? skillId = string.IsNullOrWhiteSpace(options?.SkillId) ? null : options!.SkillId!.Trim();
+
+        AgentSkill[] advertisedSkills = [.. (card.Skills ?? []).Where(static s => !string.IsNullOrWhiteSpace(s.Id))];
+
+        AgentSkill? targetSkill = null;
+
+        if (skillId is not null && advertisedSkills.Length > 0)
+        {
+
+            targetSkill = advertisedSkills.FirstOrDefault(
+                skill => string.Equals(skill.Id!.Trim(), skillId, StringComparison.OrdinalIgnoreCase));
+
+            if (targetSkill is null)
+            {
+
+                return Result<A2AOutboundModality>.Failure(new Error(
+                    ErrorCodes.Sending.SkillNotAdvertised,
+                    $"The remote agent does not advertise a skill with id '{skillId}'. "
+                    + $"Its Agent Card advertises {string.Join(", ", advertisedSkills.Select(static s => s.Id!.Trim()))}."));
+
+            }
+
+        }
+
+        // A named skill's own declaration is narrower than the card default and therefore governs; a
+        // skill that declares nothing inherits the card's list, exactly as the inbound card builder does.
+        string[] produced = Normalize(targetSkill?.OutputModes) is { Length: > 0 } skillModes
+            ? skillModes
+            : Normalize(card.DefaultOutputModes);
+
+        if (produced.Length == 0)
+        {
+
+            return Result<A2AOutboundModality>.Success(new A2AOutboundModality(requested, null));
+
+        }
+
+        foreach (string candidate in requested)
+        {
+
+            foreach (string mode in produced)
+            {
+
+                if (string.Equals(candidate, mode, StringComparison.OrdinalIgnoreCase))
+                {
+
+                    return Result<A2AOutboundModality>.Success(new A2AOutboundModality(requested, mode));
+
+                }
+
+            }
+
+        }
+
+        string source = targetSkill is null
+            ? "its Agent Card"
+            : $"its '{skillId}' skill";
+
+        return Result<A2AOutboundModality>.Failure(new Error(
+            ErrorCodes.Sending.ModalityMismatch,
+            $"The remote agent cannot produce any of the requested output modes ({string.Join(", ", requested)}). "
+            + $"{char.ToUpperInvariant(source[0])}{source[1..]} advertises {string.Join(", ", produced)}."));
+
+    }
+
     private static string[] Normalize(IReadOnlyList<string>? values)
     {
 

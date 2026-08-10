@@ -429,7 +429,11 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                           OR (
                               "State" = @attention
                               AND "Kind" IN (@retentionPrune, @retentionMutation, @retentionFactory)
-                              AND "TerminalErrorCode" = @retentionRecoveryError))
+                              AND "TerminalErrorCode" = @retentionRecoveryError)
+                          OR (
+                              "State" = @attention
+                              AND "Kind" = @a2aInbound
+                              AND "TerminalErrorCode" = @a2aParked))
                       AND ("LeaseOwner" IS NULL OR "LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
                     """;
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
@@ -441,6 +445,12 @@ internal sealed class LongRunningOperationStore(ArcanumDbContext db) : ILongRunn
                 Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
                 Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
                 Add(cmd, "@retentionRecoveryError", ErrorCodes.Data.ReconciliationFailed);
+
+                // A Sending parked awaiting a peer's answer is flagged rather than closed, and the answer
+                // may arrive processes later — so that flagged row has to stay claimable, or the record
+                // that makes the continuation work becomes unusable the moment it is recorded (#68).
+                Add(cmd, "@a2aInbound", LongRunningOperationKinds.A2AInboundSending);
+                Add(cmd, "@a2aParked", LongRunningOperationRecoveryOutcomes.A2AInboundParkedAwaitingAnswer);
                 Add(cmd, "@now", Format(utcNow));
                 Add(cmd, "@owner", Bound(ownerId, MaxOwnerLength));
                 Add(cmd, "@lease", Format(leaseExpiresAt));

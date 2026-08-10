@@ -447,7 +447,8 @@ internal sealed partial class ArcanumInternalToolServer
                     caller?.DelegationChain,
                     cancellationToken,
                     progress,
-                    args.Continuable == true ? A2ADispatchMode.Continuable : A2ADispatchMode.Blocking)
+                    ResolveDispatchMode(args.Continuable, args.Callback),
+                    new A2ASendingOptions(args.AcceptedOutputModes, args.SkillId, caller?.BudgetReservationId))
                 .ConfigureAwait(false);
 
             // Distinguishes "never dispatched" (config gate, allowlist, concurrency cap, bad goal — a
@@ -533,7 +534,8 @@ internal sealed partial class ArcanumInternalToolServer
                     caller?.DelegationChain,
                     cancellationToken,
                     progress,
-                    args.Continuable == true ? A2ADispatchMode.Continuable : A2ADispatchMode.Blocking)
+                    args.Continuable == true ? A2ADispatchMode.Continuable : A2ADispatchMode.Blocking,
+                    new A2ASendingOptions(args.AcceptedOutputModes, args.SkillId, caller?.BudgetReservationId))
                 .ConfigureAwait(false);
 
             if (result.IsFailure && IsPreflightRejection(result.Error.Code))
@@ -695,10 +697,26 @@ internal sealed partial class ArcanumInternalToolServer
         ---END REMOTE RESPONSE---
         """;
 
+    /// <summary>
+    /// Resolves the dispatch mode from the two flags a caller may set.
+    /// </summary>
+    /// <remarks>
+    /// Callback mode wins when both are set: it is about <em>where the waiting happens</em> rather than
+    /// about answering a question, and it treats <c>input-required</c> exactly as the blocking mode does
+    /// (issue #67).
+    /// </remarks>
+    private static A2ADispatchMode ResolveDispatchMode(bool? continuable, bool? callback) => callback == true
+        ? A2ADispatchMode.Callback
+        : continuable == true
+            ? A2ADispatchMode.Continuable
+            : A2ADispatchMode.Blocking;
+
     private static bool IsPreflightRejection(string errorCode) => errorCode
         is ErrorCodes.Sending.Disabled
         or ErrorCodes.Sending.AgentNotAllowed
         or ErrorCodes.Sending.MaxTasksReached
+        or ErrorCodes.Sending.ModalityMismatch
+        or ErrorCodes.Sending.SkillNotAdvertised
         or ErrorCodes.Apprentice.InvalidGoal;
 
 }

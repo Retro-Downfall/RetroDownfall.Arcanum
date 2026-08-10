@@ -150,6 +150,133 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
     }
 
+    // ── #68: a Sending parked awaiting the peer's answer ───────────────────────────────────────────
+
+    [SkippableFact]
+    public async Task ParkedInboundSending_IsResolvableAsParkedFromAFreshLedgerInstance()
+    {
+
+        RequireSqlCipher();
+
+        Guid apprenticeId = Guid.NewGuid();
+
+        IA2ASendingLedger ledger = CreateLedger();
+
+        A2ASendingLedgerEntry entry = await ledger.RegisterInboundAsync("task-parked", apprenticeId);
+
+        await ledger.MarkParkedAsync(entry, "ctx-7");
+
+        // The fresh ledger stands in for the restart: the escalated Apprentice was always durable, this
+        // is the correspondence that tells a peer's answer which Apprentice asked the question.
+        A2AParkedSending? parked = await CreateLedger().FindParkedInboundAsync("task-parked");
+
+        Assert.NotNull(parked);
+
+        Assert.Equal(apprenticeId, parked!.Value.ApprenticeId);
+
+        Assert.Equal("ctx-7", parked.Value.ContextId);
+
+    }
+
+    [SkippableFact]
+    public async Task UnparkedInboundSending_IsNotResolvableAsParked()
+    {
+
+        RequireSqlCipher();
+
+        IA2ASendingLedger ledger = CreateLedger();
+
+        await ledger.RegisterInboundAsync("task-working", Guid.NewGuid());
+
+        // A Sending still being worked is not answerable; only an escalated one is.
+        Assert.Null(await CreateLedger().FindParkedInboundAsync("task-working"));
+
+    }
+
+    [SkippableFact]
+    public async Task ParkedSendingFlaggedByReconciliation_IsStillResolvableAndCanStillBeClosed()
+    {
+
+        RequireSqlCipher();
+
+        Guid apprenticeId = Guid.NewGuid();
+
+        IA2ASendingLedger ledger = CreateLedger();
+
+        A2ASendingLedgerEntry entry = await ledger.RegisterInboundAsync("task-flagged", apprenticeId);
+
+        await ledger.MarkParkedAsync(entry, "ctx-8");
+
+        LongRunningOperationStore store = new(_db!);
+
+        LongRunningOperation flagged = (await store.GetAsync(entry.OperationId))!;
+
+        // Exactly what startup reconciliation does to a parked Sending: flag it, do not close it.
+        Assert.True(await store.TryTransitionAsync(
+            entry.OperationId,
+            flagged.Revision,
+            ownerId: null,
+            LongRunningOperationState.ReconciliationRequired,
+            DateTimeOffset.UtcNow,
+            A2ASendingRecoveryOutcomes.InboundParkedAwaitingAnswer));
+
+        IA2ASendingLedger afterRestart = CreateLedger();
+
+        A2AParkedSending? parked = await afterRestart.FindParkedInboundAsync("task-flagged");
+
+        Assert.NotNull(parked);
+
+        Assert.Equal(apprenticeId, parked!.Value.ApprenticeId);
+
+        // Flagged, not terminal: this process takes the lease, resumes the Apprentice, and closes the
+        // record when the Sending finally settles.
+        Assert.True(parked.Value.Ledger.IsRecorded);
+
+        await afterRestart.ReleaseAsync(parked.Value.Ledger);
+
+        Assert.Null(await CreateLedger().FindParkedInboundAsync("task-flagged"));
+
+    }
+
+    [SkippableFact]
+    public async Task ParkedSendingWhoseLeaseReconciliationReleased_IsStillClosedWhenItSettles()
+    {
+
+        RequireSqlCipher();
+
+        IA2ASendingLedger ledger = CreateLedger();
+
+        A2ASendingLedgerEntry entry = await ledger.RegisterInboundAsync("task-stale-lease", Guid.NewGuid());
+
+        await ledger.MarkParkedAsync(entry, "ctx-9");
+
+        LongRunningOperationStore store = new(_db!);
+
+        LongRunningOperation flagged = (await store.GetAsync(entry.OperationId))!;
+
+        // Nothing heartbeats a Sending that is waiting on a peer, so reconciliation eventually flags it
+        // and drops its lease. A handle taken before that still has to be able to close the record, or a
+        // settled Sending is left open and re-examined on every pass.
+        Assert.True(await store.TryTransitionAsync(
+            entry.OperationId,
+            flagged.Revision,
+            ownerId: null,
+            LongRunningOperationState.ReconciliationRequired,
+            DateTimeOffset.UtcNow,
+            A2ASendingRecoveryOutcomes.InboundParkedAwaitingAnswer));
+
+        Assert.Null((await store.GetAsync(entry.OperationId))!.LeaseOwner);
+
+        await ledger.ReleaseAsync(entry);
+
+        Assert.Equal(
+            LongRunningOperationState.Completed,
+            (await store.GetAsync(entry.OperationId))!.State);
+
+        Assert.Null(await CreateLedger().FindInboundApprenticeAsync("task-stale-lease"));
+
+    }
+
     private IA2ASendingLedger CreateLedger() =>
         new A2ASendingLedger(
             new LongRunningOperationStore(_db!),

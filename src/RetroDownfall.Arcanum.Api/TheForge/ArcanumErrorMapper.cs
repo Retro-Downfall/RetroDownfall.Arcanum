@@ -115,7 +115,9 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Sending.AgentUnreachable or ErrorCodes.Sending.AgentCardInvalid =>
                 StatusCodes.Status502BadGateway,
 
-            ErrorCodes.Sending.TaskRejected =>
+            ErrorCodes.Sending.TaskRejected
+                or ErrorCodes.Sending.ModalityMismatch
+                or ErrorCodes.Sending.SkillNotAdvertised =>
                 StatusCodes.Status400BadRequest,
 
             ErrorCodes.Sending.Disabled or ErrorCodes.Sending.AgentNotAllowed =>

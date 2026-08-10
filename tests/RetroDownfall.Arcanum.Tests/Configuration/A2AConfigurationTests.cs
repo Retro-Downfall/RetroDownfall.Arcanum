@@ -239,6 +239,45 @@ public sealed class A2AConfigurationTests
 
     }
 
+    [Theory]
+    [InlineData("arcanum.example.com")]
+    [InlineData("/api/conclave/a2a")]
+    [InlineData("ftp://arcanum.example.com")]
+    public void Validator_rejects_a_push_callback_base_url_a_peer_could_never_reach(string baseUrl)
+    {
+
+        Result result = Validate(new A2AIntegrationSettings
+        {
+            PushNotifications = true,
+            PushCallbackBaseUrl = baseUrl,
+        });
+
+        // A typo here is silent at runtime — callback mode just waits inline — so it has to fail at
+        // startup rather than leave an operator wondering why nothing is ever asynchronous.
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(
+            result.Error.Details!,
+            static error => error.Pointer == "integrations.a2A.pushCallbackBaseUrl");
+
+    }
+
+    [Fact]
+    public void Validator_accepts_a_reachable_push_callback_base_url_and_an_absent_one()
+    {
+
+        Assert.True(Validate(new A2AIntegrationSettings
+        {
+            PushNotifications = true,
+            PushCallbackBaseUrl = "https://arcanum.example.com",
+        }).IsSuccess);
+
+        // Empty is a supported state, not a misconfiguration: inbound push works without it, and an
+        // outbound callback dispatch simply waits inline.
+        Assert.True(Validate(new A2AIntegrationSettings { PushNotifications = true }).IsSuccess);
+
+    }
+
     private static Result Validate(A2AIntegrationSettings a2a) =>
         new ConfigurationValidator().Validate(new ArcanumSettings
         {

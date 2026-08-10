@@ -313,7 +313,8 @@ public sealed class A2ADelegationCycleTests
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking)
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null)
         {
 
             ObservedChain = delegationChain;
@@ -330,7 +331,8 @@ public sealed class A2ADelegationCycleTests
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking) =>
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null) =>
             throw new NotSupportedException();
 
         public Task<Result> CancelRemoteTaskAsync(

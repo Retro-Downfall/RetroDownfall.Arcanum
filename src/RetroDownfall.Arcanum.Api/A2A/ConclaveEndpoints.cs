@@ -98,7 +98,8 @@ internal static class ConclaveEndpoints
                     body.Name,
                     body.AgentUrl,
                     cancellationToken: cancellationToken,
-                    mode: ResolveMode(body.Continuable))
+                    mode: ResolveMode(body.Continuable, body.Callback),
+                    options: new A2ASendingOptions(body.AcceptedOutputModes, body.SkillId))
                 .ConfigureAwait(false);
 
             Result<SendingDispatchDto> result = ToDto(body.AgentUrl.Trim(), dispatch);
@@ -161,7 +162,8 @@ internal static class ConclaveEndpoints
                     taskId,
                     body.Message,
                     cancellationToken: cancellationToken,
-                    mode: ResolveMode(body.Continuable))
+                    mode: ResolveMode(body.Continuable),
+                    options: new A2ASendingOptions(body.AcceptedOutputModes, body.SkillId))
                 .ConfigureAwait(false);
 
             Result<SendingDispatchDto> result = ToDto(body.AgentUrl.Trim(), dispatch);
@@ -180,8 +182,15 @@ internal static class ConclaveEndpoints
 
     }
 
-    private static A2ADispatchMode ResolveMode(bool? continuable) =>
-        continuable == true ? A2ADispatchMode.Continuable : A2ADispatchMode.Blocking;
+    /// <summary>
+    /// Callback mode wins when both flags are set: it changes where the waiting happens rather than how
+    /// <c>input-required</c> is answered, and it treats that state exactly as the blocking mode does.
+    /// </summary>
+    private static A2ADispatchMode ResolveMode(bool? continuable, bool? callback = null) => callback == true
+        ? A2ADispatchMode.Callback
+        : continuable == true
+            ? A2ADispatchMode.Continuable
+            : A2ADispatchMode.Blocking;
 
     private static Result<SendingDispatchDto> ToDto(string agentUrl, Result<A2ADispatchResult> dispatch) =>
         dispatch.IsSuccess

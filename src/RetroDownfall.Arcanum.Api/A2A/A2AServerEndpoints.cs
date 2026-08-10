@@ -154,7 +154,10 @@ internal static class A2AServerEndpoints
             Capabilities = new AgentCapabilities
             {
                 Streaming = true,
-                PushNotifications = false,
+
+                // Advertised only when the surface is genuinely enabled: a card that promises push
+                // notifications an operator never turned on is a peer waiting forever (issue #67).
+                PushNotifications = a2a.PushNotificationsEnabled,
             },
             // Operator-declared when configured, otherwise the single historical skill and text/plain in
             // and out — so a default card stays byte-identical to the pre-#63 one and existing peers are

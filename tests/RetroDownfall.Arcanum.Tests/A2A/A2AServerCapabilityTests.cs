@@ -692,8 +692,33 @@ public sealed class A2AServerCapabilityTests
         public Task<A2ASendingLedgerEntry> RegisterOutboundAsync(
             string remoteTaskId,
             string agentUrl,
+            Guid? budgetReservationId = null,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(new A2ASendingLedgerEntry(Guid.NewGuid(), "test"));
+
+        public Task SettleOutboundAsync(
+            A2ASendingLedgerEntry entry,
+            A2ARemoteCost cost,
+            CancellationToken cancellationToken = default)
+        {
+
+            Settled.Add((entry, cost));
+
+            return Task.CompletedTask;
+
+        }
+
+        public List<(A2ASendingLedgerEntry Entry, A2ARemoteCost Cost)> Settled { get; } = [];
+
+        public Task RecordOutboundCallbackAsync(
+            A2ASendingLedgerEntry entry,
+            string callbackConfigId,
+            string callbackTokenHash,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<A2AOutboundCallback?> FindOutboundCallbackAsync(
+            string callbackConfigId,
+            CancellationToken cancellationToken = default) => Task.FromResult<A2AOutboundCallback?>(null);
 
         public Task ReleaseAsync(A2ASendingLedgerEntry entry, CancellationToken cancellationToken = default)
         {
@@ -703,6 +728,26 @@ public sealed class A2AServerCapabilityTests
             return Task.CompletedTask;
 
         }
+
+        public Task MarkParkedAsync(
+            A2ASendingLedgerEntry entry,
+            string? contextId,
+            CancellationToken cancellationToken = default)
+        {
+
+            Parked.Add((entry, contextId));
+
+            return Task.CompletedTask;
+
+        }
+
+        public List<(A2ASendingLedgerEntry Entry, string? ContextId)> Parked { get; } = [];
+
+        public Task<A2AParkedSending?> FindParkedInboundAsync(
+            string taskId,
+            bool takeLease = true,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<A2AParkedSending?>(null);
 
         public Task<Guid?> FindInboundApprenticeAsync(string taskId, CancellationToken cancellationToken = default) =>
             Task.FromResult(Recovered.TryGetValue(taskId, out Guid id) ? id : (Guid?)null);
@@ -721,7 +766,8 @@ public sealed class A2AServerCapabilityTests
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking) => throw new NotSupportedException();
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null) => throw new NotSupportedException();
 
         public Task<Result<A2ADispatchResult>> ContinueSendingAsync(
             string agentUrl,
@@ -730,7 +776,8 @@ public sealed class A2AServerCapabilityTests
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking) => throw new NotSupportedException();
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null) => throw new NotSupportedException();
 
         public Task<Result> CancelRemoteTaskAsync(
             string agentUrl,

@@ -177,10 +177,15 @@ internal static class SessionAttachmentAmbientSend
         if (ApprenticeToolInvocationAmbient.Current
             is ApprenticeToolInvocationContext { IsValid: true } apprenticeContext)
         {
+            // This boundary runs inside the turn's async flow, which is the only place the turn's budget
+            // reservation is visible — the in-process server runs on its own task (issue #69).
             ApprenticeToolInvocationBinding.BindRequest(
                 connectionKey,
                 requestId,
-                apprenticeContext);
+                apprenticeContext with
+                {
+                    BudgetReservationId = DelegatedSpendAttribution.BudgetReservationId,
+                });
         }
     }
 

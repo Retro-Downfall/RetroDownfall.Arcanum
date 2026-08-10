@@ -207,9 +207,107 @@ public sealed class BudgetMonitorTests
             },
         };
 
+    // ── #69 delegated spend counts against the ceiling ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task CheckAsync_CeilingReachedPartlyThroughDelegation_ReturnsExceeded()
+    {
+
+        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
+
+        TrackingGrimoireRepository grimoire = new() { TodaySpend = 6m };
+
+        FakeCommLinkDispatcher commLink = new();
+
+        BudgetMonitor monitor = new(
+            CreateScopeFactory(
+                grimoire,
+                new FakeBudgetAlertRepository(),
+                new StubExternalSpendLedger(new ExternalSpendSummary(4m, 1_000, 2, 0))),
+            commLink,
+            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            NullLogger<BudgetMonitor>.Instance);
+
+        Result result = await monitor.CheckAsync(CancellationToken.None);
+
+        // Local spend alone is under the limit. An operator who can delegate past a spend cap does not
+        // have a spend cap (issue #69).
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Budget.Exceeded, result.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task CheckAsync_UnpricedDelegation_IsAllowedAndFlaggedRatherThanCharged()
+    {
+
+        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
+
+        TrackingGrimoireRepository grimoire = new() { TodaySpend = 3m };
+
+        BudgetMonitor monitor = new(
+            CreateScopeFactory(
+                grimoire,
+                new FakeBudgetAlertRepository(),
+                new StubExternalSpendLedger(new ExternalSpendSummary(0m, 0, 0, 3))),
+            new FakeCommLinkDispatcher(),
+            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            NullLogger<BudgetMonitor>.Instance);
+
+        // Allow-and-flag: three unpriced Sendings are neither charged as zero nor treated as a refusal.
+        Assert.True((await monitor.CheckAsync(CancellationToken.None)).IsSuccess);
+
+    }
+
+    [Fact]
+    public async Task CheckAsync_AtTheCeilingWithUnpricedDelegation_SaysTheFigureIsAFloor()
+    {
+
+        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
+
+        TrackingGrimoireRepository grimoire = new() { TodaySpend = 10m };
+
+        BudgetMonitor monitor = new(
+            CreateScopeFactory(
+                grimoire,
+                new FakeBudgetAlertRepository(),
+                new StubExternalSpendLedger(new ExternalSpendSummary(0m, 0, 0, 2))),
+            new FakeCommLinkDispatcher(),
+            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            NullLogger<BudgetMonitor>.Instance);
+
+        Result result = await monitor.CheckAsync(CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        // "Do not silently allow": the operator is told the number they hit the ceiling on is incomplete.
+        Assert.Contains("reported no cost", result.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task CheckAsync_WithoutAnExternalSpendLedger_BehavesExactlyAsBefore()
+    {
+
+        BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
+
+        TrackingGrimoireRepository grimoire = new() { TodaySpend = 1m };
+
+        BudgetMonitor monitor = new(
+            CreateScopeFactory(grimoire, new FakeBudgetAlertRepository()),
+            new FakeCommLinkDispatcher(),
+            new TestOptionsMonitor<ArcanumSettings>(Settings(budget)),
+            NullLogger<BudgetMonitor>.Instance);
+
+        Assert.True((await monitor.CheckAsync(CancellationToken.None)).IsSuccess);
+
+    }
+
     private static IServiceScopeFactory CreateScopeFactory(
         IGrimoireRepository grimoire,
-        IBudgetAlertRepository budgetAlerts)
+        IBudgetAlertRepository budgetAlerts,
+        IExternalSpendLedger? externalSpend = null)
     {
 
         ServiceCollection services = new();
@@ -218,7 +316,22 @@ public sealed class BudgetMonitorTests
 
         services.AddScoped(_ => budgetAlerts);
 
+        if (externalSpend is not null)
+        {
+
+            services.AddScoped(_ => externalSpend);
+
+        }
+
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+
+    }
+
+    private sealed class StubExternalSpendLedger(ExternalSpendSummary summary) : IExternalSpendLedger
+    {
+
+        public Task<ExternalSpendSummary> GetTodayAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(summary);
 
     }
 

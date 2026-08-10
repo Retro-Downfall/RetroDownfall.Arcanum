@@ -143,6 +143,22 @@ public sealed record A2AIntegrationSettings
     /// </summary>
     public string[] OutputModes { get; set; } = [];
 
+    /// <summary>
+    /// Enables the A2A push-notification surface: inbound, peers may register a callback URL and receive
+    /// task-state transitions; outbound, a Sending may be dispatched in callback mode so it stops holding
+    /// a concurrency slot while the remote works. Default <c>false</c>, and the Agent Card advertises
+    /// <c>pushNotifications</c> only when it is on (issue #67).
+    /// </summary>
+    public bool PushNotifications { get; set; }
+
+    /// <summary>
+    /// Externally reachable base URL peers should post outbound-Sending callbacks to, e.g.
+    /// <c>https://arcanum.example.com</c>. Empty (default) means callback mode is unavailable: this
+    /// instance has no way to tell a peer where to reach it. The callback path itself is derived from
+    /// <see cref="ServerPath"/>.
+    /// </summary>
+    public string PushCallbackBaseUrl { get; set; } = string.Empty;
+
 }
 
 /// <summary>

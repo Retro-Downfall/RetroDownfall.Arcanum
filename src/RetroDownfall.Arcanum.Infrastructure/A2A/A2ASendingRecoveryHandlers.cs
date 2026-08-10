@@ -31,6 +31,14 @@ public static class A2ASendingRecoveryOutcomes
     /// <summary>The remote task could not be reached; it may still be running and billing.</summary>
     public const string OutboundRemoteAbandoned = "a2a.outbound_remote_abandoned";
 
+    /// <summary>
+    /// The Sending is parked at <c>input-required</c> and its escalated Apprentice can still be answered.
+    /// Not an abandonment: closing this record is what made a post-restart continuation mint a second
+    /// Apprentice (issue #68).
+    /// </summary>
+    public const string InboundParkedAwaitingAnswer =
+        LongRunningOperationRecoveryOutcomes.A2AInboundParkedAwaitingAnswer;
+
 }
 
 /// <summary>
@@ -82,6 +90,23 @@ internal sealed class A2AInboundSendingRecoveryHandler(
 
         }
 
+        // A parked Sending is not a lost relay: the Apprentice escalated, is deliberately not auto-resumed
+        // (§5.7), and the peer's answer can still resume it through this very record. Abandoning it here
+        // would close the only correspondence a post-restart continuation has to go on (issue #68).
+        if (record.Parked && !IsFinished(apprentice))
+        {
+
+            logger.LogInformation(
+                "A2A reconciliation: inbound task {TaskId} is parked awaiting the peer's answer; "
+                + "Apprentice {ApprenticeId} stays resumable and the record stays open.",
+                record.TaskId,
+                apprenticeId);
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                A2ASendingRecoveryOutcomes.InboundParkedAwaitingAnswer);
+
+        }
+
         logger.LogInformation(
             "A2A reconciliation: inbound task {TaskId} lost its peer relay across a restart. Apprentice "
             + "{ApprenticeId} is durable and unaffected; the A2A task state will not advance further.",
@@ -91,6 +116,14 @@ internal sealed class A2AInboundSendingRecoveryHandler(
         return LongRunningOperationRecoveryResult.Abandoned(A2ASendingRecoveryOutcomes.InboundRelayAbandoned);
 
     }
+
+    /// <summary>
+    /// Whether the Apprentice behind a parked Sending has already reached a terminal state, which makes
+    /// the park stale rather than answerable.
+    /// </summary>
+    private static bool IsFinished(Apprentice apprentice) =>
+        Enum.TryParse(apprentice.Status, ignoreCase: true, out ApprenticeStatus status)
+        && status is ApprenticeStatus.Completed or ApprenticeStatus.Failed or ApprenticeStatus.Cancelled;
 
 }
 

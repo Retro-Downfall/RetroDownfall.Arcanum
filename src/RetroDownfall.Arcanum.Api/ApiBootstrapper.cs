@@ -668,6 +668,10 @@ public static class ApiBootstrapper
 
         apiGroup.MapA2AServer(startupSettings);
 
+        // Mapped on the root app rather than apiGroup: the caller is a peer agent, which does not hold
+        // this instance's API key, so the route authenticates on a per-Sending secret instead (issue #67).
+        app.MapA2ACallbacks(startupSettings, rateLimitEnabled ? ArcanumRateLimiterPolicyName : null);
+
         apiGroup.MapCodexEndpoints();
 
         apiGroup.MapProviderTestEndpoints();

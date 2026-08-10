@@ -4513,6 +4513,33 @@
               "takesValue": false,
               "repeatable": false,
               "values": []
+            },
+            {
+              "name": "--skill",
+              "aliases": [],
+              "description": "Agent Card skill id to target. The Sending fails before the remote task is created if the peer advertises no such skill.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": []
+            },
+            {
+              "name": "--accept",
+              "aliases": [],
+              "description": "Media type to accept back (repeatable, e.g. --accept text/plain). Omit to accept whatever this instance can consume.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": true,
+              "values": []
+            },
+            {
+              "name": "--callback",
+              "aliases": [],
+              "description": "Ask the remote agent to report back when it finishes instead of holding one of this instance\u0027s concurrent-Sending slots for the whole remote run. Requires Arcanum:Integrations:A2A:PushNotifications and a reachable PushCallbackBaseUrl; falls back to the ordinary wait when the peer cannot accept a callback.",
+              "recursive": false,
+              "takesValue": false,
+              "repeatable": false,
+              "values": []
             }
           ],
           "examples": [
@@ -4562,6 +4589,24 @@
               "takesValue": false,
               "repeatable": false,
               "values": []
+            },
+            {
+              "name": "--skill",
+              "aliases": [],
+              "description": "Agent Card skill id to target, validated against the peer\u0027s card before sending.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": []
+            },
+            {
+              "name": "--accept",
+              "aliases": [],
+              "description": "Media type to accept back (repeatable). Omit to accept whatever this instance can consume.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": true,
+              "values": []
             }
           ],
           "examples": [
@@ -4570,6 +4615,19 @@
           "commands": []
         }
       ]
+    },
+    {
+      "path": "budget",
+      "name": "budget",
+      "description": "Show today\u0027s spend against the daily budget, separating local from delegated (A2A) cost.",
+      "runnable": true,
+      "aliases": [],
+      "arguments": [],
+      "options": [],
+      "examples": [
+        "arcanum budget"
+      ],
+      "commands": []
     },
     {
       "path": "model",

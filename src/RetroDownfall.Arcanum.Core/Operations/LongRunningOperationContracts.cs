@@ -87,6 +87,17 @@ public static class LongRunningOperationRecoveryOutcomes
     /// cached result and the caller must re-send.
     /// </summary>
     public const string ClaimNotReplayable = "idempotency.claim_not_replayable";
+
+    /// <summary>
+    /// An inbound A2A Sending parked at <c>input-required</c>: the peer relay died with its process, but
+    /// the escalated Apprentice is still there and the peer's answer can still resume it (#68).
+    /// </summary>
+    /// <remarks>
+    /// Deliberately non-terminal. The row stays re-leasable — see
+    /// <c>ILongRunningOperationStore.TryAcquireLeaseAsync</c> — because closing it would destroy the only
+    /// record that lets a continuation find its Apprentice, which is exactly the failure #68 removes.
+    /// </remarks>
+    public const string A2AInboundParkedAwaitingAnswer = "a2a.inbound_parked_awaiting_answer";
 }
 
 /// <summary>

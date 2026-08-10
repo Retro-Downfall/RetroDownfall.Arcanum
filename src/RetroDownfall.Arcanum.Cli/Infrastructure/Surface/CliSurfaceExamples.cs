@@ -168,6 +168,7 @@ internal static class CliSurfaceExamples
         // Conclave
         ["conclave dispatch"] = ["arcanum conclave dispatch --goal \"Review this diff\""],
         ["conclave status"] = ["arcanum conclave status"],
+        ["budget"] = ["arcanum budget"],
         ["conclave continue"] = [$"arcanum conclave continue {SampleGuid} --message \"keep going\""],
 
         // Models and providers

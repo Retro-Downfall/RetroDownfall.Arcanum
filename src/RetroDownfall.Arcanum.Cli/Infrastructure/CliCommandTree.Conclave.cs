@@ -41,10 +41,37 @@ internal static partial class CliCommandTree
                 + "instead of ending the Sending. Answer it with 'arcanum conclave continue'.",
         };
 
+        Option<string?> skill = new("--skill")
+        {
+            Description =
+                "Agent Card skill id to target. The Sending fails before the remote task is created if "
+                + "the peer advertises no such skill.",
+        };
+
+        Option<string[]?> accept = new("--accept")
+        {
+            Description =
+                "Media type to accept back (repeatable, e.g. --accept text/plain). Omit to accept "
+                + "whatever this instance can consume.",
+            AllowMultipleArgumentsPerToken = true,
+        };
+
+        Option<bool> callback = new("--callback")
+        {
+            Description =
+                "Ask the remote agent to report back when it finishes instead of holding one of this "
+                + "instance's concurrent-Sending slots for the whole remote run. Requires "
+                + "Arcanum:Integrations:A2A:PushNotifications and a reachable PushCallbackBaseUrl; "
+                + "falls back to the ordinary wait when the peer cannot accept a callback.",
+        };
+
         dispatch.Add(agentUrl);
         dispatch.Add(goal);
         dispatch.Add(name);
         dispatch.Add(continuable);
+        dispatch.Add(skill);
+        dispatch.Add(accept);
+        dispatch.Add(callback);
 
         dispatch.SetAction(async (ParseResult result, CancellationToken cancellationToken) =>
             await handler.Dispatch(
@@ -52,6 +79,9 @@ internal static partial class CliCommandTree
                 result.GetValue(goal),
                 result.GetValue(name),
                 result.GetValue(continuable),
+                result.GetValue(skill),
+                result.GetValue(accept),
+                result.GetValue(callback),
                 cancellationToken).ConfigureAwait(false));
 
         conclave.Add(dispatch);
@@ -80,10 +110,24 @@ internal static partial class CliCommandTree
             Description = "Keep returning a continuation if the remote asks for something again.",
         };
 
+        Option<string?> continueSkill = new("--skill")
+        {
+            Description = "Agent Card skill id to target, validated against the peer's card before sending.",
+        };
+
+        Option<string[]?> continueAccept = new("--accept")
+        {
+            Description =
+                "Media type to accept back (repeatable). Omit to accept whatever this instance can consume.",
+            AllowMultipleArgumentsPerToken = true,
+        };
+
         continueSending.Add(taskId);
         continueSending.Add(continueAgentUrl);
         continueSending.Add(message);
         continueSending.Add(stayContinuable);
+        continueSending.Add(continueSkill);
+        continueSending.Add(continueAccept);
 
         continueSending.SetAction(async (ParseResult result, CancellationToken cancellationToken) =>
             await handler.Continue(
@@ -91,6 +135,8 @@ internal static partial class CliCommandTree
                 result.GetValue(continueAgentUrl),
                 result.GetValue(message),
                 result.GetValue(stayContinuable),
+                result.GetValue(continueSkill),
+                result.GetValue(continueAccept),
                 cancellationToken).ConfigureAwait(false));
 
         conclave.Add(continueSending);

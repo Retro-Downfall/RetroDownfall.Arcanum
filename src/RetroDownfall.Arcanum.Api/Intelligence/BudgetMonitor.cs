@@ -48,6 +48,13 @@ public sealed class BudgetMonitor(
 
         decimal spend = await ResolveSpendAsync(scope.ServiceProvider, cancellationToken).ConfigureAwait(false);
 
+        ExternalSpendSummary external = await ResolveExternalSpendAsync(scope.ServiceProvider, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Delegated work counts against the ceiling: an operator who can blow through a spend cap simply
+        // by dispatching Sendings does not have a spend cap (issue #69).
+        spend += external.KnownCostUsd;
+
         if (spend >= dailyLimit)
         {
 
@@ -61,7 +68,8 @@ public sealed class BudgetMonitor(
 
             return Result.Failure(new Error(
                 ErrorCodes.Budget.Exceeded,
-                $"Daily budget limit of ${dailyLimit:0.00} USD has been reached (current spend: ${spend:0.00} USD)."));
+                $"Daily budget limit of ${dailyLimit:0.00} USD has been reached (current spend: ${spend:0.00} USD)."
+                + DescribeUnpricedDelegation(external)));
 
         }
 
@@ -83,6 +91,30 @@ public sealed class BudgetMonitor(
         return Result.Success();
 
     }
+
+    /// <summary>
+    /// Today's delegated spend, or nothing when no ledger is registered (a Grimoire-less host).
+    /// </summary>
+    private static async Task<ExternalSpendSummary> ResolveExternalSpendAsync(
+        IServiceProvider services,
+        CancellationToken cancellationToken) =>
+        services.GetService<IExternalSpendLedger>() is { } ledger
+            ? await ledger.GetTodayAsync(cancellationToken).ConfigureAwait(false)
+            : ExternalSpendSummary.None;
+
+    /// <summary>
+    /// Names unpriced delegated work on a ceiling refusal.
+    /// </summary>
+    /// <remarks>
+    /// A peer that reported nothing is allowed through and flagged, never charged as zero and never
+    /// silently allowed: the operator is told that the figure they just hit their ceiling on is a floor
+    /// (issue #69, docs/Arcanum.DESIGN.md &#167;22.2).
+    /// </remarks>
+    private static string DescribeUnpricedDelegation(ExternalSpendSummary external) =>
+        external.HasUnpricedDelegation
+            ? $" {external.UnpricedSendings} delegated Sending(s) today reported no cost at all, so actual "
+                + "spend is higher than this figure."
+            : string.Empty;
 
     private static async Task<decimal> ResolveSpendAsync(
         IServiceProvider services,

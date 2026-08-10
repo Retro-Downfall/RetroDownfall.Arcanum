@@ -78,11 +78,21 @@ public sealed class ConclaveCommands(
     /// When set, a remote that asks for more input or authentication returns a continuation task id
     /// instead of ending the Sending, so <c>arcanum conclave continue</c> can answer it (issue #64).
     /// </param>
+    /// <param name="skillId">
+    /// Optional Agent Card skill id to target; the dispatch fails before the remote task is created if
+    /// the peer advertises no such skill (issue #65).
+    /// </param>
+    /// <param name="acceptedOutputModes">
+    /// Optional media types to accept back. Empty means "whatever this instance can consume".
+    /// </param>
     public async Task<int> Dispatch(
         string? agentUrl,
         string? goal,
         string? name,
         bool continuable,
+        string? skillId,
+        string[]? acceptedOutputModes,
+        bool callback,
         CancellationToken cancellationToken)
     {
 
@@ -96,7 +106,15 @@ public sealed class ConclaveCommands(
         }
 
         Result<SendingDispatchDto> result = await apiClient
-            .DispatchSendingAsync(agentUrl.Trim(), goal.Trim(), name, continuable, cancellationToken)
+            .DispatchSendingAsync(
+                agentUrl.Trim(),
+                goal.Trim(),
+                name,
+                continuable,
+                skillId,
+                acceptedOutputModes,
+                callback,
+                cancellationToken)
             .ConfigureAwait(false);
 
         return Render(result, agentUrl.Trim());
@@ -112,6 +130,8 @@ public sealed class ConclaveCommands(
         string? agentUrl,
         string? message,
         bool continuable,
+        string? skillId,
+        string[]? acceptedOutputModes,
         CancellationToken cancellationToken)
     {
 
@@ -125,7 +145,14 @@ public sealed class ConclaveCommands(
         }
 
         Result<SendingDispatchDto> result = await apiClient
-            .ContinueSendingAsync(agentUrl.Trim(), taskId.Trim(), message.Trim(), continuable, cancellationToken)
+            .ContinueSendingAsync(
+                agentUrl.Trim(),
+                taskId.Trim(),
+                message.Trim(),
+                continuable,
+                skillId,
+                acceptedOutputModes,
+                cancellationToken)
             .ConfigureAwait(false);
 
         return Render(result, agentUrl.Trim());

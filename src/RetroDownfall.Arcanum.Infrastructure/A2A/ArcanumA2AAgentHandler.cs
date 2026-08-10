@@ -30,7 +30,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 public sealed class ArcanumA2AAgentHandler(
     IServiceScopeFactory scopeFactory,
     IOptionsMonitor<ArcanumSettings> options,
-    ILogger<ArcanumA2AAgentHandler> logger) : IAgentHandler, IAsyncDisposable
+    ILogger<ArcanumA2AAgentHandler> logger,
+    A2APushNotificationRegistry? pushNotifications = null,
+    A2APushNotificationDispatcher? pushDispatcher = null) : IAgentHandler, IAsyncDisposable
 {
 
     private readonly ConcurrentDictionary<string, Guid> _taskToApprentice = new(StringComparer.Ordinal);
@@ -41,12 +43,11 @@ public sealed class ArcanumA2AAgentHandler(
     /// <remarks>
     /// Escalation ends <see cref="ExecuteAsync"/>, which drops the live mapping. Without this second
     /// index a peer that answers the question gets a brand-new Apprentice with none of the first one's
-    /// plan, session, or progress — which is not a continuation at all (issue #64).
+    /// plan, session, or progress — which is not a continuation at all (issue #64). This index is still
+    /// process memory; the same fact is recorded durably through <see cref="IA2ASendingLedger"/> so the
+    /// answer also lands after a restart (issue #68).
     /// </remarks>
-    private readonly ConcurrentDictionary<string, ParkedSending> _awaitingContinuation = new(StringComparer.Ordinal);
-
-    /// <summary>An escalated Apprentice waiting to be answered, and the durable record still open for it.</summary>
-    private readonly record struct ParkedSending(Guid ApprenticeId, A2ASendingLedgerEntry Ledger);
+    private readonly ConcurrentDictionary<string, A2AParkedSending> _awaitingContinuation = new(StringComparer.Ordinal);
 
     public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
     {
@@ -91,10 +92,22 @@ public sealed class ArcanumA2AAgentHandler(
 
         }
 
-        if (_awaitingContinuation.TryGetValue(context.TaskId, out ParkedSending parked))
+        // A callback the peer supplied on the send itself, rather than through tasks/pushNotificationConfig.
+        // Registered before any work starts so even an early rejection is reported (issue #67).
+        await TryRegisterPushCallbackAsync(context, cancellationToken).ConfigureAwait(false);
+
+        // The live index answers a continuation inside the process that parked it; the durable record
+        // answers one that arrives after a restart. Without the second lookup the peer's answer falls
+        // through to the normal path and mints a fresh Apprentice — the exact failure #64 removed, just
+        // displaced past a restart boundary (issue #68).
+        A2AParkedSending? parked = _awaitingContinuation.TryGetValue(context.TaskId, out A2AParkedSending live)
+            ? live
+            : await TryRecoverParkedAsync(context.TaskId, cancellationToken).ConfigureAwait(false);
+
+        if (parked is { } awaiting)
         {
 
-            await ContinueApprenticeAsync(context, updater, parked, goal, cancellationToken)
+            await ContinueApprenticeAsync(context, updater, awaiting, goal, cancellationToken)
                 .ConfigureAwait(false);
 
             return;
@@ -197,8 +210,10 @@ public sealed class ArcanumA2AAgentHandler(
 
             await ForwardChronicleToTaskAsync(
                     context.TaskId,
+                    context.ContextId,
                     apprentice.Id,
                     ledgerEntry,
+                    scope.ServiceProvider,
                     chronicle,
                     firstEvent,
                     updater,
@@ -220,6 +235,44 @@ public sealed class ArcanumA2AAgentHandler(
             }
 
             await chronicle.DisposeAsync().ConfigureAwait(false);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Resolves a parked Sending recorded by this or a previous process.
+    /// </summary>
+    /// <remarks>
+    /// Best-effort and non-throwing, like every other ledger read on this path: when nothing is recorded
+    /// the caller proceeds exactly as it did before, minting a fresh Apprentice rather than failing.
+    /// </remarks>
+    private async Task<A2AParkedSending?> TryRecoverParkedAsync(string taskId, CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+            if (A2ASendingLedgerScope.Resolve(scope.ServiceProvider) is not { } ledger)
+            {
+
+                return null;
+
+            }
+
+            return await ledger
+                .FindParkedInboundAsync(taskId, takeLease: true, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            logger.LogWarning(ex, "A2A: could not look up a parked Sending for task {TaskId}.", taskId);
+
+            return null;
 
         }
 
@@ -276,13 +329,54 @@ public sealed class ArcanumA2AAgentHandler(
     }
 
     /// <summary>
+    /// Stamps the durable record as parked so a continuation after a restart can find it.
+    /// </summary>
+    /// <remarks>
+    /// Untokened and non-throwing for the same reason <see cref="RecordInboundAsync"/> is: this runs while
+    /// the request is being torn down by the escalation, and a ledger failure must never escape an
+    /// <see cref="IAgentHandler"/> callback or block the <c>input-required</c> transition the peer is owed.
+    /// </remarks>
+    private static async Task MarkParkedAsync(
+        IServiceProvider services,
+        A2ASendingLedgerEntry entry,
+        string? contextId)
+    {
+
+        if (!entry.IsRecorded)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            if (A2ASendingLedgerScope.Resolve(services) is { } ledger)
+            {
+
+                await ledger.MarkParkedAsync(entry, contextId, CancellationToken.None).ConfigureAwait(false);
+
+            }
+
+        }
+        catch (Exception)
+        {
+
+            // Best-effort; see remarks.
+
+        }
+
+    }
+
+    /// <summary>
     /// Resumes an escalated Apprentice with the peer's answer through Divine Intervention and re-attaches
     /// the task relay, instead of minting a second Apprentice that knows nothing of the first (issue #64).
     /// </summary>
     private async Task ContinueApprenticeAsync(
         RequestContext context,
         TaskUpdater updater,
-        ParkedSending parked,
+        A2AParkedSending parked,
         string guidance,
         CancellationToken cancellationToken)
     {
@@ -331,8 +425,10 @@ public sealed class ArcanumA2AAgentHandler(
 
             await ForwardChronicleToTaskAsync(
                     context.TaskId,
+                    context.ContextId,
                     apprenticeId,
                     parked.Ledger,
+                    scope.ServiceProvider,
                     chronicle,
                     firstEvent,
                     updater,
@@ -369,7 +465,7 @@ public sealed class ArcanumA2AAgentHandler(
         // cancel the Apprentice waiting for it, not just abandon the mapping (issue #64).
         bool live = _taskToApprentice.TryGetValue(context.TaskId, out Guid apprenticeId);
 
-        if (!live && _awaitingContinuation.TryRemove(context.TaskId, out ParkedSending parked))
+        if (!live && _awaitingContinuation.TryRemove(context.TaskId, out A2AParkedSending parked))
         {
 
             apprenticeId = parked.ApprenticeId;
@@ -417,6 +513,8 @@ public sealed class ArcanumA2AAgentHandler(
                 ct => new TaskUpdater(eventQueue, context.TaskId, context.ContextId).CancelAsync(ct).AsTask(),
                 cancellationToken).ConfigureAwait(false);
 
+            await NotifyPeerAsync(context.TaskId, "canceled", cancellationToken).ConfigureAwait(false);
+
             return;
 
         }
@@ -451,14 +549,18 @@ public sealed class ArcanumA2AAgentHandler(
                 ct => new TaskUpdater(eventQueue, context.TaskId, context.ContextId).CancelAsync(ct).AsTask(),
                 cancellationToken).ConfigureAwait(false);
 
+            await NotifyPeerAsync(context.TaskId, "canceled", cancellationToken).ConfigureAwait(false);
+
         }
 
     }
 
     private async Task ForwardChronicleToTaskAsync(
         string taskId,
+        string? contextId,
         Guid apprenticeId,
         A2ASendingLedgerEntry ledgerEntry,
+        IServiceProvider services,
         IAsyncEnumerator<ApprenticeEvent> chronicle,
         ValueTask<bool> firstEvent,
         TaskUpdater updater,
@@ -492,8 +594,11 @@ public sealed class ArcanumA2AAgentHandler(
                 case ApprenticeEventType.ApprenticeEscalated:
 
                     // The task is parked, not finished: the peer can answer it and resume this very
-                    // Apprentice (issue #64). Its durable record stays open — the Sending has not settled.
-                    _awaitingContinuation[taskId] = new ParkedSending(apprenticeId, ledgerEntry);
+                    // Apprentice (issue #64). Its durable record stays open — the Sending has not settled —
+                    // and is stamped parked so the answer still lands after a restart (issue #68).
+                    _awaitingContinuation[taskId] = new A2AParkedSending(apprenticeId, contextId, ledgerEntry);
+
+                    await MarkParkedAsync(services, ledgerEntry, contextId).ConfigureAwait(false);
 
                     await RequireInputAsync(
                         updater,
@@ -510,6 +615,8 @@ public sealed class ArcanumA2AAgentHandler(
 
                     await updater.CompleteAsync(BuildCompletionMessage(reportedTokens), cancellationToken).ConfigureAwait(false);
 
+                    await NotifyPeerAsync(taskId, "completed", cancellationToken).ConfigureAwait(false);
+
                     return;
 
                 case ApprenticeEventType.ApprenticeFailed:
@@ -521,6 +628,8 @@ public sealed class ArcanumA2AAgentHandler(
                 case ApprenticeEventType.ApprenticeCancelled:
 
                     await updater.CancelAsync(cancellationToken).ConfigureAwait(false);
+
+                    await NotifyPeerAsync(taskId, "canceled", cancellationToken).ConfigureAwait(false);
 
                     return;
 
@@ -675,21 +784,112 @@ public sealed class ArcanumA2AAgentHandler(
 
     }
 
-    private static Task RejectAsync(TaskUpdater updater, string reason, CancellationToken cancellationToken) =>
-        RunTerminalTransitionAsync(
-            async ct =>
-            {
-                await updater.SubmitAsync(ct).ConfigureAwait(false);
+    /// <summary>
+    /// Remembers a callback the peer supplied on the send itself, when the surface is enabled.
+    /// </summary>
+    /// <remarks>
+    /// A refused callback (SSRF-blocked, not allowlisted, or the surface disabled) is logged and the
+    /// Sending proceeds without notifications: the peer can always fetch the task state, and failing the
+    /// delegated work over a webhook it optionally asked for would be a worse answer than not calling it.
+    /// </remarks>
+    private async Task TryRegisterPushCallbackAsync(RequestContext context, CancellationToken cancellationToken)
+    {
 
-                await updater.RejectAsync(BuildAgentMessage(reason), ct).ConfigureAwait(false);
-            },
-            cancellationToken);
+        if (pushNotifications is null
+            || context.Configuration?.PushNotificationConfig is not { } supplied
+            || !pushNotifications.Enabled)
+        {
 
-    private static Task FailAsync(TaskUpdater updater, string reason, CancellationToken cancellationToken) =>
-        RunTerminalTransitionAsync(ct => updater.FailAsync(BuildAgentMessage(reason), ct).AsTask(), cancellationToken);
+            return;
 
-    private static Task RequireInputAsync(TaskUpdater updater, string reason, CancellationToken cancellationToken) =>
-        RunTerminalTransitionAsync(ct => updater.RequireInputAsync(BuildAgentMessage(reason), ct).AsTask(), cancellationToken);
+        }
+
+        Result<PushNotificationConfig> registered = await pushNotifications
+            .RegisterAsync(context.TaskId, supplied, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (registered.IsFailure)
+        {
+
+            logger.LogWarning(
+                "A2A: task {TaskId} supplied a push-notification callback that was refused ({Reason}); "
+                + "the Sending continues without notifications.",
+                context.TaskId,
+                registered.Error.Message);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Posts a task-state transition to the callback its peer registered, if any.
+    /// </summary>
+    /// <remarks>
+    /// Only the states a waiting peer can act on — the terminal ones and <c>input-required</c>. Relaying
+    /// every step-level <c>working</c> update would turn a peer's webhook into the Chronicle firehose the
+    /// progress de-duplication in &#167;5.7.1 exists to avoid.
+    /// </remarks>
+    private async Task NotifyPeerAsync(string taskId, string state, CancellationToken cancellationToken)
+    {
+
+        if (pushNotifications is null
+            || pushDispatcher is null
+            || !pushNotifications.Enabled
+            || pushNotifications.Resolve(taskId) is not { } config)
+        {
+
+            return;
+
+        }
+
+        await pushDispatcher.NotifyAsync(config, taskId, state, cancellationToken).ConfigureAwait(false);
+
+        if (state is not "input-required")
+        {
+
+            // A settled task has nothing further to report, so the callback is forgotten with it.
+            pushNotifications.Remove(taskId);
+
+        }
+
+    }
+
+    private async Task RejectAsync(TaskUpdater updater, string reason, CancellationToken cancellationToken)
+    {
+
+        await RunTerminalTransitionAsync(
+                async ct =>
+                {
+                    await updater.SubmitAsync(ct).ConfigureAwait(false);
+
+                    await updater.RejectAsync(BuildAgentMessage(reason), ct).ConfigureAwait(false);
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        await NotifyPeerAsync(updater.TaskId, "rejected", cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private async Task FailAsync(TaskUpdater updater, string reason, CancellationToken cancellationToken)
+    {
+
+        await RunTerminalTransitionAsync(ct => updater.FailAsync(BuildAgentMessage(reason), ct).AsTask(), cancellationToken)
+            .ConfigureAwait(false);
+
+        await NotifyPeerAsync(updater.TaskId, "failed", cancellationToken).ConfigureAwait(false);
+
+    }
+
+    private async Task RequireInputAsync(TaskUpdater updater, string reason, CancellationToken cancellationToken)
+    {
+
+        await RunTerminalTransitionAsync(ct => updater.RequireInputAsync(BuildAgentMessage(reason), ct).AsTask(), cancellationToken)
+            .ConfigureAwait(false);
+
+        await NotifyPeerAsync(updater.TaskId, "input-required", cancellationToken).ConfigureAwait(false);
+
+    }
 
     /// <summary>
     /// Terminal <see cref="TaskUpdater"/> transitions are best-effort: if the task already reached a
