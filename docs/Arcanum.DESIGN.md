@@ -4375,9 +4375,30 @@ validating shared process state.
 
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and manual dispatch:
 
-1. `build-test` restores/builds Arcanum + Compendium, tests Compendium, then runs Arcanum once through
-   the coverage threshold script and uploads the report. The Forge is temporarily excluded.
-2. `aot-il` runs `./scripts/verify-aot-il-warnings.sh` for the hosted Linux RID.
+1. `build-test` (Linux) restores/builds Arcanum + Compendium, tests Compendium, then runs Arcanum once
+   through the coverage threshold script and uploads the report. The Forge is temporarily excluded.
+2. `macos-workspace-check` (macOS 14) pins a root-owned dotnet host and exercises the production
+   `sandbox-exec` jail, then runs the AOT gate for the macOS RID.
+3. `windows-suite` (Windows) runs the full Arcanum and Compendium suites.
+4. `aot-il` runs `./scripts/verify-aot-il-warnings.sh` for the hosted Linux RID.
+
+**Why a Windows lane exists.** Every Windows-only test guards itself with
+`Skip.IfNot(OperatingSystem.IsWindows(), …)`, which is right on a developer machine and worthless as a
+signal: on the Linux and macOS lanes those tests report green while asserting nothing. For a long time
+no job ran the suite on Windows at all, so the entire Windows surface — Credential Manager, Job
+Objects, AppContainer, `PATHEXT` resolution, NTFS permissions — was effectively untested. That is how
+`WindowsOsCredentialStore` shipped persisting uninitialized heap in place of the operator's API key.
+
+A lane that skips everything looks identical to a lane that passes, so the job sets
+`ARCANUM_REQUIRE_WINDOWS_SUITE=true` and `WindowsCiSurfaceTests` turns that case red: it asserts the
+runner really is Windows, that a credential backend is reachable, and that the Windows-gated test
+classes still exist. This mirrors the macOS lane's `ARCANUM_REQUIRE_MACOS_WORKSPACE_CHECK` guard.
+
+`OsCredentialStoreRoundTripTests` is the one test that writes to a real OS secret store rather than
+`InMemoryOsCredentialStore`, so it is opt-in behind `ARCANUM_TEST_OS_CREDENTIAL_STORE=true` and stays
+off on developer machines; CI runners are disposable and set it. It is platform-agnostic on purpose —
+each OS reaches a different implementation through the same contract, and a round trip that compares
+the exact secret back is precisely the assertion the Windows defect would have failed.
 
 Packaging workflows are separate manual workflows: Windows Native AOT Arcanum + Compendium,
 Windows/Linux private beta including The Forge, and signed/notarized macOS arm64. SQLCipher tests
