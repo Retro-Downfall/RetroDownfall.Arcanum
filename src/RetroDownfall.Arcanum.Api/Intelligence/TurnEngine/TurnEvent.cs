@@ -1,6 +1,7 @@
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 
@@ -61,14 +62,16 @@ internal sealed record ApprovalRequested(
     TurnEventCorrelation Correlation,
     string WardId,
     string ToolName,
-    string ArgumentsJson) : TurnEvent(Correlation);
+    string ArgumentsJson,
+    WardResolutionOrigin? Origin = null) : TurnEvent(Correlation);
 
 internal sealed record ApprovalResolved(
     TurnEventCorrelation Correlation,
     string WardId,
     string ToolName,
     bool Allowed,
-    string? Reason) : TurnEvent(Correlation);
+    string? Reason,
+    WardResolutionOrigin? Origin = null) : TurnEvent(Correlation);
 
 internal sealed record HumanInputRequested(
     TurnEventCorrelation Correlation,

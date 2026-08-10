@@ -86,6 +86,14 @@ public sealed class ToolExecutionPipeline(
     private const string WardTimeoutReason =
         "The ward held until timeout — action was not allowed";
 
+    /// <summary>
+    /// Code-owned reason attached to a Ward the operator pre-authorized through
+    /// <c>Arcanum:Security:Ward:AutoApprove</c>. It is a contract string clients and audit consumers
+    /// may match on, and it deliberately carries no tool arguments, paths, or model text.
+    /// </summary>
+    private const string AutoApprovedReason =
+        "Auto-approved by operator policy — containment checks still applied";
+
     private const string ApplyPatchSessionRequiredResult =
         "{\"status\":\"invalid_request\",\"code\":\"session_required\",\"message\":\"apply_patch requires a bound persisted session and assistant-turn invocation.\"}";
 
@@ -242,6 +250,20 @@ public sealed class ToolExecutionPipeline(
             1,
             new KeyValuePair<string, object?>("tool_name", toolName),
             new KeyValuePair<string, object?>("outcome", outcome));
+
+    }
+
+    /// <summary>
+    /// Records <c>arcanum_ward_decisions_total</c>. Both labels are closed by construction — the
+    /// configured tool set is finite and <paramref name="origin"/> is an enum — so no model-supplied
+    /// text (arguments, paths, prompts, or free-text resolution reasons) reaches the metric.
+    /// </summary>
+    private static void RecordWardDecisionMetric(string toolName, WardResolutionOrigin origin)
+    {
+        ArcanumMetrics.WardDecisionsTotal.Add(
+            1,
+            new KeyValuePair<string, object?>("tool_name", toolName),
+            new KeyValuePair<string, object?>("origin", WardResolutionOrigins.ToMetricLabel(origin)));
 
     }
 
@@ -1278,10 +1300,15 @@ public sealed class ToolExecutionPipeline(
 
         WardSettings wardSettings = settings.Value.ResolveWard();
 
+        // Decision order (DESIGN §11.14): classify → hard deny → auto-approve → interactive. Deny
+        // wins, so the unattended auto-deny check runs before the auto-approval allowlist is even
+        // consulted; a tool matching both is denied in attended and unattended modes alike.
         if (IsWardCandidate(toolName, turnContext.CampaignRequiresWard, wardSettings)
             && request.UnattendedMode
             && wardSettings.AutoDenyInUnattendedMode)
         {
+
+            RecordWardDecisionMetric(toolName, WardResolutionOrigin.AutoDenied);
 
             return new WardedToolExecutionResult(UnattendedDenyMessage(toolName), [], Denied: true);
 
@@ -1323,6 +1350,8 @@ public sealed class ToolExecutionPipeline(
 
         var wardEvents = new List<IntelligenceEvent>(2);
 
+        bool autoApproved = ToolRiskClassifier.IsAutoApproved(toolName, wardSettings);
+
         IntelligenceEvent wardedEvent = new(
             IntelligenceEventType.Warded,
             toolName,
@@ -1334,11 +1363,14 @@ public sealed class ToolExecutionPipeline(
             wardArguments,
             null,
             null,
-            wardTimestamp);
+            wardTimestamp,
+            WardOrigin: autoApproved ? WardResolutionOrigin.AutoApproved : null);
 
         await EmitWardEventAsync(wardedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
 
-        if (observer is not null)
+        // An auto-approved call has nothing to wait for, so it must not raise the blocking approval
+        // request that opens the Command Center Ward modal.
+        if (observer is not null && !autoApproved)
         {
             await observer(
                     new ToolApprovalRequestedEvent(
@@ -1357,9 +1389,15 @@ public sealed class ToolExecutionPipeline(
         try
         {
 
-            resolution = await ward
-                .WardAsync(wardId, toolName, argsDocument, sessionId, timeout, cancellationToken)
-                .ConfigureAwait(false);
+            resolution = autoApproved
+                ? ward.RecordAutomaticResolution(
+                    wardId,
+                    allowed: true,
+                    AutoApprovedReason,
+                    WardResolutionOrigin.AutoApproved)
+                : await ward
+                    .WardAsync(wardId, toolName, argsDocument, sessionId, timeout, cancellationToken)
+                    .ConfigureAwait(false);
 
         }
         finally
@@ -1367,6 +1405,19 @@ public sealed class ToolExecutionPipeline(
 
             argsDocument?.Dispose();
 
+        }
+
+        RecordWardDecisionMetric(toolName, resolution.Origin);
+
+        if (autoApproved)
+        {
+            // Tool name, decision, and the code-owned reason only — never arguments, paths, or any
+            // model-supplied text.
+            logger.LogInformation(
+                "Ward for tool {ToolName} was {WardDecision} by operator auto-approval policy: {WardReason}",
+                toolName,
+                resolution.Allowed ? "allowed" : "denied",
+                resolution.Reason);
         }
 
         DateTimeOffset resolvedTimestamp = DateTimeOffset.UtcNow;
@@ -1382,7 +1433,8 @@ public sealed class ToolExecutionPipeline(
             null,
             resolution.Allowed,
             resolution.Reason,
-            resolvedTimestamp);
+            resolvedTimestamp,
+            WardOrigin: resolution.Origin);
 
         await EmitWardEventAsync(resolvedEvent, wardEvents, liveWardEmit, cancellationToken).ConfigureAwait(false);
 

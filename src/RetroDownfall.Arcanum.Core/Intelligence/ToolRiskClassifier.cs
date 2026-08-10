@@ -77,6 +77,41 @@ public static class ToolRiskClassifier
     }
 
     /// <summary>
+    /// Whether the operator pre-authorized <paramref name="toolName"/> so the host may resolve its
+    /// Ward without prompting (issue #53, DESIGN §11.14). This answers "who supplies consent", never
+    /// "is this tool gated" — <see cref="RequiresWard"/> and the advertised tool set are unaffected,
+    /// and every containment check still runs after an auto-approval. Fail-closed: off unless the
+    /// operator both enables the policy and names the tool, and never while Wards are disabled
+    /// (nothing is gated then, so there is no consent to supply).
+    /// </summary>
+    public static bool IsAutoApproved(string? toolName, WardSettings wardSettings)
+    {
+        ArgumentNullException.ThrowIfNull(wardSettings);
+
+        if (!wardSettings.Enabled || !wardSettings.AutoApproveEnabled)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(toolName))
+        {
+            return false;
+        }
+
+        IReadOnlyList<string> allowlist = wardSettings.AutoApproveTools;
+
+        for (int i = 0; i < allowlist.Count; i++)
+        {
+            if (string.Equals(allowlist[i], toolName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Names removed by <see cref="ToolPolicy.NoForbiddenArts"/>. The intrinsic set remains present
     /// even when an operator replaces the configurable forbidden-arts list.
     /// </summary>

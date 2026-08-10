@@ -112,7 +112,8 @@ internal sealed class IntelligenceEventProjection
                     WardId: approval.WardId,
                     WardToolName: approval.ToolName,
                     WardArguments: null,
-                    Timestamp: approval.Correlation.Timestamp),
+                    Timestamp: approval.Correlation.Timestamp,
+                    WardOrigin: approval.Origin),
             ],
 
             ApprovalResolved resolved =>
@@ -124,7 +125,8 @@ internal sealed class IntelligenceEventProjection
                     WardToolName: resolved.ToolName,
                     WardAllowed: resolved.Allowed,
                     WardReason: resolved.Reason,
-                    Timestamp: resolved.Correlation.Timestamp),
+                    Timestamp: resolved.Correlation.Timestamp,
+                    WardOrigin: resolved.Origin),
             ],
 
             HumanInputRequested human =>

@@ -1148,6 +1148,8 @@ public sealed class ConfigurationValidator(
 
         ValidateCodingTools(settings, errors);
 
+        ValidateWardAutoApproval(settings.Security?.Ward, errors);
+
         ValidatePathAllowlist(settings.ResolveCampaignRoots(), "security.campaignRoots", errors);
 
         ValidatePathAllowlist(settings.ResolveSpellRoots(), "security.spellWorkspaceRoots", errors);
@@ -1175,6 +1177,53 @@ public sealed class ConfigurationValidator(
         }
 
         return Result.Success();
+
+    }
+
+    /// <summary>
+    /// The Ward auto-approval allowlist grants advance operator consent, so a typo must fail at
+    /// startup rather than silently never matching. Tool availability is a runtime fact (MCP servers
+    /// are discovered after configuration binds), so only the shape is checked here: a blank entry is
+    /// meaningless and a duplicate hides an intent the operator cannot see in the file. A name that
+    /// resolves to no available tool simply grants nothing.
+    /// </summary>
+    private static void ValidateWardAutoApproval(
+        WardPolicySettings? ward,
+        List<ConfigurationValidationError> errors)
+    {
+
+        List<string> tools = ward?.AutoApprove?.Tools ?? [];
+
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        for (int index = 0; index < tools.Count; index++)
+        {
+
+            string pointer = $"security.ward.autoApprove.tools[{index}]";
+
+            string? tool = tools[index];
+
+            if (string.IsNullOrWhiteSpace(tool))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    "Ward auto-approval tool names must not be blank."));
+
+                continue;
+
+            }
+
+            if (!seen.Add(tool.Trim()))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    $"Ward auto-approval tool '{tool.Trim()}' is listed more than once; names must be unique."));
+
+            }
+
+        }
 
     }
 

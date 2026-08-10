@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Wards;
 
@@ -220,9 +221,15 @@ internal sealed class CommandCenterChatRunner(
 
                     case IntelligenceEventType.WardResolved:
                         await coalescer.FlushBeforeBlockAsync(cancellationToken).ConfigureAwait(false);
+                        // An automatic outcome is labelled as such so the transcript never implies the
+                        // operator was asked when the host answered on their behalf.
+                        string resolvedVerb = evt.WardOrigin is { } resolvedOrigin
+                            && resolvedOrigin != WardResolutionOrigin.Human
+                                ? "auto-"
+                                : string.Empty;
                         string resolved = evt.WardAllowed == true
-                            ? $"Ward allowed: {NormalizeToolName(evt.WardToolName ?? evt.Message)}"
-                            : $"Ward denied: {NormalizeToolName(evt.WardToolName ?? evt.Message)}"
+                            ? $"Ward {resolvedVerb}allowed: {NormalizeToolName(evt.WardToolName ?? evt.Message)}"
+                            : $"Ward {resolvedVerb}denied: {NormalizeToolName(evt.WardToolName ?? evt.Message)}"
                               + (string.IsNullOrWhiteSpace(evt.WardReason) ? string.Empty : $" ({evt.WardReason})");
                         _ = state.Incantations.AppendWardNote(
                             NormalizeToolName(evt.WardToolName ?? evt.Message),
@@ -420,6 +427,24 @@ internal sealed class CommandCenterChatRunner(
         string toolName = NormalizeToolName(evt.WardToolName ?? evt.Message);
         string argsPreview = CommandCenterWardCoordinator.FormatArgumentsPreview(evt.WardArguments);
 
+        // The server already resolved this ward on its own (issue #53). There is nothing to approve
+        // and nothing to POST — a resolution attempt here would only lose the AlreadyResolved race —
+        // so record it in the transcript and never raise the hard modal.
+        if (evt.WardOrigin is { } automaticOrigin and not WardResolutionOrigin.Human)
+        {
+            _ = state.Incantations.AppendWardNote(
+                toolName,
+                AutomaticWardNote(automaticOrigin, toolName, argsPreview),
+                wardId);
+
+            await uiUpdates.WriteAsync(
+                    new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return;
+        }
+
         string pendingNote = string.IsNullOrEmpty(argsPreview)
             ? $"Ward pending ({wardId})"
             : $"Ward pending ({wardId}) — {argsPreview}";
@@ -606,6 +631,31 @@ internal sealed class CommandCenterChatRunner(
 
     private static string NormalizeToolName(string? name) =>
         string.IsNullOrWhiteSpace(name) ? "unknown" : name.Trim();
+
+    /// <summary>
+    /// Transcript line for a ward the host resolved without asking. The operator still sees exactly
+    /// what ran and why it was not prompted for.
+    /// </summary>
+    private static string AutomaticWardNote(
+        WardResolutionOrigin origin,
+        string toolName,
+        string argumentsPreview)
+    {
+        string headline = origin switch
+        {
+            WardResolutionOrigin.AutoApproved =>
+                $"Auto-approved {toolName} (operator auto-approval policy)",
+            WardResolutionOrigin.AutoDenied =>
+                $"Auto-denied {toolName} (host policy)",
+            WardResolutionOrigin.TimedOut =>
+                $"Ward for {toolName} timed out",
+            _ => $"Ward for {toolName} was resolved automatically",
+        };
+
+        return string.IsNullOrEmpty(argumentsPreview)
+            ? headline
+            : $"{headline} — {argumentsPreview}";
+    }
 
     private static bool LooksLikeJsonObject(string? text) =>
         !string.IsNullOrWhiteSpace(text) && text.TrimStart().StartsWith("{");
