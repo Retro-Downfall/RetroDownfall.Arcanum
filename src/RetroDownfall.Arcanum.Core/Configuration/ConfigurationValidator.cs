@@ -1983,6 +1983,21 @@ public sealed class ConfigurationValidator(
 
         }
 
+        // A typo here is silent at runtime — callback mode simply falls back to waiting inline — so it is
+        // caught at startup rather than left for an operator to notice as "why is nothing ever
+        // asynchronous" (issue #67).
+        if (!string.IsNullOrWhiteSpace(settings.PushCallbackBaseUrl)
+            && (!Uri.TryCreate(settings.PushCallbackBaseUrl.Trim(), UriKind.Absolute, out Uri? callbackBase)
+                || (callbackBase.Scheme != Uri.UriSchemeHttp && callbackBase.Scheme != Uri.UriSchemeHttps)))
+        {
+
+            errors.Add(new ConfigurationValidationError(
+                "integrations.a2A.pushCallbackBaseUrl",
+                "The push callback base URL must be an absolute http or https URL a remote agent can reach, "
+                + "for example https://arcanum.example.com."));
+
+        }
+
         ValidateModes(settings.InputModes, "integrations.a2A.inputModes", errors);
 
         ValidateModes(settings.OutputModes, "integrations.a2A.outputModes", errors);

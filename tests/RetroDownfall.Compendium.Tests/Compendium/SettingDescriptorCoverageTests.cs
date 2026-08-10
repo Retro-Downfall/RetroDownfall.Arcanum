@@ -30,7 +30,7 @@ public sealed class SettingDescriptorCoverageTests
     public void Editable_descriptor_count_matches_the_documented_total()
     {
 
-        Assert.Equal(157, SettingDescriptors.All.Count);
+        Assert.Equal(159, SettingDescriptors.All.Count);
 
     }
 

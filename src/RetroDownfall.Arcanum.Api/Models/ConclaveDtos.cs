@@ -29,10 +29,40 @@ public sealed record ConclaveStatusDto(
 /// <c>POST /api/conclave/sendings/{taskId}/continue</c> (issue #64). Default <c>false</c> preserves the
 /// original blocking behavior.
 /// </param>
-public sealed record DispatchSendingRequest(string? AgentUrl, string? Goal, string? Name, bool? Continuable = null);
+/// <param name="SkillId">
+/// Optional Agent Card skill id to target. The dispatch fails with <c>Sending.SkillNotAdvertised</c>
+/// before the remote task is created if the peer advertises no such skill (issue #65).
+/// </param>
+/// <param name="AcceptedOutputModes">
+/// Optional media types to accept back. Omitted means "whatever this instance can consume"
+/// (<c>Arcanum:Integrations:A2A:InputModes</c>, defaulting to <c>text/plain</c>). A peer whose card can
+/// produce none of them is refused with <c>Sending.ModalityMismatch</c> before the remote task exists.
+/// </param>
+/// <param name="Callback">
+/// When <c>true</c>, ask the peer to report back when it finishes instead of holding one of this
+/// instance's concurrent-Sending slots for the whole remote run (issue #67). Falls back to the ordinary
+/// wait when the peer cannot accept a callback. Takes precedence over <paramref name="Continuable"/>.
+/// </param>
+public sealed record DispatchSendingRequest(
+    string? AgentUrl,
+    string? Goal,
+    string? Name,
+    bool? Continuable = null,
+    string? SkillId = null,
+    string[]? AcceptedOutputModes = null,
+    bool? Callback = null);
 
 /// <summary>Request body for <c>POST /api/conclave/sendings/{taskId}/continue</c>.</summary>
-public sealed record ContinueSendingRequest(string? AgentUrl, string? Message, bool? Continuable = null);
+/// <param name="SkillId"><inheritdoc cref="DispatchSendingRequest" path="/param[@name='SkillId']"/></param>
+/// <param name="AcceptedOutputModes">
+/// <inheritdoc cref="DispatchSendingRequest" path="/param[@name='AcceptedOutputModes']"/>
+/// </param>
+public sealed record ContinueSendingRequest(
+    string? AgentUrl,
+    string? Message,
+    bool? Continuable = null,
+    string? SkillId = null,
+    string[]? AcceptedOutputModes = null);
 
 /// <summary>
 /// Terminal outcome of an outbound Sending (<c>POST /api/conclave/sendings</c>).

@@ -11,9 +11,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// multi-hop cycle (A &#8594; B &#8594; C &#8594; A) is invisible — only the direct A &#8594; B &#8594; A case is caught
 /// (issue #59, docs/Arcanum.DESIGN.md &#167;5.7.1).
 /// </remarks>
+/// <param name="BudgetReservationId">
+/// The reservation covering the turn that issued the call, stamped at the send boundary so an outbound
+/// Sending's durable row can name the budget it came from (issue #69).
+/// </param>
 internal sealed record ApprenticeToolInvocationContext(
     Guid ApprenticeId,
-    IReadOnlyList<string> DelegationChain)
+    IReadOnlyList<string> DelegationChain,
+    Guid? BudgetReservationId = null)
 {
 
     internal bool IsValid => ApprenticeId != Guid.Empty;

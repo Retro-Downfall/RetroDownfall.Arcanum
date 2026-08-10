@@ -19,6 +19,7 @@ internal static class BudgetEndpoints
 
         apiGroup.MapGet("/budget", async (
             IGrimoireRepository grimoire,
+            IExternalSpendLedger externalSpend,
             IOptionsSnapshot<ArcanumSettings> settings,
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
@@ -34,9 +35,18 @@ internal static class BudgetEndpoints
 
             int alertThreshold = ArcanumSettingClamps.BudgetAlertThresholdPercent(budget.AlertThresholdPercent);
 
-            decimal todaySpend = enabled && dailyLimit > 0
+            decimal localSpend = enabled && dailyLimit > 0
                 ? await grimoire.GetTodaySpendAsync(cancellationToken).ConfigureAwait(false)
                 : 0m;
+
+            // Delegated work is real money on someone else's hardware. Reported separately so an operator
+            // can tell "we spent it" from "we delegated it", and so the unpriced count is not silently
+            // rolled into a total that then looks complete (issue #69).
+            ExternalSpendSummary external = enabled && dailyLimit > 0
+                ? await externalSpend.GetTodayAsync(cancellationToken).ConfigureAwait(false)
+                : ExternalSpendSummary.None;
+
+            decimal todaySpend = localSpend + external.KnownCostUsd;
 
             decimal remaining = Math.Max(0m, dailyLimit - todaySpend);
 
@@ -50,7 +60,10 @@ internal static class BudgetEndpoints
                 AlertThresholdPercent: alertThreshold,
                 TodaySpendUsd: todaySpend,
                 RemainingUsd: remaining,
-                SpentPercent: spentPercent);
+                SpentPercent: spentPercent,
+                LocalSpendUsd: localSpend,
+                ExternalSpendUsd: external.KnownCostUsd,
+                UnpricedDelegatedSendings: external.UnpricedSendings);
 
             Result<BudgetSummaryDto> result = Result<BudgetSummaryDto>.Success(summary);
 

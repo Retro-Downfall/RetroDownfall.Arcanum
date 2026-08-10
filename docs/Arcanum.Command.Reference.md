@@ -909,6 +909,14 @@ Manages durable Apprentice orchestration, intervention, replanning, child delega
 | `arcanum apprentice intervene [<id>]` | Provide Divine Intervention guidance to an escalated Apprentice. | `--guidance <guidance>` — Guidance text for the escalated Apprentice. |
 | `arcanum apprentice cast [<id>]` | Delegate a child Apprentice via The Conclave. | `--goal <goal>` — Child Apprentice goal text.<br>`--name <name>` — Display name for the child Apprentice. |
 
+### `arcanum budget`
+
+Today's spend against the configured daily budget (requires arcanum serve). See DESIGN §22.2.
+
+| Command | Purpose | Options |
+|---|---|---|
+| `arcanum budget` | Show today's spend against the daily limit, separating this instance's own inference (`Local`) from delegated A2A work (`Delegated`), and naming any Sendings whose peer reported no cost at all — those are counted, never costed, so a non-zero count means the figures are a floor rather than the whole bill. | None beyond global options. |
+
 ### `arcanum conclave`
 
 The Conclave and its A2A surface (requires arcanum serve). See DESIGN §5.7.1 for the end-to-end workflow.
@@ -916,8 +924,8 @@ The Conclave and its A2A surface (requires arcanum serve). See DESIGN §5.7.1 fo
 | Command | Purpose | Options |
 |---|---|---|
 | `arcanum conclave status` | Show whether A2A is disabled, configured, degraded, or healthy, with the effective server and Agent Card paths and the next action when something is missing. | None beyond global or inherited family options. |
-| `arcanum conclave dispatch` | Dispatch a Sending to a remote A2A agent and wait for its terminal result. Reports the remote task id, the remote cost (or "unknown"), and the remote wall-clock. Cancelling also cancels the remote task. | `--agent-url <url>` — Remote agent base URL or Agent Card URL.<br>`--goal <goal>` — Goal text delegated to the remote agent.<br>`--name <name>` — Optional display name for the Sending.<br>`--continuable` — Return a continuation task id when the remote asks for more input or authentication, instead of ending the Sending. |
-| `arcanum conclave continue <task-id>` | Answer a Sending the remote parked at `input-required` or `auth-required`, resuming the same remote task rather than re-running the goal. | `--agent-url <url>` — The same remote agent the Sending was dispatched to.<br>`--message <text>` — The input or credential the remote asked for.<br>`--continuable` — Keep returning a continuation if the remote asks again. |
+| `arcanum conclave dispatch` | Dispatch a Sending to a remote A2A agent and wait for its terminal result. Reports the remote task id, the remote cost (or "unknown"), and the remote wall-clock. Cancelling also cancels the remote task. | `--agent-url <url>` — Remote agent base URL or Agent Card URL.<br>`--goal <goal>` — Goal text delegated to the remote agent.<br>`--name <name>` — Optional display name for the Sending.<br>`--continuable` — Return a continuation task id when the remote asks for more input or authentication, instead of ending the Sending.<br>`--skill <id>` — Agent Card skill id to target; the Sending fails before the remote task is created if the peer advertises no such skill.<br>`--accept <media-type>` — Media type to accept back (repeatable). Omit to accept whatever this instance can consume.<br>`--callback` — Ask the remote agent to report back when it finishes instead of holding one of this instance's concurrent-Sending slots for the whole remote run. Requires `Arcanum:Integrations:A2A:PushNotifications` and a reachable `PushCallbackBaseUrl`; falls back to the ordinary wait when the peer cannot accept a callback. |
+| `arcanum conclave continue <task-id>` | Answer a Sending the remote parked at `input-required` or `auth-required`, resuming the same remote task rather than re-running the goal. | `--agent-url <url>` — The same remote agent the Sending was dispatched to.<br>`--message <text>` — The input or credential the remote asked for.<br>`--continuable` — Keep returning a continuation if the remote asks again.<br>`--skill <id>` — Agent Card skill id to target, validated against the peer's card before sending.<br>`--accept <media-type>` — Media type to accept back (repeatable). |
 
 Remote cost is reported as **unknown** when the peer publishes no usage — never as zero. A2A has no standard usage field, so only a peer that supplies one (which includes another Arcanum) yields real figures.
 

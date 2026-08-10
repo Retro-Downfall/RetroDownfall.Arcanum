@@ -29,6 +29,11 @@ internal static class TurnAccountingAmbient
     {
         Current = handle;
         Writer = writer;
+
+        // Work this turn delegates outside the process — an outbound A2A Sending — records which
+        // reservation paid for the turn it came from, so a delegated cost is traceable to a budget
+        // rather than floating unattached (issue #69).
+        DelegatedSpendAttribution.BudgetReservationId = handle.ReservationId;
     }
 
     public static IDisposable Push(TurnAccountingHandle handle, ITurnRunWriter? writer)
@@ -42,6 +47,7 @@ internal static class TurnAccountingAmbient
     {
         Current = null;
         Writer = null;
+        DelegatedSpendAttribution.BudgetReservationId = null;
     }
 
     private sealed class RestorationScope(

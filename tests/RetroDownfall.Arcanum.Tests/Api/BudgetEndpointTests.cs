@@ -52,6 +52,36 @@ public sealed class BudgetEndpointTests
     }
 
     [Fact]
+    public async Task GetBudget_DistinguishesLocalFromDelegatedSpendAndFlagsUnpricedSendings()
+    {
+
+        await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
+            new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 20m },
+            todaySpend: 5m,
+            externalSpend: new ExternalSpendSummary(3m, 900, 2, 1));
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        ApiResponse<BudgetSummaryDto>? body = await (await client.GetAsync("/api/budget")).Content
+            .ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseBudgetSummaryDto);
+
+        BudgetSummaryDto summary = body!.Data!;
+
+        Assert.Equal(5m, summary.LocalSpendUsd);
+
+        Assert.Equal(3m, summary.ExternalSpendUsd);
+
+        Assert.Equal(8m, summary.TodaySpendUsd);
+
+        Assert.Equal(12m, summary.RemainingUsd);
+
+        // The unpriced Sending is counted, never costed: adding it at zero would make the total look
+        // complete when part of the day's delegated work has no price at all (issue #69).
+        Assert.Equal(1, summary.UnpricedDelegatedSendings);
+
+    }
+
+    [Fact]
     public async Task GetBudget_Enabled_ReturnsSpendAndRemaining()
     {
 
@@ -94,7 +124,8 @@ internal static class BudgetEndpointTestFactoryExtensions
     public static ArcanumWebApplicationFactory WithBudget(
         this ArcanumWebApplicationFactory factory,
         BudgetPolicySettings budget,
-        decimal todaySpend)
+        decimal todaySpend,
+        ExternalSpendSummary? externalSpend = null)
     {
 
         return new ArcanumWebApplicationFactory
@@ -112,9 +143,22 @@ internal static class BudgetEndpointTestFactoryExtensions
 
                 services.AddScoped<IGrimoireRepository>(_ => new StubGrimoireRepository(todaySpend));
 
+                services.RemoveAll<IExternalSpendLedger>();
+
+                services.AddScoped<IExternalSpendLedger>(
+                    _ => new StubExternalSpendLedger(externalSpend ?? ExternalSpendSummary.None));
+
             },
 
         };
+
+    }
+
+    private sealed class StubExternalSpendLedger(ExternalSpendSummary summary) : IExternalSpendLedger
+    {
+
+        public Task<ExternalSpendSummary> GetTodayAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(summary);
 
     }
 

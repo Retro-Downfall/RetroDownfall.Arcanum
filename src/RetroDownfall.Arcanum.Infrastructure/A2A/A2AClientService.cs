@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 
 using A2A;
 
+using A2ATaskStatus = A2A.TaskStatus;
+
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -71,12 +73,21 @@ public sealed class A2AClientService : IA2AClientService
     /// </summary>
     private readonly IServiceScopeFactory? _scopeFactory;
 
+    /// <summary>
+    /// Live index of Sendings awaiting a peer callback. Optional: without it, callback mode degrades to
+    /// the blocking path rather than waiting on a wake-up nothing can deliver (issue #67).
+    /// </summary>
+    private readonly A2ASendingCallbackRegistry? _callbacks;
+
     public A2AClientService(
         IHttpClientFactory httpClientFactory,
         IOptionsMonitor<ArcanumSettings> options,
         ILogger<A2AClientService> logger,
-        IServiceScopeFactory? scopeFactory = null)
+        IServiceScopeFactory? scopeFactory = null,
+        A2ASendingCallbackRegistry? callbacks = null)
     {
+        _callbacks = callbacks;
+
         _httpClientFactory = httpClientFactory;
 
         _options = options;
@@ -102,7 +113,8 @@ public sealed class A2AClientService : IA2AClientService
         IReadOnlyList<string>? delegationChain = null,
         CancellationToken cancellationToken = default,
         IProgress<A2ASendingProgress>? progress = null,
-        A2ADispatchMode mode = A2ADispatchMode.Blocking)
+        A2ADispatchMode mode = A2ADispatchMode.Blocking,
+        A2ASendingOptions? options = null)
     {
 
         if (string.IsNullOrWhiteSpace(goal))
@@ -117,13 +129,16 @@ public sealed class A2AClientService : IA2AClientService
             agentUrl,
             delegationChain,
             cancellationToken,
-            (client, card, url, chain, ct) => DispatchInternalAsync(
+            (client, card, url, chain, slot, ct) => DispatchInternalAsync(
                 client,
+                card,
                 goal.Trim(),
                 url,
                 chain,
                 progress,
                 mode,
+                options,
+                slot,
                 ct));
 
     }
@@ -135,7 +150,8 @@ public sealed class A2AClientService : IA2AClientService
         IReadOnlyList<string>? delegationChain = null,
         CancellationToken cancellationToken = default,
         IProgress<A2ASendingProgress>? progress = null,
-        A2ADispatchMode mode = A2ADispatchMode.Blocking)
+        A2ADispatchMode mode = A2ADispatchMode.Blocking,
+        A2ASendingOptions? options = null)
     {
 
         if (string.IsNullOrWhiteSpace(taskId))
@@ -158,14 +174,17 @@ public sealed class A2AClientService : IA2AClientService
             agentUrl,
             delegationChain,
             cancellationToken,
-            (client, card, url, chain, ct) => ContinueInternalAsync(
+            (client, card, url, chain, slot, ct) => ContinueInternalAsync(
                 client,
+                card,
                 url,
                 taskId.Trim(),
                 message.Trim(),
                 chain,
                 progress,
                 mode,
+                options,
+                slot,
                 ct));
 
     }
@@ -187,7 +206,7 @@ public sealed class A2AClientService : IA2AClientService
                 agentUrl,
                 delegationChain: null,
                 cancellationToken,
-                async (client, card, url, chain, ct) =>
+                async (client, card, url, chain, slot, ct) =>
                 {
 
                     try
@@ -225,7 +244,7 @@ public sealed class A2AClientService : IA2AClientService
         string agentUrl,
         IReadOnlyList<string>? delegationChain,
         CancellationToken cancellationToken,
-        Func<IA2AClient, AgentCard, string, IReadOnlyList<string>, CancellationToken, Task<Result<A2ADispatchResult>>> operation)
+        Func<IA2AClient, AgentCard, string, IReadOnlyList<string>, ConcurrencySlot, CancellationToken, Task<Result<A2ADispatchResult>>> operation)
     {
 
         ArcanumSettings settings = _options.CurrentValue;
@@ -276,6 +295,8 @@ public sealed class A2AClientService : IA2AClientService
 
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
+        ConcurrencySlot slot = new(gate);
+
         try
         {
 
@@ -294,6 +315,7 @@ public sealed class A2AClientService : IA2AClientService
                     peer.Value.Card,
                     trimmedUrl,
                     delegationChain ?? [],
+                    slot,
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -301,8 +323,37 @@ public sealed class A2AClientService : IA2AClientService
         finally
         {
 
-            // Released here regardless of success, remote failure, or caller/host cancellation.
-            gate.Release();
+            // Released here regardless of success, remote failure, or caller/host cancellation — and
+            // idempotently, because a callback-mode Sending gives the slot back the moment the peer has
+            // somewhere to report to (issue #67).
+            slot.Release();
+
+        }
+
+    }
+
+    /// <summary>
+    /// One outbound Sending's claim on <c>MaxConcurrentA2ATasks</c>, releasable exactly once.
+    /// </summary>
+    /// <remarks>
+    /// The gate bounds simultaneous <em>work</em>. A callback-mode Sending waiting for a peer is not
+    /// work, so it hands the slot back early — but the guarded scope still releases in its <c>finally</c>,
+    /// and double-releasing a <see cref="SemaphoreSlim"/> would silently raise the concurrency ceiling.
+    /// </remarks>
+    private sealed class ConcurrencySlot(SemaphoreSlim gate)
+    {
+
+        private int _released;
+
+        public void Release()
+        {
+
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+            {
+
+                gate.Release();
+
+            }
 
         }
 
@@ -398,13 +449,25 @@ public sealed class A2AClientService : IA2AClientService
 
     private Task<Result<A2ADispatchResult>> DispatchInternalAsync(
         IA2AClient client,
+        AgentCard card,
         string goal,
         string discoveryUrl,
         IReadOnlyList<string> delegationChain,
         IProgress<A2ASendingProgress>? progress,
         A2ADispatchMode mode,
+        A2ASendingOptions? options,
+        ConcurrencySlot slot,
         CancellationToken cancellationToken)
     {
+
+        Result<A2AOutboundModality> modality = NegotiateAsync(card, options);
+
+        if (modality.IsFailure)
+        {
+
+            return Task.FromResult(Result<A2ADispatchResult>.Failure(modality.Error));
+
+        }
 
         Message message = new()
         {
@@ -416,20 +479,42 @@ public sealed class A2AClientService : IA2AClientService
         // Loop prevention: the receiving agent refuses work whose chain already contains its own node.
         ConclaveDelegationChain.Write(message, ConclaveDelegationChain.Extend(delegationChain));
 
-        return ExchangeAsync(client, message, discoveryUrl, progress, mode, cancellationToken);
+        return ExchangeAsync(
+            client,
+            card,
+            message,
+            discoveryUrl,
+            progress,
+            mode,
+            modality.Value,
+            options?.BudgetReservationId,
+            slot,
+            cancellationToken);
 
     }
 
     private Task<Result<A2ADispatchResult>> ContinueInternalAsync(
         IA2AClient client,
+        AgentCard card,
         string discoveryUrl,
         string taskId,
         string followUp,
         IReadOnlyList<string> delegationChain,
         IProgress<A2ASendingProgress>? progress,
         A2ADispatchMode mode,
+        A2ASendingOptions? options,
+        ConcurrencySlot slot,
         CancellationToken cancellationToken)
     {
+
+        Result<A2AOutboundModality> modality = NegotiateAsync(card, options);
+
+        if (modality.IsFailure)
+        {
+
+            return Task.FromResult(Result<A2ADispatchResult>.Failure(modality.Error));
+
+        }
 
         // TaskId is what makes this a continuation rather than a second task: the peer routes it to the
         // waiting task instead of minting a new one, which is what an escalated remote is waiting for
@@ -444,30 +529,80 @@ public sealed class A2AClientService : IA2AClientService
 
         ConclaveDelegationChain.Write(message, ConclaveDelegationChain.Extend(delegationChain));
 
-        return ExchangeAsync(client, message, discoveryUrl, progress, mode, cancellationToken);
+        return ExchangeAsync(
+            client,
+            card,
+            message,
+            discoveryUrl,
+            progress,
+            mode,
+            modality.Value,
+            options?.BudgetReservationId,
+            slot,
+            cancellationToken);
 
     }
 
     /// <summary>
-    /// Sends <paramref name="message"/>, then polls the resulting remote task until it settles, publishing
-    /// a progress observation on every remote state change.
+    /// Runs the outbound modality/skill check against the resolved card and logs what was agreed.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately before <see cref="ExchangeAsync"/>: a mismatch discovered after <c>SendMessage</c>
+    /// leaves a remote task created, running, and billing for an answer this instance cannot read
+    /// (issue #65).
+    /// </remarks>
+    private Result<A2AOutboundModality> NegotiateAsync(AgentCard card, A2ASendingOptions? options)
+    {
+
+        Result<A2AOutboundModality> modality = A2AAgentCardPolicy.ValidateOutboundModes(
+            _options.CurrentValue.ResolveA2A(),
+            card,
+            options);
+
+        if (modality.IsFailure)
+        {
+
+            _logger.LogWarning(
+                "dispatch_sending: refusing to dispatch — {Reason}",
+                modality.Error.Message);
+
+        }
+
+        return modality;
+
+    }
+
+    /// <summary>
+    /// Sends <paramref name="message"/>, then awaits the resulting remote task until it settles — by
+    /// subscription when the peer advertises streaming, otherwise by polling — publishing a progress
+    /// observation on every remote state change.
     /// </summary>
     private async Task<Result<A2ADispatchResult>> ExchangeAsync(
         IA2AClient client,
+        AgentCard card,
         Message message,
         string discoveryUrl,
         IProgress<A2ASendingProgress>? progress,
         A2ADispatchMode mode,
+        A2AOutboundModality modality,
+        Guid? budgetReservationId,
+        ConcurrencySlot slot,
         CancellationToken cancellationToken)
     {
 
         // ReturnImmediately hands back the remote task id before the work finishes. That id is what makes
         // local cancellation propagatable — a blocking send abandons the HTTP call without ever learning
         // which remote task to cancel, leaving the peer running and billing (issue #12).
+        // AcceptedOutputModes states what this instance can read: leaving it unset let a peer answer in a
+        // modality nothing on this side could consume (issue #65).
         SendMessageRequest sendRequest = new()
         {
             Message = message,
-            Configuration = new SendMessageConfiguration { ReturnImmediately = true },
+            Configuration = new SendMessageConfiguration
+            {
+                ReturnImmediately = true,
+                AcceptedOutputModes = [.. modality.AcceptedOutputModes],
+            },
         };
 
         SendMessageResponse response;
@@ -507,20 +642,41 @@ public sealed class A2AClientService : IA2AClientService
         AgentTask task = response.Task
             ?? throw new InvalidOperationException("A2A SendMessageResponse carried neither a Message nor a Task payload.");
 
+        // One filter across both the subscription and the poll fallback: a stream that drops after
+        // reporting `working` must not make the poll loop report `working` again (issue #61).
+        TransitionFilter transitions = new(task.Status.State, StatusText(task.Status));
+
         Report(progress, discoveryUrl, task, dispatchedAt);
 
         // Durable from the moment the remote task id exists: a process that dies here used to leave a
         // remote task nobody could name, still running and still billing (issue #62). Written without the
         // caller's token — cancelling right here is exactly when the record matters most, and letting the
         // write cancel would skip the peer-cancel path below and orphan the remote task.
-        A2ASendingLedgerEntry ledgerEntry = await RecordOutboundAsync(task.Id, discoveryUrl)
+        A2ASendingLedgerEntry ledgerEntry = await RecordOutboundAsync(task.Id, discoveryUrl, budgetReservationId)
             .ConfigureAwait(false);
+
+        // Callback mode asks the peer to report back, then stops occupying a slot while it works. A peer
+        // that cannot (or an instance that has the surface off) simply keeps the slot and waits, which is
+        // the historical behavior rather than a failure (issue #67).
+        A2ACallbackSubscription? callback = mode == A2ADispatchMode.Callback
+            ? await TryRegisterCallbackAsync(client, card, task.Id, ledgerEntry, cancellationToken).ConfigureAwait(false)
+            : null;
+
+        if (callback is not null)
+        {
+
+            slot.Release();
+
+        }
 
         try
         {
 
-            task = await PollUntilSettledAsync(client, task, discoveryUrl, progress, cancellationToken)
-                .ConfigureAwait(false);
+            task = callback is null
+                ? await AwaitSettledAsync(client, card, task, discoveryUrl, progress, transitions, cancellationToken)
+                    .ConfigureAwait(false)
+                : await AwaitCallbackAsync(client, task, discoveryUrl, progress, transitions, callback, cancellationToken)
+                    .ConfigureAwait(false);
 
         }
         catch (OperationCanceledException)
@@ -547,22 +703,30 @@ public sealed class A2AClientService : IA2AClientService
                 + "The remote task may still be running; it was not cancelled."));
 
         }
-
-        DateTimeOffset settledAt = DateTimeOffset.UtcNow;
-
-        // A settled task needs no reconciliation, whatever state it settled in — except a continuation,
-        // which is deliberately left alive and therefore left recorded.
-        if (task.Status.State is not (TaskState.InputRequired or TaskState.AuthRequired)
-            || mode != A2ADispatchMode.Continuable)
+        finally
         {
 
-            await ReleaseLedgerAsync(ledgerEntry).ConfigureAwait(false);
+            callback?.Dispose();
 
         }
+
+        DateTimeOffset settledAt = DateTimeOffset.UtcNow;
 
         // Read once, from the settled task: a peer that reports nothing stays explicitly unknown rather
         // than defaulting to a free Sending (issue #60).
         A2ARemoteCost cost = A2ASendingUsageMetadata.Read(task);
+
+        // A settled task needs no reconciliation, whatever state it settled in — except a continuation,
+        // which is deliberately left alive and therefore left recorded. Closing the record also stamps
+        // what it cost, so the day's delegated spend is a durable figure rather than a live total that
+        // dies with the process (issue #69).
+        if (task.Status.State is not (TaskState.InputRequired or TaskState.AuthRequired)
+            || mode != A2ADispatchMode.Continuable)
+        {
+
+            await SettleLedgerAsync(ledgerEntry, cost).ConfigureAwait(false);
+
+        }
 
         if (task.Status.State == TaskState.Completed)
         {
@@ -626,7 +790,212 @@ public sealed class A2AClientService : IA2AClientService
 
     }
 
-    private async Task<A2ASendingLedgerEntry> RecordOutboundAsync(string remoteTaskId, string agentUrl)
+    /// <summary>A live outbound Sending's callback registration, and the wake-up it waits on.</summary>
+    private sealed class A2ACallbackSubscription(string configId, SemaphoreSlim signal, IDisposable registration)
+        : IDisposable
+    {
+
+        public string ConfigId => configId;
+
+        public SemaphoreSlim Signal => signal;
+
+        public void Dispose()
+        {
+
+            registration.Dispose();
+
+            signal.Dispose();
+
+        }
+
+    }
+
+    /// <summary>
+    /// Asks the peer to post task transitions back to this instance, so the Sending can stop holding a
+    /// concurrency slot while the remote works.
+    /// </summary>
+    /// <returns>
+    /// The live registration, or <c>null</c> when callback mode is unavailable for this pairing — the
+    /// caller then keeps its slot and waits exactly as a blocking Sending does.
+    /// </returns>
+    /// <remarks>
+    /// Three things must all be true: this instance has the surface enabled and a reachable callback base
+    /// URL, and the peer advertises <c>pushNotifications</c>. Peer capability decides, as it does for
+    /// streaming (issue #66) — an instance cannot configure a peer into supporting a protocol method.
+    /// </remarks>
+    private async Task<A2ACallbackSubscription?> TryRegisterCallbackAsync(
+        IA2AClient client,
+        AgentCard card,
+        string remoteTaskId,
+        A2ASendingLedgerEntry ledgerEntry,
+        CancellationToken cancellationToken)
+    {
+
+        ConclaveA2ASettings a2a = _options.CurrentValue.ResolveA2A();
+
+        if (_callbacks is null
+            || !a2a.PushNotificationsEnabled
+            || string.IsNullOrWhiteSpace(a2a.PushCallbackBaseUrl)
+            || card.Capabilities?.PushNotifications != true)
+        {
+
+            _logger.LogDebug(
+                "dispatch_sending: callback mode is unavailable for remote task {TaskId}; waiting inline instead.",
+                remoteTaskId);
+
+            return null;
+
+        }
+
+        string configId = Guid.NewGuid().ToString("N");
+
+        string token = A2ACallbackToken.Mint();
+
+        string callbackUrl =
+            $"{a2a.PushCallbackBaseUrl.TrimEnd('/')}{ResolveCallbackPath(a2a)}/{configId}";
+
+        try
+        {
+
+            await client
+                .CreateTaskPushNotificationConfigAsync(
+                    new CreateTaskPushNotificationConfigRequest
+                    {
+                        TaskId = remoteTaskId,
+                        ConfigId = configId,
+                        Config = new PushNotificationConfig
+                        {
+                            Id = configId,
+                            Url = callbackUrl,
+                            Token = token,
+                        },
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (Exception ex) when (ex is HttpRequestException or A2AException)
+        {
+
+            _logger.LogInformation(
+                ex,
+                "dispatch_sending: the peer would not register a callback for remote task {TaskId}; "
+                + "waiting inline instead.",
+                remoteTaskId);
+
+            return null;
+
+        }
+
+        // Durable before the slot is released: a callback that arrives in a later process has only this
+        // record to recognise it by, and by then the live index is gone.
+        await RecordCallbackAsync(ledgerEntry, configId, A2ACallbackToken.Hash(token)).ConfigureAwait(false);
+
+        SemaphoreSlim signal = new(0);
+
+        return new A2ACallbackSubscription(
+            configId,
+            signal,
+            _callbacks.Register(configId, A2ACallbackToken.Hash(token), signal));
+
+    }
+
+    /// <summary>The absolute path peers post outbound-Sending callbacks to.</summary>
+    internal static string ResolveCallbackPath(ConclaveA2ASettings a2a)
+    {
+
+        string configured = string.IsNullOrWhiteSpace(a2a.ServerPath)
+            ? ArcanumRuntimeDefaults.Conclave.A2A.ServerPath
+            : a2a.ServerPath.Trim();
+
+        string normalized = configured.StartsWith("/api", StringComparison.Ordinal)
+            ? configured
+            : $"/api/{configured.Trim('/')}";
+
+        return $"{normalized.TrimEnd('/')}/callbacks";
+
+    }
+
+    /// <summary>
+    /// Waits for the peer to report back, re-reading the task on each notification until it settles.
+    /// </summary>
+    /// <remarks>
+    /// The notification body is deliberately not trusted as the outcome: it is a remote-authored claim
+    /// about state, and the authoritative answer — including artifacts and the usage block a Sending's
+    /// cost is read from — comes from <c>tasks/get</c>. A callback that never arrives leaves the Sending
+    /// waiting, which is the same "no whole-operation deadline" contract every other mode has (#55);
+    /// what it does <em>not</em> do is hold a concurrency slot while it waits.
+    /// </remarks>
+    private static async Task<AgentTask> AwaitCallbackAsync(
+        IA2AClient client,
+        AgentTask task,
+        string discoveryUrl,
+        IProgress<A2ASendingProgress>? progress,
+        TransitionFilter transitions,
+        A2ACallbackSubscription callback,
+        CancellationToken cancellationToken)
+    {
+
+        while (!IsSettled(task.Status.State))
+        {
+
+            await callback.Signal.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            task = await client
+                .GetTaskAsync(new GetTaskRequest { Id = task.Id }, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (transitions.ShouldReport(task.Status))
+            {
+
+                Report(progress, discoveryUrl, task, DateTimeOffset.UtcNow);
+
+            }
+
+        }
+
+        return task;
+
+    }
+
+    private async Task RecordCallbackAsync(A2ASendingLedgerEntry entry, string configId, string tokenHash)
+    {
+
+        if (!entry.IsRecorded || _scopeFactory is null)
+        {
+
+            return;
+
+        }
+
+        try
+        {
+
+            await using AsyncServiceScope scope = _scopeFactory.CreateAsyncScope();
+
+            if (A2ASendingLedgerScope.Resolve(scope.ServiceProvider) is { } ledger)
+            {
+
+                await ledger
+                    .RecordOutboundCallbackAsync(entry, configId, tokenHash, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+            }
+
+        }
+        catch (Exception ex)
+        {
+
+            _logger.LogWarning(ex, "dispatch_sending: could not record a Sending's callback registration.");
+
+        }
+
+    }
+
+    private async Task<A2ASendingLedgerEntry> RecordOutboundAsync(
+        string remoteTaskId,
+        string agentUrl,
+        Guid? budgetReservationId)
     {
 
         if (_scopeFactory is null)
@@ -645,7 +1014,9 @@ public sealed class A2AClientService : IA2AClientService
 
             return ledger is null
                 ? default
-                : await ledger.RegisterOutboundAsync(remoteTaskId, agentUrl, CancellationToken.None).ConfigureAwait(false);
+                : await ledger
+                    .RegisterOutboundAsync(remoteTaskId, agentUrl, budgetReservationId, CancellationToken.None)
+                    .ConfigureAwait(false);
 
         }
         catch (Exception ex)
@@ -663,7 +1034,21 @@ public sealed class A2AClientService : IA2AClientService
     /// Closes a durable record once its Sending settles. Runs without the caller's token: a cancelled
     /// Sending still needs its record closed, or reconciliation chases a task that is already stopped.
     /// </summary>
-    private async Task ReleaseLedgerAsync(A2ASendingLedgerEntry entry)
+    private Task ReleaseLedgerAsync(A2ASendingLedgerEntry entry) =>
+        CloseLedgerAsync(entry, cost: null);
+
+    /// <summary>
+    /// Closes a settled Sending's durable record, stamping what the peer said it cost — including that
+    /// it said nothing (issue #69).
+    /// </summary>
+    private Task SettleLedgerAsync(A2ASendingLedgerEntry entry, A2ARemoteCost cost) =>
+        CloseLedgerAsync(entry, cost);
+
+    /// <summary>
+    /// Closes a durable record once its Sending settles. Runs without the caller's token: a cancelled
+    /// Sending still needs its record closed, or reconciliation chases a task that is already stopped.
+    /// </summary>
+    private async Task CloseLedgerAsync(A2ASendingLedgerEntry entry, A2ARemoteCost? cost)
     {
 
         if (!entry.IsRecorded || _scopeFactory is null)
@@ -680,12 +1065,23 @@ public sealed class A2AClientService : IA2AClientService
 
             IA2ASendingLedger? ledger = A2ASendingLedgerScope.Resolve(scope.ServiceProvider);
 
-            if (ledger is not null)
+            if (ledger is null)
+            {
+
+                return;
+
+            }
+
+            if (cost is null)
             {
 
                 await ledger.ReleaseAsync(entry, CancellationToken.None).ConfigureAwait(false);
 
+                return;
+
             }
+
+            await ledger.SettleOutboundAsync(entry, cost, CancellationToken.None).ConfigureAwait(false);
 
         }
         catch (Exception ex)
@@ -743,6 +1139,149 @@ public sealed class A2AClientService : IA2AClientService
     }
 
     /// <summary>
+    /// Awaits the remote task until it settles, preferring the peer's own push stream over polling.
+    /// </summary>
+    /// <remarks>
+    /// <strong>Peer capability decides, not configuration</strong> (issue #66): a card that advertises
+    /// <c>Capabilities.Streaming</c> is subscribed to, and anything else is polled exactly as before. The
+    /// subscription is best-effort in both directions — a peer that advertises streaming and then refuses
+    /// it, or a stream that ends mid-Sending, degrades to the poll loop rather than failing a Sending that
+    /// is still running perfectly well on the far side.
+    /// </remarks>
+    private async Task<AgentTask> AwaitSettledAsync(
+        IA2AClient client,
+        AgentCard card,
+        AgentTask task,
+        string discoveryUrl,
+        IProgress<A2ASendingProgress>? progress,
+        TransitionFilter transitions,
+        CancellationToken cancellationToken)
+    {
+
+        if (card.Capabilities?.Streaming == true)
+        {
+
+            AgentTask? streamed = await TrySubscribeUntilSettledAsync(
+                    client,
+                    task,
+                    discoveryUrl,
+                    progress,
+                    transitions,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (streamed is not null)
+            {
+
+                return streamed;
+
+            }
+
+        }
+
+        return await PollUntilSettledAsync(client, task, discoveryUrl, progress, transitions, cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    /// <summary>
+    /// Consumes the peer's <c>tasks/subscribe</c> stream until the task settles.
+    /// </summary>
+    /// <returns>
+    /// The settled task, or <c>null</c> when the subscription could not carry the Sending to a settled
+    /// state — the caller then falls back to polling.
+    /// </returns>
+    /// <remarks>
+    /// The settled task is re-read once through <c>tasks/get</c>. A status-update frame carries the state
+    /// but not the task's artifacts or metadata, and those are where the response text and the peer's
+    /// usage block live — reading once keeps settle semantics byte-identical to the poll path instead of
+    /// making a streamed Sending quietly lose its answer and its cost.
+    /// <para>
+    /// A task that already reached a terminal state before the subscription opened is refused by the
+    /// protocol, which is exactly the fast-remote race; that refusal lands here as a fallback to polling,
+    /// whose first read finds the settled task immediately.
+    /// </para>
+    /// </remarks>
+    private async Task<AgentTask?> TrySubscribeUntilSettledAsync(
+        IA2AClient client,
+        AgentTask task,
+        string discoveryUrl,
+        IProgress<A2ASendingProgress>? progress,
+        TransitionFilter transitions,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            IAsyncEnumerable<StreamResponse> stream = client.SubscribeToTaskAsync(
+                new SubscribeToTaskRequest { Id = task.Id },
+                cancellationToken);
+
+            await foreach (StreamResponse update in stream.WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+
+                if (ReadState(update) is not { } observed)
+                {
+
+                    continue;
+
+                }
+
+                if (transitions.ShouldReport(observed))
+                {
+
+                    Report(progress, discoveryUrl, task.Id, observed.State, DateTimeOffset.UtcNow);
+
+                }
+
+                if (IsSettled(observed.State))
+                {
+
+                    return await client
+                        .GetTaskAsync(new GetTaskRequest { Id = task.Id }, cancellationToken)
+                        .ConfigureAwait(false);
+
+                }
+
+            }
+
+            _logger.LogInformation(
+                "dispatch_sending: the push stream for remote task {TaskId} ended before it settled; falling back to polling.",
+                task.Id);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            throw;
+
+        }
+        catch (Exception ex) when (ex is HttpRequestException or A2AException or IOException or InvalidOperationException)
+        {
+
+            _logger.LogInformation(
+                ex,
+                "dispatch_sending: could not follow remote task {TaskId} by subscription; falling back to polling.",
+                task.Id);
+
+        }
+
+        return null;
+
+    }
+
+    /// <summary>
+    /// The task status a stream frame describes, or <c>null</c> for a frame that says nothing about state.
+    /// </summary>
+    private static A2ATaskStatus? ReadState(StreamResponse update) => update.PayloadCase switch
+    {
+        StreamResponseCase.Task => update.Task?.Status,
+        StreamResponseCase.StatusUpdate => update.StatusUpdate?.Status,
+        _ => null,
+    };
+
+    /// <summary>
     /// Polls the remote task until it settles: an A2A terminal state, or <c>input-required</c> /
     /// <c>auth-required</c>, which are not terminal but which a blocking Sending can never move past.
     /// </summary>
@@ -753,7 +1292,8 @@ public sealed class A2AClientService : IA2AClientService
     /// <para>
     /// <paramref name="progress"/> fires on remote <em>transitions</em>, not once per poll: a two-second
     /// backoff against a long remote task would otherwise flood the Chronicle with identical frames
-    /// (issue #61).
+    /// (issue #61). The filter is shared with the streaming path so a fallback does not re-announce a
+    /// state the stream already reported.
     /// </para>
     /// </remarks>
     private static async Task<AgentTask> PollUntilSettledAsync(
@@ -761,14 +1301,11 @@ public sealed class A2AClientService : IA2AClientService
         AgentTask task,
         string discoveryUrl,
         IProgress<A2ASendingProgress>? progress,
+        TransitionFilter transitions,
         CancellationToken cancellationToken)
     {
 
         TimeSpan delay = InitialPollInterval;
-
-        TaskState lastState = task.Status.State;
-
-        string lastStatusText = StatusText(task);
 
         while (!IsSettled(task.Status.State))
         {
@@ -783,24 +1320,49 @@ public sealed class A2AClientService : IA2AClientService
                 .GetTaskAsync(new GetTaskRequest { Id = task.Id }, cancellationToken)
                 .ConfigureAwait(false);
 
-            string statusText = StatusText(task);
-
-            if (task.Status.State == lastState && string.Equals(statusText, lastStatusText, StringComparison.Ordinal))
+            if (transitions.ShouldReport(task.Status))
             {
 
-                continue;
+                Report(progress, discoveryUrl, task, DateTimeOffset.UtcNow);
 
             }
-
-            lastState = task.Status.State;
-
-            lastStatusText = statusText;
-
-            Report(progress, discoveryUrl, task, DateTimeOffset.UtcNow);
 
         }
 
         return task;
+
+    }
+
+    /// <summary>
+    /// Remembers the last remote state observed, so both the push stream and the poll loop report
+    /// <em>transitions</em> rather than one frame per delivery.
+    /// </summary>
+    private sealed class TransitionFilter(TaskState state, string statusText)
+    {
+
+        private TaskState _state = state;
+
+        private string _statusText = statusText;
+
+        public bool ShouldReport(A2ATaskStatus status)
+        {
+
+            string text = StatusText(status);
+
+            if (status.State == _state && string.Equals(text, _statusText, StringComparison.Ordinal))
+            {
+
+                return false;
+
+            }
+
+            _state = status.State;
+
+            _statusText = text;
+
+            return true;
+
+        }
 
     }
 
@@ -809,10 +1371,18 @@ public sealed class A2AClientService : IA2AClientService
         string discoveryUrl,
         AgentTask task,
         DateTimeOffset observedAt) =>
+        Report(progress, discoveryUrl, task.Id, task.Status.State, observedAt);
+
+    private static void Report(
+        IProgress<A2ASendingProgress>? progress,
+        string discoveryUrl,
+        string taskId,
+        TaskState state,
+        DateTimeOffset observedAt) =>
         progress?.Report(new A2ASendingProgress(
             discoveryUrl,
-            task.Id,
-            StateName(task.Status.State),
+            taskId,
+            StateName(state),
             A2ASendingDirection.Outbound,
             observedAt));
 
@@ -821,8 +1391,8 @@ public sealed class A2AClientService : IA2AClientService
     /// remote-authored text can echo the delegated prompt back and a Chronicle frame is an operator
     /// surface, not a data channel (issue #61).
     /// </summary>
-    private static string StatusText(AgentTask task) =>
-        task.Status.Message is { } message ? ExtractText(message.Parts) : string.Empty;
+    private static string StatusText(A2ATaskStatus status) =>
+        status.Message is { } message ? ExtractText(message.Parts) : string.Empty;
 
     /// <summary>A2A wire spelling of a task state, so Chronicle frames match the protocol vocabulary.</summary>
     internal static string StateName(TaskState state) => state switch

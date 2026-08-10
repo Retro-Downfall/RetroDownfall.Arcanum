@@ -626,12 +626,27 @@ public static class ServiceCollectionExtensions
         // Durable record of in-flight A2A correspondences, so a restart can cancel an orphaned remote
         // task and a peer's tasks/cancel still reaches the real Apprentice (issue #62).
         services.AddScoped<IA2ASendingLedger, A2ASendingLedger>();
+        // Delegated spend is read from those same durable records, so the day's external cost survives
+        // the process that spent it and is never confused with local spend (issue #69).
+        services.AddScoped<IExternalSpendLedger, A2AExternalSpendLedger>();
         services.AddScoped<ILongRunningOperationRecoveryHandler, A2AInboundSendingRecoveryHandler>();
         services.AddScoped<ILongRunningOperationRecoveryHandler, A2AOutboundSendingRecoveryHandler>();
-        services.AddSingleton(static sp => new A2AServer(
+        // Push notifications, off unless an operator turns them on: inbound, a peer's callback is honoured
+        // and validated like any other egress; outbound, a Sending can stop holding a concurrency slot
+        // while the remote works (issue #67).
+        services.AddSingleton<A2APushNotificationRegistry>();
+        services.AddSingleton<A2APushNotificationDispatcher>();
+        services.AddSingleton<A2ASendingCallbackRegistry>();
+        // The SDK resolves the task before it ever calls the handler, so a purely in-memory store made
+        // every post-restart continuation and peer cancel unreachable however durable the Apprentice
+        // underneath was (issue #68).
+        services.AddSingleton<A2AServer>(static sp => new ArcanumA2AServer(
             sp.GetRequiredService<ArcanumA2AAgentHandler>(),
-            new InMemoryTaskStore(),
+            new ArcanumA2ATaskStore(
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<ILogger<ArcanumA2ATaskStore>>()),
             new ChannelEventNotifier(),
+            sp.GetRequiredService<A2APushNotificationRegistry>(),
             sp.GetRequiredService<ILogger<A2AServer>>(),
             new A2AServerOptions { AutoAppendHistory = true }));
         services.AddScoped<IChronosyncEngine, ChronosyncEngine>();

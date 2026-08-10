@@ -24,7 +24,55 @@ public enum A2ADispatchMode
     /// </summary>
     Continuable = 1,
 
+    /// <summary>
+    /// Register a callback with the peer, release the concurrency slot, and settle when the peer posts
+    /// back. The caller still awaits the outcome; what it stops doing is occupying one of
+    /// <c>MaxConcurrentA2ATasks</c> for the whole remote run (issue #67). Falls back to
+    /// <see cref="Blocking"/> when the peer does not advertise <c>pushNotifications</c>, this instance
+    /// has the surface switched off, or no reachable callback base URL is configured.
+    /// </summary>
+    Callback = 2,
+
 }
+
+/// <summary>
+/// Per-dispatch options: what the caller will accept back, checked against the peer's Agent Card before
+/// the remote task is created (issue #65), and who to charge the delegated work to (issue #69).
+/// </summary>
+/// <param name="AcceptedOutputModes">
+/// Media types this dispatch will accept back. <c>null</c> or empty means "what this instance can
+/// consume" — the operator-declared <c>Arcanum:Integrations:A2A:InputModes</c>, defaulting to
+/// <c>text/plain</c>. Something is always stated on the wire: saying nothing is what let a peer answer
+/// in a modality this instance cannot read.
+/// </param>
+/// <param name="SkillId">
+/// Optional Agent Card skill id this dispatch targets. When set, the card must advertise it and that
+/// skill's own output modes (when it declares any) are what the modality check runs against.
+/// </param>
+/// <param name="BudgetReservationId">
+/// The budget reservation covering the turn this Sending was dispatched from, when there is one. The
+/// outbound ledger row carries it so an operator can see the delegated work a reservation paid for
+/// (issue #69).
+/// </param>
+public sealed record A2ASendingOptions(
+    IReadOnlyList<string>? AcceptedOutputModes = null,
+    string? SkillId = null,
+    Guid? BudgetReservationId = null);
+
+/// <summary>
+/// The outcome of negotiating modalities against a peer's Agent Card.
+/// </summary>
+/// <param name="AcceptedOutputModes">
+/// What goes on the wire as <c>SendMessageConfiguration.AcceptedOutputModes</c>.
+/// </param>
+/// <param name="NegotiatedOutputMode">
+/// The first requested mode the card can actually produce, or <c>null</c> when the card advertised no
+/// modalities at all. A card that says nothing has not said "no", so <c>null</c> is a successful
+/// outcome, not a mismatch.
+/// </param>
+public sealed record A2AOutboundModality(
+    IReadOnlyList<string> AcceptedOutputModes,
+    string? NegotiatedOutputMode);
 
 /// <summary>What a remote agent is waiting for before it can finish.</summary>
 public enum A2AContinuationNeed
@@ -113,6 +161,10 @@ public interface IA2AClientService
     /// Whether <c>input-required</c> / <c>auth-required</c> end the Sending (default) or return a
     /// continuation the Mage can answer (issue #64).
     /// </param>
+    /// <param name="options">
+    /// Optional modality and skill preferences, validated against the peer's Agent Card before the
+    /// remote task is created (issue #65).
+    /// </param>
     Task<Result<A2ADispatchResult>> DispatchSendingAsync(
         string goal,
         string? name,
@@ -120,7 +172,8 @@ public interface IA2AClientService
         IReadOnlyList<string>? delegationChain = null,
         CancellationToken cancellationToken = default,
         IProgress<A2ASendingProgress>? progress = null,
-        A2ADispatchMode mode = A2ADispatchMode.Blocking);
+        A2ADispatchMode mode = A2ADispatchMode.Blocking,
+        A2ASendingOptions? options = null);
 
     /// <summary>
     /// Answers a Sending that stopped at <c>input-required</c> / <c>auth-required</c> and resumes waiting
@@ -128,6 +181,10 @@ public interface IA2AClientService
     /// </summary>
     /// <param name="taskId">The remote task id from <see cref="A2ADispatchResult.Continuation"/>.</param>
     /// <param name="message">The follow-up the remote agent asked for.</param>
+    /// <param name="options">
+    /// Optional modality and skill preferences, validated against the peer's Agent Card before the
+    /// follow-up is sent (issue #65).
+    /// </param>
     Task<Result<A2ADispatchResult>> ContinueSendingAsync(
         string agentUrl,
         string taskId,
@@ -135,7 +192,8 @@ public interface IA2AClientService
         IReadOnlyList<string>? delegationChain = null,
         CancellationToken cancellationToken = default,
         IProgress<A2ASendingProgress>? progress = null,
-        A2ADispatchMode mode = A2ADispatchMode.Blocking);
+        A2ADispatchMode mode = A2ADispatchMode.Blocking,
+        A2ASendingOptions? options = null);
 
     /// <summary>
     /// Cancels a remote A2A task this instance previously dispatched, subject to the same allowlist,

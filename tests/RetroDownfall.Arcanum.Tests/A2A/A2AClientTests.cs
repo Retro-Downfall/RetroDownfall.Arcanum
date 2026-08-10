@@ -256,8 +256,10 @@ public sealed class A2AClientTests : IDisposable
 
         using HttpMessageHandler serverHandler = server.CreateHandler();
 
-        // Cancelling on the first poll (rather than the instant the remote starts work) is the case that
-        // matters and the only deterministic one: by then the client holds the remote task id.
+        // Cancelling once the client has begun following the remote task (rather than the instant the
+        // remote starts work) is the case that matters and the only deterministic one: by then the client
+        // holds the remote task id. "Following" is a subscription or a poll depending on what the peer
+        // advertises (issue #66); either proves the same thing.
         using PollAwareHandler handler = new(serverHandler);
 
         A2AClientService client = CreateClient(handler, EnabledSettings());
@@ -268,8 +270,8 @@ public sealed class A2AClientTests : IDisposable
             client.DispatchSendingAsync("long running work", null, DiscoveryUrl, cancellationToken: cts.Token);
 
         Assert.True(
-            await handler.WaitForFirstTaskPollAsync(TimeSpan.FromSeconds(30)),
-            "dispatch_sending never polled the remote task. Requests seen: " + string.Join(" | ", handler.Seen));
+            await handler.WaitUntilFollowingTaskAsync(TimeSpan.FromSeconds(30)),
+            "dispatch_sending never followed the remote task. Requests seen: " + string.Join(" | ", handler.Seen));
 
         await cts.CancelAsync();
 
@@ -518,8 +520,9 @@ public sealed class A2AClientTests : IDisposable
     }
 
     /// <summary>
-    /// Forwards to the fake remote agent while signalling the first task-status poll — the point at which
-    /// the client provably holds the remote task id.
+    /// Forwards to the fake remote agent while signalling the first call that follows the remote task —
+    /// a <c>tasks/get</c> poll or a <c>tasks/subscribe</c> stream — which is the point at which the client
+    /// provably holds the remote task id.
     /// </summary>
     private sealed class PollAwareHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
     {
@@ -542,7 +545,9 @@ public sealed class A2AClientTests : IDisposable
             Seen.Add($"{request.Method} {path} :: {(body.Length > 120 ? body[..120] : body)}");
 
             if (body.Contains("\"GetTask\"", StringComparison.Ordinal)
+                || body.Contains("\"SubscribeToTask\"", StringComparison.Ordinal)
                 || body.Contains("tasks/get", StringComparison.OrdinalIgnoreCase)
+                || body.Contains("tasks/subscribe", StringComparison.OrdinalIgnoreCase)
                 || (path.Contains("/tasks", StringComparison.OrdinalIgnoreCase)
                     && !path.Contains("agent-card", StringComparison.OrdinalIgnoreCase)))
             {
@@ -555,7 +560,7 @@ public sealed class A2AClientTests : IDisposable
 
         }
 
-        public async Task<bool> WaitForFirstTaskPollAsync(TimeSpan timeout)
+        public async Task<bool> WaitUntilFollowingTaskAsync(TimeSpan timeout)
         {
 
             Task completed = await Task.WhenAny(_firstPoll.Task, Task.Delay(timeout)).ConfigureAwait(false);

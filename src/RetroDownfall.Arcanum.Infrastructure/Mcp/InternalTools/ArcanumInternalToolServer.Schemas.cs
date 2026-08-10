@@ -858,6 +858,15 @@ internal sealed partial class ArcanumInternalToolServer
                 + "task id instead of ending the Sending, so the request can be answered. Defaults to false "
                 + "(the Sending ends with an actionable reason and the remote task is cancelled).");
 
+            WriteBooleanProperty(
+                w,
+                "callback",
+                "When true, ask the remote agent to report back when it finishes instead of holding one of "
+                + "this instance's concurrent-Sending slots for the whole remote run. Falls back to the "
+                + "ordinary wait when the peer cannot accept a callback.");
+
+            WriteSendingNegotiationProperties(w);
+
             w.WriteEndObject();
 
             w.WriteStartArray("required");
@@ -899,6 +908,8 @@ internal sealed partial class ArcanumInternalToolServer
                 w,
                 "continuable",
                 "When true, keep returning a continuation task id if the remote agent asks for something again.");
+
+            WriteSendingNegotiationProperties(w);
 
             w.WriteEndObject();
 
@@ -965,5 +976,41 @@ internal sealed partial class ArcanumInternalToolServer
         w.WriteString("description", description);
 
         w.WriteEndObject();
+    }
+
+    private static void WriteStringArrayProperty(Utf8JsonWriter w, string name, string description)
+    {
+        w.WriteStartObject(name);
+
+        w.WriteString("type", "array");
+
+        w.WriteString("description", description);
+
+        w.WriteStartObject("items");
+
+        w.WriteString("type", "string");
+
+        w.WriteEndObject();
+
+        w.WriteEndObject();
+    }
+
+    /// <summary>
+    /// The two Agent Card negotiation knobs both Sending tools share (issue #65).
+    /// </summary>
+    private static void WriteSendingNegotiationProperties(Utf8JsonWriter w)
+    {
+        WriteStringProperty(
+            w,
+            "skill_id",
+            "Optional Agent Card skill id to target. The dispatch fails before the remote task is created "
+            + "if the peer advertises no such skill.");
+
+        WriteStringArrayProperty(
+            w,
+            "accepted_output_modes",
+            "Optional media types to accept back (e.g. \"text/plain\"). Omit to accept whatever this "
+            + "instance can consume. A peer whose Agent Card can produce none of them is refused before "
+            + "the remote task is created.");
     }
 }

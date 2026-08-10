@@ -482,6 +482,26 @@ public sealed record DispatchSendingParams
     [JsonPropertyName("continuable")]
     public bool? Continuable { get; init; }
 
+    /// <summary>
+    /// When <c>true</c>, ask the peer to report back instead of holding a concurrency slot for the whole
+    /// remote run. Falls back to the blocking wait when the peer cannot accept a callback (issue #67).
+    /// </summary>
+    [JsonPropertyName("callback")]
+    public bool? Callback { get; init; }
+
+    /// <summary>
+    /// Optional Agent Card skill id to target. Validated against the peer's card before the remote task
+    /// is created (issue #65).
+    /// </summary>
+    [JsonPropertyName("skill_id")]
+    public string? SkillId { get; init; }
+
+    /// <summary>
+    /// Optional media types to accept back. Omitted means "whatever this instance can consume".
+    /// </summary>
+    [JsonPropertyName("accepted_output_modes")]
+    public string[]? AcceptedOutputModes { get; init; }
+
 }
 
 /// <summary>
@@ -502,6 +522,14 @@ public sealed record ContinueSendingParams
 
     [JsonPropertyName("continuable")]
     public bool? Continuable { get; init; }
+
+    /// <inheritdoc cref="DispatchSendingParams.SkillId"/>
+    [JsonPropertyName("skill_id")]
+    public string? SkillId { get; init; }
+
+    /// <inheritdoc cref="DispatchSendingParams.AcceptedOutputModes"/>
+    [JsonPropertyName("accepted_output_modes")]
+    public string[]? AcceptedOutputModes { get; init; }
 
 }
 

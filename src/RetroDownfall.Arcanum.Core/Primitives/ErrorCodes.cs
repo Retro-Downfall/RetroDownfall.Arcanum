@@ -531,6 +531,27 @@ public static class ErrorCodes
 
         public const string MaxTasksReached = "Sending.MaxTasksReached";
 
+        /// <summary>
+        /// The peer's Agent Card cannot produce any output modality this dispatch will accept. Raised
+        /// before the remote task is created, so nothing is left running on the far side (issue #65).
+        /// </summary>
+        public const string ModalityMismatch = "Sending.ModalityMismatch";
+
+        /// <summary>The peer's Agent Card advertises no skill with the requested id (issue #65).</summary>
+        public const string SkillNotAdvertised = "Sending.SkillNotAdvertised";
+
+        /// <summary>
+        /// The A2A push-notification surface is not enabled on this instance
+        /// (<c>Arcanum:Integrations:A2A:PushNotifications</c>) — issue #67.
+        /// </summary>
+        public const string PushNotificationsDisabled = "Sending.PushNotificationsDisabled";
+
+        /// <summary>
+        /// A push-notification callback was refused: an unusable URL, one the allowlist does not vouch
+        /// for, or one the outbound URL guard blocked (issue #67).
+        /// </summary>
+        public const string PushNotificationRejected = "Sending.PushNotificationRejected";
+
     }
 
     /// <summary>WebBrowsing — built-in <c>browse_web</c> tool errors.</summary>

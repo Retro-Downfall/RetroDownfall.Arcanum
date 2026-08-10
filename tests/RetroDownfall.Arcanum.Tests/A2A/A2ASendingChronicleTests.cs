@@ -351,7 +351,8 @@ public sealed class A2ASendingChronicleTests
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking)
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null)
         {
 
             foreach (A2ASendingProgress update in updates)
@@ -373,7 +374,8 @@ public sealed class A2ASendingChronicleTests
             IReadOnlyList<string>? delegationChain = null,
             CancellationToken cancellationToken = default,
             IProgress<A2ASendingProgress>? progress = null,
-            A2ADispatchMode mode = A2ADispatchMode.Blocking) => throw new NotSupportedException();
+            A2ADispatchMode mode = A2ADispatchMode.Blocking,
+            A2ASendingOptions? options = null) => throw new NotSupportedException();
 
         public Task<Result> CancelRemoteTaskAsync(
             string agentUrl,

@@ -435,6 +435,16 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
 
     #region Conclave / A2A
 
+    /// <summary>Today's spend against the configured daily budget, local and delegated (issue #69).</summary>
+    public Task<Result<BudgetSummaryDto>> GetBudgetAsync(CancellationToken cancellationToken = default) =>
+        SendRequestAsync(
+            HttpMethod.Get,
+            "api/budget",
+            null,
+            null,
+            ArcanumJsonContext.Default.ApiResponseBudgetSummaryDto,
+            cancellationToken);
+
     public Task<Result<ConclaveStatusDto>> GetConclaveStatusAsync(CancellationToken cancellationToken = default) =>
         SendRequestAsync(
             HttpMethod.Get,
@@ -453,11 +463,21 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         string goal,
         string? name,
         bool continuable = false,
+        string? skillId = null,
+        string[]? acceptedOutputModes = null,
+        bool callback = false,
         CancellationToken cancellationToken = default)
     {
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-            new DispatchSendingRequest(agentUrl, goal, name, continuable ? true : null),
+            new DispatchSendingRequest(
+                agentUrl,
+                goal,
+                name,
+                continuable ? true : null,
+                skillId,
+                acceptedOutputModes,
+                callback ? true : null),
             ArcanumJsonContext.Default.DispatchSendingRequest);
 
         return SendRequestAsync(
@@ -475,11 +495,13 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         string taskId,
         string message,
         bool continuable = false,
+        string? skillId = null,
+        string[]? acceptedOutputModes = null,
         CancellationToken cancellationToken = default)
     {
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(
-            new ContinueSendingRequest(agentUrl, message, continuable ? true : null),
+            new ContinueSendingRequest(agentUrl, message, continuable ? true : null, skillId, acceptedOutputModes),
             ArcanumJsonContext.Default.ContinueSendingRequest);
 
         return SendRequestAsync(

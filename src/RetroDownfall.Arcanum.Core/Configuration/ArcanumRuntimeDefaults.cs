@@ -180,6 +180,8 @@ public static class ArcanumRuntimeSettings
             Skills = integration.Skills ?? [],
             InputModes = integration.InputModes ?? [],
             OutputModes = integration.OutputModes ?? [],
+            PushNotificationsEnabled = integration.PushNotifications,
+            PushCallbackBaseUrl = integration.PushCallbackBaseUrl?.Trim() ?? string.Empty,
         };
     }
 
