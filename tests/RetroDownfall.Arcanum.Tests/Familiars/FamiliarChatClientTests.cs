@@ -489,6 +489,70 @@ public sealed class FamiliarChatClientTests
 
     }
 
+    /// <summary>
+    /// Codex has no <c>--tools</c> switch, so the CLI's own agent loop is suppressed through feature
+    /// overrides instead. They go through <c>-c features.&lt;name&gt;=false</c> rather than
+    /// <c>--disable &lt;name&gt;</c> deliberately: <c>--disable</c> rejects a name the installed CLI
+    /// does not know, so a renamed flag in a later release would fail every turn, while an unknown
+    /// <c>-c</c> override is ignored.
+    /// </summary>
+    [Fact]
+    public async Task Codex_disables_the_vendor_agent_loop_through_tolerant_config_overrides()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
+
+        using IChatClient client = CreateCodex(runner, "gpt-5.6");
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            cancellationToken: CancellationToken.None);
+
+        IReadOnlyList<string> argv = runner.LastRequest.Arguments;
+
+        Assert.DoesNotContain("--disable", argv);
+
+        foreach (string feature in CodexCliChatClient.SuppressedFeatures)
+        {
+
+            Assert.Contains($"features.{feature}=false", argv);
+
+        }
+
+        Assert.Contains("shell_tool", string.Join(' ', argv));
+
+    }
+
+    /// <summary>
+    /// Defence in depth for the above. Feature suppression is best-effort against a CLI Arcanum does
+    /// not version-pin, so the projection refuses a turn that ran a vendor tool anyway. Returning the
+    /// agent message would launder output produced by a shell command that escaped
+    /// <c>WorkspacePathPolicy</c> and the Ward gate entirely.
+    /// </summary>
+    [Fact]
+    public async Task Codex_fails_closed_when_the_vendor_loop_executed_a_tool_anyway()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexShellTool);
+
+        using IChatClient client = CreateCodex(runner, "gpt-5.6");
+
+        FamiliarTransportException failure = await Assert.ThrowsAsync<FamiliarTransportException>(
+            async () => await client.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, "who am i")],
+                cancellationToken: CancellationToken.None));
+
+        Assert.Contains("command_execution", failure.Message, StringComparison.Ordinal);
+
+        // The laundered answer must not reach the caller in any form.
+        Assert.DoesNotContain("logged in as", failure.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
     // ---- Shared ------------------------------------------------------------------------------
 
     /// <summary>

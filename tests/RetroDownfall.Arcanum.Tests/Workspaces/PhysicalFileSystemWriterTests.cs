@@ -554,6 +554,78 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The workspace root is never a delete target.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="WorkspacePathResolver.ResolveRelativePath"/> deliberately maps an empty, blank, or
+    /// <c>"."</c> relative path to the root, which is what the listing routes want. Nothing below it
+    /// distinguishes that case: the resolved path equals the root, so the containment revalidation
+    /// short-circuits on the equality branch and passes. Reached from
+    /// <c>DELETE /api/workspaces/{id}/files?relativePath=.&amp;recursive=true</c> that unlinks the
+    /// registered workspace itself, so the refusal belongs in the writer where every caller inherits it.
+    /// </remarks>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(".")]
+    [InlineData("./")]
+    public async Task DeleteAsync_refuses_to_delete_the_workspace_root(string relativePath)
+    {
+
+        _workspace.WriteFile("keep.txt", "content");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileDeleteResult> result = await writer.DeleteAsync(
+            workspace,
+            relativePath,
+            recursive: true,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.True(Directory.Exists(_workspace.Root));
+
+        Assert.True(File.Exists(Path.Combine(_workspace.Root, "keep.txt")));
+
+    }
+
+    /// <summary>
+    /// A relative path that walks back to the root is refused one layer earlier, by the resolver's
+    /// traversal rule rather than the root guard. Pinned separately so the two refusals cannot be
+    /// collapsed into one and silently lose a case.
+    /// </summary>
+    [Fact]
+    public async Task DeleteAsync_refuses_a_traversal_that_resolves_to_the_workspace_root()
+    {
+
+        _workspace.WriteFile("keep.txt", "content");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileDeleteResult> result = await writer.DeleteAsync(
+            workspace,
+            "foo/..",
+            recursive: true,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathTraversal", result.Error.Code);
+
+        Assert.True(Directory.Exists(_workspace.Root));
+
+        Assert.True(File.Exists(Path.Combine(_workspace.Root, "keep.txt")));
+
+    }
+
     [Fact]
     public async Task DeleteAsync_returns_FileNotFound_when_path_does_not_exist()
     {

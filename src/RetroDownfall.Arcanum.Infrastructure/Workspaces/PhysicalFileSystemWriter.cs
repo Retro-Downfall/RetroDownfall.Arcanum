@@ -210,6 +210,18 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         string workspaceRoot = Path.GetFullPath(workspace.Path);
 
+        // The resolver maps an empty, blank, or "." path to the root on purpose, because the listing
+        // routes ask for exactly that. Delete is the one caller for which it is never a legitimate
+        // target, and the containment check below cannot catch it: root-equals-root satisfies
+        // every containment rule there is.
+        if (WorkspaceRootPolicy.IsSamePath(resolvedPath, workspaceRoot))
+        {
+            return Task.FromResult<Result<FileDeleteResult>>(
+                new Error(
+                    ErrorCodes.Workspace.PathNotAllowed,
+                    "The workspace root cannot be deleted. Name a path inside the workspace."));
+        }
+
         bool isDirectory = Directory.Exists(resolvedPath);
 
         bool isFile = !isDirectory && File.Exists(resolvedPath);

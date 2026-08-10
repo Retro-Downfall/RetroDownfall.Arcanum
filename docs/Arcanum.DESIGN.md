@@ -3090,10 +3090,27 @@ explicit: it does nothing until a provider row exists.
 **Wire mapping.** Claude Code runs as
 `claude --print --output-format stream-json --verbose --include-partial-messages --model <m> --tools "" --disable-slash-commands --strict-mcp-config --no-session-persistence`,
 with system messages passed as `--system-prompt`. Codex runs as
-`codex exec --json --sandbox read-only --skip-git-repo-check --ephemeral -C <temp> -m <m> -`. Both
-CLIs' own agent loops are switched off: Arcanum owns the tool loop, and delegating into a CLI's agent
-loop is an explicit non-goal. A Familiar therefore serves text completions — `ChatOptions.Tools` is
-ignored, and a tool-using turn degrades to text rather than failing.
+`codex exec --json --sandbox read-only --skip-git-repo-check --ephemeral --ignore-rules -C <temp> -m <m> -c features.<f>=false … -`.
+Both CLIs' own agent loops are switched off: Arcanum owns the tool loop, and delegating into a CLI's
+agent loop is an explicit non-goal. A Familiar therefore serves text completions — `ChatOptions.Tools`
+is ignored, and a tool-using turn degrades to text rather than failing.
+
+The two CLIs need different mechanisms for that, and Codex's is weaker. Claude Code takes `--tools ""`,
+which is a single authoritative switch. Codex has no equivalent — `--sandbox read-only` governs only
+what a model-run command may *write*, not whether the model may run one at all — so its loop is
+suppressed through the feature flags in `CodexCliChatClient.SuppressedFeatures` (`shell_tool`,
+`unified_exec`, `browser_use`, `computer_use`, `apps`, `web_search`, `hooks`, …). They are applied as
+`-c features.<name>=false` rather than `--disable <name>` on purpose: `--disable` rejects a name the
+installed CLI does not recognise, so a flag renamed in a later release would fail every turn, while an
+unknown `-c` override is ignored and the suppression simply degrades.
+
+Because that suppression is therefore best-effort against a CLI Arcanum does not version-pin, it is not
+the guarantee. The guarantee is that `CodexCliChatClient.ProjectItem` **fails closed**: a completed
+`command_execution`, `mcp_tool_call`, `web_search`, `file_change`, `patch_apply`, `browser_action`, or
+`computer_use` item raises a transport failure instead of being skipped. Such an item is proof the
+vendor loop ran code outside `WorkspacePathPolicy`, outside the Ward gate, and outside the audit
+record, so its answer is laundered output rather than a completion, and returning it would be worse
+than failing the turn.
 
 Frames are bound through `FamiliarWireJsonContext` (source-generated, snake_case) with every member
 optional, so an unknown frame from a newer CLI is skipped rather than fatal. Claude Code's terminal

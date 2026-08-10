@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"019fe7ae-2cd2-7dc2-8dc9-8bc104c1f29e"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/zsh -lc 'whoami'","aggregated_output":"mat\n","exit_code":0}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"You are logged in as mat."}}
+{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":40,"reasoning_output_tokens":0}}

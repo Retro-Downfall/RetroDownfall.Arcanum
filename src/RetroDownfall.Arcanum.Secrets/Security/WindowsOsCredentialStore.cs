@@ -68,9 +68,7 @@ internal static partial class WindowsOsCredentialStore
 
         string target = TargetName(service, account);
 
-        byte[] blob = Encoding.Unicode.GetBytes(secret);
-
-        nint blobPtr = Marshal.AllocHGlobal(blob.Length);
+        using CredentialSecretBuffer blob = CredentialSecretBuffer.FromUtf16(secret);
 
         nint targetPtr = Marshal.StringToCoTaskMemUni(target);
 
@@ -84,8 +82,8 @@ internal static partial class WindowsOsCredentialStore
                 Type = CredTypeGeneric,
                 TargetName = targetPtr,
                 UserName = userPtr,
-                CredentialBlobSize = (uint)blob.Length,
-                CredentialBlob = blobPtr,
+                CredentialBlobSize = (uint)blob.ByteCount,
+                CredentialBlob = blob.Pointer,
                 Persist = CredPersistLocalMachine,
             };
 
@@ -103,8 +101,6 @@ internal static partial class WindowsOsCredentialStore
         }
         finally
         {
-
-            Marshal.FreeHGlobal(blobPtr);
 
             Marshal.FreeCoTaskMem(targetPtr);
 

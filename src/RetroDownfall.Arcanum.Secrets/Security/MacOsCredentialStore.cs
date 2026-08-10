@@ -22,6 +22,9 @@ internal static partial class MacOsCredentialStore
 
         byte[] accountBytes = Encoding.UTF8.GetBytes(account);
 
+        // Security.framework returns the item ref retained, so a lookup that discards it leaks a
+        // CFType on every read. This path only needs the password bytes, so the ref is released
+        // before anything else can return.
         int status = SecKeychainFindGenericPassword(
             nint.Zero,
             (uint)serviceBytes.Length,
@@ -30,7 +33,14 @@ internal static partial class MacOsCredentialStore
             accountBytes,
             out uint passwordLength,
             out nint passwordData,
-            out _);
+            out nint itemRef);
+
+        if (itemRef != nint.Zero)
+        {
+
+            CFRelease(itemRef);
+
+        }
 
         if (status == ErrSecItemNotFound)
         {
