@@ -45,6 +45,15 @@ public static class ArcanumMetrics
         "arcanum_tool_invocations_total", description: "Total tool invocations");
 
     /// <summary>
+    /// Ward outcomes by who supplied them. Labels are strictly <c>tool_name</c> and <c>origin</c>
+    /// (<c>human</c> | <c>auto_approved</c> | <c>auto_denied</c> | <c>timed_out</c> |
+    /// <c>cancelled</c> | <c>host_restarted</c>). Tool arguments, paths, prompt content, and
+    /// free-text resolution reasons are never recorded as labels.
+    /// </summary>
+    public static readonly Counter<long> WardDecisionsTotal = Meter.CreateCounter<long>(
+        "arcanum_ward_decisions_total", description: "Total ward decisions by resolution origin");
+
+    /// <summary>
     /// Bounded cleanup attempts after a mandatory apply_patch receipt commits. Label:
     /// <c>outcome</c> (<c>complete</c> | <c>retained</c>).
     /// </summary>

@@ -600,6 +600,23 @@ boundary. For architecture decisions, read `Arcanum.DESIGN.md`; for route and wi
     ceilings, advance checkpoints/slot-release signals explicitly, and assert every item eventually
     completes or a caller cancellation records its saved state. Never make these tests sleep until
     an arbitrary timeout; the progress signal or cancellation token must own every transition.
+29. **Trace Ward auto-approval without weakening containment:** set
+    `Arcanum:Security:Ward:AutoApprove:Enabled=true` with `Tools: ["execute_command"]` and break in
+    `ToolExecutionPipeline.ExecuteToolCallWithWardAsync()`. Step the decision order in place: the
+    unattended hard-deny branch is evaluated *before* `ToolRiskClassifier.IsAutoApproved()`, so with
+    `UnattendedMode` + `AutoDenyInUnattendedMode` on you must reach the synthetic denial and never
+    the allowlist — deny wins. With auto-approval taken, confirm `WardAsync()` is never entered, that
+    `IWard.RecordAutomaticResolution()` is called instead, and that no `ToolApprovalRequestedEvent`
+    reaches the observer (that event is what opens the Command Center hard modal). Continue into
+    `InvokeToolCallWithSanctumAsync()` and confirm `EnforceSanctumAsync()` still runs — set a
+    campaign with a `DisabledTools` entry for the same tool and assert the auto-approved call still
+    returns the Sanctum denial with `Denied: true`. In `WardGate.RecordAutomaticResolution()`, break
+    inside the `_resolutionGate` lock and confirm nothing is ever added to `_pending`: `GET
+    /api/wards` must not list the ward at any point, and a manual `POST /api/wards/{id}` must return
+    `AlreadyResolved` (409). Finally inspect the two emitted frames — both `warded` and
+    `wardResolved` must carry `origin: "autoApproved"` — and the `arcanum_ward_decisions_total`
+    measurement, whose only tags may be `tool_name` and `origin`; a tool argument, path, or
+    resolution reason string appearing as a label is the bug.
 
 ## Related documents
 

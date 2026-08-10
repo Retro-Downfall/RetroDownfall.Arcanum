@@ -8835,6 +8835,13 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
         public ResolveStatus Resolve(string wardId, bool allow, string? reason) =>
             ResolveStatus.Success;
 
+        public WardResolution RecordAutomaticResolution(
+            string wardId,
+            bool allowed,
+            string? reason,
+            WardResolutionOrigin origin) =>
+            new(allowed, reason, DateTimeOffset.UtcNow, origin);
+
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
 
     }

@@ -44,4 +44,28 @@ public sealed record WardSettings
     /// </summary>
     public bool UnattendedMode { get; set; }
 
+    /// <summary>
+    /// Master opt-in for operator auto-approval (<c>Arcanum:Security:Ward:AutoApprove:Enabled</c>).
+    /// Off by default; on its own it grants nothing, because <see cref="AutoApproveTools"/> is the
+    /// allowlist that names what may skip the prompt.
+    /// </summary>
+    public bool AutoApproveEnabled { get; set; }
+
+    private readonly List<string> _autoApproveTools = [];
+
+    /// <summary>
+    /// Exact tool names whose Ward the host may resolve on the operator's behalf. Normalized by
+    /// <c>ResolveWard</c> (trimmed, blanks dropped, ordinal-ignore-case deduplicated). Empty is a
+    /// no-op, and a listed name that is unavailable, unadvertised, or excluded by attunement grants
+    /// no capability — auto-approval only supplies the human consent step.
+    /// </summary>
+    public IReadOnlyList<string> AutoApproveTools
+    {
+
+        get => _autoApproveTools;
+
+        init => _autoApproveTools = new List<string>(value);
+
+    }
+
 }

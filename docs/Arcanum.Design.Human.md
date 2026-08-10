@@ -399,6 +399,17 @@ Host-process tools require the `Development` edition plus an explicit environmen
 eligible macOS host with active Seatbelt and a trusted .NET launch chain. It can execute
 repository-authored build or test code, so it is never described as harmless file inspection.
 
+A Ward is **consent**, not containment. That distinction is what makes step 4 above safe to
+delegate: an operator who trusts one particular action can name it in the auto-approval allowlist
+(`Arcanum:Security:Ward:AutoApprove`, off by default) so it stops asking, and every other step in
+the list still runs unchanged. Nothing about the boundary moves — the same Sanctum path policy,
+platform containment, and output bounds apply to an auto-approved action as to one the operator
+clicked through. Two rules keep the feature honest: a denial is evaluated before an approval, so
+turning consent on can never override a policy that says no; and consent given in advance for one
+named tool is never consent for a tool that is unavailable, unadvertised, or excluded elsewhere.
+Auto-approved actions are reported in the transcript rather than silently skipped, so "it ran
+without asking" and "it ran without being seen" stay different things.
+
 Platform containment is not identical:
 
 - macOS uses a filesystem-focused Seatbelt profile; child network remains available;

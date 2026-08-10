@@ -360,7 +360,8 @@ public sealed partial class WizardIntelligenceProvider(
                         correlation,
                         frame.WardId ?? string.Empty,
                         frame.WardToolName ?? frame.Message,
-                        frame.WardArguments?.GetRawText() ?? string.Empty);
+                        frame.WardArguments?.GetRawText() ?? string.Empty,
+                        frame.WardOrigin);
 
                     yield break;
 
@@ -370,7 +371,8 @@ public sealed partial class WizardIntelligenceProvider(
                         frame.WardId ?? string.Empty,
                         frame.WardToolName ?? frame.Message,
                         frame.WardAllowed == true,
-                        frame.WardReason);
+                        frame.WardReason,
+                        frame.WardOrigin);
 
                     yield break;
 

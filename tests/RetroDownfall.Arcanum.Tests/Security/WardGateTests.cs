@@ -507,6 +507,261 @@ public sealed class WardGateTests
 
     }
 
+    // Issue #53: an automatic decision must never insert a live waiter. The gate performs an atomic
+    // create→resolved transition so neither GET /api/wards nor a competing POST can observe the ward
+    // as approvable, and the automatic result can never be overwritten by a manual resolver.
+
+    [Fact]
+    public void RecordAutomaticResolution_ProducesAnAllowedResolutionWithTheRequestedOrigin()
+    {
+
+        WardGate gate = CreateGate();
+
+        WardResolution resolution = gate.RecordAutomaticResolution(
+            "ward-auto-allow",
+            allowed: true,
+            reason: AutoApproveReason,
+            WardResolutionOrigin.AutoApproved);
+
+        Assert.True(resolution.Allowed);
+
+        Assert.Equal(AutoApproveReason, resolution.Reason);
+
+        Assert.Equal(WardResolutionOrigin.AutoApproved, resolution.Origin);
+
+    }
+
+    [Fact]
+    public void RecordAutomaticResolution_NeverExposesTheWardAsActive()
+    {
+
+        WardGate gate = CreateGate();
+
+        _ = gate.RecordAutomaticResolution(
+            "ward-auto-invisible",
+            allowed: true,
+            reason: AutoApproveReason,
+            WardResolutionOrigin.AutoApproved);
+
+        Assert.Empty(gate.GetActiveWards());
+
+    }
+
+    [Fact]
+    public void RecordAutomaticResolution_MakesACompetingManualResolveReturnAlreadyResolved()
+    {
+
+        WardGate gate = CreateGate();
+
+        _ = gate.RecordAutomaticResolution(
+            "ward-auto-race",
+            allowed: true,
+            reason: AutoApproveReason,
+            WardResolutionOrigin.AutoApproved);
+
+        Assert.Equal(
+            ResolveStatus.AlreadyResolved,
+            gate.Resolve("ward-auto-race", allow: false, reason: "manual deny after auto-approval"));
+
+    }
+
+    [Fact]
+    public async Task RecordAutomaticResolution_ConcurrentManualResolvers_CannotChangeTheResult()
+    {
+
+        const int resolverCount = 32;
+
+        WardGate gate = CreateGate();
+
+        using Barrier start = new(resolverCount + 1);
+
+        Task<ResolveStatus>[] attempts = Enumerable.Range(0, resolverCount)
+            .Select(i => Task.Factory.StartNew(
+                () =>
+                {
+
+                    if (!start.SignalAndWait(TimeSpan.FromSeconds(10)))
+                    {
+
+                        throw new TimeoutException("Concurrent resolvers did not reach the start barrier.");
+
+                    }
+
+                    return gate.Resolve("ward-auto-contended", allow: false, reason: $"resolver-{i}");
+
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default))
+            .ToArray();
+
+        WardResolution automatic = gate.RecordAutomaticResolution(
+            "ward-auto-contended",
+            allowed: true,
+            reason: AutoApproveReason,
+            WardResolutionOrigin.AutoApproved);
+
+        Assert.True(start.SignalAndWait(TimeSpan.FromSeconds(10)));
+
+        ResolveStatus[] statuses = await Task.WhenAll(attempts);
+
+        // Every resolver either arrived before the tombstone (NotFound — there is no live ward to
+        // resolve) or after it (AlreadyResolved). None may succeed, because success would mean a
+        // manual decision replaced the automatic one.
+        Assert.DoesNotContain(ResolveStatus.Success, statuses);
+
+        Assert.True(automatic.Allowed);
+
+    }
+
+    [Fact]
+    public async Task RecordAutomaticResolution_OnALiveWard_FailsClosedAndLeavesTheWaiterPending()
+    {
+
+        WardGate gate = CreateGate();
+
+        Task<WardResolution> wardTask = gate.WardAsync(
+            "ward-auto-collision",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        WardResolution automatic = gate.RecordAutomaticResolution(
+            "ward-auto-collision",
+            allowed: true,
+            reason: AutoApproveReason,
+            WardResolutionOrigin.AutoApproved);
+
+        Assert.False(automatic.Allowed);
+
+        Assert.False(wardTask.IsCompleted);
+
+        Assert.Equal(
+            ResolveStatus.Success,
+            gate.Resolve("ward-auto-collision", allow: false, reason: "operator"));
+
+        WardResolution resolution = await wardTask;
+
+        Assert.False(resolution.Allowed);
+
+        Assert.Equal(WardResolutionOrigin.Human, resolution.Origin);
+
+    }
+
+    [Fact]
+    public void RecordAutomaticResolution_Twice_KeepsTheFirstDecision()
+    {
+
+        WardGate gate = CreateGate();
+
+        _ = gate.RecordAutomaticResolution(
+            "ward-auto-twice",
+            allowed: true,
+            reason: AutoApproveReason,
+            WardResolutionOrigin.AutoApproved);
+
+        WardResolution second = gate.RecordAutomaticResolution(
+            "ward-auto-twice",
+            allowed: false,
+            reason: "second",
+            WardResolutionOrigin.AutoDenied);
+
+        Assert.True(second.Allowed);
+
+        Assert.Equal(WardResolutionOrigin.AutoApproved, second.Origin);
+
+    }
+
+    [Fact]
+    public async Task Resolve_RecordsTheHumanOrigin()
+    {
+
+        WardGate gate = CreateGate();
+
+        Task<WardResolution> wardTask = gate.WardAsync(
+            "ward-origin-human",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromSeconds(30),
+            CancellationToken.None);
+
+        Assert.Equal(
+            ResolveStatus.Success,
+            gate.Resolve("ward-origin-human", allow: true, reason: "Operator approved"));
+
+        WardResolution resolution = await wardTask;
+
+        Assert.Equal(WardResolutionOrigin.Human, resolution.Origin);
+
+    }
+
+    [Fact]
+    public async Task WardAsync_Timeout_RecordsTheTimedOutOrigin()
+    {
+
+        WardGate gate = CreateGate();
+
+        WardResolution resolution = await gate.WardAsync(
+            "ward-origin-timeout",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromMilliseconds(75),
+            CancellationToken.None);
+
+        Assert.Equal(WardResolutionOrigin.TimedOut, resolution.Origin);
+
+    }
+
+    [Fact]
+    public async Task WardAsync_CapacityRejection_RecordsTheAutomaticDenialOrigin()
+    {
+
+        int maxActiveWards = ArcanumSettingClamps.MaxActiveWards(
+            ArcanumRuntimeDefaults.Ward.MaxActiveWards);
+
+        WardGate gate = CreateGate();
+
+        Task<WardResolution>[] admitted = Enumerable.Range(0, maxActiveWards)
+            .Select(i => gate.WardAsync(
+                $"ward-origin-capacity-{i}",
+                "write_file",
+                arguments: null,
+                sessionId: null,
+                timeout: TimeSpan.FromMinutes(2),
+                CancellationToken.None))
+            .ToArray();
+
+        WardResolution overflow = await gate.WardAsync(
+            "ward-origin-capacity-overflow",
+            "write_file",
+            arguments: null,
+            sessionId: null,
+            timeout: TimeSpan.FromMinutes(2),
+            CancellationToken.None);
+
+        Assert.False(overflow.Allowed);
+
+        Assert.Equal(CapacityReason, overflow.Reason);
+
+        Assert.Equal(WardResolutionOrigin.AutoDenied, overflow.Origin);
+
+        foreach (ActiveWard ward in gate.GetActiveWards())
+        {
+
+            Assert.Equal(ResolveStatus.Success, gate.Resolve(ward.WardId, allow: true, reason: "cleanup"));
+
+        }
+
+        _ = await Task.WhenAll(admitted);
+
+    }
+
+    private const string AutoApproveReason = "Auto-approved by operator policy";
+
     private static WardGate CreateGate(TimeProvider? timeProvider = null) =>
         new(
             new FakeOptionsMonitor(new ArcanumSettings()),

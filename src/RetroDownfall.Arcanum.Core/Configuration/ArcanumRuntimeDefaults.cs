@@ -456,6 +456,13 @@ public static class ArcanumRuntimeSettings
             .Concat(policy.ForbiddenArts ?? [])
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        WardAutoApprovePolicySettings autoApprove =
+            policy.AutoApprove ?? new WardAutoApprovePolicySettings();
+        List<string> autoApproveTools = (autoApprove.Tools ?? [])
+            .Where(static name => !string.IsNullOrWhiteSpace(name))
+            .Select(static name => name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         return defaults with
         {
@@ -463,6 +470,8 @@ public static class ArcanumRuntimeSettings
             ForbiddenArts = forbiddenArts,
             AutoDenyInUnattendedMode = policy.AutoDenyInUnattendedMode,
             UnattendedMode = policy.UnattendedMode,
+            AutoApproveEnabled = autoApprove.Enabled,
+            AutoApproveTools = autoApproveTools,
         };
     }
 

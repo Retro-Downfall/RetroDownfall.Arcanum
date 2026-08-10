@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence.Models;
 
@@ -41,7 +42,16 @@ public sealed record IntelligenceEvent(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     AttachmentRefreshEvent? AttachmentRefresh = null,
     [property: JsonIgnore]
-    bool ToolDenied = false)
+    bool ToolDenied = false,
+    /// <summary>
+    /// Who supplied a <c>warded</c> / <c>wardResolved</c> outcome (issue #53). Additive: omitted when
+    /// null, so clients that ignore it keep their existing behavior. Clients use it to tell an
+    /// operator-resolved ward from one the host resolved on its own — an auto-approved ward must be
+    /// reported, not prompted for.
+    /// </summary>
+    [property: JsonPropertyName("origin")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    WardResolutionOrigin? WardOrigin = null)
 {
 
     public IReadOnlyList<string> Warnings { get; init; } = [];

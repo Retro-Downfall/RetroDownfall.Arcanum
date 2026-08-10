@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.Input;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Ux.Models;
@@ -636,6 +637,14 @@ public sealed partial class TomeViewModel : ViewModelBase, IDisposable
 
             case IntelligenceEventType.ToolError:
                 ApplyToolError(ev);
+                break;
+
+            case IntelligenceEventType.Warded
+                when ev.WardOrigin is { } automaticOrigin && automaticOrigin != WardResolutionOrigin.Human:
+                // The server already resolved this ward on its own (issue #53). Reporting it as
+                // pending would offer an approval the Gatehouse can no longer act on.
+                LastWhisper =
+                    $"Ward resolved automatically{(string.IsNullOrWhiteSpace(ev.WardToolName) ? string.Empty : $": {ev.WardToolName}")}";
                 break;
 
             case IntelligenceEventType.Warded:

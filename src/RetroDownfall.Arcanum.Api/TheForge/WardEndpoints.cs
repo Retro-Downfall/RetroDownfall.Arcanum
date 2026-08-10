@@ -104,7 +104,8 @@ internal static class WardEndpoints
                     id,
                     request.Allow,
                     request.Reason,
-                    DateTimeOffset.UtcNow);
+                    DateTimeOffset.UtcNow,
+                    WardResolutionOrigin.Human);
 
                 return Results.Ok(
                     ApiResponse<WardResolutionDto>.FromResult(

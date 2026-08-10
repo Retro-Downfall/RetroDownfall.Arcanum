@@ -2776,14 +2776,19 @@ recovery action.
 For each tool proposal:
 
 1. An intrinsic/configured Ward candidate in unattended auto-deny mode receives a synthetic denial
-   without waiting for an operator.
+   without waiting for an operator. This hard denial is evaluated first, so it wins over a matching
+   auto-approval entry (§11.14).
 2. A non-Forbidden Art skips Ward and proceeds to Sanctum.
-3. A Forbidden Art emits `warded`, awaits `IWard.WardAsync`, emits `wardResolved`, and either returns
-   the denial or proceeds.
-4. Campaign Sanctum validates tool allowlist, model-supplied paths, and network targets. Independent
+3. A Forbidden Art named in `Arcanum:Security:Ward:AutoApprove:Tools` (with the policy enabled) emits
+   `warded`, is resolved through `IWard.RecordAutomaticResolution` with origin `autoApproved` — no
+   waiter, no approval-request observer event — emits `wardResolved`, and proceeds.
+4. Any other Forbidden Art emits `warded`, awaits `IWard.WardAsync`, emits `wardResolved`, and either
+   returns the denial or proceeds.
+5. Campaign Sanctum validates tool allowlist, model-supplied paths, and network targets. Independent
    `WorkspacePathPolicy`, symlink/handle identity, and tool-specific validation always apply whether
-   or not a Campaign exists.
-5. The selected `AIFunction` is invoked. An unexpected exception is logged and converted to
+   or not a Campaign exists — including after an auto-approval, which supplies consent and nothing
+   else.
+6. The selected `AIFunction` is invoked. An unexpected exception is logged and converted to
    `PublicToolFailureMessage`; streaming also emits `toolError` before the matching `toolResult`.
 
 Normal `search_workspace`, `workspace_check`, and other stateful interactions append assistant
@@ -3392,9 +3397,25 @@ no-prompt automation contract.
 
 **Purpose:** Gate high-risk tool invocations (**Forbidden Arts**) until an operator explicitly allows or denies them. Separate from the `ask_human` MCP tool (information gathering).
 
-**Engine:** Singleton **`IWard`** / **`WardGate`** (in-memory). Active wards are keyed by `wardId` (`Guid` string). **`WardAsync`** registers a `TaskCompletionSource`, honors caller cancellation (inference abort cleans up the ward), and auto-denies on timeout with reason `"The ward held until timeout — action was not allowed"`. **`Resolve`** atomically moves the active ward to a resolved tombstone before completing the waiter, so exactly one concurrent resolver succeeds and every competitor returns **`AlreadyResolved`** (HTTP **409**). Tombstones are retained for the clamped ward timeout plus 60 seconds and pruned against an injected `TimeProvider` (system time in production).
+**Engine:** Singleton **`IWard`** / **`WardGate`** (in-memory). Active wards are keyed by `wardId` (`Guid` string). **`WardAsync`** registers a `TaskCompletionSource`, honors caller cancellation (inference abort cleans up the ward), and auto-denies on timeout with reason `"The ward held until timeout — action was not allowed"`. **`Resolve`** atomically moves the active ward to a resolved tombstone before completing the waiter, so exactly one concurrent resolver succeeds and every competitor returns **`AlreadyResolved`** (HTTP **409**). **`RecordAutomaticResolution`** is the no-waiter counterpart used by auto-approval: under the same resolution gate it performs an atomic create → resolved transition without ever adding to `_pending`, so `GET /api/wards` never lists the ward and a competing `POST` sees `AlreadyResolved`. A ward id that is already live is left untouched and the automatic call fails closed. Tombstones are retained for the clamped ward timeout plus 60 seconds and pruned against an injected `TimeProvider` (system time in production).
 
 **Policy:** while `Arcanum:Security:Ward:Enabled` is true, `ToolRiskClassifier` makes `execute_command`, `apply_patch`, and `workspace_check` **intrinsic** Ward tools. Replacing the operator-addition list at `Arcanum:Security:Ward:ForbiddenArts` or selecting `ToolPolicy.NoForbiddenArts` cannot turn them into unwarded execution; the latter removes them from advertisement. Other configured Forbidden Arts require a matching campaign's `RequireWardForForbiddenArts` (default `true` when no campaign; **`true`** on newly registered campaigns via `CampaignSettings.CreateDefault()`). `UnattendedMode` + `AutoDenyInUnattendedMode` skips the wait and denies immediately. `workspace_check` Ward disclosure explicitly states that it executes repository code, leaves network egress open, and cannot guarantee cleanup of an intentionally detached descendant.
+
+**Operator auto-approval (`Arcanum:Security:Ward:AutoApprove`):** the narrow alternative to switching Wards off wholesale. `AutoApprove.Enabled` (default **`false`**) plus a non-empty `AutoApprove.Tools` allowlist lets the host supply the *human consent step* for exactly those tool names — nothing else. `ToolRiskClassifier.IsAutoApproved` matches ordinal-ignore-case, consistent with the rest of the tool registry; `ResolveWard` trims, drops blanks, and deduplicates, and `ConfigurationValidator` rejects blank or duplicated entries at startup. V1 is host-wide tool-name policy only; campaign scoping and argument/path predicates are follow-up features, deliberately not partially implemented.
+
+**Decision order (deterministic, fail closed).** For each proposed tool, in `ToolExecutionPipeline.ExecuteToolCallWithWardAsync`:
+
+1. **Classify** — `ToolRiskClassifier.RequiresWard`. Auto-approval never changes classification and never widens advertisement; a tool the pipeline would not otherwise invoke gains nothing from being listed.
+2. **Hard deny** — `UnattendedMode` + `AutoDenyInUnattendedMode` denies without waiting, *before* the allowlist is consulted. **Deny wins:** a tool matching both policies is denied in attended and unattended modes alike.
+3. **Auto-approve** — a listed tool emits `warded`, is resolved through `RecordAutomaticResolution`, emits `wardResolved`, and proceeds. No `TaskCompletionSource` is created and no `ToolApprovalRequestedEvent` is raised, so no client opens an approval modal.
+4. **Interactive** — everything else blocks on `IWard.WardAsync` exactly as before.
+5. **Sanctum and invocation** — unchanged and unconditional for every path above. Auto-approval substitutes for operator consent only; Sanctum, `WorkspacePathPolicy`, edition and host-process gates (`ARCANUM_ALLOW_HOST_PROCESS_TOOLS=1` + Development), Artifact Attunement, and `workspace_check` advertisement eligibility remain fully enforced. An auto-approved call blocked by Sanctum is `denied`, exactly as a manually approved one would be.
+
+Auto-approval is unrelated to the CLI direct-command `--yes` / `IConfirmationPrompt` flag, which approves direct command confirmations only and is never authority for a model-generated action. It is likewise unrelated to Client Tool Forwarding, which bypasses the server tool loop entirely.
+
+**Resolution origin:** `WardResolution.Origin` (`WardResolutionOrigin`: `Human`, `AutoApproved`, `AutoDenied`, `TimedOut`, `Cancelled`, `HostRestarted`) records who supplied an outcome. It is additive observability and never widens what a resolution permits. `Resolve` records `Human`; the timeout path records `TimedOut`; capacity rejection records `AutoDenied`. `Cancelled` and `HostRestarted` are contract values with no producing code path today — a cancelled ward surfaces `OperationCanceledException` rather than a resolution, and a restarted host has no in-memory wards to deny (§5.4.4). The origin is projected onto `warded` / `wardResolved` frames as the camelCase `origin` field (omitted when null) and onto `WardResolutionDto`, where a manual `POST` is always `human`.
+
+**Auditability:** auto-approval decisions log tool name, decision, and the code-owned reason string only — never tool arguments, paths, secrets, PII, or exception text; `Arcanum:Host:AuditLog:RedactToolArguments` continues to govern argument redaction elsewhere. `arcanum_ward_decisions_total` carries exactly `tool_name` and a closed `origin` label (`human`, `auto_approved`, `auto_denied`, `timed_out`, `cancelled`, `host_restarted`); no resolution reason text, argument, or path becomes a metric label. Tool outcome metrics keep their closed `success|denied|error` domain — an auto-approved tool that runs is `success`, one Sanctum blocks is `denied`.
 
 **Intentional exclusions from `ForbiddenArts`:**
 - **`scribe_lexicon`** — append-only structured memory; non-destructive (appends non-duplicate facts). **`delete_lexicon`** remains gated because it is destructive.
@@ -3402,7 +3423,7 @@ no-prompt automation contract.
 
 **API:** **`GET /api/wards`**, **`GET /api/wards/{id}`**, **`POST /api/wards/{id}`** (`allow`, optional `reason`). Protected by **`ApiKeyEndpointFilter`**. Wards are ephemeral by design — host restart drops all active wards (callers' `TaskCompletionSource` instances are gone with their processes). `WardGate` is a fresh, empty singleton on every process start, so there is nothing to actively deny on restart; the `HostRestartedReason` contract value (`"Host restarted — ward timed out"`) lets clients distinguish restart-driven denial from timeout/capacity denial. The durable/non-durable state inventory is §5.4.4.
 
-**Streaming:** NDJSON frames `warded` and `wardResolved` on `/api/intelligence/ping-stream`. OpenAI `/v1` SSE bridge ignores these event types (transparent latency only).
+**Streaming:** NDJSON frames `warded` and `wardResolved` on `/api/intelligence/ping-stream`, each carrying the optional `origin` field described above. OpenAI `/v1` SSE bridge ignores these event types (transparent latency only). Command Center treats any non-`human` origin as informational: it records the event in the Incantations transcript and neither opens the hard Ward modal nor posts a resolution it would only lose. Apprentices and other unattended surfaces see the same frames, which is how `AutoApprove` gives them a "permit a narrow set" path where only deny existed.
 
 **Related:** Sanctum **`ResourceLimits`** file-write and **`read_file_chunk`** line caps are enforced in **`ArcanumInternalToolServer`** (§11.15); external MCP bridge output uses the code-owned tool-output cap (§11.8).
 

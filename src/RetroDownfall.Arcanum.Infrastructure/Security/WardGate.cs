@@ -24,6 +24,14 @@ public sealed class WardGate : IWard
     /// </summary>
     private const string HostRestartedReason = "Host restarted — ward timed out";
 
+    /// <summary>
+    /// Fail-closed answer when an automatic decision names a ward id that is already live. Ward ids
+    /// are freshly minted GUIDs, so this is unreachable in practice; it exists so the automatic path
+    /// can never strand or overwrite an interactive waiter.
+    /// </summary>
+    private const string ContendedAutomaticResolutionReason =
+        "A ward with this id is already awaiting an operator — action was not allowed";
+
     // AdmissionGate atomically enforces the active-ward cap. The counter is incremented before
     // TryAdd and rolled back when the cap or a duplicate ward id rejects admission. Every terminal
     // removal from _pending disposes the lease exactly once because ConcurrentDictionary.TryRemove
@@ -67,7 +75,11 @@ public sealed class WardGate : IWard
         if (!_activeWards.TryEnter(maxActiveWards, out IDisposable? wardLease))
         {
 
-            return new WardResolution(false, CapacityReason, _timeProvider.GetUtcNow());
+            return new WardResolution(
+                false,
+                CapacityReason,
+                _timeProvider.GetUtcNow(),
+                WardResolutionOrigin.AutoDenied);
 
         }
 
@@ -138,7 +150,11 @@ public sealed class WardGate : IWard
 
             }
 
-            resolution = new WardResolution(allow, reason, _timeProvider.GetUtcNow());
+            resolution = new WardResolution(
+                allow,
+                reason,
+                _timeProvider.GetUtcNow(),
+                WardResolutionOrigin.Human);
 
             _resolved[wardId] = resolution;
 
@@ -155,6 +171,53 @@ public sealed class WardGate : IWard
         _ = entry.Tcs.TrySetResult(resolution);
 
         return ResolveStatus.Success;
+    }
+
+    /// <summary>
+    /// Records a host-made decision as an atomic create → resolved transition: the tombstone is
+    /// written under the same <see cref="_resolutionGate"/> that <see cref="Resolve"/> and the timeout
+    /// take, and no entry is ever added to <see cref="_pending"/>. There is therefore no window in
+    /// which <see cref="GetActiveWards"/> lists the ward or a manual <c>POST</c> can resolve it — a
+    /// competitor arriving afterwards sees <see cref="ResolveStatus.AlreadyResolved"/>.
+    /// </summary>
+    public WardResolution RecordAutomaticResolution(
+        string wardId,
+        bool allowed,
+        string? reason,
+        WardResolutionOrigin origin)
+    {
+        PruneResolvedTombstones();
+
+        lock (_resolutionGate)
+        {
+
+            // A live ward already has a waiter that owns the outcome; overwriting its tombstone here
+            // would strand that waiter. Fail closed instead of racing the interactive path.
+            if (_pending.ContainsKey(wardId))
+            {
+
+                return new WardResolution(
+                    false,
+                    ContendedAutomaticResolutionReason,
+                    _timeProvider.GetUtcNow(),
+                    WardResolutionOrigin.AutoDenied);
+
+            }
+
+            if (_resolved.TryGetValue(wardId, out WardResolution? existing))
+            {
+
+                return existing;
+
+            }
+
+            WardResolution resolution = new(allowed, reason, _timeProvider.GetUtcNow(), origin);
+
+            _resolved[wardId] = resolution;
+
+            return resolution;
+
+        }
     }
 
     public IReadOnlyList<ActiveWard> GetActiveWards()
@@ -222,7 +285,11 @@ public sealed class WardGate : IWard
                 return;
             }
 
-            resolution = new WardResolution(false, TimeoutReason, _timeProvider.GetUtcNow());
+            resolution = new WardResolution(
+                false,
+                TimeoutReason,
+                _timeProvider.GetUtcNow(),
+                WardResolutionOrigin.TimedOut);
 
             _resolved[wardId] = resolution;
 

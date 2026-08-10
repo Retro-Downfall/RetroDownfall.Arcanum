@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.TheForge.Ux.Models;
@@ -286,6 +287,49 @@ public class TomeViewModelTests
         Assert.Equal(30, viewModel.LastUsage.TotalTokens);
 
         Assert.True(viewModel.ManaPercent > 0);
+
+    }
+
+    // Issue #53: a server-side auto-approved ward is already resolved, so The Forge must report it
+    // rather than raising a pending-approval state the Gatehouse could no longer act on.
+    [Fact]
+    public async Task SendAsync_AutoApprovedWard_ReportsWithoutRaisingPendingApproval()
+    {
+
+        Guid wardId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+
+        FakeTomeDataSource dataSource = new()
+        {
+            Session = NewSession(),
+            PingEvents =
+            [
+                new IntelligenceEvent(
+                    IntelligenceEventType.Warded,
+                    "apply_patch",
+                    WardId: wardId.ToString(),
+                    WardToolName: "apply_patch",
+                    WardOrigin: WardResolutionOrigin.AutoApproved),
+                new IntelligenceEvent(
+                    IntelligenceEventType.WardResolved,
+                    "allowed",
+                    WardId: wardId.ToString(),
+                    WardAllowed: true,
+                    WardOrigin: WardResolutionOrigin.AutoApproved),
+                new IntelligenceEvent(IntelligenceEventType.Result, "complete"),
+            ],
+        };
+
+        TomeViewModel viewModel = CreateViewModel(dataSource);
+
+        await viewModel.LoadAsync(CancellationToken.None);
+
+        viewModel.InputText = "patch it";
+
+        await viewModel.SendAsync(CancellationToken.None);
+
+        Assert.False(viewModel.WardPending);
+
+        Assert.Null(viewModel.PendingWardId);
 
     }
 

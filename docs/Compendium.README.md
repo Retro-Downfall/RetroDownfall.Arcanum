@@ -162,7 +162,7 @@ service directly and does not implement the wizard's other steps.
 
 ## Complete configuration reference
 
-This is the sole complete documentation reference for `arcanum.json`. All 159 editable paths in
+This is the sole complete documentation reference for `arcanum.json`. All 161 editable paths in
 `SettingDescriptors.All` appear below, and that total is pinned by
 `SettingDescriptorCoverageTests.Editable_descriptor_count_matches_the_documented_total`, so a
 descriptor change updates the code, the test, and this page together.
@@ -236,6 +236,8 @@ behaviour from the declared wire dialect and budget instead.
 | `security.ward.forbiddenArts` | `string[]`, `[]` | — | Operator additions to the intrinsic code-owned Ward tool set. |
 | `security.ward.autoDenyInUnattendedMode` | `bool`, `true` | — | Immediately denies Ward-gated calls on unattended paths. |
 | `security.ward.unattendedMode` | `bool`, `false` | — | Default for operator-facing chat; daemons and Apprentices remain unattended. |
+| `security.ward.autoApprove.enabled` | `bool`, `false` | — | Master opt-in for advance operator consent. **This grants the model your approval ahead of time for the listed tools — they run without a prompt.** It never bypasses containment: Sanctum, `WorkspacePathPolicy`, edition and host-process gates, Attunement, and `workspace_check` eligibility all still apply, and a hard denial always wins (DESIGN §11.14). |
+| `security.ward.autoApprove.tools` | `string[]`, `[]` | exact tool names | Tools whose Ward the host may resolve on the operator's behalf, matched ordinal-ignore-case. Empty is a no-op. Blank and duplicate entries fail startup; a name that matches no available tool grants nothing. |
 | `security.guardrails.detectPii` | `bool`, `true` | — | PII policy used only when `features.guardrails` is enabled. |
 | `security.guardrails.blockToxicity` | `bool`, `false` | — | Applies the authored toxicity blocklist when guardrails are enabled. |
 | `security.guardrails.toxicityBlocklist` | `string[]`, `[]` | — | Case-insensitive authored terms. |
