@@ -46,8 +46,16 @@ internal interface ISetupPrompt
 /// </summary>
 internal sealed class ConsoleSetupPrompt(
     IConsoleDispatcher console,
-    ICliInvocationContext invocationContext) : ISetupPrompt
+    ICliInvocationContext invocationContext,
+    IBackupPassphrasePrompt? secretPrompt = null,
+    Func<bool>? inputRedirected = null) : ISetupPrompt
 {
+
+    private readonly IBackupPassphrasePrompt _secretPrompt =
+        secretPrompt ?? new ConsoleBackupPassphrasePrompt();
+
+    private readonly Func<bool> _inputRedirected =
+        inputRedirected ?? (static () => Console.IsInputRedirected);
 
     /// <summary>
     /// Rich prompts render through Spectre, which writes to stdout. Under <c>--json</c> that would
@@ -55,7 +63,15 @@ internal sealed class ConsoleSetupPrompt(
     /// instead — the run stays interactive, and stdout stays exactly one JSON document.
     /// </summary>
     public bool IsInteractive =>
-        !Console.IsInputRedirected && !invocationContext.Options.Json;
+        !_inputRedirected() && !invocationContext.Options.Json;
+
+    /// <summary>
+    /// Masking depends only on owning the terminal that stdin is attached to — never on the output
+    /// format. <see cref="IsInteractive"/> additionally excludes <c>--json</c> because Spectre's rich
+    /// prompts render on stdout, but that exclusion must not downgrade a credential to an echoed
+    /// line read: the masked reader writes its prompt to stderr, so it satisfies both contracts.
+    /// </summary>
+    private bool CanMaskInput => !_inputRedirected();
 
     public void Write(string line) => console.WriteDiagnostic(line);
 
@@ -201,7 +217,7 @@ internal sealed class ConsoleSetupPrompt(
         CancellationToken cancellationToken)
     {
 
-        if (!IsInteractive)
+        if (!CanMaskInput)
         {
 
             console.WriteDiagnostic(question);
@@ -214,7 +230,22 @@ internal sealed class ConsoleSetupPrompt(
 
         }
 
-        return AnsiConsole.Prompt(new TextPrompt<string>(question).Secret().AllowEmpty());
+        char[] secret = await _secretPrompt
+            .ReadHiddenAsync($"{question}: ", cancellationToken)
+            .ConfigureAwait(false);
+
+        try
+        {
+
+            return new string(secret).Trim();
+
+        }
+        finally
+        {
+
+            BackupPassphraseMemory.Clear(secret);
+
+        }
 
     }
 

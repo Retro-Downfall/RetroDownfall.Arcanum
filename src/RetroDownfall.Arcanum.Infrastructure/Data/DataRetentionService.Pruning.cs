@@ -399,6 +399,7 @@ internal sealed partial class DataRetentionService
         await AddEntryEmbeddingCandidatesAsync(
             retention,
             limit,
+            selectedSessions,
             items,
             blockers,
             conflicts,
@@ -1936,6 +1937,7 @@ internal sealed partial class DataRetentionService
     private async Task AddEntryEmbeddingCandidatesAsync(
         RetentionSettings retention,
         int limit,
+        HashSet<Guid> selectedSessions,
         List<DataRetentionPlanItem> items,
         List<DataRetentionBlocker> blockers,
         List<DataRetentionConflict> conflicts,
@@ -1980,6 +1982,12 @@ internal sealed partial class DataRetentionService
             ? string.Empty
             : $"AND lower(replace(entry.SessionId, '-', '')) NOT IN ({string.Join(", ", retention.ProtectedSessionIds.Select((_, index) => "@protected" + index.ToString(CultureInfo.InvariantCulture)))})";
 
+        Guid[] selectedSessionIds = [.. selectedSessions];
+
+        string selectedClause = selectedSessionIds.Length == 0
+            ? string.Empty
+            : $"AND lower(replace(entry.SessionId, '-', '')) NOT IN ({string.Join(", ", selectedSessionIds.Select((_, index) => "@selected" + index.ToString(CultureInfo.InvariantCulture)))})";
+
         command.CommandText =
             $"""
             SELECT embedding.EntryId, entry.SessionId, entry.IsPinned
@@ -2012,6 +2020,7 @@ internal sealed partial class DataRetentionService
                   WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
                     AND reservation.Status = @reserved)
               {protectedClause}
+              {selectedClause}
             ORDER BY entry.CreatedAt, embedding.EntryId
             LIMIT @limit
             """;
@@ -2033,6 +2042,16 @@ internal sealed partial class DataRetentionService
                 command,
                 "@protected" + index.ToString(CultureInfo.InvariantCulture),
                 retention.ProtectedSessionIds[index].ToString("N"));
+
+        }
+
+        for (int index = 0; index < selectedSessionIds.Length; index++)
+        {
+
+            Add(
+                command,
+                "@selected" + index.ToString(CultureInfo.InvariantCulture),
+                selectedSessionIds[index].ToString("N"));
 
         }
 
@@ -2059,7 +2078,8 @@ internal sealed partial class DataRetentionService
         foreach ((string entryId, Guid sessionId, bool pinned) in rows)
         {
 
-            if (candidates.Any(candidate =>
+            if (selectedSessions.Contains(sessionId)
+                || candidates.Any(candidate =>
                     candidate == EntryCandidatePrefix + NormalizeGuid(entryId)))
             {
 
@@ -3599,7 +3619,7 @@ internal sealed partial class DataRetentionService
                         ownerId,
                         plan,
                         originalCutoffs,
-                        nextCandidateIndex: index,
+                        nextCandidateIndex: earliestSkippedIndex ?? index,
                         expectedCheckpointVersion: currentCheckpointVersion,
                         pendingJournal,
                         cancellationToken).ConfigureAwait(false);
@@ -3643,7 +3663,7 @@ internal sealed partial class DataRetentionService
                     ownerId,
                     plan,
                     originalCutoffs,
-                    nextCandidateIndex: preserved ? index : index + 1,
+                    nextCandidateIndex: earliestSkippedIndex ?? (preserved ? index : index + 1),
                     expectedCheckpointVersion: currentCheckpointVersion,
                     pendingJournal: null,
                     cancellationToken).ConfigureAwait(false);
@@ -3908,15 +3928,18 @@ internal sealed partial class DataRetentionService
             if (pendingJournal is not null)
             {
 
+                // The journal target is the candidate that was mid-flight, which is at or after the
+                // cursor rather than exactly on it: the cursor is held back at the earliest
+                // preserved candidate so recovery re-evaluates that protection, while apply keeps
+                // working through the candidates that follow it.
                 if (!string.Equals(
                         pendingJournal.Subtype,
                         "prune-candidate",
                         StringComparison.Ordinal)
                     || checkpointIndex >= checkpointCandidates.Length
-                    || !string.Equals(
-                        pendingJournal.Target,
-                        checkpointCandidates[checkpointIndex],
-                        StringComparison.Ordinal))
+                    || !checkpointCandidates
+                        .Skip(checkpointIndex)
+                        .Contains(pendingJournal.Target, StringComparer.Ordinal))
                 {
 
                     return LongRunningOperationRecoveryResult.RequiresAttention(

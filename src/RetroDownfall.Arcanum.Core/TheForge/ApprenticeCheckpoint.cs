@@ -12,9 +12,15 @@ public sealed record ApprenticeCheckpoint
     public IReadOnlyList<string> CompletedToolCallIds
     {
 
-        get => _completedToolCallIds;
+        // Return a non-downcastable read-only view so a consumer cannot cast back to List<string>
+        // and mutate a checkpoint that is frozen once persisted.
+        get => _completedToolCallIds.AsReadOnly();
 
-        init => _completedToolCallIds = new List<string>(value);
+        // Tolerate null: because every member is init-only the source generator constructs through
+        // ObjectWithParameterizedConstructorCreator and feeds the parameter default (null) in when
+        // the JSON member is absent or explicitly null, which would otherwise throw out of a
+        // CheckpointData read.
+        init => _completedToolCallIds = value is null ? [] : new List<string>(value);
 
     }
 

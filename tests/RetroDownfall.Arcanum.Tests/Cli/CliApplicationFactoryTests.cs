@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -310,6 +311,90 @@ public sealed class CliApplicationFactoryTests
         Assert.DoesNotContain(SecretMarker, combined, StringComparison.Ordinal);
 
         Assert.DoesNotContain(payload, combined, StringComparison.Ordinal);
+
+    }
+
+    [Theory]
+    [InlineData("--output-format bogus doctor")]
+    [InlineData("doctor --output-format")]
+    [InlineData("--output-format json --output-format text doctor")]
+    public async Task Malformed_output_format_is_an_invalid_command_line(string commandLine)
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.DoesNotContain(
+            "An unexpected CLI error occurred.",
+            result.Output + result.Error,
+            StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Invalid_output_format_names_the_rejected_value_and_the_legal_ones()
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            ["--output-format", "bogus", "doctor"]);
+
+        string combined = result.Output + result.Error;
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("bogus", combined, StringComparison.Ordinal);
+
+        Assert.Contains("json", combined, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task Invalid_output_format_under_json_still_emits_exactly_one_error_document()
+    {
+
+        ServiceCollection services = new();
+
+        ConfigurationManager configuration = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            ["--output-format", "bogus", "--json", "doctor"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        string[] documents = result.Output.Split(
+            '\n',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        Assert.Single(documents);
+
+        using JsonDocument document = JsonDocument.Parse(documents[0]);
+
+        Assert.Equal(
+            (int)CliExitCode.ConfigurationError,
+            document.RootElement.GetProperty("exitCode").GetInt32());
+
+        Assert.False(
+            string.IsNullOrWhiteSpace(
+                document.RootElement.GetProperty("error").GetString()));
 
     }
 

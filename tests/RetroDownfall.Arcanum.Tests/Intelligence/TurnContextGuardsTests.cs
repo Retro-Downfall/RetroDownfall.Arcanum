@@ -105,6 +105,39 @@ public sealed class TurnContextGuardsTests
         Assert.Equal(ChatRole.User, messages[1].Role);
     }
 
+    /// <summary>
+    /// A stateless <c>/v1</c> transcript maps N parallel tool calls to ONE assistant message
+    /// followed by N tool messages. Removing a fixed pair splits that turn and leaves orphan tool
+    /// results, which every OpenAI-compatible provider rejects.
+    /// </summary>
+    [Fact]
+    public void TryTrimOldestToolExchanges_ParallelToolCalls_RemovesTheWholeExchange()
+    {
+        List<MeAiChatMessage> messages =
+        [
+            new(ChatRole.System, "sys"),
+            new(ChatRole.Assistant,
+            [
+                new FunctionCallContent("c1", "tool_a"),
+                new FunctionCallContent("c2", "tool_b"),
+                new FunctionCallContent("c3", "tool_c"),
+            ]),
+            new(ChatRole.Tool, [new FunctionResultContent("c1", new string('x', 4000))]),
+            new(ChatRole.Tool, [new FunctionResultContent("c2", new string('y', 4000))]),
+            new(ChatRole.Tool, [new FunctionResultContent("c3", new string('z', 4000))]),
+            new(ChatRole.User, "now"),
+        ];
+
+        _ = TurnContextGuards.TryTrimOldestToolExchanges(
+            messages,
+            static m => m.Sum(msg => 100 + (msg.Text?.Length ?? 0) + msg.Contents.Sum(c => 50 + (c.ToString()?.Length ?? 0))),
+            maxTokens: 250);
+
+        Assert.Equal(2, messages.Count);
+        Assert.Equal(ChatRole.System, messages[0].Role);
+        Assert.Equal(ChatRole.User, messages[1].Role);
+    }
+
     [Fact]
     public void ResolveContinueThenReplay_AutoUsesIdempotencyHeader()
     {

@@ -1,13 +1,17 @@
 using Microsoft.Extensions.Logging;
-using RetroDownfall.Arcanum.Cli.UX;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
-using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Services;
 
+/// <summary>
+/// Session-state warnings go to the diagnostic stream, never to the payload stream. <c>ask</c> saves
+/// and clears the bound session with the default <c>quiet: false</c>, so a warning written to stdout
+/// would be folded into the answer text under <c>--json</c> or a redirected <c>run</c>.
+/// </summary>
 public sealed class CliSessionManager(
-    IThemePalette palette,
+    IConsoleDispatcher console,
     ILogger<CliSessionManager>? logger = null,
     ICliContextStore? contextStore = null)
 {
@@ -169,7 +173,7 @@ public sealed class CliSessionManager(
             return;
         }
 
-        AnsiConsole.MarkupLine(palette.MutedMarkup(Markup.Escape("Warning: Could not save/load session state.")));
+        console.WriteDiagnostic("Warning: Could not save/load session state.");
     }
 
     private void WarnOnceSessionCorruption(bool quiet)
@@ -186,10 +190,7 @@ public sealed class CliSessionManager(
             return;
         }
 
-        AnsiConsole.MarkupLine(
-            palette.ErrorLabelMarkup(
-                Markup.Escape("Warning:"),
-                Markup.Escape(
-                    "cli-session.txt does not contain a valid session id. The file will be replaced on the next /resume or new turn.")));
+        console.WriteDiagnostic(
+            "Warning: cli-session.txt does not contain a valid session id. The file will be replaced on the next /resume or new turn.");
     }
 }

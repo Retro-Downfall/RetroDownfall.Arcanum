@@ -77,6 +77,35 @@ public sealed class SessionAttachmentPathSanitizerTests
 
     }
 
+    [Theory]
+    [InlineData("q3-report?.md", "q3-report.md")]
+    [InlineData("why<not>.txt", "whynot.txt")]
+    [InlineData("wild*card.log", "wildcard.log")]
+    [InlineData("say \"hello\".txt", "say hello.txt")]
+    [InlineData("left|right.csv", "leftright.csv")]
+    public void TrySanitize_strips_characters_windows_filenames_reject(string input, string expected)
+    {
+
+        Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out string error));
+
+        Assert.Equal(expected, sanitized);
+
+        Assert.Equal(string.Empty, error);
+
+    }
+
+    [Fact]
+    public void TrySanitize_rejects_names_made_only_of_unsafe_characters()
+    {
+
+        Assert.False(SessionAttachmentPathSanitizer.TrySanitize("<*?>", out string sanitized, out string error));
+
+        Assert.Equal(string.Empty, sanitized);
+
+        Assert.False(string.IsNullOrWhiteSpace(error));
+
+    }
+
     [Fact]
     public void TrySanitize_strips_leading_dots()
     {

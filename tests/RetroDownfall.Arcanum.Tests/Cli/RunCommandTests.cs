@@ -1385,7 +1385,7 @@ public sealed class RunCommandTests
     /// </summary>
     private static CliSessionManager SessionManager(Guid? lastSessionId = null) =>
         new(
-            new ConfiguredThemePalette(new ThemeSemanticColors(), new ThemeSemanticColors()),
+            new ConsoleDispatcher(new CliInvocationContext()),
             logger: null,
             new InMemoryContextStore(lastSessionId));
 

@@ -128,7 +128,7 @@ internal sealed class IdempotencyStore(ArcanumDbContext db) : IIdempotencyStore
 
         if (connection.State != ConnectionState.Open)
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
 
         return connection;

@@ -452,8 +452,15 @@ public sealed class ArcanumBrowseWebTool : AIFunction
                     requested = (int)l;
                     break;
 
+                // A model-supplied number need not be representable as an Int32 (10.0, 1.5, 1e40,
+                // 5000000000 all parse as JSON numbers). Leaving `requested` at 0 falls through to
+                // the configured maximum below, which is exactly what omitting the argument does.
                 case JsonElement je when je.ValueKind == JsonValueKind.Number:
-                    requested = je.GetInt32();
+                    if (!je.TryGetInt32(out requested))
+                    {
+                        requested = 0;
+                    }
+
                     break;
             }
 

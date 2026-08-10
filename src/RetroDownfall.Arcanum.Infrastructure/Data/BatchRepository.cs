@@ -734,6 +734,137 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
     }
 
+    public async Task<bool> TryRecordTerminalLineAsync(
+
+        Guid batchId,
+
+        long lineNumber,
+
+        string customId,
+
+        BatchLineOutputKind outputKind,
+
+        BatchRequestOutcome outcome,
+
+        string jsonLine,
+
+        CancellationToken cancellationToken = default)
+
+    {
+
+        ArgumentOutOfRangeException.ThrowIfLessThan(lineNumber, 1);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(customId);
+
+        ArgumentNullException.ThrowIfNull(jsonLine);
+
+        return await SqliteBusyRetry.ExecuteAsync(
+
+            async () =>
+
+            {
+
+                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                // Claim and seal in ONE transaction. The intermediate Dispatched row exists only
+                // inside it, so no crash can leave a line that never reached a provider looking as
+                // though one may have been charged — and both count triggers (AFTER INSERT for the
+                // total, AFTER UPDATE for the outcome) still fire in their established order.
+                await using DbTransaction transaction = await connection
+                    .BeginTransactionAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                await using (DbCommand claim = connection.CreateCommand())
+                {
+
+                    claim.Transaction = transaction;
+
+                    claim.CommandText =
+
+                        """
+                        INSERT INTO "BatchLineCheckpoints"
+                            ("BatchId", "LineNumber", "CustomId", "State", "OutputKind", "Outcome", "JsonLine", "DispatchedAt", "CompletedAt")
+                        SELECT @batchId, @lineNumber, @customId, @dispatched, NULL, NULL, NULL, @at, NULL
+                        FROM "Batches"
+                        WHERE "Id" = @batchId
+                          AND "Status" = @inProgress
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM "BatchLineCheckpoints"
+                              WHERE "BatchId" = @batchId
+                                AND "LineNumber" = @lineNumber
+                          )
+                        """;
+
+                    AddParameter(claim, "@batchId", batchId.ToString("N"));
+
+                    AddParameter(claim, "@lineNumber", lineNumber);
+
+                    AddParameter(claim, "@customId", customId);
+
+                    AddParameter(claim, "@dispatched", (int)BatchLineCheckpointState.Dispatched);
+
+                    AddParameter(claim, "@at", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+
+                    AddParameter(claim, "@inProgress", BatchStatuses.InProgress);
+
+                    if (await claim.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                    {
+
+                        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                        return false;
+
+                    }
+
+                }
+
+                await using (DbCommand seal = connection.CreateCommand())
+                {
+
+                    seal.Transaction = transaction;
+
+                    seal.CommandText =
+
+                        """
+                        UPDATE "BatchLineCheckpoints"
+                        SET "State" = @completed,
+                            "OutputKind" = @outputKind,
+                            "Outcome" = @outcome,
+                            "JsonLine" = @jsonLine,
+                            "CompletedAt" = @completedAt
+                        WHERE "BatchId" = @batchId
+                          AND "LineNumber" = @lineNumber
+                        """;
+
+                    AddParameter(seal, "@completed", (int)BatchLineCheckpointState.Completed);
+
+                    AddParameter(seal, "@outputKind", (int)outputKind);
+
+                    AddParameter(seal, "@outcome", (int)outcome);
+
+                    AddParameter(seal, "@jsonLine", jsonLine);
+
+                    AddParameter(seal, "@completedAt", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
+
+                    AddParameter(seal, "@batchId", batchId.ToString("N"));
+
+                    AddParameter(seal, "@lineNumber", lineNumber);
+
+                    _ = await seal.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                }
+
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+                return true;
+
+            },
+
+            cancellationToken).ConfigureAwait(false);
+
+    }
+
     public Task CompleteLineAsync(
 
         Guid batchId,
@@ -961,7 +1092,7 @@ internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository
 
         if (connection.State != ConnectionState.Open)
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
 
         return connection;

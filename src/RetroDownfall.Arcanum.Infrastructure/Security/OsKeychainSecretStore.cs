@@ -199,6 +199,8 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
                 os.Status,
                 os.Message);
 
+            PurgeSupersededOsCredential(os);
+
             await _dataProtectionStore.SaveApiKeyAsync(apiKey).ConfigureAwait(false);
 
             _apiKeyDigestCache.Invalidate();
@@ -210,6 +212,48 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
             _gate.Release();
 
         }
+
+    }
+
+    /// <summary>
+    /// Reads prefer the OS credential over security.dat, so a failed OS write has to take the
+    /// superseded credential with it — otherwise the replaced key keeps authenticating and the newly
+    /// stored one never takes effect. When the credential can neither be replaced nor removed the
+    /// save fails closed rather than reporting a rotation it did not perform.
+    /// </summary>
+    private void PurgeSupersededOsCredential(OsCredentialStoreResult save)
+    {
+
+        OsCredentialStoreResult purge = _osStore.Delete(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount);
+
+        if (purge.Status is OsCredentialStoreStatus.Ok or OsCredentialStoreStatus.NotFound)
+        {
+
+            return;
+
+        }
+
+        if (!_osStore.IsAvailable)
+        {
+
+            // No reachable backend at all: security.dat is the documented operating mode here, and
+            // every read in this state resolves through it.
+            _logger?.LogWarning(
+                "OS key storage is unavailable ({Message}); the master API key was written to "
+                + "security.dat without reconciling any earlier OS credential.",
+                purge.Message);
+
+            return;
+
+        }
+
+        throw new InvalidOperationException(
+            $"The master API key could not be written to OS key storage ({save.Status}), and the "
+            + $"superseded OS credential could not be removed ({purge.Status}): "
+            + (purge.Message ?? "no detail reported.")
+            + " The previous key would keep authenticating, so nothing was changed.");
 
     }
 

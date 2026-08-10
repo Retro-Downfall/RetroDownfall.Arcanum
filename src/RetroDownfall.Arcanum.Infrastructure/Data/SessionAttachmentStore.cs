@@ -2662,7 +2662,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         if (connection.State != ConnectionState.Open)
         {
 
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await _db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         }
 

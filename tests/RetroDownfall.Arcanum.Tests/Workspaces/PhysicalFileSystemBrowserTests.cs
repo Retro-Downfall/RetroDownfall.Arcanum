@@ -570,6 +570,55 @@ public sealed class PhysicalFileSystemBrowserTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task ListAsync_skips_an_unreadable_subdirectory_and_still_returns_the_rest()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        string locked = _workspace.CreateSubdir("locked");
+
+        File.SetUnixFileMode(locked, UnixFileMode.None);
+
+        try
+        {
+
+            PhysicalFileSystemBrowser browser = CreateBrowser();
+
+            WorkspaceInfo workspace = MakeWorkspace();
+
+            Result<FileListResult> result = await browser.ListAsync(
+                workspace,
+                null,
+                recursive: true,
+                searchPattern: null,
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Code : null);
+
+            string[] names = result.Value!.Entries.Select(entry => entry.Name).ToArray();
+
+            Assert.Contains("alpha.txt", names);
+
+            Assert.Contains("beta.txt", names);
+
+        }
+        finally
+        {
+
+            File.SetUnixFileMode(
+                locked,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        }
+
+    }
+
     private PhysicalFileSystemBrowser CreateBrowser() =>
         new(new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 

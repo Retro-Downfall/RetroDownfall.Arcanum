@@ -51,12 +51,17 @@ internal sealed record ModelCallCompleted(TurnEventCorrelation Correlation, Chat
 internal sealed record ModelCallFailed(TurnEventCorrelation Correlation, Error Error, bool IsConnectivityFailure)
     : TurnEvent(Correlation);
 
+/// <summary>
+/// <paramref name="PreserveProviderCallId"/> travels with the call so the semantic round trip does
+/// not silently downgrade a client-forwarded tool call to a fabricated <c>/v1</c> id.
+/// </summary>
 internal sealed record ToolCallProposed(
     TurnEventCorrelation Correlation,
     string CallId,
     string ToolName,
     string ArgumentsJson,
-    ToolCallDisposition Disposition) : TurnEvent(Correlation);
+    ToolCallDisposition Disposition,
+    bool PreserveProviderCallId = false) : TurnEvent(Correlation);
 
 internal sealed record ApprovalRequested(
     TurnEventCorrelation Correlation,

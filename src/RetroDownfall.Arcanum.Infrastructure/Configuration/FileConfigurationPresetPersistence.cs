@@ -36,7 +36,7 @@ internal sealed class FileConfigurationPresetPersistence(
 
     public Task<Result<ConfigurationPresetSnapshot>> ReadAsync(
         CancellationToken cancellationToken = default) =>
-        ArcanumConfigurationTransaction.RunAsync(
+        RunTransactionAsync(
             () => ReadUnderTransactionAsync(cancellationToken),
             cancellationToken);
 
@@ -47,7 +47,7 @@ internal sealed class FileConfigurationPresetPersistence(
 
         ArgumentNullException.ThrowIfNull(request);
 
-        return ArcanumConfigurationTransaction.RunAsync(
+        return RunTransactionAsync(
             () => ApplyUnderTransactionAsync(request, cancellationToken),
             cancellationToken);
 
@@ -60,9 +60,36 @@ internal sealed class FileConfigurationPresetPersistence(
 
         ArgumentNullException.ThrowIfNull(request);
 
-        return ArcanumConfigurationTransaction.RunAsync(
+        return RunTransactionAsync(
             () => ResetUnderTransactionAsync(request, cancellationToken),
             cancellationToken);
+
+    }
+
+    /// <summary>
+    /// Runs a preset operation under the shared configuration transaction. A bounded acquisition
+    /// that expires is a domain failure, not an exception escaping a <see cref="Result{T}"/> API.
+    /// </summary>
+    private static async Task<Result<T>> RunTransactionAsync<T>(
+        Func<Task<Result<T>>> operation,
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            return await ArcanumConfigurationTransaction
+                .RunAsync(operation, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (ArcanumConfigurationLockException exception)
+        {
+
+            return Result<T>.Failure(
+                new Error("Preset.LockUnavailable", exception.Message));
+
+        }
 
     }
 
@@ -1825,13 +1852,32 @@ internal sealed class FileConfigurationPresetPersistence(
     private static bool IsRollbackFailure(Error error) =>
         error.Code.EndsWith(".RollbackFailed", StringComparison.Ordinal);
 
-    private static void TryDeleteKnownFile(string path)
+    /// <summary>
+    /// Removes a known sidecar or journal file. Cleanup runs from cancellation and rollback
+    /// handlers, so a denied or locked delete is reported rather than thrown: replacing the
+    /// in-flight failure would lose the original outcome and skip the pending rethrow.
+    /// </summary>
+    internal static bool TryDeleteKnownFile(string path)
     {
 
-        if (File.Exists(path))
+        try
         {
 
-            File.Delete(path);
+            if (File.Exists(path))
+            {
+
+                File.Delete(path);
+
+            }
+
+            return true;
+
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+
+            return false;
 
         }
 

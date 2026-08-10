@@ -2,6 +2,7 @@ using System.Threading.Channels;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -679,6 +680,13 @@ internal sealed class CommandCenterHost(
             }
 
             return state.RequestExit ? state.ExitCode : tgCode;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Ctrl+C during startup (auto-serve readiness, MCP refresh, session restore) is a
+            // cancellation, not a host failure: the CLI contract fixes it at 130 for every verb.
+            logger.LogDebug("Command Center start-up was cancelled.");
+            return (int)CliExitCode.Cancelled;
         }
         catch (Exception ex)
         {

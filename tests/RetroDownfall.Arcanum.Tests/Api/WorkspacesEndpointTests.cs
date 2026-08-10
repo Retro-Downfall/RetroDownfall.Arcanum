@@ -314,6 +314,165 @@ public sealed class WorkspacesEndpointTests
     }
 
     [SkippableFact]
+    public async Task PutFileContents_MissingContent_Returns400InvalidBodyEnvelope()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        WorkspaceInfo workspace = await RegisterWorkspaceAsync(client, "put-null-content");
+
+        // System.Text.Json does not enforce non-nullable positional-record members, so an omitted or
+        // explicitly-null `content` deserializes to FileWriteRequest(Content: null) — it must be
+        // rejected as an invalid body, not handed to the writer where it becomes an unhandled 500.
+        foreach (string body in new[] { "{}", """{"content":null}""" })
+        {
+
+            HttpResponseMessage response = await client.PutAsync(
+                $"/api/workspaces/{workspace.Id}/files/contents?relativePath=null-content.txt",
+                new StringContent(body, Encoding.UTF8, "application/json"));
+
+            await AssertEnvelopeErrorAsync(
+                response,
+                HttpStatusCode.BadRequest,
+                "Validation.InvalidBody",
+                ArcanumJsonContext.Default.ApiResponseFileWriteResult);
+
+        }
+
+        Assert.False(File.Exists(Path.Combine(workspace.Path, "null-content.txt")));
+
+    }
+
+    [SkippableFact]
+    public async Task PatchFileContents_MissingStrings_Returns400InvalidBodyEnvelope()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        WorkspaceInfo workspace = await RegisterWorkspaceAsync(client, "patch-null-strings");
+
+        await client.PutAsync(
+            $"/api/workspaces/{workspace.Id}/files/contents?relativePath=null-patch.txt",
+            JsonContent(new FileWriteRequest("hello world"), ArcanumJsonContext.Default.FileWriteRequest));
+
+        // Each of these leaves OldString or NewString null on the positional record; the writer would
+        // otherwise throw ArgumentNullException out of Encoding.UTF8.GetByteCount.
+        foreach (string body in new[] { "{}", """{"oldString":"world"}""", """{"newString":"galaxy"}""" })
+        {
+
+            HttpRequestMessage request = new(HttpMethod.Patch, $"/api/workspaces/{workspace.Id}/files/contents?relativePath=null-patch.txt")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            };
+
+            HttpResponseMessage response = await client.SendAsync(request);
+
+            await AssertEnvelopeErrorAsync(
+                response,
+                HttpStatusCode.BadRequest,
+                "Validation.InvalidBody",
+                ArcanumJsonContext.Default.ApiResponseTextBlockReplaceResult);
+
+        }
+
+        Assert.Equal("hello world", await File.ReadAllTextAsync(Path.Combine(workspace.Path, "null-patch.txt")));
+
+    }
+
+    [SkippableFact]
+    public async Task GetFileContents_UnknownFile_Returns404Envelope()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        WorkspaceInfo workspace = await RegisterWorkspaceAsync(client, "get-contents-missing");
+
+        // The identical route answers HEAD with 404 (HeadFileContents_UnknownFile_Returns404), and
+        // API §8.23 maps Workspace.FileNotFound to 404 through ArcanumErrorMapper — GET must not
+        // flatten it to 400.
+        HttpResponseMessage response = await client.GetAsync(
+            $"/api/workspaces/{workspace.Id}/files/contents?relativePath=missing.txt");
+
+        await AssertEnvelopeErrorAsync(
+            response,
+            HttpStatusCode.NotFound,
+            "Workspace.FileNotFound",
+            ArcanumJsonContext.Default.ApiResponseFileReadResult);
+
+    }
+
+    [SkippableFact]
+    public async Task GetFileInfo_UnknownFile_Returns404Envelope()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        WorkspaceInfo workspace = await RegisterWorkspaceAsync(client, "get-info-missing");
+
+        HttpResponseMessage response = await client.GetAsync(
+            $"/api/workspaces/{workspace.Id}/files/info?relativePath=missing.txt");
+
+        await AssertEnvelopeErrorAsync(
+            response,
+            HttpStatusCode.NotFound,
+            "Workspace.FileNotFound",
+            ArcanumJsonContext.Default.ApiResponseFileEntry);
+
+    }
+
+    [SkippableFact]
+    public async Task ListFiles_UnknownDirectory_Returns404Envelope()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        WorkspaceInfo workspace = await RegisterWorkspaceAsync(client, "list-missing-dir");
+
+        HttpResponseMessage response = await client.GetAsync(
+            $"/api/workspaces/{workspace.Id}/files?relativePath=nosuchdir");
+
+        await AssertEnvelopeErrorAsync(
+            response,
+            HttpStatusCode.NotFound,
+            "Workspace.FileNotFound",
+            ArcanumJsonContext.Default.ApiResponseFileListResult);
+
+    }
+
+    [SkippableFact]
+    public async Task ListFiles_InvalidCursor_StaysBadRequestEnvelope()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        WorkspaceInfo workspace = await RegisterWorkspaceAsync(client, "list-bad-cursor");
+
+        // Workspace.ContinuationInvalid has no ArcanumErrorMapper entry, so the list route must keep
+        // using the default-bad-request mapper rather than turning a caller cursor mistake into a 500.
+        HttpResponseMessage response = await client.GetAsync(
+            $"/api/workspaces/{workspace.Id}/files?cursor=not-a-real-cursor");
+
+        await AssertEnvelopeErrorAsync(
+            response,
+            HttpStatusCode.BadRequest,
+            "Workspace.ContinuationInvalid",
+            ArcanumJsonContext.Default.ApiResponseFileListResult);
+
+    }
+
+    [SkippableFact]
     public async Task HeadFileContents_UnknownWorkspace_Returns404()
     {
 

@@ -213,6 +213,8 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
                     account,
                     os.Status);
 
+                PurgeSupersededOsCredential(account, os);
+
             }
 
             try
@@ -306,6 +308,49 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
     private SemaphoreSlim Gate(string account) =>
         _gates.GetOrAdd(account, static _ => new SemaphoreSlim(1, 1));
+
+    /// <summary>
+    /// Reads prefer the OS credential over the mirror, so a failed OS write has to take the
+    /// superseded credential with it — otherwise the replaced credential keeps being used and the
+    /// newly stored one never takes effect. When the credential can neither be replaced nor removed
+    /// the save fails closed, before the mirror is rewritten, rather than reporting a replacement it
+    /// did not perform.
+    /// </summary>
+    private void PurgeSupersededOsCredential(string account, OsCredentialStoreResult save)
+    {
+
+        OsCredentialStoreResult purge = _osStore.Delete(
+            ArcanumCredentialIdentity.Service,
+            account);
+
+        if (purge.Status is OsCredentialStoreStatus.Ok or OsCredentialStoreStatus.NotFound)
+        {
+
+            return;
+
+        }
+
+        if (!_osStore.IsAvailable)
+        {
+
+            // No reachable backend at all: the encrypted mirror is the documented operating mode
+            // here, and every read in this state resolves through it.
+            _logger?.LogWarning(
+                "The OS credential store is unavailable; the mirror for {Account} was written "
+                + "without reconciling any earlier OS credential.",
+                account);
+
+            return;
+
+        }
+
+        throw new InvalidOperationException(
+            $"The credential for provider account {account} could not be written to the OS "
+            + $"credential store ({save.Status}), and the superseded OS credential could not be "
+            + $"removed ({purge.Status}). The previous credential would keep being used, so "
+            + "nothing was changed.");
+
+    }
 
     private async Task<SecretStoreReadResult> ReadMirrorAsync(
         string providerName,

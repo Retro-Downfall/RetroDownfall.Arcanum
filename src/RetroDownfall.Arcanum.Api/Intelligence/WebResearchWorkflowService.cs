@@ -22,6 +22,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.TheForge;
 
+using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
+
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public sealed class WebResearchWorkflowService(
@@ -54,6 +56,17 @@ public sealed class WebResearchWorkflowService(
         {
 
             return Result<WebSearchWorkflowResult>.Failure(validation.Error);
+
+        }
+
+        Result attachmentTarget = await PreflightAttachmentTargetAsync(
+            request.AttachToSessionId,
+            cancellationToken).ConfigureAwait(false);
+
+        if (attachmentTarget.IsFailure)
+        {
+
+            return Result<WebSearchWorkflowResult>.Failure(attachmentTarget.Error);
 
         }
 
@@ -117,7 +130,11 @@ public sealed class WebResearchWorkflowService(
 
         }
 
-        string renderMode = request.RenderMode.Trim().ToLowerInvariant();
+        // System.Text.Json writes an explicit JSON null straight over the property initializer, so a
+        // non-nullable request property can still arrive null from a well-formed body.
+        string renderMode = string.IsNullOrWhiteSpace(request.RenderMode)
+            ? "static"
+            : request.RenderMode.Trim().ToLowerInvariant();
 
         if (renderMode == "javascript")
         {
@@ -151,6 +168,17 @@ public sealed class WebResearchWorkflowService(
             return Failure<WebBrowseWorkflowResult>(
                 ErrorCodes.WebResearch.InvalidUrl,
                 "An absolute HTTP or HTTPS URL is required.");
+
+        }
+
+        Result attachmentTarget = await PreflightAttachmentTargetAsync(
+            request.AttachToSessionId,
+            cancellationToken).ConfigureAwait(false);
+
+        if (attachmentTarget.IsFailure)
+        {
+
+            return Result<WebBrowseWorkflowResult>.Failure(attachmentTarget.Error);
 
         }
 
@@ -314,7 +342,7 @@ public sealed class WebResearchWorkflowService(
 
             string query = pass == 1
                 ? request.Question.Trim()
-                : $"{request.Question.Trim()} Follow-up research pass {pass}: find new corroborating evidence, disagreements, and missing current facts not covered by earlier sources.";
+                : BuildFollowUpQuery(request.Question.Trim(), pass);
 
             int resultCount = request.SourceTarget is int sourceTarget
                 ? Math.Clamp(sourceTarget - citations.Count, 1, 20)
@@ -693,6 +721,46 @@ public sealed class WebResearchWorkflowService(
 
     }
 
+    /// <summary>
+    /// Attachment is an optional side effect, so the conditions that make it impossible are checked
+    /// before any billable provider call rather than after — otherwise a bad target throws away an
+    /// answer the operator has already paid for. Mirrors what research does in its preflight.
+    /// </summary>
+    private async Task<Result> PreflightAttachmentTargetAsync(
+        Guid? sessionId,
+        CancellationToken cancellationToken)
+    {
+
+        if (sessionId is null)
+        {
+
+            return Result.Success();
+
+        }
+
+        if (!settings.Value.ResolveAttachments().Enabled)
+        {
+
+            return Result.Failure(new Error(
+                ErrorCodes.WebResearch.RequestRejected,
+                "Session attachments are disabled."));
+
+        }
+
+        if (await sessions.GetByIdAsync(sessionId.Value, cancellationToken).ConfigureAwait(false)
+            is null)
+        {
+
+            return Result.Failure(new Error(
+                ErrorCodes.Session.NotFound,
+                "The attachment target session was not found."));
+
+        }
+
+        return Result.Success();
+
+    }
+
     private async Task<Result<Guid?>> AttachAsync(
         Guid? sessionId,
         string fileName,
@@ -744,9 +812,31 @@ public sealed class WebResearchWorkflowService(
 
     }
 
+    private static string BuildFollowUpQuery(string question, int pass) =>
+        $"{question} Follow-up research pass {pass}: find new corroborating evidence, disagreements, and missing current facts not covered by earlier sources.";
+
+    /// <summary>
+    /// The provider bounds a single query at <see cref="WebResearchConstants.MaxInputQueryChars"/>,
+    /// and every pass after the first appends the follow-up suffix. Reserving room for that suffix
+    /// up front is what keeps a run from billing pass 1 and then aborting on pass 2. The reservation
+    /// is measured against a three-digit pass number, which is longer than any run reaches.
+    /// </summary>
+    internal static readonly int MaxResearchQuestionChars =
+        WebResearchConstants.MaxInputQueryChars - BuildFollowUpQuery(string.Empty, 999).Length;
+
     private static Result ValidateResearchRequest(
         WebResearchWorkflowRequest request)
     {
+
+        if (request.Question?.Trim().Length > MaxResearchQuestionChars)
+        {
+
+            return Result.Failure(
+                new Error(
+                    ErrorCodes.WebResearch.RequestRejected,
+                    $"The research question must be at most {MaxResearchQuestionChars} characters so every follow-up pass stays within the provider's {WebResearchConstants.MaxInputQueryChars}-character query limit."));
+
+        }
 
         if (string.IsNullOrWhiteSpace(request.Question)
             || request.SourceTarget is < 1
@@ -1064,15 +1154,16 @@ public sealed class WebResearchWorkflowService(
         || freshness.Trim().ToLowerInvariant()
             is "day" or "week" or "month" or "year";
 
-    private static bool AreValidDomains(IReadOnlyList<string> domains) =>
-        domains.Count <= 20
+    private static bool AreValidDomains(IReadOnlyList<string>? domains) =>
+        domains is null
+        || (domains.Count <= 20
         && domains.All(
             static domain =>
                 !string.IsNullOrWhiteSpace(domain)
                 && domain.Length <= 253
                 && !domain.Contains('/')
                 && !domain.Contains(':')
-                && !domain.Any(char.IsWhiteSpace));
+                && !domain.Any(char.IsWhiteSpace)));
 
     private static string FormatCostLimit(decimal? costBudget) =>
         costBudget is decimal value

@@ -134,4 +134,106 @@ public sealed class ConfigurationPathAccessorTests
 
     }
 
+    [Fact]
+
+    public void Set_resolves_model_descriptor_paths_under_an_indexed_provider()
+    {
+
+        ArcanumSettings settings = NewSettingsWithOneModel();
+
+        ConfigurationPathUpdate vision = ConfigurationPathAccessor.Set(
+            settings,
+            "providers.0.models.0.supportsVision",
+            "true");
+
+        Assert.True(vision.IsSuccess, vision.Error);
+
+        Assert.True(vision.Settings!.Providers[0].Models[0].SupportsVision);
+
+        ConfigurationPathUpdate name = ConfigurationPathAccessor.Set(
+            vision.Settings,
+            "providers.0.models.0.name",
+            "gpt-4o-mini");
+
+        Assert.True(name.IsSuccess, name.Error);
+
+        Assert.Equal("gpt-4o-mini", name.Settings!.Providers[0].Models[0].Name);
+
+        ConfigurationPathUpdate dialect = ConfigurationPathAccessor.Set(
+            name.Settings,
+            "providers.0.models.0.reasoning.wireDialect",
+            "openRouter");
+
+        Assert.True(dialect.IsSuccess, dialect.Error);
+
+        Assert.Equal(
+            ReasoningWireDialect.OpenRouter,
+            dialect.Settings!.Providers[0].Models[0].Reasoning!.WireDialect);
+
+        ConfigurationPathUpdate budget = ConfigurationPathAccessor.Set(
+            dialect.Settings,
+            "providers.0.models.0.reasoning.maxBudgetTokens",
+            "4096");
+
+        Assert.True(budget.IsSuccess, budget.Error);
+
+        Assert.Equal(4096, budget.Settings!.Providers[0].Models[0].Reasoning!.MaxBudgetTokens);
+
+    }
+
+    [Fact]
+
+    public void Get_reads_model_descriptor_paths_under_an_indexed_provider()
+    {
+
+        ArcanumSettings settings = NewSettingsWithOneModel();
+
+        Assert.True(ConfigurationPathAccessor.Exists(settings, "providers.0.models.0.supportsVision"));
+
+        Assert.Equal(
+            "gpt-4o",
+            ConfigurationPathAccessor.GetDisplayValue(settings, "providers.0.models.0.name"));
+
+        Assert.Equal(
+            "false",
+            ConfigurationPathAccessor.GetDisplayValue(settings, "providers.0.models.0.supportsVision"));
+
+    }
+
+    [Fact]
+
+    public void Set_rejects_an_out_of_range_model_index()
+    {
+
+        ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
+            NewSettingsWithOneModel(),
+            "providers.0.models.3.supportsVision",
+            "true");
+
+        Assert.False(result.IsSuccess);
+
+        Assert.Contains("collection index", result.Error, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    private static ArcanumSettings NewSettingsWithOneModel() =>
+        new()
+        {
+
+            Providers =
+            [
+                new ProviderSettings
+                {
+
+                    Name = "OpenAI",
+
+                    Endpoint = "https://api.example/v1",
+
+                    Models = [new ModelEntry("gpt-4o")],
+
+                },
+            ],
+
+        };
+
 }

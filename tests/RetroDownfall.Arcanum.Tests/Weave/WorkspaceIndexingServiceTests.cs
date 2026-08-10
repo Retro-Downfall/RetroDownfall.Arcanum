@@ -475,6 +475,40 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task IndexNowAsync_CoalescesASecondRequestWhileTheSameWorkspaceIsAlreadyReconciling()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _workspace.WriteFile("coalesce.md", "content that must only be embedded once per in-flight run");
+
+        GatedWeaveService weave = new();
+
+        WorkspaceIndexingService service = CreateService(weave, out _);
+
+        Task first = service.IndexNowAsync(_workspace.Root, CancellationToken.None);
+
+        await weave.EmbedEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Task second = service.IndexNowAsync(_workspace.Root, CancellationToken.None);
+
+        Task settled = await Task.WhenAny(second, Task.Delay(TimeSpan.FromSeconds(5)));
+
+        weave.Release();
+
+        await first.WaitAsync(TimeSpan.FromSeconds(30));
+
+        await second.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(
+            ReferenceEquals(settled, second),
+            "A re-index requested while the same workspace is still reconciling must coalesce onto the in-flight run instead of starting a duplicate scan.");
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+
+    }
+
+    [SkippableFact]
     public async Task ExecuteAsync_NeverIndexesRegisteredWorkspace_WhenNotUnderAnyAllowedCampaignRoot()
     {
 
@@ -537,23 +571,57 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public void RegisterWorkspace_IsThreadSafe_UnderConcurrentCalls()
+    public async Task RegisterWorkspace_IsThreadSafe_UnderConcurrentCalls()
     {
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FakeWeaveService weave = new();
 
-        WorkspaceIndexingService service = CreateService(weave, out _);
+        FakeWorkspaceFileWatcherFactory watchers = new();
 
+        WorkspaceIndexingService service = CreateService(weave, out _, watcherFactory: watchers);
+
+        // The directories have to exist on disk: CampaignPathPolicy.ValidateAndNormalizePath rejects a
+        // path that is not an existing directory, and RegisterWorkspace then returns before it ever
+        // touches the registry — so a path-only array never exercises the concurrent-write path at all.
         string[] paths = Enumerable.Range(0, 50)
-            .Select(i => Path.Combine(_workspace.Root, $"workspace-{i}"))
+            .Select(i => _workspace.CreateSubdir($"workspace-{i}"))
             .ToArray();
+
+        int watcherCapacity = ArcanumRuntimeDefaults.Embeddings.Codebase.MaxWatchers;
+
+        int expectedWatchers = Math.Min(paths.Length, watcherCapacity);
 
         Parallel.ForEach(paths, service.RegisterWorkspace);
 
         // Re-registering an already-known path (idempotent) exercises the concurrent-write path once more.
         Parallel.ForEach(paths, service.RegisterWorkspace);
+
+        // Every root must land in the registry exactly once: watched up to the capacity bound and
+        // degraded beyond it, never absent (a lost update) and never watched twice (a duplicate add).
+        Assert.Equal(expectedWatchers, service.ActiveWatcherCount);
+
+        Assert.Equal(expectedWatchers, watchers.Created.Count);
+
+        Assert.Equal(
+            expectedWatchers,
+            watchers.Created
+                .Select(static watcher => watcher.WorkspacePath)
+                .Distinct(StringComparer.Ordinal)
+                .Count());
+
+        WorkspaceIndexRuntimeStatus[] statuses = [.. paths.Select(service.GetRuntimeStatus)];
+
+        Assert.All(statuses, static status => Assert.True(status.Watching || status.Degraded));
+
+        Assert.Equal(expectedWatchers, statuses.Count(static status => status.Watching));
+
+        Assert.Equal(
+            paths.Length - expectedWatchers,
+            statuses.Count(static status => status.Degraded && !status.Watching));
+
+        await service.DisposeAsync();
 
     }
 
@@ -961,7 +1029,7 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     }
 
     private WorkspaceIndexingService CreateService(
-        FakeWeaveService weave,
+        IWeaveService weave,
         out EmbeddingSettings embeddings,
         string[]? campaignAllowedRoots = null,
         FakeWorkspaceFileWatcherFactory? watcherFactory = null,
@@ -1306,12 +1374,64 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// Parks every embedding call until <see cref="Release"/> is called, so a test can hold one
+    /// reconciliation run in flight while it issues a second one.
+    /// </summary>
+    private sealed class GatedWeaveService : IWeaveService
+    {
+
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private int _embedBatchCallCount;
+
+        public TaskCompletionSource EmbedEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int EmbedBatchCallCount => Volatile.Read(ref _embedBatchCallCount);
+
+        public bool IsAvailable => true;
+
+        public void Release() => _release.TrySetResult();
+
+        public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("WorkspaceIndexingService only calls EmbedBatchAsync.");
+
+        public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
+        {
+
+            Interlocked.Increment(ref _embedBatchCallCount);
+
+            EmbedEntered.TrySetResult();
+
+            await _release.Task.ConfigureAwait(false);
+
+            Embedding<float>[] generated = new Embedding<float>[texts.Count];
+
+            for (int i = 0; i < texts.Count; i++)
+            {
+
+                generated[i] = new Embedding<float>(new float[] { 1f, 0f, 0f });
+
+            }
+
+            return Result<Embedding<float>[]>.Success(generated);
+
+        }
+
+        public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
+            Task.FromResult(Result<(string Chunk, int Offset)[]>.Success(
+                string.IsNullOrEmpty(text) ? [] : [(text, 0)]));
+
+    }
+
     private sealed class FakeWorkspaceFileWatcherFactory : IWorkspaceFileWatcherFactory
     {
 
         private readonly List<FakeWorkspaceFileWatcher> _watchers = [];
 
         public FakeWorkspaceFileWatcher Single => Assert.Single(_watchers);
+
+        public IReadOnlyList<FakeWorkspaceFileWatcher> Created => _watchers;
 
         public IWorkspaceFileWatcher Create(
             string workspacePath,
@@ -1336,6 +1456,8 @@ public sealed class WorkspaceIndexingServiceTests : IAsyncLifetime
     {
 
         public bool IsDisposed { get; private set; }
+
+        public string WorkspacePath => workspacePath;
 
         public void TriggerCreated(string path) =>
             onChange(new WorkspaceFileChange(workspacePath, WorkspaceFileChangeKind.Created, path));

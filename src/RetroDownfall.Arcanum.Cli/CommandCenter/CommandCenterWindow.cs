@@ -1222,6 +1222,18 @@ internal sealed class CommandCenterWindow : Window
     public void MoveSessionSelection(int delta, CommandCenterState state)
     {
         ArgumentNullException.ThrowIfNull(state);
+
+        // Overlay arrow / j-k keys route here for every overlay kind, but only the session picker is
+        // bound to the session rows. Any other overlay — palette, MCP status, help — owns a shorter
+        // list of its own: clamping to the session count would put its lower entries out of reach,
+        // and assigning a session index to it walks past its last row.
+        if (OverlayPane.Visible && _overlayKind != CommandCenterOverlayKind.SessionPicker)
+        {
+            MovePaletteSelection(delta);
+
+            return;
+        }
+
         IReadOnlyList<SessionListItem> list = state.FilteredSessions;
         if (list.Count == 0)
         {

@@ -445,4 +445,38 @@ public sealed class JsonSchemaHelperTests
 
     }
 
+    /// <summary>
+    /// One error per failing element makes the report scale with the payload, and callers join that
+    /// list into a public error envelope. A wholly wrong array must therefore report a bounded,
+    /// readable summary rather than one line per element.
+    /// </summary>
+    [Fact]
+    public void Validate_EveryElementOfALargeArrayFails_ReportsABoundedErrorList()
+    {
+
+        using JsonDocument schema = JsonDocument.Parse("""
+            {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+            """);
+
+        Result<JsonSchemaDefinition> parsed = JsonSchemaHelper.Parse(schema);
+
+        Assert.True(parsed.IsSuccess);
+
+        string payload = "[" + string.Join(',', Enumerable.Range(0, 20_000)) + "]";
+
+        ValidationResult result = JsonSchemaHelper.Validate(payload, parsed.Value);
+
+        Assert.False(result.IsValid);
+
+        Assert.InRange(result.Errors.Count, 1, JsonSchemaHelper.MaxReportedErrors + 1);
+
+        Assert.True(
+            string.Join("; ", result.Errors).Length < 64 * 1024,
+            "The joined report is embedded verbatim in a public error envelope.");
+
+    }
+
 }

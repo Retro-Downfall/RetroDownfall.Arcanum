@@ -813,7 +813,11 @@ internal static class UnifiedDiffParser
             Dictionary<string, int> affectedOwners =
                 new(WorkspaceRelativePath.Comparer);
 
-            List<string> topologyPaths = [];
+            HashSet<string> topologyPaths =
+                new(WorkspaceRelativePath.Comparer);
+
+            HashSet<string> topologyAncestors =
+                new(WorkspaceRelativePath.Comparer);
 
             for (int fileIndex = 0; fileIndex < _files.Count; fileIndex++)
             {
@@ -845,15 +849,32 @@ internal static class UnifiedDiffParser
                 {
                     Checkpoint();
 
-                    if (topologyPaths.Any(
-                            existing =>
-                                WorkspaceRelativePath.HasAncestorCollision(
-                                    existing,
-                                    path)))
+                    // Ancestor/descendant collisions are decided from the set of accepted paths and
+                    // the set of their directory prefixes, so each path costs its own depth rather
+                    // than a rescan of every path accepted so far.
+                    if (topologyAncestors.Contains(path))
                     {
                         throw Invalid(
                             "path_topology",
                             "Patch paths cannot be ancestors or descendants of one another.");
+                    }
+
+                    for (int slash = path.IndexOf('/');
+                        slash >= 0;
+                        slash = path.IndexOf('/', slash + 1))
+                    {
+                        Checkpoint();
+
+                        string ancestor = path[..slash];
+
+                        if (topologyPaths.Contains(ancestor))
+                        {
+                            throw Invalid(
+                                "path_topology",
+                                "Patch paths cannot be ancestors or descendants of one another.");
+                        }
+
+                        topologyAncestors.Add(ancestor);
                     }
 
                     if (affectedOwners.TryGetValue(path, out int owner)

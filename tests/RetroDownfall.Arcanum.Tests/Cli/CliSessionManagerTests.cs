@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
-using RetroDownfall.Arcanum.Cli.UX;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage;
 using Spectre.Console;
 using Spectre.Console.Testing;
@@ -177,7 +176,13 @@ public sealed class CliSessionManagerTests : IDisposable
 
         IAnsiConsole prior = AnsiConsole.Console;
 
+        TextWriter priorError = Console.Error;
+
+        StringWriter capturedError = new();
+
         AnsiConsole.Console = console;
+
+        Console.SetError(capturedError);
 
         try
         {
@@ -187,19 +192,27 @@ public sealed class CliSessionManagerTests : IDisposable
 
             Assert.Null(manager.GetLastSessionId());
 
-            Assert.Contains("cli-session.txt", console.Output);
+            string diagnostics = capturedError.ToString();
 
-            Assert.Contains("valid session id", console.Output);
+            Assert.True(
+                string.IsNullOrEmpty(console.Output),
+                $"Expected no payload-stream output, got: {console.Output}");
 
-            Assert.DoesNotContain(canary, console.Output, StringComparison.Ordinal);
+            Assert.Contains("cli-session.txt", diagnostics);
+
+            Assert.Contains("valid session id", diagnostics);
+
+            Assert.DoesNotContain(canary, diagnostics, StringComparison.Ordinal);
 
             Assert.Equal(
                 1,
-                CountOccurrences(console.Output, "valid session id"));
+                CountOccurrences(diagnostics, "valid session id"));
         }
         finally
         {
             AnsiConsole.Console = prior;
+
+            Console.SetError(priorError);
         }
 
     }
@@ -269,18 +282,74 @@ public sealed class CliSessionManagerTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// <c>ask</c> saves and clears the bound session with the default <c>quiet: false</c>, so a
+    /// session-state I/O failure must not land on the payload stream — under <c>--json</c> or a
+    /// redirected <c>run</c> that stream carries the answer.
+    /// </summary>
+    [Fact]
+    public void SaveSessionId_warns_on_the_diagnostic_stream_not_the_payload_stream()
+    {
+
+        TestConsole console = new();
+
+        IAnsiConsole priorConsole = AnsiConsole.Console;
+
+        TextWriter priorError = Console.Error;
+
+        StringWriter capturedError = new();
+
+        AnsiConsole.Console = console;
+
+        Console.SetError(capturedError);
+
+        try
+        {
+
+            CliSessionManager manager = CreateManager(contextStore: new UnwritableContextStore());
+
+            manager.SaveSessionId(Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"));
+
+            Assert.True(
+                string.IsNullOrEmpty(console.Output),
+                $"Expected no payload-stream output, got: {console.Output}");
+
+            Assert.Contains("session state", capturedError.ToString(), StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            AnsiConsole.Console = priorConsole;
+
+            Console.SetError(priorError);
+
+        }
+
+    }
+
     private static CliSessionManager CreateManager(
         ILogger<CliSessionManager>? logger = null,
         ICliContextStore? contextStore = null)
     {
 
-        ThemeSemanticColors semantic = new();
+        return new CliSessionManager(
+            new ConsoleDispatcher(new CliInvocationContext()),
+            logger,
+            contextStore);
 
-        ThemeSemanticColors fallback = new();
+    }
 
-        ConfiguredThemePalette palette = new(semantic, fallback);
+    private sealed class UnwritableContextStore : ICliContextStore
+    {
 
-        return new CliSessionManager(palette, logger, contextStore);
+        public string FilePath => "/does-not-exist/cli-context.json";
+
+        public CliContextDocument Load() =>
+            throw new IOException("The context file could not be read.");
+
+        public void Save(CliContextDocument document) =>
+            throw new IOException("The context file could not be written.");
 
     }
 

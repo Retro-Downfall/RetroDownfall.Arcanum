@@ -937,7 +937,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
             if (connection.State != ConnectionState.Open)
             {
 
-                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await _db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
             }
 
@@ -1224,7 +1224,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
 
             if (connection.State != ConnectionState.Open)
             {
-                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await _db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             }
 
             await using DbCommand cmd = connection.CreateCommand();

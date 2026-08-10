@@ -679,7 +679,23 @@ internal static class DeterministicWorkspaceTraversal
 
                 cancellationToken.ThrowIfCancellationRequested();
 
-                FileAttributes attributes = File.GetAttributes(entry);
+                FileAttributes attributes;
+
+                try
+                {
+
+                    attributes = File.GetAttributes(entry);
+
+                }
+                catch (Exception exception) when (
+                    exception is IOException or UnauthorizedAccessException)
+                {
+
+                    // One entry that vanished or cannot be classified costs only that entry;
+                    // the rest of the directory listing must still be enumerated.
+                    continue;
+
+                }
 
                 bool isDirectory = attributes.HasFlag(FileAttributes.Directory);
 

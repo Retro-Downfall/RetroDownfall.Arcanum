@@ -134,6 +134,55 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Save_RemovesTheSupersededOsCredentialWhenTheOsWriteFails()
+    {
+
+        InMemoryOsCredentialStore backing = new();
+
+        _ = backing.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount,
+            "old-key");
+
+        WriteFailingStore os = new(backing);
+
+        using OsKeychainSecretStore store = CreateStore(os);
+
+        await store.SaveApiKeyAsync("new-key");
+
+        Assert.Equal("new-key", await store.GetApiKeyAsync());
+
+        Assert.Equal(
+            OsCredentialStoreStatus.NotFound,
+            backing.TryGet(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.MasterApiKeyAccount).Status);
+
+    }
+
+    [Fact]
+    public async Task Save_FailsWhenTheSupersededOsCredentialCannotBeRemoved()
+    {
+
+        InMemoryOsCredentialStore backing = new();
+
+        _ = backing.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.MasterApiKeyAccount,
+            "old-key");
+
+        WriteFailingStore os = new(backing, deleteFails: true);
+
+        using OsKeychainSecretStore store = CreateStore(os);
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.SaveApiKeyAsync("new-key"));
+
+        Assert.Equal("old-key", await store.GetApiKeyAsync());
+
+    }
+
+    [Fact]
     public async Task FileEncryptionSecret_RoundTripsThroughDedicatedOsCredential()
     {
         InMemoryOsCredentialStore os = new();
@@ -227,6 +276,29 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         _originalEnvironment[name] = global::System.Environment.GetEnvironmentVariable(name);
 
         global::System.Environment.SetEnvironmentVariable(name, value);
+
+    }
+
+    /// <summary>
+    /// A reachable OS credential backend that refuses writes (locked keychain, transient Secret
+    /// Service error) while reads and deletes still work.
+    /// </summary>
+    private sealed class WriteFailingStore(IOsCredentialStore inner, bool deleteFails = false)
+        : IOsCredentialStore
+    {
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            OsCredentialStoreResult.Failed("test write failure");
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            deleteFails
+                ? OsCredentialStoreResult.Failed("test delete failure")
+                : inner.Delete(service, account);
 
     }
 

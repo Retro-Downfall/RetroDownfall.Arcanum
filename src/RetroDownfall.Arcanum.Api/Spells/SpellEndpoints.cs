@@ -240,7 +240,10 @@ internal static class SpellEndpoints
 
                 return result.IsSuccess
                     ? Results.Ok(ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId))
-                    : Results.BadRequest(ApiResponse<bool>.FromResult(Result<bool>.Failure(result.Error), traceId));
+                    : SpellApiResults.MapFailure(
+                        result.Error,
+                        traceId,
+                        ArcanumJsonContext.Default.ApiResponseBoolean);
             })
         .WithName("UpdateSpell")
         .WithLargeRequestBody();
@@ -275,10 +278,10 @@ internal static class SpellEndpoints
 
                 return result.IsSuccess
                     ? Results.NoContent()
-                    : Results.BadRequest(
-                        ApiResponse<bool>.FromResult(
-                            Result<bool>.Failure(result.Error),
-                            Activity.Current?.Id ?? ctx.TraceIdentifier));
+                    : SpellApiResults.MapFailure(
+                        result.Error,
+                        traceId,
+                        ArcanumJsonContext.Default.ApiResponseBoolean);
             })
         .WithName("DeleteSpell");
 

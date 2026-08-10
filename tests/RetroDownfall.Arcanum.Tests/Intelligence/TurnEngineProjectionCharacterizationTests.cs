@@ -543,6 +543,93 @@ public sealed class TurnEngineProjectionCharacterizationTests
         Assert.Null(typeof(Core.Intelligence.PingRequest).GetProperty("IdempotencyKey"));
     }
 
+    /// <summary>
+    /// The hub emits <c>toolError</c> as (Message = tool name, Data = failure description). Reading
+    /// the tool name into <c>PublicErrorText</c> makes the re-projected wire frame carry the name in
+    /// both <c>message</c> and <c>data</c>, so the description is lost on the round trip.
+    /// </summary>
+    [Fact]
+    public void StreamingIntelligenceMapper_ToolError_CarriesTheFailureDescriptionNotTheToolName()
+    {
+        Type mapperType = typeof(WizardIntelligenceProvider).GetNestedType(
+            "StreamingIntelligenceMapper",
+            BindingFlags.NonPublic)!;
+        object mapper = Activator.CreateInstance(mapperType, nonPublic: true)!;
+        MethodInfo map = mapperType.GetMethod(
+            "Map",
+            BindingFlags.Instance | BindingFlags.Public)!;
+        TurnEventEmitter emitter = new(Guid.NewGuid());
+
+        const string description =
+            "Tool invocation failed and was tolerated; a synthetic error result was returned to the model.";
+
+        Assert.Empty(InvokeMap(
+            mapper,
+            map,
+            new IntelligenceEvent(
+                IntelligenceEventType.ToolError,
+                "execute_command",
+                description),
+            emitter));
+
+        ToolInvocationCompleted completed = Assert.IsType<ToolInvocationCompleted>(
+            Assert.Single(InvokeMap(
+                mapper,
+                map,
+                new IntelligenceEvent(
+                    IntelligenceEventType.ToolResult,
+                    "execute_command",
+                    "synthetic error result",
+                    ToolCall: new IntelligenceToolCallEvent(
+                        "call_1",
+                        "execute_command",
+                        "{}")),
+                emitter)));
+
+        Assert.True(completed.Failed);
+
+        Assert.Equal(description, completed.PublicErrorText);
+    }
+
+    /// <summary>
+    /// The hub sets <c>PreserveProviderCallId</c> on client-forwarded tool calls so <c>/v1</c> echoes
+    /// the provider's own <c>tool_call_id</c> back. Production streaming goes through the semantic
+    /// round trip, so the flag has to survive both hops or the client gets a fabricated id.
+    /// </summary>
+    [Fact]
+    public void SemanticRoundTrip_PreservesTheProviderToolCallIdFlag()
+    {
+        Type mapperType = typeof(WizardIntelligenceProvider).GetNestedType(
+            "StreamingIntelligenceMapper",
+            BindingFlags.NonPublic)!;
+        object mapper = Activator.CreateInstance(mapperType, nonPublic: true)!;
+        MethodInfo map = mapperType.GetMethod(
+            "Map",
+            BindingFlags.Instance | BindingFlags.Public)!;
+        TurnEventEmitter emitter = new(Guid.NewGuid());
+
+        TurnEvent mapped = Assert.Single(InvokeMap(
+            mapper,
+            map,
+            new IntelligenceEvent(
+                IntelligenceEventType.ToolCall,
+                "get_weather",
+                """{"city":"Oslo"}""",
+                ToolCall: new IntelligenceToolCallEvent(
+                    "call_provider_abc",
+                    "get_weather",
+                    """{"city":"Oslo"}""",
+                    Index: 0,
+                    PreserveProviderCallId: true)),
+            emitter));
+
+        IntelligenceEvent reprojected = Assert.Single(IntelligenceEventProjection.Map(mapped));
+
+        Assert.True(reprojected.ToolCall!.PreserveProviderCallId);
+
+        Assert.Equal("call_provider_abc", reprojected.ToolCall.CallId);
+    }
+
     private static IEnumerable<TurnEvent> InvokeMap(
         object mapper,
         MethodInfo map,

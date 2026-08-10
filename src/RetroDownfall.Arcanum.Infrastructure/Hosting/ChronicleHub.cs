@@ -16,29 +16,47 @@ public sealed class ChronicleHub
 
     private readonly Lock _lifecycleLock = new();
 
+    /// <summary>
+    /// Number of apprentices holding a live per-apprentice hub. A hub exists exactly while it has at
+    /// least one subscriber, so this is never a count of apprentices that have merely published.
+    /// </summary>
+    internal int TrackedApprenticeCount => _hubs.Count;
+
     public void Publish(Guid apprenticeId, ApprenticeEvent @event)
     {
 
-        PerApprenticeHub hub = GetOrCreateHub(apprenticeId);
-
-        int drops = hub.Publish(@event);
-
-        if (drops > 0)
+        // Publishing must never create a hub: a hub is removed only when its last subscriber leaves,
+        // so a publisher-created hub (a headless run, or any event after the operator closed the SSE
+        // stream) would live for the lifetime of this singleton. With nobody subscribed the event has
+        // no destination anyway — the Chronicle is live-only, never replayed from memory.
+        lock (_lifecycleLock)
         {
 
-            hub.Publish(new ApprenticeEvent
+            if (!_hubs.TryGetValue(apprenticeId, out PerApprenticeHub? hub))
             {
 
-                Type = ApprenticeEventType.EventsDropped,
+                return;
+            }
 
-                ApprenticeId = apprenticeId,
+            int drops = hub.Publish(@event);
 
-                Timestamp = DateTimeOffset.UtcNow,
+            if (drops > 0)
+            {
 
-                Summary = $"{drops} chronicle subscriber(s) dropped events due to slow consumption.",
+                hub.Publish(new ApprenticeEvent
+                {
 
-            });
+                    Type = ApprenticeEventType.EventsDropped,
 
+                    ApprenticeId = apprenticeId,
+
+                    Timestamp = DateTimeOffset.UtcNow,
+
+                    Summary = $"{drops} chronicle subscriber(s) dropped events due to slow consumption.",
+
+                });
+
+            }
         }
 
     }

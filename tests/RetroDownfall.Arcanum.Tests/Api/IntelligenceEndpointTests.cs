@@ -85,6 +85,36 @@ public sealed class IntelligenceEndpointTests
 
     }
 
+    /// <summary>
+    /// A missing or non-JSON Content-Type raises <c>InvalidOperationException</c> out of
+    /// <c>ReadFromJsonAsync</c>, not <c>JsonException</c>. Uncaught it becomes a 500
+    /// <c>Hub.Unhandled</c> with an Error-level stack trace, where every envelope endpoint that
+    /// reads its body through <c>ApiRequestJson</c> answers the same mistake with 415.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("application/x-www-form-urlencoded")]
+    [InlineData("text/plain")]
+    public async Task PostPingStream_NonJsonContentType_ReturnsUnsupportedMediaType(string contentType)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/intelligence/ping-stream",
+            new StringContent("""{"prompt":"hi"}""", Encoding.UTF8, contentType));
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        ApiResponse<string>? envelope = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseString);
+
+        Assert.Equal(ErrorCodes.Validation.UnsupportedMediaType, envelope!.Error!.Value.Code);
+
+    }
+
     [SkippableFact]
     public async Task PostPing_Buffered_ReturnsFakeIntelligenceText()
     {

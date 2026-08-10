@@ -396,6 +396,39 @@ public sealed class GuardrailsPipelineTests
 
     }
 
+    /// <summary>
+    /// An operator pattern with an ambiguous quantifier backtracks exponentially on crafted input.
+    /// The match budget then elapses, and a guardrail that reads "budget elapsed" as "no violation"
+    /// lets the caller choose whether the block applies. Blocked topics must fail closed — and be
+    /// audited — exactly like the allowed-topics arm already does.
+    /// </summary>
+    [Fact]
+    public async Task FilterInputAsync_BlockedTopics_MatchTimeout_FailsClosedAndIsAudited()
+    {
+
+        FakeGuardrailAuditLogger audit = new();
+
+        GuardrailsPipeline pipeline = CreatePipeline(
+            ArcanumRuntimeDefaults.Guardrails with
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockedTopics = ["^(a+)+$"],
+            },
+            audit);
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
+            [new CoreChatMessage("user", new string('a', 64) + "!")],
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, result.Error.Code);
+
+        Assert.NotEmpty(audit.Records);
+
+    }
+
     private static GuardrailsPipeline CreatePipeline(GuardrailsSettings guardrails, FakeGuardrailAuditLogger? audit = null)
     {
         ArcanumSettings settings = new()

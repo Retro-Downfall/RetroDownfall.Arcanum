@@ -267,6 +267,54 @@ public sealed class ProviderCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task A_failed_os_write_removes_the_superseded_os_credential()
+    {
+
+        InMemoryOsCredentialStore backing = new();
+
+        _ = backing.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.InferenceProviderApiKeyAccount("OpenAI"),
+            "sk-old");
+
+        using ProviderCredentialStore store = CreateStore(new WriteFailingStore(backing));
+
+        await store.SaveApiKeyAsync("OpenAI", "sk-new");
+
+        Assert.Equal("sk-new", (await store.GetApiKeyReadResultAsync("OpenAI")).Value);
+
+        Assert.Equal(
+            OsCredentialStoreStatus.NotFound,
+            backing.TryGet(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.InferenceProviderApiKeyAccount("OpenAI")).Status);
+
+    }
+
+    [Fact]
+    public async Task A_failed_os_write_fails_closed_when_the_superseded_credential_survives()
+    {
+
+        InMemoryOsCredentialStore backing = new();
+
+        _ = backing.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.InferenceProviderApiKeyAccount("OpenAI"),
+            "sk-old");
+
+        using ProviderCredentialStore store =
+            CreateStore(new WriteFailingStore(backing, deleteFails: true));
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.SaveApiKeyAsync("OpenAI", "sk-new"));
+
+        Assert.Equal("sk-old", (await store.GetApiKeyReadResultAsync("OpenAI")).Value);
+
+        Assert.False(File.Exists(ArcanumPaths.InferenceProviderApiKeyStoreFile("OpenAI")));
+
+    }
+
+    [Fact]
     public async Task Delete_is_safe_when_nothing_is_stored()
     {
 
@@ -422,6 +470,29 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         }
 
         global::System.Environment.SetEnvironmentVariable(name, value);
+
+    }
+
+    /// <summary>
+    /// A reachable OS credential backend that refuses writes (locked keychain, transient Secret
+    /// Service error) while reads and deletes still work.
+    /// </summary>
+    private sealed class WriteFailingStore(IOsCredentialStore inner, bool deleteFails = false)
+        : IOsCredentialStore
+    {
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            OsCredentialStoreResult.Failed("test write failure");
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            deleteFails
+                ? OsCredentialStoreResult.Failed("test delete failure")
+                : inner.Delete(service, account);
 
     }
 

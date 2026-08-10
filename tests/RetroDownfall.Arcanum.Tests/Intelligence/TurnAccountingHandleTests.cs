@@ -95,6 +95,37 @@ public sealed class TurnAccountingHandleTests
             request.ReservedUsd);
     }
 
+    /// <summary>
+    /// The run row is opened before the reservation, and only the <c>IsFailure</c> branch closes it.
+    /// An exception out of <c>ReserveAsync</c> — cancellation, or any SQLite error the reservation
+    /// service does not convert to a <c>Result</c> — must close it too, otherwise the row stays
+    /// <c>Running</c> forever with no expiry sweep to reclaim it.
+    /// </summary>
+    [Fact]
+    public async Task BeginAsync_ReservationThrows_ClosesTheRunRowBeforeRethrowing()
+    {
+        RecordingTurnRunWriter writer = new();
+        RecordingBudgetReservationService reservations = new()
+        {
+            ReserveException = new InvalidOperationException("grimoire faulted"),
+        };
+
+        async Task Begin() => await TurnAccountingHandle.BeginAsync(
+            writer,
+            reservations,
+            new PricingSettings(),
+            "reasoner",
+            sessionId: null,
+            surface: "test",
+            purpose: "chat",
+            requestId: "request-reserve-throws",
+            cancellationToken: CancellationToken.None);
+
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(Begin);
+
+        Assert.Equal(InferenceRunStatus.Failed, writer.CompletedStatus);
+    }
+
     [Fact]
     public async Task EnsureReservationForContextAsync_RaisesReservationFromMaterializedInput()
     {
@@ -559,11 +590,19 @@ public sealed class TurnAccountingHandleTests
 
         public bool WasReleased { get; private set; }
 
+        public Exception? ReserveException { get; init; }
+
         public Task<Result<BudgetReservation>> ReserveAsync(
             BudgetReservationRequest request,
             CancellationToken cancellationToken = default)
         {
             LastRequest = request;
+
+            if (ReserveException is not null)
+            {
+                return Task.FromException<Result<BudgetReservation>>(ReserveException);
+            }
+
             return Task.FromResult(Result<BudgetReservation>.Success(new BudgetReservation(
                 Guid.NewGuid(),
                 request.RunId,

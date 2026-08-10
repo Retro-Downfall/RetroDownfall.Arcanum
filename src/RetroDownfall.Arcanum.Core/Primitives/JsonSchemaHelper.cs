@@ -43,6 +43,13 @@ public static class JsonSchemaHelper
     }
 
     /// <summary>
+    /// Ceiling on how many per-element errors one validation reports. Callers join the list into a
+    /// public error envelope and into correction prompts, so a payload where every element fails
+    /// must not turn into a report that scales with the payload.
+    /// </summary>
+    public const int MaxReportedErrors = 100;
+
+    /// <summary>
     /// Validates a JSON string against a parsed schema.
     /// </summary>
     /// <param name="json">The JSON payload to validate.</param>
@@ -69,6 +76,13 @@ public static class JsonSchemaHelper
             List<string> errors = [];
 
             ValidateElement(document.RootElement, schema, "$", clampedDepth, 0, errors);
+
+            if (errors.Count >= MaxReportedErrors)
+            {
+
+                errors.Add($"Validation stopped after {MaxReportedErrors} errors; the payload may have more.");
+
+            }
 
             return new ValidationResult(errors.Count == 0, errors);
 
@@ -291,6 +305,14 @@ public static class JsonSchemaHelper
         {
 
             throw new SchemaException("JSON payload exceeds maximum nesting depth");
+
+        }
+
+        // Every recursion into an element goes through here, so one guard bounds the whole walk.
+        if (errors.Count >= MaxReportedErrors)
+        {
+
+            return;
 
         }
 

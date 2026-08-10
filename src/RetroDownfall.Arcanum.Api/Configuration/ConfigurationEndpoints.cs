@@ -322,6 +322,15 @@ internal static class ConfigurationEndpoints
         CancellationToken cancellationToken)
     {
 
+        // This helper needs the raw JsonDocument tree for RejectObsoleteJsonKeys, so it cannot route through
+        // ApiRequestJson.ReadAsync — but it still owes callers the same documented 415 media-type gate.
+        if (!httpContext.Request.HasJsonContentType())
+        {
+
+            return (null, ApiRequestJson.UnsupportedMediaTypeResult(httpContext));
+
+        }
+
         string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
         JsonDocument document;

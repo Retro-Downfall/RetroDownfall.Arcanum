@@ -102,7 +102,8 @@ internal sealed class IntelligenceEventProjection
                     ToolCall: new IntelligenceToolCallEvent(
                         proposed.CallId,
                         proposed.ToolName,
-                        proposed.ArgumentsJson)),
+                        proposed.ArgumentsJson,
+                        PreserveProviderCallId: proposed.PreserveProviderCallId)),
             ],
 
             ApprovalRequested approval =>

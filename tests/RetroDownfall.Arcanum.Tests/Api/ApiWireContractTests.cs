@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -74,6 +75,79 @@ public sealed class ApiWireContractTests
         string json = await response.Content.ReadAsStringAsync();
 
         Assert.DoesNotContain("Hub.Unhandled", json, StringComparison.Ordinal);
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.NotNull(body.Error);
+
+        Assert.Equal("Validation.UnsupportedMediaType", body.Error!.Value.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task PutConfig_NonJsonContentType_ReturnsEnveloped415()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // Round-trip the live snapshot so the body is a well-formed ArcanumSettings tree: the config write
+        // route used to parse it straight off Request.Body, so the media-type gate never ran at all.
+        HttpResponseMessage snapshotResponse = await client.GetAsync("/api/config");
+
+        ApiResponse<ArcanumSettings>? snapshot = JsonSerializer.Deserialize(
+            await snapshotResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseArcanumSettings);
+
+        Assert.NotNull(snapshot?.Data);
+
+        string payload = JsonSerializer.Serialize(
+            snapshot.Data,
+            ArcanumJsonContext.Default.ArcanumSettings);
+
+        HttpResponseMessage response = await client.PutAsync(
+            "/api/config",
+            new StringContent(payload, Encoding.UTF8, "text/plain"));
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.NotNull(body.Error);
+
+        Assert.Equal("Validation.UnsupportedMediaType", body.Error!.Value.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task PostConfigValidate_NonJsonContentType_ReturnsEnveloped415()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/config/validate",
+            new StringContent(
+                """{"providers":[]}""",
+                Encoding.UTF8,
+                "application/x-www-form-urlencoded"));
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
 
         ApiResponse<bool>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseBoolean);
 

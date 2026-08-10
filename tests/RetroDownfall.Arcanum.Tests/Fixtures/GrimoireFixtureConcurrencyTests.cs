@@ -22,6 +22,83 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
             GrimoireFixture.SqlCipherUnavailableReason);
     }
 
+    [Fact]
+    public void Probe_reports_unavailable_when_its_temp_directory_cannot_be_created()
+    {
+
+        string squatter = Path.Combine(Path.GetTempPath(), $"arcanum-probe-squatter-{Guid.NewGuid():N}");
+
+        File.WriteAllText(squatter, "A file squats the probe's parent directory.");
+
+        try
+        {
+
+            (bool available, string reason) = GrimoireFixture.ProbeSqlCipher(
+                Path.Combine(squatter, "probe.db"),
+                "probe-passphrase");
+
+            Assert.False(available);
+
+            Assert.NotEmpty(reason);
+
+        }
+        finally
+        {
+
+            File.Delete(squatter);
+
+        }
+
+    }
+
+    [Fact]
+    public void Probe_reports_unavailable_when_the_probe_database_cannot_be_opened()
+    {
+
+        string probePath = Path.Combine(Path.GetTempPath(), $"arcanum-probe-dir-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(probePath);
+
+        try
+        {
+
+            (bool available, string reason) = GrimoireFixture.ProbeSqlCipher(probePath, "probe-passphrase");
+
+            Assert.False(available);
+
+            Assert.NotEmpty(reason);
+
+        }
+        finally
+        {
+
+            Directory.Delete(probePath, recursive: true);
+
+        }
+
+    }
+
+    [SkippableFact]
+    public void Probe_reports_available_and_removes_its_temp_database()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string probePath = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-tests",
+            $"probe-{Guid.NewGuid():N}.db");
+
+        (bool available, string reason) = GrimoireFixture.ProbeSqlCipher(probePath, fixture.Passphrase);
+
+        Assert.True(available, reason);
+
+        Assert.Equal(string.Empty, reason);
+
+        Assert.False(File.Exists(probePath));
+
+    }
+
     [SkippableFact]
     public async Task CopyDatabase_waits_for_template_lifecycle_lock()
     {

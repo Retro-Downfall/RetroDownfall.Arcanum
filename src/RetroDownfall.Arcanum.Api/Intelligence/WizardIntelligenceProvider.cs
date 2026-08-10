@@ -351,7 +351,8 @@ public sealed partial class WizardIntelligenceProvider(
                         frame.ToolCall?.CallId ?? correlation.ToolCallId ?? Guid.NewGuid().ToString("N"),
                         frame.ToolCall?.Name ?? frame.Message,
                         frame.ToolCall?.ArgumentsJson ?? frame.Data ?? string.Empty,
-                        ToolCallDisposition.ServerExecution);
+                        ToolCallDisposition.ServerExecution,
+                        frame.ToolCall?.PreserveProviderCallId ?? false);
 
                     yield break;
 
@@ -384,7 +385,10 @@ public sealed partial class WizardIntelligenceProvider(
                 case IntelligenceEventType.ToolResult:
                     bool failed = _pendingToolError is not null;
 
-                    string? publicError = _pendingToolError?.Message;
+                    // The toolError frame is (Message: tool name, Data: failure description). The
+                    // description is what the client renders, so read Data — Message would send the
+                    // tool name back out in both fields of the re-projected frame.
+                    string? publicError = _pendingToolError?.Data;
 
                     _pendingToolError = null;
 
@@ -6000,7 +6004,8 @@ public sealed partial class WizardIntelligenceProvider(
                 sanctumGuard,
                 processResourceLimiter,
                 workingDirectory,
-                settings.Value.Security.AllowUnsandboxedToolChildren));
+                settings.Value.Security.AllowUnsandboxedToolChildren,
+                settings.Value.Edition));
         }
 
         IReadOnlyList<string>? declaredTools = activeSpell?.SkillMetadata?.DeclaredTools;

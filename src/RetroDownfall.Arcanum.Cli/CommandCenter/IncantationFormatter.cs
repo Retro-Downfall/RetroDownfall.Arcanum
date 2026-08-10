@@ -155,10 +155,11 @@ internal static partial class IncantationFormatter
 
         if (record.State == IncantationState.Failed && !string.IsNullOrWhiteSpace(record.ErrorText))
         {
-            string err = Sanitize(record.ErrorText!);
-            if (!heavy && !LooksLikeHugeBlob(err))
+            // Guard on the raw text, exactly as the success branch does: sanitizing first both pays for
+            // a payload the pane will not show and flattens the newlines LooksLikeHugeBlob fails on.
+            if (!heavy && !LooksLikeHugeBlob(record.ErrorText!))
             {
-                bodyParts.Add("error: " + TruncateCells(err, Math.Max(8, width * 2)));
+                bodyParts.Add("error: " + TruncateCells(Sanitize(record.ErrorText!), Math.Max(8, width * 2)));
             }
             else
             {
@@ -244,24 +245,30 @@ internal static partial class IncantationFormatter
         }
 
         StringBuilder sb = new(text.Length);
+
+        // Running column rather than re-measuring the accumulated buffer at every tab: the re-measure
+        // copied and rescanned the whole buffer per '\t', making a tab-indented payload quadratic.
+        int col = 0;
         foreach (Rune rune in text.EnumerateRunes())
         {
             int value = rune.Value;
             if (value == '\t')
             {
-                int pad = ComposerLayout.TabStop - (ComposerLayout.MeasureCellWidth(sb.ToString()) % ComposerLayout.TabStop);
+                int pad = ComposerLayout.TabStop - (col % ComposerLayout.TabStop);
                 if (pad <= 0 || pad > ComposerLayout.TabStop)
                 {
                     pad = ComposerLayout.TabStop;
                 }
 
                 _ = sb.Append(' ', pad);
+                col += pad;
                 continue;
             }
 
             if (value is '\r' or '\n')
             {
                 _ = sb.Append(' ');
+                col++;
                 continue;
             }
 
@@ -271,7 +278,16 @@ internal static partial class IncantationFormatter
                 continue;
             }
 
-            _ = sb.Append(rune.ToString());
+            if (rune.IsAscii)
+            {
+                _ = sb.Append((char)value);
+                col++;
+                continue;
+            }
+
+            string glyph = rune.ToString();
+            _ = sb.Append(glyph);
+            col += ComposerLayout.MeasureGraphemeCellWidth(glyph, col);
         }
 
         // Strip leftover CSI sequences like "[32m".

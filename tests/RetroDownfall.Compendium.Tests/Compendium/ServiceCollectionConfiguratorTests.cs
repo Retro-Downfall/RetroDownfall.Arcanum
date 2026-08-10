@@ -12,7 +12,7 @@ using Xunit;
 
 namespace RetroDownfall.Compendium.Tests.Compendium;
 
-[Collection("ProcessEnvironment")]
+[Collection("EnvVarSensitive")]
 
 public sealed class ServiceCollectionConfiguratorTests
 {

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Primitives;
 
 namespace RetroDownfall.Arcanum.Api.Security;
@@ -63,11 +64,50 @@ internal static class IdempotencyIdentity
         return "local";
     }
 
+    /// <summary>
+    /// Canonicalizes the route so that spellings ASP.NET Core routing treats as the same endpoint —
+    /// segment casing, a trailing slash — collapse to one claim key and one fingerprint instead of
+    /// executing the billed side effect twice. The matched endpoint's registered route pattern
+    /// supplies the canonical literal text (it is server-owned, so it never varies with what the
+    /// caller typed), and the route <em>values</em> are appended verbatim and ordinal-sorted:
+    /// <c>/api/spells/Foo/execute</c> and <c>/api/spells/foo/execute</c> may be different spells, so
+    /// they must stay different identities even though they share a pattern.
+    /// </summary>
     public static string NormalizeRoute(HttpContext httpContext)
     {
+        string? pattern = (httpContext.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText;
+
         PathString path = httpContext.Request.Path;
 
-        return path.HasValue ? path.Value! : "/";
+        string canonical = TrimTrailingSlash(pattern ?? (path.HasValue ? path.Value! : "/"));
+
+        RouteValueDictionary routeValues = httpContext.Request.RouteValues;
+
+        if (pattern is null || routeValues.Count == 0)
+        {
+
+            return canonical;
+
+        }
+
+        List<string> pairs = [];
+
+        foreach (KeyValuePair<string, object?> entry in routeValues)
+        {
+
+            pairs.Add(entry.Key + "=" + (entry.Value?.ToString() ?? string.Empty));
+
+        }
+
+        pairs.Sort(StringComparer.Ordinal);
+
+        return canonical + "|" + string.Join('&', pairs);
+    }
+
+    private static string TrimTrailingSlash(string route)
+    {
+        // Routing ignores exactly one trailing slash, so exactly one is stripped here.
+        return route.Length > 1 && route[^1] == '/' ? route[..^1] : route;
     }
 
     /// <summary>

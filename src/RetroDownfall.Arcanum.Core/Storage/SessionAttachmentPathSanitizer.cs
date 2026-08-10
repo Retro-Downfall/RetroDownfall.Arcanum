@@ -4,8 +4,10 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 
 /// <summary>
 /// Sanitizes logical keys and original filenames for session attachment paths:
-/// strips separators, <c>..</c>, control characters, and leading dots; caps length;
-/// rejects empty and reserved names.
+/// strips separators, <c>..</c>, control characters, characters Windows filenames reject
+/// (<c>* ? " &lt; &gt; |</c>), and leading dots; caps length; rejects empty and reserved names.
+/// The stripped set is identical on every platform so a store written on macOS or Linux stays
+/// readable on a Windows host.
 /// </summary>
 public static class SessionAttachmentPathSanitizer
 {
@@ -60,6 +62,13 @@ public static class SessionAttachmentPathSanitizer
         {
 
             if (c is '/' or '\\' or ':')
+            {
+
+                continue;
+
+            }
+
+            if (c is '*' or '?' or '"' or '<' or '>' or '|')
             {
 
                 continue;

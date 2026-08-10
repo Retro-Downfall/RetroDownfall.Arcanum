@@ -596,8 +596,10 @@ internal static class CappedChildProcessRunner
                             stdoutTask,
                             stderrTask).ConfigureAwait(false);
 
-                    TryDeleteOutputSpills(
+                    DeleteOutputSpillsWhenReadersComplete(
+                        stdoutTask,
                         stdoutSpillPath,
+                        stderrTask,
                         stderrSpillPath);
 
                     if (!descendantContainmentVerified)
@@ -699,8 +701,10 @@ internal static class CappedChildProcessRunner
                 catch (ChildProcessOutputPreservationException ex)
                 {
 
-                    TryDeleteOutputSpills(
+                    DeleteOutputSpillsWhenReadersComplete(
+                        stdoutTask,
                         stdoutSpillPath,
+                        stderrTask,
                         stderrSpillPath);
 
                     return new CappedChildProcessRunResult
@@ -718,8 +722,10 @@ internal static class CappedChildProcessRunner
                 catch (IOException ex)
                 {
 
-                    TryDeleteOutputSpills(
+                    DeleteOutputSpillsWhenReadersComplete(
+                        stdoutTask,
                         stdoutSpillPath,
+                        stderrTask,
                         stderrSpillPath);
 
                     return new CappedChildProcessRunResult
@@ -737,8 +743,10 @@ internal static class CappedChildProcessRunner
                 catch (UnauthorizedAccessException ex)
                 {
 
-                    TryDeleteOutputSpills(
+                    DeleteOutputSpillsWhenReadersComplete(
+                        stdoutTask,
                         stdoutSpillPath,
+                        stderrTask,
                         stderrSpillPath);
 
                     return new CappedChildProcessRunResult
@@ -756,8 +764,10 @@ internal static class CappedChildProcessRunner
                 catch (OperationCanceledException)
                 {
 
-                    TryDeleteOutputSpills(
+                    DeleteOutputSpillsWhenReadersComplete(
+                        stdoutTask,
                         stdoutSpillPath,
+                        stderrTask,
                         stderrSpillPath);
 
                     return new CappedChildProcessRunResult
@@ -1315,7 +1325,10 @@ internal static class CappedChildProcessRunner
             path,
             FileMode.CreateNew,
             FileAccess.Write,
-            FileShare.Read,
+            // FileShare.Delete keeps the artifact deletable while this writer is still open, so the
+            // cancellation/failure cleanup below (and CommandOutputArtifactStore's DeleteOnClose
+            // retention open) cannot be defeated by a Windows sharing violation.
+            FileShare.Read | FileShare.Delete,
             bufferSize: 4096,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
 
@@ -1449,14 +1462,65 @@ internal static class CappedChildProcessRunner
         stdoutTask.Exception?.GetBaseException()
         ?? stderrTask.Exception?.GetBaseException();
 
-    private static void TryDeleteOutputSpills(
+    private static void DeleteOutputSpillsWhenReadersComplete(
+        Task<CappedStreamOutput> stdoutTask,
         string? stdoutSpillPath,
+        Task<CappedStreamOutput> stderrTask,
         string? stderrSpillPath)
     {
 
-        TryDeleteOutputSpill(stdoutSpillPath);
+        DeleteOutputSpillWhenReaderCompletes(
+            stdoutTask,
+            stdoutSpillPath);
 
-        TryDeleteOutputSpill(stderrSpillPath);
+        DeleteOutputSpillWhenReaderCompletes(
+            stderrTask,
+            stderrSpillPath);
+
+    }
+
+    /// <summary>
+    /// Removes a partial spill artifact on a cancellation/failure path, and removes it again once an
+    /// abandoned reader finally completes. Deleting once is not sufficient: a reader whose pipe an
+    /// orphaned descendant still holds open outlives
+    /// <see cref="CompleteStreamReadTasksAsync"/>'s bounded wait, so at deletion time it may still
+    /// hold its spill writer open — and it may not have crossed the preview cap yet, in which case it
+    /// creates the artifact after the deletion.
+    /// </summary>
+    internal static void DeleteOutputSpillWhenReaderCompletes(
+        Task<CappedStreamOutput> readerTask,
+        string? spillPath)
+    {
+
+        if (spillPath is null)
+        {
+
+            return;
+
+        }
+
+        TryDeleteOutputSpill(spillPath);
+
+        if (readerTask.IsCompleted)
+        {
+
+            return;
+
+        }
+
+        _ = readerTask.ContinueWith(
+            static (completed, state) =>
+            {
+
+                _ = completed.Exception;
+
+                TryDeleteOutputSpill((string)state!);
+
+            },
+            spillPath,
+            CancellationToken.None,
+            TaskContinuationOptions.None,
+            TaskScheduler.Default);
 
     }
 

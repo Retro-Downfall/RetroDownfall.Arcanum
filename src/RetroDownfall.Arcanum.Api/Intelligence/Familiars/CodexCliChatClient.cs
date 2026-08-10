@@ -297,7 +297,17 @@ internal sealed class CodexCliChatClient(
         try
         {
 
-            File.WriteAllText(path, jsonSchema);
+            // CreateNew, not WriteAllText: a plain write follows an existing symlink. The working
+            // directory is owner-only and fresh per turn, so this can only ever be a fresh file —
+            // failing instead of following anything already at that path keeps it that way.
+            using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+
+                using StreamWriter writer = new(stream);
+
+                writer.Write(jsonSchema);
+
+            }
 
             return true;
 

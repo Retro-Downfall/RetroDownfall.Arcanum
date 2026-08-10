@@ -140,6 +140,48 @@ public sealed class WebResearchCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task A_failed_os_write_removes_the_superseded_os_credential()
+    {
+        InMemoryOsCredentialStore backing = new();
+        _ = backing.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.PerplexityApiKeyAccount,
+            "pplx-old");
+        using WebResearchCredentialStore store = CreateStore(new WriteFailingStore(backing));
+
+        await store.SavePerplexityApiKeyAsync("pplx-new");
+
+        Assert.Equal(
+            "pplx-new",
+            (await store.GetPerplexityApiKeyReadResultAsync()).Value);
+        Assert.Equal(
+            OsCredentialStoreStatus.NotFound,
+            backing.TryGet(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.PerplexityApiKeyAccount).Status);
+    }
+
+    [Fact]
+    public async Task A_failed_os_write_fails_closed_when_the_superseded_credential_survives()
+    {
+        InMemoryOsCredentialStore backing = new();
+        _ = backing.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.PerplexityApiKeyAccount,
+            "pplx-old");
+        using WebResearchCredentialStore store =
+            CreateStore(new WriteFailingStore(backing, deleteFails: true));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.SavePerplexityApiKeyAsync("pplx-new"));
+
+        Assert.Equal(
+            "pplx-old",
+            (await store.GetPerplexityApiKeyReadResultAsync()).Value);
+        Assert.False(File.Exists(ArcanumPaths.PerplexityApiKeyStoreFile));
+    }
+
+    [Fact]
     public async Task Corrupt_fallback_is_reported_without_throwing()
     {
         string path = ArcanumPaths.PerplexityApiKeyStoreFile;
@@ -205,6 +247,30 @@ public sealed class WebResearchCredentialStoreTests : IDisposable
         _originalEnvironment[name] =
             global::System.Environment.GetEnvironmentVariable(name);
         global::System.Environment.SetEnvironmentVariable(name, value);
+    }
+
+    /// <summary>
+    /// A reachable OS credential backend that refuses writes (locked keychain, transient Secret
+    /// Service error) while reads and deletes still work.
+    /// </summary>
+    private sealed class WriteFailingStore(IOsCredentialStore inner, bool deleteFails = false)
+        : IOsCredentialStore
+    {
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account) =>
+            inner.TryGet(service, account);
+
+        public OsCredentialStoreResult Set(
+            string service,
+            string account,
+            string secret) =>
+            OsCredentialStoreResult.Failed("test write failure");
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            deleteFails
+                ? OsCredentialStoreResult.Failed("test delete failure")
+                : inner.Delete(service, account);
     }
 
     private sealed class UnavailableStore : IOsCredentialStore

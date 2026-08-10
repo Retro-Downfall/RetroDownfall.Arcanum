@@ -246,6 +246,32 @@ internal static class WebWorkflowEndpoints
 
     }
 
+    private static async Task WriteResearchFrameAsync(
+        HttpContext httpContext,
+        WebResearchStreamFrame frame,
+        CancellationToken cancellationToken)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            frame,
+            ArcanumJsonContext.Default.WebResearchStreamFrame);
+
+        await httpContext.Response.Body
+            .WriteAsync(json, cancellationToken)
+            .ConfigureAwait(false);
+
+        await httpContext.Response.Body
+            .WriteAsync(NewLine, cancellationToken)
+            .ConfigureAwait(false);
+
+        await httpContext.Response.Body
+            .FlushAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+    }
+
+    private static readonly byte[] NewLine = "\n"u8.ToArray();
+
     private static IResult InvalidBody<T>(HttpContext httpContext)
     {
 

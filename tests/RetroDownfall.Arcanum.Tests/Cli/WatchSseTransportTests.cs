@@ -21,6 +21,15 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 public sealed class WatchSseTransportTests
 {
 
+    /// <summary>
+    /// Hang guard for every await in this file, not a behavioural assertion: the transport is driven
+    /// deterministically by <c>GatedStreamContent</c> / <c>ControlledDelay</c>, so these timeouts only
+    /// exist to fail a genuine deadlock instead of hanging the suite. One second was tight enough that
+    /// a loaded machine tripped them, which reads as a transport bug and is not one.
+    /// </summary>
+    private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(30);
+
+
     [Fact]
 
     public async Task WatchSseAsync_authenticates_and_preserves_multiline_json()
@@ -204,27 +213,27 @@ public sealed class WatchSseTransportTests
 
         Task<bool> idleMove = frames.MoveNextAsync().AsTask();
 
-        await reader.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await reader.ReadStarted.Task.WaitAsync(AsyncTestTimeout);
 
         delay.Release();
 
-        Assert.True(await idleMove.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.True(await idleMove.WaitAsync(AsyncTestTimeout));
 
         Assert.Equal(WatchSseFrameType.Heartbeat, frames.Current.Type);
 
         reader.Release("data: {\"sequence\":8}\r\rdata: [DONE]\r\r");
 
-        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
 
         Assert.Equal(WatchSseFrameType.Data, frames.Current.Type);
 
         Assert.Equal(8, frames.Current.Data!.Value.GetProperty("sequence").GetInt32());
 
-        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
 
         Assert.Equal(WatchSseFrameType.Done, frames.Current.Type);
 
-        Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
 
     }
 
@@ -469,11 +478,11 @@ public sealed class WatchSseTransportTests
 
         Task<bool> waitingMove = frames.MoveNextAsync().AsTask();
 
-        await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await handler.Started.Task.WaitAsync(AsyncTestTimeout);
 
         delay.Release();
 
-        Assert.True(await waitingMove.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.True(await waitingMove.WaitAsync(AsyncTestTimeout));
 
         Assert.Equal(WatchSseFrameType.Heartbeat, frames.Current.Type);
 
@@ -481,11 +490,11 @@ public sealed class WatchSseTransportTests
 
         handler.Release();
 
-        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
 
         Assert.Equal(WatchSseFrameType.Done, frames.Current.Type);
 
-        Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
 
     }
 
@@ -518,11 +527,11 @@ public sealed class WatchSseTransportTests
 
         Task<bool> waitingMove = frames.MoveNextAsync().AsTask();
 
-        await content.OpenStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await content.OpenStarted.Task.WaitAsync(AsyncTestTimeout);
 
         delay.Release();
 
-        Assert.True(await waitingMove.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.True(await waitingMove.WaitAsync(AsyncTestTimeout));
 
         Assert.Equal(WatchSseFrameType.Heartbeat, frames.Current.Type);
 
@@ -530,11 +539,11 @@ public sealed class WatchSseTransportTests
 
         content.Release("data: [DONE]\n\n");
 
-        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
 
         Assert.Equal(WatchSseFrameType.Done, frames.Current.Type);
 
-        Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
 
     }
 
@@ -567,11 +576,11 @@ public sealed class WatchSseTransportTests
 
         Task<bool> waitingMove = frames.MoveNextAsync().AsTask();
 
-        await content.OpenStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await content.OpenStarted.Task.WaitAsync(AsyncTestTimeout);
 
         delay.Release();
 
-        Assert.True(await waitingMove.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.True(await waitingMove.WaitAsync(AsyncTestTimeout));
 
         Assert.Equal(WatchSseFrameType.Heartbeat, frames.Current.Type);
 
@@ -579,13 +588,13 @@ public sealed class WatchSseTransportTests
 
         content.Release("{}");
 
-        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.True(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
 
         Assert.Equal(WatchSseFrameType.Error, frames.Current.Type);
 
         Assert.True(frames.Current.Retryable);
 
-        Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.False(await frames.MoveNextAsync().AsTask().WaitAsync(AsyncTestTimeout));
 
     }
 
@@ -630,12 +639,12 @@ public sealed class WatchSseTransportTests
 
         Task<bool> move = frames.MoveNextAsync().AsTask();
 
-        await handler.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await handler.Started.Task.WaitAsync(AsyncTestTimeout);
 
         await cancellation.CancelAsync();
 
         _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => move.WaitAsync(TimeSpan.FromSeconds(1)));
+            () => move.WaitAsync(AsyncTestTimeout));
 
     }
 
@@ -666,13 +675,13 @@ public sealed class WatchSseTransportTests
 
             move = frames.MoveNextAsync().AsTask();
 
-            await secrets.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await secrets.Started.Task.WaitAsync(AsyncTestTimeout);
 
             await cancellation.CancelAsync();
 
             Task completed = await Task.WhenAny(
                 move,
-                Task.Delay(TimeSpan.FromSeconds(1)));
+                Task.Delay(AsyncTestTimeout));
 
             Assert.Same(move, completed);
 
@@ -691,7 +700,7 @@ public sealed class WatchSseTransportTests
                 try
                 {
 
-                    _ = await move.WaitAsync(TimeSpan.FromSeconds(1));
+                    _ = await move.WaitAsync(AsyncTestTimeout);
 
                 }
                 catch (Exception)

@@ -1,3 +1,6 @@
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Globalization;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Core.TheForge;
 
@@ -42,6 +45,111 @@ public sealed class IncantationStoreTests
         IncantationRecord record = store.Snapshot()[0];
         Assert.Equal(2, record.WardNotes.Count);
         Assert.Contains("Always allowing", record.WardNotes[^1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Streamed_payloads_are_clamped_so_the_store_cannot_retain_megabytes()
+    {
+        // The store keeps up to MaxEntries records for the life of the session, and a tool response
+        // may approach the host's ToolOutputCapBytes (~1 MiB), so every retained payload is bounded.
+        string huge = new('x', 1_000_000);
+        IncantationStore store = new();
+        _ = store.UpsertCall("c5", "execute_command", huge);
+        _ = store.UpsertResult("c5", "execute_command", huge);
+        _ = store.UpsertError("c6", "read_file", huge);
+
+        IncantationRecord succeeded = store.Snapshot()[0];
+        IncantationRecord failed = store.Snapshot()[1];
+        Assert.True(succeeded.ArgumentsJson!.Length <= IncantationRecord.MaxPayloadChars);
+        Assert.True(succeeded.ResultText!.Length <= IncantationRecord.MaxPayloadChars);
+        Assert.True(failed.ErrorText!.Length <= IncantationRecord.MaxPayloadChars);
+    }
+
+    [Fact]
+    public void Resumed_history_payloads_are_clamped_too()
+    {
+        string huge = new('y', 800_000);
+        IncantationStore store = new();
+        _ = store.AddFromHistory("c7", "read_file", huge, huge, isError: false, unparseable: false);
+
+        IncantationRecord record = store.Snapshot()[0];
+        Assert.True(record.ArgumentsJson!.Length <= IncantationRecord.MaxPayloadChars);
+        Assert.True(record.ResultText!.Length <= IncantationRecord.MaxPayloadChars);
+    }
+
+    [Fact]
+    public void Clamping_oversized_json_arguments_keeps_the_safe_summary_keys()
+    {
+        // Dropping the bytes must not cost the operator the one thing the pane shows for a heavy
+        // tool: the safe summary built from the argument object's non-sensitive scalar keys.
+        string body = new('z', 900_000);
+        IncantationStore store = new();
+        _ = store.UpsertCall("c8", "write_file", $$"""{"path":"/tmp/a.cs","content":"{{body}}"}""");
+
+        IncantationRecord record = store.Snapshot()[0];
+        Assert.True(record.ArgumentsJson!.Length <= IncantationRecord.MaxPayloadChars);
+        Assert.DoesNotContain("zzzz", record.ArgumentsJson, StringComparison.Ordinal);
+
+        string joined = string.Join('\n', IncantationFormatter.FormatBlock(record, 60));
+        Assert.Contains("path=", joined, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("zzzz", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Repeated_refreshes_of_an_unchanged_store_do_not_reformat_every_record()
+    {
+        // Every composer keystroke re-runs the layout pass, which re-copies the Incantations lines.
+        // Without memoization that re-parses each retained payload as JSON on the UI thread.
+        ObservableCollection<string> lines = new();
+        List<string?> anchors = new();
+        Fill(new IncantationStore(), 20).CopyDisplayLinesTo(lines, anchors, 60);
+
+        IncantationStore store = Fill(new IncantationStore(), 300);
+        lines = new ObservableCollection<string>();
+        anchors = new List<string?>();
+
+        Stopwatch cold = Stopwatch.StartNew();
+        store.CopyDisplayLinesTo(lines, anchors, 60);
+        cold.Stop();
+
+        Stopwatch warm = Stopwatch.StartNew();
+        for (int i = 0; i < 20; i++)
+        {
+            store.CopyDisplayLinesTo(lines, anchors, 60);
+        }
+
+        warm.Stop();
+
+        Assert.True(
+            warm.Elapsed < cold.Elapsed * 5,
+            $"20 unchanged refreshes took {warm.ElapsedMilliseconds}ms after a first pass of {cold.ElapsedMilliseconds}ms.");
+    }
+
+    [Fact]
+    public void Display_lines_are_memoized_until_the_record_changes()
+    {
+        IncantationRecord record = new("c10", "read_file");
+        record.ApplyCall("read_file", """{"path":"/tmp/a"}""");
+
+        IReadOnlyList<string> first = record.DisplayLines(60);
+        Assert.Same(first, record.DisplayLines(60));
+        Assert.NotSame(first, record.DisplayLines(40));
+
+        record.ApplyResult("ok");
+        Assert.NotSame(first, record.DisplayLines(60));
+    }
+
+    private static IncantationStore Fill(IncantationStore store, int records)
+    {
+        string filler = new('a', 1_500);
+        for (int i = 0; i < records; i++)
+        {
+            string id = "call-" + i.ToString(CultureInfo.InvariantCulture);
+            _ = store.UpsertCall(id, "read_file", $$"""{"path":"/tmp/{{i}}","note":"{{filler}}"}""");
+            _ = store.UpsertResult(id, "read_file", $$"""{"bytes":{{i}},"body":"{{filler}}"}""");
+        }
+
+        return store;
     }
 
     [Fact]
@@ -198,6 +306,56 @@ public sealed class IncantationFormatterTests
         string sep = IncantationFormatter.SeparatorLine(10);
         Assert.Equal(10, sep.Length);
         Assert.All(sep, c => Assert.Equal('─', c));
+    }
+
+    [Fact]
+    public void Sanitize_expands_tabs_to_the_next_tab_stop()
+    {
+        string sanitized = IncantationFormatter.Sanitize("ab\tc\td");
+
+        // "ab" → pad 6 to column 8, "c" → pad 7 to column 16.
+        Assert.Equal("ab" + new string(' ', 6) + "c" + new string(' ', 7) + "d", sanitized);
+        Assert.Equal(17, ComposerLayout.MeasureCellWidth(sanitized));
+    }
+
+    [Fact]
+    public void Sanitize_of_a_tab_indented_payload_is_not_quadratic()
+    {
+        // Re-measuring the whole accumulated buffer per tab costs one full copy plus one full scan
+        // for every '\t', so a tab-indented stack trace degrades to O(tabs × length) on the UI thread.
+        string payload = string.Concat(Enumerable.Repeat("\tat Namespace.Type.Method(arg)", 8_000));
+
+        Stopwatch sw = Stopwatch.StartNew();
+        string sanitized = IncantationFormatter.Sanitize(payload);
+        sw.Stop();
+
+        Assert.DoesNotContain('\t', sanitized);
+        Assert.True(
+            sw.ElapsedMilliseconds < 500,
+            $"Sanitize of {payload.Length} chars with 8000 tabs took {sw.ElapsedMilliseconds}ms.");
+    }
+
+    [Fact]
+    public void Multi_line_error_is_suppressed_exactly_like_a_multi_line_result()
+    {
+        // Sanitize flattens newlines to spaces, so testing LooksLikeHugeBlob on the *sanitized* error
+        // can never see the newline count the success branch fails closed on.
+        const string blob = "boom\nat one\nat two\nat three\nat four\nat five";
+
+        IncantationRecord failed = new("id", "run_tests");
+        failed.ApplyCall("run_tests", """{"path":"/tmp/t"}""");
+        failed.ApplyError(blob);
+
+        IncantationRecord succeeded = new("id2", "run_tests");
+        succeeded.ApplyCall("run_tests", """{"path":"/tmp/t"}""");
+        succeeded.ApplyResult(blob);
+
+        string failedText = string.Join('\n', IncantationFormatter.FormatBlock(failed, 200));
+        string succeededText = string.Join('\n', IncantationFormatter.FormatBlock(succeeded, 200));
+
+        Assert.DoesNotContain("at three", succeededText, StringComparison.Ordinal);
+        Assert.DoesNotContain("at three", failedText, StringComparison.Ordinal);
+        Assert.Contains("error", failedText, StringComparison.Ordinal);
     }
 
     [Fact]

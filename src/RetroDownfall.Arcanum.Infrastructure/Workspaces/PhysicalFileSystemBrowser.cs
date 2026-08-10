@@ -211,21 +211,23 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
 
                 }
 
-                if (traverseDirectory)
+                if (traverseDirectory
+                    && TryOpenDirectoryEnumerator(fullPath) is IEnumerator<string> childEnumerator)
                 {
 
-                    directoryEnumerators.Push(
-                        Directory.EnumerateFileSystemEntries(
-                                fullPath,
-                                "*",
-                                SearchOption.TopDirectoryOnly)
-                            .GetEnumerator());
+                    directoryEnumerators.Push(childEnumerator);
 
                 }
 
             }
         }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or SecurityException)
+        catch (DirectoryNotFoundException)
+        {
+            return Task.FromResult<Result<FileListResult>>(
+                new Error("Workspace.FileNotFound", "The file or directory was not found."));
+        }
+        catch (Exception ex) when (
+            ex is UnauthorizedAccessException or SecurityException or IOException)
         {
             return Task.FromResult<Result<FileListResult>>(
                 new Error("Workspace.AccessDenied", "Insufficient permissions to read the directory."));
@@ -520,6 +522,34 @@ public sealed class PhysicalFileSystemBrowser : IFileSystemBrowser
                     ErrorCodes.Workspace.AccessDenied,
                     "The file could not be read safely."),
         };
+
+    /// <summary>
+    /// Opens a directory listing, returning null when that one directory vanished or cannot be read.
+    /// Enumeration acquires the directory handle eagerly, so a subdirectory removed or replaced after
+    /// it was mapped must cost only its own subtree rather than the whole listing.
+    /// </summary>
+    private static IEnumerator<string>? TryOpenDirectoryEnumerator(string directory)
+    {
+
+        try
+        {
+
+            return Directory.EnumerateFileSystemEntries(
+                    directory,
+                    "*",
+                    SearchOption.TopDirectoryOnly)
+                .GetEnumerator();
+
+        }
+        catch (Exception ex) when (
+            ex is IOException or UnauthorizedAccessException or SecurityException)
+        {
+
+            return null;
+
+        }
+
+    }
 
     private static FileEntry? TryMapToFileEntry(string workspaceRoot, string fullPath)
     {

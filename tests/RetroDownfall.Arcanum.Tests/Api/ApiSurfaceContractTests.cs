@@ -529,6 +529,52 @@ public sealed class ApiSurfaceContractTests : IDisposable
     }
 
     [Fact]
+    public async Task NormalizeRoute_collapses_routing_equivalent_path_variants()
+    {
+
+        (WebApplication app, RouteProbe probe) = await CreateRouteProbeHostAsync();
+
+        await using (app)
+        {
+
+            using HttpClient client = app.GetTestClient();
+
+            await PostAsync(client, "/api/spells/build/execute");
+
+            await PostAsync(client, "/api/spells/build/execute/");
+
+            await PostAsync(client, "/API/Spells/build/EXECUTE");
+
+            await PostAsync(client, "/api/spells/Build/execute");
+
+            await app.StopAsync();
+
+            string[] routes = probe.Routes;
+
+            Assert.Equal(4, routes.Length);
+
+            // Routing matched the same endpoint for all three spellings, so claim identity and
+            // fingerprint must match too — otherwise one Idempotency-Key runs the billed side effect
+            // more than once instead of replaying.
+            Assert.Equal(routes[0], routes[1]);
+
+            Assert.Equal(routes[0], routes[2]);
+
+            // ...but a differently-cased route *value* is a different spell, and must never replay
+            // the first spell's cached response.
+            Assert.NotEqual(routes[0], routes[3]);
+
+            // Identity stays endpoint-specific: the group prefix and the pattern are both part of it.
+            Assert.Contains("/api/spells/{name}/execute", routes[0], StringComparison.Ordinal);
+
+            // ...and so is the route value, or two spells would share one claim key.
+            Assert.Contains("build", routes[0], StringComparison.Ordinal);
+
+        }
+
+    }
+
+    [Fact]
     public void ResolvePrincipal_ignores_the_client_supplied_host_header()
     {
 
@@ -544,6 +590,48 @@ public sealed class ApiSurfaceContractTests : IDisposable
         Assert.Equal(
             IdempotencyIdentity.ResolvePrincipal(localhost),
             IdempotencyIdentity.ResolvePrincipal(loopback));
+
+    }
+
+    private static async Task PostAsync(HttpClient client, string requestUri)
+    {
+
+        using HttpRequestMessage request = new(HttpMethod.Post, requestUri);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+    }
+
+    private static async Task<(WebApplication App, RouteProbe Probe)> CreateRouteProbeHostAsync()
+    {
+
+        RouteProbe probe = new();
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        builder.Services.AddSingleton(probe);
+
+        WebApplication app = builder.Build();
+
+        app.MapGroup("/api")
+            .MapPost(
+                "/spells/{name}/execute",
+                (HttpContext httpContext, RouteProbe routeProbe) =>
+                {
+
+                    routeProbe.Record(IdempotencyIdentity.NormalizeRoute(httpContext));
+
+                    return Results.Ok();
+
+                });
+
+        await app.StartAsync();
+
+        return (app, probe);
 
     }
 
@@ -716,6 +804,40 @@ public sealed class ApiSurfaceContractTests : IDisposable
         services.AddArcanumApiServices(configuration);
 
         return services.BuildServiceProvider();
+
+    }
+
+    private sealed class RouteProbe
+    {
+
+        private readonly List<string> _routes = [];
+
+        public string[] Routes
+        {
+            get
+            {
+
+                lock (_routes)
+                {
+
+                    return [.. _routes];
+
+                }
+
+            }
+        }
+
+        public void Record(string route)
+        {
+
+            lock (_routes)
+            {
+
+                _routes.Add(route);
+
+            }
+
+        }
 
     }
 

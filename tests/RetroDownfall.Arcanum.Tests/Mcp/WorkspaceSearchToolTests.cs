@@ -426,6 +426,67 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Search_skips_binary_files_that_start_with_a_utf8_bom()
+    {
+
+        _workspace.WriteFile("text.txt", "needle");
+
+        await File.WriteAllBytesAsync(
+            Path.Combine(_workspace.Root, "binary.bin"),
+            [0xEF, 0xBB, 0xBF, 0x6E, 0x65, 0x65, 0x64, 0x6C, 0x65, 0x00, 0xFF]);
+
+        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true);
+
+        Assert.Single(result.Matches);
+        Assert.Equal("text.txt", result.Matches[0].Path);
+        Assert.Equal(1, result.SkippedBinaryFileCount);
+
+    }
+
+    [Fact]
+    public async Task Search_skips_utf16_files_that_start_with_a_byte_order_mark()
+    {
+
+        _workspace.WriteFile("text.txt", "needle");
+
+        await File.WriteAllBytesAsync(
+            Path.Combine(_workspace.Root, "utf16.txt"),
+            [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes("needle")]);
+
+        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true);
+
+        Assert.Single(result.Matches);
+        Assert.Equal("text.txt", result.Matches[0].Path);
+        Assert.Equal(1, result.SkippedBinaryFileCount);
+
+    }
+
+    [Fact]
+    public async Task Search_reports_column_one_for_a_match_after_a_utf8_bom()
+    {
+
+        await File.WriteAllBytesAsync(
+            Path.Combine(_workspace.Root, "bom.txt"),
+            [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes("needle\nneedle")]);
+
+        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
+            "^needle",
+            WorkspaceSearchMode.Regex,
+            caseSensitive: true);
+
+        Assert.Equal(
+            [("bom.txt", 1, 1), ("bom.txt", 2, 1)],
+            result.Matches.Select(static match => (match.Path, match.Line, match.Column)));
+
+    }
+
+    [Fact]
     public async Task Search_is_deterministically_ordered_by_path_line_and_column()
     {
 

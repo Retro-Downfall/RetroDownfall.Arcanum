@@ -197,6 +197,78 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
+    /// <summary>
+    /// The durable cursor must stay at or before the earliest preserved candidate, because recovery
+    /// resumes from it and a cursor past a preserved candidate silently drops the re-evaluation that
+    /// preservation exists to force. A journal-bearing candidate (<c>file:</c>) writes checkpoints of
+    /// its own, and those writes must be clamped the same way the periodic ones are — a preserved
+    /// <c>batch:</c> ahead of it carries no journal, so nothing else holds the cursor back.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task ApplyAsync_Prune_WhenAJournalBearingCandidateFollowsAPreservedOne_KeepsTheCursorAtThePreservedCandidate()
+    {
+
+        RequireSqlCipher();
+
+        FreshnessCandidate seeded = await SeedFreshnessCandidateAsync("batch");
+
+        // The batch's own input file must not become a second candidate — this scenario needs
+        // exactly one journal-bearing candidate, ordered after the preserved batch.
+        await ExecuteAsync(
+            """UPDATE "UploadedFiles" SET "CreatedAt" = @at""",
+            ("@at", DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture)));
+
+        Guid fileId = Guid.NewGuid();
+
+        string absolutePath = Path.Combine(_filesRoot, fileId.ToString("N"));
+
+        await File.WriteAllBytesAsync(absolutePath, [1, 2, 3]);
+
+        await SeedUploadedFileAsync(fileId, 3);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        seeded.Enable(settings.Retention);
+
+        settings.Retention.UploadedFiles = EnabledRule();
+
+        DataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(request);
+
+        Assert.Equal(
+            [seeded.CandidateId, "file:" + fileId.ToString("D")],
+            plan.CandidateIds);
+
+        await ArrangeFreshnessChangeAfterPruneStartsAsync(seeded);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId));
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.True(await seeded.Exists());
+
+        Assert.False(File.Exists(absolutePath));
+
+        LongRunningOperationStore operations = new(_db!);
+
+        LongRunningOperation operation = Assert.Single(
+            await operations.ListAsync(
+                new LongRunningOperationQuery(
+                    Kind: LongRunningOperationKinds.DataRetentionPrune)));
+
+        string[] checkpointLines = Encoding.UTF8
+            .GetString(Assert.IsType<byte[]>(operation.CheckpointPayload))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal("0", checkpointLines[2]);
+
+    }
+
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenEntryFreshensAfterPrecheckButBeforeParentDelete_RollsBackCandidate()

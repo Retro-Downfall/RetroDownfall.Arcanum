@@ -100,6 +100,23 @@ public sealed class FamiliarHideListTests
 
     }
 
+    /// <summary>
+    /// An explicit <c>"models": null</c> in <c>arcanum.json</c> is a legal Familiar row —
+    /// <c>ConfigurationValidator</c> accepts it and every other consumer reads it as "no models" —
+    /// so the listing surfaces must too rather than throwing a 500.
+    /// </summary>
+    [Fact]
+    public void A_provider_with_a_null_model_list_contributes_nothing_and_does_not_throw()
+    {
+
+        ArcanumSettings settings = Settings(declared: [], hidden: []);
+
+        settings.Providers![0].Models = null!;
+
+        Assert.Empty(ModelInfoBuilder.BuildModelInfoList(settings));
+
+    }
+
     private static ArcanumSettings Settings(string[] declared, string[] hidden) =>
         new()
         {

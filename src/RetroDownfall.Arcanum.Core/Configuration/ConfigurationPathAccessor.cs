@@ -19,6 +19,38 @@ public static class ConfigurationPathAccessor
 
     private const string RedactionMask = "***";
 
+    /// <summary>
+    /// Generic collection shapes an ordered settings property may declare. <see cref="IReadOnlyList{T}"/>
+    /// belongs here because <see cref="ProviderSettings.Models"/> declares it: omitting it makes every
+    /// <c>providers.N.models.M.*</c> descriptor path unresolvable through <c>arcanum config get/set</c>
+    /// and through an <c>ARCANUM_Arcanum__…</c> override.
+    /// </summary>
+    private static readonly Type[] IndexedCollectionDefinitions =
+    [
+        typeof(List<>),
+        typeof(IList<>),
+        typeof(IReadOnlyList<>),
+    ];
+
+    /// <summary>
+    /// JSON shape of settings types written by a hand-authored converter. A converter-backed
+    /// <see cref="JsonTypeInfo"/> reports no properties, so the generated-metadata walk cannot see
+    /// through <see cref="ModelEntry"/> to its <c>providers.N.models.M.*</c> descriptor paths. These
+    /// names and types must stay identical to <see cref="ModelEntryJsonConverter"/>.
+    /// </summary>
+    private static readonly Dictionary<Type, (string Name, Type Type)[]> ConverterBackedProperties =
+        new()
+        {
+
+            [typeof(ModelEntry)] =
+            [
+                ("name", typeof(string)),
+                ("supportsVision", typeof(bool)),
+                ("reasoning", typeof(ModelReasoningSettings)),
+            ],
+
+        };
+
     private static readonly JsonSerializerOptions CanonicalJsonOptions =
         new(ConfigurationJsonContext.Default.Options)
         {
@@ -462,15 +494,12 @@ public static class ConfigurationPathAccessor
 
             }
 
-            JsonTypeInfo? typeInfo = ConfigurationJsonContext.Default.GetTypeInfo(nodeType);
-
-            JsonPropertyInfo? property = typeInfo?.Properties.FirstOrDefault(
-                candidate => string.Equals(
-                    candidate.Name,
+            if (!TryGetPropertyMetadata(
+                    nodeType,
                     segment,
-                    StringComparison.OrdinalIgnoreCase));
-
-            if (property is null || node is not JsonObject jsonObject)
+                    out string? resolvedName,
+                    out Type? resolvedType)
+                || node is not JsonObject jsonObject)
             {
 
                 return PathResolution.Failure(
@@ -480,20 +509,20 @@ public static class ConfigurationPathAccessor
 
             parent = jsonObject;
 
-            propertyName = property.Name;
+            propertyName = resolvedName;
 
             arrayIndex = null;
 
-            node = FindPropertyValue(jsonObject, property.Name);
+            node = FindPropertyValue(jsonObject, resolvedName!);
 
-            nodeType = property.PropertyType;
+            nodeType = resolvedType!;
 
             if (index < segments.Length - 1 && node is null)
             {
 
                 node = TryGetElementType(nodeType, out _) ? new JsonArray() : new JsonObject();
 
-                jsonObject[property.Name] = node;
+                jsonObject[resolvedName!] = node;
 
             }
 
@@ -502,6 +531,67 @@ public static class ConfigurationPathAccessor
         return parent is null
             ? PathResolution.Failure($"Unknown configuration key '{key}'.")
             : PathResolution.Success(parent, propertyName, arrayIndex, nodeType);
+
+    }
+
+    /// <summary>
+    /// Resolves one path segment to its canonical JSON property name and declared type. Generated
+    /// metadata is authoritative; a converter-backed type reports no
+    /// <see cref="JsonTypeInfo.Properties"/>, so its hand-authored shape is declared in
+    /// <see cref="ConverterBackedProperties"/> instead.
+    /// </summary>
+    private static bool TryGetPropertyMetadata(
+        Type nodeType,
+        string segment,
+        out string? propertyName,
+        out Type? propertyType)
+    {
+
+        JsonTypeInfo? typeInfo = ConfigurationJsonContext.Default.GetTypeInfo(nodeType);
+
+        JsonPropertyInfo? property = typeInfo?.Properties.FirstOrDefault(
+            candidate => string.Equals(
+                candidate.Name,
+                segment,
+                StringComparison.OrdinalIgnoreCase));
+
+        if (property is not null)
+        {
+
+            propertyName = property.Name;
+
+            propertyType = property.PropertyType;
+
+            return true;
+
+        }
+
+        if (ConverterBackedProperties.TryGetValue(nodeType, out (string Name, Type Type)[]? declared))
+        {
+
+            foreach ((string name, Type type) in declared)
+            {
+
+                if (string.Equals(name, segment, StringComparison.OrdinalIgnoreCase))
+                {
+
+                    propertyName = name;
+
+                    propertyType = type;
+
+                    return true;
+
+                }
+
+            }
+
+        }
+
+        propertyName = null;
+
+        propertyType = null;
+
+        return false;
 
     }
 
@@ -537,7 +627,7 @@ public static class ConfigurationPathAccessor
         }
 
         if (type.IsGenericType
-            && type.GetGenericTypeDefinition() == typeof(List<>))
+            && IndexedCollectionDefinitions.Contains(type.GetGenericTypeDefinition()))
         {
 
             elementType = type.GenericTypeArguments[0];
@@ -735,7 +825,13 @@ public static class ConfigurationPathAccessor
 
             }
 
-            value = JsonValue.Create(Convert.ToInt32(parsed, CultureInfo.InvariantCulture));
+            JsonTypeInfo? enumTypeInfo = ConfigurationJsonContext.Default.GetTypeInfo(targetType);
+
+            // Write the enum the way its own contract writes it. Several configuration enums declare
+            // StringOnlyJsonStringEnumConverter, which rejects the numeric form on read.
+            value = enumTypeInfo is null
+                ? JsonValue.Create(Convert.ToInt32(parsed, CultureInfo.InvariantCulture))
+                : JsonSerializer.SerializeToNode(parsed, enumTypeInfo);
 
             error = null;
 

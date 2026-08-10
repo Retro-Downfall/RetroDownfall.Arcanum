@@ -49,6 +49,66 @@ public sealed class ChronicleHubTests
 
     }
 
+    [Fact]
+    public void Publish_WithoutASubscriber_StrandsNoPerApprenticeHub()
+    {
+
+        ChronicleHub hub = new();
+
+        Guid apprenticeId = Guid.NewGuid();
+
+        // A headless run (no Studio SSE client attached) publishes every lifecycle event with nobody
+        // listening; the singleton hub must not retain per-apprentice state for it.
+        hub.Publish(apprenticeId, Event(apprenticeId));
+
+        hub.Publish(apprenticeId, Event(apprenticeId));
+
+        Assert.Equal(0, hub.TrackedApprenticeCount);
+
+    }
+
+    [Fact]
+    public async Task Publish_AfterTheLastSubscriberDisconnects_StrandsNoPerApprenticeHub()
+    {
+
+        ChronicleHub hub = new();
+
+        Guid apprenticeId = Guid.NewGuid();
+
+        using CancellationTokenSource cts = new();
+
+        await using (IAsyncEnumerator<ApprenticeEvent> chronicle =
+            hub.SubscribeAsync(apprenticeId, cts.Token).GetAsyncEnumerator())
+        {
+
+            Task<bool> first = chronicle.MoveNextAsync().AsTask();
+
+            hub.Publish(apprenticeId, Event(apprenticeId));
+
+            Assert.True(await first.WaitAsync(TimeSpan.FromSeconds(5)));
+
+            Assert.Equal(1, hub.TrackedApprenticeCount);
+
+        }
+
+        Assert.Equal(0, hub.TrackedApprenticeCount);
+
+        // The apprentice keeps running after the operator closes the stream.
+        hub.Publish(apprenticeId, Event(apprenticeId));
+
+        Assert.Equal(0, hub.TrackedApprenticeCount);
+
+    }
+
+    private static ApprenticeEvent Event(Guid apprenticeId) =>
+        new()
+        {
+            Type = ApprenticeEventType.ApprenticeStarted,
+            ApprenticeId = apprenticeId,
+            Timestamp = DateTimeOffset.UtcNow,
+            Name = "headless",
+        };
+
     private static async Task<ApprenticeEvent?> ReadOneAsync(
         ChronicleHub hub,
         Guid apprenticeId,

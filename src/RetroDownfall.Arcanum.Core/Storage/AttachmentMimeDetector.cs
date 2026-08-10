@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+
 namespace RetroDownfall.Arcanum.Core.Storage;
 
 /// <summary>
@@ -40,7 +42,7 @@ public static class AttachmentMimeDetector
             return "image/webp";
         }
 
-        if (bytes.Length >= 2 && bytes[0] == 0x42 && bytes[1] == 0x4D)
+        if (IsBitmapFileHeader(bytes))
         {
             return "image/bmp";
         }
@@ -71,5 +73,33 @@ public static class AttachmentMimeDetector
             ".bmp" => "image/bmp",
             _ => "application/octet-stream",
         };
+    }
+
+    /// <summary>
+    /// Validates the whole 14-byte <c>BITMAPFILEHEADER</c> — magic, declared file size, zero
+    /// reserved fields, and a plausible pixel-data offset — rather than the two-character
+    /// <c>BM</c> magic alone, so text that merely starts with "BM" is never sniffed as an image.
+    /// A bitmap with an inconsistent header still resolves through the <c>.bmp</c> extension.
+    /// </summary>
+    private static bool IsBitmapFileHeader(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length < 14 || bytes[0] != 0x42 || bytes[1] != 0x4D)
+        {
+            return false;
+        }
+
+        if (BinaryPrimitives.ReadUInt32LittleEndian(bytes[2..]) != (uint)bytes.Length)
+        {
+            return false;
+        }
+
+        if (BinaryPrimitives.ReadUInt32LittleEndian(bytes[6..]) != 0)
+        {
+            return false;
+        }
+
+        uint pixelDataOffset = BinaryPrimitives.ReadUInt32LittleEndian(bytes[10..]);
+
+        return pixelDataOffset >= 14 && pixelDataOffset <= (uint)bytes.Length;
     }
 }

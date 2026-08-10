@@ -32,7 +32,10 @@ public sealed record SanctumConfig
 
         // A null value is not an error: System.Text.Json's generated object-initializer creator
         // assigns every init-only member on each deserialization, passing null for members the
-        // payload omits. Degrade to the empty (most restrictive) allow-list rather than throwing.
+        // payload omits, and it does not honour nullable annotations. Throwing here would turn an
+        // explicit JSON null — or a merely absent property — into an ArgumentNullException during
+        // body binding, surfacing as an unhandled 500 out of every containment check for the
+        // campaign. Degrade to the empty (most restrictive) allow-list instead.
         init => _allowedPaths = value is null ? [] : new List<string>(value);
 
     }

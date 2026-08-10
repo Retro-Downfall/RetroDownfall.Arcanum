@@ -1132,6 +1132,144 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     }
 
+    [Theory]
+
+    [InlineData(false)]
+
+    [InlineData(true)]
+
+    public async Task Configuration_transaction_bounds_a_contended_acquisition(bool cancellable)
+    {
+
+        using CancellationTokenSource cancellation = new();
+
+        CancellationToken waiting = cancellable
+            ? cancellation.Token
+            : CancellationToken.None;
+
+        TaskCompletionSource acquired = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<int> holder = ArcanumConfigurationTransaction.RunAsync(
+            async () =>
+            {
+
+                acquired.SetResult();
+
+                await release.Task;
+
+                return 1;
+
+            });
+
+        await acquired.Task;
+
+        try
+        {
+
+            Task<int> blocked = ArcanumConfigurationTransaction.RunAsync(
+                () => Task.FromResult(2),
+                waiting,
+                TimeSpan.FromMilliseconds(250));
+
+            Task settled = await Task.WhenAny(
+                blocked,
+                Task.Delay(TimeSpan.FromSeconds(5)));
+
+            Assert.Same(blocked, settled);
+
+            await Assert.ThrowsAsync<ArcanumConfigurationLockException>(() => blocked);
+
+        }
+        finally
+        {
+
+            release.TrySetResult();
+
+        }
+
+        Assert.Equal(1, await holder);
+
+    }
+
+    [SkippableFact]
+
+    public void Journal_cleanup_reports_a_denied_delete_instead_of_throwing()
+    {
+
+        string directory = Path.Combine(_workspace.Root, "undeletable-journal");
+
+        Directory.CreateDirectory(directory);
+
+        string path = Path.Combine(directory, "arcanum.preset.journal.json");
+
+        File.WriteAllText(path, "{}");
+
+        using FileStream? exclusiveHandle = OperatingSystem.IsWindows()
+            ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None)
+            : null;
+
+        try
+        {
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                File.SetUnixFileMode(
+                    directory,
+                    UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+            }
+
+            Skip.IfNot(
+                DeletionIsDenied(path),
+                "This host still allows the delete, so the cleanup guard cannot be exercised.");
+
+            Assert.False(FileConfigurationPresetPersistence.TryDeleteKnownFile(path));
+
+            Assert.True(File.Exists(path));
+
+        }
+        finally
+        {
+
+            if (!OperatingSystem.IsWindows())
+            {
+
+                File.SetUnixFileMode(
+                    directory,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            }
+
+        }
+
+    }
+
+    private static bool DeletionIsDenied(string path)
+    {
+
+        try
+        {
+
+            File.Delete(path);
+
+            return false;
+
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+
+            return true;
+
+        }
+
+    }
+
     private static ConfigurationWriter CreateWriter() =>
         new(NullLogger<ConfigurationWriter>.Instance);
 

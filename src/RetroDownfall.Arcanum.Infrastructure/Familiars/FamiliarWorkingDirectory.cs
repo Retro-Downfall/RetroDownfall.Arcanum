@@ -23,11 +23,18 @@ public sealed class FamiliarWorkingDirectory : IDisposable
 
     private FamiliarWorkingDirectory(string path) => Path = path;
 
-    /// <summary>Absolute path to the private directory, or the OS temp root if creation failed.</summary>
+    /// <summary>Absolute path to the private, owner-only directory this turn runs in.</summary>
     public string Path { get; }
 
     private bool Owned { get; init; }
 
+    /// <summary>
+    /// Fails the turn rather than falling back to a directory anyone can write. Running a Familiar
+    /// out of the shared temp root is exactly the exposure this type exists to close: a planted
+    /// <c>AGENTS.md</c> or <c>.claude/settings.json</c> steers (or executes code during) every turn,
+    /// and the fixed-name files Arcanum writes there can be pre-created as symlinks.
+    /// </summary>
+    /// <exception cref="IOException">A private working directory could not be created.</exception>
     public static FamiliarWorkingDirectory Create()
     {
 
@@ -44,9 +51,9 @@ public sealed class FamiliarWorkingDirectory : IDisposable
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
 
-            // Falling back to the temp root keeps the turn working; it is still not the operator's
-            // repository, which is the exposure that matters.
-            return new FamiliarWorkingDirectory(System.IO.Path.GetTempPath());
+            throw new IOException(
+                "Arcanum could not create a private working directory for this Familiar turn. Restore temporary-disk capacity and permissions before retrying.",
+                ex);
 
         }
 

@@ -1150,6 +1150,8 @@ public sealed class ConfigurationValidator(
 
         ValidateWardAutoApproval(settings.Security?.Ward, errors);
 
+        ValidateDaemonJobs(settings.Daemon, errors);
+
         ValidatePathAllowlist(settings.ResolveCampaignRoots(), "security.campaignRoots", errors);
 
         ValidatePathAllowlist(settings.ResolveSpellRoots(), "security.spellWorkspaceRoots", errors);
@@ -1220,6 +1222,53 @@ public sealed class ConfigurationValidator(
                 errors.Add(new ConfigurationValidationError(
                     pointer,
                     $"Ward auto-approval tool '{tool.Trim()}' is listed more than once; names must be unique."));
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// A scheduled job's daemon id is its name verbatim (<c>unseen-servant:{Name}</c>), and the
+    /// daemon registry resolves an id to the first match, so a blank or duplicate name produces a
+    /// job that still ticks and still spends tokens but can never be run on demand or inspected —
+    /// its history is attributed to its twin. Interval bounds are deliberately left alone: they are
+    /// clamped by <c>ArcanumSettingClamps.UnseenServantIntervalMinutes</c>, not rejected.
+    /// </summary>
+    private static void ValidateDaemonJobs(
+        DaemonSettings? daemon,
+        List<ConfigurationValidationError> errors)
+    {
+
+        List<UnseenServantJob> jobs = daemon?.Jobs ?? [];
+
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        for (int index = 0; index < jobs.Count; index++)
+        {
+
+            string pointer = $"daemon.jobs[{index}].name";
+
+            string? name = jobs[index]?.Name;
+
+            if (string.IsNullOrWhiteSpace(name))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    "Unseen Servant job names must not be blank."));
+
+                continue;
+
+            }
+
+            if (!seen.Add(name.Trim()))
+            {
+
+                errors.Add(new ConfigurationValidationError(
+                    pointer,
+                    $"Unseen Servant job name '{name.Trim()}' is configured more than once; job names must be unique."));
 
             }
 

@@ -389,10 +389,29 @@ public static class ErrorCodes
 
     }
 
+    /// <summary>Auth — request authentication outcomes emitted by the API-key filter (DESIGN §11.3).</summary>
+    public static class Auth
+    {
+
+        /// <summary>
+        /// The only 401 the server itself emits: <c>ApiKeyEndpointFilter</c> rejected a missing,
+        /// ambiguous, oversized, or non-matching API key. Distinct from
+        /// <see cref="Security.MissingApiKey"/>, which clients synthesize locally when no key is
+        /// configured and no request was ever sent.
+        /// </summary>
+        public const string Unauthorized = "Auth.Unauthorized";
+
+    }
+
     /// <summary>Security — authentication and outbound URL policy.</summary>
     public static class Security
     {
 
+        /// <summary>
+        /// Client-synthesized only: the CLI and The Forge emit this when no API key is available
+        /// locally, so the request is never sent. The server never returns it — a rejected key
+        /// comes back as <see cref="Auth.Unauthorized"/>.
+        /// </summary>
         public const string MissingApiKey = "Security.MissingApiKey";
 
         public const string BlockedOutboundUrl = "Security.BlockedOutboundUrl";
@@ -510,6 +529,9 @@ public static class ErrorCodes
         public const string TooManyImages = "Scrying.TooManyImages";
 
         public const string UnsupportedMimeType = "Scrying.UnsupportedMimeType";
+
+        /// <summary>The caller's image payload is not well-formed base64.</summary>
+        public const string InvalidImageData = "Scrying.InvalidImageData";
 
         public const string FeatureDisabled = "Scrying.FeatureDisabled";
 

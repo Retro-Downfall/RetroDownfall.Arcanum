@@ -34,12 +34,28 @@ internal sealed class ConfigurationWriter
 
     internal ArcanumSettings? Latest => Volatile.Read(ref _latest);
 
-    public Task<Result> WriteAsync(
+    public async Task<Result> WriteAsync(
         ArcanumSettings settings,
-        CancellationToken cancellationToken) =>
-        ArcanumConfigurationTransaction.RunAsync(
-            () => WriteUnderTransactionAsync(settings, cancellationToken),
-            cancellationToken);
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            return await ArcanumConfigurationTransaction.RunAsync(
+                    () => WriteUnderTransactionAsync(settings, cancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (ArcanumConfigurationLockException exception)
+        {
+
+            return LockUnavailable(exception);
+
+        }
+
+    }
 
     private async Task<Result> WriteUnderTransactionAsync(
         ArcanumSettings settings,
@@ -57,6 +73,12 @@ internal sealed class ConfigurationWriter
                 .ConfigureAwait(false);
 
             return Result.Success();
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
 
         }
         catch (Exception exception)
@@ -99,16 +121,32 @@ internal sealed class ConfigurationWriter
     /// replacement. The updater and its validation run while the configuration writer lock is held,
     /// so another partial writer cannot commit between the current snapshot and replacement.
     /// </summary>
-    internal Task<Result<ArcanumSettings>> UpdateAsync(
+    internal async Task<Result<ArcanumSettings>> UpdateAsync(
         ArcanumSettings fallback,
         Func<ArcanumSettings, CancellationToken, Task<Result<ArcanumSettings>>> update,
-        CancellationToken cancellationToken) =>
-        ArcanumConfigurationTransaction.RunAsync(
-            () => UpdateUnderTransactionAsync(
-                fallback,
-                update,
-                cancellationToken),
-            cancellationToken);
+        CancellationToken cancellationToken)
+    {
+
+        try
+        {
+
+            return await ArcanumConfigurationTransaction.RunAsync(
+                    () => UpdateUnderTransactionAsync(
+                        fallback,
+                        update,
+                        cancellationToken),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (ArcanumConfigurationLockException exception)
+        {
+
+            return Result<ArcanumSettings>.Failure(LockUnavailable(exception).Error);
+
+        }
+
+    }
 
     private async Task<Result<ArcanumSettings>> UpdateUnderTransactionAsync(
         ArcanumSettings fallback,
@@ -148,6 +186,12 @@ internal sealed class ConfigurationWriter
                 .ConfigureAwait(false);
 
             return updated;
+
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            throw;
 
         }
         catch (Exception exception)
@@ -276,6 +320,19 @@ internal sealed class ConfigurationWriter
         }
 
         Volatile.Write(ref _latest, settings);
+
+    }
+
+    private Result LockUnavailable(ArcanumConfigurationLockException exception)
+    {
+
+        _logger.LogWarning(
+            exception,
+            "Timed out acquiring the configuration transaction for {ConfigPath}",
+            ConfigurationPath());
+
+        return Result.Failure(
+            new Error("Configuration.LockUnavailable", exception.Message));
 
     }
 

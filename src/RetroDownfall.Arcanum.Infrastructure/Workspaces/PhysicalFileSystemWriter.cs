@@ -130,17 +130,23 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
             await using (readStream)
             {
 
-                using MemoryStream buffer = new();
+                using SecureFileReadResult readResult = await SecureFileReader
+                    .ReadBytesAsync(
+                        readStream,
+                        checked((int)GetMaxFileReadSizeBytes()),
+                        ct)
+                    .ConfigureAwait(false);
 
-                await readStream.CopyToAsync(buffer, ct).ConfigureAwait(false);
+                if (readResult.Status is not SecureFileReadStatus.Success)
+                {
+                    return MapSecureReadError(readResult.Status);
+                }
 
-                byte[] bytes = buffer.ToArray();
+                ReadOnlySpan<byte> bytes = readResult.Bytes.Span;
 
-                hadBom = bytes.Length >= Utf8Bom.Length && bytes.AsSpan(0, Utf8Bom.Length).SequenceEqual(Utf8Bom);
+                hadBom = bytes.StartsWith(Utf8Bom);
 
-                byte[] textBytes = hadBom ? bytes[Utf8Bom.Length..] : bytes;
-
-                text = Encoding.UTF8.GetString(textBytes);
+                text = Encoding.UTF8.GetString(hadBom ? bytes[Utf8Bom.Length..] : bytes);
 
             }
 
@@ -359,6 +365,28 @@ public sealed class PhysicalFileSystemWriter(IOptionsSnapshot<ArcanumSettings> o
 
         return ArcanumSettingClamps.MaxReplaceTextBlockBytes(configured);
     }
+
+    private long GetMaxFileReadSizeBytes()
+    {
+        long configured = ArcanumRuntimeDefaults.WorkspaceMaxFileReadSizeBytes;
+
+        return ArcanumSettingClamps.MaxFileReadSizeBytes(configured);
+    }
+
+    private static Error MapSecureReadError(SecureFileReadStatus status) =>
+        status switch
+        {
+            SecureFileReadStatus.NotFound =>
+                new Error(ErrorCodes.Workspace.FileNotFound, FileNotFoundMessage),
+            SecureFileReadStatus.TooLarge =>
+                new Error(ErrorCodes.Workspace.FileTooLarge, FileTooLargeMessage),
+            SecureFileReadStatus.Rejected =>
+                new Error(ErrorCodes.Workspace.SymbolicLinkEscape, SymlinkEscapeMessage),
+            SecureFileReadStatus.IoError =>
+                new Error(ErrorCodes.Workspace.WriteFailed, IoWriteErrorMessage),
+            _ =>
+                new Error(ErrorCodes.Workspace.AccessDenied, AccessDeniedMessage),
+        };
 
     /// <summary>
     /// Atomically replaces <paramref name="absolutePath"/> with <paramref name="contentBytes"/>, creating parent

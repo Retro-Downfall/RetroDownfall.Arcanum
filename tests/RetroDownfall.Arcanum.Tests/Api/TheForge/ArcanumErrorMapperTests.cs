@@ -73,6 +73,9 @@ public sealed class ArcanumErrorMapperTests
     [InlineData(ErrorCodes.Api.TooManyConnections, StatusCodes.Status503ServiceUnavailable)]
     [InlineData(ErrorCodes.RateLimit.TooManyRequests, StatusCodes.Status429TooManyRequests)]
     [InlineData(ErrorCodes.Connection.Timeout, StatusCodes.Status504GatewayTimeout)]
+    // Auth.Unauthorized is the code ApiKeyEndpointFilter actually puts on the wire (DESIGN §11.3);
+    // Security.MissingApiKey is client-synthesized. Both must resolve to 401, never the 500 default.
+    [InlineData(ErrorCodes.Auth.Unauthorized, StatusCodes.Status401Unauthorized)]
     [InlineData(ErrorCodes.Security.MissingApiKey, StatusCodes.Status401Unauthorized)]
     [InlineData(ErrorCodes.Security.BlockedOutboundUrl, StatusCodes.Status400BadRequest)]
     [InlineData(ErrorCodes.Security.IdempotencyInProgress, StatusCodes.Status409Conflict)]

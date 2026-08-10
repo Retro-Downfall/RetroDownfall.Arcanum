@@ -290,12 +290,18 @@ internal static class WorkspaceEndpoints
                         ctx.RequestAborted)
                     .ConfigureAwait(false);
 
+                // Default-bad-request variant deliberately: the paging/search failures unique to this
+                // route (Workspace.ContinuationInvalid, Workspace.ContinuationCheckpointMissing,
+                // Workspace.InvalidSearchPattern) have no ArcanumErrorMapper entry, and a caller
+                // cursor mistake must stay a 400 rather than becoming the mapper's default 500.
                 return result.IsSuccess
                     ? Results.Ok(ApiResponse<FileListResult>.FromResult(result, traceId))
-                    : Results.BadRequest(
+                    : Results.Json(
                         ApiResponse<FileListResult>.FromResult(
                             Result<FileListResult>.Failure(result.Error),
-                            traceId));
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseFileListResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
             })
         .WithName("ListWorkspaceFiles");
 
@@ -328,12 +334,16 @@ internal static class WorkspaceEndpoints
                     .GetInfoAsync(workspace, relativePath, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
+                // Same GetInfoAsync result as the HEAD handler on this route below, so it must map to
+                // the same status: Workspace.FileNotFound → 404, Workspace.AccessDenied → 403.
                 return result.IsSuccess
                     ? Results.Ok(ApiResponse<FileEntry>.FromResult(result, traceId))
-                    : Results.BadRequest(
+                    : Results.Json(
                         ApiResponse<FileEntry>.FromResult(
                             Result<FileEntry>.Failure(result.Error),
-                            traceId));
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseFileEntry,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
             })
         .WithName("GetWorkspaceFileInfo");
 
@@ -366,12 +376,16 @@ internal static class WorkspaceEndpoints
                     .ReadAsync(workspace, relativePath, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
+                // API §8.23's documented mapping: Workspace.FileNotFound → 404 (as HEAD on this exact
+                // route already answers), Workspace.AccessDenied → 403, Workspace.FileTooLarge → 413.
                 return result.IsSuccess
                     ? Results.Ok(ApiResponse<FileReadResult>.FromResult(result, traceId))
-                    : Results.BadRequest(
+                    : Results.Json(
                         ApiResponse<FileReadResult>.FromResult(
                             Result<FileReadResult>.Failure(result.Error),
-                            traceId));
+                            traceId),
+                        ArcanumJsonContext.Default.ApiResponseFileReadResult,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
             })
         .WithName("ReadWorkspaceFileContents");
 
@@ -454,12 +468,21 @@ internal static class WorkspaceEndpoints
                     return jsonError;
                 }
 
-                if (request is null)
+                // `request.Content is null` is reachable despite the non-nullable positional member:
+                // System.Text.Json does not enforce constructor-parameter nullability, so `{}` or
+                // `{"content":null}` deserializes to FileWriteRequest(Content: null). Rejecting it here
+                // keeps the typed ApiResponse<FileWriteResult> envelope instead of letting the writer
+                // throw ArgumentNullException into a 500 Hub.Unhandled.
+                if (request is null || request.Content is null)
                 {
                     return Results.BadRequest(
                         ApiResponse<FileWriteResult>.FromResult(
                             Result<FileWriteResult>.Failure(
-                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
+                                new Error(
+                                    ErrorCodes.Validation.InvalidBody,
+                                    request is null
+                                        ? ApiRequestJson.DefaultInvalidBodyMessage
+                                        : "Request body must include a non-null content value.")),
                             traceId));
                 }
 
@@ -523,12 +546,19 @@ internal static class WorkspaceEndpoints
                     return jsonError;
                 }
 
-                if (request is null)
+                // Null OldString/NewString are reachable for the same reason as the PUT above — see the
+                // comment there. The writer would throw ArgumentNullException out of
+                // Encoding.UTF8.GetByteCount, surfacing as 500 Hub.Unhandled with the wrong envelope.
+                if (request is null || request.OldString is null || request.NewString is null)
                 {
                     return Results.BadRequest(
                         ApiResponse<TextBlockReplaceResult>.FromResult(
                             Result<TextBlockReplaceResult>.Failure(
-                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
+                                new Error(
+                                    ErrorCodes.Validation.InvalidBody,
+                                    request is null
+                                        ? ApiRequestJson.DefaultInvalidBodyMessage
+                                        : "Request body must include non-null oldString and newString values.")),
                             traceId));
                 }
 

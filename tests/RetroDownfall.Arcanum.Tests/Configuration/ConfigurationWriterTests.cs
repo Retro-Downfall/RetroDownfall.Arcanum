@@ -359,6 +359,34 @@ public sealed class ConfigurationWriterTests : IAsyncLifetime
 
     }
 
+    [Fact]
+
+    public async Task UpdateAsync_propagates_cancellation_observed_inside_the_transaction()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        using CancellationTokenSource cancellation = new();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => writer.UpdateAsync(
+            new ArcanumSettings(),
+            (current, token) =>
+            {
+
+                cancellation.Cancel();
+
+                token.ThrowIfCancellationRequested();
+
+                return Task.FromResult(Result<ArcanumSettings>.Success(current));
+
+            },
+            cancellation.Token));
+
+        Assert.False(
+            File.Exists(Path.Combine(ArcanumPaths.GrimoireDirectory, "arcanum.json")));
+
+    }
+
     private static ConfigurationWriter CreateWriter()
     {
         return new ConfigurationWriter(NullLogger<ConfigurationWriter>.Instance);

@@ -823,6 +823,36 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task ReplaceTextBlockAsync_rejects_a_target_beyond_the_read_size_limit()
+    {
+
+        string path = Path.Combine(_workspace.Root, "huge.txt");
+
+        string original = new string('a', 1024 * 1024) + "needle";
+
+        await File.WriteAllTextAsync(path, original);
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
+            workspace,
+            "huge.txt",
+            "needle",
+            "found",
+            expectedReplacements: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Workspace.FileTooLarge, result.Error.Code);
+
+        Assert.Equal(original, await File.ReadAllTextAsync(path));
+
+    }
+
     private static PhysicalFileSystemWriter CreateWriter() =>
         CreateWriter(new ArcanumSettings { Workspaces = new WorkspaceSettings { EnableFileWrite = true } });
 

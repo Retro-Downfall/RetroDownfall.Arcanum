@@ -134,6 +134,15 @@ internal static partial class OpenAiV1Endpoints
     {
         OpenAiChatRequest? body;
 
+        // ReadFromJsonAsync throws InvalidOperationException — not JsonException — for a missing or
+        // non-JSON Content-Type, and Kestrel throws BadHttpRequestException once WithLargeRequestBody's
+        // 16 MiB ceiling is exceeded. Uncaught, both escape to ArcanumExceptionHandler and turn a routine
+        // client mistake into a 500 api_error/inference_failed with an Error-level stack trace.
+        if (!httpContext.Request.HasJsonContentType())
+        {
+            return CreateUnsupportedMediaTypeErrorResult();
+        }
+
         try
         {
             body = await httpContext.Request
@@ -148,6 +157,14 @@ internal static partial class OpenAiV1Endpoints
                 code: "invalid_json",
                 param: null,
                 statusCode: StatusCodes.Status400BadRequest);
+        }
+        catch (InvalidOperationException)
+        {
+            return CreateUnsupportedMediaTypeErrorResult();
+        }
+        catch (BadHttpRequestException exception)
+        {
+            return CreateRequestBodyReadErrorResult(exception.StatusCode);
         }
 
         if (body is null)
@@ -1107,6 +1124,7 @@ internal static partial class OpenAiV1Endpoints
             ErrorCodes.Scrying.FeatureDisabled => ("api_error", "feature_disabled"),
             ErrorCodes.Scrying.TooManyImages
                 or ErrorCodes.Scrying.UnsupportedMimeType
+                or ErrorCodes.Scrying.InvalidImageData
                 or ErrorCodes.Scrying.ImageTooLarge => ("api_error", MapScryingOpenAiErrorCode(internalCode)),
             ErrorCodes.StructuredOutput.SchemaInvalid => ("invalid_request_error", "invalid_schema"),
             ErrorCodes.StructuredOutput.ValidationFailed => ("invalid_request_error", "validation_failed"),
@@ -1133,6 +1151,7 @@ internal static partial class OpenAiV1Endpoints
         {
             ErrorCodes.Scrying.TooManyImages => "too_many_images",
             ErrorCodes.Scrying.UnsupportedMimeType => "unsupported_mime_type",
+            ErrorCodes.Scrying.InvalidImageData => "invalid_image_data",
             ErrorCodes.Scrying.ImageTooLarge => "image_too_large",
             ErrorCodes.Scrying.FeatureDisabled => "feature_disabled",
             _ => "invalid_value",
@@ -1275,6 +1294,28 @@ internal static partial class OpenAiV1Endpoints
             code: "inference_failed",
             param: null,
             statusCode: StatusCodes.Status500InternalServerError);
+
+    private static IResult CreateUnsupportedMediaTypeErrorResult() =>
+        JsonError(
+            ApiRequestJson.UnsupportedMediaTypeMessage,
+            "invalid_request_error",
+            code: "unsupported_media_type",
+            param: null,
+            statusCode: StatusCodes.Status415UnsupportedMediaType);
+
+    internal static IResult CreateRequestBodyReadErrorResult(int statusCode)
+    {
+        bool payloadTooLarge = statusCode == StatusCodes.Status413PayloadTooLarge;
+
+        return JsonError(
+            payloadTooLarge
+                ? "Request body exceeds the maximum size accepted by this server."
+                : "Request body could not be read.",
+            "invalid_request_error",
+            code: payloadTooLarge ? "payload_too_large" : "invalid_request",
+            param: null,
+            statusCode: statusCode);
+    }
 
     internal static IResult CreateInvalidJsonErrorResult() =>
         JsonError(

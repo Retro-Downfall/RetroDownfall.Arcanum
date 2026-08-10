@@ -5,11 +5,63 @@ using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Security;
 using Spectre.Console;
+using Spectre.Console.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
+[Collection("GlobalConsole")]
 public sealed class ConsoleAskHumanCoordinatorTests
 {
+    /// <summary>
+    /// The non-interactive branch is exactly the redirected/<c>--json</c> case, so its submit-failure
+    /// diagnostic must not join the answer on stdout (Arcanum.Command.Reference: diagnostics on stderr).
+    /// </summary>
+    [Fact]
+    public async Task SubmitFailure_writes_the_diagnostic_to_stderr_not_the_answer_stream()
+    {
+        ArcanumApiClient client = CreateApiClient((_, _, _) => false);
+
+        TestConsole payloadConsole = new();
+
+        IAnsiConsole priorConsole = AnsiConsole.Console;
+
+        TextWriter priorError = Console.Error;
+
+        StringWriter capturedError = new();
+
+        AnsiConsole.Console = payloadConsole;
+
+        Console.SetError(capturedError);
+
+        try
+        {
+            ConsoleAskHumanCoordinator coordinator = new(client, new FakePalette());
+
+            AskHumanResult result = await coordinator.TryBeginAsync(
+                AskHumanToolCall("call-1", "prompt-1", "Who?"),
+                unattended: true,
+                isInteractive: false,
+                CancellationToken.None);
+
+            Assert.Equal(AskHumanResult.SubmitFailed, result);
+
+            Assert.True(
+                string.IsNullOrEmpty(payloadConsole.Output),
+                $"Expected no payload-stream output, got: {payloadConsole.Output}");
+
+            Assert.Contains(
+                "Failed to submit response to Daemon",
+                capturedError.ToString(),
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            AnsiConsole.Console = priorConsole;
+
+            Console.SetError(priorError);
+        }
+    }
+
     [Fact]
     public async Task StreamContinues_WhileInputPending_ThenSubmitOnAnswer()
     {

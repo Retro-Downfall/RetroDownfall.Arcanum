@@ -200,6 +200,44 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task RegisterAsync_does_not_persist_campaign_when_arcanum_directory_cannot_be_created()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Security = new SecuritySettings { CampaignRoots = [_workspaceRoot] },
+        };
+
+        GrimoireDbReadiness readiness = new();
+
+        readiness.MarkReady();
+
+        RecordingCampaignRepository repository = new();
+
+        CampaignBackedWorkspaceRegistry registry = new(
+            new FixedCampaignRepositoryScopeFactory(repository),
+            readiness,
+            new TestOptionsMonitor<ArcanumSettings>(settings));
+
+        string workspaceDir = Path.Combine(_workspaceRoot, "blocked-arcanum");
+
+        Directory.CreateDirectory(workspaceDir);
+
+        await File.WriteAllTextAsync(Path.Combine(workspaceDir, ".arcanum"), "occupied by a regular file");
+
+        Result<WorkspaceInfo> result = await registry.RegisterAsync(
+            new CreateWorkspaceRequest("Blocked", workspaceDir, WorkspaceType.Campaign),
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Workspace.WriteFailed, result.Error.Code);
+
+        Assert.Empty(repository.Added);
+
+    }
+
+    [Fact]
     public async Task GetAllAsync_reads_every_campaign_page()
     {
 
@@ -289,6 +327,61 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
+
+    }
+
+    private sealed class RecordingCampaignRepository : ICampaignRepository
+    {
+
+        public List<Campaign> Added { get; } = [];
+
+        public Task<Campaign?> GetByIdAsync(
+            Guid id,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Added.FirstOrDefault(campaign => campaign.Id == id));
+
+        public Task<Campaign?> GetByPathAsync(
+            string path,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(
+                Added.FirstOrDefault(campaign => string.Equals(campaign.Path, path, StringComparison.Ordinal)));
+
+        public Task<Campaign?> GetByNameAsync(
+            string name,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(
+                Added.FirstOrDefault(campaign => string.Equals(campaign.Name, name, StringComparison.Ordinal)));
+
+        public Task<ListPageResult<Campaign>> ListAsync(
+            WorkspaceType? typeFilter,
+            int? limit = null,
+            int offset = 0,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ListPageResult<Campaign>([.. Added], false));
+
+        public Task<Result<Campaign>> AddAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default)
+        {
+
+            Added.Add(campaign);
+
+            return Task.FromResult(Result<Campaign>.Success(campaign));
+
+        }
+
+        public Task<Campaign> UpdateAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(campaign);
+
+        public Task<bool> DeleteAsync(
+            Guid id,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(Added.Count);
 
     }
 

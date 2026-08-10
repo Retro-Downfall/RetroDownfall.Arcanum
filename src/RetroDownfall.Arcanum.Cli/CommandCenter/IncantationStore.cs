@@ -1,5 +1,8 @@
+using System.Buffers;
 using System.Collections.ObjectModel;
+using System.Text;
 using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -14,6 +17,19 @@ internal enum IncantationState
 /// <summary>One tool invocation keyed by <see cref="CallId"/>.</summary>
 internal sealed class IncantationRecord
 {
+    /// <summary>
+    /// Per-payload retention cap, mirroring <see cref="SessionLogBuffer.DefaultMaxToolChars"/>. A tool
+    /// response may approach the host's tool-output cap (~1 MiB), and the store keeps up to
+    /// <see cref="IncantationStore.DefaultMaxEntries"/> records for the whole session, so the raw text
+    /// is bounded on the way in rather than carried for the life of the process.
+    /// </summary>
+    public const int MaxPayloadChars = 4_096;
+
+    /// <summary>Longest scalar value kept when an oversized argument object is reduced.</summary>
+    public const int MaxRetainedValueChars = 256;
+
+    public const string TruncationMarker = "… [truncated]";
+
     public IncantationRecord(string callId, string toolName)
     {
         CallId = string.IsNullOrWhiteSpace(callId) ? Guid.NewGuid().ToString("N") : callId.Trim();
@@ -47,6 +63,37 @@ internal sealed class IncantationRecord
     /// <summary>Ward pending / allow / deny notes for this invocation (Incantations-only).</summary>
     public IReadOnlyList<string> WardNotes => _wardNotes;
 
+    private long _revision;
+
+    private IReadOnlyList<string>? _cachedLines;
+
+    private int _cachedWidth = -1;
+
+    private long _cachedRevision = -1;
+
+    /// <summary>
+    /// Formatted display lines for this record, memoized per wrap width until the record changes.
+    /// The pane is re-copied on every layout pass — which the composer fires on every keystroke — and
+    /// formatting re-parses the retained argument and result JSON, so an unchanged record must cost
+    /// nothing on the second pass (mirrors <see cref="SessionLogBuffer"/>'s per-entry wrap cache).
+    /// </summary>
+    public IReadOnlyList<string> DisplayLines(int contentWidth)
+    {
+        // Read the revision first: a mutation racing the format below leaves the cache stamped with
+        // the older revision, so the next caller recomputes rather than serving stale lines.
+        long revision = Interlocked.Read(ref _revision);
+        if (_cachedLines is { } cached && _cachedWidth == contentWidth && _cachedRevision == revision)
+        {
+            return cached;
+        }
+
+        IReadOnlyList<string> formatted = IncantationFormatter.FormatBlock(this, contentWidth);
+        _cachedLines = formatted;
+        _cachedWidth = contentWidth;
+        _cachedRevision = revision;
+        return formatted;
+    }
+
     public void ApplyCall(string? toolName, string? argumentsJson)
     {
         if (!string.IsNullOrWhiteSpace(toolName))
@@ -56,7 +103,7 @@ internal sealed class IncantationRecord
 
         if (argumentsJson is not null)
         {
-            ArgumentsJson = argumentsJson;
+            ArgumentsJson = ClampArguments(argumentsJson);
         }
 
         if (State == IncantationState.Unknown)
@@ -74,14 +121,14 @@ internal sealed class IncantationRecord
         {
             if (!string.IsNullOrWhiteSpace(resultText) && string.IsNullOrWhiteSpace(ErrorText))
             {
-                ErrorText = resultText;
+                ErrorText = ClampPayload(resultText);
             }
 
             Touch();
             return;
         }
 
-        ResultText = resultText;
+        ResultText = ClampPayload(resultText);
         ErrorText = null;
         State = IncantationState.Succeeded;
         Touch();
@@ -89,7 +136,7 @@ internal sealed class IncantationRecord
 
     public void ApplyError(string? errorText)
     {
-        ErrorText = errorText;
+        ErrorText = ClampPayload(errorText);
         State = IncantationState.Failed;
         Touch();
     }
@@ -123,7 +170,96 @@ internal sealed class IncantationRecord
         Touch();
     }
 
-    private void Touch() => UpdatedUtc = DateTimeOffset.UtcNow;
+    /// <summary>Hard-caps a retained payload on a surrogate-safe boundary.</summary>
+    private static string? ClampPayload(string? text)
+    {
+        if (text is null || text.Length <= MaxPayloadChars)
+        {
+            return text;
+        }
+
+        int keep = Math.Max(0, MaxPayloadChars - TruncationMarker.Length);
+        return text[..Utf8Truncation.SafeCharSliceLength(text, keep)] + TruncationMarker;
+    }
+
+    /// <summary>
+    /// Caps retained arguments. Cutting a JSON object mid-token would cost the formatter the safe
+    /// summary it builds from the argument keys, so an oversized object is first reduced — every key
+    /// survives (key names drive sensitive/heavy detection) while oversized values and array bodies
+    /// are dropped. Anything that will not reduce falls back to a plain clamp.
+    /// </summary>
+    private static string? ClampArguments(string? argumentsJson)
+    {
+        if (argumentsJson is null || argumentsJson.Length <= MaxPayloadChars)
+        {
+            return argumentsJson;
+        }
+
+        return TryReduceArgumentObject(argumentsJson) ?? ClampPayload(argumentsJson);
+    }
+
+    private static string? TryReduceArgumentObject(string argumentsJson)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(argumentsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            ArrayBufferWriter<byte> buffer = new();
+            using (Utf8JsonWriter writer = new(buffer))
+            {
+                WriteReducedObject(document.RootElement, writer);
+            }
+
+            string reduced = Encoding.UTF8.GetString(buffer.WrittenSpan);
+            return reduced.Length <= MaxPayloadChars ? reduced : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static void WriteReducedObject(JsonElement element, Utf8JsonWriter writer)
+    {
+        writer.WriteStartObject();
+        foreach (JsonProperty property in element.EnumerateObject())
+        {
+            switch (property.Value.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    writer.WritePropertyName(property.Name);
+                    WriteReducedObject(property.Value, writer);
+                    break;
+                case JsonValueKind.Array:
+                    // Arrays feed neither the safe summary nor sensitive-key detection.
+                    writer.WriteStartArray(property.Name);
+                    writer.WriteEndArray();
+                    break;
+                case JsonValueKind.String:
+                    string value = property.Value.GetString() ?? string.Empty;
+                    writer.WriteString(
+                        property.Name,
+                        value.Length <= MaxRetainedValueChars ? value : string.Empty);
+                    break;
+                default:
+                    writer.WritePropertyName(property.Name);
+                    property.Value.WriteTo(writer);
+                    break;
+            }
+        }
+
+        writer.WriteEndObject();
+    }
+
+    private void Touch()
+    {
+        UpdatedUtc = DateTimeOffset.UtcNow;
+        _ = Interlocked.Increment(ref _revision);
+    }
 }
 
 /// <summary>CallId-keyed store for the Incantations pane.</summary>
@@ -365,7 +501,7 @@ internal sealed class IncantationStore
                 anchors.Add(null);
             }
 
-            IReadOnlyList<string> block = IncantationFormatter.FormatBlock(snapshot[i], contentWidth);
+            IReadOnlyList<string> block = snapshot[i].DisplayLines(contentWidth);
             foreach (string line in block)
             {
                 lines.Add(line);

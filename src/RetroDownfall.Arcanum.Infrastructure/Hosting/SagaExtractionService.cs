@@ -49,6 +49,10 @@ public sealed class SagaExtractionService(
 
     private static readonly TimeSpan AutomaticRetryDelay = TimeSpan.FromSeconds(1);
 
+    private static readonly TimeSpan MaximumAutomaticRetryDelay = TimeSpan.FromMinutes(5);
+
+    private const int MaximumAutomaticRetryAttempts = 5;
+
     private const string ExtractionSystemPrompt =
         """
         You are the Saga Keeper, responsible for maintaining the long-term memory
@@ -70,6 +74,22 @@ public sealed class SagaExtractionService(
         });
 
     private readonly ConcurrentDictionary<Guid, SagaExtractionRequest> _pending = new();
+
+    private readonly ConcurrentDictionary<Guid, int> _retryAttempts = new();
+
+    private readonly TimeSpan _retryBaseDelay = AutomaticRetryDelay;
+
+    /// <summary>
+    /// First rung of the code-owned retry ladder. There is no configuration key for it; tests shrink
+    /// it so the bounded-attempt behavior can be exercised without real-time waits.
+    /// </summary>
+    internal TimeSpan RetryBaseDelayForTests
+    {
+
+        get => _retryBaseDelay;
+
+        init => _retryBaseDelay = value;
+    }
 
     internal IReadOnlyCollection<SagaExtractionRequest> PendingRequestsForTests =>
         [.. _pending.Values];
@@ -215,6 +235,8 @@ public sealed class SagaExtractionService(
                             embeddings.SagaEnabled,
                             embeddings.Saga.ExtractionEnabled);
 
+                        _ = _retryAttempts.TryRemove(sessionId, out _);
+
                         continue;
 
                     }
@@ -247,11 +269,27 @@ public sealed class SagaExtractionService(
                 if (retry)
                 {
 
-                    await Task.Delay(AutomaticRetryDelay, stoppingToken).ConfigureAwait(false);
+                    if (NextRetryDelay(sessionId) is not { } delay)
+                    {
+
+                        logger.LogError(
+                            "Saga extraction for session {SessionId} failed {Attempts} consecutive times; abandoning the request. The watermark is unchanged, so the session's next successful turn re-enqueues the same entries.",
+                            sessionId,
+                            MaximumAutomaticRetryAttempts);
+
+                        continue;
+
+                    }
+
+                    await Task.Delay(delay, stoppingToken).ConfigureAwait(false);
 
                     EnqueueExtraction(request);
 
+                    continue;
+
                 }
+
+                _ = _retryAttempts.TryRemove(sessionId, out _);
 
             }
 
@@ -260,6 +298,37 @@ public sealed class SagaExtractionService(
         {
 
         }
+
+    }
+
+    /// <summary>
+    /// Records one failed attempt for a session and returns how long to wait before the next one,
+    /// doubling each rung up to <see cref="MaximumAutomaticRetryDelay"/>. Returns <see langword="null"/>
+    /// once <see cref="MaximumAutomaticRetryAttempts"/> is reached, at which point the request is
+    /// abandoned: a deterministic failure — an extraction model that never emits parseable JSON, an
+    /// embedding model name that fails every <c>EmbedAsync</c> — must not become an endless ladder of
+    /// billable provider round-trips. Abandoning loses nothing durable, because the watermark was never
+    /// advanced and the session's next successful turn enqueues the same entries with a fresh ladder.
+    /// </summary>
+    private TimeSpan? NextRetryDelay(Guid sessionId)
+    {
+
+        int attempt = _retryAttempts.AddOrUpdate(sessionId, 1, static (_, previous) => previous + 1);
+
+        if (attempt >= MaximumAutomaticRetryAttempts)
+        {
+
+            _ = _retryAttempts.TryRemove(sessionId, out _);
+
+            return null;
+
+        }
+
+        double seconds = _retryBaseDelay.TotalSeconds * Math.Pow(2, attempt - 1);
+
+        return seconds >= MaximumAutomaticRetryDelay.TotalSeconds
+            ? MaximumAutomaticRetryDelay
+            : TimeSpan.FromSeconds(seconds);
 
     }
 
