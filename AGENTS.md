@@ -8,7 +8,8 @@
 ## What this is
 **Arcanum** is a .NET 10, local-first AI assistant/inference hub. One `arcanum` binary is both the
 HTTP host (`arcanum serve`) and thin CLI clients (`run`, `watch`, `session`, …) over the same API. Windows/Linux
-ship Native AOT; macOS is a signed folder-based self-contained publish.
+ship Native AOT; macOS ships Native AOT too when LLVM `lld` is installed (`brew install lld`),
+and degrades to a signed folder-based self-contained publish when it is not.
 
 ## Project layout & dependency direction
 `Cli → Api → Infrastructure → Core` (Infrastructure also references the isolated `Secrets` project).

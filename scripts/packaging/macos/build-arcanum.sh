@@ -108,15 +108,45 @@ fi
 chmod +x "$STAGE_DIR/arcanum"
 cp "$REPO_ROOT/docs/Arcanum.README.md" "$STAGE_DIR/README.md"
 
+# The csproj enables Native AOT on macOS only when ld64.lld is present and otherwise falls back to a
+# self-contained CoreCLR folder publish. That fallback signs, notarizes, launches, and passes every
+# check below, so without an explicit assertion a release host that simply lacks the linker ships a
+# non-AOT binary and says nothing. A Native AOT publish carries no managed assemblies at all, which
+# is the difference the two shapes cannot fake.
+MANAGED_DLL_COUNT="$(find "$STAGE_DIR" -maxdepth 1 -name '*.dll' | wc -l | tr -d ' ')"
+
+if [[ "${ARCANUM_REQUIRE_MACOS_AOT:-}" == "true" ]]; then
+  if [[ "$MANAGED_DLL_COUNT" != "0" ]]; then
+    echo "error: ARCANUM_REQUIRE_MACOS_AOT=true but the publish contains $MANAGED_DLL_COUNT managed assemblies," >&2
+    echo "       so this is the CoreCLR fallback, not Native AOT. Install ld64.lld (brew install lld)." >&2
+    exit 1
+  fi
+
+  echo "==> Verified Native AOT publish (no managed assemblies in the staged tree)"
+else
+  if [[ "$MANAGED_DLL_COUNT" == "0" ]]; then
+    echo "==> Native AOT publish (no managed assemblies staged)"
+  else
+    echo "==> CoreCLR fallback publish ($MANAGED_DLL_COUNT managed assemblies); ld64.lld not found on this host"
+  fi
+fi
+
 if [[ "$SKIP_SIGN" -eq 0 ]]; then
   require_cmd codesign
   require_cmd ditto
   require_cmd xcrun
   require_signing_env
 
-  # The macOS CLI is a JIT CoreCLR publish, not Native AOT, so the hardened runtime needs the
-  # .NET JIT entitlements. Signing without them still passes `codesign --verify` and
-  # `spctl --assess` but the binary aborts before Main.
+  # These are the .NET JIT entitlements, and they are required whenever the macOS CLI falls back to
+  # the self-contained CoreCLR folder publish (no ld64.lld on the build host): the hardened runtime
+  # must be told to permit the RWX/MAP_JIT mappings the runtime creates, and signing without them
+  # still passes `codesign --verify` and `spctl --assess` while the binary aborts before Main.
+  #
+  # A Native AOT publish does not JIT and does not need them. They are left applied because an
+  # unused entitlement is permissive rather than breaking, and because dropping them cannot be
+  # verified without a Developer ID certificate and a notarization round-trip. Narrowing this to the
+  # AOT path is a real hardening improvement and should be done the next time a signed build can
+  # actually be exercised end to end -- not blind.
   ENTITLEMENTS="$SCRIPT_DIR/entitlements.cli.plist"
   if [[ ! -f "$ENTITLEMENTS" ]]; then
     echo "error: entitlements plist not found: $ENTITLEMENTS" >&2

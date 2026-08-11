@@ -112,6 +112,18 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      # Apple's ld-prime asserts on the CLI's ~450 MB Native AOT object file
+      # (dotnet/runtime#119380) and ld_classic no longer exists to fall back to, so the csproj
+      # routes the AOT link through LLVM lld when ld64.lld is present. Without it the publish
+      # silently degrades to the non-AOT self-contained folder, which still ships and still passes
+      # -- the release would just quietly stop being Native AOT. Verified, not assumed.
+      - name: Install LLVM lld for the Native AOT link
+        run: |
+          set -euo pipefail
+          brew install lld
+          test -x /opt/homebrew/opt/lld/bin/ld64.lld
+          /opt/homebrew/opt/lld/bin/ld64.lld --version
+
       - name: Print dotnet --info (post-setup)
         run: |
           set -euo pipefail
@@ -157,6 +169,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          # Fail the release rather than quietly shipping the CoreCLR fallback if ld64.lld is
+          # missing. Every other check in the packaging script passes on the fallback.
+          ARCANUM_REQUIRE_MACOS_AOT: "true"
         run: |
           set -euo pipefail
           chmod +x scripts/packaging/macos/build-arcanum.sh

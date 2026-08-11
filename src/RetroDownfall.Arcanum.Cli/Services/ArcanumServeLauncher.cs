@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -322,14 +323,25 @@ internal sealed class ArcanumServeLauncher(
 
     }
 
+    /// <remarks>
+    /// The empty <see cref="Assembly.Location"/> a single-file or Native AOT image reports is the
+    /// expected reading here, not a defect: it is only consulted to re-launch through `dotnet
+    /// &lt;dll&gt; serve` during development, and the blank-check below falls through to
+    /// <see cref="Environment.ProcessPath"/> for every published build. Suppressed with an
+    /// attribute rather than the `#pragma` that stood here, because a pragma silences only the
+    /// Roslyn analyzer — ILC re-raises IL3000 during whole-program analysis and failed the Native
+    /// AOT gate on it.
+    /// </remarks>
+    [UnconditionalSuppressMessage(
+        "SingleFile",
+        "IL3000:Avoid accessing Assembly file path when publishing as a single file",
+        Justification = "Empty Location is handled: the blank check falls through to Environment.ProcessPath.")]
     internal static (string Executable, IReadOnlyList<string> Arguments) ResolveServeLaunch()
     {
 
         string? processPath = Environment.ProcessPath;
 
-#pragma warning disable IL3000 // Location is empty in single-file; only used for dotnet-run (non-single-file) launches.
         string? entryLocation = Assembly.GetEntryAssembly()?.Location;
-#pragma warning restore IL3000
 
         bool forceDev = string.Equals(
             Environment.GetEnvironmentVariable(DevLauncherEnvVar),

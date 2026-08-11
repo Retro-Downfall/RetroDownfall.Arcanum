@@ -14,8 +14,10 @@
 runs either as the long-lived HTTP host (`arcanum serve`) or as thin terminal clients (`run`,
 `watch`, `look`, `lore`, `daemon`, `campaign`, `session`, `memory`, `saga`, `spell`, `prompt`, `ward`, `trial`,
 `apprentice`, `model`, `provider`) over the same API. Windows and Linux ship the CLI/host as one
-self-contained Native AOT executable; the current macOS arm64 release is a signed, notarized,
-folder-based self-contained publish because of the supported linker/toolchain limitation. Arcanum
+self-contained Native AOT executable, and so does macOS arm64 when LLVM `lld` is installed
+(`brew install lld`) — Apple's own linker asserts on an object file this large, so the AOT link is
+routed through `ld64.lld`; without it the signed, notarized release degrades to a folder-based
+self-contained publish. Arcanum
 exposes an **OpenAI Chat Completions compatibility subset**, routes inference across OpenAI-compatible
 HTTP providers (including Ollama through `/v1`) and — opt in — across the Claude Code and Codex CLIs
 you already have installed, and persists state in an encrypted SQLCipher store.

@@ -2025,7 +2025,7 @@ Zero runtime prerequisite for the shipping CLI; fast cold start for short verbs;
 
 ### 9.2 What is AOT-optimized today
 
-- **`Cli` publish** (`<PublishAot>true</PublishAot>` on non-macOS RIDs) produces a native binary via ILCompiler over the full closure (`Cli` + `Api` + `Infrastructure` + `Core` + framework + third-party assemblies). macOS RIDs use folder-based self-contained publish (see Cli csproj notes on ld-prime).
+- **`Cli` publish** (`<PublishAot>true</PublishAot>` on every RID that can link one) produces a native binary via ILCompiler over the full closure (`Cli` + `Api` + `Infrastructure` + `Core` + framework + third-party assemblies). macOS is included when LLVM `ld64.lld` is present: Apple's ld-prime asserts on the ~450 MB object file (dotnet/runtime#119380) and `ld_classic` no longer exists, but ILC itself is unaffected and lld links it cleanly — a 98 MB `osx-arm64` binary with no CoreCLR dependency. Without lld the RID falls back to a folder-based self-contained publish. See the Cli csproj notes.
 - **`Infrastructure`** additionally sets `PublishAot` / `IsTrimmable` as a library signal so the ILCompiler analyzes it in the publish graph — it is not shipped as its own binary.
 - **`Api` / `Core`** declare `<IsAotCompatible>true</IsAotCompatible>` to opt into AOT-oriented analyzers. Libraries in the closure should remain AOT-compatible for every host.
 - **Command Center (Terminal.Gui 2.4.17)** lives only in `Cli`. Bootstrap is isolated in `CommandCenterApp`; any `IL3050`/`IL2026` suppressions are method-level there and must remain first-party-clean under `./scripts/verify-aot-il-warnings.sh`.
@@ -4732,9 +4732,11 @@ SQLCipher contention uses `SqliteBusyRetry`; and
 - Windows and Linux archives are unsigned by default. Windows SmartScreen may warn; Authenticode is
   available only when the Windows packager runs with `-Sign` and `WINDOWS_CERT_PATH` /
   `WINDOWS_CERT_PASSWORD`.
-- The Windows/Linux `arcanum` executable is Native AOT. The current macOS arm64 CLI release is a
-  folder-based self-contained publish because the supported macOS linker/toolchain cannot reliably
-  link this Native AOT closure. Compendium and The Forge are self-contained, multi-file .NET 10
+- The Windows/Linux `arcanum` executable is Native AOT, and so is macOS arm64 when `ld64.lld` is
+  installed — Apple's ld-prime asserts on this closure's object file (dotnet/runtime#119380), so
+  the link is routed through LLVM lld and the release workflow installs it. Without lld the macOS
+  RID falls back to a folder-based self-contained publish rather than failing the build.
+  Compendium and The Forge are self-contained, multi-file .NET 10
   Avalonia applications on every platform and are not Native AOT.
 - Linux shared key discovery requires `libsecret` plus a running Secret Service. Without it, The
   Forge prompts for the API key or accepts process-only `THEFORGE_ARCANUM_KEY`; that value is never
@@ -5111,10 +5113,14 @@ apps set matching `CFBundleName` / `CFBundleDisplayName`.
   `CFBundleShortVersionString` is the numeric `MAJOR.MINOR.PATCH`, and `CFBundleVersion` is the
   GitHub run number.
 - `arcanum-osx-arm64.zip` contains the signed, folder-based self-contained CLI publish plus
-  `docs/Arcanum.README.md` packaged as `README.md`. macOS does not use Native AOT because the
-  supported linker/toolchain cannot reliably link the full CLI closure, so the macOS publish is a
-  self-contained **JIT CoreCLR folder publish**. It is therefore signed with the hardened runtime
-  **plus** the .NET JIT entitlements from `scripts/packaging/macos/entitlements.cli.plist` —
+  `docs/Arcanum.README.md` packaged as `README.md`. macOS is Native AOT when the build host has
+  `ld64.lld`, and falls back to a self-contained **JIT CoreCLR folder publish** when it does not.
+  The packaging script is unchanged by this: Native AOT emits the executable under the same name in
+  the same publish directory, so the staging, rename, and signing steps are identical. Both shapes
+  are signed with the hardened runtime **plus** the .NET JIT entitlements from
+  `scripts/packaging/macos/entitlements.cli.plist` — the AOT image does not need them, but an
+  unused entitlement is permissive rather than breaking, and narrowing it is deferred until a
+  signed build can be verified end to end —
   `com.apple.security.cs.allow-jit`, `allow-unsigned-executable-memory`, and
   `disable-library-validation` — because the hardened runtime must be told to permit the RWX/`MAP_JIT`
   mappings the runtime creates; without `allow-jit` the signed binary aborts before `Main` with

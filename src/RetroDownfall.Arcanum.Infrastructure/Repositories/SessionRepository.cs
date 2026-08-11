@@ -240,7 +240,7 @@ public sealed class SessionRepository(
                 .AsNoTracking()
                 .Where(e => sessionIds.Contains(e.SessionId))
                 .GroupBy(e => e.SessionId)
-                .Select(g => new { SessionId = g.Key, Count = g.Count() })
+                .Select(g => new SessionEntryCountRow(g.Key, g.Count()))
                 .ToDictionaryAsync(x => x.SessionId, x => x.Count, ct)
                 .ConfigureAwait(false);
 
@@ -308,27 +308,23 @@ public sealed class SessionRepository(
         var sessionStats = await db.Sessions
             .AsNoTracking()
             .GroupBy(_ => 1)
-            .Select(g => new
-            {
-                TotalSessions = g.Count(),
-                ActiveSessions = g.Sum(s => s.Status == "active" ? 1 : 0),
-                ArchivedSessions = g.Sum(s => s.Status == "archived" ? 1 : 0),
-                TotalTokensUsed = g.Sum(s => s.TotalTokensUsed),
-            })
+            .Select(g => new SessionStatsRow(
+                g.Count(),
+                g.Sum(s => s.Status == "active" ? 1 : 0),
+                g.Sum(s => s.Status == "archived" ? 1 : 0),
+                g.Sum(s => s.TotalTokensUsed)))
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
 
         var entryStats = await db.Entries
             .AsNoTracking()
             .GroupBy(_ => 1)
-            .Select(g => new
-            {
-                TotalEntries = g.Count(),
-                UserEntries = g.Sum(e => e.Role == MessageRole.User ? 1 : 0),
-                AssistantEntries = g.Sum(e => e.Role == MessageRole.Assistant ? 1 : 0),
-                ToolEntries = g.Sum(e => e.Role == MessageRole.Tool ? 1 : 0),
-                SystemEntries = g.Sum(e => e.Role == MessageRole.System ? 1 : 0),
-            })
+            .Select(g => new EntryStatsRow(
+                g.Count(),
+                g.Sum(e => e.Role == MessageRole.User ? 1 : 0),
+                g.Sum(e => e.Role == MessageRole.Assistant ? 1 : 0),
+                g.Sum(e => e.Role == MessageRole.Tool ? 1 : 0),
+                g.Sum(e => e.Role == MessageRole.System ? 1 : 0)))
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
 
@@ -336,7 +332,7 @@ public sealed class SessionRepository(
             .AsNoTracking()
             .Where(e => e.ModelUsed != "")
             .GroupBy(e => e.ModelUsed)
-            .Select(g => new { Model = g.Key, Count = g.Count() })
+            .Select(g => new ModelEntryCountRow(g.Key, g.Count()))
             .ToDictionaryAsync(x => x.Model, x => x.Count, StringComparer.OrdinalIgnoreCase, ct)
             .ConfigureAwait(false);
 
@@ -1043,5 +1039,34 @@ public sealed class SessionRepository(
 
         return trimmed[..cut].TrimEnd() + "...";
     }
+
+    /// <summary>
+    /// Named shapes for the aggregate projections above.
+    /// </summary>
+    /// <remarks>
+    /// Not anonymous types, and not merely for style. <c>Select(g =&gt; new { ... })</c> compiles to
+    /// the <c>Expression.New(ConstructorInfo, IEnumerable&lt;Expression&gt;, MemberInfo[])</c>
+    /// overload, which carries <c>RequiresUnreferencedCode</c> because the member metadata it maps
+    /// through can be trimmed — four IL2026 warnings out of this one file, and the reason the
+    /// repository could not pass the Native AOT IL gate. Projecting into a named record uses the
+    /// plain constructor overload instead, which has no such attribute. It is also what convention 1
+    /// in AGENTS.md already required: no anonymous DTOs.
+    /// </remarks>
+    private sealed record SessionEntryCountRow(Guid SessionId, int Count);
+
+    private sealed record ModelEntryCountRow(string Model, int Count);
+
+    private sealed record SessionStatsRow(
+        int TotalSessions,
+        int ActiveSessions,
+        int ArchivedSessions,
+        long TotalTokensUsed);
+
+    private sealed record EntryStatsRow(
+        int TotalEntries,
+        int UserEntries,
+        int AssistantEntries,
+        int ToolEntries,
+        int SystemEntries);
 
 }

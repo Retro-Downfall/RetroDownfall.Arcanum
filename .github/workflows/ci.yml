@@ -127,6 +127,16 @@ jobs:
       - name: Install ripgrep
         run: command -v rg >/dev/null 2>&1 || brew install ripgrep
 
+      # Without ld64.lld the csproj cannot enable Native AOT on macOS (Apple's ld-prime asserts on
+      # the large object file, dotnet/runtime#119380), and the gate quietly degrades to Roslyn
+      # analyzer diagnostics with no ILC whole-program analysis. That is a weaker gate that still
+      # reports success, so the linker is a hard requirement of this lane rather than a nicety.
+      - name: Install LLVM lld so the gate runs real ILC closure analysis
+        run: |
+          set -euo pipefail
+          command -v /opt/homebrew/opt/lld/bin/ld64.lld >/dev/null 2>&1 || brew install lld
+          test -x /opt/homebrew/opt/lld/bin/ld64.lld
+
       - name: Verify macOS AOT IL warnings and search regex smoke
         run: ./scripts/verify-aot-il-warnings.sh
 
