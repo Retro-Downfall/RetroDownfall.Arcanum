@@ -27,6 +27,19 @@ internal sealed class ShellCommandDispatcher(
 {
     private const int TerminalListPageSize = 50;
 
+    /// <summary>
+    /// The one canonical resume spelling every operator-facing hint below is built from, so a
+    /// removed form cannot be taught back in a corner of the UI.
+    /// </summary>
+    internal const string ResumeUsage = "/resume <id>";
+
+    internal const string ResumeUsageMessage = $"Usage: {ResumeUsage}";
+
+    internal const string SessionListResumeHint = $"Resume: {ResumeUsage}  or  Ctrl+O then Enter";
+
+    internal const string NoActiveSessionMessage =
+        $"No active session. Send a message or `{ResumeUsage}` before using /attachments.";
+
     public async Task<ShellDispatchResult> DispatchAsync(
         string input,
         CommandCenterState state,
@@ -631,9 +644,7 @@ internal sealed class ShellCommandDispatcher(
         }
 
         sessionId = default;
-        state.Log.Append(
-            SessionLogEntryKind.Error,
-            "No active session. Send a message or `/session resume <id>` before using /attachments.");
+        state.Log.Append(SessionLogEntryKind.Error, NoActiveSessionMessage);
         return false;
     }
 
@@ -876,7 +887,7 @@ internal sealed class ShellCommandDispatcher(
     {
         if (!Guid.TryParse(argument, out Guid id))
         {
-            state.Log.Append(SessionLogEntryKind.Error, "Usage: /session resume <guid>");
+            state.Log.Append(SessionLogEntryKind.Error, ResumeUsageMessage);
             return ShellDispatchResult.Continue;
         }
 
@@ -908,7 +919,7 @@ internal sealed class ShellCommandDispatcher(
         }
 
         lines.Add("");
-        lines.Add("Resume: /session resume <guid>  or  Ctrl+O then Enter");
+        lines.Add(SessionListResumeHint);
         return string.Join(Environment.NewLine, lines);
     }
 

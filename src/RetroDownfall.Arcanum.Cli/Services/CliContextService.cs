@@ -477,6 +477,16 @@ public sealed class CliContextService(
 
             }
 
+            if (nextOffset <= offset)
+            {
+
+                // A cursor that does not advance would loop forever while the accumulator grows without
+                // bound. ArcanumApiClient.ListLoreAsync refuses the same shape; here the caller already
+                // degrades gracefully when campaigns cannot be listed.
+                return (false, []);
+
+            }
+
             offset = nextOffset;
 
         }

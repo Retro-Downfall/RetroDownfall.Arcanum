@@ -46,7 +46,7 @@ internal static class WardEndpoints
                 {
                     return Results.Json(
                         ApiResponse<WardDto>.FromResult(
-                            Result<WardDto>.Failure(new Error("Ward.NotFound", "The ward was not found or has already been resolved.")),
+                            Result<WardDto>.Failure(new Error(ErrorCodes.Ward.NotFound, "The ward was not found or has already been resolved.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseWardDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -83,7 +83,7 @@ internal static class WardEndpoints
                     return Results.Json(
                         ApiResponse<WardResolutionDto>.FromResult(
                             Result<WardResolutionDto>.Failure(
-                                new Error("Ward.NotFound", "The ward was not found or has already been resolved.")),
+                                new Error(ErrorCodes.Ward.NotFound, "The ward was not found or has already been resolved.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseWardResolutionDto,
                         statusCode: StatusCodes.Status404NotFound);
@@ -94,7 +94,7 @@ internal static class WardEndpoints
                     return Results.Json(
                         ApiResponse<WardResolutionDto>.FromResult(
                             Result<WardResolutionDto>.Failure(
-                                new Error("Ward.AlreadyResolved", "The ward has already been resolved.")),
+                                new Error(ErrorCodes.Ward.AlreadyResolved, "The ward has already been resolved.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseWardResolutionDto,
                         statusCode: StatusCodes.Status409Conflict);

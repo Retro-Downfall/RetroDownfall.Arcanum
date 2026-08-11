@@ -43,6 +43,12 @@ internal static class CliSuggestionEngine
     };
 
     /// <summary>
+    /// Every removed command path, so operator-facing prose elsewhere can assert it never teaches a
+    /// spelling this engine would reject.
+    /// </summary>
+    public static IReadOnlyCollection<string> RemovedSpellings => Removed.Keys;
+
+    /// <summary>
     /// Builds the diagnostic for a failed parse, or <c>null</c> when the failure is not an
     /// unrecognized command and System.CommandLine's own message is already the better one.
     /// </summary>
@@ -112,6 +118,121 @@ internal static class CliSuggestionEngine
         return suggestion is null
             ? null
             : $"`{unrecognized}` is not an {prefix} command. Did you mean `{prefix} {suggestion}`?";
+
+    }
+
+    /// <summary>
+    /// Builds the diagnostic for an option spelling that a free-text prompt swallowed, or
+    /// <c>null</c> when every token bound to the prompt is really prompt text.
+    ///
+    /// A prompt is a <c>ZeroOrMore</c> positional, so System.CommandLine binds every remaining
+    /// token to it — a mistyped flag included. Nothing fails, nothing is unmatched, and
+    /// <c>arcanum run --dryrun "Rewrite every file under src"</c> runs a live, billed turn with
+    /// real tool calls at the exact moment the operator asked for a preview. A dash-led token
+    /// before the <c>--</c> terminator is therefore refused; after the terminator it is deliberate
+    /// prompt text and is left alone.
+    /// </summary>
+    public static string? DescribePromptOption(ParseResult parseResult, Argument prompt)
+    {
+
+        ArgumentNullException.ThrowIfNull(parseResult);
+
+        ArgumentNullException.ThrowIfNull(prompt);
+
+        if (parseResult.GetResult(prompt) is not ArgumentResult promptResult)
+        {
+
+            return null;
+
+        }
+
+        // Only tokens the prompt actually took: an option's own value can be dash-led (a `--stop`
+        // sequence, say) and is not the operator's mistake.
+        HashSet<string> promptTokens =
+        [
+            .. promptResult.Tokens.Select(static token => token.Value),
+        ];
+
+        string? offending = parseResult.Tokens
+            .TakeWhile(static token => token.Type != TokenType.DoubleDash)
+            .Select(static token => token.Value)
+            .FirstOrDefault(value => IsOptionShaped(value) && promptTokens.Contains(value));
+
+        if (offending is null)
+        {
+
+            return null;
+
+        }
+
+        string matched = MatchedPath(parseResult);
+
+        string command = matched.Length == 0
+            ? "arcanum"
+            : $"arcanum {matched}";
+
+        string? nearest = Nearest(offending, OptionSpellings(parseResult));
+
+        string suggestion = nearest is null
+            ? string.Empty
+            : $" Did you mean `{nearest}`?";
+
+        return $"`{offending}` is not an `{command}` option.{suggestion} "
+            + "Put `--` before prompt text that begins with a dash.";
+
+    }
+
+    /// <summary>
+    /// Reads as an option spelling rather than prompt text: one dash-led word whose first character
+    /// after the dash is a letter or a second dash. A negative number (<c>-40 degrees …</c>), a bare
+    /// <c>-</c>, and any multi-word quoted token stay prompt text.
+    /// </summary>
+    private static bool IsOptionShaped(string value) =>
+        value.Length > 1
+        && value[0] == '-'
+        && (value[1] == '-' || char.IsLetter(value[1]))
+        && !value.Any(char.IsWhiteSpace);
+
+    /// <summary>
+    /// Every option spelling legal where the operator typed: the resolved command's own options
+    /// plus the recursive ones contributed by each ancestor up to the root.
+    /// </summary>
+    private static IReadOnlyList<string> OptionSpellings(ParseResult parseResult)
+    {
+
+        List<string> spellings = [];
+
+        for (SymbolResult? current = parseResult.CommandResult;
+            current is not null;
+            current = current.Parent)
+        {
+
+            if (current is not CommandResult commandResult)
+            {
+
+                continue;
+
+            }
+
+            foreach (Option option in commandResult.Command.Options)
+            {
+
+                if (option.Hidden)
+                {
+
+                    continue;
+
+                }
+
+                spellings.Add(option.Name);
+
+                spellings.AddRange(option.Aliases);
+
+            }
+
+        }
+
+        return [.. spellings.Where(static spelling => spelling.StartsWith('-'))];
 
     }
 

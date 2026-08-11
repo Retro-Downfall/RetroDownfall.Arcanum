@@ -107,6 +107,48 @@ public sealed class OpenAiV1BatchesEndpointTests
     }
 
     [SkippableFact]
+    public async Task PostBatches_MalformedJson_ReturnsOpenAiInvalidJsonEnvelope()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/batches",
+            new StringContent("""{"input_file_id": """, Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body.Error.Type);
+
+        Assert.Equal("invalid_json", body.Error.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task PostBatches_NonJsonContentType_Returns415()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/batches",
+            new StringContent("input_file_id=1", Encoding.UTF8, "text/plain"));
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+    }
+
+    [SkippableFact]
     public async Task GetBatch_AfterCreate_ReturnsSameBatch()
     {
 

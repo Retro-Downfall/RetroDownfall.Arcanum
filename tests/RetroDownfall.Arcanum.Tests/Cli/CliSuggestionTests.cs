@@ -358,7 +358,7 @@ public sealed class CliSuggestionTests
     /// Splits an example the way a shell would for the simple quoting the examples use. Examples
     /// containing a pipe are split at the pipe and only the arcanum side is parsed.
     /// </summary>
-    private static string[] Tokenize(string example)
+    internal static string[] Tokenize(string example)
     {
 
         string command = example[(example.LastIndexOf('|') + 1)..].Trim();

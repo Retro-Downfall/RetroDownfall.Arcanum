@@ -4,11 +4,15 @@ using RetroDownfall.Arcanum.Core.Configuration.Presets;
 
 using RetroDownfall.Compendium.Ux;
 
+using RetroDownfall.Compendium.Ux.Services;
+
+using RetroDownfall.Compendium.Ux.Tests;
+
 using Xunit;
 
 namespace RetroDownfall.Compendium.Tests.Compendium;
 
-[Collection("ProcessEnvironment")]
+[Collection("EnvVarSensitive")]
 
 public sealed class ServiceCollectionConfiguratorTests
 {
@@ -74,6 +78,24 @@ public sealed class ServiceCollectionConfiguratorTests
             }
 
         }
+
+    }
+
+    /// <summary>
+    /// Registering <see cref="IFamiliarProbeClient"/> without the secret store it depends on reads as
+    /// wired while every resolution throws, so the Re-probe button on a Familiar row would never get a
+    /// probe client. The composition has to actually build one.
+    /// </summary>
+    [Fact]
+
+    public void Production_composition_resolves_the_familiar_probe_client()
+    {
+
+        using ArcanumTestHomeScope home = new("compendium-probe-composition");
+
+        using ServiceProvider provider = ServiceCollectionConfigurator.Build();
+
+        Assert.NotNull(provider.GetRequiredService<IFamiliarProbeClient>());
 
     }
 

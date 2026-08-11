@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Reflection;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -223,6 +224,30 @@ public sealed class GuardrailAuditLoggerTests : IDisposable
         await logger.LogAsync(MakeRecord("pii-email"), CancellationToken.None);
 
         Assert.True(File.Exists(oldFile));
+
+    }
+
+    /// <summary>
+    /// <see cref="AuditLogPageReader"/> is the sole owner of dated-file discovery — QueryPageAsync
+    /// delegates to it wholesale. A private copy on the logger is unreachable code that parses file
+    /// stamps by different rules, so a maintainer editing the copy changes nothing at runtime.
+    /// </summary>
+    [Fact]
+    public void GuardrailAuditLogger_DeclaresNoDatedLogFileDiscoveryOfItsOwn()
+    {
+
+        string[] declared = typeof(GuardrailAuditLogger)
+            .GetMethods(
+                BindingFlags.Public
+                | BindingFlags.NonPublic
+                | BindingFlags.Static
+                | BindingFlags.Instance
+                | BindingFlags.DeclaredOnly)
+            .Select(static method => method.Name)
+            .Where(static name => name is "EnumerateDatedLogFiles" or "ParseDatedLogFile")
+            .ToArray();
+
+        Assert.Empty(declared);
 
     }
 

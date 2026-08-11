@@ -127,6 +127,16 @@ internal static class ArcanumHealthProbe
 
             return new HealthProbeResult(ClassifyHttpRequestException(ex), null, sw.Elapsed, ex.Message);
         }
+        catch (IOException ex)
+        {
+            // A reset or premature EOF while the body streams surfaces as HttpIOException, which derives
+            // from IOException rather than HttpRequestException, so neither catch above sees it. Something
+            // is listening but did not answer completely — the Timeout arm's meaning exactly — and, like
+            // every other "something answered" state, it must never let auto-serve spawn a second host.
+            sw.Stop();
+
+            return new HealthProbeResult(HealthProbeState.Timeout, null, sw.Elapsed, ex.Message);
+        }
 
     }
 

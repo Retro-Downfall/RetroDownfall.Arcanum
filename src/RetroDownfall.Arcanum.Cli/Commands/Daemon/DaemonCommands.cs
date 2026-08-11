@@ -232,7 +232,7 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
 
         }
 
-        if (!Enum.TryParse(severity.Trim(), ignoreCase: true, out CommLinkSeverity parsedSeverity))
+        if (!TryParseSeverity(severity, out CommLinkSeverity parsedSeverity))
         {
 
             AnsiConsole.MarkupLine(
@@ -269,6 +269,27 @@ public sealed class DaemonCommands(IDaemonManager daemonManager, ArcanumApiClien
                 Markup.Escape($"{dto.Title} ({dto.Severity}).")));
 
         return 0;
+
+    }
+
+    /// <summary>
+    /// Parses a Comm Link severity by name only. <see cref="Enum.TryParse{TEnum}(string, bool, out TEnum)"/>
+    /// also accepts any numeric spelling within the underlying type, so an undeclared value such as
+    /// <c>9</c> would otherwise pass validation whose own message advertises a closed set.
+    /// </summary>
+    private static bool TryParseSeverity(
+        string severity,
+        out CommLinkSeverity parsedSeverity)
+    {
+
+        parsedSeverity = default;
+
+        string normalized = severity.Trim();
+
+        return normalized.Length > 0
+            && normalized.All(char.IsLetter)
+            && Enum.TryParse(normalized, ignoreCase: true, out parsedSeverity)
+            && Enum.IsDefined(parsedSeverity);
 
     }
 

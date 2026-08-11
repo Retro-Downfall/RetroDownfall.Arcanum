@@ -327,6 +327,56 @@ public sealed class SpellCommandTests
 
     }
 
+    /// <summary>
+    /// The body preview is capped at 800 characters. An astral-plane character straddling that
+    /// boundary must be dropped whole rather than halved into an unpaired surrogate.
+    /// </summary>
+    [Fact]
+    public void Spell_show_body_preview_never_splits_a_surrogate_pair()
+    {
+
+        // The emoji occupies chars 799 and 800, so a raw 800-char slice keeps only its high half.
+        string body = new string('a', 799) + "\U0001F600" + new string('b', 50);
+
+        SpellDetail detail = new(
+            "greet",
+            "Say hello",
+            SpellSource.Workspace,
+            [],
+            null,
+            null,
+            body,
+            null,
+            null,
+            [],
+            [],
+            "/tmp/ws",
+            "/tmp/ws/spells/greet/SPELL.md");
+
+        SpellSummary summary = new("greet", "Say hello", SpellSource.Workspace, []);
+
+        RecordingHandler handler = new(request =>
+            request.RequestUri!.AbsolutePath == "/api/spells"
+                ? CreateResponse(
+                    new ApiResponse<SpellCatalogPage>(
+                        new SpellCatalogPage([summary], false, null, null),
+                        true,
+                        null),
+                    ArcanumJsonContext.Default.ApiResponseSpellCatalogPage)
+                : CreateResponse(
+                    new ApiResponse<SpellDetail>(detail, true, null),
+                    ArcanumJsonContext.Default.ApiResponseSpellDetail));
+
+        CliTestResult result = RunCommand(handler, ["spell", "show", "greet"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.False(
+            Utf16Assert.ContainsLoneSurrogate(result.Output),
+            "The spell body preview emitted an unpaired surrogate.");
+
+    }
+
     private static CliTestResult RunCommand(
         RecordingHandler handler,
         string[] args,

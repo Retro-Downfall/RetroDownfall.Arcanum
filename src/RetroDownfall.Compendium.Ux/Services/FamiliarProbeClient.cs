@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Security.Authentication;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -52,6 +53,20 @@ public sealed class FamiliarProbeClient(
     internal const string HostUnavailableMessage =
         "Probe unavailable — the Arcanum host is not running. Start it with `arcanum serve` and re-probe. "
         + "The hidden-models list stays editable either way.";
+
+    internal const string CertificateUntrustedCode = "Compendium.HostCertificateUntrusted";
+
+    /// <summary>
+    /// A rejected chain is not a stopped host, and saying so sends the operator to restart something
+    /// that is already running. Under ListenAny the probe target is HTTPS, and the certificate
+    /// Compendium generates is loopback-SAN only and is never installed into an OS trust store — so
+    /// this is the expected first failure there, and it needs its own remediation.
+    /// </summary>
+    internal static string CertificateUntrustedMessage(string endpoint, string detail) =>
+        $"Probe unavailable — {endpoint} presented a TLS certificate this machine does not trust, so the probe "
+        + "never reached the host. The host may well be running: trust that certificate (a Compendium-generated "
+        + "one is loopback-SAN only and is not installed into your OS trust store) or configure one that is "
+        + $"already trusted, then re-probe. The hidden-models list stays editable either way. ({detail})";
 
     public async Task<Result<FamiliarProbeResult>> ProbeAsync(
         string providerName,
@@ -133,12 +148,57 @@ public sealed class FamiliarProbeClient(
         catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException or JsonException)
         {
 
-            // Host down, still starting, or answering something Compendium cannot read. All three
-            // are the same actionable state for the operator, and none of them is an error dialog.
+            // Host down, still starting, or answering something Compendium cannot read. Those are
+            // the same actionable state for the operator, and none of them is an error dialog — but
+            // a certificate the machine will not trust is a different remedy and gets its own.
             return Result<FamiliarProbeResult>.Failure(
-                new Error(HostUnavailableCode, HostUnavailableMessage));
+                DescribeTransportFailure(ex, client.BaseAddress));
 
         }
+
+    }
+
+    private static Error DescribeTransportFailure(Exception exception, Uri? endpoint)
+    {
+
+        if (!IsCertificateRejection(exception))
+        {
+
+            return new Error(HostUnavailableCode, HostUnavailableMessage);
+
+        }
+
+        return new Error(
+            CertificateUntrustedCode,
+            CertificateUntrustedMessage(
+                endpoint?.ToString() ?? "the configured HTTPS endpoint",
+                exception.Message));
+
+    }
+
+    private static bool IsCertificateRejection(Exception exception)
+    {
+
+        if (exception is HttpRequestException { HttpRequestError: HttpRequestError.SecureConnectionError })
+        {
+
+            return true;
+
+        }
+
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+
+            if (current is AuthenticationException)
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return false;
 
     }
 

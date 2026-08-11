@@ -399,9 +399,8 @@ public sealed class TapestryRetrievalTests
             Models = [new ModelEntry("gpt-4o")],
         };
 
-        ModelTokenEstimator estimator = new(
-            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+        ModelTokenEstimator estimator =
+            new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
         string systemPrompt =
             """

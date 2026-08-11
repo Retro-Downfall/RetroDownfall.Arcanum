@@ -2,7 +2,14 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <PublishAot>true</PublishAot>
+    <!-- Native AOT only on an explicit RID. On an empty RID (plain `dotnet build`, F5,
+         `dotnet watch run`) PublishAot pulls in the ILCompiler targets and stamps
+         RuntimeFeature.IsDynamicCodeSupported=false, JsonSerializer.IsReflectionEnabledByDefault=false,
+         CanEmitObjectArrayDelegate=false and EventSource.IsSupported=false into the DevHost
+         runtimeconfig, which breaks EF Core LINQ (queries are not precompiled; see
+         EFPrecompileQueriesStage=none) and makes the F5 host behave unlike `arcanum serve`.
+         IsAotCompatible stays unconditional so the AOT/trim analyzers still run during F5. -->
+    <PublishAot Condition="'$(RuntimeIdentifier)' != ''">true</PublishAot>
     <IsAotCompatible>true</IsAotCompatible>
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
     <EFOptimizeContext>false</EFOptimizeContext>

@@ -260,10 +260,10 @@ internal static partial class CliCommandTree
 
         command.SetAction(
             async (ParseResult result, CancellationToken cancellationToken) =>
-                await handler.RunAsync(
+                RejectedPromptOption(serviceProvider, result, prompt)
+                ?? await handler.RunAsync(
                     new RunCommandRequest(
                         result.GetValue(prompt) ?? [],
-                        result.UnmatchedTokens.ToArray(),
                         result.GetValue(research),
                         result.GetValue(spell),
                         result.GetValue(with) ?? [],

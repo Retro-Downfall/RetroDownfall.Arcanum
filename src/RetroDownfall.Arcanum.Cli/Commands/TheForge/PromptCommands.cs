@@ -164,7 +164,7 @@ public sealed class PromptCommands(
         const int templatePreviewChars = 800;
 
         string template = prompt.Template.Length > templatePreviewChars
-            ? prompt.Template[..templatePreviewChars] + "\u2026"
+            ? prompt.Template[..Utf8Truncation.SafeCharSliceLength(prompt.Template, templatePreviewChars)] + "\u2026"
             : prompt.Template;
 
         table.AddRow(themePalette.MutedMarkup(Markup.Escape("Template:")), themePalette.TextMarkup(Markup.Escape(template)));
@@ -645,7 +645,7 @@ public sealed class PromptCommands(
         const int templatePreviewChars = 200;
 
         string template = prompt.Template.Length > templatePreviewChars
-            ? prompt.Template[..templatePreviewChars] + "\u2026"
+            ? prompt.Template[..Utf8Truncation.SafeCharSliceLength(prompt.Template, templatePreviewChars)] + "\u2026"
             : prompt.Template;
 
         table.AddRow(themePalette.MutedMarkup(Markup.Escape("Template:")), themePalette.TextMarkup(Markup.Escape(template)));
@@ -693,7 +693,16 @@ public sealed class PromptCommands(
         }
         else
         {
-            await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+            {
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
+
+                return 1;
+            }
 
             AnsiConsole.MarkupLine(
                 themePalette.HighlightLabelMarkup(Markup.Escape("Prompt exported to:"), Markup.Escape(output)));

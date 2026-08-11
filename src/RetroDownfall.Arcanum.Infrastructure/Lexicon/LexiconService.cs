@@ -296,17 +296,22 @@ internal sealed class LexiconService(
                         ordered = ordered.GetRange(0, clampedLimit);
                     }
 
+                    Dictionary<Guid, LexiconFactProvenance[]> provenance = await ReadFactProvenanceBatchAsync(
+                        connection,
+                        ordered.ConvertAll(static entry => entry.Id),
+                        cancellationToken).ConfigureAwait(false);
+
                     for (int index = 0; index < ordered.Count; index++)
                     {
 
                         LexiconEntryDto entry = ordered[index];
 
-                        LexiconFactProvenance[] provenance = await ReadFactProvenanceAsync(
-                            connection,
-                            entry.Id,
-                            cancellationToken).ConfigureAwait(false);
-
-                        ordered[index] = entry with { FactProvenance = provenance };
+                        ordered[index] = entry with
+                        {
+                            FactProvenance = provenance.TryGetValue(entry.Id, out LexiconFactProvenance[]? facts)
+                                ? facts
+                                : [],
+                        };
 
                     }
 
@@ -396,18 +401,26 @@ internal sealed class LexiconService(
 
                     await reader.DisposeAsync().ConfigureAwait(false);
 
-                    for (int index = 0; index < entries.Count; index++)
+                    if (entries.Count > 0)
                     {
 
-                        LexiconEntryDto entry = entries[index];
+                        Dictionary<Guid, LexiconFactProvenance[]> provenance = await ReadAllFactProvenanceAsync(
+                            connection,
+                            cancellationToken).ConfigureAwait(false);
 
-                        entries[index] = entry with
+                        for (int index = 0; index < entries.Count; index++)
                         {
-                            FactProvenance = await ReadFactProvenanceAsync(
-                                connection,
-                                entry.Id,
-                                cancellationToken).ConfigureAwait(false),
-                        };
+
+                            LexiconEntryDto entry = entries[index];
+
+                            entries[index] = entry with
+                            {
+                                FactProvenance = provenance.TryGetValue(entry.Id, out LexiconFactProvenance[]? facts)
+                                    ? facts
+                                    : [],
+                            };
+
+                        }
 
                     }
 
@@ -889,24 +902,88 @@ internal sealed class LexiconService(
         CancellationToken cancellationToken)
     {
 
+        Dictionary<Guid, LexiconFactProvenance[]> provenance = await ReadFactProvenanceBatchAsync(
+            connection,
+            [entryId],
+            cancellationToken).ConfigureAwait(false);
+
+        return provenance.TryGetValue(entryId, out LexiconFactProvenance[]? facts) ? facts : [];
+
+    }
+
+    /// <summary>
+    /// Provenance for a whole result set in one read, keyed by entry id. Hydrating per entry made
+    /// every listing and every per-turn match an N+1 against the encrypted Grimoire.
+    /// </summary>
+    private static Task<Dictionary<Guid, LexiconFactProvenance[]>> ReadFactProvenanceBatchAsync(
+        DbConnection connection,
+        IReadOnlyList<Guid> entryIds,
+        CancellationToken cancellationToken) =>
+        entryIds.Count == 0
+            ? Task.FromResult(new Dictionary<Guid, LexiconFactProvenance[]>(0))
+            : ReadFactProvenanceCoreAsync(connection, entryIds, cancellationToken);
+
+    /// <summary>
+    /// Provenance for every entry in one read. <see cref="ListAsync"/> returns the entire
+    /// <c>lexicon_entries</c> table, so an <c>IN</c> clause would add one parameter per entry without
+    /// narrowing anything — and would eventually collide with SQLite's bound-parameter ceiling.
+    /// </summary>
+    private static Task<Dictionary<Guid, LexiconFactProvenance[]>> ReadAllFactProvenanceAsync(
+        DbConnection connection,
+        CancellationToken cancellationToken) =>
+        ReadFactProvenanceCoreAsync(connection, entryIds: null, cancellationToken);
+
+    private static async Task<Dictionary<Guid, LexiconFactProvenance[]>> ReadFactProvenanceCoreAsync(
+        DbConnection connection,
+        IReadOnlyList<Guid>? entryIds,
+        CancellationToken cancellationToken)
+    {
+
         await using DbCommand command = connection.CreateCommand();
 
-        command.CommandText =
+        StringBuilder sql = new(
             """
-            SELECT p.Fact, p.SessionId, p.AttachmentId, p.LogicalKey, p.Version,
+            SELECT p.EntryId, p.Fact, p.SessionId, p.AttachmentId, p.LogicalKey, p.Version,
                    p.ContentHash, p.MaterializedAt, p.SourceType,
                    EXISTS(
                        SELECT 1 FROM "SessionAttachments" a
                        WHERE a."Id" = p.AttachmentId AND a."State" = 'Bound'
                    )
             FROM lexicon_fact_attachment_provenance p
-            WHERE p.EntryId = @entryId
-            ORDER BY p.rowid
-            """;
+            """);
 
-        AddParameter(command, "@entryId", entryId.ToString("N"));
+        if (entryIds is not null)
+        {
 
-        List<LexiconFactProvenance> results = [];
+            _ = sql.Append(" WHERE p.EntryId IN (");
+
+            for (int index = 0; index < entryIds.Count; index++)
+            {
+
+                if (index > 0)
+                {
+                    _ = sql.Append(", ");
+                }
+
+                string parameterName = "@e" + index.ToString(CultureInfo.InvariantCulture);
+
+                _ = sql.Append(parameterName);
+
+                AddParameter(command, parameterName, entryIds[index].ToString("N"));
+
+            }
+
+            _ = sql.Append(')');
+
+        }
+
+        // rowid ordering is global here, which preserves each entry's own insertion order because
+        // ReplaceFactProvenanceAsync rewrites one entry's rows contiguously.
+        _ = sql.Append(" ORDER BY p.rowid");
+
+        command.CommandText = sql.ToString();
+
+        Dictionary<Guid, List<LexiconFactProvenance>> grouped = [];
 
         await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -914,22 +991,42 @@ internal sealed class LexiconService(
         {
 
             AttachmentMemoryProvenance source = new(
-                Guid.Parse(reader.GetString(1)),
                 Guid.Parse(reader.GetString(2)),
-                reader.GetString(3),
-                reader.GetInt32(4),
-                reader.GetString(5),
-                DateTimeOffset.Parse(reader.GetString(6), CultureInfo.InvariantCulture),
-                reader.GetString(7),
-                reader.GetInt32(8) == 1
+                Guid.Parse(reader.GetString(3)),
+                reader.GetString(4),
+                reader.GetInt32(5),
+                reader.GetString(6),
+                DateTimeOffset.Parse(reader.GetString(7), CultureInfo.InvariantCulture),
+                reader.GetString(8),
+                reader.GetInt32(9) == 1
                     ? AttachmentSourceAvailability.Available
                     : AttachmentSourceAvailability.Unavailable);
 
-            results.Add(new LexiconFactProvenance(reader.GetString(0), source));
+            Guid entryId = Guid.Parse(reader.GetString(0));
+
+            if (!grouped.TryGetValue(entryId, out List<LexiconFactProvenance>? facts))
+            {
+
+                facts = [];
+
+                grouped[entryId] = facts;
+
+            }
+
+            facts.Add(new LexiconFactProvenance(reader.GetString(1), source));
 
         }
 
-        return [.. results];
+        Dictionary<Guid, LexiconFactProvenance[]> results = new(grouped.Count);
+
+        foreach ((Guid entryId, List<LexiconFactProvenance> facts) in grouped)
+        {
+
+            results[entryId] = [.. facts];
+
+        }
+
+        return results;
 
     }
 
@@ -1054,7 +1151,7 @@ internal sealed class LexiconService(
 
         if (connection.State != ConnectionState.Open)
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
 
         return connection;

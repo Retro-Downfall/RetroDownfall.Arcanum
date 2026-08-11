@@ -201,37 +201,6 @@ internal static class WorkspaceRelativePath
 
     }
 
-    internal static bool HasAncestorCollision(
-        string left,
-        string right)
-    {
-
-        string[] leftSegments = left.Split('/');
-        string[] rightSegments = right.Split('/');
-
-        if (leftSegments.Length == rightSegments.Length)
-        {
-            return false;
-        }
-
-        int commonLength = Math.Min(
-            leftSegments.Length,
-            rightSegments.Length);
-
-        for (int index = 0; index < commonLength; index++)
-        {
-            if (!Comparer.Equals(
-                    leftSegments[index],
-                    rightSegments[index]))
-            {
-                return false;
-            }
-        }
-
-        return true;
-
-    }
-
     internal static string FromAbsolute(string workspaceRoot, string absolutePath)
     {
 

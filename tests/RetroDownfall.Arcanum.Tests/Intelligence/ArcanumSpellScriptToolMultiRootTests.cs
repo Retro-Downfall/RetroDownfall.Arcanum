@@ -1,5 +1,9 @@
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Environment;
+using RetroDownfall.Arcanum.Core.Platform;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -149,6 +153,33 @@ public sealed class ArcanumSpellScriptToolMultiRootTests : IDisposable
         Assert.NotNull(result);
 
         Assert.Contains("bare file name", result, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The advertisement gate resolves the edition from the bound <c>Arcanum:Edition</c> value. The
+    /// invocation gate must read the same source, or an operator who enables Development in
+    /// configuration rather than via <c>ARCANUM_EDITION</c> gets a tool that is advertised to the
+    /// model and denied on every call.
+    /// </summary>
+    [Fact]
+    public async Task Edition_set_in_configuration_alone_still_permits_invocation()
+    {
+        global::System.Environment.SetEnvironmentVariable(ArcanumEnvironment.EditionEnvVar, null);
+
+        ArcanumSpellScriptTool tool = new(
+            [_rootA],
+            allowUnsandboxedToolChildren: true,
+            configuredEdition: ArcanumEdition.Development);
+
+        string? result = await tool.InvokeAsync(
+            new AIFunctionArguments(new Dictionary<string, object?> { ["script_name"] = "absent.sh" }))
+            as string;
+
+        Assert.NotNull(result);
+
+        Assert.DoesNotContain(HostProcessToolPolicy.DeniedMessage, result, StringComparison.Ordinal);
+
+        Assert.Contains("script not found", result, StringComparison.Ordinal);
     }
 
 }

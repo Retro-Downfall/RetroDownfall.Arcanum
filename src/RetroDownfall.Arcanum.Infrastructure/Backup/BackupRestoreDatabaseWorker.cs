@@ -572,7 +572,11 @@ internal static class BackupRestoreDatabaseWorker
             for (int index = 0; index < allowed.Count; index++)
             {
 
-                if (allowed[index]?.GetValue<string>() is not string value
+                // A hand-edited or partially corrupt allow-list can hold a number, object, array, or
+                // boolean. Those are not paths, so they are skipped exactly like the malformed-JSON
+                // case above rather than aborting the whole staging phase.
+                if (allowed[index] is not JsonValue entry
+                    || !entry.TryGetValue(out string? value)
                     || value.Length == 0)
                 {
 

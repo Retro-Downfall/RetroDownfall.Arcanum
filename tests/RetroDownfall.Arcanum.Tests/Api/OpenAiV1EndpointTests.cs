@@ -1,12 +1,15 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Security;
@@ -901,6 +904,108 @@ public sealed class OpenAiV1EndpointTests
         Assert.False(body.IsSuccess);
 
         Assert.Equal("Auth.Unauthorized", body.Error?.Code);
+
+    }
+
+    [SkippableTheory]
+    [InlineData("application/x-www-form-urlencoded")]
+    [InlineData("text/plain")]
+    [InlineData(null)]
+    public async Task PostChatCompletions_NonJsonContentType_Returns415NotUnhandled(string? contentType)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string payload = """
+            {
+              "model": "mistral:latest",
+              "messages": [
+                { "role": "user", "content": "hello" }
+              ]
+            }
+            """;
+
+        using ByteArrayContent content = new(Encoding.UTF8.GetBytes(payload));
+
+        content.Headers.ContentType = contentType is null ? null : new MediaTypeHeaderValue(contentType);
+
+        HttpResponseMessage response = await client.PostAsync("/v1/chat/completions", content);
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body.Error.Type);
+
+        Assert.Equal("unsupported_media_type", body.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task CreateRequestBodyReadErrorResult_OverSizeLimit_KeepsKestrels413InTheOpenAiEnvelope()
+    {
+
+        // Kestrel raises BadHttpRequestException(413) once WithLargeRequestBody's 16 MiB ceiling is
+        // exceeded. It is not a JsonException, so it used to escape the handler and be answered as a
+        // 500 api_error/inference_failed by ArcanumExceptionHandler.
+        IResult result = OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(
+            StatusCodes.Status413PayloadTooLarge);
+
+        (int statusCode, string json) = await ExecuteResultAsync(result);
+
+        Assert.Equal(StatusCodes.Status413PayloadTooLarge, statusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body.Error.Type);
+
+        Assert.Equal("payload_too_large", body.Error.Code);
+
+    }
+
+    [Fact]
+    public async Task CreateRequestBodyReadErrorResult_OtherBadRequest_KeepsKestrelsStatusCode()
+    {
+
+        IResult result = OpenAiV1Endpoints.CreateRequestBodyReadErrorResult(StatusCodes.Status400BadRequest);
+
+        (int statusCode, string json) = await ExecuteResultAsync(result);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, statusCode);
+
+        OpenAiErrorResponse? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(body);
+
+        Assert.Equal("invalid_request_error", body.Error.Type);
+
+        Assert.Equal("invalid_request", body.Error.Code);
+
+    }
+
+    private static async Task<(int StatusCode, string Body)> ExecuteResultAsync(IResult result)
+    {
+
+        DefaultHttpContext context = new()
+        {
+            RequestServices = new ServiceCollection().AddLogging().BuildServiceProvider(),
+        };
+
+        MemoryStream buffer = new();
+
+        context.Response.Body = buffer;
+
+        await result.ExecuteAsync(context);
+
+        return (context.Response.StatusCode, Encoding.UTF8.GetString(buffer.ToArray()));
 
     }
 

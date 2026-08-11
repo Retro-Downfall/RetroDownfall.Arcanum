@@ -156,7 +156,9 @@ public sealed class SetupProviderProbe(
 
         string probeUrl = endpoint.Trim().TrimEnd('/') + "/models";
 
-        using HttpClient client = new(handlerFactory.Create(), disposeHandler: false)
+        // The factory hands back a fresh guarded egress handler per probe, so the client owns it:
+        // without disposeHandler the handler and its connection pool would outlive every probe.
+        using HttpClient client = new(handlerFactory.Create(), disposeHandler: true)
         {
 
             Timeout = ProbeTimeout,

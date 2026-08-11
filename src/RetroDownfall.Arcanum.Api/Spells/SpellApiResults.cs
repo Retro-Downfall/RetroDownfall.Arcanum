@@ -45,7 +45,7 @@ internal static class SpellApiResults
         return MapFailure(workspaceResult.Error, traceId, responseTypeInfo);
     }
 
-    private static IResult MapFailure<T>(
+    public static IResult MapFailure<T>(
         Error error,
         string traceId,
         JsonTypeInfo<ApiResponse<T>> responseTypeInfo)

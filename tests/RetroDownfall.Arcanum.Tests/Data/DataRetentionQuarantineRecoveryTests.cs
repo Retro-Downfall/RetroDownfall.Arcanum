@@ -419,6 +419,76 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
+    [SkippableFact]
+
+    public async Task MutationRecovery_WhenInterruptedBeforeItsJournal_TerminalizesAndUnblocksRetention()
+    {
+
+        RequireSqlCipher();
+
+        DataRetentionService service = CreateService();
+
+        LongRunningOperationStore operations = new(_db!);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        const string ownerId = "pre-journal-mutation-recovery-test";
+
+        LongRunningOperation operation = await operations.CreateAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionMutation,
+                LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+                "Interrupted before its durable journal.",
+                now));
+
+        LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(
+            operation.Id,
+            ownerId,
+            now,
+            now.AddMinutes(5));
+
+        Assert.True(lease.Acquired);
+
+        LongRunningOperation stranded = Assert.IsType<LongRunningOperation>(
+            await operations.GetAsync(operation.Id));
+
+        Assert.Equal(0, stranded.CheckpointVersion);
+
+        Assert.Null(stranded.CheckpointPayload);
+
+        Assert.Null(stranded.CheckpointReference);
+
+        DataRetentionMutationRecoveryHandler handler = new(service);
+
+        LongRunningOperationRecoveryResult recovered = await handler.RecoverAsync(
+            stranded,
+            CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.Abandoned, recovered.State);
+
+        Assert.True(
+            await operations.TryTransitionAsync(
+                stranded.Id,
+                stranded.Revision,
+                ownerId,
+                recovered.State,
+                now,
+                recovered.ErrorCode));
+
+        LongRunningOperation? nextOperation = await operations.TryStartSingleFlightAsync(
+            new LongRunningOperationCreateRequest(
+                LongRunningOperationKinds.DataRetentionPrune,
+                LongRunningOperationRecoveryPolicy.RestartIdempotently,
+                "A later retention sweep must not be blocked by the stranded row.",
+                now),
+            "later-retention-owner",
+            now,
+            now.AddMinutes(5));
+
+        Assert.NotNull(nextOperation);
+
+    }
+
     private async Task<QuarantineRecoveryCandidate> SeedQuarantineRecoveryCandidateAsync(
         string kind)
     {

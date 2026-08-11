@@ -200,7 +200,8 @@ public sealed class WardAutoApproveConfigurationTests
                 "security.ward.autoApprove.enabled"),
             ignoreCase: true);
 
-        // Collection-valued paths take JSON, matching every other array setting the accessor exposes.
+        // Collection-valued paths take either a JSON array or the plain comma-separated form, matching
+        // every other array setting the accessor exposes.
         ConfigurationPathUpdate tools = ConfigurationPathAccessor.Set(
             enabled.Settings,
             "security.ward.autoApprove.tools",
@@ -211,6 +212,17 @@ public sealed class WardAutoApproveConfigurationTests
         Assert.Equal(
             ["apply_patch", "workspace_check"],
             tools.Settings!.Security!.Ward.AutoApprove.Tools);
+
+        ConfigurationPathUpdate plainTools = ConfigurationPathAccessor.Set(
+            enabled.Settings,
+            "security.ward.autoApprove.tools",
+            "apply_patch, workspace_check");
+
+        Assert.True(plainTools.IsSuccess, plainTools.Error);
+
+        Assert.Equal(
+            ["apply_patch", "workspace_check"],
+            plainTools.Settings!.Security!.Ward.AutoApprove.Tools);
 
     }
 

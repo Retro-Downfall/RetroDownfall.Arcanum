@@ -209,6 +209,53 @@ public sealed partial class DataRetentionServiceTests
 
     }
 
+    /// <summary>
+    /// An entry owned by a session that is itself a prune candidate must not also become an
+    /// <c>entry-embedding:</c> candidate. The session candidate already plans and deletes those
+    /// embedding rows, so a second candidate counts them twice in the operator-facing preview and
+    /// then deletes nothing, leaving the applied total short of the plan it was confirmed against.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task PlanAndApplyAsync_Prune_WhenSessionIsAlsoACandidate_CountsItsEntryEmbeddingsOnce()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+
+        await SeedEntryEmbeddingAsync(entryId);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.ArchivedSessions = EnabledRule();
+
+        settings.Retention.SessionEntryEmbeddings = EnabledRule();
+
+        IDataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Equal(
+            "session:" + sessionId.ToString("D"),
+            Assert.Single(plan.CandidateIds));
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(plan.DerivedRecords, result.Value.DerivedRecordsDeleted);
+
+        Assert.Equal(0, await CountAllAsync("entry_embeddings"));
+
+    }
+
     [SkippableFact]
 
     public async Task PlanAndApplyAsync_PruneBatch_DoesNotClaimReferencedFilesAsDeletedRecords()

@@ -379,9 +379,12 @@ internal sealed record SessionListItem(
         get
         {
             string title = string.IsNullOrWhiteSpace(Title) ? "Untitled" : Title;
-            if (title.Length > 22)
+
+            // A code-unit slice can land between the halves of a surrogate pair; the shared metrics
+            // walk graphemes and measure display cells, as every other pane does (DESIGN §16.6).
+            if (TerminalCellMetrics.MeasureWidth(title) > 22)
             {
-                title = title[..21] + "…";
+                title = TerminalCellMetrics.TruncateToCells(title, 21) + "…";
             }
 
             string branch = ForkedFromSessionId is null ? string.Empty : " ⑂";

@@ -181,7 +181,6 @@ internal sealed class RunExecutionDispatcher(
         RunCommandRequest options = request.Options;
 
         return askCommand.Ask(
-            escapedArguments: [],
             cancellationToken,
             model: request.Context.Model.Value,
             @new: options.NewSession,

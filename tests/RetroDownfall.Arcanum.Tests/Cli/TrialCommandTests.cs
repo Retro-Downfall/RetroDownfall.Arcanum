@@ -104,6 +104,45 @@ public sealed class TrialCommandTests
 
     }
 
+    /// <summary>
+    /// The output preview is capped at 500 characters. A .NET string is UTF-16, so an astral-plane
+    /// character straddling that boundary must be dropped whole rather than cut in half — a lone
+    /// surrogate renders as a replacement glyph and is not valid UTF-16 once copied out.
+    /// </summary>
+    [Fact]
+    public void Trial_output_preview_never_splits_a_surrogate_pair()
+    {
+
+        // The emoji occupies chars 499 and 500, so a raw 500-char slice keeps only its high half.
+        string output = new string('a', 499) + "\U0001F600" + new string('b', 200);
+
+        TrialResult trialResult = new(
+            "Trial",
+            TrialTargetKind.Spell,
+            "greet",
+            true,
+            output,
+            [],
+            1,
+            1,
+            null);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<TrialResult>(trialResult, true, null),
+            ArcanumJsonContext.Default.ApiResponseTrialResult));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["trial", "run", "--target", "spell", "--target-value", "greet"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.False(
+            Utf16Assert.ContainsLoneSurrogate(result.Output),
+            "The trial output preview emitted an unpaired surrogate.");
+
+    }
+
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 

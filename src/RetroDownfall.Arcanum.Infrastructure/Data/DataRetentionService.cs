@@ -265,6 +265,19 @@ internal sealed partial class DataRetentionService(
             retention,
             cancellationToken).ConfigureAwait(false);
 
+        await AddCompositeDatabaseStatusAsync(
+            items,
+            RetentionDataClass.Tapestry,
+            [
+                "tapestry_generations",
+                "tapestry_nodes",
+                "tapestry_node_embeddings",
+                "tapestry_node_embeddings_vec",
+            ],
+            "Derived Tapestry generations, model-written summary nodes, embedding blobs, and vector mirrors.",
+            retention,
+            cancellationToken).ConfigureAwait(false);
+
         AddLogStatuses(items, retention);
 
         await AddCompositeDatabaseStatusAsync(
@@ -4427,7 +4440,7 @@ internal sealed partial class DataRetentionService(
         if (connection.State != ConnectionState.Open)
         {
 
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         }
 
@@ -5097,8 +5110,31 @@ internal sealed partial class DataRetentionService(
         if (!string.Equals(
                 operation.Kind,
                 LongRunningOperationKinds.DataRetentionMutation,
-                StringComparison.Ordinal)
-            || operation.CheckpointVersion != 2
+                StringComparison.Ordinal))
+        {
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(
+                ErrorCodes.Data.ReconciliationFailed);
+
+        }
+
+        // The single-flight insert creates this row at checkpoint version 0, and
+        // PrepareMutationJournalAsync lifts it to 2 before anything is captured, quarantined, or
+        // deleted. A row still at 0 was interrupted inside that window, so no storage was touched
+        // and there is nothing to reconcile. It has to close: ReconciliationRequired is re-selected
+        // by the reconciler forever and blocks every later data-retention operation, so parking a
+        // mutation that never began would wedge retention permanently.
+        if (operation.CheckpointVersion == 0
+            && operation.CheckpointPayload is null
+            && operation.CheckpointReference is null)
+        {
+
+            return LongRunningOperationRecoveryResult.Abandoned(
+                LongRunningOperationRecoveryOutcomes.RetentionMutationNeverStarted);
+
+        }
+
+        if (operation.CheckpointVersion != 2
             || operation.CheckpointPayload is null
             || !string.Equals(
                 operation.CheckpointReference,

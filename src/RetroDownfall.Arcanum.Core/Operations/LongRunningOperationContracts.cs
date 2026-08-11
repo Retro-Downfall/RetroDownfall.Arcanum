@@ -98,6 +98,14 @@ public static class LongRunningOperationRecoveryOutcomes
     /// record that lets a continuation find its Apprentice, which is exactly the failure #68 removes.
     /// </remarks>
     public const string A2AInboundParkedAwaitingAnswer = "a2a.inbound_parked_awaiting_answer";
+
+    /// <summary>
+    /// A data-retention mutation died between its single-flight insert and the durable journal that
+    /// authorizes any storage change, so nothing was captured, quarantined, or deleted. There is no
+    /// repair to perform and the row must close rather than park — a parked retention row blocks
+    /// every later retention operation.
+    /// </summary>
+    public const string RetentionMutationNeverStarted = "data-retention.mutation_never_started";
 }
 
 /// <summary>

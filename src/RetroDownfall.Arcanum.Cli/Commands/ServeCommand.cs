@@ -9,6 +9,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Hosting;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -58,6 +59,56 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
     }
 
     /// <summary>
+    /// Applies the all-interfaces binding policy before Kestrel is built. Returns the exit code the
+    /// process must stop with, or <see langword="null"/> when the host may start.
+    /// </summary>
+    internal int? EnforceListenAnyPolicy(bool requiresInteractiveConfirmation)
+    {
+
+        if (!requiresInteractiveConfirmation)
+        {
+
+            AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
+
+            return null;
+
+        }
+
+        if (!AnsiConsole.Console.Profile.Capabilities.Interactive)
+        {
+
+            AnsiConsole.MarkupLine(
+                themePalette.ErrorMarkup(
+                    Markup.Escape(
+                        "Refusing to bind to all interfaces: set ARCANUM_LISTEN_ANY_ACK=1 or run interactively to acknowledge the security risk.")));
+
+            // An acknowledgement that cannot be obtained non-interactively is a configuration
+            // failure (exit 2), not a generic runtime error — see the exit-code table in
+            // docs/Arcanum.Command.Reference.md.
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
+
+        if (!AnsiConsole.Confirm(ListenAnySecurityPolicy.InteractiveConfirmPrompt, defaultValue: false))
+        {
+
+            AnsiConsole.MarkupLine(
+                themePalette.MutedMarkup(
+                    Markup.Escape("Aborted. Set Arcanum:Host:ListenAny to false or unset ARCANUM_HOST_ANY to use loopback only.")));
+
+            return (int)CliExitCode.GenericError;
+
+        }
+
+        ListenAnySecurityPolicy.PersistAcknowledgement();
+
+        return null;
+
+    }
+
+    /// <summary>
     /// Hosts the Arcanum Minimal API (default http://localhost:5001/; set Arcanum:Host:Port in arcanum.json).
     /// When ListenAny / ARCANUM_HOST_ANY is effective, binds HTTPS-only on Arcanum:Host:Https:Port.
     /// </summary>
@@ -76,41 +127,13 @@ public sealed class ServeCommand(IThemePalette themePalette, ArcanumApiClient ap
         if (configuredListenAny)
         {
 
-            if (ListenAnySecurityPolicy.RequiresInteractiveConfirmation(ReadConfiguredListenAny(probeConfig)))
+            int? refusal = EnforceListenAnyPolicy(
+                ListenAnySecurityPolicy.RequiresInteractiveConfirmation(ReadConfiguredListenAny(probeConfig)));
+
+            if (refusal is not null)
             {
 
-                if (!AnsiConsole.Console.Profile.Capabilities.Interactive)
-                {
-
-                    AnsiConsole.MarkupLine(
-                        themePalette.ErrorMarkup(
-                            Markup.Escape(
-                                "Refusing to bind to all interfaces: set ARCANUM_LISTEN_ANY_ACK=1 or run interactively to acknowledge the security risk.")));
-
-                    return 1;
-
-                }
-
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
-
-                if (!AnsiConsole.Confirm(ListenAnySecurityPolicy.InteractiveConfirmPrompt, defaultValue: false))
-                {
-
-                    AnsiConsole.MarkupLine(
-                        themePalette.MutedMarkup(
-                            Markup.Escape("Aborted. Set Arcanum:Host:ListenAny to false or unset ARCANUM_HOST_ANY to use loopback only.")));
-
-                    return 1;
-
-                }
-
-                ListenAnySecurityPolicy.PersistAcknowledgement();
-
-            }
-            else
-            {
-
-                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape(ListenAnySecurityPolicy.SecurityBanner)));
+                return refusal.Value;
 
             }
 

@@ -38,6 +38,9 @@ CREATE INDEX IF NOT EXISTS "IX_LongRunningOperations_Kind_State"
 CREATE INDEX IF NOT EXISTS "IX_LongRunningOperations_ParentOperationId"
     ON "LongRunningOperations" ("ParentOperationId");
 
+CREATE INDEX IF NOT EXISTS "IX_LongRunningOperations_RootOperationId"
+    ON "LongRunningOperations" ("RootOperationId");
+
 CREATE INDEX IF NOT EXISTS "IX_LongRunningOperations_SessionId"
     ON "LongRunningOperations" ("SessionId");
 

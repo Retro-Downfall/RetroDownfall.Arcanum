@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.Commands.TheForge;
@@ -37,7 +38,7 @@ internal static class TheForgeExecuteRendering
             const int maxArgsPreviewChars = 200;
 
             string argsPreview = call.ArgumentsJson.Length > maxArgsPreviewChars
-                ? call.ArgumentsJson[..maxArgsPreviewChars] + "\u2026"
+                ? call.ArgumentsJson[..Utf8Truncation.SafeCharSliceLength(call.ArgumentsJson, maxArgsPreviewChars)] + "\u2026"
                 : call.ArgumentsJson;
 
             table.AddRow(

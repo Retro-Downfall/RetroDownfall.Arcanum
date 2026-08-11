@@ -93,12 +93,21 @@ public sealed class ArcanumHealthChecker(
             .GetAllStatusesAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        int mcpTotal = mcpServers.Length;
+        // Only always-on servers are readiness-scoped: `alwaysOn: false` entries are deliberately
+        // left Stopped until something starts them, so counting them would report a correctly
+        // configured on-demand server as a bootstrap failure forever.
+        McpServerInfo[] mcpAlwaysOn = mcpServers.Where(static s => s.AlwaysOn).ToArray();
 
-        int mcpHealthy = mcpServers.Count(static s => s.State == McpServerState.Running);
+        int mcpTotal = mcpAlwaysOn.Length;
 
-        string[] mcpFailures = mcpServers
-            .Where(static s => s.State is McpServerState.Error or McpServerState.Stopped && s.AlwaysOn)
+        int mcpHealthy = mcpAlwaysOn.Count(static s => s.State == McpServerState.Running);
+
+        int onDemandTotal = mcpServers.Length - mcpTotal;
+
+        int onDemandStopped = mcpServers.Count(static s => !s.AlwaysOn && s.State != McpServerState.Running);
+
+        string[] mcpFailures = mcpAlwaysOn
+            .Where(static s => s.State is McpServerState.Error or McpServerState.Stopped)
             .Select(static s => string.IsNullOrWhiteSpace(s.ErrorMessage) ? s.Name : $"{s.Name}: {s.ErrorMessage}")
             .ToArray();
 
@@ -110,9 +119,9 @@ public sealed class ArcanumHealthChecker(
                     ? HealthStatus.Degraded
                     : HealthStatus.Unhealthy;
 
-        string mcpDetail = mcpFailures.Length > 0
-            ? $"{mcpHealthy}/{mcpTotal} running. Failed always-on: {string.Join("; ", mcpFailures)}"
-            : $"{mcpHealthy}/{mcpTotal} running.";
+        string mcpDetail = $"{mcpHealthy}/{mcpTotal} always-on running."
+            + (onDemandTotal > 0 ? $" {onDemandStopped}/{onDemandTotal} on-demand not running." : string.Empty)
+            + (mcpFailures.Length > 0 ? $" Failed always-on: {string.Join("; ", mcpFailures)}" : string.Empty);
 
         components.Add(new HealthComponentDto("MCP", mcpStatus, mcpDetail));
 

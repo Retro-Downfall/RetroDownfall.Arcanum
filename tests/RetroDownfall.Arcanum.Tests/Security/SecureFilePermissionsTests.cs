@@ -293,18 +293,33 @@ public sealed class SecureFilePermissionsTests : IAsyncLifetime
     public void RunStartupPermissionSelfCheck_warns_for_world_readable_file()
     {
 
-        string path = Path.Combine(_temp.Root, "world-readable.txt");
-
-        File.WriteAllText(path, "data");
-
-        if (!OperatingSystem.IsWindows())
+        if (OperatingSystem.IsWindows())
         {
 
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+            return;
 
         }
 
-        SecureFilePermissions.RunStartupPermissionSelfCheck(NullLogger.Instance);
+        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(ArcanumPaths.SecretStoreDirectory);
+
+        string path = ArcanumPaths.ApiKeyStoreFile;
+
+        File.WriteAllText(path, "data");
+
+        File.SetUnixFileMode(
+            path,
+            UnixFileMode.UserRead
+            | UnixFileMode.UserWrite
+            | UnixFileMode.GroupRead
+            | UnixFileMode.OtherRead);
+
+        CapturingLogger logger = new();
+
+        SecureFilePermissions.RunStartupPermissionSelfCheck(logger);
+
+        Assert.Contains(
+            logger.Warnings,
+            warning => warning.Message.Contains(path, StringComparison.Ordinal));
 
     }
 

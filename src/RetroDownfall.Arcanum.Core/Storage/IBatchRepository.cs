@@ -119,6 +119,28 @@ public interface IBatchRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Records a line that never reached a provider — a JSON-parse failure or a budget refusal —
+    /// as a single durable terminal transition, so it is never observable in the
+    /// provider-ambiguous <c>Dispatched</c> state. Returns false when the line already has any
+    /// durable checkpoint or the batch is no longer in progress.
+    /// </summary>
+    Task<bool> TryRecordTerminalLineAsync(
+
+        Guid batchId,
+
+        long lineNumber,
+
+        string customId,
+
+        BatchLineOutputKind outputKind,
+
+        BatchRequestOutcome outcome,
+
+        string jsonLine,
+
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Atomically replaces a dispatched checkpoint with its terminal JSONL output. Repeating the
     /// exact completion is idempotent; conflicting terminal content is rejected.
     /// </summary>

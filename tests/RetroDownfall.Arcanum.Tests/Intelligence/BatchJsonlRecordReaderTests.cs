@@ -117,6 +117,57 @@ public sealed class BatchJsonlRecordReaderTests
 
     [Fact]
 
+    public async Task ReadAsync_Utf8BomPrefixedFirstRecord_ParsesOnInMemoryAndSpilledPathsAlike()
+    {
+
+        string smallRecord =
+            """{"custom_id":"in-memory","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}""";
+
+        string spilledRecord =
+            "{\"custom_id\":\"spilled\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\""
+            + new string('y', BatchJsonlRecordReader.InMemoryByteLimit + 1)
+            + "\"}]}}";
+
+        Assert.Equal(
+            "in-memory",
+            (await ReadSingleAsync(Encoding.UTF8.Preamble.ToArray(), smallRecord)).Request!.CustomId);
+
+        Assert.Equal(
+            "spilled",
+            (await ReadSingleAsync(Encoding.UTF8.Preamble.ToArray(), spilledRecord)).Request!.CustomId);
+
+    }
+
+    private static async Task<BatchJsonlRecordReadResult> ReadSingleAsync(
+        byte[] preamble,
+        string record)
+    {
+
+        byte[] input = [.. preamble, .. Encoding.UTF8.GetBytes(record + "\n")];
+
+        List<BatchJsonlRecordReadResult> records = [];
+
+        await foreach (BatchJsonlRecordReadResult read in BatchJsonlRecordReader.ReadAsync(
+                           new MemoryStream(input),
+                           temporaryDirectory: null,
+                           spillCreated: null,
+                           CancellationToken.None))
+        {
+
+            records.Add(read);
+
+        }
+
+        BatchJsonlRecordReadResult single = Assert.Single(records);
+
+        Assert.Null(single.Error);
+
+        return single;
+
+    }
+
+    [Fact]
+
     public async Task ReadAsync_RecordAboveMaterializationBoundary_ReportsMeasurementAndContinues()
 
     {

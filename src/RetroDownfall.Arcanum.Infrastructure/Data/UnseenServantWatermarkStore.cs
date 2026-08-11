@@ -146,7 +146,7 @@ internal sealed class UnseenServantWatermarkStore(ArcanumDbContext db) : IUnseen
 
         if (connection.State != ConnectionState.Open)
         {
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
 
         return connection;

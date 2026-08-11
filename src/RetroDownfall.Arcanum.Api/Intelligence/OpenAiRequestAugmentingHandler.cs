@@ -298,7 +298,10 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
         try
         {
 
-            await using Stream stream = await response.Content
+            // Not `await using`: the stream belongs to a response that is handed back to the caller
+            // whenever the body turns out not to be about `strict`. Disposing it there destroys the
+            // provider's real error — the only place the reason for the 400 lives.
+            Stream stream = await response.Content
                 .ReadAsStreamAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -324,6 +327,20 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
 
             }
 
+            // Put the consumed prefix back in front of whatever is left, so the caller reads the
+            // whole body exactly as the provider sent it.
+            HttpContent replayable = new StreamContent(
+                new PrefixedStream(prefix.AsMemory(0, totalRead), stream));
+
+            foreach (KeyValuePair<string, IEnumerable<string>> header in response.Content.Headers)
+            {
+
+                _ = replayable.Headers.TryAddWithoutValidation(header.Key, header.Value);
+
+            }
+
+            response.Content = replayable;
+
             string body = Encoding.UTF8.GetString(prefix, 0, totalRead);
 
             return body.Contains("strict", StringComparison.OrdinalIgnoreCase);
@@ -339,6 +356,107 @@ public sealed class OpenAiRequestAugmentingHandler : DelegatingHandler
         {
 
             return false;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Replays an already-read prefix ahead of the rest of a one-shot response stream, so bounding
+    /// the retry inspection never costs the caller any of the body.
+    /// </summary>
+    private sealed class PrefixedStream(ReadOnlyMemory<byte> prefix, Stream rest) : Stream
+    {
+
+        private int _prefixPosition;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+
+            if (_prefixPosition < prefix.Length)
+            {
+
+                int taken = Math.Min(buffer.Length, prefix.Length - _prefixPosition);
+
+                prefix.Span.Slice(_prefixPosition, taken).CopyTo(buffer);
+
+                _prefixPosition += taken;
+
+                return taken;
+
+            }
+
+            return rest.Read(buffer);
+
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+
+            if (_prefixPosition < prefix.Length)
+            {
+
+                int taken = Math.Min(buffer.Length, prefix.Length - _prefixPosition);
+
+                prefix.Slice(_prefixPosition, taken).CopyTo(buffer);
+
+                _prefixPosition += taken;
+
+                return taken;
+
+            }
+
+            return await rest.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+        }
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+
+            if (disposing)
+            {
+
+                rest.Dispose();
+
+            }
+
+            base.Dispose(disposing);
 
         }
 

@@ -178,9 +178,19 @@ indexing slice sizes are code-owned adaptive behavior and are not editable. Remo
 removes authentication, containment, SSRF protection, Wards/Sanctum, cryptographic/protocol
 integrity, single-allocation protection, or explicit operator policy.
 
-Arcanum does not flatten arbitrary environment variables into the configuration
-tree. `ARCANUM_EDITION` and `ARCANUM_HOST_ANY` are explicit runtime overrides;
-secret values use only the dedicated environment references documented below.
+Arcanum does not flatten arbitrary environment variables into the configuration tree, but it does
+reserve one override namespace. A variable named `ARCANUM_Arcanum__<Path>` — the prefix keeps the
+`Arcanum` wrapper, and `__` separates path segments, for example
+`ARCANUM_Arcanum__Host__Port` — is applied to the matching descriptor path by
+`ConfigurationEnvironmentResolver`. **That namespace reaches every editable path on this page,
+including security policy** such as `security.ward.enabled`, `security.ward.autoApprove.enabled`,
+and `security.allowUnsandboxedToolChildren`, so a deployment audit must cover the whole
+`ARCANUM_Arcanum__*` namespace and not just the two named variables below. `ARCANUM_EDITION` and
+`ARCANUM_HOST_ANY` are additional explicit runtime overrides. An environment override never touches
+`arcanum.json`: it applies to a cloned effective snapshot, and `arcanum config show`/`get` report
+the variable name and whether it took effect without ever printing its value. Secret values use
+only the dedicated environment references documented below, and a secret reference naming anything
+inside `ARCANUM_Arcanum__*` (or the `Arcanum__*` binding namespace) fails validation.
 
 ### Edition, host, providers, and model selection
 
@@ -395,7 +405,7 @@ parent's current-turn materialized allowlist, and each explicit path/content rem
 | `retention.daemonHistory.enabled` | `bool`, `true` | — | Enables age pruning for terminal daemon execution summaries; active executions remain protected. The current history store is process-local and count-bounded, so restart also clears it. |
 | `retention.daemonHistory.days` | `int`, `30` | 1–3,650 | Age threshold for terminal entries in the current process-local daemon history. |
 | `daemon.maxConcurrentJobs` | `int`, `8` | 1–1,024 | Concurrent Unseen Servant jobs. |
-| `daemon.jobs.name` | `string`, `""` | nonblank | Human-readable schedule name. |
+| `daemon.jobs.name` | `string`, `""` | nonblank; unique case-insensitively | Human-readable schedule name. It is also the job's daemon id (`unseen-servant:<name>`), so a blank or duplicate name fails startup: the registry resolves an id to its first match, which would leave a twin permanently unrunnable and misattribute its history. |
 | `daemon.jobs.intervalMinutes` | `int`, `60` | 1–10,080 | Minutes between runs. |
 | `daemon.jobs.targetSpell` | `string`, `""` | valid spell | Spell invoked on each tick. |
 | `daemon.jobs.enabled` | `bool`, `true` | — | Makes the schedule eligible to run. |
@@ -592,6 +602,15 @@ and custom workspace-check profiles use multiline JSON editors backed by the
 source-generated configuration JSON context. Allowlists use chip editors.
 `retention.protectedSessionIds` uses the same comma-separated editor while converting each value to
 a `Guid`; the stored contract remains a typed `Guid[]`.
+
+A descriptor whose key crosses a collection describes every element rather than one path — for
+example `integrations.a2A.skills.id` describes each entry of `integrations.a2A.skills`. Sections
+whose collections have a structured editor (providers, models, daemon schedules) bind those
+descriptors per row. Anywhere else the generic view renders the descriptor read-only with its label,
+description, and the `arcanum config set integrations.a2A.skills.0.id <value>` form that does write
+it, because an editable box there would accept text no save could apply.
+`GenericSettingsSectionViewTests.Every_input_control_the_generic_editor_renders_addresses_a_settable_path`
+pins that: every control the generic view offers addresses a path Save can write.
 
 `ConfigurationViewModel` keeps the last loaded settings as a snapshot. Polished
 pages rebuild only their owned records; generic edits clone and update only the

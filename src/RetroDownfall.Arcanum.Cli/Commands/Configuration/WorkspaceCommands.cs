@@ -255,6 +255,8 @@ public sealed class WorkspaceCommands(
 
         string? cursor = null;
 
+        HashSet<string> seenCursors = [];
+
         do
         {
 
@@ -295,6 +297,19 @@ public sealed class WorkspaceCommands(
             AnsiConsole.Write(table);
 
             cursor = result.Value.NextCursor;
+
+            // A host that repeats a cursor is not paging, and following it would re-print this page
+            // forever. Fail with the same no-progress contract the other paging paths use.
+            if (cursor is not null
+                && !seenCursors.Add(cursor))
+            {
+
+                return WriteError(
+                    new Error(
+                        "Api.PaginationNoProgress",
+                        "The workspace file listing returned a repeated continuation cursor. Retry after repairing or upgrading the host."));
+
+            }
 
         } while (cursor is not null);
 
@@ -393,7 +408,10 @@ public sealed class WorkspaceCommands(
 
         }
 
-        AnsiConsole.Write(new Text(result.Value.Content));
+        // Raw stdout: Spectre would render the file as a Text renderable and hard-wrap it at the
+        // profile width (80 when stdout is redirected), and normalize CRLF to LF, so redirected
+        // output would no longer match the file the server read.
+        Console.Out.Write(result.Value.Content);
 
         return 0;
 
@@ -770,6 +788,18 @@ public sealed class WorkspaceCommands(
             {
 
                 return Result<CampaignDto[]>.Success([.. campaigns]);
+
+            }
+
+            // A non-advancing offset would append the same page forever, so it fails here rather
+            // than growing the accumulated list until the process runs out of memory.
+            if (nextOffset <= offset)
+            {
+
+                return Result<CampaignDto[]>.Failure(
+                    new Error(
+                        "Api.PaginationNoProgress",
+                        $"The campaign list returned non-advancing offset {nextOffset} after {offset}. Retry after repairing or upgrading the host."));
 
             }
 

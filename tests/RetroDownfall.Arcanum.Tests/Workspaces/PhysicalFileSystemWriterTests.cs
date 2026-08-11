@@ -143,6 +143,55 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A symlinked ancestor plus a not-yet-existing leaf skips the resolver's symlink check, so the
+    /// containment revalidation must run *before* the parent directories are created: mkdir(2) follows
+    /// symlinks in the path prefix, and creating them first leaves an orphaned directory tree outside
+    /// the workspace even though the write itself is rejected.
+    /// </summary>
+    [Fact]
+    public async Task WriteFileAsync_does_not_create_parent_directories_outside_workspace_through_a_symlinked_ancestor()
+    {
+
+        if (!OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        string outsideDir = Path.Combine(Path.GetTempPath(), $"arcanum-outside-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(outsideDir);
+
+        try
+        {
+
+            Directory.CreateSymbolicLink(Path.Combine(_workspace.Root, "escape-dir"), outsideDir);
+
+            PhysicalFileSystemWriter writer = CreateWriter();
+
+            WorkspaceInfo workspace = MakeWorkspace();
+
+            Result<FileWriteResult> result = await writer.WriteFileAsync(
+                workspace, "escape-dir/injected/deeper/payload.txt", "hello", CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal("Workspace.SymbolicLinkEscape", result.Error.Code);
+
+            Assert.False(Directory.Exists(Path.Combine(outsideDir, "injected")));
+
+            Assert.False(File.Exists(Path.Combine(outsideDir, "injected", "deeper", "payload.txt")));
+
+        }
+        finally
+        {
+
+            Directory.Delete(outsideDir, recursive: true);
+
+        }
+
+    }
+
     [Fact]
     public async Task WriteFileAsync_rejects_content_exceeding_MaxFileWriteSizeBytes()
     {
@@ -554,6 +603,78 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// The workspace root is never a delete target.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="WorkspacePathResolver.ResolveRelativePath"/> deliberately maps an empty, blank, or
+    /// <c>"."</c> relative path to the root, which is what the listing routes want. Nothing below it
+    /// distinguishes that case: the resolved path equals the root, so the containment revalidation
+    /// short-circuits on the equality branch and passes. Reached from
+    /// <c>DELETE /api/workspaces/{id}/files?relativePath=.&amp;recursive=true</c> that unlinks the
+    /// registered workspace itself, so the refusal belongs in the writer where every caller inherits it.
+    /// </remarks>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(".")]
+    [InlineData("./")]
+    public async Task DeleteAsync_refuses_to_delete_the_workspace_root(string relativePath)
+    {
+
+        _workspace.WriteFile("keep.txt", "content");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileDeleteResult> result = await writer.DeleteAsync(
+            workspace,
+            relativePath,
+            recursive: true,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathNotAllowed", result.Error.Code);
+
+        Assert.True(Directory.Exists(_workspace.Root));
+
+        Assert.True(File.Exists(Path.Combine(_workspace.Root, "keep.txt")));
+
+    }
+
+    /// <summary>
+    /// A relative path that walks back to the root is refused one layer earlier, by the resolver's
+    /// traversal rule rather than the root guard. Pinned separately so the two refusals cannot be
+    /// collapsed into one and silently lose a case.
+    /// </summary>
+    [Fact]
+    public async Task DeleteAsync_refuses_a_traversal_that_resolves_to_the_workspace_root()
+    {
+
+        _workspace.WriteFile("keep.txt", "content");
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<FileDeleteResult> result = await writer.DeleteAsync(
+            workspace,
+            "foo/..",
+            recursive: true,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Workspace.PathTraversal", result.Error.Code);
+
+        Assert.True(Directory.Exists(_workspace.Root));
+
+        Assert.True(File.Exists(Path.Combine(_workspace.Root, "keep.txt")));
+
+    }
+
     [Fact]
     public async Task DeleteAsync_returns_FileNotFound_when_path_does_not_exist()
     {
@@ -699,6 +820,36 @@ public sealed class PhysicalFileSystemWriterTests : IAsyncLifetime
         Result<TextBlockReplaceResult> result = await replace;
 
         Assert.True(result.IsFailure);
+
+    }
+
+    [Fact]
+    public async Task ReplaceTextBlockAsync_rejects_a_target_beyond_the_read_size_limit()
+    {
+
+        string path = Path.Combine(_workspace.Root, "huge.txt");
+
+        string original = new string('a', 1024 * 1024) + "needle";
+
+        await File.WriteAllTextAsync(path, original);
+
+        PhysicalFileSystemWriter writer = CreateWriter();
+
+        WorkspaceInfo workspace = MakeWorkspace();
+
+        Result<TextBlockReplaceResult> result = await writer.ReplaceTextBlockAsync(
+            workspace,
+            "huge.txt",
+            "needle",
+            "found",
+            expectedReplacements: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Workspace.FileTooLarge, result.Error.Code);
+
+        Assert.Equal(original, await File.ReadAllTextAsync(path));
 
     }
 

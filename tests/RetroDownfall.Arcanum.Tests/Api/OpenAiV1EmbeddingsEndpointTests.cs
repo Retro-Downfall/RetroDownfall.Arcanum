@@ -351,6 +351,67 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task PostEmbeddings_ProviderReturnsFewerVectorsThanInputs_Returns503()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // An OpenAI-compatible embedding server (Ollama, vLLM, a proxy) can answer a batch with fewer
+        // `data` entries than inputs, and Microsoft.Extensions.AI does not enforce the 1:1 contract —
+        // so the endpoint must reject the short batch as a sanitized 503 rather than indexing off the
+        // end of the array and surfacing an unhandled 500.
+        _fake.BatchVectorLimit = 1;
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/embeddings",
+            new StringContent("""{"input":["alpha","beta","gamma"]}""", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        OpenAiErrorResponse? error = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task PostEmbeddings_ProviderReturnsFewerVectorsThanChunksForLongInput_Returns503()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // Same provider misbehavior on the long-input path: a short chunk batch must not be
+        // mean-pooled (a silently wrong vector), and an empty one must not throw.
+        _fake.BatchVectorLimit = 0;
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string longText = string.Concat(Enumerable.Repeat("The quick brown fox jumps over the lazy dog. ", 30));
+
+        OpenAiEmbeddingRequest request = new(Model: null, Input: new OpenAiEmbeddingInput { Strings = [longText] });
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/v1/embeddings",
+            new StringContent(
+                JsonSerializer.Serialize(request, ArcanumJsonContext.Default.OpenAiEmbeddingRequest),
+                Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        OpenAiErrorResponse? error = JsonSerializer.Deserialize(
+            await response.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.Equal("embedding_provider_unavailable", error!.Error.Code);
+
+    }
+
+    [SkippableFact]
     public async Task PostEmbeddings_WithoutApiKey_Returns401()
     {
 
@@ -497,14 +558,23 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
         /// <summary>Counts <see cref="EmbedBatchAsync"/> calls — see <see cref="EmbedCallCount"/>.</summary>
         public int EmbedBatchCallCount { get; private set; }
 
+        /// <summary>
+        /// Caps how many vectors a batch answer carries, reproducing an OpenAI-compatible provider
+        /// that returns fewer <c>data</c> entries than inputs. <see cref="int.MaxValue"/> (the
+        /// default) keeps the honest one-vector-per-input behavior.
+        /// </summary>
+        public int BatchVectorLimit { get; set; } = int.MaxValue;
+
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
 
             EmbedBatchCallCount++;
 
-            Embedding<float>[] result = new Embedding<float>[texts.Count];
+            int count = Math.Min(texts.Count, BatchVectorLimit);
 
-            for (int i = 0; i < texts.Count; i++)
+            Embedding<float>[] result = new Embedding<float>[count];
+
+            for (int i = 0; i < count; i++)
             {
 
                 result[i] = new Embedding<float>(MakeVector(texts[i]));

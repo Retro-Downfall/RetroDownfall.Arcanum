@@ -131,6 +131,77 @@ public sealed class RequestAugmentingHandlerTests
 
     }
 
+    /// <summary>
+    /// A 400 that has nothing to do with <c>strict</c> is the provider's real verdict, and it is the
+    /// only place the reason lives. Inspecting the body for the retry decision must not consume it:
+    /// the caller reads the same response afterwards, and a drained one degrades a precise
+    /// <c>context_length_exceeded</c> into a bare "Status: 400".
+    /// </summary>
+    [Fact]
+    public async Task OpenAiHandler_BadRequestNotAboutStrict_LeavesTheProviderErrorReadable()
+    {
+
+        StreamingBadRequestHandler rejecting = new(
+            """{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 8192 tokens."}}""");
+
+        OpenAiRequestAugmentingHandler handler = new(
+            NullLogger<OpenAiRequestAugmentingHandler>.Instance)
+        {
+
+            InnerHandler = rejecting,
+
+        };
+
+        using HttpClient client = new(handler);
+
+        using HttpRequestMessage request = CreateJsonRequest("""
+            {"model":"test-model","messages":[],"response_format":{"type":"json_schema","json_schema":{"name":"test","schema":{"type":"object"}}}}
+            """);
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Equal(1, rejecting.CallCount);
+
+        Assert.Contains(
+            "context_length_exceeded",
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Answers 400 with a body carried on a one-shot stream, the way a real transport does — a
+    /// buffered <see cref="StringContent"/> would replay itself and hide a consumed response.
+    /// </summary>
+    private sealed class StreamingBadRequestHandler(string body) : DelegatingHandler
+    {
+
+        public int CallCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+
+            CallCount++;
+
+            HttpResponseMessage response = new(HttpStatusCode.BadRequest)
+            {
+
+                Content = new StreamContent(new MemoryStream(Encoding.UTF8.GetBytes(body))),
+
+            };
+
+            return Task.FromResult(response);
+
+        }
+
+    }
+
     private static HttpRequestMessage CreateJsonRequest(string json)
     {
 

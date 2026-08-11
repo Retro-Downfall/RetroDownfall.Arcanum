@@ -57,48 +57,58 @@ internal static class MemoryEndpoints
         apiGroup.MapGet(
             "/memory/status",
             (ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
-                HandleStatusAsync(null, db, options, context));
+                HandleStatusAsync(null, db, options, context))
+        .WithName("GetMemoryStatus");
 
         apiGroup.MapGet(
             "/memory/status/{sessionId:guid}",
             (Guid sessionId, ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
-                HandleStatusAsync(sessionId, db, options, context));
+                HandleStatusAsync(sessionId, db, options, context))
+        .WithName("GetSessionMemoryStatus");
 
         apiGroup.MapGet(
             "/memory/sources",
             (ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
-                HandleSourcesAsync(null, db, options, context));
+                HandleSourcesAsync(null, db, options, context))
+        .WithName("GetMemorySources");
 
         apiGroup.MapGet(
             "/memory/sources/{sessionId:guid}",
             (Guid sessionId, ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
-                HandleSourcesAsync(sessionId, db, options, context));
+                HandleSourcesAsync(sessionId, db, options, context))
+        .WithName("GetSessionMemorySources");
 
         apiGroup.MapPost(
             "/memory/search",
-            HandleSearchAsync);
+            HandleSearchAsync)
+        .WithName("SearchMemory");
 
         apiGroup.MapGet(
             "/memory/explain",
             (ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
-                HandleExplainAsync(null, db, options, context));
+                HandleExplainAsync(null, db, options, context))
+        .WithName("ExplainMemory");
 
         apiGroup.MapGet(
             "/memory/explain/{sessionId:guid}",
             (Guid sessionId, ArcanumDbContext db, IOptionsMonitor<ArcanumSettings> options, HttpContext context) =>
-                HandleExplainAsync(sessionId, db, options, context));
+                HandleExplainAsync(sessionId, db, options, context))
+        .WithName("ExplainSessionMemory");
 
         apiGroup.MapGet(
             "/memory/lexicon",
-            HandleLexiconListAsync);
+            HandleLexiconListAsync)
+        .WithName("ListLexiconEntries");
 
         apiGroup.MapGet(
             "/memory/lexicon/{**name}",
-            HandleLexiconShowAsync);
+            HandleLexiconShowAsync)
+        .WithName("GetLexiconEntry");
 
         apiGroup.MapDelete(
             "/memory/lexicon/{**name}",
-            HandleLexiconDeleteAsync);
+            HandleLexiconDeleteAsync)
+        .WithName("DeleteLexiconEntry");
 
         return apiGroup;
 

@@ -519,6 +519,8 @@ public sealed partial class WizardIntelligenceProvider
 
                     MaxIndexBytes = maxIndexBytes,
 
+                    ScryingFoci = turn.ScryingFoci,
+
                 });
 
         ContextTokenBreakdown breakdown = ModelTokenEstimator.EstimateContext(

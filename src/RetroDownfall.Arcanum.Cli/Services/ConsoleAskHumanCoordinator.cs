@@ -17,6 +17,7 @@ internal sealed class ConsoleAskHumanCoordinator
     private readonly object _gate = new();
     private readonly ArcanumApiClient _apiClient;
     private readonly IThemePalette _palette;
+    private readonly IAnsiConsole _diagnosticConsole;
     private readonly Func<string, bool, CancellationToken, Task<string?>> _readLineAsync;
 
     private PendingHitl? _pending;
@@ -39,13 +40,21 @@ internal sealed class ConsoleAskHumanCoordinator
         public bool SubmitStarted { get; set; }
     }
 
+    /// <summary>
+    /// Operator diagnostics go to <paramref name="diagnosticConsole" /> (stderr by default), never to
+    /// the process-global console: the non-interactive branch below is exactly the redirected and
+    /// <c>--json</c> case, where stdout carries the assistant answer. Only the interactive prompt
+    /// itself is rendered on stdout, by the caller-supplied read-line delegate.
+    /// </summary>
     public ConsoleAskHumanCoordinator(
         ArcanumApiClient apiClient,
         IThemePalette palette,
-        Func<string, bool, CancellationToken, Task<string?>>? readLineAsync = null)
+        Func<string, bool, CancellationToken, Task<string?>>? readLineAsync = null,
+        IAnsiConsole? diagnosticConsole = null)
     {
         _apiClient = apiClient;
         _palette = palette;
+        _diagnosticConsole = diagnosticConsole ?? CreateStandardErrorConsole();
         _readLineAsync = readLineAsync ?? DefaultReadLineAsync;
     }
 
@@ -86,7 +95,7 @@ internal sealed class ConsoleAskHumanCoordinator
         {
             if (parseError is not null)
             {
-                AnsiConsole.MarkupLine(_palette.ErrorMarkup(Markup.Escape(parseError)));
+                _diagnosticConsole.MarkupLine(_palette.ErrorMarkup(Markup.Escape(parseError)));
                 return AskHumanResult.ParseFailed;
             }
 
@@ -105,7 +114,7 @@ internal sealed class ConsoleAskHumanCoordinator
 
             if (submitResult.IsFailure)
             {
-                AnsiConsole.MarkupLine(
+                _diagnosticConsole.MarkupLine(
                     _palette.ErrorMarkup(Markup.Escape(
                         $"Failed to submit response to Daemon ({submitResult.Error.Code}): {submitResult.Error.Message}")));
                 return AskHumanResult.SubmitFailed;
@@ -119,7 +128,7 @@ internal sealed class ConsoleAskHumanCoordinator
             // Exactly one console input owner.
             if (_pending is not null)
             {
-                AnsiConsole.MarkupLine(
+                _diagnosticConsole.MarkupLine(
                     _palette.ErrorMarkup(Markup.Escape(
                         "ask_human: console input is already owned by another prompt.")));
                 return AskHumanResult.SubmitFailed;
@@ -272,7 +281,7 @@ internal sealed class ConsoleAskHumanCoordinator
             }
             catch (InvalidOperationException)
             {
-                AnsiConsole.MarkupLine(
+                _diagnosticConsole.MarkupLine(
                     _palette.ErrorMarkup(Markup.Escape(
                         "ask_human: no interactive input is available to answer the prompt.")));
                 Settle(pending.Generation, AskHumanResult.SubmitFailed);
@@ -293,7 +302,7 @@ internal sealed class ConsoleAskHumanCoordinator
 
             if (string.IsNullOrWhiteSpace(answer))
             {
-                AnsiConsole.MarkupLine(
+                _diagnosticConsole.MarkupLine(
                     _palette.ErrorMarkup(Markup.Escape(
                         "ask_human: no answer was provided; the prompt was left unanswered.")));
                 Settle(pending.Generation, AskHumanResult.SubmitFailed);
@@ -328,7 +337,7 @@ internal sealed class ConsoleAskHumanCoordinator
 
             if (submitResult.IsFailure)
             {
-                AnsiConsole.MarkupLine(
+                _diagnosticConsole.MarkupLine(
                     _palette.ErrorMarkup(Markup.Escape(
                         $"Failed to submit response to Daemon ({submitResult.Error.Code}): {submitResult.Error.Message}")));
                 Settle(pending.Generation, AskHumanResult.SubmitFailed);
@@ -408,6 +417,13 @@ internal sealed class ConsoleAskHumanCoordinator
             return null;
         }
     }
+
+    private static IAnsiConsole CreateStandardErrorConsole() =>
+        AnsiConsole.Create(
+            new AnsiConsoleSettings
+            {
+                Out = new AnsiConsoleOutput(Console.Error),
+            });
 
     private static Task<string?> DefaultReadLineAsync(
         string promptMarkup,

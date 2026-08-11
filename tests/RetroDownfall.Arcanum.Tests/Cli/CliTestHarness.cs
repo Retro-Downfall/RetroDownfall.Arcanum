@@ -79,3 +79,45 @@ internal static class CliTestHarness
 }
 
 internal readonly record struct CliTestResult(int ExitCode, string Output, string Error);
+
+/// <summary>
+/// Console previews are truncated by character count. .NET strings are UTF-16, so a cutoff that
+/// lands between the two halves of a surrogate pair leaves an unpaired code unit: the terminal
+/// renders U+FFFD and the copied text is no longer valid Unicode. Rendered CLI output must never
+/// contain one.
+/// </summary>
+internal static class Utf16Assert
+{
+
+    public static bool ContainsLoneSurrogate(string text)
+    {
+
+        for (int index = 0; index < text.Length; index++)
+        {
+
+            if (char.IsHighSurrogate(text[index]))
+            {
+
+                if (index + 1 >= text.Length || !char.IsLowSurrogate(text[index + 1]))
+                {
+                    return true;
+                }
+
+                index++;
+
+                continue;
+
+            }
+
+            if (char.IsLowSurrogate(text[index]))
+            {
+                return true;
+            }
+
+        }
+
+        return false;
+
+    }
+
+}

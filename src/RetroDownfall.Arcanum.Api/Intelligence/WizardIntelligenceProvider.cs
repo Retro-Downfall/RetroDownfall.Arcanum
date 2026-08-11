@@ -98,7 +98,6 @@ public sealed partial class WizardIntelligenceProvider(
             modelTokenEstimator,
             modelCallExecutor,
             tokenizerResolver,
-            settings,
             logger);
 
     private IModelTokenEstimator ModelTokenEstimator => _tokenAccounting.Estimator;
@@ -351,7 +350,8 @@ public sealed partial class WizardIntelligenceProvider(
                         frame.ToolCall?.CallId ?? correlation.ToolCallId ?? Guid.NewGuid().ToString("N"),
                         frame.ToolCall?.Name ?? frame.Message,
                         frame.ToolCall?.ArgumentsJson ?? frame.Data ?? string.Empty,
-                        ToolCallDisposition.ServerExecution);
+                        ToolCallDisposition.ServerExecution,
+                        frame.ToolCall?.PreserveProviderCallId ?? false);
 
                     yield break;
 
@@ -384,7 +384,10 @@ public sealed partial class WizardIntelligenceProvider(
                 case IntelligenceEventType.ToolResult:
                     bool failed = _pendingToolError is not null;
 
-                    string? publicError = _pendingToolError?.Message;
+                    // The failure reason rides on Data; Message carries the tool name, so reading it
+                    // first would report "read_file" as the error text. Message stays as the
+                    // fallback for producers that only populate it.
+                    string? publicError = _pendingToolError?.Data ?? _pendingToolError?.Message;
 
                     _pendingToolError = null;
 
@@ -1189,8 +1192,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             IntelligenceEvent firstEvent = enumerator.Current;
 
-            // Pre-commit events (Status / SessionBound / ConversationBound) must not close the
-            // fallback window (ADR 0004: commit from ModelCallUpdate / tool proposal / empty
+            // Pre-commit events (Status / SessionBound / ConversationBound / Context) must not close
+            // the fallback window (ADR 0004: commit from ModelCallUpdate / tool proposal / empty
             // success — tracked on classification.ProviderCommitted).
             List<IntelligenceEvent> preCommitBuffer = [];
 
@@ -1399,10 +1402,18 @@ public sealed partial class WizardIntelligenceProvider(
         && !classification.ProviderCommitted
         && streamedLength == 0;
 
+    /// <summary>
+    /// Frames a candidate can emit before it has committed anything. <c>Context</c> belongs here:
+    /// <c>ModelCallExecutor</c> yields the token-accounting frame before the provider socket is
+    /// dialled at all, so every streaming turn emits one ahead of a connectivity error. Leaving it
+    /// out closed the fallback window on that frame, the gate never reached the terminal
+    /// <c>error</c>, and streaming fallback never advanced to the next candidate.
+    /// </summary>
     private static bool IsPreCommitStreamingEvent(IntelligenceEvent evt) =>
         evt.Type is IntelligenceEventType.Status
             or IntelligenceEventType.SessionBound
-            or IntelligenceEventType.ConversationBound;
+            or IntelligenceEventType.ConversationBound
+            or IntelligenceEventType.Context;
 
     // CS8425: intentionally no [EnumeratorCancellation] parameter — every caller (StreamPromptAsync)
     // passes inferenceToken/callerToken as ordinary arguments and drives the enumerator manually via
@@ -2378,6 +2389,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                             MaxIndexBytes = streamMaxIndexBytes,
 
+                            ScryingFoci = streamContextRequest.ScryingFoci,
+
                         });
 
                 bool RemoveSemanticForAttachmentAdmission(ContextMaterializationEntry removed)
@@ -2601,6 +2614,7 @@ public sealed partial class WizardIntelligenceProvider(
                             SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
                             MaxIndexItems = streamMaxIndexItems,
                             MaxIndexBytes = streamMaxIndexBytes,
+                            ScryingFoci = streamContextRequest.ScryingFoci,
                         });
                 chatMessages = preparedMessages;
                 streamingContextPrepared = true;
@@ -4184,19 +4198,22 @@ public sealed partial class WizardIntelligenceProvider(
             .ConfigureAwait(false);
 
         // Do not emit ToolCall — no waiter was registered, so clients must not try to answer.
+        // toolCall.argumentsJson carries the serialized call arguments on every frame; the denial
+        // text is the human-readable failure and rides on Data, exactly as a tolerated tool failure
+        // does.
         yield return new IntelligenceEvent(
             IntelligenceEventType.ToolError,
             denied.ToolName,
             message,
             null,
-            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ResultText, toolCallIndex));
+            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ArgsSnapshot, toolCallIndex));
 
         yield return new IntelligenceEvent(
             IntelligenceEventType.ToolResult,
             denied.ToolName,
             denied.ResultText,
             null,
-            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ResultText, toolCallIndex));
+            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ArgsSnapshot, toolCallIndex));
     }
 
     private async Task<Result<ResolvedSpell?>> ResolveRoutedSpellAsync(
@@ -4261,7 +4278,7 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 return Result<ResolvedSpell?>.Failure(
                     new Error(
-                        "Validation.SpellOverride",
+                        ErrorCodes.Validation.SpellOverride,
                         $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name."));
             }
 
@@ -5989,7 +6006,8 @@ public sealed partial class WizardIntelligenceProvider(
                 sanctumGuard,
                 processResourceLimiter,
                 workingDirectory,
-                settings.Value.Security.AllowUnsandboxedToolChildren));
+                settings.Value.Security.AllowUnsandboxedToolChildren,
+                settings.Value.Edition));
         }
 
         IReadOnlyList<string>? declaredTools = activeSpell?.SkillMetadata?.DeclaredTools;
@@ -7518,11 +7536,10 @@ public sealed partial class WizardIntelligenceProvider(
             IModelTokenEstimator? estimator,
             IModelCallExecutor? executor,
             InferenceTokenizerResolver tokenizerResolver,
-            IOptionsSnapshot<ArcanumSettings> settings,
             ILogger logger)
         {
             IModelTokenEstimator resolvedEstimator =
-                estimator ?? new ModelTokenEstimator(tokenizerResolver, settings);
+                estimator ?? new ModelTokenEstimator(tokenizerResolver);
             return new TokenAccountingDependencies(
                 resolvedEstimator,
                 executor ?? new ModelCallExecutor(

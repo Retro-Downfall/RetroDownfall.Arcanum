@@ -69,6 +69,72 @@ public sealed class GrimoireSchemaInstallerTests
     }
 
     /// <summary>
+    /// Both self-referencing <c>ON DELETE RESTRICT</c> columns on the durable operation ledger must
+    /// be index-backed (§10.8). Retention's leaf-first prune predicate looks children up by
+    /// <c>ParentOperationId</c> <b>or</b> <c>RootOperationId</c>, and SQLite enforces RESTRICT with
+    /// the same lookups, so an unindexed side turns every candidate into a full ledger scan.
+    /// </summary>
+    [Theory]
+    [InlineData("ParentOperationId")]
+    [InlineData("RootOperationId")]
+    public async Task LongRunningOperations_child_lookups_are_index_backed(string column)
+    {
+
+        await using SqliteConnection connection = await InstallAsync();
+
+        string plan = await ExplainQueryPlanAsync(
+            connection,
+            $"""SELECT 1 FROM "LongRunningOperations" child WHERE child."{column}" = 'x';""");
+
+        Assert.Contains("INDEX", plan, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("SCAN", plan, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// <c>Entries_fts</c> is a standalone FTS5 table whose <c>Id</c> column is <c>UNINDEXED</c>, and
+    /// FTS5 can only satisfy MATCH, rowid, and rank constraints — an equality on a stored column
+    /// scans the whole index. Its maintenance triggers therefore key each row by the rowid of the
+    /// entry it indexes, the way <c>lexicon_entries</c> already does, so deleting a session's entries
+    /// stays linear instead of scanning the index once per row.
+    /// </summary>
+    [Fact]
+    public async Task Entries_fts_rows_are_keyed_by_the_rowid_of_the_entry_they_index()
+    {
+
+        await using SqliteConnection connection = await InstallAsync();
+
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO "Sessions" ("Id", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ('session-1', 'active', '2026-01-01', '2026-01-01');
+
+            INSERT INTO "Entries"
+                ("rowid", "Id", "SessionId", "Role", "Content", "ModelUsed", "CreatedAt", "Sequence")
+            VALUES
+                (1000, 'entry-a', 'session-1', 0, 'alpha', 'test-model', '2026-01-01', 1),
+                (2000, 'entry-b', 'session-1', 0, 'beta', 'test-model', '2026-01-01', 2);
+            """);
+
+        Assert.Equal([1000L, 2000L], await ReadFtsRowIdsAsync(connection));
+
+        await ExecuteAsync(
+            connection,
+            """UPDATE "Entries" SET "Content" = 'gamma' WHERE "Id" = 'entry-a';""");
+
+        Assert.Equal([1000L, 2000L], await ReadFtsRowIdsAsync(connection));
+
+        await ExecuteAsync(
+            connection,
+            """DELETE FROM "Entries" WHERE "Id" = 'entry-b';""");
+
+        Assert.Equal([1000L], await ReadFtsRowIdsAsync(connection));
+
+    }
+
+    /// <summary>
     /// One schema source: The Weave, Saga, The Tapestry, and The Lexicon install from the same tree
     /// as everything else, not from separate runtime initializers.
     /// </summary>
@@ -414,6 +480,61 @@ public sealed class GrimoireSchemaInstallerTests
         object? result = await command.ExecuteScalarAsync(CancellationToken.None);
 
         return result is not null && result != DBNull.Value;
+
+    }
+
+    private static async Task ExecuteAsync(SqliteConnection connection, string sql)
+    {
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+
+    }
+
+    private static async Task<List<long>> ReadFtsRowIdsAsync(SqliteConnection connection)
+    {
+
+        List<long> rowIds = [];
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """SELECT "rowid" FROM "Entries_fts" ORDER BY "rowid";""";
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None);
+
+        while (await reader.ReadAsync(CancellationToken.None))
+        {
+
+            rowIds.Add(reader.GetInt64(0));
+
+        }
+
+        return rowIds;
+
+    }
+
+    private static async Task<string> ExplainQueryPlanAsync(SqliteConnection connection, string sql)
+    {
+
+        List<string> details = [];
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "EXPLAIN QUERY PLAN " + sql;
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None);
+
+        while (await reader.ReadAsync(CancellationToken.None))
+        {
+
+            details.Add(reader.GetString(reader.GetOrdinal("detail")));
+
+        }
+
+        return string.Join('\n', details);
 
     }
 

@@ -33,6 +33,8 @@ internal static class FamiliarFixtures
 
     internal const string CodexTurnFailed = "codex-cli-turn-failed.ndjson";
 
+    internal const string CodexShellTool = "codex-cli-shell-tool.ndjson";
+
     internal const string ClaudeAuthStatusConfigured = "claude-auth-status-configured.json";
 
     internal const string ClaudeAuthStatusSignedOut = "claude-auth-status-signed-out.json";

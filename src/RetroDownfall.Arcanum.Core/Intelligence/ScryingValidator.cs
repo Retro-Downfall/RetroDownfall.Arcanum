@@ -60,9 +60,12 @@ public static class ScryingValidator
     /// Validates every image on the request against <paramref name="scrying"/>: master kill-switch,
     /// per-request image count, and — for <c>data:</c> URI images only (native
     /// <see cref="PingRequest.ScryingFoci"/> and any <c>data:</c>-URI <c>image_url</c> content part) —
-    /// MIME allow-list and decoded byte size. <c>http(s)</c> URL images are counted toward the
-    /// per-request cap but are not size/MIME-checked here; the downstream provider fetches and
-    /// rejects them, avoiding a HEAD-request side-channel and added latency on this boundary.
+    /// MIME allow-list and decoded byte size. A <c>data:</c>-URI image with a missing or blank MIME
+    /// type is rejected (<see cref="ErrorCodes.Scrying.UnsupportedMimeType"/>) rather than skipped —
+    /// it can satisfy no allow-list entry, and the downstream <c>DataContent</c> mapping requires a
+    /// media type. <c>http(s)</c> URL images are counted toward the per-request cap but are not
+    /// size/MIME-checked here; the downstream provider fetches and rejects them, avoiding a
+    /// HEAD-request side-channel and added latency on this boundary.
     /// Returns success immediately when the request carries no images.
     /// </summary>
     public static Result ValidateRequestImages(PingRequest request, ScryingSettings scrying)
@@ -183,7 +186,9 @@ public static class ScryingValidator
 
         if (string.IsNullOrWhiteSpace(mimeType))
         {
-            return Result.Success();
+            return Result.Failure(new Error(
+                ErrorCodes.Scrying.UnsupportedMimeType,
+                $"Image content must declare a MIME type. Allowed types: {string.Join(", ", allowedMimeTypes)}."));
         }
 
         foreach (string allowed in allowedMimeTypes)
@@ -210,6 +215,20 @@ public static class ScryingValidator
             return Result.Failure(new Error(
                 ErrorCodes.Scrying.ImageTooLarge,
                 $"Image exceeds the maximum size of {maxBytes} bytes."));
+        }
+
+        // Well-formedness is checked here, after the size cap has bounded the buffer: a decode is
+        // the very next thing that happens to this payload, and a caller mistake deserves a Scrying
+        // validation error rather than a FormatException escaping the turn as a provider failure.
+        if (!string.IsNullOrEmpty(base64Data)
+            && !Convert.TryFromBase64String(
+                base64Data,
+                new byte[Math.Max(decodedBytes, 0L) + 3L],
+                out _))
+        {
+            return Result.Failure(new Error(
+                ErrorCodes.Scrying.InvalidImageData,
+                "Scrying focus data is not valid base64."));
         }
 
         return Result.Success();
@@ -240,8 +259,10 @@ public static class ScryingValidator
 
     /// <summary>
     /// Parses a <c>data:&lt;mime&gt;;base64,&lt;payload&gt;</c> URI. Returns <c>false</c> for any
-    /// other shape (missing <c>base64,</c> marker, empty mime) — callers skip size/MIME validation
-    /// for those rather than fail the request, leaving them to the provider/mapper.
+    /// other shape (missing <c>base64,</c> marker or encoding token) — callers skip size/MIME
+    /// validation for those rather than fail the request, leaving them to the provider/mapper. An
+    /// empty mime still parses, so <c>data:;base64,…</c> reaches the allow-list and is rejected
+    /// there rather than slipping past validation.
     /// </summary>
     private static bool TryParseDataUri(string dataUri, out string mimeType, out string base64Payload)
     {

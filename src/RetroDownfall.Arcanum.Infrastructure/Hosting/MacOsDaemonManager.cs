@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -35,13 +36,23 @@ public sealed class MacOsDaemonManager : IDaemonManager
         }
 
         string guiDomain = string.Create(CultureInfo.InvariantCulture, $"gui/{uid}");
-        (int exitCode, string _, string stderr) = await RunProcessAsync(
+        DaemonProcessOutcome bootstrapOutcome = await RunProcessAsync(
             "/bin/launchctl",
             ["bootstrap", guiDomain, PlistPath],
             cancellationToken).ConfigureAwait(false);
-        if (exitCode != 0)
+        if (bootstrapOutcome.FatalError is { } fatalBootstrap)
         {
-            return Result.Failure(ToolError("DaemonBootstrap", "launchctl bootstrap failed.", stderr, exitCode));
+            return Result.Failure(fatalBootstrap);
+        }
+
+        if (bootstrapOutcome.ExitCode != 0)
+        {
+            return Result.Failure(
+                ToolError(
+                    "DaemonBootstrap",
+                    "launchctl bootstrap failed.",
+                    bootstrapOutcome.StdErr,
+                    bootstrapOutcome.ExitCode));
         }
 
         return Result.Success();
@@ -61,13 +72,23 @@ public sealed class MacOsDaemonManager : IDaemonManager
 
         string uid = uidResult.Value;
         string guiDomain = string.Create(CultureInfo.InvariantCulture, $"gui/{uid}");
-        (int exitCode, string _, string stderr) = await RunProcessAsync(
+        DaemonProcessOutcome bootoutOutcome = await RunProcessAsync(
             "/bin/launchctl",
             ["bootout", guiDomain, PlistPath],
             cancellationToken).ConfigureAwait(false);
-        if (exitCode != 0)
+        if (bootoutOutcome.FatalError is { } fatalBootout)
         {
-            return Result.Failure(ToolError("DaemonBootout", "launchctl bootout failed.", stderr, exitCode));
+            return Result.Failure(fatalBootout);
+        }
+
+        if (bootoutOutcome.ExitCode != 0)
+        {
+            return Result.Failure(
+                ToolError(
+                    "DaemonBootout",
+                    "launchctl bootout failed.",
+                    bootoutOutcome.StdErr,
+                    bootoutOutcome.ExitCode));
         }
 
         try
@@ -87,27 +108,36 @@ public sealed class MacOsDaemonManager : IDaemonManager
 
     public async Task<Result<string>> GetStatusAsync(CancellationToken cancellationToken)
     {
-        (int exitCode, string stdout, string stderr) = await RunProcessAsync(
+        DaemonProcessOutcome listOutcome = await RunProcessAsync(
             "/bin/launchctl",
             ["list", LaunchdLabel],
             cancellationToken).ConfigureAwait(false);
-        if (exitCode != 0)
+        if (listOutcome.FatalError is { } fatal)
         {
-            if (IndicatesPermissionDenied(stderr))
+            return Result<string>.Failure(fatal);
+        }
+
+        if (listOutcome.ExitCode != 0)
+        {
+            if (IndicatesPermissionDenied(listOutcome.StdErr))
             {
                 return Result<string>.Failure(
-                    ToolError("DaemonLaunchctlList", "launchctl list failed.", stderr, exitCode));
+                    ToolError(
+                        "DaemonLaunchctlList",
+                        "launchctl list failed.",
+                        listOutcome.StdErr,
+                        listOutcome.ExitCode));
             }
 
             return Result<string>.Success(NotLoadedMessage);
         }
 
-        if (string.IsNullOrWhiteSpace(stdout))
+        if (string.IsNullOrWhiteSpace(listOutcome.StdOut))
         {
             return Result<string>.Success(NotLoadedMessage);
         }
 
-        string line = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        string line = listOutcome.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .FirstOrDefault(l => l.Contains(LaunchdLabel, StringComparison.Ordinal)) ?? string.Empty;
         if (string.IsNullOrEmpty(line))
         {
@@ -143,16 +173,22 @@ public sealed class MacOsDaemonManager : IDaemonManager
 
     private static async Task<Result<string>> TryResolveUidAsync(CancellationToken cancellationToken)
     {
-        (int exitCode, string stdout, string stderr) = await RunProcessAsync(
+        DaemonProcessOutcome idOutcome = await RunProcessAsync(
             "/usr/bin/id",
             ["-u"],
             cancellationToken).ConfigureAwait(false);
-        if (exitCode != 0)
+        if (idOutcome.FatalError is { } fatal)
         {
-            return Result<string>.Failure(ToolError("DaemonUidResolution", "id -u failed.", stderr, exitCode));
+            return Result<string>.Failure(fatal);
         }
 
-        string trimmed = stdout.Trim();
+        if (idOutcome.ExitCode != 0)
+        {
+            return Result<string>.Failure(
+                ToolError("DaemonUidResolution", "id -u failed.", idOutcome.StdErr, idOutcome.ExitCode));
+        }
+
+        string trimmed = idOutcome.StdOut.Trim();
         if (string.IsNullOrEmpty(trimmed) || !uint.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
         {
             return Result<string>.Failure(new Error("DaemonUidResolution", "id -u returned invalid UID output."));
@@ -247,7 +283,12 @@ public sealed class MacOsDaemonManager : IDaemonManager
         return new Error(code, $"{message} {suffix}".Trim());
     }
 
-    private static async Task<(int ExitCode, string StdOut, string StdErr)> RunProcessAsync(
+    /// <summary>
+    /// Runs a launchd helper binary. A binary that cannot be started at all is reported as
+    /// <see cref="DaemonProcessOutcome.FatalError"/> rather than thrown, so every caller stays inside
+    /// the <see cref="Result"/> contract.
+    /// </summary>
+    internal static async Task<DaemonProcessOutcome> RunProcessAsync(
         string fileName,
         string[] arguments,
         CancellationToken cancellationToken)
@@ -267,12 +308,25 @@ public sealed class MacOsDaemonManager : IDaemonManager
 
         using var process = new Process();
         process.StartInfo = startInfo;
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch (Exception ex) when (ex is Win32Exception or UnauthorizedAccessException)
+        {
+            return new DaemonProcessOutcome(-1, string.Empty, string.Empty, StartError(fileName, ex));
+        }
+
         Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
         Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         string stdout = await stdoutTask.ConfigureAwait(false);
         string stderr = await stderrTask.ConfigureAwait(false);
-        return (process.ExitCode, stdout, stderr);
+        return new DaemonProcessOutcome(process.ExitCode, stdout, stderr, null);
+    }
+
+    private static Error StartError(string fileName, Exception ex)
+    {
+        return new Error("DaemonProcessStart", $"Could not start '{fileName}'. {ex.Message}");
     }
 }

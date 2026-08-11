@@ -1,17 +1,27 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
+using Microsoft.AspNetCore.Builder;
+
+using Microsoft.AspNetCore.Hosting;
+
+using Microsoft.AspNetCore.Http;
+
 using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.DependencyInjection.Extensions;
+
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -184,6 +194,67 @@ public sealed class OpenAiV1FilesEndpointTests
 
     [Fact]
 
+    public async Task PostFiles_WhenTheRequestIsAborted_DoesNotReportAStorageFailure()
+    {
+
+        RecordingLoggerProvider recording = new();
+
+        AbortObservingBlobStore blobStore = new();
+
+        TaskCompletionSource requestCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using ArcanumWebApplicationFactory isolatedFactory = new();
+
+        isolatedFactory.ServiceOverrides = services =>
+        {
+
+            services.RemoveAll<ILoggerFactory>();
+
+            services.AddSingleton<ILoggerFactory>(new LoggerFactory([recording]));
+
+            services.RemoveAll<IEncryptedBlobStore>();
+
+            services.AddSingleton<IEncryptedBlobStore>(blobStore);
+
+            services.AddSingleton<IStartupFilter>(new RequestCompletionStartupFilter(requestCompleted));
+
+        };
+
+        HttpClient client = isolatedFactory.CreateAuthenticatedClient();
+
+        using MultipartFormDataContent form = new();
+
+        ByteArrayContent fileContent = new([1, 2, 3, 4]);
+
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+
+        form.Add(fileContent, "file", "aborted.bin");
+
+        form.Add(new StringContent("assistants"), "purpose");
+
+        using CancellationTokenSource clientAbort = new();
+
+        Task<HttpResponseMessage> upload = client.PostAsync("/v1/files", form, clientAbort.Token);
+
+        await blobStore.WriteStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        await clientAbort.CancelAsync();
+
+        _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => upload);
+
+        await requestCompleted.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(blobStore.ObservedCancellation);
+
+        Assert.DoesNotContain(
+            recording.Entries,
+            static entry => entry.Level == LogLevel.Error
+                && entry.Message.Contains("Failed to persist uploaded file", StringComparison.Ordinal));
+
+    }
+
+    [Fact]
+
     public async Task DeleteFile_WhenLifecycleNeedsRecovery_ReturnsOpenAi500WithoutDeletedTrue()
     {
 
@@ -304,6 +375,69 @@ public sealed class OpenAiV1FilesEndpointTests
         HttpResponseMessage response = await client.PostAsync("/v1/files", form);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+    }
+
+    [SkippableTheory]
+    [InlineData("batch_output")]
+    [InlineData("error")]
+    public async Task PostFiles_ReservedBatchArtifactPurpose_Returns400RatherThanStoringUnreadableBytes(string reservedPurpose)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // These purposes are owned by /v1/batches' artifact publisher: their envelopes are written
+        // with EncryptedBlobPurpose.BatchArtifact. An upload always writes
+        // EncryptedBlobPurpose.UploadedFile, so accepting one of these strings would persist bytes
+        // whose header purpose can never match the read purpose GET /v1/files/{id}/content derives
+        // from the stored string — a permanent 500 encrypted_file_corrupt.
+        Assert.Equal(
+            EncryptedBlobPurpose.BatchArtifact,
+            UploadedFileStorage.ResolveEncryptionPurpose(reservedPurpose));
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string filename = $"reserved-{Guid.NewGuid():N}.jsonl";
+
+        using MultipartFormDataContent form = new();
+
+        ByteArrayContent fileContent = new(Encoding.UTF8.GetBytes("{}\n"));
+
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/jsonl");
+
+        form.Add(fileContent, "file", filename);
+
+        form.Add(new StringContent(reservedPurpose), "purpose");
+
+        HttpResponseMessage response = await client.PostAsync("/v1/files", form);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.True(
+            response.StatusCode == HttpStatusCode.BadRequest,
+            $"Expected BadRequest for reserved purpose '{reservedPurpose}', got {response.StatusCode}: {json}");
+
+        OpenAiErrorResponse? error = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(error);
+
+        Assert.Equal("invalid_value", error.Error.Code);
+
+        Assert.Equal("purpose", error.Error.Param);
+
+        HttpResponseMessage listResponse = await client.GetAsync($"/v1/files?purpose={reservedPurpose}");
+
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+
+        OpenAiFileListResponse? listBody = JsonSerializer.Deserialize(
+            await listResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiFileListResponse);
+
+        Assert.NotNull(listBody);
+
+        Assert.DoesNotContain(listBody.Data, f => f.Filename == filename);
 
     }
 
@@ -548,6 +682,168 @@ public sealed class OpenAiV1FilesEndpointTests
         return body;
 
     }
+
+    /// <summary>
+    /// Runs the aborted upload's whole server pipeline to completion before the assertions look at the log,
+    /// so the handler's own catch block is guaranteed to have run by the time the test inspects it.
+    /// </summary>
+    private sealed class RequestCompletionStartupFilter(TaskCompletionSource completed) : IStartupFilter
+    {
+
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
+            app =>
+            {
+
+                _ = app.Use(async (HttpContext context, Func<Task> nextMiddleware) =>
+                {
+
+                    bool isUpload = string.Equals(context.Request.Method, "POST", StringComparison.Ordinal)
+                        && context.Request.Path.StartsWithSegments("/v1/files");
+
+                    try
+                    {
+
+                        await nextMiddleware().ConfigureAwait(false);
+
+                    }
+                    finally
+                    {
+
+                        if (isUpload)
+                        {
+
+                            _ = completed.TrySetResult();
+
+                        }
+
+                    }
+
+                });
+
+                next(app);
+
+            };
+
+    }
+
+    /// <summary>
+    /// Holds an uploaded-file write open until the request is aborted, then surfaces the cancellation the
+    /// way the real <c>EncryptedBlobStore</c> does. Every other member defers to a genuine store so the
+    /// host's own blob-encryption startup work is unaffected.
+    /// </summary>
+    private sealed class AbortObservingBlobStore : IEncryptedBlobStore
+    {
+
+        private readonly IEncryptedBlobStore _inner = TestEncryptedBlobStore.Create();
+
+        public TaskCompletionSource WriteStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool ObservedCancellation { get; private set; }
+
+        public async Task<EncryptedBlobDescriptor> WriteAsync(
+            string destinationPath,
+            Stream plaintext,
+            EncryptedBlobPurpose purpose,
+            ReadOnlyMemory<byte> authenticatedMetadata = default,
+            long? plaintextLength = null,
+            CancellationToken cancellationToken = default)
+        {
+
+            if (purpose != EncryptedBlobPurpose.UploadedFile)
+            {
+
+                return await _inner
+                    .WriteAsync(destinationPath, plaintext, purpose, authenticatedMetadata, plaintextLength, cancellationToken)
+                    .ConfigureAwait(false);
+
+            }
+
+            _ = WriteStarted.TrySetResult();
+
+            try
+            {
+
+                await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
+
+            }
+            catch (OperationCanceledException)
+            {
+
+                ObservedCancellation = true;
+
+                throw;
+
+            }
+
+            throw new InvalidOperationException("The upload request was never aborted.");
+
+        }
+
+        public Task<Stream> OpenReadAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            CancellationToken cancellationToken = default) =>
+            _inner.OpenReadAsync(path, purpose, cancellationToken);
+
+        public Task<EncryptedBlobWriter> CreateWriterAsync(
+            string destinationPath,
+            EncryptedBlobPurpose purpose,
+            ReadOnlyMemory<byte> authenticatedMetadata = default,
+            CancellationToken cancellationToken = default) =>
+            _inner.CreateWriterAsync(destinationPath, purpose, authenticatedMetadata, cancellationToken);
+
+        public Task<EncryptedBlobDescriptor> InspectAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            bool verifyAllChunks,
+            CancellationToken cancellationToken = default) =>
+            _inner.InspectAsync(path, purpose, verifyAllChunks, cancellationToken);
+
+        public bool HasEnvelope(string path) => _inner.HasEnvelope(path);
+
+    }
+
+    private sealed class RecordingLoggerProvider : ILoggerProvider
+    {
+
+        private readonly ConcurrentQueue<LogEntry> _entries = new();
+
+        public IReadOnlyCollection<LogEntry> Entries => _entries;
+
+        public ILogger CreateLogger(string categoryName) => new RecordingLogger(_entries);
+
+        public void Dispose()
+        {
+
+            // Nothing to release.
+
+        }
+
+        private sealed class RecordingLogger(ConcurrentQueue<LogEntry> entries) : ILogger
+        {
+
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull =>
+                null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter) =>
+                entries.Enqueue(new LogEntry(logLevel, formatter(state, exception), exception));
+
+        }
+
+    }
+
+    private sealed record LogEntry(
+        LogLevel Level,
+        string Message,
+        Exception? Exception);
 
     private sealed class DeleteStatusUploadedFileRepository(
         UploadedFileDeleteStatus status,

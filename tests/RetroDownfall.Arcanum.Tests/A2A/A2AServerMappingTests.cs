@@ -94,6 +94,9 @@ public sealed class A2AServerMappingTests : IDisposable
     // A path outside /api used to silently disable the whole server. It is now mounted under /api so
     // the operator gets the surface they asked for, still behind ApiKeyEndpointFilter (issue #12).
     [InlineData("/conclave/a2a", "/api/conclave/a2a")]
+    // "/apiary" is not inside "/api" — it only shares its first four characters. Pinned because the
+    // callback route resolves the same setting and the two must not disagree (§5.7.1.4).
+    [InlineData("/apiary/a2a", "/api/apiary/a2a")]
     [InlineData("/agents/inbound", "/api/agents/inbound")]
     [InlineData("agents/inbound", "/api/agents/inbound")]
     [InlineData("/", "/api")]

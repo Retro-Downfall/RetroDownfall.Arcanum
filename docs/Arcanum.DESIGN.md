@@ -186,7 +186,11 @@ The Native-AOT-safe CLI configuration surface is `arcanum config path|show|get|s
 indices such as `providers.0.endpoint`) through `ConfigurationJsonContext` property metadata; it
 does not walk settings POCOs with `PropertyInfo`. Values are parsed to the generated target type,
 then the complete snapshot passes the same outbound and semantic validation used by the API before
-any write. `show` and `get` apply `ConfigurationRedactor`; provider endpoint updates reject argv
+any write. Collection-valued keys accept either an explicit JSON array or the plain comma-separated
+form, decided by the declared *element* type rather than the declared collection type, so
+`string[]`, `List<string>`, and `Guid[]` keys behave identically — `security.ward.autoApprove.tools`
+and `retention.protectedSessionIds` are not special cases. GUID elements are validated and
+normalized per entry, and the rejection names the offending entry rather than the CLR type. `show` and `get` apply `ConfigurationRedactor`; provider endpoint updates reject argv
 values and accept only redirected stdin or a hidden terminal prompt. Successful `set` output shows
 the effective value, or `***` for a sensitive field.
 
@@ -304,7 +308,13 @@ hash recomputes, and its state and rollback records agree in full.
 `ArcanumConfigurationTransaction` is a current-user named cross-process coordinator. Every
 canonical `ConfigurationWriter` mutation and Compendium save takes it, and preset apply/reset holds
 it across configuration and sidecar finalization so separate processes cannot interleave those
-writes. `FileConfigurationPresetPersistence` also rejects a stale expected settings hash. Apply
+writes. Acquisition is bounded by `DefaultAcquisitionTimeout` (30s) for cancellable *and*
+uncancellable callers alike, so a transaction held by another process or window can never park a
+caller indefinitely; expiry raises `ArcanumConfigurationLockException`, which the writer reports as
+`Configuration.LockUnavailable` and preset persistence as `Preset.LockUnavailable` rather than
+letting an exception escape a `Result` API. Cancellation observed once the transaction is held
+propagates as `OperationCanceledException`; it is never rewritten into a write failure.
+`FileConfigurationPresetPersistence` also rejects a stale expected settings hash. Apply
 validates the complete candidate, writes an owner-only prepared journal
 (`arcanum.preset.journal.json`) plus rollback baseline (`arcanum.preset.rollback.json`), atomically
 replaces `arcanum.json`, writes provenance, verifies the preset-owned candidate values, and only
@@ -415,7 +425,7 @@ Single-host failure behavior:
 | Condition | Behavior |
 |-----------|----------|
 | Provider unreachable / stalled | Provider/transport failures surface as **`Hub.Error`** (buffered) or an **`Error`** frame (streaming). Arcanum imposes no hidden turn duration cap; caller or host cancellation ends the autonomous workflow. |
-| MCP server failed bootstrap (AlwaysOn) | Prominent startup warning; server excluded from toolset; surfaced in **`GET /api/health`** MCP component counts. |
+| MCP server failed bootstrap (AlwaysOn) | Prominent startup warning; server excluded from toolset; surfaced in **`GET /api/health`** MCP component counts. Those counts are **always-on only** — `alwaysOn: false` servers stay `Stopped` by design (§5.6) and never degrade the MCP component; they are reported separately in the component detail. |
 | `workspace_check` disabled or loses its trusted macOS jail/executable/SDK/launch-chain eligibility | Omitted from `tools/list`; direct stale calls return structured `status:"unavailable"` / `code:"capability_unavailable"`. `GET /api/health` component **`WorkspaceCheck`** reports `available=false` plus the reason: explicitly disabled is Healthy/non-degraded, while requested-but-unavailable platform/trust capability is Degraded. Linux and Windows are unavailable in this release. |
 | Grimoire SQLITE_BUSY / locked | Bounded exponential backoff on writes (`SqliteBusyRetry`); the delay budget counts only code-scheduled backoff, never action time, profiler suspension, scheduler starvation, or retry-observer work. Persistent contention is then surfaced as API/CLI failure. |
 | Disk full / partial `security.dat` write | Atomic temp+rename on `security.dat`; corrupt store fails with recovery guidance (§16.3) instead of silent key regen when a Grimoire DB exists. |
@@ -789,7 +799,7 @@ legacy checks' *prose* detail still embeds a few command names inline (`arcanum 
 
 ### 4.5 `RetroDownfall.Arcanum.Api.DevHost` (console executable, debug-only)
 
-Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Core`, and `Infrastructure`; mirrors `ServeCommand` wiring. Not the production entrypoint. To catch AOT issues during F5, the project sets `PublishAot`, `IsAotCompatible`, and `EnableConfigurationBindingGenerator` as **analysis signals** (not a shipped native image). On first run generates an API key and prints it to stdout.
+Thin host for F5 debugging the HTTP stack without Spectre. References `Api`, `Core`, and `Infrastructure`; mirrors `ServeCommand` wiring. Not the production entrypoint. To catch AOT issues during F5, the project sets `IsAotCompatible` and `EnableConfigurationBindingGenerator` as **analysis signals** (not a shipped native image) — `IsAotCompatible` is what turns on the AOT/trim analyzers, so it stays unconditional. `PublishAot` is gated on `'$(RuntimeIdentifier)' != ''` exactly as in the `Cli` project: on an empty RID it would stamp `RuntimeFeature.IsDynamicCodeSupported=false`, `JsonSerializer.IsReflectionEnabledByDefault=false`, `CanEmitObjectArrayDelegate=false` and `EventSource.IsSupported=false` into the DevHost runtimeconfig, breaking EF Core LINQ (no precompiled queries — `EFPrecompileQueriesStage` is `none`) and making the F5 host behave unlike `arcanum serve`. On first run generates an API key and prints it to stdout.
 
 ### 4.6 `RetroDownfall.Compendium.Ux` (.NET 10 Avalonia desktop configuration editor)
 
@@ -932,7 +942,7 @@ is required because Serilog's file sink is not multi-writer safe.
 | Entity | Table | Primary key | Notable |
 |--------|-------|-------------|---------|
 | `Session` | `Sessions` | `Id` (Guid) | Optional `CampaignId`, `Status` (default `active`), `Title` (nullable), `CreatedAt`, `UpdatedAt`, nullable `Summary`, nullable `LastSummarizedMessageAt`, **`TotalTokensUsed`**, **`TotalCostUsd`**, **`ForkedFromSessionId`**, **`UnsummarizedEntryCount`** (entries after watermark; default `0`; `-1` reserved for lazy backfill if ever needed); indexes on `CreatedAt`, `Status`, `UpdatedAt`, `(CampaignId, Status, UpdatedAt)`, `ForkedFromSessionId`, `UnsummarizedEntryCount`; cascade-deletes entries. |
-| `Entry` | `Entries` | `Id` (Guid) | FK to `Session`; composite index on `(SessionId, CreatedAt)`; **unique** index on `(SessionId, Sequence)`; index on `Role`; `Role` (enum → int); `ModelUsed` (non-null); `Sequence` (`INTEGER NOT NULL`, application-assigned); optional tool columns; FTS5 virtual table `Entries_fts` + triggers for `search_archives`. |
+| `Entry` | `Entries` | `Id` (Guid) | FK to `Session`; composite index on `(SessionId, CreatedAt)`; **unique** index on `(SessionId, Sequence)`; index on `Role`; `Role` (enum → int); `ModelUsed` (non-null); `Sequence` (`INTEGER NOT NULL`, application-assigned); optional tool columns; FTS5 virtual table `Entries_fts` + triggers for `search_archives` — the triggers key each index row by the entry's `rowid`, because FTS5 resolves only MATCH/rowid/rank constraints and an equality on the `UNINDEXED` `Id` column scans the whole index once per row. |
 | `MageSetting` | `MageSettings` | `Key` (string) | `Value`, `UpdatedAt`; operator key-value surface (`/api/lore`, `arcanum lore`). No longer model-directed memory — the Lore MCP tools are removed; agent memory is The Lexicon (§10.6). |
 | `WorkspaceContext` | `WorkspaceContexts` | `Id` (Guid) | `CreatedAt` (`DateTimeOffset`), `WorkspacePath` (mapped column `RootPath`, max 4096), `SerializedSnapshot` (JSON `PatternSnapshot` via `GrimoireJsonContext`). **Chronosync reporting** appends a row after each analysis; “latest” for a path is `ORDER BY CreatedAt DESC`. Composite index on `(RootPath, CreatedAt)`. |
 
@@ -1180,7 +1190,8 @@ inside SQLCipher while recording the envelope version and key id. Plaintext is n
 logs or recovery artifacts. A file without `ARCABLOB` magic is legacy plaintext and is never
 silently returned by the encrypted reader. Health and `arcanum doctor` report OS-key status plus
 encrypted, legacy-plaintext, and corrupt blob counts. A corrupt tag, wrong purpose, unsupported
-version, missing key, wrong key id, truncation, or trailing data fails closed.
+version, missing key, wrong key id, truncation, trailing data, or length metadata that overflows the
+envelope-length pre-check fails closed as `InvalidDataException`.
 
 Upgrade compatibility is explicit and metadata-led. `EncryptionVersion = 0` permits a legacy
 plaintext read only during the migration window. The same metadata state also accepts a valid
@@ -1238,7 +1249,8 @@ setting defaults are in
 - OpenAI file/batch ownership: `UploadedFiles`, `BatchInputFiles`, `BatchOutputFiles`,
   `BatchErrorFiles`, and `CompletedBatches`;
 - durable memory/index ownership: `SagaMemories`, `LexiconEntries`, `WorkspaceChunks`,
-  `WorkspaceEmbeddings`, and `SessionEntryEmbeddings`;
+  `WorkspaceEmbeddings`, `SessionEntryEmbeddings`, and `Tapestry` (generations, model-written
+  summary nodes, embedding blobs, and vector mirrors — §21.11);
 - audit/security ownership: `AuditLogs`, `GuardrailLogs`, `IdempotencyClaims`, and
   `SanctumBreaches`;
 - accounting/operation ownership: `InferenceRuns`, `BillableOperations`, `BudgetReservations`,
@@ -1271,6 +1283,10 @@ related physical classes:
 | `LongRunningOperations` | terminal durable-operation history | enabled / 90 days |
 | `SanctumBreaches` | durable breach rows | enabled / 90 days |
 | `DaemonHistory` | daemon execution-history policy | enabled / 30 days |
+
+`Tapestry` deliberately has no rule. A tree is derived data the weaving sweep rebuilds and prunes on
+its own (§21.11), so the class is reported by status and erased by factory reset but is never
+age-selected by a prune; `data retention set tapestry …` is rejected as an unrecognized class.
 
 All rule days clamp to 1–3,650. `AutomaticSweepsEnabled` defaults false and
 `SweepIntervalHours` defaults 24 and clamps 1–168. Retention applies the complete selected plan;
@@ -1373,8 +1389,11 @@ blocker filtering cannot let an oldest pinned or active item hide the next eligi
 remain page-bounded and deterministically ordered. Prune and explicit retention mutations use one
 atomic cross-kind single-flight start, so
 there is no lease-less pending marker and destructive retention operations cannot overlap. The lease
-is renewed on elapsed time while each candidate runs, in addition to checkpoint boundaries, and
-loss of ownership cancels the candidate and fails closed. If a selected prune candidate gains a pin,
+is renewed on elapsed time while each candidate runs, in addition to every checkpoint boundary, and
+loss of ownership cancels the candidate and fails closed. Renewal happens on every boundary the
+sweep reaches, including boundaries whose cursor cannot advance — a preserved or journal-bearing
+candidate pauses the cursor, never the lease, so a long sweep can never expire into the background
+reconciler and be adopted for a second concurrent run. If a selected prune candidate gains a pin,
 hold, or active-work conflict after planning, apply preserves it, reports `Data.PlanChanged`, and
 continues later independent candidates. The durable cursor remains before the earliest such candidate
 so recovery re-evaluates the protection rather than silently skipping it. Every resumed candidate rechecks the blocker, active-work, and ownership condition
@@ -1402,7 +1421,9 @@ It clears managed data beneath the configured Arcanum root but preserves externa
 registered workspace content outside that root, `arcanum.json`, and security/credential/key
 material. Terminal operation history is removed in leaf-first dependency order; the factory reset's
 own operation cannot delete itself and remains as the completed audit/recovery marker for that
-mutation. Persisted daemon schedule watermarks are included in the preview and cleared with the
+mutation. Every derived index over the erased corpora goes with them, including the Tapestry's
+generations, model-written summary nodes, embedding blobs, and vector mirrors — a summary of an
+erased transcript is erased transcript content, not a rebuildable cache the reset may leave behind. Persisted daemon schedule watermarks are included in the preview and cleared with the
 daemon lifecycle state. Planning classifies canonical rows separately from dependency/index/
 provenance records and excludes reference-only batch roles, so the preview counts each physical
 record once. Factory database cleanup runs in one immediate transaction, holds new managed work
@@ -1703,7 +1724,10 @@ The conflict modes are distinct plans, not flags on one plan:
 Before a destructive replacement the CLI confirms interactively (or accepts `--yes`) and a
 pre-restore safety backup is written through §5.4.8's `IBackupService`. `--no-safety-backup` records
 that the operator declined; the displaced tree remains the only recovery point until cleanup, and the
-plan warns accordingly.
+plan warns accordingly. A requested safety backup that does not report `Complete` is a blocker, not a
+warning: the restore returns `Rejected` with `backup.restore_safety_backup_failed` plus the create's
+own issues, before the commit displaces anything. Declining the recovery point is the operator's
+decision to make, so a restore never silently proceeds without the one they asked for.
 
 `--dry-run` performs every read, authentication, verification, mapping validation, schema comparison,
 and capacity calculation possible without mutating the destination, and returns the same
@@ -1771,7 +1795,7 @@ Grimoire-backed separately (§11.15).
 
 **`mcp.json` extensions:** Each server entry supports **`alwaysOn`** (default `true`), optional **`cwd`** (subprocess working directory for stdio servers), an optional **`type`** transport selector (`"stdio"` | `"http"` | `"sse"`), optional **`url`** (a URL infers the **Streamable HTTP** transport when `type` is omitted; an explicit `type: "sse"` selects the legacy SSE transport, still unsupported → **`Mcp.SseNotSupported`**), and an optional **`inheritEnv`** string array naming host environment variables an stdio server may inherit despite the default env-strip (e.g. `["PATH","HOME"]` for `npx`). HTTP endpoints must be `https` unless their host is listed in `Arcanum:Integrations:Mcp:AllowedHttpHosts`, and are SSRF-validated via `OutboundUrlGuard` before connect.
 
-**Workspace-local trust gate:** Workspace `mcp.json` servers are **not admitted** until the operator approves the workspace via **`POST /api/mcp/trust-workspace`** (`{ "workingDirectory": "<root>" }`). Approvals persist as normalized workspace path → SHA-256 digest in the primary `~/.config/arcanum/trusted-mcp-workspaces.json` page and contiguous `trusted-mcp-workspaces.page-NNNNNNNN.json` pages.
+**Workspace-local trust gate:** Workspace `mcp.json` servers are **not admitted** until the operator approves the workspace via **`POST /api/mcp/trust-workspace`** (`{ "workingDirectory": "<root>" }`). Approvals persist as normalized workspace path → SHA-256 digest in the primary `~/.config/arcanum/trusted-mcp-workspaces.json` page and contiguous `trusted-mcp-workspaces.page-NNNNNNNN.json` pages. The lifecycle endpoints (`start` / `stop` / `restart` / `trust-workspace`) resolve their failure status through `ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest`, so a refusal reaches the client as the status the API error-code table publishes — **403** for `Mcp.WorkspaceNotTrusted`, **404** for `Mcp.ServerNotFound` (which unknown and retired entries both return) — and any code without a mapping stays **400**.
 
 Admission is bound to the exact bytes parsed: `BuildMergedToolsForWorkspaceAsync` performs one `SecureFileReader` read capped by the code constant **`McpSecurityLimits.MaxMcpConfigBytes = 256 KiB`**, deserializes that buffer, hashes that same buffer, and asks `IsApprovedDigestAsync` whether the **just-parsed digest** is approved. It does not re-read `mcp.json` between parse and approval. The digest is carried on every `ManagedMcpServerEntry`; config B retires config-A entries with an old digest or removed name before registering replacements, and missing/invalid/oversized/unapproved files retire the whole workspace-local surface. Retired entries reject new lifecycle work, leave the registry/cache immediately, and drain/stop under a bounded cleanup path.
 
@@ -1831,7 +1855,7 @@ never enter step results, plans, prompts, checkpoints, or Chronicle replay.
 
 **Chronicle event types (lifecycle):** `apprenticeStarted`, `planGenerated`, `stepStarted`, `stepRetrying`, `stepCompleted`, `stepFailed`, `planRevised`, `apprenticeEscalated`, `apprenticeIntervened`, `apprenticePaused`, `apprenticeResumed`, `apprenticeCompleted`, `apprenticeFailed`, `apprenticeCancelled`, `eventsDropped` (slow-reader backpressure marker), `castSent`, `simulacrumStarted`/`simulacrumCompleted`, the A2A Sending frames `sendingDispatched` / `sendingProgress` / `sendingCompleted` / `sendingFailed` (§5.7.1), plus pass-through `toolCall`, `toolResult`, `warded`, `wardResolved`.
 
-**Chronicle:** **`ChronicleHub`** (per-Apprentice bounded channel, `DropOldest`) decouples execution from **`GET /api/apprentices/{id}/chronicle`** SSE. When a subscriber's channel is full, the oldest event is dropped and an **`eventsDropped`** marker is emitted so operators know the stream is lossy. Late connect replays plan state from DB, emits **`apprenticeEscalated`** when status is **`Escalated`**, then streams live. Pass-through Master events (`toolCall`, `toolResult`, `warded`, `wardResolved`) are flattened on the wire (the legacy nested field name `wizardEvent` is not used).
+**Chronicle:** **`ChronicleHub`** (per-Apprentice bounded channel, `DropOldest`) decouples execution from **`GET /api/apprentices/{id}/chronicle`** SSE. When a subscriber's channel is full, the oldest event is dropped and an **`eventsDropped`** marker is emitted so operators know the stream is lossy. A per-Apprentice hub's lifetime is exactly its subscriber set: subscribing creates it, the last unsubscribe removes it, and publishing never creates one — a headless run, or any event published after the operator closed the SSE stream, is dropped rather than stranding per-Apprentice state on the singleton hub for the life of the host. Late connect replays plan state from DB, emits **`apprenticeEscalated`** when status is **`Escalated`**, then streams live. Pass-through Master events (`toolCall`, `toolResult`, `warded`, `wardResolved`) are flattened on the wire (the legacy nested field name `wizardEvent` is not used).
 
 **Control API:** **`POST .../start|pause|resume|cancel|reweave|intervene`** delegate to **`IApprenticeRuntime`**. Pause cancels the in-flight step CTS (without disposing it — disposal happens in **`CleanupExecution`** after the task drains); **`cancel`** follows the same cancel-not-dispose pattern so the run exits cooperatively without **`ObjectDisposedException`** overwriting **`Cancelled`** with **`Failed`**. Resume continues from **`CurrentStep`**; intervene resumes from **`Escalated`** only.
 
@@ -1899,7 +1923,9 @@ Only `degraded` contributes to readiness; off and merely-configured are delibera
 
 #### 5.7.1.2 In-flight Sendings across a restart
 
-The A2A task id ↔ Apprentice id map is **process memory** (§5.4.4), but the *correspondence* is now recorded durably in the shared `LongRunningOperations` ledger (§39/#40's framework, not a bespoke A2A table) under kinds `a2a-inbound-sending` and `a2a-outbound-sending`, both with recovery policy `ReconcileAndComplete`. The record carries the A2A task id plus either the serving Apprentice id (inbound) or the peer URL needed to cancel it (outbound); it is closed as soon as the Sending settles, so only genuinely in-flight work is ever reconciled. Ledger writes are best-effort: a Grimoire that is unavailable degrades to "no durable record" rather than failing the Sending.
+The A2A task id ↔ Apprentice id map is **process memory** (§5.4.4), but the *correspondence* is now recorded durably in the shared `LongRunningOperations` ledger (§39/#40's framework, not a bespoke A2A table) under kinds `a2a-inbound-sending` and `a2a-outbound-sending`, both with recovery policy `ReconcileAndComplete`. The record carries the A2A task id plus either the serving Apprentice id (inbound) or the peer URL needed to cancel it (outbound); it is closed as soon as the Sending settles, so only genuinely in-flight work is ever reconciled. Every lookup asks SQLite for the **open states only**, one at a time, rather than reading the kind's whole history and discarding the closed rows in memory: a settled Sending can never be the answer, so decrypting and deserializing it is pure cost — and these lookups sit on the accept path of every new inbound Sending and behind the deliberately anonymous callback route (§5.7.1.4), where the cost of a miss is a cost anyone can impose. Ledger writes are best-effort: a Grimoire that is unavailable degrades to "no durable record" rather than failing the Sending.
+
+A Sending has no whole-operation deadline (§5.7.1), so its ledger lease marks **ownership** rather than sizing the work: it is renewed every five minutes for as long as this process is holding the Sending, and lapses when the process does. That distinction is what makes background reconciliation — a full pass every minute for the host's lifetime — safe to run against live Sendings: an unrenewed lease is the signal that nobody is holding the row, so reconciliation reclaiming it cannot cancel a peer task the local dispatch is still awaiting or abandon a relay whose Apprentice is still working. Renewal deliberately stops the moment this process lets go: a Sending parked at `input-required` (§5.7.1.5), a continuation left alive for the Mage to answer, and a dispatch that lost contact mid-poll all hand their row back so reconciliation can flag or cancel it.
 
 | Concern | Behavior across a host restart |
 |---------|-------------------------------|
@@ -1917,7 +1943,7 @@ Both outcomes are visible through the normal durable-operation surfaces (`arcanu
 
 `input-required` and `auth-required` are non-terminal A2A states, and Arcanum's own inbound handler emits exactly `input-required` when an Apprentice escalates — so an Arcanum-to-Arcanum dispatch where the remote escalates used to deadlock, and after the blocking fix it simply ended. Continuation makes the natural answer available on both sides:
 
-- **Outbound.** `A2ADispatchMode.Continuable` returns the live remote task id and what the peer wants, leaving the remote task alive. `ContinueSendingAsync` sends the follow-up with `Message.TaskId` set, which is what routes it to the waiting task instead of minting a second one, and resumes following it. Blocking remains the default so nothing regresses. Both halves are reachable from both surfaces — `arcanum conclave dispatch --continuable` / `arcanum conclave continue` for the Mage, and the `dispatch_sending` (`continuable`) / `continue_sending` MCP tools for an Apprentice. They ship together deliberately: a continuable dispatch with no way to answer it would park a remote task alive and billing with no way back.
+- **Outbound.** `A2ADispatchMode.Continuable` returns the live remote task id and what the peer wants, leaving the remote task alive. `ContinueSendingAsync` sends the follow-up with `Message.TaskId` set, which is what routes it to the waiting task instead of minting a second one, and resumes following it. It does not mint a second **durable record** either: the continuable dispatch deliberately left one open so the answer could find it, so a continuation **adopts** that row and closes it when the Sending finally settles. A second row for one remote task would be an orphan nothing ever closes — reconciliation would eventually claim it, issue `tasks/cancel` against a task that may still be running, and count one delegated Sending twice against §22.2's "exactly once". Blocking remains the default so nothing regresses. Both halves are reachable from both surfaces — `arcanum conclave dispatch --continuable` / `arcanum conclave continue` for the Mage, and the `dispatch_sending` (`continuable`) / `continue_sending` MCP tools for an Apprentice. They ship together deliberately: a continuable dispatch with no way to answer it would park a remote task alive and billing with no way back.
 - **Inbound.** A task parked at `input-required` is remembered against the Apprentice that escalated. A continuation for that task id resumes **that** Apprentice through Divine Intervention (`InterveneAsync`, the peer's message as guidance) rather than casting a new one that knows nothing of the first one's plan, session, or progress. Cancelling a parked task cancels the waiting Apprentice. That correspondence survives a restart (§5.7.1.5).
 
 #### 5.7.1.4 Push notifications and callback-mode Sendings
@@ -1925,9 +1951,11 @@ Both outcomes are visible through the normal durable-operation surfaces (`arcanu
 Off unless an operator sets `Arcanum:Integrations:A2A:PushNotifications`; the Agent Card advertises `pushNotifications` **only** when it is on, so the card never promises a peer something nothing will send.
 
 - **Inbound.** A peer may supply a callback on the send itself (`SendMessageConfiguration.PushNotificationConfig`) or through `tasks/pushNotificationConfig/*`, which `ArcanumA2AServer` implements over the SDK's own refusal. The URL is a remote-controlled address this instance will POST to on a schedule the peer chooses — an SSRF primitive — so it goes through exactly the same gate as any other egress: `OutboundUrlGuard` plus `AllowedRemoteAgents` when one is configured (§11.11), **re-checked at delivery**, because DNS and the allowlist can both change while a long Sending runs. Notifications carry the task id and the protocol state name and nothing else, for the same reason a `sendingProgress` frame does. Only states a waiting peer can act on are posted — the terminal ones and `input-required` — rather than every step-level `working` update. Delivery is best-effort: a peer whose endpoint is down never fails the Apprentice doing the actual work, which the peer can always poll for anyway. A refused callback is logged and the Sending continues without notifications.
-- **Outbound.** `A2ADispatchMode.Callback` asks the peer to report back, then **releases the concurrency slot** — the gate bounds simultaneous *work*, and a Sending waiting on a peer is not work. The caller still awaits the outcome; what it stops doing is occupying one of `MaxConcurrentA2ATasks` for the whole remote run. All three of these must hold or the dispatch keeps its slot and waits inline exactly as before: this instance has the surface enabled, `PushCallbackBaseUrl` names somewhere a peer can actually reach, and the peer's card advertises `pushNotifications`. Peer capability decides, as it does for streaming. A notification is never trusted as the outcome — it is a remote-authored claim about state — so each one triggers a `tasks/get`, and the authoritative answer (including artifacts and the usage block) comes from there. **A callback that never arrives leaves the Sending waiting**, which is the same no-whole-operation-deadline contract every other mode has (#55); what it does not do is hold capacity while it waits. Local cancellation still issues `tasks/cancel`.
+- **Outbound.** `A2ADispatchMode.Callback` asks the peer to report back, then **releases the concurrency slot** — the gate bounds simultaneous *work*, and a Sending waiting on a peer is not work. The caller still awaits the outcome; what it stops doing is occupying one of `MaxConcurrentA2ATasks` for the whole remote run. All three of these must hold or the dispatch keeps its slot and waits inline exactly as before: this instance has the surface enabled, `PushCallbackBaseUrl` names somewhere a peer can actually reach, and the peer's card advertises `pushNotifications`. Peer capability decides, as it does for streaming. A notification is never trusted as the outcome — it is a remote-authored claim about state — so each one triggers a `tasks/get`, and the authoritative answer (including artifacts and the usage block) comes from there. The same `tasks/get` also runs **once before the first wait**: a fast peer can settle in the window between the send and the registration round-trip, and the notification for that transition fired while there was still nowhere to post it, so believing the send's snapshot would be a wait nothing could ever end — the streaming path answers the identical race by falling back to a poll whose first read finds the settled task. **A callback that never arrives leaves the Sending waiting**, which is the same no-whole-operation-deadline contract every other mode has (#55); what it does not do is hold capacity while it waits. Local cancellation still issues `tasks/cancel`.
 
-**Callback endpoint (`POST {ServerPath}/callbacks/{configId}`).** Deliberately the **one** A2A route outside `ApiKeyEndpointFilter`: the caller is a peer agent, which by definition does not hold this instance's operator API key. It authenticates on a 256-bit secret minted per Sending, handed to the peer inside the push config, and compared in constant time against a **stored digest** — the token itself is never persisted, so a Grimoire read cannot yield a working callback credential (§11.2). A post with the wrong secret, or naming a callback nobody is waiting on, is answered `404`, so the endpoint never confirms which config ids exist. The route inherits the rate limiter when one is configured, and is not mapped at all when the surface is off.
+**Callback endpoint (`POST {ServerPath}/callbacks/{configId}`).** Deliberately the **one** A2A route outside `ApiKeyEndpointFilter`: the caller is a peer agent, which by definition does not hold this instance's operator API key. It authenticates on a 256-bit secret minted per Sending, handed to the peer inside the push config, and compared in constant time against a **stored digest** — the token itself is never persisted, so a Grimoire read cannot yield a working callback credential (§11.2). A post with the wrong secret, or naming a callback nobody is waiting on, is answered `404`, so the endpoint never confirms which config ids exist. `{configId}` is unauthenticated peer-supplied input reaching a durable lookup, so an id outside the shape this instance mints one in is refused on its shape alone rather than by paging the outbound Sendings the retention window still holds — minting and recognising it live in one place (`A2ACallbackConfigId`) so they cannot drift. The route inherits the rate limiter when one is configured, and is not mapped at all when the surface is off.
+
+Its path is resolved from `ServerPath` by the **same** normalization that mounts the server itself (`A2APathPolicy.ResolveServerPath`), because this one value both maps the route and is the URL advertised to the peer: two copies of that rule disagreed on a path like `/apiary/a2a`, which merely starts with the same four characters as `/api` without being inside it.
 
 A callback that arrives **after the process which dispatched the Sending has gone** finds no live waiter and is matched instead against the durable outbound record's `callbackConfigId` + token digest, which settles that row. Its cost is recorded as **unknown**: this process never observed the remote task, and inventing a figure — or a zero — is exactly what #60 removed.
 
@@ -1937,7 +1965,7 @@ Issue #64 made an escalated inbound Sending continuable; the index that made it 
 
 | Missing piece | Now |
 |---------------|-----|
-| The peer's follow-up could not reach the handler **at all** | The SDK resolves a task from `ITaskStore` *before* it ever calls `IAgentHandler`, and `InMemoryTaskStore` died with its process — so a continuation or a `tasks/cancel` naming a task id from a previous process was answered `TaskNotFound` and the handler never ran, however durable the Apprentice underneath was. `ArcanumA2ATaskStore` keeps live tasks in memory as before and **rehydrates a parked one** from the durable Sending record: its id, its context id, and `input-required`, which is the state the peer is answering. Only parked Sendings are rehydrated — a merely mid-flight task cannot be resurrected and is abandoned with a named reason as before. |
+| The peer's follow-up could not reach the handler **at all** | The SDK resolves a task from `ITaskStore` *before* it ever calls `IAgentHandler`, and `InMemoryTaskStore` died with its process — so a continuation or a `tasks/cancel` naming a task id from a previous process was answered `TaskNotFound` and the handler never ran, however durable the Apprentice underneath was. `ArcanumA2ATaskStore` keeps live tasks in memory as before and **rehydrates a parked one** from the durable Sending record: its id, its context id, and `input-required`, which is the state the peer is answering. Only parked Sendings are rehydrated — a merely mid-flight task cannot be resurrected and is abandoned with a named reason as before. What it keeps in memory is **bounded**: the SDK documents that it never calls `DeleteTaskAsync` and leaves pruning to the store, so past a code-owned retention cap the least recently touched **settled** tasks are dropped. A task that has not settled is never a candidate — it is live correspondence, and dropping it would answer the peer still driving it `TaskNotFound`. `tasks/list` is likewise a query and not a dump: `contextId`, `status`, `statusTimestampAfter`, `historyLength`, `includeArtifacts`, and the page cursor are all honoured by the store, because the SDK hands the request straight through. |
 | Which Apprentice a parked task belongs to | The `A2ASendingRecord` carries `parked` and `contextId` alongside the task ↔ Apprentice mapping from #62 — the same record, not a second store. A continuation with no live index entry resolves through it and resumes that Apprentice; "no record at all" still mints a fresh Apprentice rather than failing. |
 
 Reconciliation therefore **must not close a parked record**, or the answer has nothing to find. A parked Sending whose Apprentice still exists and has not reached a terminal state is recorded `a2a.inbound_parked_awaiting_answer` (state `ReconciliationRequired`, non-terminal) rather than `a2a.inbound_relay_abandoned`; a park whose Apprentice is gone or already finished is stale and is abandoned as before. Because that flagged row still has to be claimable when the answer arrives — possibly processes later — `ILongRunningOperationStore.TryAcquireLeaseAsync` carves it out, mirroring the existing carve-out for the data-retention kinds. Closing a settled Sending retakes the lease when the original handle no longer holds it, so a legitimately finished Sending is never left open for reconciliation to keep re-examining.
@@ -2001,6 +2029,7 @@ Zero runtime prerequisite for the shipping CLI; fast cold start for short verbs;
 - **`Infrastructure`** additionally sets `PublishAot` / `IsTrimmable` as a library signal so the ILCompiler analyzes it in the publish graph — it is not shipped as its own binary.
 - **`Api` / `Core`** declare `<IsAotCompatible>true</IsAotCompatible>` to opt into AOT-oriented analyzers. Libraries in the closure should remain AOT-compatible for every host.
 - **Command Center (Terminal.Gui 2.4.17)** lives only in `Cli`. Bootstrap is isolated in `CommandCenterApp`; any `IL3050`/`IL2026` suppressions are method-level there and must remain first-party-clean under `./scripts/verify-aot-il-warnings.sh`.
+- **Size-tuning feature switches** (`OptimizationPreference`, `StackTraceSupport`, `DebuggerSupport`, `UseWindowsThreadPool`, `BuiltInComInteropSupport`, `UseSystemResourceKeys`) are declared in a `Cli` `PropertyGroup` carrying the same RID guard as `PublishAot`. The SDK emits each of them as a runtimeconfig `configProperty` on the sole condition that the property is *set*, so an unguarded group also reaches plain `dotnet build`/`dotnet run` and the untrimmed macOS publish — where `UseSystemResourceKeys=true` has no trimmer to justify it and degrades every BCL exception message to a bare resource key (`Arg_NullReferenceException`). `HostProjectFeatureSwitchTests` gates this for `Cli` and `Api.DevHost`.
 
 ### 9.3 Tradeoffs and constraints
 
@@ -2180,7 +2209,7 @@ Closed audit items (writer reuse, scan/cache bounds, Loremaster counter, MCP lin
 **Gate placement — before any inference token:** `ScryingValidator` (`Core.Intelligence`) is the single validation surface shared by every inference entry point:
 
 - `RequestContainsImages(PingRequest)` — scans `StatelessMessages[].ContentParts` (kind `image_url`) and `ScryingFoci`.
-- `ValidateRequestImages(PingRequest, ScryingSettings)` — when images are present: `Scrying.Enabled` (else `Scrying.FeatureDisabled`, 403), per-request image count vs `MaxImagesPerRequest` (else `Scrying.TooManyImages`, 400), and — **for `data:`-URI images only** (native `ScryingFoci` and any `data:`-URI `image_url` part) — MIME allow-list (`Scrying.UnsupportedMimeType`, 400) and decoded byte size vs `MaxImageBytes` (`Scrying.ImageTooLarge`, 413). `http(s)` URL images are counted toward the cap but not size/MIME-checked — the downstream provider fetches and rejects them, avoiding a HEAD-request side-channel and added latency.
+- `ValidateRequestImages(PingRequest, ScryingSettings)` — when images are present: `Scrying.Enabled` (else `Scrying.FeatureDisabled`, 403), per-request image count vs `MaxImagesPerRequest` (else `Scrying.TooManyImages`, 400), and — **for `data:`-URI images only** (native `ScryingFoci` and any `data:`-URI `image_url` part) — MIME allow-list (`Scrying.UnsupportedMimeType`, 400) and decoded byte size vs `MaxImageBytes` (`Scrying.ImageTooLarge`, 413). A missing or blank MIME type is itself an allow-list failure (`Scrying.UnsupportedMimeType`, 400), not a skipped check — it can match no configured type, and `DataContent` requires a media type downstream. `http(s)` URL images are counted toward the cap but not size/MIME-checked — the downstream provider fetches and rejects them, avoiding a HEAD-request side-channel and added latency.
 
 **`WizardIntelligenceProvider`** (`ExecutePromptAsync`, `StreamPromptAsync`, and context preview) and
 research synthesis use `PingRequestPreflightValidator` before model-lease or search-provider work.
@@ -2916,7 +2945,13 @@ Lifecycle writes use SQL compare-and-swap:
   to `Running`, records the owner/expiry, increments attempt and revision, and succeeds for only one
   worker;
 - heartbeats renew only a live lease still owned by that worker; operation authors use bounded
-  leases (5 seconds through 15 minutes) and stop immediately after renewal failure;
+  leases (5 seconds through 15 minutes) and stop immediately after renewal failure. **An author
+  whose work can outrun its lease must renew it** — an accepted heartbeat also increments the row
+  revision, so a renewing author tracks the revision its heartbeats produced and addresses its
+  terminal transition at that value, not at the one `StartAsync` returned. `SubagentRunner` renews
+  every five minutes for the life of the child turn: the 15-minute ceiling is easy for a delegated
+  child on local inference to cross, and an unrenewed lease lets the reconciler abandon a run that
+  is still executing and throw away the answer it eventually produces;
 - checkpoints require the owner and exact previous checkpoint version, so duplicate/out-of-order
   writes cannot overwrite newer recovery state;
 - cancellation, retry, and terminal transitions require the exact row revision. Terminal and
@@ -2954,7 +2989,7 @@ registered twice.
 | `blob-encryption-key-rotation` | `RestartIdempotently` | `BlobEncryptionLifecycleService` | Continue toward the active write key while retaining every still-referenced prior key. |
 | `backup-create` | `AbandonSafely` | `BackupService` | Preserve phase/output metadata for inspection and never resume with a recovery passphrase that was intentionally not persisted. Normal failure/cancellation removes owned staging; an expired unfinished operation becomes abandoned, while a fully self-verified atomically published archive remains valid. |
 | `data-retention-prune` | `RestartIdempotently` | `DataRetentionService` | Restart from the durable prune cursor; pruned rows are already gone. |
-| `data-retention-mutation` | `ReconcileAndComplete` | `DataRetentionService` | Reconcile a partially applied retention mutation against its durable journal. |
+| `data-retention-mutation` | `ReconcileAndComplete` | `DataRetentionService` | Reconcile a partially applied retention mutation against its durable journal. A row still at checkpoint version 0 died before that journal existed, so nothing was captured, quarantined, or deleted: it is abandoned as `data-retention.mutation_never_started` rather than parked, because a parked retention row blocks every later retention operation. |
 | `data-retention-factory-reset` | `RestartIdempotently` | `DataRetentionService` | Restart from durable quarantine state so a half-erased state root is never presented as a working installation. |
 | `a2a-inbound-sending` | `ReconcileAndComplete` | `A2ASendingLedger` | The peer's connection died with the process; abandon the relay with a named reason. The serving Apprentice is durable and untouched. |
 | `a2a-outbound-sending` | `ReconcileAndComplete` | `A2ASendingLedger` | Cancel the orphaned remote task so it stops billing on the peer, recording whether the cancel was confirmed or the peer was unreachable. |
@@ -3046,6 +3081,16 @@ them: a hard ceiling of 2000 distinct label sets per metric, with refusals count
 `Arcanum.ConstraintInventory.json` classifies the per-label-value length; the series ceiling is
 code-owned.
 
+**`arcanum_http_requests_total` counts every exit path.** `UseArcanumMetrics` emits the counter from a
+`finally`, not from the normal return of `await next()`. The exception handler is registered *upstream*
+of the metrics middleware, so an unhandled exception unwinds through the metrics frame before the
+handler writes its envelope; recording only on the success path would have dropped every
+unhandled-exception response from the counter and reported a clean `status_code` distribution while
+the host returned 500s. Because the terminal status is not yet written on that path, a fault that
+escapes before the response started is recorded as `500` — the status `UseExceptionHandler` writes by
+default — rather than the not-yet-final `200`; a fault after the response started keeps the status
+already on the wire, which is what the client actually received.
+
 ---
 
 ### 10.9 Familiars — subscription-backed CLI transports
@@ -3071,8 +3116,17 @@ streaming projections, Wards, Sanctum, and accounting are untouched.
 exists for code the *model* chose and therefore jails, rlimits, and rewrites the process image:
 
 - `ProcessStartInfo.ArgumentList` only. There is no command-string path anywhere in the contract.
+- Only the path `FamiliarExecutableResolver` returned is spawned. A command `PATH` cannot answer is
+  `NotInstalled`, never handed back to the OS — whose search order (CreateProcess on Windows, and
+  .NET's deliberately matching walk on Unix) reaches the application directory and the caller's
+  current directory *before* `PATH`, so a repository Arcanum was started in could otherwise supply
+  the binary. On Windows the resolver tries the `PATHEXT` variants ahead of the bare name, because an
+  npm install writes `claude.cmd` beside an extensionless sh shim that `CreateProcess` cannot start.
 - The prompt travels on stdin, which is then closed. Nothing about the conversation can be re-parsed
   as an option, and no argv length limit applies.
+- stdin, stdout, and stderr are pinned to UTF-8 without a BOM. Left unset, Windows would encode and
+  decode them with the console code page (CP_ACP with no console at all), silently corrupting every
+  non-ASCII prompt and answer in a way that still parses as JSON.
 - Environment scrub via `ChildProcessEnvironmentProfile.Familiar`: `ARCANUM_*` and loader/runtime
   hijack variables are stripped, and the caller additionally names every configured provider
   credential variable (both the explicit reference and the derived `ARCANUM_PROVIDER_*` default).
@@ -3090,10 +3144,40 @@ explicit: it does nothing until a provider row exists.
 **Wire mapping.** Claude Code runs as
 `claude --print --output-format stream-json --verbose --include-partial-messages --model <m> --tools "" --disable-slash-commands --strict-mcp-config --no-session-persistence`,
 with system messages passed as `--system-prompt`. Codex runs as
-`codex exec --json --sandbox read-only --skip-git-repo-check --ephemeral -C <temp> -m <m> -`. Both
-CLIs' own agent loops are switched off: Arcanum owns the tool loop, and delegating into a CLI's agent
-loop is an explicit non-goal. A Familiar therefore serves text completions — `ChatOptions.Tools` is
-ignored, and a tool-using turn degrades to text rather than failing.
+`codex exec --json --sandbox read-only --skip-git-repo-check --ephemeral --ignore-rules -C <temp> -m <m> -c features.<f>=false … -`.
+Both CLIs' own agent loops are switched off: Arcanum owns the tool loop, and delegating into a CLI's
+agent loop is an explicit non-goal. A Familiar therefore serves text completions — `ChatOptions.Tools`
+is ignored, and a tool-using turn degrades to text rather than failing.
+
+**Argv budget.** Only the *prompt* is unconditionally free of an argv length limit, because it
+travels on stdin. Anything Arcanum puts on the command line is bounded by the OS: Windows caps a
+whole command line at 32,767 characters, Linux caps a single argument at 128 KiB
+(`MAX_ARG_STRLEN`), and overshooting either makes `Process.Start` fail with a `Win32Exception` that
+the pipeline reads as a connectivity failure and silently falls back from. A composed Arcanum system
+prompt clears those ceilings routinely — it carries attached-file bodies and resonant spell text,
+and `Arcanum:Spells:MaxResonantBytes` alone defaults to 131,072. Claude Code's adapter therefore
+caps every inline argument at 8 KiB: a larger `--system-prompt` is folded into the stdin payload
+behind `=== SYSTEM INSTRUCTIONS ===` / `=== CONVERSATION ===` headers, and a larger `--json-schema`
+is dropped rather than passed (Arcanum validates structured output and retries a mismatch, so losing
+the hint costs a retry where a failed spawn costs the turn). Codex is unaffected: it has no
+system-prompt flag and already folds instructions into stdin, and takes its schema as a file.
+
+The two CLIs need different mechanisms for that, and Codex's is weaker. Claude Code takes `--tools ""`,
+which is a single authoritative switch. Codex has no equivalent — `--sandbox read-only` governs only
+what a model-run command may *write*, not whether the model may run one at all — so its loop is
+suppressed through the feature flags in `CodexCliChatClient.SuppressedFeatures` (`shell_tool`,
+`unified_exec`, `browser_use`, `computer_use`, `apps`, `web_search`, `hooks`, …). They are applied as
+`-c features.<name>=false` rather than `--disable <name>` on purpose: `--disable` rejects a name the
+installed CLI does not recognise, so a flag renamed in a later release would fail every turn, while an
+unknown `-c` override is ignored and the suppression simply degrades.
+
+Because that suppression is therefore best-effort against a CLI Arcanum does not version-pin, it is not
+the guarantee. The guarantee is that `CodexCliChatClient.ProjectItem` **fails closed**: a completed
+`command_execution`, `mcp_tool_call`, `web_search`, `file_change`, `patch_apply`, `browser_action`, or
+`computer_use` item raises a transport failure instead of being skipped. Such an item is proof the
+vendor loop ran code outside `WorkspacePathPolicy`, outside the Ward gate, and outside the audit
+record, so its answer is laundered output rather than a completion, and returning it would be worse
+than failing the turn.
 
 Frames are bound through `FamiliarWireJsonContext` (source-generated, snake_case) with every member
 optional, so an unknown frame from a newer CLI is skipped rather than fatal. Claude Code's terminal
@@ -3112,7 +3196,9 @@ list, so an explicitly named model still resolves. Arcanum caches no discovered 
 
 **Readiness.** `IFamiliarProbe` reads each CLI's own status surface — `claude auth status --json` plus
 `claude --version`, or `codex doctor --json` — and reports `NotInstalled` / `NotConfigured` /
-`Configured` with a version and a remediation command the *operator* runs. Redaction is structural:
+`Configured` with a version and a remediation command the *operator* runs. A status spawn is still a
+spawn, so the probe creates one `FamiliarWorkingDirectory` per call and runs every command in it: the
+same containment an inference turn gets, for the same reason. Redaction is structural:
 the bound DTOs have no field for the account e-mail, organisation identifiers, or local paths those
 commands print, so that material cannot reach a payload or a log. Model enumeration is typed
 `Discovered` / `OperatorDeclared` / `Unknown`; neither CLI publishes a machine-readable catalogue
@@ -3196,6 +3282,12 @@ Reads prefer the OS store; a mirror that decrypts while the OS store is merely e
 the OS store once, and that promotion is idempotent. Repeated saves replace the prior value without
 accumulating state. A present-but-undecryptable mirror is `Corrupted` and never triggers silent
 regeneration while encrypted data exists.
+Because reads prefer the OS store, a save whose OS write fails must also **delete** the superseded OS
+credential before it falls back to the mirror — otherwise the replaced credential would keep winning
+on every later read and the newly stored one would never take effect. If that delete cannot confirm
+removal while the backend is reachable (`IOsCredentialStore.IsAvailable`), the save throws before the
+mirror is rewritten instead of reporting a replacement it did not perform. With no reachable backend
+at all the mirror-only mode of §11.2 item 4 still applies, and the fallback write is logged.
 
 .NET cannot reliably zero an immutable managed `string`: the value is a GC-managed allocation that
 compaction may copy before any explicit clear. Arcanum therefore does not claim to erase the
@@ -3206,12 +3298,33 @@ completion summaries expose presence/status and fixed recovery guidance only.
 
 ### 11.3 Request authentication
 
-`ApiKeyEndpointFilter` (singleton) accepts the API key from either header, in this order:
+**The key is checked before the request body is touched.** Minimal-API endpoint filters run *after*
+parameter binding, so an endpoint-filter-only gate let an unauthenticated caller have its body read,
+buffered and deserialized before the 401 — on `POST /v1/files` that is the 513 MiB multipart envelope
+of §11.20 spooled to the temp filesystem with no credentials, and on a body-bound route a malformed
+body produced a binding `400` instead of this section's `401`. The primary gate is therefore
+**middleware**, installed by `MapArcanumEndpoints` (not by each composition root, so it cannot be
+forgotten) and running between the framework's implicit `UseRouting` and `UseEndpoints`: the matched
+endpoint's metadata is available while the body is still untouched. It fires only for endpoints
+carrying `ApiKeyRequirementMetadata`, which `ApiBootstrapper.RequireArcanumApiKey` attaches in the
+same call that attaches `ApiKeyEndpointFilter` — the `/v1` group, the `/api` group (therefore every
+nested group, including Scalar and the A2A server), and `GET /metrics` when
+`Arcanum:Security:MetricsRequireApiKey` is effective. `POST /api/conclave/a2a/callbacks` deliberately
+carries neither and authenticates on its per-Sending secret instead (§5.7.1.4). Endpoint **matching**
+still runs ahead of the gate, so `404`, `405`, and the `415` for a `Content-Type` the route does not
+accept remain reachable without a key — none of them read the body.
 
-1. **`X-Arcanum-Key`** when present (legacy Arcanum header). **Multiple values reject with 401** — the filter explicitly disallows ambiguous duplicate headers.
+`ApiKeyEndpointFilter` (singleton) stays attached as defence in depth for a host that maps the
+endpoints without the Arcanum pipeline; both gates delegate to the same `ApiKeyAuthenticator` and
+share the singleton `IApiKeyDigestCache`, so the second check costs one extra SHA-256 of the presented
+header and never a second secret-store read.
+
+`ApiKeyAuthenticator` accepts the API key from either header, in this order:
+
+1. **`X-Arcanum-Key`** when present (legacy Arcanum header). **Multiple values reject with 401** — the authenticator explicitly disallows ambiguous duplicate headers.
 2. Otherwise `Authorization: Bearer` followed by the raw key (OpenAI-compatible clients). The `Bearer` prefix is case-insensitive; only the trimmed token after the first space is compared. **Multiple `Authorization` values reject with 401**.
 
-The filter then:
+It then:
 
 1. Rejects values exceeding `MaxApiKeyHeaderUtf16Chars` with 401.
 2. Caches a **SHA-256 digest** of the expected key (32 bytes, fixed size) for a code-owned short TTL so on-disk key rotation propagates without restart. The plaintext expected key never lives in long-term memory beyond computing the digest, and the temporary UTF-8 buffer is zeroed.
@@ -3234,7 +3347,7 @@ Failed authentication returns **`ApiResponse<string>`** at **401** with error co
 
 **Shared secure reads:** `SecureFileReader` opens once with link following disabled (`O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC` on supported Unix; reparse-point/overlapped open on Windows), proves from the opened handle that the object is a regular file with exactly one hard link, optionally matches the pre-open identity, and reads only from that handle. The nonblocking Unix open makes FIFO rejection bounded; FIFOs, devices, symlinks/reparse points, hard links, unknown metadata, and identity swaps fail closed. It reads at most `maxBytes + 1` through an incrementally grown `ArrayPool<byte>` buffer, revalidates handle identity/kind/link count after the read, strictly decodes UTF-8, and clears every rented buffer on return/disposal.
 
-`McpConnectionManager`/`TrustedMcpWorkspaceStore`, `SandboxedFileIo` (therefore `read_file_chunk` and `replace_text_block`), `PhysicalFileSystemBrowser.ReadAsync`, `PhysicalFileSystemWriter`'s replace-text-block read, and AtomicFile's backup-source copy use this shared primitive where applicable. The API writer path is covered by the same fail-closed assertion: it proves the target is a regular file with exactly one hard link **before** opening, because a blocking open of a FIFO planted in the workspace never returns until a writer appears and that read carries no cancellation token, so the request would hang past `RequestAborted` and leak a thread-pool thread per call. Sandboxed and workspace-browser reads additionally revalidate post-open workspace containment/current path identity. Atomic writes stage and fingerprint content, verify the moved destination, and restore only a backup whose captured identity **and content fingerprint** still match; the restored destination is fingerprinted again. Temporary/backup cleanup uses identity-owned deletion, not a blind path delete.
+`McpConnectionManager`/`TrustedMcpWorkspaceStore`, `SandboxedFileIo` (therefore `read_file_chunk` and `replace_text_block`), `PhysicalFileSystemBrowser.ReadAsync`, `PhysicalFileSystemWriter`'s replace-text-block read, `CodexReader` (therefore the global, workspace, and campaign `CODEX.md` reads), and AtomicFile's backup-source copy use this shared primitive where applicable. The API writer path is covered by the same fail-closed assertion: it proves the target is a regular file with exactly one hard link **before** opening, because a blocking open of a FIFO planted in the workspace never returns until a writer appears and that read carries no cancellation token, so the request would hang past `RequestAborted` and leak a thread-pool thread per call. Sandboxed and workspace-browser reads additionally revalidate post-open workspace containment/current path identity. Atomic writes stage and fingerprint content, verify the moved destination, and restore only a backup whose captured identity **and content fingerprint** still match; the restored destination is fingerprinted again. Temporary/backup cleanup uses identity-owned deletion, not a blind path delete.
 
 `search_workspace`, the `apply_patch` planner/coordinator, direct file tools, spell scanning, and API workspace I/O all use this policy. A matching Campaign with `SanctumConfig.Enabled` adds its tool/path/network allowlist in `ToolExecutionPipeline`; no campaign or disabled Sanctum means only that additional gate is absent. Sanctum never replaces or weakens `WorkspacePathPolicy`.
 
@@ -3316,7 +3429,7 @@ Inference-pipeline errors must not leak internal exception text to clients:
 - **`ArcanumExceptionHandler`** (`IExceptionHandler`) — unhandled pipeline exceptions return **`Hub.Unhandled`** in the `ApiResponse<string>` envelope with the same **`TraceId`** logged server-side. **`JsonException`** from request binding or deserialization returns **400** with **`Validation.InvalidBody`** in the `ApiResponse<bool>` envelope.
 - **`POST /v1/chat/completions`** — both buffered and SSE generic failures return exactly `"Inference failed. See server logs for details."`, and model-not-configured uses the same exact string as the native path; never the raw `Result.Error.Message`.
 - **`WebhookCommLinkDispatcher`** — outbound webhook exceptions return the public code `CommLink.WebhookException` with the generic message `"Comm Link webhook POST failed. See server logs for details."`; logs retain only host and exception type, never the secret URL or exception text. Responses are requested with `ResponseHeadersRead` and drained only through the existing capped reader, so an untrusted webhook cannot force full-body buffering.
-- **`PUT /api/config`** — validation failures return **`ApiResponse<bool>`** at **400** with code `Configuration.ValidationFailed` (user-facing validation messages). Write failures return **`ApiResponse<bool>`** at **500** with code `Configuration.WriteFailed` (exception detail is logged server-side; the envelope message is safe to display in Studio).
+- **`PUT /api/config`** — validation failures return **`ApiResponse<bool>`** at **400** with code `Configuration.ValidationFailed` (user-facing validation messages). Write failures return **`ApiResponse<bool>`** at **500** with code `Configuration.WriteFailed` (exception detail is logged server-side; the envelope message is safe to display in Studio), and a configuration transaction still held elsewhere after the bounded acquisition window returns **500** with `Configuration.LockUnavailable`.
 
 The sanitization rule covers response **headers** as well as bodies: no model-, schema-, or
 tool-derived text may be written into a response header unsanitized. Header values have a stricter
@@ -3351,6 +3464,8 @@ Changed inference, attachment, tool, CLI-session, and TurnEngine failure paths l
 ### 11.12 Kestrel limits and optional rate limiter
 
 `ArcanumKestrelConfigurator` (shared by `ServeCommand` and `Api.DevHost`) applies the code-owned request-body limit once as `KestrelServerOptions.Limits.MaxRequestBodySize` for all listeners (HTTP and HTTPS). When automatic rate limiting is effective (§11.13), `AddArcanumApiServices` calls `AddRateLimiter` with a fixed-window policy named **`ArcanumRateLimit`**; both `/api` and `/v1` `MapGroup` routes apply `RequireRateLimiting("ArcanumRateLimit")`. Partition keys use the **remote IP address only**. `RejectionStatusCode = 429`, and the code-owned queue limit is zero so excess requests are rejected immediately.
+
+**Rejection shape.** The limiter's `OnRejected` is global, so it branches on the request path the same way every other dual-surface failure path does (`IdempotencyEndpointFilters`, `ArcanumExceptionHandler`): `/v1` receives an OpenAI error envelope (`error.type` `rate_limit_error`, `error.code` `rate_limit_exceeded`), everything else the Arcanum `ApiResponse<T>` envelope with `RateLimit.TooManyRequests`. Both shapes carry **`Retry-After`** in whole seconds, rounded up (minimum `1`) from the lease's `MetadataName.RetryAfter`, so a client backs off on the server's actual window instead of its own guess.
 
 ### 11.13 `Arcanum:Host:ListenAny` versus `ARCANUM_HOST_ANY`
 
@@ -3453,7 +3568,7 @@ Auto-approval is unrelated to the CLI direct-command `--yes` / `IConfirmationPro
 **OS filesystem jail (macOS-ARM beta posture):** The same **`CappedChildProcessRunner`** composes env scrub → resource limits → **filesystem jail** → cwd / output caps / cancellation. This is a **filesystem sandbox only** — it does **not** prevent network use by network-capable binaries. Sanctum network policy still applies to model-supplied network targets such as `read_url`; CommLink enforces its URL policy at dispatch. `execute_command` network behavior is **not** solved by the FS jail.
 - **macOS (active):** wraps the child with deprecated **`/usr/bin/sandbox-exec`** and an owner-only Seatbelt profile (deny-default + explicit allows). Access classes: workspace / Sanctum `AllowedPaths` → read+write; spell script roots (incl. global spells) → **read+execute** (no write unless also an AllowedPath/workspace); system runtime (`/bin`, `/usr`, `/System`, …) → read+execute, **no write**; per-invocation owner-only **`TMPDIR`** → read+write (no broad `/tmp`); and, for `workspace_check` only, the two shared .NET PAL inter-process roots `/private/tmp/.dotnet/shm` and `/private/tmp/.dotnet/lockfiles` → read+write (see §11.7.1). Directory walk uses `(allow file-read* (vnode-type DIRECTORY))` for getcwd/dyld path resolution — **not** whole-volume file-content read. **Critical invariant:** no `(subpath "/")` / `(literal "/")` for file content. Network is explicitly allowed in the filesystem-only profile. Apple may remove the deprecated tool; absence or profile setup failure fail-closes unless `Arcanum:Security:AllowUnsandboxedToolChildren=true`. Distinct from the Linux internal helper argv `__sandbox-exec`.
 - **Linux (inactive for this beta):** Landlock / internal **`__sandbox-exec`** helper code remains **in-tree but is not invoked** (probe-first: not activated until Landlock-backed end-to-end wiring is validated). Default is fail-closed with the public message: *"Linux filesystem jail is not active in this beta. Set Arcanum:Security:AllowUnsandboxedToolChildren=true to run without FS confinement, or use macOS for sandboxed command tools."* Escape hatch runs unsandboxed with a warning; resource limits still apply where available. Do **not** conflate this helper with macOS `/usr/bin/sandbox-exec`.
-- **Windows (active AppContainer jail; ADR):** selected design is a fresh AppContainer profile/SID per invocation, explicit inherited ACL grants on canonical local-drive roots, and a trusted broker that launches the target suspended only after its Job membership is confirmed. Read/write is granted only to workspace/Sanctum allowed roots and the owner-only invocation temp directory; runtime and spell-script roots receive read/execute. UNC, device/extended paths, alternate data streams, traversal components, and reparse-point roots are rejected before ACL mutation. Original security descriptors are restored in reverse order and the profile/temp/config are removed on success, failure, or cancellation; a random non-reused SID limits residual authority after a host crash, where immediate ACL restoration cannot be guaranteed. AppContainer was chosen over (a) a restricted token plus a filesystem broker, which would require routing every filesystem operation and remains vulnerable to unbrokered runtime calls; (b) temporary ACLs alone, which do not remove the user's ambient access token; and (c) Windows Sandbox/WDAG or Hyper-V containers, which are heavyweight optional features unsuitable for per-tool local execution. Job Objects remain the process-tree/resource boundary and are not represented as filesystem isolation. Health/`arcanum doctor` report Healthy only when the live AppContainer API probe succeeds; otherwise command tools fail closed. `AllowUnsandboxedToolChildren` may permit a non-Sanctum invocation to run without confinement, but never overrides a Sanctum strict path-boundary requirement.
+- **Windows (active AppContainer jail; ADR):** selected design is a fresh AppContainer profile/SID per invocation, explicit inherited ACL grants on canonical local-drive roots, and a trusted broker that launches the target suspended only after its Job membership is confirmed. Read/write is granted only to workspace/Sanctum allowed roots and the owner-only invocation temp directory; runtime and spell-script roots receive read/execute. UNC, device/extended paths, alternate data streams, traversal components, and reparse-point roots are rejected before ACL mutation. Original security descriptors are restored in reverse order and the profile/temp/config are removed on success, failure, or cancellation. Restoration cannot rely on the broker's own `finally`: timeout, cancellation, and Job Object resource kills all terminate it with TerminateProcess, which runs no managed cleanup. The broker therefore appends each undo step — the pre-grant security descriptor of every root, and the profile name before the profile is created — to an owner-only undo log the **host** creates and owns (`WindowsAppContainerRestoreJournal`), always before performing the matching mutation, and clears the log only after it has undone everything itself. A grant whose undo record cannot be made durable fails the run closed rather than mutating an ACL nothing can take back. `CappedChildProcessRunner` replays whatever survives once the child is gone, before deleting the log, so a killed broker cannot leave an orphaned inheritable ACE on the workspace root. Only a torn final record is discarded, because the mutation it describes had not yet been performed. A random non-reused SID limits residual authority after a **host** crash, which is the one case where immediate ACL restoration still cannot be guaranteed. AppContainer was chosen over (a) a restricted token plus a filesystem broker, which would require routing every filesystem operation and remains vulnerable to unbrokered runtime calls; (b) temporary ACLs alone, which do not remove the user's ambient access token; and (c) Windows Sandbox/WDAG or Hyper-V containers, which are heavyweight optional features unsuitable for per-tool local execution. Job Objects remain the process-tree/resource boundary and are not represented as filesystem isolation. Health/`arcanum doctor` report Healthy only when the live AppContainer API probe succeeds; otherwise command tools fail closed. `AllowUnsandboxedToolChildren` may permit a non-Sanctum invocation to run without confinement, but never overrides a Sanctum strict path-boundary requirement.
 - **Fail-closed:** when the jail cannot be applied and the escape hatch is false, the model-visible result is a clear expected denial (Linux beta message above, missing `/usr/bin/sandbox-exec`, profile setup failure, or Windows Sanctum denial) — **not** a Hub generic internal error / unhandled exception / provider failure.
 - **Escape hatch:** `Arcanum:Security:AllowUnsandboxedToolChildren` (default `false`) logs a warning (platform, tool name, campaign id when available — no secret-bearing env/argv) and runs without FS confinement; rlimits / Job Objects still apply where available.
 - **Operator visibility:** `ToolChildSandboxStatus` / `ToolChildSandboxCapabilityReporter` feed `arcanum doctor` (Tool Child Sandbox panel) and `GET /api/health` component `ToolChildSandbox` (Healthy only when FS jail is active or an equivalent safe state; Degraded for Windows no-FS-jail, Linux inactive fail-closed, escape hatch, or missing macOS sandbox-exec). Network isolation is always reported as **not provided**.
@@ -3558,7 +3673,7 @@ leave the source transcript selected.
 
 Opt-in, client-supplied replay protection (Stripe-style semantics) for the eight side-effecting inference endpoints: **`POST /api/intelligence/ping`**, **`POST /api/intelligence/ping-stream`**, **`POST /v1/chat/completions`** (both buffered and streaming), **`POST /v1/embeddings`**, **`POST /api/spells/{name}/execute`**, **`POST /api/spells/{name}/execute-stream`**, **`POST /api/prompts/{id}/execute`**, and **`POST /api/prompts/{id}/execute-stream`**. Requests without an `Idempotency-Key` header are unaffected — the feature is entirely bypassed at effectively zero cost.
 
-**Claim key ≠ fingerprint:** claim identity is `SHA-256(principal + API version + HTTP method + normalized route + Idempotency-Key)`. Fingerprint is `SHA-256(route + canonicalised query string + selected Content-Type + canonical body)`. Same key with a different fingerprint → **409** `Security.IdempotencyConflict`. The query string is material because `?workspace=` and `?version=` retarget spell and prompt execution, so two requests differing only there conflict rather than replaying each other's response; it is canonicalised as ordinal-sorted `key=value` pairs, so parameter **order** alone never changes the fingerprint while any differing name or value does. The claim key deliberately excludes the query, so that mismatch surfaces as one conflict rather than as two independent claims. The principal is a fixed installation marker and is **not** derived from the client-supplied `Host` header — a caller could otherwise partition its own claims (`localhost:5001` versus `127.0.0.1:5001`) and defeat replay protection. Only **terminal** Completed claims (writer-marked, within byte cap) are replayable; cancelled/partial/over-cap streams → Abandoned. Durable table: `IdempotencyClaims` (raw SQL); legacy `IdempotencyKeys` remains for TTL sweep compatibility.
+**Claim key ≠ fingerprint:** claim identity is `SHA-256(principal + API version + HTTP method + normalized route + Idempotency-Key)`. Fingerprint is `SHA-256(route + canonicalised query string + selected Content-Type + canonical body)`. Same key with a different fingerprint → **409** `Security.IdempotencyConflict`. The query string is material because `?workspace=` and `?version=` retarget spell and prompt execution, so two requests differing only there conflict rather than replaying each other's response; it is canonicalised as ordinal-sorted `key=value` pairs, so parameter **order** alone never changes the fingerprint while any differing name or value does. The claim key deliberately excludes the query, so that mismatch surfaces as one conflict rather than as two independent claims. The **normalized route** is the matched endpoint's registered route pattern (`RouteEndpoint.RoutePattern.RawText`, one trailing slash stripped) followed by its ordinal-sorted route **values** — never the raw request path. ASP.NET Core route matching is case-insensitive and tolerates a trailing slash, so `/api/spells/build/execute`, `/api/spells/build/execute/`, and `/API/Spells/build/EXECUTE` all reach the same handler and must therefore share one claim key and one fingerprint; hashing the raw path instead let a proxy-added slash or a differently-cased base URL run the billed turn a second time. Route values stay **verbatim** (not lower-cased) because `/api/spells/Foo/execute` and `/api/spells/foo/execute` may be two different spells, and collapsing them would replay one spell's cached response for the other. The principal is a fixed installation marker and is **not** derived from the client-supplied `Host` header — a caller could otherwise partition its own claims (`localhost:5001` versus `127.0.0.1:5001`) and defeat replay protection. Only **terminal** Completed claims (writer-marked, within byte cap) are replayable; cancelled/partial/over-cap streams → Abandoned. Durable table: `IdempotencyClaims` (raw SQL); legacy `IdempotencyKeys` remains for TTL sweep compatibility.
 
 **Coordination and ownership:** an in-process `ConcurrentDictionary` local-flight coordinator is acquired **before** durable lookup/acquire, so same-process competitors wait for the leader's response completion and then re-read/replay instead of racing the handler. Durable owner IDs are `{process-instance-guid}:{execution-guid}`. A live orphan carrying this process-instance prefix can be retired and reclaimed; a live claim owned by another process is confirmed as cross-process work and returns **409** without invoking the handler: native `Security.IdempotencyInProgress`, or OpenAI `code: "idempotency_in_progress"` in the standard OpenAI error envelope. Completed same-fingerprint claims replay status/content type/body verbatim; fingerprint mismatch remains `Security.IdempotencyConflict` / OpenAI `idempotency_conflict`, also 409.
 
@@ -3637,8 +3752,9 @@ upload failures remain the sanitized **500** `internal_error` envelope.
 
 **Endpoints:**
 - **`POST /v1/files`** — `multipart/form-data`: `file` (binary, required) + `purpose` (string,
-  required — any non-empty value; Arcanum does not enforce OpenAI's specific purpose enum because
-  it has no per-purpose behavior beyond what `/v1/batches` expects for `purpose: "batch"`).
+  required — any non-empty value except the two reserved batch-artifact purposes below; Arcanum
+  does not otherwise enforce OpenAI's specific purpose enum because it has no per-purpose behavior
+  beyond what `/v1/batches` expects for `purpose: "batch"`).
   Plaintext is streamed directly into an atomic encrypted write, then published with the
   linearizable metadata boundary above. Returns **201** + `OpenAiFileObject`.
 - **`GET /v1/files?purpose=`** — list, optionally filtered; **200** + `OpenAiFileListResponse`.
@@ -3671,10 +3787,21 @@ upload failures remain the sanitized **500** `internal_error` envelope.
 
 **Upload validation (in order — first failure wins):**
 1. `file` present and non-empty, `purpose` present and non-empty → else **400** `missing_required_parameter`.
-2. Filename must not exceed 255 characters, and (defense-in-depth; unreachable through any conformant HTTP client, whose header-quoting rejects embedded control characters before the request is even sent) must not contain an embedded null byte → else **400** `invalid_value`.
-3. Size must fit the code-owned 512 MiB upload envelope → else **413** `invalid_value`. The effective multipart ceiling is that envelope plus a 1 MiB allowance for multipart boundaries, part headers, and the sibling `purpose` field, applied through endpoint form-limits metadata (`WithFileUploadRequestBody` → `RequestFormLimitsAttribute`, an `IFormOptionsMetadata`). Sized this way, a file at the envelope still binds and the *handler* owns rejection with the structured 413 all the way up to the ceiling, while a body beyond it is cut off at the multipart layer as a framework **400** rather than being buffered to disk first. The endpoint's 10 GiB `RequestSizeLimit` is the transport ceiling only and never the rejection boundary.
-4. Extension/declared-Content-Type cross-check (`UploadedFileMimeValidator.IsExtensionMimeMismatch`) — a *known* extension (`.png`, `.jsonl`, etc.) paired with an unexpected declared type is rejected (**400** `invalid_value`); an *unrecognized* extension is always allowed through (nothing to cross-check against).
-5. If `Arcanum:Security:AllowedUploadMimeTypes` is non-empty, the declared type must be in that operator allowlist → else **400** `invalid_value`.
+2. The trimmed `purpose` must not be one of the two **reserved batch-artifact purposes**,
+   `batch_output` or `error` (`UploadedFileStorage.IsReservedEncryptionPurpose`) → else **400**
+   `invalid_value` on `param: "purpose"`. Those two strings are owned by `/v1/batches`' artifact
+   publisher, whose envelopes are written under `EncryptedBlobPurpose.BatchArtifact`; an upload
+   always writes `EncryptedBlobPurpose.UploadedFile`, while every reader
+   (`GET /v1/files/{id}/content`, `BlobEncryptionMetadataStore`, `BackupInventoryPlanner`) derives
+   its purpose from the stored string via `UploadedFileStorage.ResolveEncryptionPurpose`. Accepting
+   one would therefore store bytes whose envelope purpose can never match the requested purpose
+   again — a permanent **500** `encrypted_file_corrupt` on download, a permanently failing
+   re-encryption candidate that blocks superseded-key retirement, and a failed `files/` backup
+   component.
+3. Filename must not exceed 255 characters, and (defense-in-depth; unreachable through any conformant HTTP client, whose header-quoting rejects embedded control characters before the request is even sent) must not contain an embedded null byte → else **400** `invalid_value`.
+4. Size must fit the code-owned 512 MiB upload envelope → else **413** `invalid_value`. The effective multipart ceiling is that envelope plus a 1 MiB allowance for multipart boundaries, part headers, and the sibling `purpose` field, applied through endpoint form-limits metadata (`WithFileUploadRequestBody` → `RequestFormLimitsAttribute`, an `IFormOptionsMetadata`). Sized this way, a file at the envelope still binds and the *handler* owns rejection with the structured 413 all the way up to the ceiling, while a body beyond it is cut off at the multipart layer as a framework **400** rather than being buffered to disk first. The endpoint's 10 GiB `RequestSizeLimit` is the transport ceiling only and never the rejection boundary.
+5. Extension/declared-Content-Type cross-check (`UploadedFileMimeValidator.IsExtensionMimeMismatch`) — a *known* extension (`.png`, `.jsonl`, etc.) paired with an unexpected declared type is rejected (**400** `invalid_value`); an *unrecognized* extension is always allowed through (nothing to cross-check against).
+6. If `Arcanum:Security:AllowedUploadMimeTypes` is non-empty, the declared type must be in that operator allowlist → else **400** `invalid_value`.
 
 **Permissions:** the files directory, every encrypted envelope, and same-directory ciphertext temp
 get owner-only permissions via `SecureFilePermissions` (600 Unix / owner ACL Windows). Atomic
@@ -3818,7 +3945,14 @@ deduplicated. Each provider search keeps its own result-page bound, but another 
 discovers at least one new URL. Research stops when the optional `sourceTarget` is reached, a pass
 discovers no new URLs, the caller/host cancels, reported cost exceeds an explicit ceiling, or a
 provider/safety failure occurs. The selected citations are then read and the final
-model call receives a bounded untrusted-data prompt with all tools disabled. The synthesis model,
+model call receives a bounded untrusted-data prompt with all tools disabled. Each search answer and
+fetched page — including its URL and title — is wrapped by `SystemPromptBuilder.AppendUntrusted` in
+the same adaptive backtick fence (`ComputeFenceBacktickLength`) used for attachments and Data
+Streams, under a code-owned `Source [n]` label that stays outside the fence for citation mapping, so
+a hostile page cannot forge additional `[n]` sources or append its own instruction block. The
+code-owned trailing synthesis instruction is reserved out of the character budget before any source
+is appended, and a block that will not fit once framed is re-framed around a shortened payload
+rather than trimmed in place, so the closing fence is never cut away. The synthesis model,
 token accounting, inference audit (`requestType:research`), and optional existing `SessionId` stay
 inside the host. The request also accepts effective `WorkingDirectory` / `CampaignId`, current-turn
 `AttachedFiles` / `ScryingFoci`, and production temperature, top-p, stop, seed, response-format,
@@ -4058,8 +4192,9 @@ env:
 
 Do not publish a historical test count or coverage percentage as a release claim. GitHub Actions
 uploads HTML + Cobertura as `arcanum-coverage-report`. Compendium runs as a separate `dotnet test`
-step. The Forge remains excluded from CI build/test until its test project and Ux solution build are
-re-enabled in `.github/workflows/ci.yml`; use the Windows command above meanwhile.
+step. `TheForge.Ux` — and through it `TheForge.Core` — is compiled by the `build-test` job because the
+release workflows package and ship it; only the Forge test suite remains excluded from
+`.github/workflows/ci.yml` until it is repaired, so use the Windows command above to run it meanwhile.
 
 ### 13.2 Test data, ownership, and parallel collections
 
@@ -4089,8 +4224,13 @@ xUnit runs collections in parallel and tests inside a collection serially:
 ### 13.3 SQLCipher and API-host fixtures
 
 Grimoire tests use `[SkippableFact]` and skip when `e_sqlcipher` is unavailable
-(`GrimoireFixture.SqlCipherAvailable`). The probe disables SQLite pooling and reports available only
-after its temporary DB can be deleted. Cached-template validation/remediation and main DB/sidecar
+(`GrimoireFixture.SqlCipherAvailable`). The probe disables SQLite pooling, reports available once an
+encrypted connection opens, and deletes its temporary DB best-effort. It runs from a static
+constructor, so it catches **every** exception and reports it as
+`SqlCipherUnavailableReason`: a squatted temp path, a read-only volume, a locked probe file, or a
+native library without encryption support must degrade to skipped tests, never to a failed type
+initializer that turns every later `Skip.IfNot` into `TypeInitializationException`.
+Cached-template validation/remediation and main DB/sidecar
 copying share an in-process lifecycle lock plus a named cross-process mutex, so concurrent
 test/coverage processes cannot observe or delete a partial template.
 
@@ -4189,7 +4329,12 @@ Windows process-boundary behavior lives in `ProcessResourceLimiterWindowsBehavio
 `WindowsJobObjectSessionTests`, and `ChildProcessBoundaryBehaviorTests`: Job Object failures use
 hand-written API fakes; stream failures use custom `Encoding`/`Decoder` implementations; cleanup
 uses unique owned roots; process-tree tests use immediate-exit or bounded 30-second children with
-prompt termination assertions and unconditional cleanup. `SpellVersionPathPolicyTests` covers
+prompt termination assertions and unconditional cleanup. `WindowsAppContainerRestoreJournalTests`
+covers the broker's kill-proof undo log on every host — replay order, a broker that cleaned up after
+itself, torn and corrupt records, and reported residue — because the ACL mutation it protects is
+Windows-only but the log itself is not. `MacOsDescendantSupervisorTests` parks the kqueue monitor
+loop inside a tick through an injected hold, which is the only way to prove that disposal waits for
+the loop before releasing the event buffer without depending on scheduler timing. `SpellVersionPathPolicyTests` covers
 labels/sidecars without filesystem I/O. `WorkspacePathPolicyTests` and symlink variants separately
 cover lexical, symlink-component, and handle-revalidation boundaries independently of Sanctum.
 
@@ -4283,11 +4428,43 @@ artifacts are likewise excluded there. Full-suite duration is host-dependent; th
 costs are Grimoire template creation and ApiHost startup. Use the serial Windows command when
 validating shared process state.
 
+`ArcanumPerfBaselineTests` is a manual wall-clock baseline harness, not a gate: its budgets are
+machine-load sensitive and would fail the CI run for reasons unrelated to any code change. It is
+excluded from the coverage run by `--filter "Category!=Perf"` in `scripts/coverage.sh`, and
+`PerfCategoryExclusionTests` guards both halves of that contract — the filter must exist in the
+script, and every test class in `Tests.Performance` must carry `[Trait("Category", "Perf")]`. A
+plain unfiltered `dotnet test` still runs the baselines; the production paths they touch
+(`GET /api/health`, `ManaPreflight.CountTokens`) are separately covered by non-`Perf` tests, so the
+exclusion costs the gate no coverage.
+
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and manual dispatch:
 
-1. `build-test` restores/builds Arcanum + Compendium, tests Compendium, then runs Arcanum once through
-   the coverage threshold script and uploads the report. The Forge is temporarily excluded.
-2. `aot-il` runs `./scripts/verify-aot-il-warnings.sh` for the hosted Linux RID.
+1. `build-test` (Linux) restores/builds Arcanum + Compendium + `TheForge.Ux`, tests Compendium, then
+   runs Arcanum once through the coverage threshold script and uploads the report. Only the Forge
+   *test suite* is excluded; `TheForge.Ux` is compiled because both release workflows ship it, and
+   without that a compile break would merge green.
+2. `macos-workspace-check` (macOS 14) pins a root-owned dotnet host and exercises the production
+   `sandbox-exec` jail, then runs the AOT gate for the macOS RID.
+3. `windows-suite` (Windows) runs the full Arcanum and Compendium suites.
+4. `aot-il` runs `./scripts/verify-aot-il-warnings.sh` for the hosted Linux RID.
+
+**Why a Windows lane exists.** Every Windows-only test guards itself with
+`Skip.IfNot(OperatingSystem.IsWindows(), …)`, which is right on a developer machine and worthless as a
+signal: on the Linux and macOS lanes those tests report green while asserting nothing. For a long time
+no job ran the suite on Windows at all, so the entire Windows surface — Credential Manager, Job
+Objects, AppContainer, `PATHEXT` resolution, NTFS permissions — was effectively untested. That is how
+`WindowsOsCredentialStore` shipped persisting uninitialized heap in place of the operator's API key.
+
+A lane that skips everything looks identical to a lane that passes, so the job sets
+`ARCANUM_REQUIRE_WINDOWS_SUITE=true` and `WindowsCiSurfaceTests` turns that case red: it asserts the
+runner really is Windows, that a credential backend is reachable, and that the Windows-gated test
+classes still exist. This mirrors the macOS lane's `ARCANUM_REQUIRE_MACOS_WORKSPACE_CHECK` guard.
+
+`OsCredentialStoreRoundTripTests` is the one test that writes to a real OS secret store rather than
+`InMemoryOsCredentialStore`, so it is opt-in behind `ARCANUM_TEST_OS_CREDENTIAL_STORE=true` and stays
+off on developer machines; CI runners are disposable and set it. It is platform-agnostic on purpose —
+each OS reaches a different implementation through the same contract, and a round trip that compares
+the exact secret back is precisely the assertion the Windows defect would have failed.
 
 Packaging workflows are separate manual workflows: Windows Native AOT Arcanum + Compendium,
 Windows/Linux private beta including The Forge, and signed/notarized macOS arm64. SQLCipher tests
@@ -4523,17 +4700,30 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   differing suffix of the `ObservableCollection` bound to the Terminal.Gui `ListView`, because that
   list wrapper rescans the whole collection on every change notification. Transcript and Incantations
   refreshes therefore cost work proportional to the appended text, not `O(transcript)`.
-- **Command Center panes are cell-correct.** Transcript wrap, header/footer/thinking truncation, and
+- **Command Center panes are cell-correct.** Transcript wrap, header/footer/thinking truncation,
+  session sidebar rows (`SessionListItem.DisplayLine`, also reused by the Ctrl+O picker), and
   overlay wrap and width all measure terminal *display cells* and slice on grapheme boundaries
   through the shared `CommandCenter/TerminalCellMetrics`, which `ComposerLayout` delegates to. CJK,
   fullwidth, and emoji content therefore sizes correctly and no slice splits a surrogate pair.
   (§16.5's naive line-counter caveat is scoped to the Spectre swap renderer and does not apply here.)
+- **Operator guidance names only live spellings.** Arcanum ships no compatibility aliases, so every
+  Command Center message that tells the operator what to type — the size gate and start-failure
+  diagnostics, the F1 slash summary, `/help` usage strings, and the resume hints — is pinned by test
+  against `ShellCommandParser` and `CliSuggestionEngine.RemovedSpellings`. Help cannot document a
+  form the grammar denies.
+- **Composer measurement is proportional to what changed, not to what is pasted.** `ComposerHasText`
+  scans the live cells and stops at the first non-whitespace one instead of rebuilding the buffer,
+  and `ComposerLayout` counts a printable-ASCII line arithmetically rather than walking grapheme
+  clusters. A large paste therefore does not make each subsequent keystroke re-measure the whole
+  buffer.
 
 ### 16.7 Reliability & Performance Hardening
 
 `EmbeddingBlobCodec` uses SIMD cosine; `/v1` SSE classifies disconnects; RAG chunking/truncation is
-surrogate-safe, and `SessionLogBuffer.ClampForKind` routes through
-`Utf8Truncation.SafeCharSliceLength` so Command Center transcript clamping is surrogate-safe too;
+surrogate-safe, and both Command Center transcript clamps are surrogate-safe —
+`SessionLogBuffer.ClampForKind` routes through `Utf8Truncation.SafeCharSliceLength`, and
+`BoundedStreamingTextBuffer` rewinds off an orphaned high surrogate before appending its truncation
+marker so a capped stream never ends in half a glyph;
 SQLCipher contention uses `SqliteBusyRetry`; and
 `scripts/verify-aot-il-warnings.sh` gates first-party AOT purity.
 
@@ -5060,7 +5250,7 @@ disabled; Saga extraction is naive (no dedupe); pure spell-routing ties break by
 
 **Service:** `WorkspaceIndexingService` — idle unless `Arcanum:Features:CodebaseRetrieval` is enabled. Workspace API registration and inference `WorkingDirectory` registration each request one recursive `FileSystemWatcher`; a code-owned `MaxWatchers` capacity bounds simultaneous native watchers and never creates one watcher per directory. Workspace update/unregister and host shutdown dispose obsolete watchers. Create/change/delete/rename callbacks enter a per-workspace, 4,096-path bounded coalescer. After the code-owned debounce window, final filesystem state wins: editor temporary-file rename replacement and out-of-order delete notifications become one target upsert, storms on one path become one action, deleted/renamed-away paths remove chunks and embeddings, and directory events request reconciliation.
 
-Watchers are latency hints, never a security or correctness boundary. Every `FileSystemWatcher` callback is wrapped so no consumer exception escapes onto a watcher-dispatch thread: those threads (inotify / FSEvents / `ReadDirectoryChangesW`) have no ambient exception handler, so an escaping exception terminates the process on Windows and silently kills the notification loop elsewhere. A failing consumer is reported through the error sink instead, and a failure of the sink itself drops the notification rather than throwing from the dispatch thread. The pending-work signal is race-free: concurrent signallers coalesce onto one raised edge rather than double-counting or losing it. Every incremental upsert repeats lexical containment, symlink-component resolution, stable path identity capture, opened-handle identity comparison, extension/ignored-folder checks, and stable-handle reading. A symlink replacement removes previously indexed content without embedding the outside target. Watcher error, native buffer overflow, or pending-path overflow marks the volatile status degraded/potentially stale, discards the lossy action set, and schedules a complete cancellable scan. Periodic polling remains active even with healthy watchers; when watchers cannot be created or internal watcher capacity is reached, reconciliation is the complete fallback. `IndexNowAsync` and `POST .../files/index` run the same reconciliation. Candidate discovery is lazy and a full walk visits every reachable eligible entry unless the caller cancels; it has no total-entry ceiling or aggregate candidate list. Each opened file streams through a pooled character page sized to eight embedding chunks, embeds/persists page chunks, then returns the buffer; there is no aggregate eligible-file-size ceiling or `ReadToEnd` allocation. The internal `MaxFilesToIndex` value bounds one embedding checkpoint only. Unchanged files do not consume it, later ticks continue changed work, and orphan cleanup runs only from a complete inventory. Extension, ignored-directory, cancellation, and symlink/handle-identity defenses remain mandatory.
+Watchers are latency hints, never a security or correctness boundary. Every `FileSystemWatcher` callback is wrapped so no consumer exception escapes onto a watcher-dispatch thread: those threads (inotify / FSEvents / `ReadDirectoryChangesW`) have no ambient exception handler, so an escaping exception terminates the process on Windows and silently kills the notification loop elsewhere. A failing consumer is reported through the error sink instead, and a failure of the sink itself drops the notification rather than throwing from the dispatch thread. The pending-work signal is race-free: concurrent signallers coalesce onto one raised edge rather than double-counting or losing it. Every incremental upsert repeats lexical containment, symlink-component resolution, stable path identity capture, opened-handle identity comparison, extension/ignored-folder checks, and stable-handle reading. A symlink replacement removes previously indexed content without embedding the outside target. Watcher error, native buffer overflow, or pending-path overflow marks the volatile status degraded/potentially stale, discards the lossy action set, and schedules a complete cancellable scan. Periodic polling remains active even with healthy watchers; when watchers cannot be created or internal watcher capacity is reached, reconciliation is the complete fallback. A tick that throws out of reconciliation (an unavailable or corrupt Grimoire during the file-time load or orphan cleanup, for example) is logged and retried only after a fixed one-second backoff: the next-reconciliation stamp is advanced by a completed tick, so retrying without that backoff would spin, flooding logs and burning a core until the underlying fault clears. `IndexNowAsync` and `POST .../files/index` run the same reconciliation. Reconciliation is **single-flight per workspace**: the timer loop, the watcher drain, and `IndexNowAsync` all pass through one per-workspace gate, so a request arriving while that workspace is already reconciling coalesces onto the in-flight run instead of starting a duplicate walk. Repeated manual re-index requests therefore cannot multiply workspace scans, embedding-provider spend, or racing writes to the same deterministic `ChunkId` rows; `POST .../files/index` still answers **202** because the accepted request is satisfied by the run already in flight. Candidate discovery is lazy and a full walk visits every reachable eligible entry unless the caller cancels; it has no total-entry ceiling or aggregate candidate list. Each opened file streams through a pooled character page sized to eight embedding chunks, embeds/persists page chunks, then returns the buffer; there is no aggregate eligible-file-size ceiling or `ReadToEnd` allocation. The internal `MaxFilesToIndex` value bounds one embedding checkpoint only. Unchanged files do not consume it, later ticks continue changed work, and orphan cleanup runs only from a complete inventory. Extension, ignored-directory, cancellation, and symlink/handle-identity defenses remain mandatory.
 
 **Stable chunks:** `WorkspaceCodeChunker` preserves exact source slices, character offsets, and one-based line ranges; it prefers Markdown headings and common code declaration shapes without a reflection-heavy parser, falls back to bounded line-aware splits, and never separates a UTF-16 surrogate pair. That holds at **read-page boundaries** too: page reads fill to a character count and know nothing about UTF-16 pairs, so a page ending in a lone high surrogate holds it back and joins it to its partner on the next page, and a short read (end of stream) emits a genuinely unpaired high surrogate rather than dropping it. Without that carry, both halves would be embedded and persisted with the character replaced by U+FFFD, and the stored chunk would no longer be the exact source slice. `WeaveService.ChunkAsync` guards the window **start** as well as the tail, so no chunk begins with an orphaned low surrogate; the previous window already carried the whole character, so stepping past the low half loses no coverage.
 
@@ -5094,8 +5284,13 @@ reads oldest-first checkpoint targets of 10 entries, widens through the complete
 group, advances the watermark only after the page's eligible conclusions are persisted, and
 continues until caught up. The page target is one provider-context slice, not a tail window or total
 history cap. LLM/embedding/malformed-response failure leaves the watermark unchanged and requeues
-after a short code-owned delay; host cancellation stops cleanly. There is no public extraction
-interval/output-token control or per-session/installation memory-count ceiling. The selected
+on a code-owned ladder that doubles from a short first delay up to a code-owned ceiling, and
+abandons the request after a code-owned attempt cap so a deterministic failure (an extraction model
+that never emits parseable JSON, an embedding model name that fails every embed) cannot become an
+endless run of billable provider round-trips; nothing durable is lost, because the watermark was
+never advanced and the session's next successful turn enqueues the same entries with a fresh ladder.
+Host cancellation stops cleanly. There is no public extraction
+interval/output-token control, retry-count/backoff knob, or per-session/installation memory-count ceiling. The selected
 provider/model remains authoritative for output; storage and retrieval are paged, and explicit
 deletion/retention own the durable lifecycle. Invalid/unmaterialized attachment claims are discarded
 before embedding, and ephemeral attachment content without durable provenance fails closed.
@@ -5370,10 +5565,11 @@ model-call or tool-round count, and their database transaction is never held acr
   its `-wal`/`-shm` sidecars, then restart. There is intentionally no data migration. Copy-pastable
   commands are in [Arcanum.README, “Local Grimoire reinstall”](Arcanum.README.md#local-grimoire-reinstall).
 - **Spend authority.** Daily spend = **`BillableOperations.CompletedAt` (UTC day) + outstanding `BudgetReservations`**. `Sessions.TotalCostUsd` / `TotalTokensUsed` remain a **projection/cache** updated via `IncrementSessionTokensAndCostAsync` for UI convenience — not admission authority. When a durable run exists, the session cost projection uses the accounting root's accumulated reconciled per-call cost; compatibility paths without a run retain the equivalent usage-based calculation.
-- **Budget gate.** `BudgetMonitor.CheckAsync` prefers `IBudgetReservationService` (committed + outstanding), plus today's **known** delegated spend. It falls back to summing session `TotalCostUsd` for today only when the reservation service is unavailable. At 100% of `Arcanum:Cost:Budget:DailyLimitUsd` it returns `Budget.Exceeded` (HTTP 429 on the buffered path). The code-owned 80% alert threshold dispatches a Comm Link warning and records a `BudgetAlerts` row.
+- **One resolver, gate and report.** `DailySpendAuthority.ResolveLocalSpendAsync` is the single implementation of the spend authority above: it prefers `IBudgetReservationService` (committed + outstanding) and falls back to `IGrimoireRepository.GetTodaySpendAsync` — the `Sessions.TotalCostUsd` projection — only on a host with no reservation service (tests / early bootstrap). Both `BudgetMonitor.CheckAsync` and `GET /api/budget` resolve through it, so the figure an operator is *shown* can never drift from the figure they are *refused* on. Reading the projection directly on a reporting surface is the specific bug this prevents: it is keyed on `Sessions.CreatedAt`, so a session opened yesterday and still being worked in today contributes nothing to today, and it knows nothing of calls in flight.
+- **Budget gate.** `BudgetMonitor.CheckAsync` resolves spend through `DailySpendAuthority`, plus today's **known** delegated spend. At 100% of `Arcanum:Cost:Budget:DailyLimitUsd` it returns `Budget.Exceeded` (HTTP 429 on the buffered path). The code-owned 80% alert threshold dispatches a Comm Link warning and records a `BudgetAlerts` row.
 - **Delegated (A2A) spend.** An outbound Sending's cost is stamped onto its durable `LongRunningOperations` record when it settles, so the day's external spend is a durable figure that survives the process which spent it and is counted **exactly once** — one record per Sending, no double count between an owning turn and the work it delegated. `IExternalSpendLedger` sums those records for the UTC day and reports four things: known cost, known tokens, the number of priced Sendings, and the number of **unpriced** ones. That last number is the point. A peer that reported nothing is *counted, never costed*: adding it at zero would make the total look complete while part of the day's work has no price at all, which is the understatement §5.7.1's cost attribution removed from the reporting surfaces and must not reintroduce here. An outbound Sending's ledger row also carries the `BudgetReservationId` of the turn that dispatched it, where the caller had one, so an operator can see the delegated work a reservation paid for. **A ceiling reached with unpriced delegation present is refused and says so** — the operator is told the figure they hit the ceiling on is a floor, not the whole bill. Unpriced delegation on its own is **allowed and flagged**, never charged as zero and never silently allowed. `GET /api/budget` and `arcanum budget` report `localSpendUsd`, `externalSpendUsd`, and `unpricedDelegatedSendings` alongside the combined total.
 - **Alert deduplication.** The `BudgetAlerts` table (migration `20260706040100_AddBudgetAlerts`) has a unique index `IX_BudgetAlerts_Threshold_Date` on `(Threshold, date(AlertedAt))`; `BudgetAlertRepository.RecordAlertAsync` swallows the resulting `SQLITE_CONSTRAINT` and returns `false` for duplicate inserts. `BudgetMonitor.TryDispatchAlertAsync` **inserts the alert row before dispatching the Comm Link notification**, so the unique index is the dedup authority under concurrent turns — the previous check-then-dispatch race that sent duplicate notifications is eliminated. `HasAlertedTodayAsync` is retained as a cheap pre-check but is no longer the sole dedup gate. Decimal columns (`SpendUsd`, `DailyLimitUsd`) are bound as `decimal`, not strings.
-- **Endpoint.** `GET /api/budget` returns `BudgetSummaryDto` (enabled, daily limit, today's spend, remaining, spent percent, alert threshold). When budget is disabled, `TodaySpendUsd` is reported as `0` to avoid a Grimoire read.
+- **Endpoint.** `GET /api/budget` returns `BudgetSummaryDto` (enabled, daily limit, today's spend, remaining, spent percent, alert threshold). `LocalSpendUsd` comes from `DailySpendAuthority`, not from the session projection. When budget is disabled, `TodaySpendUsd` is reported as `0` to avoid a Grimoire read.
 
 ### 22.3 Prompt caching (built-in capability catalog)
 

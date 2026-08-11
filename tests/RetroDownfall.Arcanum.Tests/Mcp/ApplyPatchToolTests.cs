@@ -271,6 +271,55 @@ public sealed class ApplyPatchToolTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Parser_validates_path_topology_without_rescanning_every_earlier_path()
+    {
+
+        const int fileCount = 40_000;
+
+        System.Text.StringBuilder patch = new();
+
+        for (int index = 0; index < fileCount; index++)
+        {
+
+            _ = patch.AppendLine("--- /dev/null");
+
+            _ = index % 2 == 0
+                ? patch
+                    .Append("+++ b/d")
+                    .Append(index)
+                    .Append("/f")
+                    .Append(index)
+                    .AppendLine(".txt")
+                : patch
+                    .Append("+++ b/f")
+                    .Append(index)
+                    .AppendLine(".txt");
+
+            _ = patch
+                .AppendLine("@@ -0,0 +1 @@")
+                .AppendLine("+value");
+
+        }
+
+        string text = patch.ToString();
+
+        System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        UnifiedDiffParseResult result = UnifiedDiffParser.Parse(
+            text,
+            DefaultPatchSettings());
+
+        stopwatch.Stop();
+
+        Assert.True(result.Success, result.Code ?? "parse failed");
+
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(10),
+            $"Parsing {fileCount} file records took {stopwatch.Elapsed.TotalSeconds:F1}s; path-topology validation is not linear in file count.");
+
+    }
+
+    [Fact]
     public void Parser_honors_cancellation_before_and_during_parse()
     {
 

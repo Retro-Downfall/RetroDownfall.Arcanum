@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
@@ -85,22 +86,41 @@ public sealed class LinuxDaemonManager : IDaemonManager
         {
             return writeResult;
         }
-        (int reloadExit, string _, string reloadStderr) = await RunProcessAsync(
+        DaemonProcessOutcome reloadOutcome = await RunProcessAsync(
             "systemctl",
             ["--user", "daemon-reload"],
             cancellationToken).ConfigureAwait(false);
-        if (reloadExit != 0)
+        if (reloadOutcome.FatalError is { } fatalReload)
         {
-            return Result.Failure(ToolError("DaemonSystemdReload", "systemctl --user daemon-reload failed.", reloadStderr, reloadExit));
+            return Result.Failure(fatalReload);
         }
-        (int enableExit, string _, string enableStderr) = await RunProcessAsync(
+
+        if (reloadOutcome.ExitCode != 0)
+        {
+            return Result.Failure(
+                ToolError(
+                    "DaemonSystemdReload",
+                    "systemctl --user daemon-reload failed.",
+                    reloadOutcome.StdErr,
+                    reloadOutcome.ExitCode));
+        }
+        DaemonProcessOutcome enableOutcome = await RunProcessAsync(
             "systemctl",
             ["--user", "enable", "--now", ServiceUnitFileName],
             cancellationToken).ConfigureAwait(false);
-        if (enableExit != 0)
+        if (enableOutcome.FatalError is { } fatalEnable)
+        {
+            return Result.Failure(fatalEnable);
+        }
+
+        if (enableOutcome.ExitCode != 0)
         {
             return Result.Failure(
-                ToolError("DaemonSystemdEnable", "systemctl --user enable --now failed.", enableStderr, enableExit));
+                ToolError(
+                    "DaemonSystemdEnable",
+                    "systemctl --user enable --now failed.",
+                    enableOutcome.StdErr,
+                    enableOutcome.ExitCode));
         }
 
         return Result.Success();
@@ -108,10 +128,15 @@ public sealed class LinuxDaemonManager : IDaemonManager
 
     private static async Task<Result> UninstallCoreAsync(CancellationToken cancellationToken)
     {
-        _ = await RunProcessAsync(
+        DaemonProcessOutcome disableOutcome = await RunProcessAsync(
             "systemctl",
             ["--user", "disable", "--now", ServiceUnitFileName],
             cancellationToken).ConfigureAwait(false);
+        if (disableOutcome.FatalError is { } fatalDisable)
+        {
+            return Result.Failure(fatalDisable);
+        }
+
         try
         {
             if (File.Exists(ServiceUnitPath))
@@ -136,16 +161,21 @@ public sealed class LinuxDaemonManager : IDaemonManager
         {
             return Result<string>.Success(NotLoadedMessage);
         }
-        (int exitCode, string stdout, string _) = await RunProcessAsync(
+        DaemonProcessOutcome showOutcome = await RunProcessAsync(
             "systemctl",
             ["--user", "show", "-p", "ActiveState", "--value", ServiceUnitFileName],
             cancellationToken).ConfigureAwait(false);
-        if (exitCode != 0)
+        if (showOutcome.FatalError is { } fatal)
+        {
+            return Result<string>.Failure(fatal);
+        }
+
+        if (showOutcome.ExitCode != 0)
         {
             return Result<string>.Success(NotLoadedMessage);
         }
 
-        string state = stdout.Trim();
+        string state = showOutcome.StdOut.Trim();
         if (string.Equals(state, "active", StringComparison.Ordinal))
         {
             return Result<string>.Success(RunningMessage);
@@ -236,7 +266,12 @@ WantedBy=default.target
         return new Error(code, $"{message} {suffix}".Trim());
     }
 
-    private static async Task<(int ExitCode, string StdOut, string StdErr)> RunProcessAsync(
+    /// <summary>
+    /// Runs a systemd helper binary. A binary that cannot be started at all (no systemd on this host)
+    /// is reported as <see cref="DaemonProcessOutcome.FatalError"/> rather than thrown, so every caller
+    /// stays inside the <see cref="Result"/> contract.
+    /// </summary>
+    internal static async Task<DaemonProcessOutcome> RunProcessAsync(
         string fileName,
         string[] arguments,
         CancellationToken cancellationToken)
@@ -256,12 +291,27 @@ WantedBy=default.target
 
         using var process = new Process();
         process.StartInfo = startInfo;
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch (Exception ex) when (ex is Win32Exception or UnauthorizedAccessException)
+        {
+            return new DaemonProcessOutcome(-1, string.Empty, string.Empty, StartError(fileName, ex));
+        }
+
         Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
         Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         string stdout = await stdoutTask.ConfigureAwait(false);
         string stderr = await stderrTask.ConfigureAwait(false);
-        return (process.ExitCode, stdout, stderr);
+        return new DaemonProcessOutcome(process.ExitCode, stdout, stderr, null);
+    }
+
+    private static Error StartError(string fileName, Exception ex)
+    {
+        return new Error(
+            "DaemonProcessStart",
+            $"Could not start '{fileName}'; systemd may not be available on this host. {ex.Message}");
     }
 }

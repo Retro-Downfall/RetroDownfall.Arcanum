@@ -10,8 +10,6 @@ public sealed record RunCommandRequest(
 
     string[] Prompt,
 
-    string[] EscapedArguments,
-
     bool Research,
 
     string? Spell,
@@ -112,6 +110,18 @@ internal sealed class RunCommand(
 
         }
 
+        // A malformed reference is invalid input, so it is rejected here rather than deep in the
+        // inference path — which would report it as a generic error after starting the host.
+        if (!AttachmentReferenceInput.TryParse(
+                request.Attachment,
+                out _,
+                out string? attachmentError))
+        {
+
+            return Fail(attachmentError!);
+
+        }
+
         if (!TryResolveSessionSelector(
                 request,
                 out string? sessionSelector,
@@ -123,9 +133,7 @@ internal sealed class RunCommand(
 
         }
 
-        string positionalInstruction = AskCommand.BuildPrompt(
-            request.Prompt,
-            request.EscapedArguments);
+        string positionalInstruction = AskCommand.BuildPrompt(request.Prompt);
 
         RunInputReadResult input = await inputReader
             .ReadAsync(
@@ -315,6 +323,18 @@ internal sealed class RunCommand(
             error = "--session, --continue, and --resume each select a session; supply exactly one.";
 
             return false;
+
+        }
+
+        // --new wins over a selector rather than adding a second conflict, so nothing is resolved:
+        // resolving --continue here would fail a fresh install that explicitly asked for a new
+        // session, and would announce a continuation the caller discards moments later.
+        if (request.NewSession)
+        {
+
+            selector = null;
+
+            return true;
 
         }
 

@@ -118,11 +118,56 @@ try {
     function Invoke-AuthenticodeSign {
         param(
             [Parameter(Mandatory = $true)]
-            [string]$Path
+            [string[]]$Path
         )
 
-        & signtool sign /sha1 $script:SignThumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $Path
-        if ($LASTEXITCODE -ne 0) { throw "signtool failed for $Path" }
+        & signtool sign /sha1 $script:SignThumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 @Path
+        if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($Path -join ', ')" }
+    }
+
+    # An Authenticode signature covers one file, so every PE in the staged tree needs its own.
+    # The CLI zip ships e_sqlcipher.dll and libonigwrap.dll beside the host, and the GUI zips are
+    # not AOT — their .exe is an apphost stub with all first-party code in neighbouring
+    # RetroDownfall.*.dll. Signing only the .exe leaves the code that actually executes unsigned
+    # and outside any WDAC/AppLocker publisher rule, while the archive looks signed. This is the
+    # Windows counterpart of sign_publish_dir in scripts/packaging/macos/common.sh.
+    function Invoke-StageAuthenticodeSign {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$StageDir
+        )
+
+        $all = @(
+            Get-ChildItem -LiteralPath $StageDir -File -Recurse |
+                Where-Object { $_.Extension -eq ".exe" -or $_.Extension -eq ".dll" } |
+                ForEach-Object { $_.FullName }
+        )
+
+        if ($all.Count -eq 0) {
+            throw "No .exe or .dll found under $StageDir; refusing to archive an unverified tree."
+        }
+
+        # The Microsoft runtime assemblies arrive already signed by Microsoft; re-signing would
+        # replace that provenance with ours for no gain. Sign whatever is not already valid, so
+        # that every PE in the archive carries a signature once this returns.
+        $unsigned = @($all | Where-Object {
+                (Get-AuthenticodeSignature -LiteralPath $_).Status -ne "Valid"
+            })
+
+        Write-Host "==> Authenticode signing $($unsigned.Count) of $($all.Count) file(s) under $StageDir"
+
+        # Batch the calls: a self-contained Avalonia publish is a few hundred assemblies, and one
+        # timestamp round trip per file invites rate limiting from the timestamp authority.
+        $batchSize = 40
+
+        # Verify what this pass signed, the way sign_publish_dir verifies each item it signs.
+        # The rest of the tree was already Valid before we started.
+        for ($i = 0; $i -lt $unsigned.Count; $i += $batchSize) {
+            $batch = @($unsigned[$i..([Math]::Min($i + $batchSize - 1, $unsigned.Count - 1))])
+            Invoke-AuthenticodeSign -Path $batch
+            & signtool verify /pa /q @batch
+            if ($LASTEXITCODE -ne 0) { throw "signtool verify failed under $StageDir" }
+        }
     }
 
     function Publish-Cli {
@@ -159,8 +204,7 @@ try {
         Assert-StagedNatives -StageDir $stageDir -Names @("e_sqlcipher.dll", "libonigwrap.dll")
 
         if ($Sign) {
-            Write-Host "==> Authenticode signing arcanum.exe"
-            Invoke-AuthenticodeSign -Path $stagedArcanum
+            Invoke-StageAuthenticodeSign -StageDir $stageDir
         }
 
         Write-Host "==> Creating $archive"
@@ -190,11 +234,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\Arcanum.README.md") -Destination (Join-Path $stageDir "README.md")
 
         if ($Sign) {
-            $exes = Get-ChildItem -Path $stageDir -Filter *.exe -File
-            foreach ($exe in $exes) {
-                Write-Host "==> Authenticode signing $($exe.Name)"
-                Invoke-AuthenticodeSign -Path $exe.FullName
-            }
+            Invoke-StageAuthenticodeSign -StageDir $stageDir
         }
 
         Write-Host "==> Creating $archive"

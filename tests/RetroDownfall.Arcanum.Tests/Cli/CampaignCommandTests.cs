@@ -203,6 +203,57 @@ public sealed class CampaignCommandTests
 
     }
 
+    /// <summary>
+    /// An unwritable <c>--output</c> must name the path and the OS reason, the way the sibling
+    /// <c>import</c> path already reports an unreadable <c>--file</c>. Letting the exception escape
+    /// leaves the operator with the generic "An unexpected CLI error occurred." and no path at all.
+    /// </summary>
+    [Fact]
+    public void Campaign_export_reports_the_path_and_cause_when_the_output_cannot_be_written()
+    {
+
+        CampaignDto campaign = new(SampleId, "Demo", "/tmp/demo", WorkspaceType.Campaign, null, CampaignSettings.CreateDefault(), DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<CampaignExportDto>(new CampaignExportDto(campaign, [], []), true, null),
+            ArcanumJsonContext.Default.ApiResponseCampaignExportDto));
+
+        // A directory is never a writable file destination, on any supported platform.
+        string output = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-export-blocked-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(output);
+
+        try
+        {
+
+            CliTestResult result = RunCommand(handler, ["campaign", "export", SampleId.ToString(), "--output", output]);
+
+            Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+            // Spectre wraps at the profile width, so the path can carry a line break.
+            string reported = (result.Output + result.Error)
+                .Replace("\r", string.Empty, StringComparison.Ordinal)
+                .Replace("\n", string.Empty, StringComparison.Ordinal);
+
+            Assert.Contains(output, reported, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(
+                "An unexpected CLI error occurred.",
+                reported,
+                StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            Directory.Delete(output, recursive: true);
+
+        }
+
+    }
+
     private static CliTestResult RunCommand(RecordingHandler handler, string[] args)
     {
 

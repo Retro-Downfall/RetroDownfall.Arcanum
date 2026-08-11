@@ -723,6 +723,9 @@ public sealed partial class McpConnectionManager(
                     when (generation != Volatile.Read(
                         ref _toolSurfaceGeneration))
                 {
+                    UnregisterPartition(
+                        workspaceKey,
+                        partition);
                     TrackRetiredPartitionDisposal(
                         partition);
                     continue;
@@ -731,6 +734,7 @@ public sealed partial class McpConnectionManager(
                 if (generation != Volatile.Read(
                         ref _toolSurfaceGeneration))
                 {
+                    UnregisterPartition(workspaceKey, partition);
                     TrackRetiredPartitionDisposal(partition);
                     continue;
                 }
@@ -1109,7 +1113,27 @@ public sealed partial class McpConnectionManager(
         await AwaitPendingWorkspaceRetirementsAsync()
             .ConfigureAwait(false);
 
-        await StopAllAsync(CancellationToken.None).ConfigureAwait(false);
+        // Not StopAllAsync: _disposed is already set above, so that entry point short-circuits. A
+        // client only reaches a partition when a surface build attaches it, so an entry started
+        // through StartAsync and never used for inference would otherwise keep its stdio child
+        // alive past shutdown. StopManagedServerCoreAsync also unregisters from the partition, so
+        // the drain below stays correct for everything it does cover.
+        foreach (ManagedMcpServerEntry entry in _registry.Values)
+        {
+            if (entry.Client is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                _ = await StopManagedServerCoreAsync(entry).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Error stopping MCP server {ServerName} during shutdown.", entry.Name);
+            }
+        }
 
         foreach (Lazy<McpPartitionClients> partitionLazy in _partitionClients.Values)
         {

@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Avalonia;
+using Avalonia.Controls;
 using Avalonia.LogicalTree;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Compendium.Ux.Models;
@@ -69,6 +71,66 @@ public sealed class GenericSettingsSectionViewTests
 
         Assert.True(WebBrowsingField(view).BoolValue);
     }
+
+    /// <summary>
+    /// Every control the generic editor hands an operator must address a path Save can write. A
+    /// descriptor that names a field of a collection element (for example
+    /// <c>integrations.a2A.skills.id</c>) has no per-element UI here, so rendering it as an ordinary
+    /// box drops whatever is typed while the save still reports success.
+    /// </summary>
+    [Fact]
+    public void Every_input_control_the_generic_editor_renders_addresses_a_settable_path()
+    {
+        using InMemoryConfigurationStore store = new();
+
+        List<string> unsettable = [];
+
+        foreach (ConfigSection section in Enum.GetValues<ConfigSection>())
+        {
+            if (SectionDescriptors.IsPolished(section))
+            {
+                continue;
+            }
+
+            ConfigurationViewModel root = new(
+                store,
+                new NoopDialogService(),
+                new SynchronousUiDispatcher(),
+                NullLogger<ConfigurationViewModel>.Instance);
+
+            GenericSettingsSectionView view = new()
+            {
+                Section = section,
+            };
+
+            view.DataContext = root;
+
+            unsettable.AddRange(
+                InputFields(view)
+                    .Select(static field => field.Descriptor.Key)
+                    .Where(static key => GenericSettingsUpdater.ResolveValueType(key) is null));
+        }
+
+        Assert.True(
+            unsettable.Count == 0,
+            "The generic editor renders editable controls for paths Save cannot write, so operator input is"
+            + $" silently discarded: {string.Join(", ", unsettable.Distinct().Order(StringComparer.Ordinal))}");
+    }
+
+    private static IEnumerable<GenericSettingFieldViewModel> InputFields(
+        GenericSettingsSectionView view) =>
+        view.GetLogicalDescendants()
+            .Where(static control =>
+                control is LabeledEntry
+                    or LabeledToggle
+                    or LabeledStepper
+                    or LabeledPicker
+                    or LabeledColorEntry
+                    or ChipsEditor
+                    or TextBox)
+            .OfType<StyledElement>()
+            .Select(static control => control.DataContext)
+            .OfType<GenericSettingFieldViewModel>();
 
     private static GenericSettingFieldViewModel WebBrowsingField(
         GenericSettingsSectionView view) =>

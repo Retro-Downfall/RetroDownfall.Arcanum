@@ -1,6 +1,8 @@
 using System.Net;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
@@ -723,6 +725,94 @@ public sealed class ArcanumApiClientTests
         Assert.Single(frames);
 
         Assert.Equal("status", frames[0].Type);
+
+    }
+
+    /// <summary>
+    /// <c>arcanum watch session</c> streams through <c>WatchSseAsync</c>/<c>WatchSseParser</c>. A
+    /// second hand-rolled SSE reader on the same client is unreachable duplication that silently
+    /// drifts from the tested parser, so the client must expose exactly one session-stream reader.
+    /// </summary>
+    [Fact]
+    public void The_client_exposes_no_second_session_stream_reader()
+    {
+
+        string[] declared = [.. typeof(ArcanumApiClient)
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Select(static method => method.Name)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)];
+
+        Assert.Contains("WatchSseAsync", declared);
+
+        Assert.DoesNotContain("WatchSessionAsync", declared);
+
+    }
+
+    [Fact]
+    public async Task ResearchWebAsync_surfaces_the_api_error_envelope_on_a_non_success_status()
+    {
+
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+            new ApiResponse<string>(
+                null,
+                false,
+                new Error("Auth.Unauthorized", "Invalid or missing API key.")),
+            ArcanumJsonContext.Default.ApiResponseString);
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new ByteArrayContent(payload),
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        List<WebResearchStreamFrame> frames = [];
+
+        await foreach (WebResearchStreamFrame frame in client.ResearchWebAsync(
+            new WebResearchWorkflowRequest { Question = "why" },
+            CancellationToken.None))
+        {
+            frames.Add(frame);
+        }
+
+        WebResearchStreamFrame only = Assert.Single(frames);
+
+        Assert.Equal(WebResearchStreamFrameType.Error, only.Type);
+
+        Assert.Equal("Auth.Unauthorized", only.Code);
+
+        Assert.Equal("Invalid or missing API key.", only.Message);
+
+    }
+
+    [Fact]
+    public async Task ResearchWebAsync_falls_back_to_the_status_line_when_the_body_is_not_an_envelope()
+    {
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.BadGateway)
+        {
+            Content = new StringContent("<html>proxy failure</html>"),
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        List<WebResearchStreamFrame> frames = [];
+
+        await foreach (WebResearchStreamFrame frame in client.ResearchWebAsync(
+            new WebResearchWorkflowRequest { Question = "why" },
+            CancellationToken.None))
+        {
+            frames.Add(frame);
+        }
+
+        WebResearchStreamFrame only = Assert.Single(frames);
+
+        Assert.Equal(WebResearchStreamFrameType.Error, only.Type);
+
+        Assert.Equal("Api.HttpError", only.Code);
+
+        Assert.Contains("502", only.Message);
 
     }
 

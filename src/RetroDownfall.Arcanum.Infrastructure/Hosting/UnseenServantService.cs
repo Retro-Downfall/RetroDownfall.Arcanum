@@ -210,29 +210,28 @@ internal sealed class UnseenServantService(
 
             Guid taskId = Guid.NewGuid();
 
-            _activeJobTasks[taskId] = Task.CompletedTask;
-
-            Task jobTask = Task.Run(
-                async () =>
-                {
-                    try
+            Task jobTask = TrackJobTask(
+                _activeJobTasks,
+                taskId,
+                () => Task.Run(
+                    async () =>
                     {
-                        await RunJobAsync(job, key, stoppingToken).ConfigureAwait(false);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
+                        try
+                        {
+                            await RunJobAsync(job, key, stoppingToken).ConfigureAwait(false);
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
 
-                        logger.LogError(ex, "Unseen Servant job {JobName} failed.", job.Name);
+                            logger.LogError(ex, "Unseen Servant job {JobName} failed.", job.Name);
 
-                    }
-                    finally
-                    {
-                        _ = _activeJobTasks.TryRemove(taskId, out _);
-                    }
-                },
-                stoppingToken);
-
-            _activeJobTasks[taskId] = jobTask;
+                        }
+                        finally
+                        {
+                            _ = _activeJobTasks.TryRemove(taskId, out _);
+                        }
+                    },
+                    stoppingToken));
 
             if (jobTask.IsCanceled)
             {
@@ -245,6 +244,27 @@ internal sealed class UnseenServantService(
 
             }
         }
+    }
+
+    /// <summary>
+    /// Registers a dispatched job under <paramref name="taskId"/> so a shutdown drain snapshot always
+    /// observes the real in-flight job, and so a body that completes (removing its own entry) before the
+    /// dispatcher regains control cannot be resurrected by a later write.
+    /// </summary>
+    internal static Task TrackJobTask(
+        ConcurrentDictionary<Guid, Task> activeJobTasks,
+        Guid taskId,
+        Func<Task> startJob)
+    {
+        TaskCompletionSource<Task> handle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        activeJobTasks[taskId] = handle.Task.Unwrap();
+
+        Task jobTask = startJob();
+
+        handle.SetResult(jobTask);
+
+        return jobTask;
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

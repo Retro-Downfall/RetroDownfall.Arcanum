@@ -562,17 +562,29 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
 
     private static void ValidateEnvelopeLength(long actualLength, EncryptedBlobDescriptor descriptor)
     {
-        long chunks = Math.Max(
-            1,
-            checked((descriptor.PlaintextLength + descriptor.ChunkSize - 1) / descriptor.ChunkSize));
-        long expectedLength = checked(
-            descriptor.HeaderLength
-            + descriptor.PlaintextLength
-            + chunks * TagLength);
-        if (actualLength != expectedLength)
+        // The declared length and chunk size are still unauthenticated here, so a corrupt header can
+        // overflow this pre-check. Fail closed as invalid data rather than letting an
+        // OverflowException escape every corruption handler in the call chain.
+        try
+        {
+            long chunks = Math.Max(
+                1,
+                checked((descriptor.PlaintextLength + descriptor.ChunkSize - 1) / descriptor.ChunkSize));
+            long expectedLength = checked(
+                descriptor.HeaderLength
+                + descriptor.PlaintextLength
+                + chunks * TagLength);
+            if (actualLength != expectedLength)
+            {
+                throw new InvalidDataException(
+                    "The encrypted blob is truncated or has unexpected trailing bytes.");
+            }
+        }
+        catch (OverflowException ex)
         {
             throw new InvalidDataException(
-                "The encrypted blob is truncated or has unexpected trailing bytes.");
+                "The encrypted blob length metadata overflows supported bounds.",
+                ex);
         }
     }
 

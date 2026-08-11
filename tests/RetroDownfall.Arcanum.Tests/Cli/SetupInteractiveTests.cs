@@ -234,6 +234,74 @@ public sealed class SetupInteractiveTests : IDisposable
 
     }
 
+    /// <summary>
+    /// <c>--json</c> alone makes <c>IsInteractive</c> false, but stdin can still be a real terminal.
+    /// Masking must follow stdin ownership, not the output format, or the operator's provider key is
+    /// typed in cleartext into terminal scrollback.
+    /// </summary>
+    [Fact]
+    public async Task A_credential_is_read_without_echo_when_stdin_is_a_terminal_under_json()
+    {
+
+        RecordingSecretPrompt secretPrompt = new("masked-provider-key");
+
+        TextReader priorInput = Console.In;
+
+        Console.SetIn(new StringReader("echoed-provider-key\n"));
+
+        try
+        {
+
+            ConsoleSetupPrompt prompt = new(
+                new ConsoleDispatcher(new CliInvocationContext()),
+                new JsonInvocationContext(),
+                secretPrompt,
+                inputRedirected: static () => false);
+
+            string? secret = await prompt.AskSecretAsync(
+                "Provider API key (input is hidden)",
+                CancellationToken.None);
+
+            Assert.Equal("masked-provider-key", secret);
+
+            Assert.Equal(1, secretPrompt.Reads);
+
+        }
+        finally
+        {
+
+            Console.SetIn(priorInput);
+
+        }
+
+    }
+
+    private sealed class JsonInvocationContext : ICliInvocationContext
+    {
+
+        public CliInvocationOptions Options { get; } =
+            new(Json: true, Plain: false, Yes: false);
+
+    }
+
+    private sealed class RecordingSecretPrompt(string secret) : IBackupPassphrasePrompt
+    {
+
+        public int Reads { get; private set; }
+
+        public ValueTask<char[]> ReadHiddenAsync(
+            string prompt,
+            CancellationToken cancellationToken)
+        {
+
+            Reads++;
+
+            return ValueTask.FromResult(secret.ToCharArray());
+
+        }
+
+    }
+
     private static string[] CompleteScript(string workspaceRoot) =>
         [
             "local",                        // 1. edition

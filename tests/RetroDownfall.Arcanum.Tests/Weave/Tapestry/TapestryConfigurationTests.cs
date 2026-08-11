@@ -1,5 +1,7 @@
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
@@ -112,6 +114,55 @@ public sealed class TapestryConfigurationTests
         Assert.Contains(
             result.Error.Details!,
             static error => error.Pointer == "integrations.embeddings.model");
+
+    }
+
+    [Theory]
+    [InlineData("CollapsedTree", TapestryRetrievalMode.CollapsedTree)]
+    [InlineData("TreeTraversal", TapestryRetrievalMode.TreeTraversal)]
+    [InlineData("treeTraversal", TapestryRetrievalMode.TreeTraversal)]
+    public void RetrievalMode_ReadsTheDocumentedNamedValues(
+        string wire,
+        TapestryRetrievalMode expected)
+    {
+
+        TapestryIntegrationSettings? tapestry = JsonSerializer.Deserialize(
+            $$"""{"retrievalMode":"{{wire}}"}""",
+            ConfigurationJsonContext.Default.TapestryIntegrationSettings);
+
+        Assert.NotNull(tapestry);
+
+        Assert.Equal(expected, tapestry.RetrievalMode);
+
+    }
+
+    [Theory]
+    [InlineData(0, TapestryRetrievalMode.CollapsedTree)]
+    [InlineData(1, TapestryRetrievalMode.TreeTraversal)]
+    public void RetrievalMode_StillReadsAlreadyPersistedNumericValues(
+        int wire,
+        TapestryRetrievalMode expected)
+    {
+
+        TapestryIntegrationSettings? tapestry = JsonSerializer.Deserialize(
+            $$"""{"retrievalMode":{{wire}}}""",
+            ConfigurationJsonContext.Default.TapestryIntegrationSettings);
+
+        Assert.NotNull(tapestry);
+
+        Assert.Equal(expected, tapestry.RetrievalMode);
+
+    }
+
+    [Fact]
+    public void RetrievalMode_WritesTheDocumentedNamedValue()
+    {
+
+        string json = JsonSerializer.Serialize(
+            new TapestryIntegrationSettings { RetrievalMode = TapestryRetrievalMode.TreeTraversal },
+            ConfigurationJsonContext.Default.TapestryIntegrationSettings);
+
+        Assert.Contains("\"TreeTraversal\"", json, StringComparison.Ordinal);
 
     }
 

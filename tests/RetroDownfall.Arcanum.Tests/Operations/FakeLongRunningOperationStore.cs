@@ -14,7 +14,12 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
 
     private readonly Lock _gate = new();
 
+    private int _listCallCount;
+
     public IReadOnlyCollection<LongRunningOperation> Operations => [.. _operations.Values];
+
+    /// <summary>How many paging round-trips callers have made, for tests that assert a lookup is cheap.</summary>
+    public int ListCallCount => Volatile.Read(ref _listCallCount);
 
     public LongRunningOperation Seed(
         string kind,
@@ -77,8 +82,12 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider) :
 
     public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
         LongRunningOperationQuery query,
-        CancellationToken cancellationToken = default) =>
-        Task.FromResult<IReadOnlyList<LongRunningOperation>>([.. _operations.Values]);
+        CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _listCallCount);
+
+        return Task.FromResult<IReadOnlyList<LongRunningOperation>>([.. _operations.Values]);
+    }
 
     public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
         DateTimeOffset utcNow,

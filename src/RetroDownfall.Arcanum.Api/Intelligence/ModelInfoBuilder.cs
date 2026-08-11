@@ -28,7 +28,7 @@ internal static class ModelInfoBuilder
 
             string redactedEndpoint = RedactRequired(provider.Endpoint);
 
-            foreach (ModelEntry model in provider.Models)
+            foreach (ModelEntry model in provider.Models ?? [])
             {
 
                 if (string.IsNullOrWhiteSpace(model.Name))

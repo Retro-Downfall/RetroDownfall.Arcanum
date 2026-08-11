@@ -112,6 +112,82 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Search_previews_trim_astral_characters_whole_at_the_ellipsis_boundary()
+    {
+
+        string astral = char.ConvertFromUtf32(0x1F600);
+
+        // Line 1 opens the window on the high half of a pair, line 2 closes it on the low half, and
+        // line 3 makes the leading-low-surrogate guard fire.
+        _workspace.WriteFile(
+            "astral.txt",
+            string.Join(
+                '\n',
+                new string('a', 10) + astral + "cccccMAGIC" + new string('z', 20),
+                new string('a', 10)
+                    + "bbcccccMAGIC"
+                    + new string('y', 6)
+                    + astral
+                    + new string('z', 20),
+                new string('a', 9) + astral + "ccccccMAGIC" + new string('z', 20)));
+
+        WorkspaceSearchSettings settings = DefaultSettings() with
+        {
+            MaxPreviewChars = 20,
+        };
+
+        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
+            "MAGIC",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true,
+            settings);
+
+        Assert.Equal(3, result.Matches.Length);
+        Assert.All(
+            result.Matches,
+            static match =>
+            {
+
+                Assert.Contains("MAGIC", match.Preview, StringComparison.Ordinal);
+                Assert.InRange(match.Preview.Length, 1, 20);
+                AssertNoUnpairedSurrogate(match.Preview);
+
+            });
+
+        // Stepping the window past a leading low surrogate must not cost a character of the budget.
+        Assert.Equal(20, result.Matches[2].Preview.Length);
+
+    }
+
+    private static void AssertNoUnpairedSurrogate(string value)
+    {
+
+        for (int index = 0; index < value.Length; index++)
+        {
+
+            if (char.IsHighSurrogate(value[index]))
+            {
+
+                Assert.True(
+                    index + 1 < value.Length
+                    && char.IsLowSurrogate(value[index + 1]),
+                    $"Unpaired high surrogate at index {index} of '{value}'.");
+
+                index++;
+
+                continue;
+
+            }
+
+            Assert.False(
+                char.IsLowSurrogate(value[index]),
+                $"Unpaired low surrogate at index {index} of '{value}'.");
+
+        }
+
+    }
+
+    [Fact]
     public void Runtime_regex_factory_uses_non_backtracking_without_compilation()
     {
 
@@ -422,6 +498,67 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
         Assert.Single(result.Matches);
         Assert.Equal("text.txt", result.Matches[0].Path);
         Assert.Equal(1, result.SkippedBinaryFileCount);
+
+    }
+
+    [Fact]
+    public async Task Search_skips_binary_files_that_start_with_a_utf8_bom()
+    {
+
+        _workspace.WriteFile("text.txt", "needle");
+
+        await File.WriteAllBytesAsync(
+            Path.Combine(_workspace.Root, "binary.bin"),
+            [0xEF, 0xBB, 0xBF, 0x6E, 0x65, 0x65, 0x64, 0x6C, 0x65, 0x00, 0xFF]);
+
+        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true);
+
+        Assert.Single(result.Matches);
+        Assert.Equal("text.txt", result.Matches[0].Path);
+        Assert.Equal(1, result.SkippedBinaryFileCount);
+
+    }
+
+    [Fact]
+    public async Task Search_skips_utf16_files_that_start_with_a_byte_order_mark()
+    {
+
+        _workspace.WriteFile("text.txt", "needle");
+
+        await File.WriteAllBytesAsync(
+            Path.Combine(_workspace.Root, "utf16.txt"),
+            [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes("needle")]);
+
+        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
+            "needle",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true);
+
+        Assert.Single(result.Matches);
+        Assert.Equal("text.txt", result.Matches[0].Path);
+        Assert.Equal(1, result.SkippedBinaryFileCount);
+
+    }
+
+    [Fact]
+    public async Task Search_reports_column_one_for_a_match_after_a_utf8_bom()
+    {
+
+        await File.WriteAllBytesAsync(
+            Path.Combine(_workspace.Root, "bom.txt"),
+            [.. Encoding.UTF8.GetPreamble(), .. Encoding.UTF8.GetBytes("needle\nneedle")]);
+
+        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
+            "^needle",
+            WorkspaceSearchMode.Regex,
+            caseSensitive: true);
+
+        Assert.Equal(
+            [("bom.txt", 1, 1), ("bom.txt", 2, 1)],
+            result.Matches.Select(static match => (match.Path, match.Line, match.Column)));
 
     }
 

@@ -337,6 +337,71 @@ public sealed class FamiliarChatClientTests
     }
 
     /// <summary>
+    /// A composed Arcanum system prompt carries attached-file bodies and resonant spell text, so it
+    /// routinely runs past the OS argument ceilings — 32,767 characters for a whole Windows command
+    /// line, 128 KiB for a single Linux argument. Putting it on argv makes <c>Process.Start</c> fail
+    /// and the turn falls back to another provider with "check that it is executable", so an
+    /// oversized prompt travels on stdin, which has no such limit.
+    /// </summary>
+    [Fact]
+    public async Task Claude_folds_an_oversized_system_prompt_into_standard_input()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
+
+        using IChatClient client = CreateClaude(runner, "claude-sonnet");
+
+        string systemPrompt = "ATTACHED FILE BODY " + new string('x', 200 * 1024);
+
+        _ = await client.GetResponseAsync(
+            [
+                new ChatMessage(ChatRole.System, systemPrompt),
+                new ChatMessage(ChatRole.User, "hi"),
+            ],
+            cancellationToken: CancellationToken.None);
+
+        FamiliarProcessRequest request = runner.LastRequest;
+
+        Assert.DoesNotContain("--system-prompt", request.Arguments);
+
+        Assert.All(request.Arguments, static argument => Assert.True(argument.Length <= 8192));
+
+        Assert.True(request.Arguments.Sum(static argument => argument.Length + 1) < 16_384);
+
+        Assert.Contains("ATTACHED FILE BODY", request.StandardInput, StringComparison.Ordinal);
+
+        Assert.Contains("hi", request.StandardInput, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// The same ceiling applies to <c>--json-schema</c>. Arcanum validates structured output and
+    /// retries a mismatch, so losing the hint costs a retry; losing the spawn costs the turn.
+    /// </summary>
+    [Fact]
+    public async Task Claude_keeps_an_oversized_output_schema_off_the_command_line()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.ClaudeSuccess);
+
+        using IChatClient client = CreateClaude(runner, "claude-sonnet");
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            new ChatOptions { ResponseFormat = OversizedSchemaFormat() },
+            CancellationToken.None);
+
+        Assert.All(
+            runner.LastRequest.Arguments,
+            static argument => Assert.True(argument.Length <= 8192));
+
+    }
+
+    /// <summary>
     /// A one-shot process has no session to resume, so the earlier turns have to travel in the
     /// prompt. Role labels appear only when there is more than one message to disambiguate.
     /// </summary>
@@ -486,6 +551,93 @@ public sealed class FamiliarChatClientTests
 
         // `-` makes the prompt come from stdin explicitly rather than being appended to it.
         Assert.Equal("-", argv[^1]);
+
+    }
+
+    /// <summary>
+    /// Codex has no <c>--tools</c> switch, so the CLI's own agent loop is suppressed through feature
+    /// overrides instead. They go through <c>-c features.&lt;name&gt;=false</c> rather than
+    /// <c>--disable &lt;name&gt;</c> deliberately: <c>--disable</c> rejects a name the installed CLI
+    /// does not know, so a renamed flag in a later release would fail every turn, while an unknown
+    /// <c>-c</c> override is ignored.
+    /// </summary>
+    [Fact]
+    public async Task Codex_disables_the_vendor_agent_loop_through_tolerant_config_overrides()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
+
+        using IChatClient client = CreateCodex(runner, "gpt-5.6");
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            cancellationToken: CancellationToken.None);
+
+        IReadOnlyList<string> argv = runner.LastRequest.Arguments;
+
+        Assert.DoesNotContain("--disable", argv);
+
+        foreach (string feature in CodexCliChatClient.SuppressedFeatures)
+        {
+
+            Assert.Contains($"features.{feature}=false", argv);
+
+        }
+
+        Assert.Contains("shell_tool", string.Join(' ', argv));
+
+    }
+
+    /// <summary>
+    /// Codex reads execpolicy <c>.rules</c> files out of its working root, and they widen what the
+    /// CLI may run. Ignoring them is what keeps a planted rules file from steering a turn — the
+    /// Codex counterpart to Claude Code's <c>--setting-sources user</c>.
+    /// </summary>
+    [Fact]
+    public async Task Codex_ignores_repository_execpolicy_rules()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
+
+        using IChatClient client = CreateCodex(runner, "gpt-5.6");
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            cancellationToken: CancellationToken.None);
+
+        Assert.Contains("--ignore-rules", runner.LastRequest.Arguments);
+
+    }
+
+    /// <summary>
+    /// Defence in depth for the above. Feature suppression is best-effort against a CLI Arcanum does
+    /// not version-pin, so the projection refuses a turn that ran a vendor tool anyway. Returning the
+    /// agent message would launder output produced by a shell command that escaped
+    /// <c>WorkspacePathPolicy</c> and the Ward gate entirely.
+    /// </summary>
+    [Fact]
+    public async Task Codex_fails_closed_when_the_vendor_loop_executed_a_tool_anyway()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexShellTool);
+
+        using IChatClient client = CreateCodex(runner, "gpt-5.6");
+
+        FamiliarTransportException failure = await Assert.ThrowsAsync<FamiliarTransportException>(
+            async () => await client.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, "who am i")],
+                cancellationToken: CancellationToken.None));
+
+        Assert.Contains("command_execution", failure.Message, StringComparison.Ordinal);
+
+        // The laundered answer must not reach the caller in any form.
+        Assert.DoesNotContain("logged in as", failure.Message, StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -779,6 +931,15 @@ public sealed class FamiliarChatClientTests
         ChatResponseFormat.ForJsonSchema(
             JsonSerializer.Deserialize<JsonElement>(
                 "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"),
+            "answer",
+            schemaDescription: string.Empty);
+
+    private static ChatResponseFormat OversizedSchemaFormat() =>
+        ChatResponseFormat.ForJsonSchema(
+            JsonSerializer.Deserialize<JsonElement>(
+                "{\"type\":\"object\",\"description\":\""
+                + new string('d', 64 * 1024)
+                + "\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"),
             "answer",
             schemaDescription: string.Empty);
 

@@ -124,6 +124,8 @@ public sealed class WebResearchCredentialStore : IWebResearchCredentialStore, ID
                     "OS credential store save failed for the Perplexity provider "
                     + "({Status}); using the encrypted fallback.",
                     os.Status);
+
+                PurgeSupersededOsCredential(os);
             }
 
             try
@@ -182,6 +184,42 @@ public sealed class WebResearchCredentialStore : IWebResearchCredentialStore, ID
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Reads prefer the OS credential over the encrypted fallback, so a failed OS write has to take
+    /// the superseded credential with it — otherwise the replaced credential keeps being used and
+    /// the newly stored one never takes effect. When the credential can neither be replaced nor
+    /// removed the save fails closed, before the fallback is rewritten, rather than reporting a
+    /// replacement it did not perform.
+    /// </summary>
+    private void PurgeSupersededOsCredential(OsCredentialStoreResult save)
+    {
+        OsCredentialStoreResult purge = _osStore.Delete(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.PerplexityApiKeyAccount);
+
+        if (purge.Status is OsCredentialStoreStatus.Ok or OsCredentialStoreStatus.NotFound)
+        {
+            return;
+        }
+
+        if (!_osStore.IsAvailable)
+        {
+            // No reachable backend at all: the encrypted fallback is the documented operating mode
+            // here, and every read in this state resolves through it.
+            _logger?.LogWarning(
+                "The OS credential store is unavailable; the encrypted Perplexity fallback was "
+                + "written without reconciling any earlier OS credential.");
+
+            return;
+        }
+
+        throw new InvalidOperationException(
+            "The Perplexity credential could not be written to the OS credential store "
+            + $"({save.Status}), and the superseded OS credential could not be removed "
+            + $"({purge.Status}). The previous credential would keep being used, so nothing "
+            + "was changed.");
     }
 
     private async Task<SecretStoreReadResult> ReadFallbackAsync(

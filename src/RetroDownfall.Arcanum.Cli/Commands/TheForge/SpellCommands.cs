@@ -199,7 +199,9 @@ public sealed class SpellCommands(
 
         string bodyPreview = string.IsNullOrEmpty(body)
             ? "(empty)"
-            : body.Length > bodyPreviewChars ? body[..bodyPreviewChars] + "\u2026" : body;
+            : body.Length > bodyPreviewChars
+                ? body[..Utf8Truncation.SafeCharSliceLength(body, bodyPreviewChars)] + "\u2026"
+                : body;
 
         table.AddRow(themePalette.MutedMarkup(Markup.Escape("Body:")), themePalette.TextMarkup(Markup.Escape(bodyPreview)));
 
@@ -618,7 +620,16 @@ public sealed class SpellCommands(
         }
         else
         {
-            await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+            {
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
+
+                return 1;
+            }
 
             AnsiConsole.MarkupLine(
                 themePalette.HighlightLabelMarkup(Markup.Escape("Spell exported to:"), Markup.Escape(output)));

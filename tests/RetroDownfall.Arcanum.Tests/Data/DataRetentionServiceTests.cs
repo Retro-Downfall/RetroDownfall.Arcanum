@@ -611,6 +611,83 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     [SkippableFact]
 
+    public async Task ApplyAsync_Prune_WhenEarlyCandidateIsPreserved_KeepsRenewingTheDurableLease()
+    {
+
+        RequireSqlCipher();
+
+        const int candidateCount = PruneCheckpointIntervalInTest + 1;
+
+        _ = await SeedEntryEmbeddingBatchAsync(candidateCount);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.SessionEntryEmbeddings = EnabledRule();
+
+        HeartbeatCountingOperationStore operations = new(
+            new LongRunningOperationStore(_db!));
+
+        IDataRetentionService service = CreateService(
+            settings,
+            operationStore: operations);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Equal(candidateCount, plan.CandidateIds.Length);
+
+        const string candidatePrefix = "entry-embedding:";
+
+        string firstCandidate = plan.CandidateIds[0];
+
+        Assert.StartsWith(candidatePrefix, firstCandidate, StringComparison.Ordinal);
+
+        Guid preservedEntryId = Guid.Parse(
+            firstCandidate[candidatePrefix.Length..],
+            CultureInfo.InvariantCulture);
+
+        await ExecuteAsync(
+            $"""
+            CREATE TRIGGER pin_first_candidate_after_retention_start
+            AFTER INSERT ON "LongRunningOperations"
+            WHEN NEW."Kind" = '{LongRunningOperationKinds.DataRetentionPrune}'
+            BEGIN
+                INSERT INTO "SessionContextPins"
+                    ("Id", "SessionId", "Kind", "TargetIdentifier", "DisplayLabel",
+                     "ContentVersion", "CreatedAt", "UpdatedAt")
+                SELECT
+                    '{Guid.NewGuid():N}', entry."SessionId",
+                    {(int)SessionContextPinKind.SessionEntry},
+                    entry."Id", 'Boundary pin', NULL, NEW."CreatedAt", NEW."CreatedAt"
+                FROM "Entries" entry
+                WHERE lower(replace(entry."Id", '-', '')) = '{preservedEntryId:N}';
+            END;
+            """);
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Contains(
+            result.Value.Conflicts,
+            static conflict => conflict.Code == ErrorCodes.Data.PlanChanged);
+
+        Assert.Equal(1, await CountAllAsync("entry_embeddings"));
+
+        Assert.True(
+            operations.Heartbeats > 0,
+            "A sweep that preserved one candidate must keep renewing its durable lease for the "
+                + $"remaining {candidateCount - 1} candidates, but it renewed nothing.");
+
+    }
+
+    [SkippableFact]
+
     public async Task ApplyAsync_Prune_WhenSessionBecomesHeldAtBoundary_PreservesEntryEmbedding()
     {
 
@@ -2445,6 +2522,60 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     [SkippableFact]
 
+    public async Task ApplyAsync_FactoryReset_ErasesTapestrySummariesOfDeletedCorpora()
+    {
+
+        RequireSqlCipher();
+
+        (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
+
+        await SeedTapestryGenerationAsync(sessionId);
+
+        Assert.Equal(1, await CountAllAsync("tapestry_generations"));
+
+        Assert.Equal(2, await CountAllAsync("tapestry_nodes"));
+
+        Assert.Equal(1, await CountAllAsync("tapestry_node_embeddings"));
+
+        IDataRetentionService service = CreateService();
+
+        DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
+
+        DataRetentionPlan plan = await service.PlanAsync(
+            request,
+            CancellationToken.None);
+
+        Assert.Equal(
+            4,
+            plan.Items
+                .Where(static item => item.DataClass == RetentionDataClass.Tapestry)
+                .Sum(static item => item.DerivedRecords));
+
+        Result<DataRetentionApplyResult> result = await service.ApplyAsync(
+            new DataRetentionApplyRequest(request, plan.PlanId),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(0, await CountAllAsync("tapestry_nodes"));
+
+        Assert.Equal(0, await CountAllAsync("tapestry_generations"));
+
+        Assert.Equal(0, await CountAllAsync("tapestry_node_embeddings"));
+
+        if (await TableExistsInTestAsync("tapestry_node_embeddings_vec"))
+        {
+
+            Assert.Equal(0, await CountAllAsync("tapestry_node_embeddings_vec"));
+
+        }
+
+        Assert.True(result.Value.Reconciled);
+
+    }
+
+    [SkippableFact]
+
     public async Task ApplyAsync_FactoryReset_RollsBackEveryDatabaseDeletionWhenDependencyFails()
     {
 
@@ -3040,10 +3171,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
     private DataRetentionService CreateService(
         ArcanumSettings? settings = null,
         IDataRetentionPolicyStore? policyStore = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ILongRunningOperationStore? operationStore = null)
     {
 
-        LongRunningOperationStore operations = new(_db!);
+        ILongRunningOperationStore operations = operationStore
+            ?? new LongRunningOperationStore(_db!);
 
         return new DataRetentionService(
             _db!,
@@ -3060,6 +3193,12 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
 
     private const string OldTimestamp =
         "2000-01-01T00:00:00.0000000+00:00";
+
+    /// <summary>
+    /// Mirrors the service's own private <c>PruneCheckpointInterval</c>; a sweep shorter than this
+    /// never reaches a checkpoint boundary and so proves nothing about periodic lease renewal.
+    /// </summary>
+    private const int PruneCheckpointIntervalInTest = 50;
 
     private static RetentionRuleSettings EnabledRule(int days = 1) =>
         new()
@@ -3422,6 +3561,136 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             ("@entryId", entryId.ToString()),
             ("@embedding", new byte[] { 0, 0, 128, 63 }));
 
+    /// <summary>
+    /// Seeds one archived session carrying <paramref name="count"/> embedded Entries, which is
+    /// <paramref name="count"/> independent <c>entry-embedding:</c> prune candidates.
+    /// </summary>
+    private async Task<Guid[]> SeedEntryEmbeddingBatchAsync(int count)
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        DateTimeOffset createdAt = DateTimeOffset.Parse(
+            "2000-01-01T00:00:00Z",
+            CultureInfo.InvariantCulture);
+
+        _db!.Sessions.Add(
+            new Session
+            {
+
+                Id = sessionId,
+
+                Status = "archived",
+
+                CreatedAt = createdAt,
+
+                UpdatedAt = createdAt,
+
+            });
+
+        Guid[] entryIds = new Guid[count];
+
+        for (int index = 0; index < count; index++)
+        {
+
+            entryIds[index] = Guid.NewGuid();
+
+            _db.Entries.Add(
+                new Entry
+                {
+
+                    Id = entryIds[index],
+
+                    SessionId = sessionId,
+
+                    Role = MessageRole.User,
+
+                    Content = "Retain this test entry.",
+
+                    ModelUsed = "test-model",
+
+                    CreatedAt = createdAt,
+
+                    Sequence = index + 1,
+
+                    IsPinned = false,
+
+                });
+
+        }
+
+        await _db.SaveChangesAsync();
+
+        foreach (Guid entryId in entryIds)
+        {
+
+            await SeedEntryEmbeddingAsync(entryId);
+
+        }
+
+        return entryIds;
+
+    }
+
+    /// <summary>
+    /// Seeds one published Tapestry generation over a session scope: a null-content leaf plus a
+    /// layer-1 summary whose <c>Content</c> is model prose about the transcript, and the summary's
+    /// embedding blob.
+    /// </summary>
+    private async Task SeedTapestryGenerationAsync(Guid sessionId)
+    {
+
+        string generationId = "generation-" + Guid.NewGuid().ToString("N");
+
+        string leafNodeId = "leaf-" + Guid.NewGuid().ToString("N");
+
+        string summaryNodeId = "summary-" + Guid.NewGuid().ToString("N");
+
+        await ExecuteAsync(
+            """
+            INSERT INTO tapestry_generations
+                (GenerationId, ScopeKind, ScopeId, Status, AlgorithmVersion,
+                 SettingsFingerprint, SummaryModel, SummaryRecipeVersion, EmbeddingDimension,
+                 CorpusFingerprint, LayerCount, NodeCount, RootNodeCount, StartedAt, CompletedAt)
+            VALUES
+                (@generationId, 'Session', @scopeId, 'Published', '1', 'FINGERPRINT',
+                 'test-model', '1', 1, 'CORPUS', 2, 2, 1, @at, @at)
+            """,
+            ("@generationId", generationId),
+            ("@scopeId", sessionId.ToString("N")),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO tapestry_nodes
+                (NodeId, GenerationId, ScopeKind, ScopeId, Layer, ParentScopeKey, NodeKind,
+                 ParentNodeId, SourceKind, SourceId, SourceLabel, Content, ContentHash,
+                 EmbeddingDimension, CreatedAt)
+            VALUES
+                (@leafNodeId, @generationId, 'Session', @scopeId, 0, @scopeId, 'Leaf',
+                 @summaryNodeId, 'Entry', @scopeId, 'Transcript entry', NULL, 'LEAF-HASH',
+                 1, @at),
+                (@summaryNodeId, @generationId, 'Session', @scopeId, 1, @scopeId, 'Summary',
+                 NULL, NULL, NULL, 'Session summary',
+                 'The operator described their medical history in detail.', 'SUMMARY-HASH',
+                 1, @at)
+            """,
+            ("@leafNodeId", leafNodeId),
+            ("@summaryNodeId", summaryNodeId),
+            ("@generationId", generationId),
+            ("@scopeId", sessionId.ToString("N")),
+            ("@at", OldTimestamp));
+
+        await ExecuteAsync(
+            """
+            INSERT INTO tapestry_node_embeddings (NodeId, Embedding, Dim)
+            VALUES (@nodeId, @embedding, 1)
+            """,
+            ("@nodeId", summaryNodeId),
+            ("@embedding", new byte[] { 0, 0, 128, 63 }));
+
+    }
+
     private async Task<SeededAttachment> SeedAttachmentAsync(
         Guid sessionId,
         Guid entryId)
@@ -3703,6 +3972,165 @@ public sealed partial class DataRetentionServiceTests : IAsyncLifetime
             RetentionRuleUpdateRequest request,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("This test policy store is read-only.");
+
+    }
+
+    /// <summary>
+    /// Counts the sweep's own periodic lease renewals and delegates everything else to the real
+    /// store, so a test can assert that a long prune keeps its durable lease alive. The
+    /// <see cref="DataRetentionLeaseMaintainer"/>'s in-candidate renewals go through
+    /// <c>RenewLeaseAsync</c> and are deliberately not counted here.
+    /// </summary>
+    private sealed class HeartbeatCountingOperationStore(ILongRunningOperationStore inner)
+        : ILongRunningOperationStore
+    {
+
+        private int _heartbeats;
+
+        public int Heartbeats => Volatile.Read(ref _heartbeats);
+
+        public Task<bool> HeartbeatAsync(
+            Guid operationId,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default)
+        {
+
+            _ = Interlocked.Increment(ref _heartbeats);
+
+            return inner.HeartbeatAsync(
+                operationId,
+                ownerId,
+                utcNow,
+                leaseExpiresAt,
+                cancellationToken);
+
+        }
+
+        public Task<bool> RenewLeaseAsync(
+            Guid operationId,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default) =>
+            inner.RenewLeaseAsync(
+                operationId,
+                ownerId,
+                utcNow,
+                leaseExpiresAt,
+                cancellationToken);
+
+        public Task<LongRunningOperation> CreateAsync(
+            LongRunningOperationCreateRequest request,
+            CancellationToken cancellationToken = default) =>
+            inner.CreateAsync(request, cancellationToken);
+
+        public Task<LongRunningOperation?> TryStartSingleFlightAsync(
+            LongRunningOperationCreateRequest request,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default) =>
+            inner.TryStartSingleFlightAsync(
+                request,
+                ownerId,
+                utcNow,
+                leaseExpiresAt,
+                cancellationToken);
+
+        public Task<LongRunningOperation?> GetAsync(
+            Guid operationId,
+            CancellationToken cancellationToken = default) =>
+            inner.GetAsync(operationId, cancellationToken);
+
+        public Task<IReadOnlyList<LongRunningOperation>> ListAsync(
+            LongRunningOperationQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.ListAsync(query, cancellationToken);
+
+        public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
+            DateTimeOffset utcNow,
+            int limit,
+            CancellationToken cancellationToken = default) =>
+            inner.FindExpiredAsync(utcNow, limit, cancellationToken);
+
+        public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
+            Guid operationId,
+            string ownerId,
+            DateTimeOffset utcNow,
+            DateTimeOffset leaseExpiresAt,
+            CancellationToken cancellationToken = default) =>
+            inner.TryAcquireLeaseAsync(
+                operationId,
+                ownerId,
+                utcNow,
+                leaseExpiresAt,
+                cancellationToken);
+
+        public Task<bool> SaveCheckpointAsync(
+            Guid operationId,
+            string ownerId,
+            int expectedCheckpointVersion,
+            int checkpointVersion,
+            byte[]? checkpointPayload,
+            string? checkpointReference,
+            string publicSummary,
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) =>
+            inner.SaveCheckpointAsync(
+                operationId,
+                ownerId,
+                expectedCheckpointVersion,
+                checkpointVersion,
+                checkpointPayload,
+                checkpointReference,
+                publicSummary,
+                utcNow,
+                cancellationToken);
+
+        public Task<bool> TryTransitionAsync(
+            Guid operationId,
+            long expectedRevision,
+            string? ownerId,
+            LongRunningOperationState state,
+            DateTimeOffset utcNow,
+            string? terminalErrorCode = null,
+            CancellationToken cancellationToken = default) =>
+            inner.TryTransitionAsync(
+                operationId,
+                expectedRevision,
+                ownerId,
+                state,
+                utcNow,
+                terminalErrorCode,
+                cancellationToken);
+
+        public Task<bool> RequestCancellationAsync(
+            Guid operationId,
+            long expectedRevision,
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) =>
+            inner.RequestCancellationAsync(
+                operationId,
+                expectedRevision,
+                utcNow,
+                cancellationToken);
+
+        public Task<bool> ResetForRetryAsync(
+            Guid operationId,
+            long expectedRevision,
+            DateTimeOffset utcNow,
+            CancellationToken cancellationToken = default) =>
+            inner.ResetForRetryAsync(
+                operationId,
+                expectedRevision,
+                utcNow,
+                cancellationToken);
+
+        public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(
+            CancellationToken cancellationToken = default) =>
+            inner.GetCountsAsync(cancellationToken);
 
     }
 

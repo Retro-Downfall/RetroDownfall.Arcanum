@@ -244,54 +244,6 @@ public sealed class InferenceAuditLogger : IInferenceAuditLogger, IDisposable
 
     }
 
-    private static IEnumerable<string> EnumerateDatedLogFiles(
-        string directory,
-        string stem,
-        DateTimeOffset from,
-        DateTimeOffset to)
-    {
-
-        string prefix = stem + "-";
-
-        foreach ((string Path, DateTimeOffset Date) candidate in Directory
-                     .EnumerateFiles(directory, "*.jsonl", SearchOption.TopDirectoryOnly)
-                     .Select(path => (Path: path, Date: ParseDatedLogFile(path, prefix)))
-                     .Where(static candidate => candidate.Date is not null)
-                     .Select(static candidate => (candidate.Path, candidate.Date!.Value))
-                     .Where(candidate => candidate.Item2.Date >= from.Date && candidate.Item2.Date <= to.Date)
-                     .OrderByDescending(static candidate => candidate.Item2))
-        {
-
-            yield return candidate.Path;
-
-        }
-
-    }
-
-    private static DateTimeOffset? ParseDatedLogFile(string path, string prefix)
-    {
-
-        string name = Path.GetFileNameWithoutExtension(path);
-
-        if (!name.StartsWith(prefix, StringComparison.Ordinal)
-            || name.Length != prefix.Length + 8)
-        {
-
-            return null;
-
-        }
-
-        return DateTimeOffset.TryParseExact(
-            name.AsSpan(prefix.Length),
-            "yyyyMMdd",
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeUniversal,
-            out DateTimeOffset date)
-            ? date
-            : null;
-
-    }
-
     private void PrepareForNewDate(string directory, string dateStamp)
     {
 

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Serialization;
 
 namespace RetroDownfall.Arcanum.Core.Weave.Tapestry;
 
@@ -99,7 +100,12 @@ public enum TapestryPartitionReason
 
 }
 
-/// <summary>Which retrieval strategy produced a node (DESIGN §21.11).</summary>
+/// <summary>
+/// Which retrieval strategy produced a node (DESIGN §21.11). Also operator policy at
+/// <c>Arcanum:Integrations:Embeddings:Tapestry:RetrievalMode</c>, so it travels as its documented
+/// name; already-persisted numeric values still read.
+/// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter<TapestryRetrievalMode>))]
 public enum TapestryRetrievalMode
 {
 

@@ -81,27 +81,33 @@ internal static class CodexReader
         return content;
     }
 
+    /// <summary>
+    /// Reads a codex through the shared fail-closed primitive (DESIGN §11.6). A plain
+    /// <c>File.ReadAllTextAsync</c> here followed symlinks — a git-tracked <c>CODEX.md -&gt; ~/.ssh/id_ed25519</c>
+    /// in a cloned campaign was returned verbatim — and blocked forever on a FIFO, whose
+    /// <c>FileInfo.Length</c> of 0 sailed through the size gate while <c>open(2)</c> waited for a writer that
+    /// no cancellation token could interrupt. <c>SecureFileReader</c> opens once with link following disabled,
+    /// proves the object is an unaliased regular file, and bounds the read.
+    /// </summary>
     private static async Task<string?> TryReadAsync(string path, long maxSizeBytes, CancellationToken ct)
     {
-        try
-        {
-            FileInfo info = new(path);
-
-            if (!info.Exists || info.Length > maxSizeBytes)
-            {
-                return null;
-            }
-
-            return await File.ReadAllTextAsync(path, ct).ConfigureAwait(false);
-        }
-        catch (IOException)
+        if (maxSizeBytes <= 0)
         {
             return null;
         }
-        catch (UnauthorizedAccessException)
+
+        int maxBytes = (int)Math.Min(maxSizeBytes, int.MaxValue - 1);
+
+        SecureUtf8FileReadResult readResult = await SecureFileReader
+            .ReadUtf8TextAsync(path, maxBytes, ct)
+            .ConfigureAwait(false);
+
+        if (readResult.Status is not SecureFileReadStatus.Success)
         {
             return null;
         }
+
+        return readResult.Text;
     }
 
 }

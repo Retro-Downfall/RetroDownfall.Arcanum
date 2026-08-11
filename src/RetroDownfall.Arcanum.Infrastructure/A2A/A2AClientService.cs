@@ -652,7 +652,16 @@ public sealed class A2AClientService : IA2AClientService
         // remote task nobody could name, still running and still billing (issue #62). Written without the
         // caller's token — cancelling right here is exactly when the record matters most, and letting the
         // write cancel would skip the peer-cancel path below and orphan the remote task.
-        A2ASendingLedgerEntry ledgerEntry = await RecordOutboundAsync(task.Id, discoveryUrl, budgetReservationId)
+        //
+        // A message that names a task is a continuation, and that task already has a row: the dispatch
+        // that parked it deliberately left one open so the answer could find it. Opening a second row for
+        // the same Sending leaves an orphan nothing ever closes, which reconciliation later claims —
+        // cancelling a remote task that may still be running, and counting one delegated Sending twice.
+        A2ASendingLedgerEntry ledgerEntry = await RecordOutboundAsync(
+                task.Id,
+                discoveryUrl,
+                budgetReservationId,
+                continuation: !string.IsNullOrWhiteSpace(message.TaskId))
             .ConfigureAwait(false);
 
         // Callback mode asks the peer to report back, then stops occupying a slot while it works. A peer
@@ -695,6 +704,8 @@ public sealed class A2AClientService : IA2AClientService
             // The remote accepted the task and then the transport failed. The work may still be running
             // there, so report the task id rather than letting an exception escape as an opaque tool error.
             // The ledger entry deliberately stays open: reconciliation will try to cancel it.
+            StopRenewing(ledgerEntry);
+
             _logger.LogWarning(ex, "dispatch_sending: lost contact with the remote agent while polling task {TaskId}.", task.Id);
 
             return Result<A2ADispatchResult>.Failure(new Error(
@@ -725,6 +736,14 @@ public sealed class A2AClientService : IA2AClientService
         {
 
             await SettleLedgerAsync(ledgerEntry, cost).ConfigureAwait(false);
+
+        }
+        else
+        {
+
+            // Left open on purpose so the Mage can answer it, which also means this dispatch has stopped
+            // holding it: the lease must lapse rather than be renewed for the host's lifetime.
+            StopRenewing(ledgerEntry);
 
         }
 
@@ -847,7 +866,7 @@ public sealed class A2AClientService : IA2AClientService
 
         }
 
-        string configId = Guid.NewGuid().ToString("N");
+        string configId = A2ACallbackConfigId.Mint();
 
         string token = A2ACallbackToken.Mint();
 
@@ -901,20 +920,13 @@ public sealed class A2AClientService : IA2AClientService
     }
 
     /// <summary>The absolute path peers post outbound-Sending callbacks to.</summary>
-    internal static string ResolveCallbackPath(ConclaveA2ASettings a2a)
-    {
-
-        string configured = string.IsNullOrWhiteSpace(a2a.ServerPath)
-            ? ArcanumRuntimeDefaults.Conclave.A2A.ServerPath
-            : a2a.ServerPath.Trim();
-
-        string normalized = configured.StartsWith("/api", StringComparison.Ordinal)
-            ? configured
-            : $"/api/{configured.Trim('/')}";
-
-        return $"{normalized.TrimEnd('/')}/callbacks";
-
-    }
+    /// <remarks>
+    /// Resolved through <see cref="A2APathPolicy"/> rather than normalized here a second time: this
+    /// value both maps the route and is advertised to the peer, so any disagreement with where the
+    /// server was actually mounted hands a peer an address nothing answers (&#167;5.7.1.4).
+    /// </remarks>
+    internal static string ResolveCallbackPath(ConclaveA2ASettings a2a) =>
+        $"{A2APathPolicy.ResolveServerPath(a2a.ServerPath)}/callbacks";
 
     /// <summary>
     /// Waits for the peer to report back, re-reading the task on each notification until it settles.
@@ -925,6 +937,13 @@ public sealed class A2AClientService : IA2AClientService
     /// cost is read from — comes from <c>tasks/get</c>. A callback that never arrives leaves the Sending
     /// waiting, which is the same "no whole-operation deadline" contract every other mode has (#55);
     /// what it does <em>not</em> do is hold a concurrency slot while it waits.
+    /// <para>
+    /// The snapshot <c>SendMessage</c> handed back is read once against the peer before anything waits on
+    /// a signal. A fast remote can settle between the send and the registration round-trip, and the
+    /// notification for that transition fired while there was still nowhere to post it — so believing the
+    /// stale snapshot is a wait that nothing will ever end. The streaming path answers the same
+    /// fast-remote race by falling back to a poll whose first read finds the settled task.
+    /// </para>
     /// </remarks>
     private static async Task<AgentTask> AwaitCallbackAsync(
         IA2AClient client,
@@ -936,21 +955,43 @@ public sealed class A2AClientService : IA2AClientService
         CancellationToken cancellationToken)
     {
 
+        task = await ReadTaskAsync(client, task.Id, discoveryUrl, progress, transitions, cancellationToken)
+            .ConfigureAwait(false);
+
         while (!IsSettled(task.Status.State))
         {
 
             await callback.Signal.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-            task = await client
-                .GetTaskAsync(new GetTaskRequest { Id = task.Id }, cancellationToken)
+            task = await ReadTaskAsync(client, task.Id, discoveryUrl, progress, transitions, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (transitions.ShouldReport(task.Status))
-            {
+        }
 
-                Report(progress, discoveryUrl, task, DateTimeOffset.UtcNow);
+        return task;
 
-            }
+    }
+
+    /// <summary>
+    /// Reads the authoritative remote task and reports the state change, if it is one.
+    /// </summary>
+    private static async Task<AgentTask> ReadTaskAsync(
+        IA2AClient client,
+        string taskId,
+        string discoveryUrl,
+        IProgress<A2ASendingProgress>? progress,
+        TransitionFilter transitions,
+        CancellationToken cancellationToken)
+    {
+
+        AgentTask task = await client
+            .GetTaskAsync(new GetTaskRequest { Id = taskId }, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (transitions.ShouldReport(task.Status))
+        {
+
+            Report(progress, discoveryUrl, task, DateTimeOffset.UtcNow);
 
         }
 
@@ -992,10 +1033,17 @@ public sealed class A2AClientService : IA2AClientService
 
     }
 
+    /// <param name="continuation">
+    /// Whether this exchange is answering a remote task that already has an open record. Its row is
+    /// adopted rather than duplicated; a continuation whose row cannot be found or claimed — a different
+    /// process still owns it, or it was already closed — registers a fresh one, which is still better
+    /// than an unrecorded in-flight remote task.
+    /// </param>
     private async Task<A2ASendingLedgerEntry> RecordOutboundAsync(
         string remoteTaskId,
         string agentUrl,
-        Guid? budgetReservationId)
+        Guid? budgetReservationId,
+        bool continuation = false)
     {
 
         if (_scopeFactory is null)
@@ -1012,11 +1060,32 @@ public sealed class A2AClientService : IA2AClientService
 
             IA2ASendingLedger? ledger = A2ASendingLedgerScope.Resolve(scope.ServiceProvider);
 
-            return ledger is null
-                ? default
-                : await ledger
-                    .RegisterOutboundAsync(remoteTaskId, agentUrl, budgetReservationId, CancellationToken.None)
+            if (ledger is null)
+            {
+
+                return default;
+
+            }
+
+            if (continuation)
+            {
+
+                A2ASendingLedgerEntry existing = await ledger
+                    .FindOpenOutboundAsync(remoteTaskId, CancellationToken.None)
                     .ConfigureAwait(false);
+
+                if (existing.IsRecorded)
+                {
+
+                    return existing;
+
+                }
+
+            }
+
+            return await ledger
+                .RegisterOutboundAsync(remoteTaskId, agentUrl, budgetReservationId, CancellationToken.None)
+                .ConfigureAwait(false);
 
         }
         catch (Exception ex)
@@ -1027,6 +1096,30 @@ public sealed class A2AClientService : IA2AClientService
             return default;
 
         }
+
+    }
+
+    /// <summary>
+    /// Stops renewing a still-open record this dispatch has let go of.
+    /// </summary>
+    /// <remarks>
+    /// A record left open for reconciliation — contact lost mid-poll, or a continuation deliberately kept
+    /// alive — is no longer this process's to hold. Renewing its lease anyway would keep it out of every
+    /// reconciliation pass for the host's lifetime, which is the opposite of leaving it open.
+    /// </remarks>
+    private void StopRenewing(A2ASendingLedgerEntry entry)
+    {
+
+        if (!entry.IsRecorded || _scopeFactory is null)
+        {
+
+            return;
+
+        }
+
+        using IServiceScope scope = _scopeFactory.CreateScope();
+
+        scope.ServiceProvider.GetService<A2ASendingLeaseRenewer>()?.Forget(entry);
 
     }
 

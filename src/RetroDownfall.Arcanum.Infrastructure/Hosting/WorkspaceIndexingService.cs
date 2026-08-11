@@ -74,6 +74,8 @@ internal sealed class WorkspaceIndexingService(
 
     private readonly ConcurrentDictionary<string, RuntimeStatusState> _runtimeStatuses = new(StringComparer.Ordinal);
 
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _reconciliationGates = new(StringComparer.Ordinal);
+
     private readonly SemaphoreSlim _watcherSignal = new(0, 1);
 
     private readonly object _watcherRegistryGate = new();
@@ -364,6 +366,24 @@ internal sealed class WorkspaceIndexingService(
 
                     logger.LogError(ex, "Workspace Indexing tick failed; continuing.");
 
+                    // nextReconciliation is only stamped after the reconciliation loop completes, so a
+                    // tick that throws (e.g. a locked or corrupt Grimoire) leaves the due time in the
+                    // past and the next iteration would reconcile again immediately. Back off before
+                    // retrying — otherwise a persistent failure spins, flooding logs and burning CPU
+                    // until the underlying problem is fixed. Mirrors EntryWeavingService.
+                    try
+                    {
+
+                        await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
+
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+
+                        break;
+
+                    }
+
                 }
 
             }
@@ -607,11 +627,34 @@ internal sealed class WorkspaceIndexingService(
 
     }
 
+    /// <summary>
+    /// Single-flight per workspace: a reconciliation requested while that same workspace is already
+    /// reconciling coalesces onto the in-flight run instead of starting a duplicate full scan. The
+    /// timer loop, the watcher drain, and <see cref="IndexNowAsync"/> (therefore
+    /// <c>POST /api/workspaces/{id}/files/index</c>) all pass through this gate, so repeated manual
+    /// re-index requests cannot multiply workspace walks or embedding-provider spend, and two runs can
+    /// never race on the same deterministic <c>ChunkId</c> rows.
+    /// </summary>
     private async Task<bool> ReconcileWorkspaceAsync(
         string workspacePath,
         EmbeddingSettings embeddings,
         CancellationToken cancellationToken)
     {
+
+        SemaphoreSlim gate = _reconciliationGates.GetOrAdd(
+            workspacePath,
+            static _ => new SemaphoreSlim(1, 1));
+
+        if (!await gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+
+            logger.LogDebug(
+                "Workspace reconciliation for {WorkspacePath} is already in flight; coalescing this request onto it.",
+                workspacePath);
+
+            return false;
+
+        }
 
         RuntimeStatusState status = _runtimeStatuses.GetOrAdd(
             workspacePath,
@@ -646,6 +689,8 @@ internal sealed class WorkspaceIndexingService(
         {
 
             status.SetReconciling(false);
+
+            gate.Release();
 
         }
 
@@ -2074,7 +2119,7 @@ internal sealed class WorkspaceIndexingService(
         if (connection.State != ConnectionState.Open)
         {
 
-            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         }
 

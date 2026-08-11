@@ -17,6 +17,7 @@ using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Api.Configuration;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
@@ -88,7 +89,11 @@ public static class ApiBootstrapper
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
             // W3.5: emit the uniform ApiResponse envelope on rejection (explicit JsonTypeInfo, AOT-safe)
-            // instead of a bare 429 with no body, matching every other /api and /v1 route.
+            // instead of a bare 429 with no body, matching every other /api and /v1 route. The limiter is
+            // global, so the body shape branches on the request path exactly as the other dual-surface
+            // failure paths do (IdempotencyEndpointFilters, ArcanumExceptionHandler): /v1 always speaks
+            // OpenAI shapes, everything else the Arcanum envelope. Retry-After is emitted on both shapes
+            // from the lease metadata so a client backs off on the server's window instead of a guess.
             options.OnRejected = static async (context, cancellationToken) =>
             {
                 HttpContext http = context.HttpContext;
@@ -100,10 +105,38 @@ public static class ApiBootstrapper
 
                 http.Response.StatusCode = StatusCodes.Status429TooManyRequests;
 
+                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out TimeSpan retryAfter))
+                {
+                    // Retry-After is whole seconds (RFC 9110 §10.2.3); round up so the advertised delay
+                    // never lands inside the window that is still rejecting, and never advertises 0.
+                    int retryAfterSeconds = Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds));
+
+                    http.Response.Headers.RetryAfter = retryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+                }
+
+                const string RejectionMessage = "Too many requests; please slow down and retry.";
+
+                if (http.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase))
+                {
+                    OpenAiErrorResponse openAiError = new(
+                        new OpenAiErrorDetail(
+                            RejectionMessage,
+                            "rate_limit_error",
+                            Param: null,
+                            Code: "rate_limit_exceeded"));
+
+                    await http.Response.WriteAsJsonAsync(
+                        openAiError,
+                        ArcanumJsonContext.Default.OpenAiErrorResponse,
+                        cancellationToken: cancellationToken).ConfigureAwait(false);
+
+                    return;
+                }
+
                 string traceId = Activity.Current?.Id ?? http.TraceIdentifier;
 
                 Result<string> rejected = Result<string>.Failure(
-                    new Error(ErrorCodes.RateLimit.TooManyRequests, "Too many requests; please slow down and retry."));
+                    new Error(ErrorCodes.RateLimit.TooManyRequests, RejectionMessage));
 
                 ApiResponse<string> envelope = ApiResponse<string>.FromResult(rejected, traceId);
 
@@ -113,19 +146,20 @@ public static class ApiBootstrapper
                     cancellationToken: cancellationToken).ConfigureAwait(false);
             };
 
+            // §11.13: the window is code-owned — every value comes from ArcanumRuntimeDefaults and
+            // nothing is bound from Arcanum:Host:RateLimit — so it is clamped once here at
+            // registration. The per-request delegate must stay allocation- and DI-free; the only
+            // thing that varies per request is the partition key.
+            HostRateLimitSettings rl = ArcanumRuntimeDefaults.HostRateLimit;
+
+            int permitLimit = ArcanumSettingClamps.RateLimitPermitLimit(rl.PermitLimit);
+
+            int windowSeconds = ArcanumSettingClamps.RateLimitWindowSeconds(rl.WindowSeconds);
+
+            int queueLimit = ArcanumSettingClamps.RateLimitQueueLimit(rl.QueueLimit);
+
             options.AddPolicy(ArcanumRateLimiterPolicyName, ctx =>
             {
-                IOptionsMonitor<ArcanumSettings> monitor = ctx.RequestServices
-                    .GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
-
-                HostRateLimitSettings rl = ArcanumRuntimeDefaults.HostRateLimit;
-
-                int permitLimit = ArcanumSettingClamps.RateLimitPermitLimit(rl.PermitLimit);
-
-                int windowSeconds = ArcanumSettingClamps.RateLimitWindowSeconds(rl.WindowSeconds);
-
-                int queueLimit = ArcanumSettingClamps.RateLimitQueueLimit(rl.QueueLimit);
-
                 string partitionKey = ResolveRateLimitPartitionKey(ctx);
 
                 return RateLimitPartition.GetFixedWindowLimiter(
@@ -270,6 +304,8 @@ public static class ApiBootstrapper
         services.AddArcanumDaemonServices(configuration);
 
         services.AddSingleton<Microsoft.AspNetCore.Hosting.IStartupFilter, ConfigurationStartupValidator>();
+
+        services.AddSingleton<ApiKeyAuthenticator>();
 
         services.AddSingleton<ApiKeyEndpointFilter>();
 
@@ -488,6 +524,15 @@ public static class ApiBootstrapper
     /// a self-referential feedback loop (every scrape incrementing the very counter it just read).
     /// Requests that match no route carry the fixed <see cref="UnmatchedRouteMetricLabel"/> sentinel — the
     /// raw path there is attacker-chosen and would grow the exporter's series map without bound.
+    /// The counter is emitted from a <c>finally</c> so a request whose pipeline throws is still counted:
+    /// <c>UseArcanumExceptionHandler</c> is registered upstream of this middleware, so an unhandled
+    /// exception unwinds through here <em>before</em> the handler writes its envelope, and a plain
+    /// post-<c>next()</c> record would drop every unhandled-exception response from the counter.
+    /// Because the terminal status has not been written yet on that path, a fault that escapes before the
+    /// response started is recorded as <c>500</c> — the status <c>UseExceptionHandler</c> writes by
+    /// default — rather than the not-yet-final <c>200</c> that would inflate the success distribution.
+    /// A fault after the response started keeps the status already on the wire, which is what the client
+    /// actually received.
     /// </summary>
     public static void UseArcanumMetrics(this WebApplication app)
     {
@@ -503,19 +548,94 @@ public static class ApiBootstrapper
 
             }
 
-            await next().ConfigureAwait(false);
+            bool completed = false;
 
-            string routeLabel = (context.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText
-                ?? UnmatchedRouteMetricLabel;
+            try
+            {
 
-            ArcanumMetrics.HttpRequestsTotal.Add(
-                1,
-                new KeyValuePair<string, object?>("endpoint", routeLabel),
-                new KeyValuePair<string, object?>("method", ResolveMethodMetricLabel(context.Request.Method)),
-                new KeyValuePair<string, object?>("status_code", context.Response.StatusCode.ToString(CultureInfo.InvariantCulture)));
+                await next().ConfigureAwait(false);
+
+                completed = true;
+
+            }
+            finally
+            {
+
+                string routeLabel = (context.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText
+                    ?? UnmatchedRouteMetricLabel;
+
+                int statusCode = completed || context.Response.HasStarted
+                    ? context.Response.StatusCode
+                    : StatusCodes.Status500InternalServerError;
+
+                ArcanumMetrics.HttpRequestsTotal.Add(
+                    1,
+                    new KeyValuePair<string, object?>("endpoint", routeLabel),
+                    new KeyValuePair<string, object?>("method", ResolveMethodMetricLabel(context.Request.Method)),
+                    new KeyValuePair<string, object?>("status_code", statusCode.ToString(CultureInfo.InvariantCulture)));
+
+            }
 
         });
     }
+
+    /// <summary>
+    /// Enforces the API key after routing has matched an endpoint but <b>before</b> the endpoint
+    /// delegate — and therefore before parameter binding — runs. Minimal-API endpoint filters run
+    /// after binding, so gating on <see cref="ApiKeyEndpointFilter"/> alone let an unauthenticated
+    /// caller have its body read, buffered and deserialized first: <c>POST /v1/files</c> raises the
+    /// multipart ceiling to the 513 MiB upload envelope, so anonymous requests spooled that much to
+    /// the temp filesystem before the 401, and a malformed body produced a binding 400 instead of the
+    /// 401 DESIGN §11.3 specifies. Installed from <see cref="MapArcanumEndpoints"/> rather than left
+    /// to each host so the gate cannot be forgotten by a composition root; it lands between the
+    /// framework's implicit <c>UseRouting</c> and <c>UseEndpoints</c>, and inside
+    /// <see cref="UseArcanumMetrics"/> so 401s still carry the matched route label.
+    /// </summary>
+    internal static void UseArcanumApiKeyAuthentication(this WebApplication app)
+    {
+        app.Use(static async (HttpContext context, Func<Task> next) =>
+        {
+
+            if (context.GetEndpoint()?.Metadata.GetMetadata<ApiKeyRequirementMetadata>() is null)
+            {
+
+                await next().ConfigureAwait(false);
+
+                return;
+
+            }
+
+            ApiKeyAuthenticator authenticator = context.RequestServices.GetRequiredService<ApiKeyAuthenticator>();
+
+            if (await authenticator.IsAuthorizedAsync(context).ConfigureAwait(false))
+            {
+
+                await next().ConfigureAwait(false);
+
+                return;
+
+            }
+
+            await ApiKeyAuthenticator.Unauthorized(context).ExecuteAsync(context).ConfigureAwait(false);
+
+        });
+    }
+
+    /// <summary>
+    /// Attaches both halves of the API-key gate — the metadata marker the pre-binding middleware reads
+    /// and <see cref="ApiKeyEndpointFilter"/> as defence in depth — so a route can never carry one
+    /// without the other.
+    /// </summary>
+    internal static RouteGroupBuilder RequireArcanumApiKey(this RouteGroupBuilder group)
+        => group
+            .AddEndpointFilter<ApiKeyEndpointFilter>()
+            .WithMetadata(ApiKeyRequirementMetadata.Instance);
+
+    /// <inheritdoc cref="RequireArcanumApiKey(RouteGroupBuilder)"/>
+    internal static RouteHandlerBuilder RequireArcanumApiKey(this RouteHandlerBuilder route)
+        => route
+            .AddEndpointFilter<ApiKeyEndpointFilter>()
+            .WithMetadata(ApiKeyRequirementMetadata.Instance);
 
     public static void MapArcanumEndpoints(this WebApplication app)
     {
@@ -523,9 +643,13 @@ public static class ApiBootstrapper
         // into live snapshots. Resolve it before any endpoint can emit metrics.
         _ = app.Services.GetRequiredService<TelemetryService>();
 
+        // Must be installed before the endpoints it guards can be reached; see the method's remarks
+        // for why the key cannot be checked by an endpoint filter alone.
+        app.UseArcanumApiKeyAuthentication();
+
         bool rateLimitEnabled = IsRateLimitEnabled(app.Configuration);
 
-        RouteGroupBuilder openAiV1 = app.MapGroup("/v1").AddEndpointFilter<ApiKeyEndpointFilter>();
+        RouteGroupBuilder openAiV1 = app.MapGroup("/v1").RequireArcanumApiKey();
 
         if (rateLimitEnabled)
         {
@@ -548,7 +672,7 @@ public static class ApiBootstrapper
 
         openAiV1.MapOpenAiV1Batches();
 
-        var apiGroup = app.MapGroup("/api").AddEndpointFilter<ApiKeyEndpointFilter>();
+        var apiGroup = app.MapGroup("/api").RequireArcanumApiKey();
 
         if (rateLimitEnabled)
         {
@@ -556,13 +680,13 @@ public static class ApiBootstrapper
         }
 
         // Canonical path stays GET /metrics (not /api/metrics). Auth is attached via
-        // ApiKeyEndpointFilter when RequireApiKey is effective (default true; false only on loopback).
+        // RequireArcanumApiKey when RequireApiKey is effective (default true; false only on loopback).
         RouteHandlerBuilder metrics = app.MapMetricsEndpoint();
 
         if (IsMetricsRequireApiKeyEffective(app.Configuration))
         {
 
-            metrics.AddEndpointFilter<ApiKeyEndpointFilter>();
+            metrics.RequireArcanumApiKey();
 
             if (rateLimitEnabled)
             {

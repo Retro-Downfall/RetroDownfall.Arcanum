@@ -12,17 +12,21 @@ public sealed class AskCommandBuildPromptTests
     public void BuildPrompt_joins_prompt_words()
     {
 
-        string prompt = AskCommand.BuildPrompt(["What", "time", "is", "it?"], escapedArguments: null);
+        string prompt = AskCommand.BuildPrompt(["What", "time", "is", "it?"]);
 
         Assert.Equal("What time is it?", prompt);
 
     }
 
+    /// <summary>
+    /// Tokens escaped after <c>--</c> are absorbed by the variadic prompt argument, so they reach
+    /// here as ordinary prompt words rather than through a second channel.
+    /// </summary>
     [Fact]
-    public void BuildPrompt_appends_remaining_raw_tokens_after_delimiter()
+    public void BuildPrompt_joins_tokens_escaped_after_the_delimiter()
     {
 
-        string prompt = AskCommand.BuildPrompt(["local"], escapedArguments: ["time", "now"]);
+        string prompt = AskCommand.BuildPrompt(["local", "time", "now"]);
 
         Assert.Equal("local time now", prompt);
 
@@ -32,7 +36,7 @@ public sealed class AskCommandBuildPromptTests
     public void BuildPrompt_skips_whitespace_only_tokens()
     {
 
-        string prompt = AskCommand.BuildPrompt(["  hello  ", "", "   "], escapedArguments: [" ", "world"]);
+        string prompt = AskCommand.BuildPrompt(["  hello  ", "", "   ", " ", "world"]);
 
         Assert.Equal("hello world", prompt);
 
@@ -42,7 +46,7 @@ public sealed class AskCommandBuildPromptTests
     public void BuildPrompt_returns_empty_when_no_tokens()
     {
 
-        string prompt = AskCommand.BuildPrompt([], escapedArguments: null);
+        string prompt = AskCommand.BuildPrompt([]);
 
         Assert.Equal(string.Empty, prompt);
 

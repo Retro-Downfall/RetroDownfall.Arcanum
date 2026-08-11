@@ -5,6 +5,8 @@ using Microsoft.Extensions.Configuration;
 using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using Serilog.Core;
+using Serilog.Events;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
@@ -239,6 +241,65 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
 
     }
 
+    /// <summary>
+    /// The sanitized failure string names the file but not the cause, so the underlying
+    /// <see cref="CryptographicException"/> is the only thing that tells an operator whether the PFX
+    /// was locked by the wrong password, corrupt, or rejected by the platform key store. The Kestrel
+    /// bind is the sole production caller of the loader, so if it does not hand the loader a logger
+    /// that exception is never written anywhere.
+    /// </summary>
+    [Fact]
+    public void Configure_HttpsEnabledWithWrongPassword_LogsUnderlyingException()
+    {
+
+        (string path, _) = CreatePfx(password: "correct");
+
+        System.Environment.SetEnvironmentVariable(PasswordVariable, "wrong");
+
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Host:Https:Enabled"] = "true",
+                ["Arcanum:Host:Https:Port"] = "5443",
+                ["Arcanum:Host:Https:CertificatePath"] = path,
+                ["Arcanum:Host:Https:CertificatePasswordEnvironmentVariable"] = PasswordVariable,
+            })
+            .Build();
+
+        KestrelServerOptions options = new();
+
+        CapturingSink sink = new();
+
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+
+        try
+        {
+
+            _ = Assert.Throws<InvalidOperationException>(
+                () => ArcanumKestrelConfigurator.Configure(options, configuration, listenAny: false));
+
+        }
+        finally
+        {
+
+            Serilog.Log.Logger = previous;
+
+        }
+
+        LogEvent? loadFailure = sink.Events.FirstOrDefault(logEvent => logEvent.Exception is not null);
+
+        Assert.NotNull(loadFailure);
+
+        Assert.Equal(LogEventLevel.Error, loadFailure.Level);
+
+        Assert.Contains("PFX", loadFailure.MessageTemplate.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("correct", loadFailure.RenderMessage(), StringComparison.Ordinal);
+
+    }
+
     public void Dispose()
     {
 
@@ -324,6 +385,42 @@ public sealed class HttpsCertificateLoaderTests : IDisposable
         File.WriteAllText(keyPath, rsa.ExportRSAPrivateKeyPem());
 
         return (certPath, keyPath);
+
+    }
+
+    private sealed class CapturingSink : ILogEventSink
+    {
+
+        private readonly List<LogEvent> _events = [];
+
+        public IReadOnlyList<LogEvent> Events
+        {
+
+            get
+            {
+
+                lock (_events)
+                {
+
+                    return [.. _events];
+
+                }
+
+            }
+
+        }
+
+        public void Emit(LogEvent logEvent)
+        {
+
+            lock (_events)
+            {
+
+                _events.Add(logEvent);
+
+            }
+
+        }
 
     }
 

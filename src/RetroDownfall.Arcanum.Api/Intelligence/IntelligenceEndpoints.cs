@@ -148,7 +148,7 @@ internal static class IntelligenceEndpoints
                     || string.IsNullOrWhiteSpace(body.Answer))
                 {
                     Result<bool> invalid = Result<bool>.Failure(
-                        new Error("Validation.InvalidHumanResponse", "promptId and answer are required."));
+                        new Error(ErrorCodes.Validation.InvalidHumanResponse, "promptId and answer are required."));
 
                     return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
                 }
@@ -195,12 +195,33 @@ internal static class IntelligenceEndpoints
 
             PingRequest? body;
 
+            // ReadFromJsonAsync raises InvalidOperationException — not JsonException — for a missing
+            // or non-JSON Content-Type. Left uncaught it escapes to ArcanumExceptionHandler and a
+            // routine client mistake becomes a 500 Hub.Unhandled with an Error-level stack trace,
+            // where every ApiRequestJson-based endpoint answers the same mistake with 415.
+            if (!httpContext.Request.HasJsonContentType())
+            {
+
+                await WriteUnsupportedMediaTypeAsync(httpContext, ct).ConfigureAwait(false);
+
+                return;
+
+            }
+
             try
             {
 
                 body = await httpContext.Request
                     .ReadFromJsonAsync(ArcanumJsonContext.Default.PingRequest, ct)
                     .ConfigureAwait(false);
+
+            }
+            catch (InvalidOperationException)
+            {
+
+                await WriteUnsupportedMediaTypeAsync(httpContext, ct).ConfigureAwait(false);
+
+                return;
 
             }
             catch (JsonException)
@@ -505,6 +526,29 @@ internal static class IntelligenceEndpoints
             .WithName("PostIntelligenceContextInspect");
 
         return apiGroup;
+    }
+
+    /// <summary>
+    /// The streaming handler owns its response, so it writes the same 415 envelope
+    /// <see cref="ApiRequestJson.UnsupportedMediaTypeResult"/> produces for the buffered endpoints.
+    /// </summary>
+    private static async Task WriteUnsupportedMediaTypeAsync(
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+
+        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+        httpContext.Response.StatusCode = StatusCodes.Status415UnsupportedMediaType;
+
+        await httpContext.Response.WriteAsJsonAsync(
+            ApiResponse<string>.FromResult(
+                Result<string>.Failure(
+                    new Error(ErrorCodes.Validation.UnsupportedMediaType, ApiRequestJson.UnsupportedMediaTypeMessage)),
+                traceId),
+            ArcanumJsonContext.Default.ApiResponseString,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
     }
 
     /// <summary>

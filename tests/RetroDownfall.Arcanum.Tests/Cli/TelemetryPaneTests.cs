@@ -2,7 +2,6 @@ using RetroDownfall.Arcanum.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Storage;
-using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Core.Weave;
 using Xunit;
@@ -16,19 +15,6 @@ public class TelemetryPaneTests
     {
         TelemetryPane pane = new();
         Assert.False(pane.CanFocus);
-    }
-
-    [Fact]
-    public void Snapshot_HoldsAggregates()
-    {
-        TelemetrySnapshot snap = new(
-            InputTokens: 100, InputCacheHits: 30, InputCacheMisses: 70,
-            OutputTokens: 50, OutputReasoningTokens: 10, OutputStandardTokens: 40,
-            EstimatedCostUsd: 0.001m, CumulativeLatency: TimeSpan.FromMilliseconds(120),
-            TimeToFirstToken: TimeSpan.FromMilliseconds(45));
-
-        Assert.Equal(100, snap.InputTokens);
-        Assert.Equal(30, snap.InputCacheHits);
     }
 
     [Fact]

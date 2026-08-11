@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Compendium.Ux.Models;
@@ -224,6 +225,71 @@ public sealed class FamiliarProviderEditorTests
         Assert.Contains(AiProviderKind.ClaudeCodeCli, Enum.GetValues<AiProviderKind>());
 
         Assert.Contains(AiProviderKind.CodexCli, Enum.GetValues<AiProviderKind>());
+
+    }
+
+    /// <summary>
+    /// The section is never constructed by hand in the shipped app — the window builds it. If the
+    /// composed editor keeps the probe client to itself, every Familiar row gets a null one and
+    /// Re-probe returns before doing anything: no status, no remediation, no request, forever.
+    /// </summary>
+    [Fact]
+    public async Task A_composed_editor_hands_the_probe_client_to_every_familiar_row()
+    {
+
+        ConfigurationViewModel editor = new(
+            new StubConfigurationStore(new ArcanumSettings
+            {
+                Providers =
+                [
+                    new ProviderSettings
+                    {
+                        Name = "ClaudeCode-subscription",
+                        Type = AiProviderKind.ClaudeCodeCli,
+                    },
+                ],
+            }),
+            new StubDialogService(),
+            new SynchronousUiDispatcher(),
+            NullLogger<ConfigurationViewModel>.Instance,
+            probeClient: new UnavailableHostProbeClient());
+
+        ProvidersSectionViewModel.ProviderViewModel row = Assert.Single(editor.Providers.Providers);
+
+        await row.ProbeCommand.ExecuteAsync(null);
+
+        Assert.Contains("not running", row.ProbeStatus, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+    private sealed class StubConfigurationStore(ArcanumSettings settings) : IArcanumConfigurationStore
+    {
+
+        public string ConfigurationFilePath => "arcanum.json";
+
+        /// <summary>Never raised: this stub owns no file to watch.</summary>
+        public event EventHandler? ExternalChange
+        {
+
+            add { }
+
+            remove { }
+
+        }
+
+        public DateTimeOffset? GetLastWriteTimeUtc() => null;
+
+        public Task<ArcanumSettings> ReadAsync(CancellationToken ct = default) =>
+            Task.FromResult(settings);
+
+        public Task<ConfigurationWriteResult> WriteAsync(
+            ArcanumSettings updated,
+            CancellationToken ct = default) =>
+            Task.FromResult(new ConfigurationWriteResult(true, [], null));
+
+        public void Dispose()
+        {
+        }
 
     }
 

@@ -488,8 +488,14 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(stagingParent);
 
-        OwnedTemporaryDirectory staging = OwnedTemporaryDirectory.Create(
-            Path.Combine(stagingParent, BackupRestoreJournal.CreateStagingName()));
+        string stagingPath = Path.Combine(stagingParent, BackupRestoreJournal.CreateStagingName());
+
+        // Recorded before the root exists, and beside the live installation rather than inside it: a
+        // new-profile restore stages beside its destination, where the startup sweep of the live
+        // root's parent would never look for it.
+        BackupRestoreStagingIndex.Add(liveRoot, stagingPath);
+
+        OwnedTemporaryDirectory staging = OwnedTemporaryDirectory.Create(stagingPath);
 
         string stagedRoot = Path.Combine(staging.Path, BackupRestoreJournal.StagedDirectoryName);
 
@@ -607,9 +613,45 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
                 _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.SafetyPoint);
 
-                safetyBackupPath = await CreateSafetyBackupAsync(
+                BackupCreateResult? safety = await CreateSafetyBackupAsync(
                     recoveryPassphrase,
                     cancellationToken).ConfigureAwait(false);
+
+                // The safety backup is the recovery point the operator asked for, so a create that
+                // did not complete stops the restore here — before the commit displaces the live
+                // installation, which the cleanup below then removes. Nothing is destroyed yet.
+                if (safety is not { Status: BackupCreateStatus.Complete, ArchivePath: { } archived }
+                    || string.IsNullOrWhiteSpace(archived))
+                {
+
+                    Record(
+                        phases,
+                        BackupRestorePhase.SafetyPoint,
+                        "The pre-restore safety backup did not complete; the restore stopped before "
+                        + "any destructive step.");
+
+                    List<BackupVerifyIssue> safetyIssues =
+                    [
+                        new BackupVerifyIssue(
+                            "backup.restore_safety_backup_failed",
+                            "The requested pre-restore safety backup did not complete, so nothing was "
+                            + "displaced and the current installation is unchanged. Resolve the backup "
+                            + "failure, or re-run with the safety backup declined to accept the "
+                            + "displaced installation as the only recovery point."),
+                    ];
+
+                    if (safety is not null)
+                    {
+
+                        safetyIssues.AddRange(safety.Issues);
+
+                    }
+
+                    return Rejected(operationId, effectivePlan, phases, safetyIssues);
+
+                }
+
+                safetyBackupPath = archived;
 
                 journal = BackupRestoreJournal.Write(
                     staging.Path,
@@ -618,9 +660,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 Record(
                     phases,
                     BackupRestorePhase.SafetyPoint,
-                    safetyBackupPath is null
-                        ? "A pre-restore safety backup could not be produced; the displaced tree is the only recovery point."
-                        : $"Pre-restore safety backup written to {safetyBackupPath}.");
+                    $"Pre-restore safety backup written to {safetyBackupPath}.");
 
             }
 
@@ -868,6 +908,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 BackupRestoreJournal.Delete(staging.Path);
 
                 _ = staging.TryDelete();
+
+                BackupRestoreStagingIndex.Remove(liveRoot, staging.Path);
 
             }
 
@@ -1524,7 +1566,12 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
     }
 
-    private async Task<string?> CreateSafetyBackupAsync(
+    /// <summary>
+    /// Produces the pre-restore safety backup, returning the whole create result — status and
+    /// issues — so the caller can refuse the restore on anything short of a complete archive rather
+    /// than commit against a recovery point that was never written.
+    /// </summary>
+    private async Task<BackupCreateResult?> CreateSafetyBackupAsync(
         ReadOnlyMemory<char> recoveryPassphrase,
         CancellationToken cancellationToken)
     {
@@ -1540,7 +1587,7 @@ internal sealed class BackupRestoreService : IBackupRestoreService
             _paths.BackupsDirectory,
             $"arcanum-pre-restore-{_timeProvider.GetUtcNow():yyyyMMddTHHmmssfffZ}{BackupArchiveFormat.Extension}");
 
-        BackupCreateResult created = await _safetyBackupFactory()
+        return await _safetyBackupFactory()
             .CreateAsync(
                 new BackupCreateRequest(
                     new BackupPlanRequest(BackupScope.Full, SessionId: null, Include: [], Exclude: []),
@@ -1549,10 +1596,6 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 recoveryPassphrase,
                 cancellationToken)
             .ConfigureAwait(false);
-
-        return created.Status == BackupCreateStatus.Complete
-            ? created.ArchivePath
-            : null;
 
     }
 

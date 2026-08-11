@@ -60,6 +60,8 @@ internal sealed class WorkspaceSearchEngine
 
     private const int ResultPageSize = 256;
 
+    private static ReadOnlySpan<byte> Utf8Preamble => [0xEF, 0xBB, 0xBF];
+
     private readonly int _maxPatternChars;
 
     private readonly int _regexTimeoutMilliseconds;
@@ -449,12 +451,14 @@ internal sealed class WorkspaceSearchEngine
 
                     Checkpoint();
 
+                    SkipUtf8Preamble(stream);
+
                     using StreamReader reader = new(
                         stream,
                         new System.Text.UTF8Encoding(
                             encoderShouldEmitUTF8Identifier: false,
                             throwOnInvalidBytes: true),
-                        detectEncodingFromByteOrderMarks: true,
+                        detectEncodingFromByteOrderMarks: false,
                         bufferSize: ReadBufferSize,
                         leaveOpen: true);
 
@@ -786,6 +790,29 @@ internal sealed class WorkspaceSearchEngine
 
     }
 
+    /// <summary>
+    /// Consumes a single leading UTF-8 preamble so the strict UTF-8 decoder never sees it, mirroring
+    /// <see cref="WorkspaceTextFile"/>. Byte-order marks are never allowed to substitute a
+    /// replacement-fallback encoding for the strict decoder, so UTF-16/UTF-32 input is rejected as binary.
+    /// </summary>
+    private static void SkipUtf8Preamble(FileStream stream)
+    {
+
+        Span<byte> head = stackalloc byte[3];
+
+        int read = stream.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
+
+        if (read == head.Length && head.SequenceEqual(Utf8Preamble))
+        {
+
+            return;
+
+        }
+
+        stream.Position = 0;
+
+    }
+
     private static bool TryValidateSearchFile(
         string workspaceRoot,
         string absolutePath,
@@ -970,7 +997,6 @@ internal sealed class WorkspaceSearchEngine
 
         int desiredStart = matchIndex - Math.Max(1, (_maxPreviewChars - matchLength) / 2);
         int start = Math.Clamp(desiredStart, 0, line.Length - _maxPreviewChars);
-        int end = start + _maxPreviewChars;
 
         if (start > 0 && char.IsLowSurrogate(line[start]))
         {
@@ -979,6 +1005,10 @@ internal sealed class WorkspaceSearchEngine
 
         }
 
+        // The budget is measured from the adjusted start, so stepping past a split pair never costs a
+        // character of the preview.
+        int end = Math.Min(line.Length, start + _maxPreviewChars);
+
         if (end < line.Length && end > start && char.IsHighSurrogate(line[end - 1]))
         {
 
@@ -986,25 +1016,51 @@ internal sealed class WorkspaceSearchEngine
 
         }
 
-        string preview = line[start..end].ToString();
+        ReadOnlySpan<char> window = line[start..end];
+        bool leading = start > 0;
+        bool trailing = end < line.Length;
 
-        if (start > 0 && preview.Length > 0)
+        // Each ellipsis replaces a whole code point: taking a single char would strand the other half
+        // of an astral pair and emit an unpaired surrogate.
+        if (leading && window.Length > 0)
         {
 
-            preview = $"…{preview[1..]}";
+            window = window[LeadingCodePointLength(window)..];
 
         }
 
-        if (end < line.Length && preview.Length > 0)
+        if (trailing && window.Length > 0)
         {
 
-            preview = $"{preview[..^1]}…";
+            window = window[..^TrailingCodePointLength(window)];
 
         }
 
-        return preview;
+        return leading
+            ? trailing
+                ? $"…{window}…"
+                : $"…{window}"
+            : trailing
+                ? $"{window}…"
+                : window.ToString();
 
     }
+
+    private static int LeadingCodePointLength(
+        ReadOnlySpan<char> value) =>
+        value.Length > 1
+        && char.IsHighSurrogate(value[0])
+        && char.IsLowSurrogate(value[1])
+            ? 2
+            : 1;
+
+    private static int TrailingCodePointLength(
+        ReadOnlySpan<char> value) =>
+        value.Length > 1
+        && char.IsLowSurrogate(value[^1])
+        && char.IsHighSurrogate(value[^2])
+            ? 2
+            : 1;
 
     private static bool MatchesFilters(
         string relativePath,

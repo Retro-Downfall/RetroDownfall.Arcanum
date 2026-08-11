@@ -125,6 +125,148 @@ public sealed class InferenceContextBuilderTests
 
     }
 
+    /// <summary>
+    /// Read-time compression rebuilds the transcript from Grimoire entries, which store text only.
+    /// Scrying foci are ephemeral current-turn content threaded onto the last message, so a rebuild
+    /// that does not re-attach them silently sends a vision turn with no image (DESIGN §10.2.4).
+    /// </summary>
+    [Fact]
+    public void TryApplyContextCompressionIfNeeded_WhenCompressed_ReAttachesScryingFoci()
+    {
+
+        InferenceContextBuilder builder = CreateBuilder(new NullGrimoireRepository());
+
+        Session thread = CreateSummarizedSession();
+
+        ScryingFocusDto focus = new(Convert.ToBase64String([1, 2, 3, 4]), "image/png");
+
+        PingRequest request = new(
+            Prompt: "what is in this image?",
+            Model: "m",
+            WorkingDirectory: string.Empty,
+            SessionId: thread.Id,
+            ScryingFoci: [focus]);
+
+        List<MeAiChatMessage> messages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
+            request,
+            thread,
+            request.Prompt);
+
+        Assert.Single(messages[^1].Contents.OfType<DataContent>());
+
+        using ChatClientLease lease = CreateLease();
+
+        (bool compressed, List<MeAiChatMessage> rebuilt) = builder.TryApplyContextCompressionIfNeeded(
+            new ContextCompressionRequest
+            {
+
+                Request = request,
+
+                Messages = messages,
+
+                Thread = thread,
+
+                NewUserPrompt = request.Prompt,
+
+                Lease = lease,
+
+                ChatOptions = new ChatOptions(),
+
+                ScryingFoci = request.ScryingFoci,
+
+            });
+
+        Assert.True(compressed);
+
+        DataContent image = Assert.Single(rebuilt[^1].Contents.OfType<DataContent>());
+
+        Assert.Equal("image/png", image.MediaType);
+
+    }
+
+    private static Session CreateSummarizedSession()
+    {
+
+        DateTimeOffset start = DateTimeOffset.UtcNow.AddHours(-1);
+
+        Session thread = new()
+        {
+
+            Id = Guid.NewGuid(),
+
+            Summary = "The campaign so far.",
+
+            LastSummarizedMessageAt = start.UtcDateTime,
+
+        };
+
+        for (int index = 0; index < 40; index++)
+        {
+
+            thread.Entries.Add(new Entry
+            {
+
+                Role = index % 2 == 0 ? MessageRole.User : MessageRole.Assistant,
+
+                Content = $"turn {index}: " + new string('w', 256),
+
+                CreatedAt = start.AddMinutes(index + 1),
+
+            });
+
+        }
+
+        return thread;
+
+    }
+
+    private static ChatClientLease CreateLease() =>
+        new(
+            new NullChatClient(),
+            new ProviderSettings
+            {
+
+                Name = "test",
+
+                Type = AiProviderKind.OpenAICompatible,
+
+                Endpoint = "http://localhost",
+
+                ContextWindowLimit = 256,
+
+            },
+            "m",
+            ownedHttpClient: null);
+
+    private sealed class NullChatClient : IChatClient
+    {
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<MeAiChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<MeAiChatMessage> messages,
+            ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+
+            await Task.CompletedTask;
+
+            yield break;
+
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+
+    }
+
     private static InferenceContextBuilder CreateBuilder(IGrimoireRepository grimoire)
     {
 

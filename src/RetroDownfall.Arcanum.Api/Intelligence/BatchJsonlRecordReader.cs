@@ -2,6 +2,8 @@ using System.Buffers;
 
 using System.Runtime.CompilerServices;
 
+using System.Text;
+
 using System.Text.Json;
 
 using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
@@ -355,7 +357,7 @@ internal static class BatchJsonlRecordReader
 
                     request = JsonSerializer.Deserialize(
 
-                        _buffer.AsSpan(0, _bufferedBytes),
+                        TrimUtf8Preamble(_buffer.AsSpan(0, _bufferedBytes)),
 
                         ArcanumJsonContext.Default.BatchJsonlRequestLine);
 
@@ -558,6 +560,19 @@ internal static class BatchJsonlRecordReader
             }
 
         }
+
+        /// <summary>
+        /// Matches the BOM handling that <see cref="JsonSerializer.DeserializeAsync"/> already
+        /// applies on the spill path, so an identical record parses the same way whether or not it
+        /// fit in <see cref="InMemoryByteLimit"/>.
+        /// </summary>
+        private static ReadOnlySpan<byte> TrimUtf8Preamble(ReadOnlySpan<byte> bytes) =>
+
+            bytes.StartsWith(Encoding.UTF8.Preamble)
+
+                ? bytes[Encoding.UTF8.Preamble.Length..]
+
+                : bytes;
 
         private static bool ContainsNonWhitespace(ReadOnlySpan<byte> bytes)
 

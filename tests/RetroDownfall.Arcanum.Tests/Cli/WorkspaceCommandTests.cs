@@ -300,6 +300,57 @@ public sealed class WorkspaceCommandTests
 
     [Fact]
 
+    public void Workspace_read_emits_file_content_verbatim_without_console_reflow()
+    {
+
+        string content = string.Join(
+            "\n",
+            new string('a', 100),
+            "{ \"key\": \"" + new string('b', 120) + "\" }",
+            "short\tline\twith\ttabs")
+            + "\r\ncrlf tail\r\n";
+
+        RecordingHandler handler = new(request =>
+        {
+
+            if (request.RequestUri!.AbsolutePath.EndsWith(
+                "/files/contents",
+                StringComparison.Ordinal))
+            {
+
+                FileReadResult read = new(
+                    "src/App.cs",
+                    content,
+                    "utf-8",
+                    content.Length,
+                    DateTimeOffset.Parse("2026-07-31T12:00:00Z"));
+
+                return CreateResponse(
+                    new ApiResponse<FileReadResult>(read, true, null),
+                    ArcanumJsonContext.Default.ApiResponseFileReadResult);
+
+            }
+
+
+            return CreateWorkspaceApiResponse(request);
+
+        });
+
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["workspace", "read", "src/App.cs", "--workspace", "ws-demo"]);
+
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains(content, result.Output, StringComparison.Ordinal);
+
+    }
+
+
+    [Fact]
+
     public void Workspace_current_reports_independent_campaign_and_workspace_mapping()
     {
 
@@ -396,6 +447,114 @@ public sealed class WorkspaceCommandTests
         Assert.Contains("campaign create", result.Output, StringComparison.OrdinalIgnoreCase);
 
         Assert.Contains("server-path", result.Output, StringComparison.OrdinalIgnoreCase);
+
+    }
+
+
+    /// <summary>
+    /// A host that keeps handing back the same continuation cursor must stop the walk, not make the
+    /// command re-print the same page until the operator interrupts it.
+    /// </summary>
+    [Fact]
+
+    public void Workspace_tree_stops_when_the_host_repeats_a_continuation_cursor()
+    {
+
+        const int safetyValve = 12;
+
+        int calls = 0;
+
+        RecordingHandler handler = new(request =>
+        {
+
+            string path = request.RequestUri!.AbsolutePath;
+
+            if (path == "/api/workspaces")
+            {
+
+                return CreateResponse(
+                    new ApiResponse<WorkspaceInfo[]>([Workspace()], true, null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray);
+
+            }
+
+            calls++;
+
+            if (calls > safetyValve)
+            {
+
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+
+            }
+
+            return CreateResponse(
+                new ApiResponse<FileListResult>(
+                    new FileListResult([], null, "stuck-cursor"),
+                    true,
+                    null),
+                ArcanumJsonContext.Default.ApiResponseFileListResult);
+
+        });
+
+        CliTestResult result = RunCommand(handler, ["workspace", "tree", "ws-demo"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        Assert.Equal(2, calls);
+
+    }
+
+
+    /// <summary>
+    /// The same invariant for offset paging: a non-advancing offset must fail rather than grow the
+    /// accumulated list until the process runs out of memory.
+    /// </summary>
+    [Fact]
+
+    public void Workspace_current_stops_when_the_host_stops_advancing_the_campaign_offset()
+    {
+
+        const int safetyValve = 12;
+
+        int calls = 0;
+
+        RecordingHandler handler = new(request =>
+        {
+
+            string path = request.RequestUri!.AbsolutePath;
+
+            if (path == "/api/workspaces")
+            {
+
+                return CreateResponse(
+                    new ApiResponse<WorkspaceInfo[]>([Workspace()], true, null),
+                    ArcanumJsonContext.Default.ApiResponseWorkspaceInfoArray);
+
+            }
+
+            calls++;
+
+            if (calls > safetyValve)
+            {
+
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+
+            }
+
+            return CreateResponse(
+                new ApiResponse<ListPageResult<CampaignDto>>(
+                    new ListPageResult<CampaignDto>([], true, 0),
+                    true,
+                    null),
+                ArcanumJsonContext.Default.ApiResponseListPageResultCampaignDto);
+
+        });
+
+        CliTestResult result = RunCommand(handler, ["workspace", "current"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+
+        Assert.Equal(1, calls);
 
     }
 

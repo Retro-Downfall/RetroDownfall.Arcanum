@@ -266,24 +266,40 @@ internal sealed class TurnAccountingHandle
                 new TurnAccountingHandle(budget, runId, reservationId: null, reservationActive: false, ownsLifecycle: true));
         }
 
-        ModelPricingEntry entry = pricing.ResolveForModel(model);
+        Result<BudgetReservation> reserved;
 
-        decimal reservedUsd = reservedUsdOverride
-            ?? BudgetReservationService.EstimateWorstCaseTurnUsd(
-                entry,
-                maxOutputTokens,
-                reasoningBudgetTokens);
+        // The run row is already open. Only BudgetExceededException comes back as a Result failure;
+        // cancellation and every other store fault propagate, and an unclosed row stays Running
+        // forever — there is no expiry sweep for runs the way there is for reservations, and
+        // retention pruning treats a Running run as an active session.
+        try
+        {
+            ModelPricingEntry entry = pricing.ResolveForModel(model);
 
-        string period = BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow);
+            decimal reservedUsd = reservedUsdOverride
+                ?? BudgetReservationService.EstimateWorstCaseTurnUsd(
+                    entry,
+                    maxOutputTokens,
+                    reasoningBudgetTokens);
 
-        Result<BudgetReservation> reserved = await budgetReservations.ReserveAsync(
-                new BudgetReservationRequest(
-                    runId,
-                    reservedUsd,
-                    ExpiresAt: DateTimeOffset.UtcNow.AddHours(1),
-                    period),
-                cancellationToken)
-            .ConfigureAwait(false);
+            string period = BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow);
+
+            reserved = await budgetReservations.ReserveAsync(
+                    new BudgetReservationRequest(
+                        runId,
+                        reservedUsd,
+                        ExpiresAt: DateTimeOffset.UtcNow.AddHours(1),
+                        period),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            await turnRunWriter.CompleteRunAsync(runId, InferenceRunStatus.Failed, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            throw;
+        }
 
         if (reserved.IsFailure)
         {

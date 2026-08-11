@@ -152,6 +152,63 @@ public sealed class CappedChildProcessRunnerTests
     }
 
     [Fact]
+    public async Task Abandoned_output_reader_spill_is_deleted_when_that_reader_completes()
+    {
+
+        // Cancellation/timeout paths give up on a stream reader after five seconds, which happens
+        // when an orphaned descendant still holds the inherited pipe open. The reader keeps running
+        // with its spill writer open, and it may not even have crossed the preview cap yet — so the
+        // deletion the runner performs at that moment cannot be the only one, or the artifact
+        // outlives the run inside the per-connection temporary root.
+        string spillDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-command-output-orphan-test-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(spillDirectory);
+
+        try
+        {
+
+            string spillPath = Path.Combine(
+                spillDirectory,
+                "stdout-" + Guid.NewGuid().ToString("N") + ".utf8");
+
+            TaskCompletionSource<CappedStreamOutput> abandonedReader = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            CappedChildProcessRunner.DeleteOutputSpillWhenReaderCompletes(
+                abandonedReader.Task,
+                spillPath);
+
+            await File.WriteAllTextAsync(spillPath, "output written after the runner gave up");
+
+            abandonedReader.SetResult(
+                new CappedStreamOutput(
+                    string.Empty,
+                    Truncated: true,
+                    spillPath,
+                    TotalBytes: 39L));
+
+            for (int attempt = 0; attempt < 100 && File.Exists(spillPath); attempt++)
+            {
+
+                await Task.Delay(50);
+
+            }
+
+            Assert.Empty(Directory.EnumerateFiles(spillDirectory));
+
+        }
+        finally
+        {
+
+            Directory.Delete(spillDirectory, recursive: true);
+
+        }
+
+    }
+
+    [Fact]
     public async Task RunAsync_spill_storage_failure_kills_process_instead_of_discarding_output()
     {
 

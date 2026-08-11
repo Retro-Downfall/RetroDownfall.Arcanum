@@ -12,7 +12,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// Windows-only trusted broker. It waits for the host to place it in the invocation Job Object,
 /// grants a fresh AppContainer SID only the declared roots, creates the target suspended with
 /// PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, then resumes it. ACLs and the profile are restored
-/// in a finally block.
+/// in a finally block, and every one of those undo steps is journaled to an owner-only host-owned
+/// file first: a timeout, cancellation, or Job Object kill terminates this process with
+/// TerminateProcess, which does not run the finally, and the host replays the journal instead.
 /// </summary>
 [SupportedOSPlatform("windows")]
 [ExcludeFromCodeCoverage] // Windows kernel/ACL integration is exercised by Windows CI.
@@ -29,12 +31,15 @@ internal static partial class WindowsAppContainerLauncher
     {
         if (!OperatingSystem.IsWindows()
             || string.IsNullOrWhiteSpace(payload.WindowsProfileName)
+            || string.IsNullOrWhiteSpace(payload.WindowsRestoreJournalPath)
             || string.IsNullOrWhiteSpace(payload.Target))
         {
             return 70;
         }
 
+        string journalPath = payload.WindowsRestoreJournalPath;
         nint sid = 0;
+        bool profileCreated = false;
         List<(string Path, byte[] Descriptor)> aclBackups = [];
         try
         {
@@ -43,6 +48,9 @@ internal static partial class WindowsAppContainerLauncher
                 return 71;
             }
 
+            // Journal before creating, not after: a kill in that window would otherwise strand a
+            // registered profile that nothing remembers the name of.
+            WindowsAppContainerRestoreJournal.RecordProfile(journalPath, payload.WindowsProfileName);
             int profileResult = CreateAppContainerProfile(
                 payload.WindowsProfileName,
                 payload.WindowsProfileName,
@@ -50,7 +58,8 @@ internal static partial class WindowsAppContainerLauncher
                 0,
                 0,
                 out sid);
-            if (profileResult != 0 || sid == 0)
+            profileCreated = profileResult == 0 && sid != 0;
+            if (!profileCreated)
             {
                 return 72;
             }
@@ -58,11 +67,11 @@ internal static partial class WindowsAppContainerLauncher
             SecurityIdentifier identity = new(sid);
             foreach (string root in payload.ReadWriteRoots)
             {
-                Grant(root, identity, FileSystemRights.Modify | FileSystemRights.ReadAndExecute, aclBackups);
+                Grant(journalPath, root, identity, FileSystemRights.Modify | FileSystemRights.ReadAndExecute, aclBackups);
             }
             foreach (string root in payload.ReadOnlyRoots.Concat(payload.ReadExecuteRoots))
             {
-                Grant(root, identity, FileSystemRights.ReadAndExecute, aclBackups);
+                Grant(journalPath, root, identity, FileSystemRights.ReadAndExecute, aclBackups);
             }
 
             return LaunchSuspended(payload, sid);
@@ -73,19 +82,19 @@ internal static partial class WindowsAppContainerLauncher
         }
         finally
         {
+            bool undone = true;
             for (int index = aclBackups.Count - 1; index >= 0; index--)
             {
                 try
                 {
                     (string path, byte[] descriptor) = aclBackups[index];
-                    DirectorySecurity restored = new();
-                    restored.SetSecurityDescriptorBinaryForm(descriptor);
-                    new DirectoryInfo(path).SetAccessControl(restored);
+                    undone &= RestoreDirectorySecurity(path, descriptor);
                 }
                 catch (Exception)
                 {
                     // Failures are intentionally not hidden from health: the next capability probe
                     // remains independent. A random per-run SID prevents reuse by later children.
+                    undone = false;
                 }
             }
 
@@ -93,14 +102,40 @@ internal static partial class WindowsAppContainerLauncher
             {
                 FreeSid(sid);
             }
-            if (!string.IsNullOrWhiteSpace(payload.WindowsProfileName))
+            if (profileCreated)
             {
-                _ = DeleteAppContainerProfile(payload.WindowsProfileName);
+                undone &= DeleteProfile(payload.WindowsProfileName);
+            }
+
+            // Only a complete self-restore retires the journal. Anything left is the host's to undo.
+            if (undone)
+            {
+                try
+                {
+                    WindowsAppContainerRestoreJournal.Clear(journalPath);
+                }
+                catch (Exception)
+                {
+                }
             }
         }
     }
 
+    /// <summary>Reinstates a directory's original security descriptor. Host replay uses this too.</summary>
+    internal static bool RestoreDirectorySecurity(string path, byte[] descriptor)
+    {
+        DirectorySecurity restored = new();
+        restored.SetSecurityDescriptorBinaryForm(descriptor);
+        new DirectoryInfo(path).SetAccessControl(restored);
+        return true;
+    }
+
+    /// <summary>Removes a per-run AppContainer profile. Host replay uses this too.</summary>
+    internal static bool DeleteProfile(string profileName) =>
+        DeleteAppContainerProfile(profileName) == 0;
+
     private static void Grant(
+        string journalPath,
         string path,
         SecurityIdentifier identity,
         FileSystemRights rights,
@@ -115,7 +150,13 @@ internal static partial class WindowsAppContainerLauncher
 
         DirectoryInfo directory = new(path);
         DirectorySecurity security = directory.GetAccessControl(AccessControlSections.Access);
-        backups.Add((path, security.GetSecurityDescriptorBinaryForm()));
+        byte[] descriptor = security.GetSecurityDescriptorBinaryForm();
+
+        // The mutation below outlives this process when it is terminated, so the undo record has to
+        // reach disk first; a failure here throws and fails the run closed rather than granting an
+        // ACE nothing can take back.
+        WindowsAppContainerRestoreJournal.RecordGrant(journalPath, path, descriptor);
+        backups.Add((path, descriptor));
         security.AddAccessRule(new FileSystemAccessRule(
             identity,
             rights,

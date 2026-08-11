@@ -15,6 +15,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 [JsonSerializable(typeof(PortableBackupFileKey[]))]
 [JsonSerializable(typeof(BackupOperationCheckpoint))]
 [JsonSerializable(typeof(BackupRestoreJournalRecord))]
+[JsonSerializable(typeof(BackupRestoreStagingIndexRecord))]
 internal sealed partial class BackupJsonContext : JsonSerializerContext;
 
 internal sealed record BackupOperationCheckpoint(

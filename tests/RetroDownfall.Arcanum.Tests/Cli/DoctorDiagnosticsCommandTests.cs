@@ -515,6 +515,41 @@ public sealed class DoctorDiagnosticsCommandTests : IDisposable
 
     }
 
+    /// <summary>
+    /// The plan shown before an <c>--apply</c> confirmation is built from the same request, so it
+    /// must inherit <c>--only</c>/<c>--skip</c>. Discarding them there re-runs exactly the probes
+    /// per-check gating exists to avoid, and does it before the operator has even agreed.
+    /// </summary>
+    [Fact]
+    public async Task The_confirmation_preview_honours_the_filters_the_operator_supplied()
+    {
+
+        ServiceCollection services = BuildServices();
+
+        services.RemoveAll<IConfirmationPrompt>();
+
+        services.AddSingleton<IConfirmationPrompt>(new StubConfirmationPrompt(true));
+
+        CountingHttpClientFactory counter = new();
+
+        services.AddSingleton<IHttpClientFactory>(counter);
+
+        _ = await CliTestHarness.RunAsync(
+            services,
+            [
+                "doctor",
+                "--json",
+                "--only",
+                "runtime",
+                "--repair",
+                "paths.create_managed_directories",
+                "--apply",
+            ]);
+
+        Assert.Equal(0, counter.Sends);
+
+    }
+
     private ServiceCollection BuildServices()
     {
 

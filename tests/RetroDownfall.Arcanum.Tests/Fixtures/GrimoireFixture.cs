@@ -63,27 +63,49 @@ public sealed class GrimoireFixture : IDisposable
     static GrimoireFixture()
     {
 
+        // Use a deterministic salt for the shared template so that a template created by
+        // a previous test process is still openable by a new process. The KDF sidecar tests
+        // exercise random salt generation separately.
+        _saltStatic = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+        _passphraseStatic = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(
+            TestGrimoireSecret,
+            _saltStatic);
+
+        string probePath = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"probe-{Guid.NewGuid():N}.db");
+
+        (bool available, string reason) = ProbeSqlCipher(probePath, _passphraseStatic);
+
+        SqlCipherAvailable = available;
+
+        SqlCipherUnavailableReason = reason;
+
+    }
+
+    /// <summary>
+    /// Probes for a usable SQLCipher native library.
+    /// </summary>
+    /// <remarks>
+    /// This runs from the static constructor, so it must never throw: an escaping exception marks
+    /// this type's initializer as failed permanently, and every later read of
+    /// <see cref="SqlCipherAvailable"/> — roughly sixty test classes reach it through
+    /// <c>Skip.IfNot</c> — would then throw <see cref="TypeInitializationException"/> instead of
+    /// skipping. Any failure is therefore reported as unavailable with its own message.
+    /// </remarks>
+    internal static (bool Available, string Reason) ProbeSqlCipher(string probePath, string passphrase)
+    {
+
         try
         {
             Batteries_V2.Init();
 
-            string probePath = Path.Combine(Path.GetTempPath(), "arcanum-tests", $"probe-{Guid.NewGuid():N}.db");
-
             Directory.CreateDirectory(Path.GetDirectoryName(probePath)!);
-
-            // Use a deterministic salt for the shared template so that a template created by
-            // a previous test process is still openable by a new process. The KDF sidecar tests
-            // exercise random salt generation separately.
-            _saltStatic = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-            _passphraseStatic = GrimoireKeyDerivation.DerivePassphraseFromEncryptionSecret(
-                TestGrimoireSecret,
-                _saltStatic);
 
             {
                 using SqliteConnection probe = new(new SqliteConnectionStringBuilder
                 {
                     DataSource = probePath,
-                    Password = _passphraseStatic,
+                    Password = passphrase,
                     Pooling = false,
                 }.ToString());
 
@@ -93,26 +115,42 @@ public sealed class GrimoireFixture : IDisposable
 
             }
 
-            File.Delete(probePath);
+            TryDeleteProbe(probePath);
 
-            if (File.Exists(probePath))
-            {
-
-                throw new IOException($"SQLCipher availability probe was not deleted: {probePath}");
-
-            }
-
-            SqlCipherAvailable = true;
-
-            SqlCipherUnavailableReason = string.Empty;
+            return (true, string.Empty);
 
         }
-        catch (Exception ex) when (ex is DllNotFoundException or TypeInitializationException)
+        catch (Exception ex)
         {
-            SqlCipherAvailable = false;
 
-            SqlCipherUnavailableReason =
-                $"SQLCipher native library unavailable: {ex.Message}. Install e_sqlcipher runtimes or run on a supported RID.";
+            return (
+                false,
+                $"SQLCipher availability probe failed ({ex.GetType().Name}): {ex.Message}. "
+                + "Install e_sqlcipher runtimes or run on a supported RID.");
+
+        }
+
+    }
+
+    /// <summary>
+    /// Removes the probe database on a best-effort basis. The probe already proved SQLCipher works
+    /// by opening an encrypted connection, so a scanner or indexer still holding the handle must
+    /// neither fail the probe nor throw out of the static constructor.
+    /// </summary>
+    private static void TryDeleteProbe(string probePath)
+    {
+
+        try
+        {
+
+            File.Delete(probePath);
+
+        }
+        catch
+        {
+
+            // Best-effort cleanup of the probe database.
+
         }
 
     }
@@ -197,6 +235,14 @@ public sealed class GrimoireFixture : IDisposable
         return new CrossProcessMutexLease();
     }
 
+    /// <summary>
+    /// Every file a handed-out copy can put on disk, relative to its database path. The copies are
+    /// opened in <c>journal_mode=WAL</c> (see <see cref="SqlitePragmaConnectionInterceptor"/>), and
+    /// the <c>-wal</c>/<c>-shm</c> pair outlives the connection, so cleanup that only knew about the
+    /// database and its KDF sidecar left two orphans under the temp directory per copy.
+    /// </summary>
+    private static readonly string[] CopySuffixes = ["", "-wal", "-shm", ".kdf"];
+
     public string CopyDatabase()
     {
 
@@ -205,8 +251,6 @@ public sealed class GrimoireFixture : IDisposable
         string copySidecarPath = copyPath + ".kdf";
 
         _copyPaths.Add(copyPath);
-
-        _copyPaths.Add(copySidecarPath);
 
         lock (BuildLock)
         {
@@ -225,11 +269,39 @@ public sealed class GrimoireFixture : IDisposable
             catch
             {
 
-                File.Delete(copyPath);
-
-                File.Delete(copySidecarPath);
+                DeleteCopyFiles(copyPath);
 
                 throw;
+
+            }
+
+        }
+
+    }
+
+    private static void DeleteCopyFiles(string copyPath)
+    {
+
+        foreach (string suffix in CopySuffixes)
+        {
+
+            try
+            {
+
+                string path = copyPath + suffix;
+
+                if (File.Exists(path))
+                {
+
+                    File.Delete(path);
+
+                }
+
+            }
+            catch
+            {
+
+                // Best-effort cleanup; another test may still hold the handle.
 
             }
 
@@ -381,23 +453,7 @@ public sealed class GrimoireFixture : IDisposable
         foreach (string copyPath in _copyPaths)
         {
 
-            try
-            {
-
-                if (File.Exists(copyPath))
-                {
-
-                    File.Delete(copyPath);
-
-                }
-
-            }
-            catch
-            {
-
-                // Best-effort cleanup; another test may still hold the handle.
-
-            }
+            DeleteCopyFiles(copyPath);
 
         }
 

@@ -10,18 +10,28 @@ internal sealed record BackupRestoreCapacity(
     BackupVerifyIssue? Issue);
 
 /// <summary>
-/// Decides, before staging begins, whether the destination volume can hold both the restored
-/// generation and the displaced installation at the same time.
+/// Decides, before staging begins, whether the destination volume can hold everything a restore
+/// materializes at its peak.
 /// </summary>
 /// <remarks>
-/// A restore keeps the old tree on disk until the new one is committed, so the peak requirement is
-/// the sum of both plus working headroom — not just the archive's restored size.
+/// A restore writes the archive's contents to the volume <em>twice at once</em>: the decrypted
+/// payload temporary grows alongside the extraction tree, and the extraction tree is then copied
+/// entry by entry into the staged tree and kept until commit. Nothing is compressed, so each copy is
+/// the archive's restored size. The displaced installation costs nothing new — commit renames it into
+/// staging on the same volume — but the pre-restore safety backup is a fresh uncompressed archive of
+/// it, so the measured installation size stays in the reservation as that allowance.
 /// </remarks>
 internal static class BackupRestoreCapacityPlanner
 {
 
-    /// <summary>Working room for the decrypted payload, journal, and filesystem overhead.</summary>
+    /// <summary>Working room for the journal, staging metadata, and filesystem overhead.</summary>
     internal const long HeadroomBytes = 64L * 1024 * 1024;
+
+    /// <summary>
+    /// Concurrent materializations of the archive's contents: decrypted payload plus extraction
+    /// tree during extraction, then extraction tree plus staged tree through commit.
+    /// </summary>
+    private const long ConcurrentArchiveCopies = 2;
 
     public static BackupRestoreCapacity Plan(
         string destinationRoot,
@@ -37,7 +47,8 @@ internal static class BackupRestoreCapacityPlanner
         try
         {
 
-            required = checked(restoredBytes + displacedBytes + HeadroomBytes);
+            required = checked(
+                (restoredBytes * ConcurrentArchiveCopies) + displacedBytes + HeadroomBytes);
 
         }
         catch (OverflowException)
@@ -57,9 +68,9 @@ internal static class BackupRestoreCapacityPlanner
                 new BackupVerifyIssue(
                     "backup.restore_insufficient_disk",
                     $"The destination volume needs {required.ToString(CultureInfo.InvariantCulture)} bytes "
-                    + $"to hold the restored generation alongside the current installation, but only "
-                    + $"{available.ToString(CultureInfo.InvariantCulture)} bytes are free. The current "
-                    + "installation was not modified.",
+                    + "to extract and stage the restored generation alongside the current installation, "
+                    + $"but only {available.ToString(CultureInfo.InvariantCulture)} bytes are free. The "
+                    + "current installation was not modified.",
                     destinationRoot));
 
     }

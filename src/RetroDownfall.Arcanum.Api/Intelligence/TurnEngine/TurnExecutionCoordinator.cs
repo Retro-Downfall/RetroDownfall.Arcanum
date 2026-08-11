@@ -107,19 +107,31 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
 
         IntelligenceEventProjection projection = new(transport.Writer);
 
+        using CancellationTokenSource producerCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(executionToken);
+
         Task produce = ProjectStreamingAsync(
             request,
             projection,
             transport.Writer,
-            executionToken,
+            producerCancellation.Token,
             auditContext);
 
-        await foreach (IntelligenceEvent frame in transport.Reader.ReadAllAsync(executionToken).ConfigureAwait(false))
-        {
-            yield return frame;
-        }
+        bool drained = false;
 
-        await produce.ConfigureAwait(false);
+        try
+        {
+            await foreach (IntelligenceEvent frame in transport.Reader.ReadAllAsync(executionToken).ConfigureAwait(false))
+            {
+                yield return frame;
+            }
+
+            drained = true;
+        }
+        finally
+        {
+            await JoinProducerAsync(produce, producerCancellation, drained).ConfigureAwait(false);
+        }
     }
 
     public IAsyncEnumerable<OpenAiChatChunk> ExecuteOpenAiSseAsync(
@@ -167,19 +179,69 @@ internal sealed class TurnExecutionCoordinator(ITurnEventSource turnEventSource)
 
         OpenAiSseProjection projection = new(transport.Writer, completionId, model);
 
+        using CancellationTokenSource producerCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(executionToken);
+
         Task produce = ProjectOpenAiAsync(
             request,
             projection,
             transport.Writer,
-            executionToken,
+            producerCancellation.Token,
             auditContext);
 
-        await foreach (OpenAiChatChunk chunk in transport.Reader.ReadAllAsync(executionToken).ConfigureAwait(false))
+        bool drained = false;
+
+        try
         {
-            yield return chunk;
+            await foreach (OpenAiChatChunk chunk in transport.Reader.ReadAllAsync(executionToken).ConfigureAwait(false))
+            {
+                yield return chunk;
+            }
+
+            drained = true;
+        }
+        finally
+        {
+            await JoinProducerAsync(produce, producerCancellation, drained).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Never returns to the endpoint with the producer still running. A client disconnect breaks or
+    /// cancels the drain above, and the pipeline behind <paramref name="produce"/> is still in its
+    /// finally blocks — finalizing the assistant Entry, reconciling the budget reservation, and
+    /// closing the InferenceRun, all deliberately on <see cref="CancellationToken.None"/> so they
+    /// must complete. Those touch request-scoped repositories over a pooled DbContext that ASP.NET
+    /// disposes and re-leases the moment this iterator returns, so the abandonment path cancels the
+    /// producer and then waits for it rather than orphaning it.
+    /// </summary>
+    /// <param name="drained">
+    /// Whether the consumer read the stream to completion. On that path the producer has already
+    /// finished and its failure, if any, is the caller's to see.
+    /// </param>
+    private static async Task JoinProducerAsync(
+        Task produce,
+        CancellationTokenSource producerCancellation,
+        bool drained)
+    {
+        if (drained)
+        {
+            await produce.ConfigureAwait(false);
+
+            return;
         }
 
-        await produce.ConfigureAwait(false);
+        await producerCancellation.CancelAsync().ConfigureAwait(false);
+
+        try
+        {
+            await produce.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The consumer is gone, so there is nobody left to report this to — and throwing here
+            // would replace whatever ended the stream. The wait itself was the point.
+        }
     }
 
     private async Task ProjectStreamingAsync(

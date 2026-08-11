@@ -143,7 +143,7 @@ internal sealed class OpenCommands(
                 ApplicationResourceKind.Campaign,
                 campaign.Id.ToString("D"),
                 initialView: ApplicationInitialView.Atelier),
-            static campaign => $"arcanum campaign get {campaign.Id:D}",
+            static campaign => $"arcanum campaign show {campaign.Id:D}",
             cancellationToken);
 
     public async Task<int> Spell(
@@ -215,7 +215,7 @@ internal sealed class OpenCommands(
                 ApplicationResourceKind.Prompt,
                 prompt.Id.ToString("D"),
                 initialView: ApplicationInitialView.Workbench),
-            static prompt => $"arcanum prompt get {prompt.Id:D}",
+            static prompt => $"arcanum prompt show {prompt.Id:D}",
             cancellationToken);
 
     public Task<int> Apprentice(
@@ -228,7 +228,7 @@ internal sealed class OpenCommands(
                 ApplicationResourceKind.Apprentice,
                 apprentice.Id.ToString("D"),
                 initialView: ApplicationInitialView.WarTable),
-            static apprentice => $"arcanum apprentice get {apprentice.Id:D}",
+            static apprentice => $"arcanum apprentice show {apprentice.Id:D}",
             cancellationToken);
 
     private async Task<int> ResolveAndLaunchAsync<T>(
@@ -356,7 +356,7 @@ internal sealed class OpenCommands(
             ? "-- "
             : string.Empty;
 
-        return $"arcanum spell get {workspaceOption}{separator}{CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(name)}";
+        return $"arcanum spell show {workspaceOption}{separator}{CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(name)}";
 
     }
 

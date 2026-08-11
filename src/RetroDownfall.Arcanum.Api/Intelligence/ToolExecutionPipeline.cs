@@ -239,11 +239,28 @@ public sealed class ToolExecutionPipeline(
     }
 
     /// <summary>
+    /// The fixed <c>tool_name</c> label used when the model named a tool that is not in the
+    /// advertised set. Echoing the model's own string there would make the label unbounded.
+    /// </summary>
+    internal const string UnregisteredToolMetricLabel = "unregistered";
+
+    /// <summary>
     /// Records <c>arcanum_tool_invocations_total</c>. <paramref name="outcome"/> is one of
     /// <c>success</c>, <c>denied</c> (ward or Sanctum blocked the call), or <c>error</c> (the tool
-    /// invocation itself threw). The configured MCP/local tool set is finite, so <paramref name="toolName"/>
-    /// is a bounded label value by construction.
+    /// invocation itself threw, or the model named a tool that was never registered). The configured
+    /// MCP/local tool set is finite and an unregistered name collapses to
+    /// <see cref="UnregisteredToolMetricLabel"/>, so <paramref name="toolName"/> is a bounded label
+    /// value by construction.
     /// </summary>
+    /// <summary>
+    /// A call that resolved to no registered function never ran, so it is an <c>error</c> rather
+    /// than a <c>success</c> even though the pipeline hands the model a synthetic string result.
+    /// </summary>
+    private static string ResolveInvocationOutcome(bool isRegisteredTool, bool denied) =>
+        denied ? "denied"
+        : isRegisteredTool ? "success"
+        : "error";
+
     private static void RecordToolInvocationMetric(string toolName, string outcome)
     {
         ArcanumMetrics.ToolInvocationsTotal.Add(
@@ -323,6 +340,14 @@ public sealed class ToolExecutionPipeline(
 
         string toolName = fcc.Name ?? string.Empty;
 
+        // A model can name a tool that was never advertised. InvokeToolCallAsync answers such a call
+        // with a synthetic "no local tool registered" string rather than invoking anything, so the
+        // metric must not report it as a success, and the model's arbitrary string must not become
+        // the label value.
+        bool isRegisteredTool = ResolveRegisteredFunction(chatOptions, fcc.Name) is not null;
+
+        string metricToolName = isRegisteredTool ? toolName : UnregisteredToolMetricLabel;
+
         bool isApplyPatch = string.Equals(
                 toolName,
                 ToolRiskClassifier.ApplyPatchToolName,
@@ -386,6 +411,10 @@ public sealed class ToolExecutionPipeline(
 
         WardedToolExecutionResult wardedExecution;
 
+        // Owned here rather than inside ExecuteToolCallWithWardAsync so the tolerant catches below
+        // can still report the frames a Ward already produced when the invocation itself throws.
+        List<IntelligenceEvent> wardEvents = new(2);
+
         if (suppressInvocationFailures)
         {
 
@@ -400,12 +429,15 @@ public sealed class ToolExecutionPipeline(
                     sessionId,
                     turnContext,
                     argsSnapshot,
+                    wardEvents,
                     cancellationToken,
                     liveWardEmit,
                     observer)
                     .ConfigureAwait(false);
 
-                RecordToolInvocationMetric(toolName, wardedExecution.Denied ? "denied" : "success");
+                RecordToolInvocationMetric(
+                    metricToolName,
+                    ResolveInvocationOutcome(isRegisteredTool, wardedExecution.Denied));
 
             }
             catch (OperationCanceledException)
@@ -418,15 +450,15 @@ public sealed class ToolExecutionPipeline(
                 applyPatchContext?.RequiresTurnFailure == true
                 || applyPatchContext?.CancellationClassified == true)
             {
-                RecordToolInvocationMetric(toolName, "error");
+                RecordToolInvocationMetric(metricToolName, "error");
                 throw;
             }
             catch (HumanPromptTimeoutException ex)
             {
 
-                wardedExecution = new WardedToolExecutionResult(ex.Message, [], Failed: true);
+                wardedExecution = new WardedToolExecutionResult(ex.Message, wardEvents, Failed: true);
 
-                RecordToolInvocationMetric(toolName, "error");
+                RecordToolInvocationMetric(metricToolName, "error");
 
             }
             catch (Exception ex)
@@ -438,9 +470,9 @@ public sealed class ToolExecutionPipeline(
                     ex.GetType().FullName,
                     callId);
 
-                wardedExecution = new WardedToolExecutionResult(PublicToolFailureMessage(toolName), [], Failed: true);
+                wardedExecution = new WardedToolExecutionResult(PublicToolFailureMessage(toolName), wardEvents, Failed: true);
 
-                RecordToolInvocationMetric(toolName, "error");
+                RecordToolInvocationMetric(metricToolName, "error");
 
             }
 
@@ -462,12 +494,15 @@ public sealed class ToolExecutionPipeline(
                     sessionId,
                     turnContext,
                     argsSnapshot,
+                    wardEvents,
                     cancellationToken,
                     liveWardEmit,
                     observer)
                     .ConfigureAwait(false);
 
-                RecordToolInvocationMetric(toolName, wardedExecution.Denied ? "denied" : "success");
+                RecordToolInvocationMetric(
+                    metricToolName,
+                    ResolveInvocationOutcome(isRegisteredTool, wardedExecution.Denied));
 
             }
             catch (OperationCanceledException)
@@ -479,7 +514,7 @@ public sealed class ToolExecutionPipeline(
             catch (Exception)
             {
 
-                RecordToolInvocationMetric(toolName, "error");
+                RecordToolInvocationMetric(metricToolName, "error");
 
                 throw;
 
@@ -533,7 +568,7 @@ public sealed class ToolExecutionPipeline(
                         ex.GetType().FullName,
                         callId);
 
-                    RecordToolInvocationMetric(toolName, "error");
+                    RecordToolInvocationMetric(metricToolName, "error");
 
                     return new ProcessedToolCall(
                         callId,
@@ -546,7 +581,7 @@ public sealed class ToolExecutionPipeline(
 
                 }
 
-                RecordToolInvocationMetric(toolName, "error");
+                RecordToolInvocationMetric(metricToolName, "error");
 
                 throw;
 
@@ -580,7 +615,7 @@ public sealed class ToolExecutionPipeline(
                         "refresh_session_file post-process failed during inference (tolerated by mode policy); exception type {ExceptionType}, call {ToolCallId}.",
                         ex.GetType().FullName,
                         callId);
-                    RecordToolInvocationMetric(toolName, "error");
+                    RecordToolInvocationMetric(metricToolName, "error");
                     return new ProcessedToolCall(
                         callId,
                         toolName,
@@ -590,7 +625,7 @@ public sealed class ToolExecutionPipeline(
                         Failed: true);
                 }
 
-                RecordToolInvocationMetric(toolName, "error");
+                RecordToolInvocationMetric(metricToolName, "error");
                 throw;
             }
         }
@@ -1283,6 +1318,12 @@ public sealed class ToolExecutionPipeline(
 
     }
 
+    /// <summary>
+    /// <paramref name="wardEvents"/> is caller-owned so that buffered <c>warded</c>/<c>wardResolved</c>
+    /// frames survive an exception out of the invocation: the tolerant catches in
+    /// <see cref="ProcessSingleToolCallAsync"/> still have to report that a Ward was raised and how
+    /// the operator resolved it.
+    /// </summary>
     private async Task<WardedToolExecutionResult> ExecuteToolCallWithWardAsync(
         FunctionCallContent fcc,
         PingRequest request,
@@ -1291,6 +1332,7 @@ public sealed class ToolExecutionPipeline(
         string? sessionId,
         TurnContext turnContext,
         string argsSnapshot,
+        List<IntelligenceEvent> wardEvents,
         CancellationToken cancellationToken,
         Func<IntelligenceEvent, CancellationToken, Task>? liveWardEmit = null,
         Func<ToolExecutionEvent, ValueTask>? observer = null)
@@ -1310,7 +1352,7 @@ public sealed class ToolExecutionPipeline(
 
             RecordWardDecisionMetric(toolName, WardResolutionOrigin.AutoDenied);
 
-            return new WardedToolExecutionResult(UnattendedDenyMessage(toolName), [], Denied: true);
+            return new WardedToolExecutionResult(UnattendedDenyMessage(toolName), wardEvents, Denied: true);
 
         }
 
@@ -1334,7 +1376,7 @@ public sealed class ToolExecutionPipeline(
                 argsSnapshot,
                 cancellationToken).ConfigureAwait(false);
 
-            return new WardedToolExecutionResult(directResult, [], directDenied);
+            return new WardedToolExecutionResult(directResult, wardEvents, directDenied);
 
         }
 
@@ -1347,8 +1389,6 @@ public sealed class ToolExecutionPipeline(
         JsonElement? wardArguments = argsDocument?.RootElement.Clone();
 
         DateTimeOffset wardTimestamp = DateTimeOffset.UtcNow;
-
-        var wardEvents = new List<IntelligenceEvent>(2);
 
         bool autoApproved = ToolRiskClassifier.IsAutoApproved(toolName, wardSettings);
 

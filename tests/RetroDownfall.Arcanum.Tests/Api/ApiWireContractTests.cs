@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -74,6 +75,79 @@ public sealed class ApiWireContractTests
         string json = await response.Content.ReadAsStringAsync();
 
         Assert.DoesNotContain("Hub.Unhandled", json, StringComparison.Ordinal);
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.NotNull(body.Error);
+
+        Assert.Equal("Validation.UnsupportedMediaType", body.Error!.Value.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task PutConfig_NonJsonContentType_ReturnsEnveloped415()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // Round-trip the live snapshot so the body is a well-formed ArcanumSettings tree: the config write
+        // route used to parse it straight off Request.Body, so the media-type gate never ran at all.
+        HttpResponseMessage snapshotResponse = await client.GetAsync("/api/config");
+
+        ApiResponse<ArcanumSettings>? snapshot = JsonSerializer.Deserialize(
+            await snapshotResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.ApiResponseArcanumSettings);
+
+        Assert.NotNull(snapshot?.Data);
+
+        string payload = JsonSerializer.Serialize(
+            snapshot.Data,
+            ArcanumJsonContext.Default.ArcanumSettings);
+
+        HttpResponseMessage response = await client.PutAsync(
+            "/api/config",
+            new StringContent(payload, Encoding.UTF8, "text/plain"));
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<bool>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseBoolean);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.NotNull(body.Error);
+
+        Assert.Equal("Validation.UnsupportedMediaType", body.Error!.Value.Code);
+
+    }
+
+    [SkippableFact]
+    public async Task PostConfigValidate_NonJsonContentType_ReturnsEnveloped415()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/config/validate",
+            new StringContent(
+                """{"providers":[]}""",
+                Encoding.UTF8,
+                "application/x-www-form-urlencoded"));
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
 
         ApiResponse<bool>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseBoolean);
 
@@ -172,6 +246,91 @@ public sealed class ApiWireContractTests
         Assert.True(body.IsSuccess);
 
         Assert.NotNull(body.Data);
+
+    }
+
+    [SkippableFact]
+    public async Task GetPerceptionLook_OutsideAllowedRoots_DoesNotLeakDirectoryExistence()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // Both live outside Arcanum:Security:PerceptionWorkspaceRoots (which is the factory's TempHome).
+        string existingOutside = Path.Combine(Path.GetTempPath(), $"arcanum-perception-oracle-{Guid.NewGuid():N}");
+
+        string missingOutside = Path.Combine(Path.GetTempPath(), $"arcanum-perception-oracle-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(existingOutside);
+
+        try
+        {
+
+            HttpResponseMessage existingResponse = await client.GetAsync(
+                $"/api/perception/look?directory={Uri.EscapeDataString(existingOutside)}");
+
+            HttpResponseMessage missingResponse = await client.GetAsync(
+                $"/api/perception/look?directory={Uri.EscapeDataString(missingOutside)}");
+
+            Assert.Equal(HttpStatusCode.Forbidden, existingResponse.StatusCode);
+
+            // A path the policy denies must not reveal whether it exists on the host.
+            Assert.Equal(HttpStatusCode.Forbidden, missingResponse.StatusCode);
+
+            Assert.Equal(
+                "Perception.PathNotAllowed",
+                await ReadPerceptionErrorCodeAsync(existingResponse));
+
+            Assert.Equal(
+                "Perception.PathNotAllowed",
+                await ReadPerceptionErrorCodeAsync(missingResponse));
+
+        }
+        finally
+        {
+
+            Directory.Delete(existingOutside, recursive: true);
+
+        }
+
+    }
+
+    [SkippableFact]
+    public async Task GetPerceptionLook_MissingDirectoryInsideAllowedRoots_StillReturns400()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string missingInside = Path.Combine(_factory.TempHome, $"missing-{Guid.NewGuid():N}");
+
+        HttpResponseMessage response = await client.GetAsync(
+            $"/api/perception/look?directory={Uri.EscapeDataString(missingInside)}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Equal("Perception.InvalidPath", await ReadPerceptionErrorCodeAsync(response));
+
+    }
+
+    private static async Task<string?> ReadPerceptionErrorCodeAsync(HttpResponseMessage response)
+    {
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<PatternSnapshot>? body = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.ApiResponsePatternSnapshot);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.NotNull(body.Error);
+
+        return body.Error!.Value.Code;
 
     }
 

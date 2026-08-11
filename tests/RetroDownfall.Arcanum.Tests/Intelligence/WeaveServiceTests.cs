@@ -242,6 +242,30 @@ public sealed class WeaveServiceTests
         Assert.Equal(operation.ActualCostUsd, reservations.ReconciledUsd);
     }
 
+    /// <summary>
+    /// An OpenAI-compatible backend can answer 200 with an empty <c>data</c> array (model still
+    /// loading, input silently dropped). The single-text overload must degrade to a
+    /// <see cref="Result{T}"/> failure like every other provider fault instead of throwing out of an
+    /// API documented as never throwing.
+    /// </summary>
+    [Fact]
+    public async Task EmbedAsync_ProviderReturnsNoVectors_ReturnsProviderUnavailable_NeverThrows()
+    {
+
+        FakeEmbeddingGeneratorFactory factory = new();
+
+        factory.Generator.ReturnNoVectors = true;
+
+        WeaveService service = CreateService(EnabledSettings(), factory);
+
+        Result<Embedding<float>> result = await service.EmbedAsync("hello", CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Embeddings.ProviderUnavailable, result.Error.Code);
+
+    }
+
     [Fact]
     public async Task EmbedAsync_ProviderThrows_ReturnsProviderUnavailable_NeverThrows()
     {
@@ -582,6 +606,8 @@ public sealed class WeaveServiceTests
 
         public int? ThrowOnCallNumber { get; set; }
 
+        public bool ReturnNoVectors { get; set; }
+
         public CancellationToken GenerateCancellationToken { get; private set; }
 
         public async Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
@@ -607,6 +633,12 @@ public sealed class WeaveServiceTests
             if (ThrowOnGenerate is not null || ThrowOnCallNumber == CallSizes.Count)
             {
                 throw ThrowOnGenerate ?? new InvalidOperationException("scripted embedding failure");
+
+            }
+
+            if (ReturnNoVectors)
+            {
+                return new GeneratedEmbeddings<Embedding<float>>();
 
             }
 

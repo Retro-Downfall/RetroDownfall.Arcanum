@@ -157,6 +157,55 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A <c>new-profile-root</c> restore stages beside its destination so commit stays a same-volume
+    /// rename, which puts staging outside the live root's parent. Recovery must still find it, or a
+    /// process death leaks decrypted archive contents that nothing ever sweeps.
+    /// </summary>
+    [Fact]
+    public void Staging_beside_a_foreign_destination_is_resolved_from_the_staging_index()
+    {
+
+        string elsewhere = Path.Combine(_root, "another-volume");
+
+        Directory.CreateDirectory(elsewhere);
+
+        Interrupted interrupted = Interrupt(
+            BackupRestorePhase.Stage,
+            live: true,
+            staged: true,
+            displaced: false,
+            stagingParent: elsewhere,
+            conflictMode: BackupRestoreConflictMode.NewProfileRoot);
+
+        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_live));
+
+        Assert.Equal(BackupRestoreRecoveryOutcome.Discarded, report.Outcome);
+
+        Assert.Equal(interrupted.StagingRoot, report.StagingRoot);
+
+        Assert.False(Directory.Exists(interrupted.StagingRoot));
+
+        Assert.Empty(BackupRestoreStagingIndex.Read(_live));
+
+    }
+
+    [Fact]
+    public void A_staging_index_entry_whose_staging_root_is_already_gone_is_pruned()
+    {
+
+        Directory.CreateDirectory(_live);
+
+        BackupRestoreStagingIndex.Add(
+            _live,
+            Path.Combine(_root, "gone", BackupRestoreJournal.CreateStagingName()));
+
+        Assert.Empty(BackupRestoreRecovery.Resolve(_live));
+
+        Assert.Empty(BackupRestoreStagingIndex.Read(_live));
+
+    }
+
     [Fact]
     public void Staging_without_a_journal_is_never_touched()
     {
@@ -178,10 +227,16 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
         bool live,
         bool staged,
         bool displaced,
-        string? liveRootOverride = null)
+        string? liveRootOverride = null,
+        string? stagingParent = null,
+        BackupRestoreConflictMode conflictMode = BackupRestoreConflictMode.ReplaceInstallation)
     {
 
-        string stagingRoot = Path.Combine(_root, BackupRestoreJournal.CreateStagingName());
+        string stagingRoot = Path.Combine(
+            stagingParent ?? _root,
+            BackupRestoreJournal.CreateStagingName());
+
+        BackupRestoreStagingIndex.Add(_live, stagingRoot);
 
         OwnedTemporaryDirectory owned = OwnedTemporaryDirectory.Create(stagingRoot);
 
@@ -215,7 +270,7 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
             new BackupRestoreJournalRecord(
                 BackupRestoreJournal.CurrentVersion,
                 Guid.NewGuid(),
-                BackupRestoreConflictMode.ReplaceInstallation,
+                conflictMode,
                 phase,
                 liveRootOverride ?? _live,
                 stagedRoot,

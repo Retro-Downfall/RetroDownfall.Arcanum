@@ -120,6 +120,63 @@ public sealed class GenericSettingsPreservationTests : IDisposable
 
     [Fact]
 
+    public void Advertised_a2a_skill_keys_are_collection_templates_and_never_overwrite_a_declared_skill()
+    {
+
+        ArcanumSettings settings = new()
+        {
+            Integrations = new IntegrationSettings
+            {
+                A2A = new A2AIntegrationSettings
+                {
+                    Skills = [new A2ASkillSettings { Id = "code-review" }],
+                },
+            },
+        };
+
+        string[] templateKeys =
+        [
+            "integrations.a2A.skills.id",
+            "integrations.a2A.skills.name",
+            "integrations.a2A.skills.description",
+            "integrations.a2A.skills.inputModes",
+            "integrations.a2A.skills.outputModes",
+        ];
+
+        List<GenericSettingFieldViewModel> fields = [];
+
+        foreach (string key in templateKeys)
+        {
+
+            SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
+                SettingDescriptors.Find(key));
+
+            GenericSettingFieldViewModel field = new(
+                descriptor,
+                GenericSettingsUpdater.ReadValue(settings, key));
+
+            Assert.True(field.IsCollectionTemplate, key);
+
+            Assert.Equal("integrations.a2A.skills", field.CollectionTemplatePath);
+
+            field.StringValue = "typed-into-a-template";
+
+            fields.Add(field);
+
+        }
+
+        ArcanumSettings updated = GenericSettingsUpdater.ApplyFields(settings, fields);
+
+        A2ASkillSettings skill = Assert.Single(updated.Integrations.A2A.Skills);
+
+        Assert.Equal("code-review", skill.Id);
+
+        Assert.Null(skill.Name);
+
+    }
+
+    [Fact]
+
     public void Protected_session_ids_use_the_string_array_editor_without_losing_guid_values()
     {
 
@@ -449,6 +506,44 @@ public sealed class GenericSettingsPreservationTests : IDisposable
         Assert.Equal(
             2m,
             saved.Cost.Pricing.ModelPricing["reasoner"].OutputPer1M);
+
+    }
+
+    [Fact]
+
+    public void Dictionary_setter_failure_names_the_field_that_could_not_be_applied()
+    {
+
+        SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
+            SettingDescriptors.Find("cost.pricing.modelPricing"));
+
+        GenericSettingFieldViewModel field = new(
+            descriptor,
+            new Dictionary<string, ModelPricingEntry>());
+
+        // System.Text.Json builds an ordinal-comparer dictionary, so both casings validate; the
+        // case-insensitive rebuild inside the PricingSettings setter is what rejects them.
+        field.StringValue = """{"gpt-4o":{"inputPer1M":1},"GPT-4o":{"inputPer1M":2}}""";
+
+        Assert.False(field.HasError);
+
+        InvalidOperationException failure = Assert.Throws<InvalidOperationException>(
+            () => GenericSettingsUpdater.ApplyFields(new ArcanumSettings(), [field]));
+
+        Assert.Contains(
+            "cost.pricing.modelPricing",
+            failure.Message,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "target of an invocation",
+            failure.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            "same key",
+            failure.Message,
+            StringComparison.OrdinalIgnoreCase);
 
     }
 

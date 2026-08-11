@@ -554,6 +554,8 @@ internal sealed partial class ArcanumInternalToolServer
 
         string wire = JsonSerializer.Serialize(response, _json.JsonRpcResponse);
 
+        wire = BoundOutboundResponseLine(response, wire);
+
         await _responseWriteLock.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
@@ -568,6 +570,67 @@ internal sealed partial class ArcanumInternalToolServer
             _responseWriteLock.Release();
 
         }
+
+    }
+
+    /// <summary>
+    /// Returns <paramref name="wire"/> unchanged when it fits the frame budget, otherwise a small
+    /// typed JSON-RPC error carrying the same id. Every inbound reader drops an oversized line
+    /// silently, so writing the original frame would strand the request until the caller's own
+    /// timeout: the upstream tool-output cap only assumes a 2x JSON escaping allowance, while the
+    /// default encoder expands <c>&lt;</c>, <c>&amp;</c>, <c>"</c> and friends six-fold, so a result
+    /// that legitimately cleared that cap can still overflow here. Substituting rather than throwing
+    /// keeps <see cref="HandleLineSafelyAsync"/>'s own error writer — which routes through this same
+    /// method — from faulting.
+    /// </summary>
+    private string BoundOutboundResponseLine(JsonRpcResponse response, string wire)
+    {
+
+        if (!McpSecurityLimits.ExceedsMaxLineUtf8Bytes(wire, _maxJsonRpcLineBytes))
+        {
+
+            return wire;
+
+        }
+
+        _logger?.LogWarning(
+            "Arcanum internal MCP server replaced a {ActualBytes}-byte JSON-RPC response line exceeding {MaxBytes} UTF-8 bytes with an oversized-output error.",
+            Encoding.UTF8.GetByteCount(wire),
+            _maxJsonRpcLineBytes);
+
+        JsonRpcResponse oversized = new()
+        {
+            Id = response.Id,
+
+            Error = new JsonRpcError
+            {
+                Code = -32603,
+
+                Message = "Tool output too large for one JSON-RPC frame. Narrow the request range or parameters and retry.",
+
+                Data = null,
+            },
+
+            Result = null,
+        };
+
+        string replacement = JsonSerializer.Serialize(oversized, _json.JsonRpcResponse);
+
+        if (!McpSecurityLimits.ExceedsMaxLineUtf8Bytes(replacement, _maxJsonRpcLineBytes))
+        {
+
+            return replacement;
+
+        }
+
+        // Only reachable when the request id itself consumed nearly the whole inbound budget. Drop
+        // the id rather than the frame so the peer still sees a protocol-level failure.
+        JsonRpcResponse idless = oversized with
+        {
+            Id = JsonSerializer.SerializeToElement((string?)null, _json.String),
+        };
+
+        return JsonSerializer.Serialize(idless, _json.JsonRpcResponse);
 
     }
 

@@ -74,7 +74,7 @@ internal static class HelpTopics
             ],
             [
                 "arcanum session rest",
-                "arcanum memory list",
+                "arcanum memory lexicon list",
                 "arcanum lore list",
                 "arcanum session compact",
             ]),
@@ -122,7 +122,7 @@ internal static class HelpTopics
                 "arcanum ward show 8f14e45f-ceea-467a-9cbd-08c3c4a4c1f5",
                 "arcanum key list",
                 "arcanum mcp list",
-                "arcanum doctor --only security",
+                "arcanum doctor --only credentials",
             ]),
 
         new(

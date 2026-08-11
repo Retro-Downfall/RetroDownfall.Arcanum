@@ -37,7 +37,7 @@ internal sealed class BatchProcessingService(
 
     private static readonly TimeSpan CancelWatchInterval = TimeSpan.FromSeconds(2);
 
-    private readonly ConcurrentDictionary<Guid, byte> _inFlight = new();
+    private readonly ConcurrentDictionary<Guid, Task> _inFlight = new();
 
     private sealed record PreparedBatchRequestLine(
         long Line,
@@ -139,16 +139,90 @@ internal sealed class BatchProcessingService(
         foreach (BatchRecord batch in pending)
         {
 
-            if (!_inFlight.TryAdd(batch.Id, 0))
+            if (!_inFlight.TryAdd(batch.Id, Task.CompletedTask))
             {
 
                 continue;
 
             }
 
-            _ = Task.Run(
-                () => ProcessBatchWithCleanupAsync(batch, stoppingToken),
+            // Gated so the worker cannot finish — and remove its own entry — before the real handle
+            // replaces the placeholder, which would leave the batch permanently marked in flight.
+            TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            _inFlight[batch.Id] = Task.Run(
+                async () =>
+                {
+
+                    await started.Task.ConfigureAwait(false);
+
+                    await ProcessBatchWithCleanupAsync(batch, stoppingToken).ConfigureAwait(false);
+
+                },
                 CancellationToken.None);
+
+            started.SetResult();
+
+        }
+
+    }
+
+    /// <summary>
+    /// Drains in-flight batch workers before the host disposes the container underneath them. A
+    /// worker that has already received (and been billed for) a provider response is inside
+    /// <c>CompleteLineAsync</c> with <see cref="CancellationToken.None"/> precisely so the result is
+    /// persisted; losing the scope mid-write would strand that line as
+    /// <c>batch_interrupted_after_dispatch</c> and discard a paid-for response. Batches that do not
+    /// drain within the shutdown budget still fall back to startup reconciliation.
+    /// </summary>
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+
+        int drainSeconds = ArcanumSettingClamps.DaemonShutdownDrainTimeoutSeconds(
+            ArcanumRuntimeDefaults.DaemonShutdownDrainTimeoutSeconds);
+
+        if (drainSeconds <= 0)
+        {
+
+            return;
+
+        }
+
+        Task[] snapshot = [.. _inFlight.Values];
+
+        if (snapshot.Length == 0)
+        {
+
+            return;
+
+        }
+
+        using CancellationTokenSource drainCts = new(TimeSpan.FromSeconds(drainSeconds));
+
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            drainCts.Token);
+
+        try
+        {
+
+            await Task.WhenAll(snapshot).WaitAsync(linked.Token).ConfigureAwait(false);
+
+        }
+        catch (OperationCanceledException)
+        {
+
+            logger.LogInformation(
+                "Batch shutdown drain elapsed before {Count} batch(es) completed; they remain durable for startup reconciliation.",
+                snapshot.Length);
+
+        }
+        catch (Exception ex)
+        {
+
+            logger.LogWarning(ex, "Batch shutdown drain observed an unhandled exception.");
 
         }
 
@@ -205,14 +279,44 @@ internal sealed class BatchProcessingService(
 
         IArcanumIntelligenceProvider intelligence = scope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
 
-        await batches.UpdateStatusAsync(batch.Id, BatchStatuses.InProgress, null, batch.OutputFileId, batch.ErrorFileId, stoppingToken).ConfigureAwait(false);
+        // Claim the row instead of overwriting it: TickAsync read this record before queueing the
+        // worker, so an operator cancel (validating → cancelled) can have committed in the meantime.
+        // A losing CAS means the batch is no longer ours to run — leave the durable status alone.
+        bool claimed = await batches.TryCompareAndSetStatusAsync(
+                batch.Id,
+                BatchStatuses.Validating,
+                BatchStatuses.InProgress,
+                completedAt: null,
+                batch.OutputFileId,
+                batch.ErrorFileId,
+                stoppingToken)
+            .ConfigureAwait(false);
+
+        if (!claimed)
+        {
+
+            logger.LogInformation(
+                "Batch {BatchId} was no longer validating when the worker claimed it; leaving its durable status untouched.",
+                batch.Id);
+
+            return;
+
+        }
 
         string inputPath = UploadedFileStorage.ResolvePath(batch.InputFileId);
 
         if (!File.Exists(inputPath))
         {
 
-            await batches.UpdateStatusAsync(batch.Id, BatchStatuses.Failed, DateTimeOffset.UtcNow, null, null, CancellationToken.None).ConfigureAwait(false);
+            _ = await batches.TryCompareAndSetStatusAsync(
+                    batch.Id,
+                    BatchStatuses.InProgress,
+                    BatchStatuses.Failed,
+                    DateTimeOffset.UtcNow,
+                    null,
+                    null,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
 
             return;
 
@@ -223,8 +327,9 @@ internal sealed class BatchProcessingService(
             .ConfigureAwait(false);
         if (inputFile is null)
         {
-            await batches.UpdateStatusAsync(
+            _ = await batches.TryCompareAndSetStatusAsync(
                     batch.Id,
+                    BatchStatuses.InProgress,
                     BatchStatuses.Failed,
                     DateTimeOffset.UtcNow,
                     null,
@@ -606,7 +711,17 @@ internal sealed class BatchProcessingService(
 
         string customId = ResolveCustomId(prepared);
 
-        bool began = await batches.TryBeginLineAsync(
+        string jsonLine = JsonSerializer.Serialize(
+
+            new BatchJsonlParseError(prepared.Line, message),
+
+            ArcanumJsonContext.Default.BatchJsonlParseError);
+
+        // One durable transition, not begin-then-complete. This line never reaches a provider, so a
+        // crash between two writes must not leave it Dispatched — restart recovery would seal that
+        // as batch_interrupted_after_dispatch in the OUTPUT file and tell the operator the provider
+        // may already have charged for a line that can never succeed.
+        _ = await batches.TryRecordTerminalLineAsync(
 
             batchId,
 
@@ -614,35 +729,13 @@ internal sealed class BatchProcessingService(
 
             customId,
 
-            cancellationToken).ConfigureAwait(false);
-
-        if (!began)
-
-        {
-
-            return;
-
-        }
-
-        string jsonLine = JsonSerializer.Serialize(
-
-            new BatchJsonlParseError(prepared.Line, message),
-
-            ArcanumJsonContext.Default.BatchJsonlParseError);
-
-        await batches.CompleteLineAsync(
-
-            batchId,
-
-            prepared.Line,
-
             BatchLineOutputKind.Error,
 
             BatchRequestOutcome.Failed,
 
             jsonLine,
 
-            CancellationToken.None).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
 
     }
 

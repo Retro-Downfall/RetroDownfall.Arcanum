@@ -88,7 +88,7 @@ public sealed partial class GuardrailsPipeline(
 
         await LogViolationsAsync(StageInput, result.Violations, auditContext, cancellationToken).ConfigureAwait(false);
 
-        Error error = BuildError(result.Violations[0]);
+        Error error = BuildError(result.Violations[0], StageInput);
 
         return Result<GuardrailsResult>.Failure(error);
 
@@ -128,7 +128,7 @@ public sealed partial class GuardrailsPipeline(
 
         await LogViolationsAsync(StageOutput, result.Violations, auditContext, cancellationToken).ConfigureAwait(false);
 
-        Error error = BuildError(result.Violations[0]);
+        Error error = BuildError(result.Violations[0], StageOutput);
 
         return Result<GuardrailsResult>.Failure(error);
 
@@ -298,7 +298,9 @@ public sealed partial class GuardrailsPipeline(
             foreach (string pattern in allowed)
             {
 
-                if (TryMatchTopic(pattern, text, out string? matched))
+                // Undetermined stays unmatched here, which is already the fail-closed direction for
+                // an allow list.
+                if (MatchTopic(pattern, text, out string? matched) == TopicMatch.Matched)
                 {
 
                     matchedAny = true;
@@ -327,13 +329,30 @@ public sealed partial class GuardrailsPipeline(
             foreach (string pattern in blocked)
             {
 
-                if (TryMatchTopic(pattern, text, out string? matched))
+                switch (MatchTopic(pattern, text, out string? matched))
                 {
 
-                    violations.Add(new GuardrailsViolation(
-                        TypeTopicBlocked,
-                        "Content matched a blocked-topic pattern.",
-                        RedactMatch(TypeTopicBlocked, matched)));
+                    case TopicMatch.Matched:
+                        violations.Add(new GuardrailsViolation(
+                            TypeTopicBlocked,
+                            "Content matched a blocked-topic pattern.",
+                            RedactMatch(TypeTopicBlocked, matched)));
+
+                        break;
+
+                    // The match budget elapsed, so whether the block applies is unknown. Treating
+                    // that as "no violation" would let crafted input choose its own answer, so a
+                    // blocked-topic evaluation that did not finish fails closed and is audited.
+                    case TopicMatch.Undetermined:
+                        violations.Add(new GuardrailsViolation(
+                            TypeTopicBlocked,
+                            "A blocked-topic pattern could not be evaluated within its match budget.",
+                            RedactMatch(TypeTopicBlocked, null)));
+
+                        break;
+
+                    default:
+                        break;
 
                 }
 
@@ -343,7 +362,22 @@ public sealed partial class GuardrailsPipeline(
 
     }
 
-    private bool TryMatchTopic(string pattern, string text, out string? matched)
+    /// <summary>
+    /// Outcome of evaluating one topic pattern. <see cref="Undetermined"/> is deliberately distinct
+    /// from <see cref="NoMatch"/> so each caller can pick its own fail-safe direction.
+    /// </summary>
+    private enum TopicMatch
+    {
+
+        NoMatch,
+
+        Matched,
+
+        Undetermined,
+
+    }
+
+    private TopicMatch MatchTopic(string pattern, string text, out string? matched)
     {
 
         matched = null;
@@ -351,7 +385,7 @@ public sealed partial class GuardrailsPipeline(
         if (string.IsNullOrWhiteSpace(pattern))
         {
 
-            return false;
+            return TopicMatch.NoMatch;
 
         }
 
@@ -367,19 +401,29 @@ public sealed partial class GuardrailsPipeline(
 
                 matched = m.Value;
 
-                return true;
+                return TopicMatch.Matched;
 
             }
 
         }
-        catch (Exception ex) when (ex is ArgumentException or RegexMatchTimeoutException)
+        catch (ArgumentException ex)
         {
 
-            logger.LogWarning(ex, "Guardrails topic pattern '{Pattern}' is invalid or timed out; skipped.", pattern);
+            // An operator typo is a configuration mistake, not an attack surface: the pattern never
+            // matches anything, so skipping it is the same answer at every call site.
+            logger.LogWarning(ex, "Guardrails topic pattern '{Pattern}' is invalid; skipped.", pattern);
+
+        }
+        catch (RegexMatchTimeoutException ex)
+        {
+
+            logger.LogWarning(ex, "Guardrails topic pattern '{Pattern}' exceeded its match budget; the result is undetermined.", pattern);
+
+            return TopicMatch.Undetermined;
 
         }
 
-        return false;
+        return TopicMatch.NoMatch;
 
     }
 
@@ -464,10 +508,29 @@ public sealed partial class GuardrailsPipeline(
 
     }
 
-    private static Error BuildError(GuardrailsViolation violation) =>
-        violation.Type.StartsWith("pii-", StringComparison.Ordinal)
-            ? new Error(ErrorCodes.Guardrails.PiiDetected, "Input rejected: personally identifiable information detected. Redact PII and retry.")
-            : new Error(ErrorCodes.Guardrails.Blocked, "Input rejected: content matched a guardrail policy (toxicity or topic).");
+    /// <summary>
+    /// Builds the caller-facing failure for the first violation. The <see cref="ErrorCodes.Guardrails"/>
+    /// code is stage-independent (the wire contract is unchanged); only the human-readable text names
+    /// the stage, so an output-gate rejection is not misreported as a rejected prompt.
+    /// </summary>
+    private static Error BuildError(GuardrailsViolation violation, string stage)
+    {
+
+        bool isOutput = string.Equals(stage, StageOutput, StringComparison.Ordinal);
+
+        return violation.Type.StartsWith("pii-", StringComparison.Ordinal)
+            ? new Error(
+                ErrorCodes.Guardrails.PiiDetected,
+                isOutput
+                    ? "Response blocked: personally identifiable information detected in the model output."
+                    : "Input rejected: personally identifiable information detected. Redact PII and retry.")
+            : new Error(
+                ErrorCodes.Guardrails.Blocked,
+                isOutput
+                    ? "Response blocked: model output matched a guardrail policy (toxicity or topic)."
+                    : "Input rejected: content matched a guardrail policy (toxicity or topic).");
+
+    }
 
     /// <summary>
     /// Redacts a matched span so the audit log and any error envelope never persist raw PII. PII

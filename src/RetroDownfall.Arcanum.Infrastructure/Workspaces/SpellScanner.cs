@@ -953,7 +953,7 @@ internal static class SpellScanner
             return null;
         }
 
-        if (!TryGetFileLength(filePath, out long fileLength) || ExceedsMaxFileSize(fileLength, maxFileSizeBytes))
+        if (!TryGetRegularFileLength(filePath, out long fileLength) || ExceedsMaxFileSize(fileLength, maxFileSizeBytes))
         {
             return null;
         }
@@ -994,16 +994,28 @@ internal static class SpellScanner
             return null;
         }
 
+        // Prove the object is an unaliased regular file before opening it (DESIGN §11.6). TryGetFileLength
+        // reports 0 for a FIFO, so the size gate above passes, and a blocking open(2) on a FIFO never returns
+        // until a writer appears — no CancellationToken can interrupt an open. Because ScanMetadataAsync
+        // coalesces through SingleFlight, one planted FIFO would pin a thread-pool thread and leave the spell
+        // catalog permanently unavailable for every caller of that workspace.
+        if (SecureFileReader.TryOpenRegularFile(
+                filePath,
+                expectedIdentity: null,
+                out FileStream? secureStream,
+                out _)
+            is not SecureFileOpenStatus.Success
+            || secureStream is null)
+        {
+            secureStream?.Dispose();
+
+            return null;
+        }
+
+        await using FileStream stream = secureStream;
+
         try
         {
-            await using FileStream stream = new(
-                filePath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite,
-                bufferSize: 4096,
-                useAsync: true);
-
             using StreamReader reader = new(stream);
 
             long bytesRead = 0L;
@@ -1070,30 +1082,32 @@ internal static class SpellScanner
             return null;
         }
 
-        if (!TryGetFileLength(filePath, out long fileLength) || ExceedsMaxFileSize(fileLength, maxFileSizeBytes))
+        if (!TryGetRegularFileLength(filePath, out long fileLength) || ExceedsMaxFileSize(fileLength, maxFileSizeBytes))
         {
             return null;
         }
 
-        string fullText;
-
-        try
-        {
-            fullText = await File.ReadAllTextAsync(filePath, cancellationToken).ConfigureAwait(false);
-        }
-        catch (IOException)
-        {
-            return null;
-        }
-        catch (UnauthorizedAccessException)
+        if (maxFileSizeBytes <= 0)
         {
             return null;
         }
 
-        if (Encoding.UTF8.GetByteCount(fullText) > maxFileSizeBytes)
+        // Same fail-closed read as the metadata walk (DESIGN §11.6): File.ReadAllTextAsync blocked forever on
+        // a FIFO whose stat length of 0 sailed through the size gate, and once a writer attached it read to EOF
+        // with no cap because the byte-count check only ran after the whole payload was already in memory.
+        // SecureFileReader rejects non-regular/aliased objects and bounds the read at maxFileSizeBytes + 1.
+        int maxBytes = (int)Math.Min(maxFileSizeBytes, int.MaxValue - 1);
+
+        SecureUtf8FileReadResult readResult = await SecureFileReader
+            .ReadUtf8TextAsync(filePath, maxBytes, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (readResult.Status is not SecureFileReadStatus.Success || readResult.Text is null)
         {
             return null;
         }
+
+        string fullText = readResult.Text;
 
         string directoryFallbackName = GetSpellDirectoryFallbackName(filePath);
 
@@ -1258,6 +1272,27 @@ internal static class SpellScanner
         {
             return Array.Empty<string>();
         }
+    }
+
+    /// <summary>
+    /// Stat gate for spell files that also proves the object is an unaliased regular file. Directory
+    /// enumeration yields FIFOs and devices, and .NET's Unix attribute mapping has no bit for them (a FIFO
+    /// reports <see cref="FileAttributes.Normal"/>), so one would otherwise reach the read paths with a stat
+    /// length of 0 — comfortably under the size cap — and be published to the catalog under its directory
+    /// fallback name even though nothing can ever be read from it.
+    /// </summary>
+    private static bool TryGetRegularFileLength(string filePath, out long length)
+    {
+        length = 0L;
+
+        if (!FileHandleIdentityInterop.TryGetPathMetadata(filePath, out FileHandleMetadata metadata)
+            || metadata.Kind != FileSystemObjectKind.RegularFile
+            || metadata.HardLinkCount != 1)
+        {
+            return false;
+        }
+
+        return TryGetFileLength(filePath, out length);
     }
 
     private static bool TryGetFileLength(string filePath, out long length)

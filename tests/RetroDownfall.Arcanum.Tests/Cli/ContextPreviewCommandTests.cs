@@ -51,4 +51,46 @@ public sealed class ContextPreviewCommandTests
 
     }
 
+    /// <summary>
+
+    /// The preview verbs share <c>run</c>'s <c>ZeroOrMore</c> prompt positional, so a mistyped flag
+
+    /// was bound as prompt text and the preview ran against a silently different request than the
+
+    /// operator asked for. A dash-led token before the <c>--</c> terminator is a command-line
+
+    /// error here too.
+
+    /// </summary>
+
+    [Theory]
+
+    [InlineData("inspect")]
+
+    [InlineData("tools")]
+
+    [InlineData("sources")]
+
+    [InlineData("cost")]
+
+    public async Task Preview_commands_refuse_a_mistyped_option(string verb)
+
+    {
+
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            ["--print", "context", verb, "--show-contents", "explain"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("--show-contents", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("--show-content", result.Error, StringComparison.Ordinal);
+
+    }
+
 }

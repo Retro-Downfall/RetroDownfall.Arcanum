@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
+using ModelContextProtocol.Client;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -127,6 +129,79 @@ public sealed class McpOutboundLineGuardTests
             Assert.EndsWith("\n", line);
 
         }
+
+    }
+
+    // A <see cref="..."/> that names a type nobody declares any more silently rots: the compiler
+    // never checks it (no documentation file is generated) and it keeps pointing a maintainer at
+    // a transport that the SDK migration deleted. Every Mcp-prefixed cref in the MCP sources must
+    // resolve to a real type in either the Infrastructure assembly or the MCP SDK assembly.
+    [Fact]
+    public void Mcp_doc_comment_crefs_name_types_that_still_exist()
+    {
+
+        string mcpSourceRoot = Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "RetroDownfall.Arcanum.Infrastructure",
+            "Mcp");
+
+        Assert.True(Directory.Exists(mcpSourceRoot), $"Missing MCP source root: {mcpSourceRoot}");
+
+        HashSet<string> declaredTypeNames = typeof(McpOutboundLineGuard).Assembly.GetTypes()
+            .Concat(typeof(IClientTransport).Assembly.GetTypes())
+            .Select(static type => type.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Regex crefPattern = new("<see cref=\"(?<name>Mcp[A-Za-z0-9_]*)\"\\s*/>");
+
+        List<string> unresolved = [];
+
+        foreach (string file in Directory.EnumerateFiles(mcpSourceRoot, "*.cs", SearchOption.AllDirectories))
+        {
+
+            foreach (Match match in crefPattern.Matches(File.ReadAllText(file)))
+            {
+
+                string name = match.Groups["name"].Value;
+
+                if (!declaredTypeNames.Contains(name))
+                {
+
+                    unresolved.Add($"{Path.GetFileName(file)}: {name}");
+
+                }
+
+            }
+
+        }
+
+        Assert.True(
+            unresolved.Count == 0,
+            $"XML doc cref targets naming types that no longer exist:\n  {string.Join("\n  ", unresolved)}");
+
+    }
+
+    private static string FindRepositoryRoot()
+    {
+
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+
+        while (directory is not null)
+        {
+
+            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
+            {
+
+                return directory.FullName;
+
+            }
+
+            directory = directory.Parent;
+
+        }
+
+        throw new InvalidOperationException("Could not locate the repository root.");
 
     }
 

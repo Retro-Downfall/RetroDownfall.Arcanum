@@ -71,40 +71,77 @@ public sealed class FamiliarProbe(
 
         string executable = resolvedPath ?? command;
 
-        return provider.Type switch
+        // A status spawn is still a spawn. Both CLIs read project state out of their working root —
+        // Claude Code's `.claude/settings.json` hooks, Codex's `AGENTS.md` and `.rules` — so the
+        // probe gets the same private root the inference path gives every turn. Inheriting the host's
+        // current directory would let whatever repository the operator started Arcanum in steer it.
+        FamiliarWorkingDirectory root;
+
+        try
         {
 
-            AiProviderKind.ClaudeCodeCli =>
-                await ProbeClaudeAsync(provider, executable, enumeration, models, cancellationToken)
-                    .ConfigureAwait(false),
+            root = FamiliarWorkingDirectory.Create();
 
-            AiProviderKind.CodexCli =>
-                await ProbeCodexAsync(provider, executable, enumeration, models, cancellationToken)
-                    .ConfigureAwait(false),
+        }
+        catch (IOException)
+        {
 
-            _ => Build(
+            // The inference path is right to throw here, but the probe is the surface an operator
+            // calls to find out what is wrong — so it reports the unusable host instead of taking
+            // down the caller. Nothing is spawned either way: running the CLI from a directory other
+            // accounts can write to is precisely what was refused.
+            return Build(
                 provider,
-                FamiliarProbeStatus.NotInstalled,
+                FamiliarProbeStatus.NotConfigured,
                 version: null,
-                $"'{provider.Type}' is not a Familiar kind.",
-                "Set this provider's type to ClaudeCodeCli or CodexCli.",
+                $"{FamiliarProviders.DisplayName(provider.Type)} could not be checked: Arcanum could not create a private directory to run it in.",
+                "Make sure this machine's temporary directory exists and is writable by the account Arcanum runs as. A Familiar is never run from a directory other accounts can write to.",
                 remediationCommand: null,
                 enumeration,
-                models),
+                models);
 
-        };
+        }
+
+        using (root)
+        {
+
+            return provider.Type switch
+            {
+
+                AiProviderKind.ClaudeCodeCli =>
+                    await ProbeClaudeAsync(provider, executable, root.Path, enumeration, models, cancellationToken)
+                        .ConfigureAwait(false),
+
+                AiProviderKind.CodexCli =>
+                    await ProbeCodexAsync(provider, executable, root.Path, enumeration, models, cancellationToken)
+                        .ConfigureAwait(false),
+
+                _ => Build(
+                    provider,
+                    FamiliarProbeStatus.NotInstalled,
+                    version: null,
+                    $"'{provider.Type}' is not a Familiar kind.",
+                    "Set this provider's type to ClaudeCodeCli or CodexCli.",
+                    remediationCommand: null,
+                    enumeration,
+                    models),
+
+            };
+
+        }
 
     }
 
     private async Task<FamiliarProbeResult> ProbeClaudeAsync(
         ProviderSettings provider,
         string command,
+        string workingDirectory,
         FamiliarModelEnumeration enumeration,
         string[] models,
         CancellationToken cancellationToken)
     {
 
-        string? version = await ReadVersionAsync(command, ["--version"], cancellationToken)
+        string? version = await ReadVersionAsync(command, ["--version"], workingDirectory, cancellationToken)
             .ConfigureAwait(false);
 
         FamiliarProcessOutput output = await runner.RunToCompletionAsync(
@@ -112,17 +149,38 @@ public sealed class FamiliarProbe(
             {
                 FileName = command,
                 Arguments = ["auth", "status", "--json"],
+                WorkingDirectory = workingDirectory,
                 DeniedEnvironmentVariables = DeniedEnvironmentVariables(),
                 Timeout = FamiliarProcessLimits.ProbeTimeout,
             },
             cancellationToken).ConfigureAwait(false);
 
+        // A CLI that never answered is not a signed-out CLI. A wedged binary that hit the probe
+        // deadline, or one the OS refused to start, leaves stdout empty — and reading that as a
+        // sign-out would send the operator to `auth login` to fix something that is not broken.
+        if (output.Failure is FamiliarProcessFailure.TimedOut
+            or FamiliarProcessFailure.StartFailed
+            or FamiliarProcessFailure.NotInstalled)
+        {
+
+            return Build(
+                provider,
+                FamiliarProbeStatus.NotConfigured,
+                version,
+                "Claude Code is installed but did not answer its status command.",
+                "Run the status command yourself to see what it says; Arcanum only reads its status.",
+                "claude auth status",
+                enumeration,
+                models);
+
+        }
+
         ClaudeAuthStatus? status = TryParse(
             output.StandardOutput,
             FamiliarProbeJsonContext.Default.ClaudeAuthStatus);
 
-        // A non-zero exit here means the CLI could not answer, which for an installed binary is the
-        // same operator action as an explicit "not signed in".
+        // A non-zero exit here means the CLI ran and refused to answer, which for an installed
+        // binary is the same operator action as an explicit "not signed in".
         if (status?.LoggedIn != true)
         {
 
@@ -157,6 +215,7 @@ public sealed class FamiliarProbe(
     private async Task<FamiliarProbeResult> ProbeCodexAsync(
         ProviderSettings provider,
         string command,
+        string workingDirectory,
         FamiliarModelEnumeration enumeration,
         string[] models,
         CancellationToken cancellationToken)
@@ -167,6 +226,7 @@ public sealed class FamiliarProbe(
             {
                 FileName = command,
                 Arguments = ["doctor", "--json"],
+                WorkingDirectory = workingDirectory,
                 DeniedEnvironmentVariables = DeniedEnvironmentVariables(),
                 Timeout = FamiliarProcessLimits.ProbeTimeout,
             },
@@ -230,6 +290,7 @@ public sealed class FamiliarProbe(
     private async Task<string?> ReadVersionAsync(
         string command,
         IReadOnlyList<string> arguments,
+        string workingDirectory,
         CancellationToken cancellationToken)
     {
 
@@ -238,6 +299,7 @@ public sealed class FamiliarProbe(
             {
                 FileName = command,
                 Arguments = arguments,
+                WorkingDirectory = workingDirectory,
                 DeniedEnvironmentVariables = DeniedEnvironmentVariables(),
                 Timeout = FamiliarProcessLimits.ProbeTimeout,
             },

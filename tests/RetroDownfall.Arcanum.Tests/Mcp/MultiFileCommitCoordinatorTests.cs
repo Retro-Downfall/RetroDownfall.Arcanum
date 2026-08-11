@@ -312,6 +312,67 @@ public sealed class MultiFileCommitCoordinatorTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Staged_output_is_never_group_or_world_readable_while_it_is_written()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        string path = _workspace.WriteFile("secret.env", "TOKEN=old");
+
+        UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+        File.SetUnixFileMode(path, ownerOnly);
+
+        UnixFileMode? stagedMode = null;
+
+        MultiFileCommitCoordinator coordinator = new(
+            _workspace.Root,
+            new MultiFileCommitCoordinatorOptions
+            {
+                AfterStagingArtifactCreated = relativePath =>
+                {
+
+                    if (OperatingSystem.IsWindows())
+                    {
+
+                        return;
+
+                    }
+
+                    stagedMode ??= File.GetUnixFileMode(
+                        Path.Combine(_workspace.Root, relativePath));
+
+                },
+            });
+
+        WorkspaceCommitResult result = await coordinator.CommitAsync(
+            [await WriteOperationAsync("secret.env", "TOKEN=new")],
+            CancellationToken.None);
+
+        Assert.Equal(WorkspaceCommitStatus.Committed, result.Status);
+
+        Assert.NotNull(stagedMode);
+
+        Assert.Equal(
+            UnixFileMode.None,
+            stagedMode!.Value
+                & (UnixFileMode.GroupRead
+                    | UnixFileMode.GroupWrite
+                    | UnixFileMode.OtherRead
+                    | UnixFileMode.OtherWrite));
+
+        Assert.Equal(ownerOnly, File.GetUnixFileMode(path));
+
+        _ = await result.Transaction!.MarkIrreversibleAsync(CancellationToken.None);
+
+    }
+
+    [Fact]
     public async Task Rollback_incomplete_keeps_relative_recovery_artifacts_and_external_content()
     {
 

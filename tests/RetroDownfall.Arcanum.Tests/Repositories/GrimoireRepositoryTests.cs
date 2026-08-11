@@ -1,7 +1,10 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -147,6 +150,36 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
         Assert.True(deleted);
 
         Assert.Null(await repository.GetLoreAsync("ward.color", CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task GetLoreAsync_and_ListLoreAsync_return_UpdatedAtUtc_marked_as_Utc()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireRepository repository = CreateRepository();
+
+        LoreDto written = await repository.ScribeLoreAsync("ward.kind", "cobalt", CancellationToken.None);
+
+        Assert.Equal(DateTimeKind.Utc, written.UpdatedAtUtc.Kind);
+
+        LoreDto? fetched = await repository.GetLoreAsync("ward.kind", CancellationToken.None);
+
+        Assert.NotNull(fetched);
+
+        Assert.Equal(DateTimeKind.Utc, fetched!.UpdatedAtUtc.Kind);
+
+        ListPageResult<LoreDto> page = await repository.ListLoreAsync(cancellationToken: CancellationToken.None);
+
+        LoreDto listed = page.Items.Single(item => item.Key == "ward.kind");
+
+        Assert.Equal(DateTimeKind.Utc, listed.UpdatedAtUtc.Kind);
+
+        string json = JsonSerializer.Serialize(fetched, ArcanumJsonContext.Default.LoreDto);
+
+        Assert.Contains("Z\"", json, StringComparison.Ordinal);
 
     }
 

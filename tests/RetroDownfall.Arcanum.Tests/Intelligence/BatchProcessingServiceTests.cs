@@ -256,6 +256,136 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A JSON-parse failure never reaches a provider, so it must never be observable in the
+    /// <c>Dispatched</c> state: a crash in that window makes restart recovery seal it in the OUTPUT
+    /// file as <c>batch_interrupted_after_dispatch</c> and tell the operator the provider "may have
+    /// completed and charged the request" for a line that can never succeed.
+    /// </summary>
+    [SkippableFact]
+    public async Task ProcessBatchAsync_InvalidJsonLine_IsNeverCheckpointedAsDispatched()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeIntelligenceProvider intelligence = new() { NextText = "ok", NextFinishReason = "stop" };
+
+        List<long> dispatchedLines = [];
+
+        ServiceCollection services = new();
+
+        services.AddSingleton(_db!);
+
+        services.AddScoped<IBatchRepository>(sp => new DispatchRecordingBatchRepository(
+            new BatchRepository(sp.GetRequiredService<ArcanumDbContext>()),
+            dispatchedLines));
+
+        services.AddScoped<IUploadedFileRepository, UploadedFileRepository>();
+
+        services.AddSingleton(_blobStore);
+
+        services.AddSingleton<IArcanumIntelligenceProvider>(intelligence);
+
+        services.AddSingleton<IBatchRecoveryService>(_ => new NoOpBatchRecoveryService());
+
+        await using ServiceProvider root = services.BuildServiceProvider();
+
+        BatchProcessingService service = CreateService(root);
+
+        string jsonl =
+            "{ this is not valid json\n" +
+            """{"custom_id":"req-good","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}""" + "\n";
+
+        Guid inputFileId = await SeedInputFileAsync(jsonl);
+
+        BatchRecord batch = new(Guid.NewGuid(), inputFileId, "/v1/chat/completions", BatchStatuses.Validating, DateTimeOffset.UtcNow, null, null, null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        BatchRecord? finished = await _batches.GetByIdAsync(batch.Id, CancellationToken.None);
+
+        Assert.NotNull(finished);
+
+        Assert.Equal(BatchStatuses.Completed, finished!.Status);
+
+        Assert.Equal(2, finished.TotalRequestCount);
+
+        Assert.Equal(1, finished.CompletedRequestCount);
+
+        Assert.Equal(1, finished.FailedRequestCount);
+
+        string errorPath = UploadedFileStorage.ResolvePath(finished.ErrorFileId!.Value);
+
+        _createdFilePaths.Add(errorPath);
+
+        _createdFilePaths.Add(UploadedFileStorage.ResolvePath(finished.OutputFileId!.Value));
+
+        Assert.Contains("\"line\":1", await ReadArtifactTextAsync(errorPath), StringComparison.Ordinal);
+
+        Assert.Equal([2L], dispatchedLines);
+
+    }
+
+    /// <summary>
+    /// Batches are dispatched with <c>Task.Run</c>. If their handles are not retained,
+    /// <c>StopAsync</c> returns the moment the poll loop breaks and the host tears the process down
+    /// underneath a worker that is mid-<c>CompleteLineAsync</c> — losing a provider response that
+    /// was already received and paid for.
+    /// </summary>
+    [SkippableFact]
+    public async Task StopAsync_DrainsInFlightBatchWorkBeforeReturning()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TaskCompletionSource gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeIntelligenceProvider intelligence = new()
+        {
+            NextText = "ok",
+            NextFinishReason = "stop",
+            ExecuteGate = gate,
+            ExecuteEntered = entered,
+        };
+
+        BatchProcessingService service = CreateService(intelligence);
+
+        Guid inputFileId = await SeedInputFileAsync(
+            """{"custom_id":"draining","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}"""
+            + "\n");
+
+        BatchRecord batch = new(Guid.NewGuid(), inputFileId, "/v1/chat/completions", BatchStatuses.Validating, DateTimeOffset.UtcNow, null, null, null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.TickAsync(CancellationToken.None);
+
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Task stopping = service.StopAsync(CancellationToken.None);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(250));
+
+        Assert.False(stopping.IsCompleted);
+
+        gate.SetResult();
+
+        await stopping.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.False(service.IsBatchInFlight(batch.Id));
+
+        BatchRecord? finished = await _batches.GetByIdAsync(batch.Id, CancellationToken.None);
+
+        Assert.Equal(BatchStatuses.Completed, finished!.Status);
+
+        _createdFilePaths.Add(UploadedFileStorage.ResolvePath(finished.OutputFileId!.Value));
+
+    }
+
     [SkippableFact]
     public async Task ProcessBatchAsync_MoreThanOneInternalPage_ProcessesEveryLine()
     {
@@ -530,6 +660,88 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
         Assert.Contains("uncertain", output, StringComparison.Ordinal);
 
         Assert.Contains("batch_interrupted_after_dispatch", output, StringComparison.Ordinal);
+
+    }
+
+    [SkippableFact]
+
+    public async Task ProcessBatchAsync_CancelledBeforeClaim_LeavesBatchCancelledAndDispatchesNothing()
+
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeIntelligenceProvider provider = new()
+
+        {
+
+            NextText = "must-never-run",
+
+            NextFinishReason = "stop",
+
+        };
+
+        BatchProcessingService service = CreateService(
+
+            provider,
+
+            maxConcurrentRequestsPerBatch: 1);
+
+        Guid inputFileId = await SeedInputFileAsync(
+
+            """{"custom_id":"cancelled-before-claim","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"one"}]}}"""
+
+            + "\n");
+
+        BatchRecord batch = new(
+
+            Guid.NewGuid(),
+
+            inputFileId,
+
+            "/v1/chat/completions",
+
+            BatchStatuses.Validating,
+
+            DateTimeOffset.UtcNow,
+
+            null,
+
+            null,
+
+            null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        DateTimeOffset cancelledAt = DateTimeOffset.UtcNow;
+
+        Assert.True(await _batches.TryCompareAndSetStatusAsync(
+
+            batch.Id,
+
+            BatchStatuses.Validating,
+
+            BatchStatuses.Cancelled,
+
+            cancelledAt,
+
+            outputFileId: null,
+
+            errorFileId: null,
+
+            CancellationToken.None));
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(
+
+            await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Cancelled, finished.Status);
+
+        Assert.NotNull(finished.CompletedAt);
+
+        Assert.Equal(0, provider.ExecutePromptCallCount);
 
     }
 
@@ -1562,6 +1774,134 @@ public sealed class BatchProcessingServiceTests : IAsyncLifetime
             DateTimeOffset utcNow,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
+    }
+
+    /// <summary>
+    /// Forwards everything and records which lines were ever opened in the provider-ambiguous
+    /// <c>Dispatched</c> state.
+    /// </summary>
+    private sealed class DispatchRecordingBatchRepository(
+        IBatchRepository inner,
+        List<long> dispatchedLines) : IBatchRepository
+    {
+
+        public Task CreateAsync(BatchRecord record, CancellationToken cancellationToken = default) =>
+            inner.CreateAsync(record, cancellationToken);
+
+        public Task<BatchRecord?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+            inner.GetByIdAsync(id, cancellationToken);
+
+        public Task<IReadOnlyList<BatchRecord>> ListAsync(string? status, CancellationToken cancellationToken = default) =>
+            inner.ListAsync(status, cancellationToken);
+
+        public Task<BatchListPage> ListPageAsync(
+            string? status,
+            BatchListPosition? after,
+            int pageSize,
+            CancellationToken cancellationToken = default) =>
+            inner.ListPageAsync(status, after, pageSize, cancellationToken);
+
+        public Task<IReadOnlyList<BatchRecord>> ListPendingPageAsync(
+            int pageSize,
+            CancellationToken cancellationToken = default) =>
+            inner.ListPendingPageAsync(pageSize, cancellationToken);
+
+        public Task<IReadOnlyList<BatchRecord>> ListByStatusAsync(string status, CancellationToken cancellationToken = default) =>
+            inner.ListByStatusAsync(status, cancellationToken);
+
+        public Task UpdateStatusAsync(
+            Guid id,
+            string status,
+            DateTimeOffset? completedAt,
+            Guid? outputFileId,
+            Guid? errorFileId,
+            CancellationToken cancellationToken = default) =>
+            inner.UpdateStatusAsync(id, status, completedAt, outputFileId, errorFileId, cancellationToken);
+
+        public Task<bool> TryCompareAndSetStatusAsync(
+            Guid id,
+            string expectedStatus,
+            string newStatus,
+            DateTimeOffset? completedAt,
+            Guid? outputFileId,
+            Guid? errorFileId,
+            CancellationToken cancellationToken = default) =>
+            inner.TryCompareAndSetStatusAsync(
+                id,
+                expectedStatus,
+                newStatus,
+                completedAt,
+                outputFileId,
+                errorFileId,
+                cancellationToken);
+
+        public Task<IReadOnlyList<BatchLineCheckpoint>> ListLineCheckpointsAsync(
+            Guid batchId,
+            long firstLine,
+            long lastLine,
+            CancellationToken cancellationToken = default) =>
+            inner.ListLineCheckpointsAsync(batchId, firstLine, lastLine, cancellationToken);
+
+        public Task<IReadOnlyList<BatchLineCheckpoint>> ListLineCheckpointsAsync(
+            Guid batchId,
+            BatchLineCheckpointState state,
+            long afterLine,
+            int pageSize,
+            CancellationToken cancellationToken = default) =>
+            inner.ListLineCheckpointsAsync(batchId, state, afterLine, pageSize, cancellationToken);
+
+        public async Task<bool> TryBeginLineAsync(
+            Guid batchId,
+            long lineNumber,
+            string customId,
+            CancellationToken cancellationToken = default)
+        {
+
+            bool began = await inner.TryBeginLineAsync(batchId, lineNumber, customId, cancellationToken);
+
+            if (began)
+            {
+
+                lock (dispatchedLines)
+                {
+                    dispatchedLines.Add(lineNumber);
+                }
+
+            }
+
+            return began;
+
+        }
+
+        public Task<bool> TryRecordTerminalLineAsync(
+            Guid batchId,
+            long lineNumber,
+            string customId,
+            BatchLineOutputKind outputKind,
+            BatchRequestOutcome outcome,
+            string jsonLine,
+            CancellationToken cancellationToken = default) =>
+            inner.TryRecordTerminalLineAsync(
+                batchId,
+                lineNumber,
+                customId,
+                outputKind,
+                outcome,
+                jsonLine,
+                cancellationToken);
+
+        public Task CompleteLineAsync(
+            Guid batchId,
+            long lineNumber,
+            BatchLineOutputKind outputKind,
+            BatchRequestOutcome outcome,
+            string jsonLine,
+            CancellationToken cancellationToken = default) =>
+            inner.CompleteLineAsync(batchId, lineNumber, outputKind, outcome, jsonLine, cancellationToken);
+
+        public Task DeleteLineCheckpointsAsync(Guid batchId, CancellationToken cancellationToken = default) =>
+            inner.DeleteLineCheckpointsAsync(batchId, cancellationToken);
+
     }
 
     private sealed class NoOpBatchRecoveryService : IBatchRecoveryService

@@ -105,7 +105,7 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
         ApiResponse<string> body = new(
             null,
             false,
-            new Error("Hub.Unhandled", "An internal error occurred."),
+            new Error(ErrorCodes.Hub.Unhandled, "An internal error occurred."),
             traceId);
 
         await httpContext.Response

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -116,12 +117,53 @@ internal static partial class OpenAiV1Endpoints
 
     }
 
+    /// <summary>
+    /// The body is read here rather than bound as a route-handler parameter (the same shape
+    /// <c>HandleChatCompletionsAsync</c> uses): <c>RequestDelegateFactory</c> swallows the
+    /// <see cref="JsonException"/> from a malformed body and completes the request with a body-less
+    /// framework <c>400</c>, so an OpenAI SDK client would never see the OpenAI error envelope this
+    /// surface promises (<c>docs/Arcanum.API.md</c> §8.23, "/api vs /v1").
+    /// </summary>
     private static async Task<IResult> HandleCreateBatchAsync(
-        OpenAiBatchRequest? body,
+        HttpContext httpContext,
         IBatchRepository batches,
         IUploadedFileRepository files,
         CancellationToken cancellationToken)
     {
+
+        if (!httpContext.Request.HasJsonContentType())
+        {
+
+            return JsonError(
+                "Request body must be sent with 'Content-Type: application/json'.",
+                "invalid_request_error",
+                "unsupported_media_type",
+                param: null,
+                StatusCodes.Status415UnsupportedMediaType);
+
+        }
+
+        OpenAiBatchRequest? body;
+
+        try
+        {
+
+            body = await httpContext.Request
+                .ReadFromJsonAsync(ArcanumJsonContext.Default.OpenAiBatchRequest, cancellationToken)
+                .ConfigureAwait(false);
+
+        }
+        catch (JsonException)
+        {
+
+            return JsonError(
+                "Request body could not be parsed as a batch request.",
+                "invalid_request_error",
+                "invalid_json",
+                param: null,
+                StatusCodes.Status400BadRequest);
+
+        }
 
         if (body is null || string.IsNullOrWhiteSpace(body.InputFileId))
         {

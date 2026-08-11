@@ -816,13 +816,34 @@ internal sealed class MultiFileCommitCoordinator
         CancellationToken cancellationToken)
     {
 
+        UnixFileMode? mode = operation.ExpectedFingerprint.Exists
+            ? operation.ExpectedFingerprint.UnixMode
+            : operation.NewFileUnixMode;
+
+        FileStreamOptions stagingOptions = new()
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+            BufferSize = 4096,
+            Options = FileOptions.Asynchronous | FileOptions.WriteThrough,
+        };
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            // The staged plaintext must never be readable by anyone the destination excludes,
+            // so the create mode carries the destination's mode from the first byte written.
+            stagingOptions.UnixCreateMode =
+                (mode ?? UnixFileMode.None)
+                | UnixFileMode.UserRead
+                | UnixFileMode.UserWrite;
+
+        }
+
         await using (FileStream stream = new(
             operation.TempAbsolutePath!,
-            FileMode.CreateNew,
-            FileAccess.Write,
-            FileShare.None,
-            bufferSize: 4096,
-            FileOptions.Asynchronous | FileOptions.WriteThrough))
+            stagingOptions))
         {
 
             if (!FileHandleIdentityInterop.TryGetHandleMetadata(
@@ -851,10 +872,6 @@ internal sealed class MultiFileCommitCoordinator
             stream.Flush(flushToDisk: true);
 
         }
-
-        UnixFileMode? mode = operation.ExpectedFingerprint.Exists
-            ? operation.ExpectedFingerprint.UnixMode
-            : operation.NewFileUnixMode;
 
         ApplyUnixMode(operation.TempAbsolutePath!, mode);
 

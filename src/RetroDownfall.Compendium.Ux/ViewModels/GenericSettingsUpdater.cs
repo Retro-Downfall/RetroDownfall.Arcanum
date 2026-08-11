@@ -91,6 +91,48 @@ public static class GenericSettingsUpdater
 
     }
 
+    /// <summary>
+    /// Returns the dotted path of the collection whose elements a descriptor key describes, or
+    /// <c>null</c> when the key addresses one settable value. <c>integrations.a2A.skills.id</c>
+    /// describes every element of <c>integrations.a2A.skills</c>, so it names no single property the
+    /// generic editor could write; only an explicit index (<c>integrations.a2A.skills.0.id</c>) does.
+    /// </summary>
+    public static string? ResolveCollectionTemplatePath(string key)
+    {
+
+        Type node = typeof(ArcanumSettings);
+
+        string[] parts = key.Split('.', StringSplitOptions.RemoveEmptyEntries);
+
+        // The final segment is the value itself; only a collection crossed on the way to it makes the
+        // key a per-element template.
+        for (int index = 0; index < parts.Length - 1; index++)
+        {
+
+            PropertyInfo? property = GetCachedProperty(node, ToPascal(parts[index]));
+
+            if (property is null)
+            {
+
+                return null;
+
+            }
+
+            if (IsElementCollection(property.PropertyType))
+            {
+
+                return string.Join('.', parts[..(index + 1)]);
+
+            }
+
+            node = property.PropertyType;
+
+        }
+
+        return null;
+
+    }
+
     public static ArcanumSettings ApplyFields(
         ArcanumSettings settings,
         IReadOnlyList<GenericSettingFieldViewModel> fields,
@@ -113,6 +155,15 @@ public static class GenericSettingsUpdater
 
             }
 
+            if (field.IsCollectionTemplate)
+            {
+
+                // A per-element template addresses no single property. The editor renders it read-only,
+                // so there is nothing to apply and nothing to warn about.
+                continue;
+
+            }
+
             ArcanumSettings? updated;
 
             try
@@ -126,13 +177,18 @@ public static class GenericSettingsUpdater
                 or FormatException
                 or OverflowException
                 or ArgumentException
-                or InvalidCastException)
+                or InvalidCastException
+                or TargetInvocationException)
             {
 
                 // Attribute the failure to the key that caused it: an unattributed exception escaping
-                // here aborts the whole save with a message naming no field and no section.
+                // here aborts the whole save with a message naming no field and no section. Reflection
+                // wraps whatever a normalizing property setter throws, so report the inner cause —
+                // otherwise the dialog reads "the target of an invocation" and names nothing at all.
+                Exception cause = (ex as TargetInvocationException)?.InnerException ?? ex;
+
                 throw new InvalidOperationException(
-                    $"'{field.Descriptor.Key}' could not be applied: {ex.Message}",
+                    $"'{field.Descriptor.Key}' could not be applied: {cause.Message}",
                     ex);
 
             }
@@ -169,7 +225,7 @@ public static class GenericSettingsUpdater
             SettingKind.StringArray when value is string[] arr => arr,
             SettingKind.Int when value is double d => (int)Math.Round(d),
             SettingKind.Long when value is double d => (long)Math.Round(d),
-            SettingKind.Float when value is double d => (float)d,
+            SettingKind.Float when value is double d => (decimal)d,
             SettingKind.Bool => value is true,
             _ => value,
         };
@@ -499,6 +555,30 @@ public static class GenericSettingsUpdater
             return value;
 
         }
+
+    }
+
+    private static bool IsElementCollection(Type type)
+    {
+
+        Type? element = null;
+
+        if (type.IsArray)
+        {
+
+            element = type.GetElementType();
+
+        }
+        else if (type.IsGenericType
+            && (type.GetGenericTypeDefinition() == typeof(List<>)
+                || type.GetGenericTypeDefinition() == typeof(IReadOnlyList<>)))
+        {
+
+            element = type.GetGenericArguments()[0];
+
+        }
+
+        return element is { IsClass: true } && element != typeof(string);
 
     }
 

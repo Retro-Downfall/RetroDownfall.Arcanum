@@ -89,7 +89,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         IUiDispatcher uiDispatcher,
         ILogger<ConfigurationViewModel> logger,
         LocalCertificateGenerator? certificateGenerator = null,
-        IConfigurationPresetService? presetService = null)
+        IConfigurationPresetService? presetService = null,
+        IFamiliarProbeClient? probeClient = null)
     {
 
         _store = store;
@@ -101,7 +102,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         _logger = logger;
 
         // Initialize view models with dialog service for confirmation dialogs
-        Providers = new ProvidersSectionViewModel(dialogService);
+        Providers = new ProvidersSectionViewModel(dialogService, probeClient);
         Daemon = new DaemonSectionViewModel(dialogService);
         Host.AttachServices(certificateGenerator ?? new LocalCertificateGenerator(), dialogService);
 
@@ -185,7 +186,48 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         HasFieldErrors = anyFieldError;
 
+        if (SameErrors(ValidationErrorsByPointer, merged))
+        {
+
+            return;
+
+        }
+
         ValidationErrorsByPointer = merged;
+
+    }
+
+    /// <summary>
+    /// <c>[ObservableProperty]</c> falls back to reference equality for a dictionary, so a freshly built
+    /// map never compares equal and would re-notify every bound control on every keystroke. Compare the
+    /// contents instead, and republish only when the error surface genuinely moved.
+    /// </summary>
+    private static bool SameErrors(
+        IReadOnlyDictionary<string, string> published,
+        Dictionary<string, string> candidate)
+    {
+
+        if (published.Count != candidate.Count)
+        {
+
+            return false;
+
+        }
+
+        foreach (KeyValuePair<string, string> entry in candidate)
+        {
+
+            if (!published.TryGetValue(entry.Key, out string? existing)
+                || !string.Equals(existing, entry.Value, StringComparison.Ordinal))
+            {
+
+                return false;
+
+            }
+
+        }
+
+        return true;
 
     }
 
@@ -727,6 +769,17 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
+
+            // A Reset carries no OldItems, so the subscription set is the only remaining handle on the
+            // discarded generation. Detaching through it is what removes each provider's
+            // Models.CollectionChanged hook — without it the editor keeps every previously loaded
+            // provider alive and a stale one can still mark the configuration dirty.
+            foreach (ProvidersSectionViewModel.ProviderViewModel discarded in _modelsSubscribedProviders.ToArray())
+            {
+
+                UnsubscribeProviderDirty(discarded);
+
+            }
 
             foreach (INotifyPropertyChanged nested in _nestedDirtySubscriptions.ToArray())
             {

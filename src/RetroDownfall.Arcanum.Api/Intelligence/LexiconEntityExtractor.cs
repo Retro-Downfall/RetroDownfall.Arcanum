@@ -121,7 +121,9 @@ internal static class LexiconEntityExtractor
             return ([], response.Usage);
         }
 
-        string cleaned = SemanticRouter.StripMarkdownFences(response.Text.Trim());
+        string trimmed = response.Text.Trim();
+
+        string cleaned = SemanticRouter.StripMarkdownFences(trimmed);
 
         LexiconEntityExtractionResponse? parsed;
 
@@ -131,7 +133,9 @@ internal static class LexiconEntityExtractor
         }
         catch (JsonException)
         {
-            logger?.LogWarning("LexiconEntityExtractor failed to parse JSON response: {ResponseText}", response.Text);
+            string logSnippet = trimmed.Length > 200 ? trimmed[..200] : trimmed;
+
+            logger?.LogWarning("LexiconEntityExtractor failed to parse JSON response: {ResponseText}", logSnippet);
 
             return ([], response.Usage);
         }

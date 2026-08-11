@@ -302,6 +302,51 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
     }
 
+    /// <summary>
+    /// A refused socket surfaces from the streaming enumerator, not from lease resolution — and by
+    /// then <c>ModelCallExecutor</c> has already emitted the <c>context</c> token-accounting frame,
+    /// which is produced before the provider is dialled. If that frame closes the pre-commit window
+    /// the fallback gate never inspects the terminal <c>error</c>, and streaming fallback is dead for
+    /// every real connectivity failure.
+    /// </summary>
+    [Fact]
+    public async Task StreamPromptAsync_falls_back_when_the_socket_fails_after_the_context_frame()
+    {
+        ProviderSettings providerA = MakeProvider("provider-a");
+
+        ProviderSettings providerB = MakeProvider("provider-b");
+
+        RecordingChatClientFactory factory = new();
+
+        ScriptingChatClient chatA = new();
+
+        chatA.EnqueueStreamException(new HttpRequestException("connection refused"));
+
+        factory.CandidateResolvers[providerA.Name] = () => MakeLease(chatA, providerA);
+
+        ScriptingChatClient chatB = new();
+
+        chatB.EnqueueStreamTokens("from ", "B");
+
+        factory.CandidateResolvers[providerB.Name] = () => MakeLease(chatB, providerB);
+
+        IProviderHealthTracker tracker = CreateTracker(healthFailureThreshold: 1);
+
+        WizardIntelligenceProvider wizard = CreateWizard(factory, tracker, providerA, providerB);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(wizard, BaseRequest());
+
+        Assert.Equal(
+            [providerA.Name, providerB.Name],
+            factory.CandidateCallOrder);
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "from ");
+
+        Assert.Contains(events, static e => e.Type == IntelligenceEventType.Token && e.Data == "B");
+
+        Assert.DoesNotContain(events, static e => e.Type == IntelligenceEventType.Error);
+    }
+
     [Fact]
     public async Task Marks_provider_unhealthy_on_failure()
     {
@@ -1291,6 +1336,10 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             Exception exception) =>
             _streaming.Enqueue(_ => ReasoningThenFail(reasoning, exception));
 
+        /// <summary>A refused socket: the enumerator faults before any update arrives.</summary>
+        public void EnqueueStreamException(Exception exception) =>
+            _streaming.Enqueue(_ => FailBeforeFirstUpdate(exception));
+
         public void Dispose()
         {
             DisposeCount++;
@@ -1368,6 +1417,21 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             await Task.Yield();
 
             throw exception;
+        }
+
+        private static async IAsyncEnumerable<ChatResponseUpdate> FailBeforeFirstUpdate(
+            Exception exception,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await Task.Yield();
+
+            throw exception;
+
+#pragma warning disable CS0162 // Required so the compiler treats this as an iterator.
+            yield break;
+#pragma warning restore CS0162
         }
 
     }

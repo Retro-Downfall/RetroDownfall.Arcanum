@@ -1,11 +1,13 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.A2A;
 
@@ -277,13 +279,232 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
 
     }
 
+    // ── the durable lease on a Sending that is still running ───────────────────────────────────────
+
+    [SkippableFact]
+    public async Task SendingStillInFlight_KeepsItsLeaseSoBackgroundReconciliationCannotReclaimIt()
+    {
+
+        RequireSqlCipher();
+
+        FakeTimeProvider clock = new();
+
+        A2ASendingLeaseRenewer renewer = CreateRenewer(clock);
+
+        A2ASendingLedgerEntry entry = await CreateLedger(clock, renewer)
+            .RegisterOutboundAsync("remote-slow", "https://peer.example.test/");
+
+        // One renewal pass, well inside the lease the registration took.
+        clock.Advance(TimeSpan.FromMinutes(5));
+
+        Assert.Equal(1, await renewer.RenewHeldAsync(CancellationToken.None));
+
+        // Eighteen minutes in, the peer is still working and this process is still awaiting it. Unrenewed,
+        // the row is "expired" here, so the reconciliation pass that runs every minute re-leases it and the
+        // outbound recovery handler sends tasks/cancel for the very task the dispatch is waiting on.
+        clock.Advance(TimeSpan.FromMinutes(13));
+
+        IReadOnlyList<LongRunningOperation> expired = await new LongRunningOperationStore(_db!)
+            .FindExpiredAsync(clock.GetUtcNow(), 100);
+
+        Assert.DoesNotContain(expired, operation => operation.Id == entry.OperationId);
+
+    }
+
+    [SkippableFact]
+    public async Task SettledSending_IsNoLongerRenewed()
+    {
+
+        RequireSqlCipher();
+
+        FakeTimeProvider clock = new();
+
+        A2ASendingLeaseRenewer renewer = CreateRenewer(clock);
+
+        IA2ASendingLedger ledger = CreateLedger(clock, renewer);
+
+        A2ASendingLedgerEntry entry = await ledger.RegisterInboundAsync("task-settled", Guid.NewGuid());
+
+        await ledger.ReleaseAsync(entry);
+
+        clock.Advance(TimeSpan.FromMinutes(5));
+
+        // Renewing a closed row forever would keep a settled Sending out of every later pass.
+        Assert.Equal(0, await renewer.RenewHeldAsync(CancellationToken.None));
+
+    }
+
+    [SkippableFact]
+    public async Task ParkedSending_IsNoLongerRenewed()
+    {
+
+        RequireSqlCipher();
+
+        FakeTimeProvider clock = new();
+
+        A2ASendingLeaseRenewer renewer = CreateRenewer(clock);
+
+        IA2ASendingLedger ledger = CreateLedger(clock, renewer);
+
+        A2ASendingLedgerEntry entry = await ledger.RegisterInboundAsync("task-parked-lease", Guid.NewGuid());
+
+        await ledger.MarkParkedAsync(entry, "ctx-11");
+
+        clock.Advance(TimeSpan.FromMinutes(5));
+
+        // Waiting on a peer is not work: reconciliation is supposed to flag a parked Sending, which
+        // renewing its lease forever would prevent (§5.7.1.5).
+        Assert.Equal(0, await renewer.RenewHeldAsync(CancellationToken.None));
+
+    }
+
     private IA2ASendingLedger CreateLedger() =>
         new A2ASendingLedger(
             new LongRunningOperationStore(_db!),
             TimeProvider.System,
             NullLogger<A2ASendingLedger>.Instance);
 
+    private IA2ASendingLedger CreateLedger(TimeProvider clock, A2ASendingLeaseRenewer renewer) =>
+        new A2ASendingLedger(
+            new LongRunningOperationStore(_db!),
+            clock,
+            NullLogger<A2ASendingLedger>.Instance,
+            renewer);
+
+    private A2ASendingLeaseRenewer CreateRenewer(TimeProvider clock)
+    {
+
+        ServiceCollection services = new();
+
+        services.AddScoped<ILongRunningOperationStore>(_ => new LongRunningOperationStore(_db!));
+
+        return new A2ASendingLeaseRenewer(
+            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            clock,
+            NullLogger<A2ASendingLeaseRenewer>.Instance);
+
+    }
+
     private static void RequireSqlCipher() =>
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+}
+
+/// <summary>
+/// Counts the rows a ledger lookup actually pulls out of SQLite, so a test can assert what a lookup
+/// costs rather than only what it answers.
+/// </summary>
+internal sealed class CountingOperationStore(ILongRunningOperationStore inner) : ILongRunningOperationStore
+{
+
+    private int _rowsRead;
+
+    public int RowsRead => Volatile.Read(ref _rowsRead);
+
+    public async Task<IReadOnlyList<LongRunningOperation>> ListAsync(
+        LongRunningOperationQuery query,
+        CancellationToken cancellationToken = default)
+    {
+
+        IReadOnlyList<LongRunningOperation> page = await inner.ListAsync(query, cancellationToken);
+
+        Interlocked.Add(ref _rowsRead, page.Count);
+
+        return page;
+
+    }
+
+    public Task<LongRunningOperation> CreateAsync(
+        LongRunningOperationCreateRequest request,
+        CancellationToken cancellationToken = default) =>
+        inner.CreateAsync(request, cancellationToken);
+
+    public Task<LongRunningOperation?> TryStartSingleFlightAsync(
+        LongRunningOperationCreateRequest request,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        inner.TryStartSingleFlightAsync(request, ownerId, utcNow, leaseExpiresAt, cancellationToken);
+
+    public Task<LongRunningOperation?> GetAsync(Guid operationId, CancellationToken cancellationToken = default) =>
+        inner.GetAsync(operationId, cancellationToken);
+
+    public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
+        DateTimeOffset utcNow,
+        int limit,
+        CancellationToken cancellationToken = default) =>
+        inner.FindExpiredAsync(utcNow, limit, cancellationToken);
+
+    public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        inner.TryAcquireLeaseAsync(operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken);
+
+    public Task<bool> HeartbeatAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        inner.HeartbeatAsync(operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken);
+
+    public Task<bool> SaveCheckpointAsync(
+        Guid operationId,
+        string ownerId,
+        int expectedCheckpointVersion,
+        int checkpointVersion,
+        byte[]? checkpointPayload,
+        string? checkpointReference,
+        string publicSummary,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        inner.SaveCheckpointAsync(
+            operationId,
+            ownerId,
+            expectedCheckpointVersion,
+            checkpointVersion,
+            checkpointPayload,
+            checkpointReference,
+            publicSummary,
+            utcNow,
+            cancellationToken);
+
+    public Task<bool> TryTransitionAsync(
+        Guid operationId,
+        long expectedRevision,
+        string? ownerId,
+        LongRunningOperationState state,
+        DateTimeOffset utcNow,
+        string? terminalErrorCode = null,
+        CancellationToken cancellationToken = default) =>
+        inner.TryTransitionAsync(
+            operationId,
+            expectedRevision,
+            ownerId,
+            state,
+            utcNow,
+            terminalErrorCode,
+            cancellationToken);
+
+    public Task<bool> RequestCancellationAsync(
+        Guid operationId,
+        long expectedRevision,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        inner.RequestCancellationAsync(operationId, expectedRevision, utcNow, cancellationToken);
+
+    public Task<bool> ResetForRetryAsync(
+        Guid operationId,
+        long expectedRevision,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        inner.ResetForRetryAsync(operationId, expectedRevision, utcNow, cancellationToken);
+
+    public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(CancellationToken cancellationToken = default) =>
+        inner.GetCountsAsync(cancellationToken);
 
 }

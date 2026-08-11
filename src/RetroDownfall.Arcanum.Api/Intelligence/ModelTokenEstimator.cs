@@ -3,7 +3,6 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -28,23 +27,14 @@ public sealed class ModelTokenEstimator : IModelTokenEstimator
 
     private readonly InferenceTokenizerResolver _tokenizerResolver;
 
-    private readonly Func<ArcanumSettings> _getSettings;
-
-    public ModelTokenEstimator(
-        InferenceTokenizerResolver tokenizerResolver,
-        IOptionsMonitor<ArcanumSettings> settings)
-    {
+    /// <summary>
+    /// Tokenization profiles resolve from <see cref="ModelCapabilityCatalog"/> and the code-owned
+    /// <see cref="ArcanumRuntimeDefaults.Intelligence"/> defaults, so no bound
+    /// <c>Arcanum:…</c> settings accessor is taken — none of the tokenization knobs are projected
+    /// onto <see cref="IntelligenceSettings"/> by <c>ResolveIntelligence</c>.
+    /// </summary>
+    public ModelTokenEstimator(InferenceTokenizerResolver tokenizerResolver) =>
         _tokenizerResolver = tokenizerResolver;
-        _getSettings = () => settings.CurrentValue;
-    }
-
-    internal ModelTokenEstimator(
-        InferenceTokenizerResolver tokenizerResolver,
-        IOptionsSnapshot<ArcanumSettings> settings)
-    {
-        _tokenizerResolver = tokenizerResolver;
-        _getSettings = () => settings.Value;
-    }
 
     public ResolvedModelTokenizationProfile ResolveProfile(
         ProviderSettings provider,

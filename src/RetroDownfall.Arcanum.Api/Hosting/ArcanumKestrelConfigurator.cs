@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
+using Serilog.Extensions.Logging;
 
 namespace RetroDownfall.Arcanum.Api.Hosting;
 
@@ -17,7 +18,8 @@ namespace RetroDownfall.Arcanum.Api.Hosting;
 /// <c>ListenAnyIP(HttpsPort)</c> with TLS, and never binds plaintext any-IP HTTP. Reads configuration
 /// through string keys (no reflection binding) to keep the Native AOT host trim-safe. When HTTPS is
 /// required or enabled and the certificate cannot be loaded, startup fails with a sanitized,
-/// password-free message.
+/// password-free message; the underlying load exception reaches Serilog's static logger so the root
+/// cause stays recoverable from the log without ever being surfaced publicly.
 /// </summary>
 public static class ArcanumKestrelConfigurator
 {
@@ -96,7 +98,15 @@ public static class ArcanumKestrelConfigurator
 
         int httpsPort = ArcanumSettingClamps.HostHttpsPort(https.Port);
 
-        HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(https);
+        // Kestrel is configured before the host's DI logging graph exists, so the loader's internal
+        // diagnostics — the underlying load exception and the not-yet-valid warning — are bridged onto
+        // the same static Serilog logger this method's own bind diagnostics use. Without a logger the
+        // thrown message is sanitized down to a generic reason and the root cause is lost entirely.
+        using SerilogLoggerFactory loggerFactory = new(Log.Logger, dispose: false);
+
+        HttpsCertificateLoadResult result = HttpsCertificateLoader.Load(
+            https,
+            loggerFactory.CreateLogger(typeof(HttpsCertificateLoader).FullName!));
 
         if (!result.IsSuccess || result.Certificate is null)
         {

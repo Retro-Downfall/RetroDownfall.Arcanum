@@ -2299,6 +2299,80 @@ public sealed class ConfigurationValidatorTests
         }
     }
 
+    [Fact]
+    public void Validate_BlankDaemonJobName_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = SettingsWithDaemonJobs(
+            new UnseenServantJob { Name = "  ", TargetSpell = "daily-digest" });
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "daemon.jobs[0].name");
+
+    }
+
+    [Fact]
+    public void Validate_DuplicateDaemonJobName_ReturnsFailure()
+    {
+
+        ArcanumSettings settings = SettingsWithDaemonJobs(
+            new UnseenServantJob { Name = "digest", TargetSpell = "daily-digest" },
+            new UnseenServantJob { Name = "Digest", TargetSpell = "weekly-digest" });
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Contains(result.Error.Details!, static e => e.Pointer == "daemon.jobs[1].name");
+
+    }
+
+    [Fact]
+    public void Validate_DistinctDaemonJobNames_ReturnsSuccess()
+    {
+
+        ArcanumSettings settings = SettingsWithDaemonJobs(
+            new UnseenServantJob { Name = "digest", TargetSpell = "daily-digest" },
+            new UnseenServantJob { Name = "sweep", TargetSpell = "weekly-digest" });
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    [Fact]
+    public void Validate_NullDaemonSection_DoesNotThrow()
+    {
+
+        ArcanumSettings settings = SettingsWithDaemonJobs();
+
+        settings.Daemon = null!;
+
+        Result result = _validator.Validate(settings);
+
+        Assert.True(result.IsSuccess);
+
+    }
+
+    private static ArcanumSettings SettingsWithDaemonJobs(params UnseenServantJob[] jobs) =>
+        new()
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "ollama",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Models = ["llama3"],
+                },
+            ],
+            Daemon = new DaemonSettings { Jobs = [.. jobs] },
+        };
+
     private static ArcanumSettings SettingsWithReasoning(ReasoningWireDialect? wireDialect, int? maxBudgetTokens) =>
         new()
         {

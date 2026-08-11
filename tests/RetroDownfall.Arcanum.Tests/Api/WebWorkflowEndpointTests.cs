@@ -94,6 +94,189 @@ public sealed class WebWorkflowEndpointTests
 
     }
 
+    /// <summary>
+    /// System.Text.Json writes an explicit JSON <c>null</c> over a property initializer, so a
+    /// non-nullable request property can still arrive null. Dereferencing it turns a routine client
+    /// mistake into a 500 <c>Hub.Unhandled</c> instead of an envelope the caller can act on.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("""{"query":"current facts","resultCount":3,"includeDomains":null}""")]
+    [InlineData("""{"query":"current facts","resultCount":3,"excludeDomains":null}""")]
+    public async Task Search_explicit_null_domain_filters_do_not_fault_the_host(string body)
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            new StubWebProvider(),
+            new StubIntelligence());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/web/search",
+            new StringContent(body, Encoding.UTF8, "application/json"));
+
+        Assert.NotEqual(HttpStatusCode.InternalServerError, response.StatusCode);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Browse_explicit_null_render_mode_does_not_fault_the_host()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            new StubWebProvider(),
+            new StubIntelligence());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/web/browse",
+            new StringContent(
+                """{"url":"https://example.test/app","renderMode":null}""",
+                Encoding.UTF8,
+                "application/json"));
+
+        Assert.NotEqual(HttpStatusCode.InternalServerError, response.StatusCode);
+
+    }
+
+    /// <summary>
+    /// Attachment is an optional side effect. Discovering the target is unusable only after the
+    /// (non-retried, billable) provider call throws away an answer the operator already paid for,
+    /// which is why research preflights the same conditions before searching.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Search_rejects_an_unknown_attachment_target_before_provider_work()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            new StubIntelligence());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/web/search",
+            new WebSearchWorkflowRequest
+            {
+
+                Query = "current facts",
+
+                AttachToSessionId = Guid.NewGuid(),
+
+            },
+            ArcanumJsonContext.Default.WebSearchWorkflowRequest);
+
+        Assert.Contains(
+            ErrorCodes.Session.NotFound,
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+
+        Assert.Equal(0, provider.SearchCalls);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Browse_rejects_an_unknown_attachment_target_before_provider_work()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            new StubIntelligence());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/web/browse",
+            new WebBrowseWorkflowRequest
+            {
+
+                Url = "https://example.test/page",
+
+                AttachToSessionId = Guid.NewGuid(),
+
+            },
+            ArcanumJsonContext.Default.WebBrowseWorkflowRequest);
+
+        Assert.Contains(
+            ErrorCodes.Session.NotFound,
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+
+        Assert.Equal(0, provider.ReadCalls);
+
+    }
+
+    /// <summary>
+    /// Every other streaming writer in the host disables caching and proxy buffering. Without them
+    /// an intermediary can hold the NDJSON frames back and the progress stream stops being a stream.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_stream_disables_caching_and_proxy_buffering()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            new StubWebProvider(),
+            new StubIntelligence());
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpRequestMessage request = new(HttpMethod.Post, "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "stream headers",
+
+                    SourceTarget = 1,
+
+                    TokenBudget = 512,
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead);
+
+        Assert.Equal("no-cache", Assert.Single(response.Headers.CacheControl!.ToString().Split(", ")));
+
+        Assert.Equal("no", Assert.Single(response.Headers.GetValues("X-Accel-Buffering")));
+
+    }
+
     [SkippableFact]
 
     public async Task Browse_javascript_returns_actionable_degraded_behavior_without_fetching()
@@ -497,6 +680,63 @@ public sealed class WebWorkflowEndpointTests
 
     }
 
+    /// <summary>
+    /// Follow-up passes append a fixed suffix to the question, so a question just under the
+    /// provider's 4,000-character query limit passes pass 1 — which is billed — and then fails pass
+    /// 2 with the run aborted and nothing returned. The bound has to be enforced up front.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_rejects_a_question_that_no_follow_up_pass_could_carry()
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new();
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            intelligence);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = new string('q', 3_950),
+
+                    SourceTarget = 2,
+
+                    TokenBudget = 1_200,
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        Assert.Contains(
+            ErrorCodes.WebResearch.RequestRejected,
+            await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+
+        Assert.Equal(0, provider.SearchCalls);
+
+    }
+
     [SkippableFact]
 
     public async Task Research_rejects_unknown_synthesis_model_before_provider_work()
@@ -631,6 +871,76 @@ public sealed class WebWorkflowEndpointTests
         Assert.Equal(0, provider.ReadCalls);
 
         Assert.Null(intelligence.Request);
+
+    }
+
+    /// <summary>
+    /// The NDJSON research stream must always end on a frame. Once the first frame is flushed the
+    /// response has started, so <c>ArcanumExceptionHandler</c> can no longer produce an envelope and
+    /// an escaping exception aborts the chunked body — the caller sees a stream that simply stops,
+    /// after the billable search and synthesis passes have already been paid for.
+    /// </summary>
+    [SkippableFact]
+
+    public async Task Research_orchestration_failure_ends_the_stream_with_a_sanitized_error_frame()
+
+    {
+
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        StubWebProvider provider = new() { ThrowOnSearchCall = 2 };
+
+        StubIntelligence intelligence = new();
+
+        await using ArcanumWebApplicationFactory factory = Factory(
+            provider,
+            intelligence);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpRequestMessage request = new(
+            HttpMethod.Post,
+            "/api/web/research")
+        {
+
+            Content = JsonContent.Create(
+                new WebResearchWorkflowRequest
+                {
+
+                    Question = "What changed?",
+
+                    SourceTarget = 2,
+
+                    TokenBudget = 1_200,
+
+                },
+                ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+
+        };
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        string ndjson = await response.Content.ReadAsStringAsync();
+
+        string[] lines = ndjson.Split(
+            '\n',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        WebResearchStreamFrame? terminal = JsonSerializer.Deserialize(
+            lines[^1],
+            ArcanumJsonContext.Default.WebResearchStreamFrame);
+
+        Assert.Equal(WebResearchStreamFrameType.Error, terminal?.Type);
+
+        // Sanitized: the operator gets a stable public message, never the exception's own text.
+        Assert.DoesNotContain(
+            "citation index exploded",
+            ndjson,
+            StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -806,6 +1116,9 @@ public sealed class WebWorkflowEndpointTests
 
         public int ChangingCitationRounds { get; init; }
 
+        /// <summary>1-based search call that throws instead of returning, or 0 to never throw.</summary>
+        public int ThrowOnSearchCall { get; init; }
+
         public int SearchCalls { get; private set; }
 
         public int ReadCalls { get; private set; }
@@ -827,6 +1140,13 @@ public sealed class WebWorkflowEndpointTests
             SearchCalls++;
 
             LastSearchOptions = options;
+
+            if (ThrowOnSearchCall == SearchCalls)
+            {
+
+                throw new InvalidOperationException("citation index exploded");
+
+            }
 
             int citationNumber = ChangingCitationRounds > 0
                 ? Math.Min(SearchCalls, ChangingCitationRounds)

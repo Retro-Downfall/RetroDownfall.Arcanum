@@ -271,6 +271,42 @@ public sealed class GuardrailsPipelineTests
     }
 
     [Fact]
+    public async Task FilterOutputAsync_Blocked_ReportsOutputStageInErrorMessage()
+    {
+
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
+        {
+            Enabled = true,
+            DetectPii = false,
+            BlockToxicity = true,
+            ToxicityBlocklist = ["bad-word"],
+        });
+
+        Result<GuardrailsResult> outputResult = await pipeline.FilterOutputAsync(
+            "The model says bad-word here.",
+            CancellationToken.None);
+
+        Assert.True(outputResult.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, outputResult.Error.Code);
+
+        Assert.DoesNotContain("Input rejected", outputResult.Error.Message, StringComparison.Ordinal);
+
+        Assert.StartsWith("Response blocked", outputResult.Error.Message, StringComparison.Ordinal);
+
+        Result<GuardrailsResult> inputResult = await pipeline.FilterInputAsync(
+            [new CoreChatMessage("user", "The user says bad-word here.")],
+            CancellationToken.None);
+
+        Assert.True(inputResult.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, inputResult.Error.Code);
+
+        Assert.StartsWith("Input rejected", inputResult.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public async Task FilterOutputAsync_Pii_IsNotReScannedOnOutput()
     {
 
@@ -393,6 +429,39 @@ public sealed class GuardrailsPipelineTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Guardrails.PiiDetected, result.Error.Code);
+
+    }
+
+    /// <summary>
+    /// An operator pattern with an ambiguous quantifier backtracks exponentially on crafted input.
+    /// The match budget then elapses, and a guardrail that reads "budget elapsed" as "no violation"
+    /// lets the caller choose whether the block applies. Blocked topics must fail closed — and be
+    /// audited — exactly like the allowed-topics arm already does.
+    /// </summary>
+    [Fact]
+    public async Task FilterInputAsync_BlockedTopics_MatchTimeout_FailsClosedAndIsAudited()
+    {
+
+        FakeGuardrailAuditLogger audit = new();
+
+        GuardrailsPipeline pipeline = CreatePipeline(
+            ArcanumRuntimeDefaults.Guardrails with
+            {
+                Enabled = true,
+                DetectPii = false,
+                BlockedTopics = ["^(a+)+$"],
+            },
+            audit);
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync(
+            [new CoreChatMessage("user", new string('a', 64) + "!")],
+            CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, result.Error.Code);
+
+        Assert.NotEmpty(audit.Records);
 
     }
 

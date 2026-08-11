@@ -532,6 +532,35 @@ public sealed class ArcanumServeLauncherTests
 
     }
 
+    [Fact]
+    public async Task Health_body_reset_after_headers_is_classified_not_thrown()
+    {
+
+        // A host shutting down mid-response returns 200 headers and then resets the connection while
+        // the body streams. HttpIOException derives from IOException (not HttpRequestException), so
+        // the probe must classify it as "something answered" rather than letting it escape.
+        SequencedHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new ResettingStream()),
+        });
+
+        FakeServeProcessLauncher processLauncher = new();
+
+        ArcanumServeLauncher launcher = CreateLauncher(
+            handler,
+            processLauncher,
+            apiKey: "test-key");
+
+        ServeLaunchResult result = await launcher.EnsureRunningAsync(CancellationToken.None);
+
+        Assert.Equal(ServeLaunchStatus.Failed, result.Status);
+
+        Assert.Equal(HealthProbeState.Timeout, result.Health);
+
+        Assert.Equal(0, processLauncher.StartCount);
+
+    }
+
     private static ArcanumServeLauncher CreateLauncher(
         HttpMessageHandler handler,
         FakeServeProcessLauncher processLauncher,
@@ -648,6 +677,54 @@ public sealed class ArcanumServeLauncherTests
                 BaseAddress = new Uri("http://localhost:5001/"),
                 Timeout = TimeSpan.FromSeconds(60),
             };
+
+    }
+
+    /// <summary>
+    /// Stands in for a connection reset while the response body streams: readable, then throws the
+    /// same <see cref="IOException"/> shape <c>HttpIOException</c> surfaces on a premature EOF.
+    /// </summary>
+    private sealed class ResettingStream : Stream
+    {
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new IOException("The response ended prematurely.");
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            throw new IOException("The response ended prematurely.");
+
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken) =>
+            throw new IOException("The response ended prematurely.");
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
     }
 

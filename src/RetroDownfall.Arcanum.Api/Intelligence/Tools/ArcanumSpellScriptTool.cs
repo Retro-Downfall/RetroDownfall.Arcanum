@@ -50,6 +50,14 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     private readonly long _toolOutputCapBytes;
 
+    /// <summary>
+    /// The bound <c>Arcanum:Edition</c> value, so the invocation gate resolves the same edition the
+    /// advertisement gate did. Resolving from a hardcoded default here made an operator who set
+    /// <c>Development</c> in configuration (rather than via <c>ARCANUM_EDITION</c>) see this tool
+    /// advertised and then denied on every call.
+    /// </summary>
+    private readonly ArcanumEdition _configuredEdition;
+
     private readonly ILogger? _logger;
 
     /// <summary>
@@ -72,7 +80,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         ISanctumGuard? sanctumGuard = null,
         IProcessResourceLimiter? resourceLimiter = null,
         string? campaignWorkspaceRoot = null,
-        bool allowUnsandboxedToolChildren = false)
+        bool allowUnsandboxedToolChildren = false,
+        ArcanumEdition configuredEdition = ArcanumEdition.Local)
     {
         _toolOutputCapBytes = toolOutputCapBytes < 2048L ? 2048L : toolOutputCapBytes;
 
@@ -85,6 +94,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         _campaignWorkspaceRoot = campaignWorkspaceRoot;
 
         _allowUnsandboxedToolChildren = allowUnsandboxedToolChildren;
+
+        _configuredEdition = configuredEdition;
 
         var roots = new List<string>(scriptsDirectoryPaths.Count);
 
@@ -119,7 +130,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
         ISanctumGuard? sanctumGuard = null,
         IProcessResourceLimiter? resourceLimiter = null,
         string? campaignWorkspaceRoot = null,
-        bool allowUnsandboxedToolChildren = false)
+        bool allowUnsandboxedToolChildren = false,
+        ArcanumEdition configuredEdition = ArcanumEdition.Local)
         : this(
             [scriptsDirectoryPath],
             toolOutputCapBytes,
@@ -127,7 +139,8 @@ public sealed class ArcanumSpellScriptTool : AIFunction
             sanctumGuard,
             resourceLimiter,
             campaignWorkspaceRoot,
-            allowUnsandboxedToolChildren)
+            allowUnsandboxedToolChildren,
+            configuredEdition)
     {
     }
 
@@ -142,7 +155,7 @@ public sealed class ArcanumSpellScriptTool : AIFunction
 
     protected override async ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
     {
-        if (!HostProcessToolPolicy.AreAllowed(ArcanumEnvironment.ResolveEdition(ArcanumEdition.Local)))
+        if (!HostProcessToolPolicy.AreAllowed(ArcanumEnvironment.ResolveEdition(_configuredEdition)))
         {
             return HostProcessToolPolicy.DeniedMessage;
         }

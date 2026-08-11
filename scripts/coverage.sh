@@ -47,9 +47,13 @@ dotnet tool restore >/dev/null
 # The XPlat Code Coverage collector + its include/exclude filters are declared
 # in coverage.runsettings; --settings both enables and configures it.
 # --collect is required so VSTest actually attaches the XPlat collector.
+# Category=Perf is the manual wall-clock baseline harness (Tests/Performance): its
+# assertions are machine-load sensitive and would fail the gate for reasons unrelated
+# to any code change, especially under coverlet instrumentation on a loaded runner.
 dotnet test "$TEST_PROJECT" \
   --collect:"XPlat Code Coverage" \
   --settings "$RUNSETTINGS" \
+  --filter "Category!=Perf" \
   --results-directory "$OUT_DIR"
 
 COBERTURA="$(find "$OUT_DIR" -name 'coverage.cobertura.xml' | head -n 1)"

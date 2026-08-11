@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using System.Reflection;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
@@ -20,6 +21,83 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
         Assert.True(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
+    }
+
+    [Fact]
+    public void Probe_reports_unavailable_when_its_temp_directory_cannot_be_created()
+    {
+
+        string squatter = Path.Combine(Path.GetTempPath(), $"arcanum-probe-squatter-{Guid.NewGuid():N}");
+
+        File.WriteAllText(squatter, "A file squats the probe's parent directory.");
+
+        try
+        {
+
+            (bool available, string reason) = GrimoireFixture.ProbeSqlCipher(
+                Path.Combine(squatter, "probe.db"),
+                "probe-passphrase");
+
+            Assert.False(available);
+
+            Assert.NotEmpty(reason);
+
+        }
+        finally
+        {
+
+            File.Delete(squatter);
+
+        }
+
+    }
+
+    [Fact]
+    public void Probe_reports_unavailable_when_the_probe_database_cannot_be_opened()
+    {
+
+        string probePath = Path.Combine(Path.GetTempPath(), $"arcanum-probe-dir-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(probePath);
+
+        try
+        {
+
+            (bool available, string reason) = GrimoireFixture.ProbeSqlCipher(probePath, "probe-passphrase");
+
+            Assert.False(available);
+
+            Assert.NotEmpty(reason);
+
+        }
+        finally
+        {
+
+            Directory.Delete(probePath, recursive: true);
+
+        }
+
+    }
+
+    [SkippableFact]
+    public void Probe_reports_available_and_removes_its_temp_database()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string probePath = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-tests",
+            $"probe-{Guid.NewGuid():N}.db");
+
+        (bool available, string reason) = GrimoireFixture.ProbeSqlCipher(probePath, fixture.Passphrase);
+
+        Assert.True(available, reason);
+
+        Assert.Equal(string.Empty, reason);
+
+        Assert.False(File.Exists(probePath));
+
     }
 
     [SkippableFact]
@@ -70,6 +148,39 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
         Assert.True(File.Exists(copyPath));
 
         Assert.True(File.Exists(copyPath + ".kdf"));
+
+    }
+
+    [SkippableFact]
+    public async Task Dispose_deletes_the_wal_and_shm_sidecars_of_every_copy()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireFixture scoped = new();
+
+        string copyPath = scoped.CopyDatabase();
+
+        ArcanumDbContext context = scoped.CreateContext(copyPath);
+
+        Assert.True(await context.Database.CanConnectAsync());
+
+        await context.DisposeAsync();
+
+        Assert.True(
+            File.Exists(copyPath + "-wal"),
+            "The copy was not opened in WAL mode, so this test no longer reproduces the sidecar leak.");
+
+        scoped.Dispose();
+
+        string[] suffixes = ["", ".kdf", "-wal", "-shm"];
+
+        foreach (string suffix in suffixes)
+        {
+
+            Assert.False(File.Exists(copyPath + suffix), copyPath + suffix);
+
+        }
 
     }
 

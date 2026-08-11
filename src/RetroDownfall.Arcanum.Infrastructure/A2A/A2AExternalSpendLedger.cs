@@ -57,7 +57,7 @@ internal sealed class A2AExternalSpendLedger(
                         if (connection.State != ConnectionState.Open)
                         {
 
-                            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                            await db.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
                         }
 

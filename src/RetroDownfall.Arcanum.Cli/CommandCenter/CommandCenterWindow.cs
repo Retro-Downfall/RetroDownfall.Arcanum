@@ -37,6 +37,13 @@ internal sealed class CommandCenterWindow : Window
 
     private bool _overlayHumanPrompt;
 
+    /// <summary>
+    /// Which overlay is on screen. Kept separately from <c>OverlayPane.Title</c> because
+    /// <see cref="UpdateFocusChrome"/> rewrites that title to carry the focus dot, so any refresh
+    /// keyed off the title stops matching after the first pass.
+    /// </summary>
+    private CommandCenterOverlayKind _overlayKind = CommandCenterOverlayKind.None;
+
     private bool _followTail = true;
 
     private bool _incantationsFollowTail = true;
@@ -92,7 +99,9 @@ internal sealed class CommandCenterWindow : Window
             // Empty: the ASCII brand mark + status line are enough; avoid a redundant border title.
             Title = string.Empty,
             BorderStyle = chrome,
-            CanFocus = false,
+            // Focusable so the model drop-down it hosts can take focus at all: Terminal.Gui refuses
+            // focus to a view whose SuperView cannot focus.
+            CanFocus = true,
             SchemeName = CommandCenterTheme.HeaderScheme,
         };
 
@@ -289,11 +298,13 @@ internal sealed class CommandCenterWindow : Window
             SchemeName = CommandCenterTheme.SidebarScheme,
         };
 
+        // Focusable on purpose: Terminal.Gui refuses focus to a view whose SuperView cannot focus,
+        // so an unfocusable pane would make the answer editor and the type-ahead filter untypeable.
         OverlayPane = new FrameView
         {
             Title = "Overlay",
             BorderStyle = chrome,
-            CanFocus = false,
+            CanFocus = true,
             Visible = false,
             SchemeName = CommandCenterTheme.OverlayScheme,
         };
@@ -478,6 +489,9 @@ internal sealed class CommandCenterWindow : Window
 
     public IReadOnlyList<string> GetLogLinesSnapshot() => _logLines.ToArray();
 
+    /// <summary>The rows the overlay list is currently showing — what the operator actually sees.</summary>
+    public IReadOnlyList<string> GetOverlayLinesSnapshot() => _overlayLines.ToArray();
+
     public int GetSelectedLogIndex() =>
         _logLines.Count == 0 ? -1 : Math.Clamp(LogView.SelectedItem ?? 0, 0, _logLines.Count - 1);
 
@@ -530,7 +544,58 @@ internal sealed class CommandCenterWindow : Window
         return Input.Text?.ToString() ?? string.Empty;
     }
 
-    public bool ComposerHasText => !string.IsNullOrWhiteSpace(GetComposerText());
+    /// <summary>
+    /// Whether the composer holds anything but whitespace. Evaluated on every mapped key event and
+    /// once more per layout pass, so it inspects the live cells in place instead of rebuilding a
+    /// pasted buffer into a string each time.
+    /// </summary>
+    public bool ComposerHasText
+    {
+        get
+        {
+            try
+            {
+                var lines = Input.GetAllLines();
+                if (lines is { Count: > 0 })
+                {
+                    return ComposerLinesHaveContent(lines);
+                }
+            }
+            catch
+            {
+            }
+
+            return !string.IsNullOrWhiteSpace(Input.Text?.ToString());
+        }
+    }
+
+    /// <summary>
+    /// True as soon as one composer cell holds a non-whitespace grapheme. The scan stops there, so
+    /// the cost is proportional to the leading whitespace rather than to the whole buffer.
+    /// </summary>
+    internal static bool ComposerLinesHaveContent(System.Collections.IList lines)
+    {
+        for (int i = 0; i < lines.Count; i++)
+        {
+            object? line = lines[i];
+            if (line is System.Collections.Generic.List<Cell> cells)
+            {
+                foreach (Cell cell in cells)
+                {
+                    if (!string.IsNullOrWhiteSpace(cell.Grapheme))
+                    {
+                        return true;
+                    }
+                }
+            }
+            else if (line is string text && !string.IsNullOrWhiteSpace(text))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public void ClearComposer()
     {
@@ -814,6 +879,7 @@ internal sealed class CommandCenterWindow : Window
 
     public void ShowOverlay(CommandCenterOverlayKind kind, IReadOnlyList<string> lines, string title, bool showFilter)
     {
+        _overlayKind = kind;
         _overlayHumanPrompt = false;
         OverlayAnswer.Visible = false;
         try
@@ -823,6 +889,10 @@ internal sealed class CommandCenterWindow : Window
         catch
         {
         }
+
+        // The palette is a list of actions, not prose: it renders through the list view so the row
+        // Enter will run is highlighted, and its rows stay one-to-one with the actions behind them.
+        bool selectable = kind == CommandCenterOverlayKind.CommandPalette;
 
         OverlayPane.Title = title;
         OverlayPane.Visible = true;
@@ -843,7 +913,7 @@ internal sealed class CommandCenterWindow : Window
 
         int overlayW = OverlayLayout.MeasureWidth(_cols, longest);
         int innerWidth = Math.Max(8, overlayW - 2);
-        IReadOnlyList<string> displayLines = showFilter
+        IReadOnlyList<string> displayLines = showFilter || selectable
             ? lines
             : OverlayLayout.WrapLines(lines, innerWidth);
 
@@ -853,13 +923,13 @@ internal sealed class CommandCenterWindow : Window
             _overlayLines.Add(line);
         }
 
-        if (showFilter)
+        if (showFilter || selectable)
         {
             OverlayBody.Visible = false;
             OverlayBody.Text = string.Empty;
             OverlayList.Visible = true;
-            OverlayList.Y = 1;
-            OverlayList.Height = Dim.Fill(1);
+            OverlayList.Y = showFilter ? 1 : 0;
+            OverlayList.Height = showFilter ? Dim.Fill(1) : Dim.Fill();
             if (_overlayLines.Count > 0)
             {
                 OverlayList.SelectedItem = 0;
@@ -881,6 +951,10 @@ internal sealed class CommandCenterWindow : Window
         {
             OverlayFilter.SetFocus();
         }
+        else if (selectable)
+        {
+            OverlayList.SetFocus();
+        }
         else
         {
             OverlayBody.SetFocus();
@@ -895,6 +969,7 @@ internal sealed class CommandCenterWindow : Window
         ArgumentNullException.ThrowIfNull(question);
         ArgumentNullException.ThrowIfNull(promptId);
 
+        _overlayKind = CommandCenterOverlayKind.HumanPrompt;
         _overlayHumanPrompt = true;
         _overlayShowFilter = false;
         OverlayPane.Title = "Mage asks";
@@ -981,6 +1056,7 @@ internal sealed class CommandCenterWindow : Window
 
     public void HideOverlayVisual()
     {
+        _overlayKind = CommandCenterOverlayKind.None;
         OverlayPane.Visible = false;
         OverlayFilter.Visible = false;
         OverlayFilter.Text = string.Empty;
@@ -1009,6 +1085,7 @@ internal sealed class CommandCenterWindow : Window
     {
         ArgumentNullException.ThrowIfNull(state);
 
+        _overlayKind = CommandCenterOverlayKind.ModelPicker;
         _overlayHumanPrompt = false;
         OverlayAnswer.Visible = false;
         try
@@ -1139,6 +1216,7 @@ internal sealed class CommandCenterWindow : Window
 
     public void ShowSessionPickerOverlay()
     {
+        _overlayKind = CommandCenterOverlayKind.SessionPicker;
         _overlayHumanPrompt = false;
         OverlayAnswer.Visible = false;
         try
@@ -1169,9 +1247,44 @@ internal sealed class CommandCenterWindow : Window
     public int GetOverlaySelectedIndex() =>
         _overlayLines.Count == 0 ? -1 : Math.Clamp(OverlayList.SelectedItem ?? 0, 0, _overlayLines.Count - 1);
 
+    /// <summary>
+    /// Moves the command palette highlight. Bounded by the overlay's own rows rather than the
+    /// sessions list: clamping it to the session count would put most palette entries out of reach.
+    /// </summary>
+    public void MovePaletteSelection(int delta)
+    {
+        if (_overlayLines.Count == 0)
+        {
+            return;
+        }
+
+        int current = Math.Clamp(OverlayList.SelectedItem ?? 0, 0, _overlayLines.Count - 1);
+        int next = Math.Clamp(current + delta, 0, _overlayLines.Count - 1);
+        try
+        {
+            OverlayList.SelectedItem = next;
+            OverlayList.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
     public void MoveSessionSelection(int delta, CommandCenterState state)
     {
         ArgumentNullException.ThrowIfNull(state);
+
+        // Overlay arrow / j-k keys route here for every overlay kind, but only the session picker is
+        // bound to the session rows. Any other overlay — palette, MCP status, help — owns a shorter
+        // list of its own: clamping to the session count would put its lower entries out of reach,
+        // and assigning a session index to it walks past its last row.
+        if (OverlayPane.Visible && _overlayKind != CommandCenterOverlayKind.SessionPicker)
+        {
+            MovePaletteSelection(delta);
+
+            return;
+        }
+
         IReadOnlyList<SessionListItem> list = state.FilteredSessions;
         if (list.Count == 0)
         {
@@ -1823,7 +1936,7 @@ internal sealed class CommandCenterWindow : Window
             }
         }
 
-        if (OverlayPane.Visible && OverlayPane.Title == "Sessions")
+        if (OverlayPane.Visible && _overlayKind == CommandCenterOverlayKind.SessionPicker)
         {
             _overlayLines.Clear();
             foreach (string line in _sessionLines)
@@ -1847,9 +1960,19 @@ internal sealed class CommandCenterWindow : Window
             if (idx >= 0)
             {
                 SessionsView.SelectedItem = idx;
-                if (OverlayPane.Visible)
+
+                // Only the session picker is showing session rows. Any other overlay is a different,
+                // usually shorter, list — writing a session index into it re-points the wrong
+                // selection at best and throws past the last row at worst.
+                if (OverlayPane.Visible && _overlayKind == CommandCenterOverlayKind.SessionPicker)
                 {
-                    OverlayList.SelectedItem = idx;
+                    try
+                    {
+                        OverlayList.SelectedItem = Math.Clamp(idx, 0, Math.Max(0, _overlayLines.Count - 1));
+                    }
+                    catch
+                    {
+                    }
                 }
             }
         }
@@ -1858,7 +1981,7 @@ internal sealed class CommandCenterWindow : Window
     private void SyncOverlay(CommandCenterState state)
     {
         if (state.Overlay == CommandCenterOverlayKind.None && OverlayPane.Visible
-            && OverlayPane.Title is not "Sessions")
+            && _overlayKind != CommandCenterOverlayKind.SessionPicker)
         {
             // Host may leave session picker open; don't auto-hide Sessions overlay here.
         }

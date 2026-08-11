@@ -20,7 +20,7 @@
   <string>__MARKETING_VERSION__</string>
   <key>CFBundleVersion</key>
   <string>__BUNDLE_VERSION__</string>
-  <key>LSHighResolutionCapable</key>
+  <key>NSHighResolutionCapable</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>

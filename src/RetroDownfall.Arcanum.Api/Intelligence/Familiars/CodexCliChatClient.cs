@@ -22,6 +22,48 @@ internal sealed class CodexCliChatClient(
     : FamiliarChatClient(runner, provider, resolvedModel, deniedEnvironmentVariables)
 {
 
+    /// <summary>
+    /// Codex feature flags that carry a tool the vendor's own agent loop can call.
+    /// </summary>
+    /// <remarks>
+    /// Codex exposes no <c>--tools</c> switch, so this list is how its loop is switched off. It is
+    /// applied as <c>-c features.&lt;name&gt;=false</c> rather than <c>--disable &lt;name&gt;</c>:
+    /// <c>--disable</c> hard-errors on a name the installed CLI does not recognise, so a flag renamed
+    /// in a later release would break every turn, while an unknown <c>-c</c> override is ignored.
+    /// That tolerance is also the reason this list is best-effort, and why
+    /// <see cref="ProjectItem"/> independently refuses a turn that ran a tool regardless.
+    /// </remarks>
+    internal static readonly string[] SuppressedFeatures =
+    [
+        "shell_tool",
+        "unified_exec",
+        "shell_snapshot",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "in_app_browser",
+        "computer_use",
+        "apps",
+        "image_generation",
+        "web_search",
+        "standalone_web_search",
+        "hooks",
+    ];
+
+    /// <summary>
+    /// Completed item types that only exist because the vendor loop invoked a tool.
+    /// </summary>
+    private static readonly string[] VendorToolItemTypes =
+    [
+        "command_execution",
+        "mcp_tool_call",
+        "web_search",
+        "file_change",
+        "patch_apply",
+        "browser_action",
+        "computer_use",
+    ];
+
     protected override FamiliarProcessRequest BuildRequest(FamiliarPrompt prompt, string? jsonSchema)
     {
 
@@ -54,11 +96,22 @@ internal sealed class CodexCliChatClient(
 
             "-m",
             ResolvedModel,
-
-            // Read the prompt from stdin rather than argv, and say so explicitly: with a prompt
-            // argument present, piped stdin would be appended as a separate <stdin> block instead.
-            "-",
         ];
+
+        // Arcanum owns the tool loop. `--sandbox read-only` only constrains what a command may
+        // write, not whether the model may run one, so the vendor tools are switched off explicitly.
+        foreach (string feature in SuppressedFeatures)
+        {
+
+            arguments.Add("-c");
+
+            arguments.Add($"features.{feature}=false");
+
+        }
+
+        // Read the prompt from stdin rather than argv, and say so explicitly: with a prompt
+        // argument present, piped stdin would be appended as a separate <stdin> block instead.
+        arguments.Add("-");
 
         // Codex takes its output schema as a file rather than inline. The private working directory
         // this turn already owns is the natural place for it — nobody else can read or replace it,
@@ -146,6 +199,21 @@ internal sealed class CodexCliChatClient(
     private IEnumerable<ChatResponseUpdate> ProjectItem(CodexItem? item, FamiliarTurnState state)
     {
 
+        // Feature suppression is best-effort against a CLI Arcanum does not version-pin, so the
+        // guarantee lives here: a turn that reached a vendor tool ran code outside
+        // WorkspacePathPolicy, outside the Ward gate, and outside the audit record. Its answer is
+        // laundered output, not a completion, and returning it would be worse than failing.
+        if (item?.Type is { Length: > 0 } itemType
+            && VendorToolItemTypes.Contains(itemType, StringComparer.Ordinal))
+        {
+
+            throw Refused(
+                $"the Codex CLI ran its own '{itemType}' tool, which Arcanum's tool loop does not "
+                + "govern. Update the Codex CLI, or remove the CodexCli provider until its agent "
+                + "loop can be disabled.");
+
+        }
+
         switch (item?.Type)
         {
 
@@ -229,7 +297,17 @@ internal sealed class CodexCliChatClient(
         try
         {
 
-            File.WriteAllText(path, jsonSchema);
+            // CreateNew, not WriteAllText: a plain write follows an existing symlink. The working
+            // directory is owner-only and fresh per turn, so this can only ever be a fresh file —
+            // failing instead of following anything already at that path keeps it that way.
+            using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+
+                using StreamWriter writer = new(stream);
+
+                writer.Write(jsonSchema);
+
+            }
 
             return true;
 

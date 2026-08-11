@@ -252,6 +252,60 @@ public sealed class WorkspaceFilePrimitivesTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Traversal_skips_only_the_entry_that_vanished_mid_enumeration()
+    {
+
+        string directory = _workspace.CreateSubdir("src");
+
+        for (int i = 0; i < 6; i++)
+        {
+
+            _workspace.WriteFile($"src/f{i}.txt", "x");
+
+        }
+
+        string[] order = Directory
+            .EnumerateFileSystemEntries(directory)
+            .Select(Path.GetFileName)
+            .Select(static name => name!)
+            .ToArray();
+
+        HashSet<string> seen = new(StringComparer.Ordinal);
+
+        string? victim = null;
+
+        WorkspaceTraversalResult result = DeterministicWorkspaceTraversal.Traverse(
+            _workspace.Root,
+            new WorkspaceTraversalLimits(MaxSteps: 100, MaxFiles: 100),
+            includeFile: relativePath =>
+            {
+
+                seen.Add(Path.GetFileName(relativePath));
+
+                if (victim is null)
+                {
+
+                    victim = order.First(
+                        name => !seen.Contains(name)
+                            && !string.Equals(name, order[^1], StringComparison.Ordinal));
+
+                    File.Delete(Path.Combine(directory, victim));
+
+                }
+
+                return true;
+
+            });
+
+        Assert.Equal(
+            order.Where(name => !string.Equals(name, victim, StringComparison.Ordinal))
+                .Select(name => $"src/{name}")
+                .Order(StringComparer.Ordinal),
+            result.Files.Select(file => file.RelativePath));
+
+    }
+
+    [Fact]
     public void Traversal_honors_cancellation_before_enumerating()
     {
 

@@ -559,10 +559,28 @@ public sealed class ModelTokenEstimatorTests
         Assert.True(huge.ProviderReportedInputValid);
     }
 
+    [Fact]
+    public void Construction_RequiresOnlyTheTokenizerResolver()
+    {
+        // Tokenization profiles come from ModelCapabilityCatalog and the code-owned
+        // ArcanumRuntimeDefaults.Intelligence, never from bound ArcanumSettings — so the estimator
+        // must not advertise a settings dependency it never reads.
+        ModelTokenEstimator estimator =
+            new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
+
+        ContextTokenBreakdown breakdown = estimator.EstimateContext(new ModelTokenizationRequest(
+            Provider("gpt-4o"),
+            "gpt-4o",
+            [new ChatMessage(ChatRole.User, "hello")],
+            new ChatOptions(),
+            ReservedAnswerTokens: 0,
+            ReservedReasoningTokens: 0));
+
+        Assert.True(breakdown.InputTokens > 0);
+    }
+
     private static ModelTokenEstimator CreateEstimator() =>
-        new(
-            new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance),
-            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
+        new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
     private static ProviderSettings Provider(string model, int contextWindow = 128_000) =>
         new()

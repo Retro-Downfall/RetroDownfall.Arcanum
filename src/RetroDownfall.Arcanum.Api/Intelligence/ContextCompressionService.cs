@@ -55,7 +55,7 @@ internal sealed class ContextCompressionService : IContextCompressionService
         _settings = settings;
 
         _modelTokenEstimator = modelTokenEstimator
-            ?? new ModelTokenEstimator(inferenceTokenizerResolver, settings);
+            ?? new ModelTokenEstimator(inferenceTokenizerResolver);
 
         _logger = logger;
 

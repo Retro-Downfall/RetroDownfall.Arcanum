@@ -2078,151 +2078,6 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
         return result.IsSuccess ? Result.Success() : Result.Failure(result.Error);
     }
 
-    public async IAsyncEnumerable<Result<EntryDto>> WatchSessionAsync(
-        Guid sessionId,
-        Guid? since = null,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
-        string? apiKey = await TryGetApiKeyAsync(cancellationToken).ConfigureAwait(false);
-
-        if (apiKey is null)
-        {
-            yield return Result<EntryDto>.Failure(MissingApiKeyError);
-
-            yield break;
-        }
-
-        HttpClient client = httpClientFactory.CreateClient(StreamingHttpClientName);
-
-        string path = BuildQueryString(
-            $"api/sessions/{sessionId:D}/stream",
-            ("since", since?.ToString("D")));
-
-        using HttpRequestMessage request = new(HttpMethod.Get, path);
-
-        _ = request.Headers.TryAddWithoutValidation(ArcanumApiHeaders.ApiKey, apiKey);
-
-        HttpResponseMessage? response = null;
-
-        Error? sendError = null;
-
-        try
-        {
-            response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException)
-        {
-            sendError = RequestTimeoutError;
-        }
-        catch (HttpRequestException)
-        {
-            sendError = RequestUnreachableError;
-        }
-
-        if (sendError is not null || response is null)
-        {
-            yield return Result<EntryDto>.Failure(
-                sendError ?? RequestUnreachableError);
-
-            yield break;
-        }
-
-        using (response!)
-        {
-            if (!response.IsSuccessStatusCode)
-            {
-                byte[]? responseBytes = await TryReadCappedContentAsync(
-                        response.Content,
-                        MaxResponseBytes,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-                ApiResponse<SessionDetailDto>? envelope = responseBytes is null
-                    ? null
-                    : TryDeserialize(
-                        responseBytes,
-                        ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
-
-                Error error = envelope?.Error
-                    ?? new Error(
-                        "Api.HttpError",
-                        $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
-
-                yield return Result<EntryDto>.Failure(error);
-
-                yield break;
-            }
-
-            Stream stream = await response.Content
-                .ReadAsStreamAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            await using (stream.ConfigureAwait(false))
-            {
-                using StreamReader reader = new(
-                    stream,
-                    Encoding.UTF8,
-                    detectEncodingFromByteOrderMarks: false,
-                    bufferSize: 1024,
-                    leaveOpen: true);
-
-                while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
-                {
-                    if (!line.StartsWith("data: ", StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    string payload = line[6..];
-
-                    if (string.Equals(payload, "[DONE]", StringComparison.Ordinal))
-                    {
-                        yield break;
-                    }
-
-                    if (string.Equals(payload, "{\"type\":\"live\"}", StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    EntryDto? entry = null;
-
-                    bool malformed = false;
-
-                    try
-                    {
-                        entry = JsonSerializer.Deserialize(
-                            payload,
-                            ArcanumJsonContext.Default.EntryDto);
-                    }
-                    catch (JsonException)
-                    {
-                        malformed = true;
-                    }
-
-                    if (malformed)
-                    {
-                        yield return Result<EntryDto>.Failure(
-                            new Error("Api.InvalidResponse", "Malformed session event received from API."));
-
-                        continue;
-                    }
-
-                    if (entry is not null)
-                    {
-                        yield return Result<EntryDto>.Success(entry);
-                    }
-                }
-            }
-        }
-    }
-
     public async IAsyncEnumerable<IntelligenceEvent> AskStreamAsync(
         PingRequest body,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -4247,10 +4102,24 @@ public sealed partial class ArcanumApiClient(IHttpClientFactory httpClientFactor
             if (!response.IsSuccessStatusCode)
             {
 
+                byte[]? responseBytes = await TryReadCappedContentAsync(
+                        response.Content,
+                        MaxResponseBytes,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                ApiResponse<string>? envelope = responseBytes is null
+                    ? null
+                    : TryDeserialize(
+                        responseBytes,
+                        ArcanumJsonContext.Default.ApiResponseString);
+
                 yield return ResearchError(
-                    new Error(
-                        "Api.HttpError",
-                        $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
+                    envelope is { IsSuccess: false, Error: not null }
+                        ? envelope.Error.Value
+                        : new Error(
+                            "Api.HttpError",
+                            $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
 
                 yield break;
 

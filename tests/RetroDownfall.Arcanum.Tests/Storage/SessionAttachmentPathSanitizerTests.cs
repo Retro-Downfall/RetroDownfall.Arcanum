@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Tests.Storage;
@@ -77,6 +78,35 @@ public sealed class SessionAttachmentPathSanitizerTests
 
     }
 
+    [Theory]
+    [InlineData("q3-report?.md", "q3-report.md")]
+    [InlineData("why<not>.txt", "whynot.txt")]
+    [InlineData("wild*card.log", "wildcard.log")]
+    [InlineData("say \"hello\".txt", "say hello.txt")]
+    [InlineData("left|right.csv", "leftright.csv")]
+    public void TrySanitize_strips_characters_windows_filenames_reject(string input, string expected)
+    {
+
+        Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out string error));
+
+        Assert.Equal(expected, sanitized);
+
+        Assert.Equal(string.Empty, error);
+
+    }
+
+    [Fact]
+    public void TrySanitize_rejects_names_made_only_of_unsafe_characters()
+    {
+
+        Assert.False(SessionAttachmentPathSanitizer.TrySanitize("<*?>", out string sanitized, out string error));
+
+        Assert.Equal(string.Empty, sanitized);
+
+        Assert.False(string.IsNullOrWhiteSpace(error));
+
+    }
+
     [Fact]
     public void TrySanitize_strips_leading_dots()
     {
@@ -106,6 +136,38 @@ public sealed class SessionAttachmentPathSanitizerTests
         Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out _));
 
         Assert.Equal(120, sanitized.Length);
+
+    }
+
+    [Fact]
+    public void TrySanitize_does_not_split_a_surrogate_pair_at_the_length_cap()
+    {
+
+        string input = new string('a', 119) + "\U0001F600" + new string('b', 40);
+
+        Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out _));
+
+        Assert.Equal(119, sanitized.Length);
+
+        Assert.DoesNotContain(sanitized, char.IsSurrogate);
+
+        Assert.Equal(sanitized, Utf8Truncation.NormalizeInvalidUtf16(sanitized));
+
+    }
+
+    [Fact]
+    public void TrySanitize_keeps_a_whole_surrogate_pair_that_fits_under_the_cap()
+    {
+
+        string input = new string('a', 118) + "\U0001F600" + new string('b', 40);
+
+        Assert.True(SessionAttachmentPathSanitizer.TrySanitize(input, out string sanitized, out _));
+
+        Assert.Equal(120, sanitized.Length);
+
+        Assert.EndsWith("\U0001F600", sanitized, StringComparison.Ordinal);
+
+        Assert.Equal(sanitized, Utf8Truncation.NormalizeInvalidUtf16(sanitized));
 
     }
 

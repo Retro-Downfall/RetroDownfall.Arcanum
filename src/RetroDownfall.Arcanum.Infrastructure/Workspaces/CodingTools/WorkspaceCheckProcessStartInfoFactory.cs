@@ -18,26 +18,60 @@ internal sealed record WorkspaceCheckRunDirectories(
     WorkspaceCheckTrxSource? TestResultsSource = null)
 {
 
-    internal static WorkspaceCheckRunDirectories Create()
+    internal static WorkspaceCheckRunDirectories Create() =>
+        Create(Path.GetTempPath());
+
+    internal static WorkspaceCheckRunDirectories Create(
+        string temporaryDirectory)
     {
 
         string root = Path.Combine(
-            Path.GetTempPath(),
+            temporaryDirectory,
             $"arcanum-workspace-check-{Guid.NewGuid():N}");
         CreateOwnerOnlyDirectory(root);
 
-        WorkspaceCheckRunDirectories directories = CreateUnder(root);
-
-        if (!OperatingSystem.IsMacOS())
+        try
         {
 
-            return directories;
+            WorkspaceCheckRunDirectories directories = CreateUnder(root);
+
+            if (!OperatingSystem.IsMacOS())
+            {
+
+                return directories;
+            }
+
+            return directories with
+            {
+                SharedIpcRoots = MacOsDotNetIpcRoots.Ensure(),
+            };
         }
-
-        return directories with
+        catch
         {
-            SharedIpcRoots = MacOsDotNetIpcRoots.Ensure(),
-        };
+
+            // The run never started, so the caller has no handle to clean up: a sub-root, TRX-source,
+            // or shared-IPC failure must not strand this owner-only tree in the temp directory.
+            TryDeletePartialRoot(root);
+
+            throw;
+        }
+    }
+
+    private static void TryDeletePartialRoot(
+        string root)
+    {
+
+        try
+        {
+
+            Directory.Delete(root, recursive: true);
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException)
+        {
+            // Best-effort: the original allocation failure is what the caller must see.
+        }
     }
 
     internal static WorkspaceCheckRunDirectories CreateUnder(string root)

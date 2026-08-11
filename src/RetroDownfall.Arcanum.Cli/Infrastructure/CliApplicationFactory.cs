@@ -401,17 +401,17 @@ internal static class CliApplicationFactory
                     ResponseFileTokenReplacer = null,
 
                 });
-            string? requestedFormat = parseResult.GetValue(globalOptions.OutputFormat);
+            string? requestedFormat = ReadGlobalOption(parseResult, globalOptions.OutputFormat);
 
-            bool jsonShorthand = parseResult.GetValue(globalOptions.Json);
+            bool jsonShorthand = ReadGlobalOption(parseResult, globalOptions.Json);
 
             CliInvocationOptions options = new(
                 ResolveJsonOutput(requestedFormat, jsonShorthand),
-                parseResult.GetValue(globalOptions.Plain),
-                parseResult.GetValue(globalOptions.Yes),
-                parseResult.GetValue(globalOptions.NoContext),
-                parseResult.GetValue(globalOptions.Print),
-                parseResult.GetValue(globalOptions.Verbose));
+                ReadGlobalOption(parseResult, globalOptions.Plain),
+                ReadGlobalOption(parseResult, globalOptions.Yes),
+                ReadGlobalOption(parseResult, globalOptions.NoContext),
+                ReadGlobalOption(parseResult, globalOptions.Print),
+                ReadGlobalOption(parseResult, globalOptions.Verbose));
             activeOptions = options;
 
             using IDisposable invocationScope =
@@ -697,6 +697,33 @@ internal static class CliApplicationFactory
         }
 
         return false;
+
+    }
+
+    /// <summary>
+    /// Reads a recursive global option without letting its own value failure escape. A rejected,
+    /// missing, or repeated value makes <c>GetValue</c> throw rather than yield the default, and that
+    /// throw lands before the invocation options are known — so an invalid <c>--output-format</c>
+    /// surfaced as the generic exit 1 "unexpected CLI error" with no JSON envelope for scripts.
+    /// Falling back to the default lets the parse-error handling below own the outcome: the real
+    /// System.CommandLine message, one <see cref="CliErrorPayload"/> document under <c>--json</c>,
+    /// and the documented exit 2 for an invalid command line.
+    /// </summary>
+    private static T? ReadGlobalOption<T>(ParseResult parseResult, Option<T> option)
+    {
+
+        try
+        {
+
+            return parseResult.GetValue(option);
+
+        }
+        catch (InvalidOperationException)
+        {
+
+            return default;
+
+        }
 
     }
 

@@ -16,9 +16,15 @@ using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Telemetry;
+using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -30,6 +36,8 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 [Collection("ProcessEnvironment")]
 public sealed class ApiSurfaceContractTests : IDisposable
 {
+
+    private const string GatedHostApiKey = "api-surface-contract-key";
 
     private readonly string _tempHome;
 
@@ -335,6 +343,73 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
     }
 
+    /// <summary>
+    /// AGENTS.md's "New endpoint" checklist requires <c>.WithName(...)</c> on every route; the memory
+    /// group was the only route file in the Api project that registered none, so its ten documented
+    /// routes emitted no <c>operationId</c> in <c>/api/openapi/v1.json</c> and were unaddressable by
+    /// <see cref="LinkGenerator"/>.
+    /// </summary>
+    [Fact]
+    public async Task MemoryEndpoints_are_registered_with_unique_endpoint_names()
+    {
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        // Registration alone is what endpoint building inspects; these are never resolved here.
+        builder.Services.AddScoped<ArcanumDbContext>(static _ => throw new NotSupportedException());
+
+        builder.Services.AddScoped<ILexiconService>(static _ => throw new NotSupportedException());
+
+        builder.Services.AddScoped<ISagaMemoryStore>(static _ => throw new NotSupportedException());
+
+        builder.Services.ConfigureHttpJsonOptions(static options =>
+            options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
+
+        await using WebApplication app = builder.Build();
+
+        _ = app.MapGroup("/api").MapMemoryEndpoints();
+
+        await app.StartAsync();
+
+        RouteEndpoint[] memoryRoutes =
+        [
+            .. app.Services
+                .GetRequiredService<EndpointDataSource>()
+                .Endpoints
+                .OfType<RouteEndpoint>()
+                .Where(static endpoint => endpoint.RoutePattern.RawText is { } raw
+                    && raw.StartsWith("/api/memory", StringComparison.Ordinal)),
+        ];
+
+        await app.StopAsync();
+
+        Assert.Equal(10, memoryRoutes.Length);
+
+        string[] unnamed =
+        [
+            .. memoryRoutes
+                .Where(static endpoint => string.IsNullOrEmpty(
+                    endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName))
+                .Select(static endpoint => endpoint.RoutePattern.RawText ?? endpoint.DisplayName ?? "?"),
+        ];
+
+        Assert.True(
+            unnamed.Length == 0,
+            $"Memory routes registered without .WithName(...): {string.Join(", ", unnamed)}");
+
+        string[] names =
+        [
+            .. memoryRoutes.Select(static endpoint =>
+                endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()!.EndpointName),
+        ];
+
+        // Duplicate endpoint names throw at routing-table build time, so uniqueness is part of the fix.
+        Assert.Equal(names.Length, names.Distinct(StringComparer.Ordinal).Count());
+
+    }
+
     [Fact]
     public async Task DuplicateIdempotencyKeyHeaders_are_rejected_instead_of_silently_ignored()
     {
@@ -395,6 +470,96 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
     }
 
+    /// <summary>
+    /// DESIGN §11.3: a request without the key is answered with 401 and nothing else happens. Minimal
+    /// API endpoint filters run <em>after</em> parameter binding, so gating on
+    /// <c>ApiKeyEndpointFilter</c> alone let every anonymous POST have its body read, buffered and
+    /// deserialized first — on <c>POST /v1/files</c> that is a 513 MiB multipart envelope spooled to
+    /// the temp filesystem by an unauthenticated caller.
+    /// </summary>
+    [Fact]
+    public async Task Unauthenticated_requests_are_rejected_before_the_request_body_is_read()
+    {
+
+        (WebApplication app, ExecutionProbe probe) = await CreateApiKeyGatedHostAsync();
+
+        await using (app)
+        {
+
+            using HttpClient client = app.GetTestClient();
+
+            HttpResponseMessage response = await client.SendAsync(BuildProbeRequest());
+
+            _ = await response.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+            Assert.Equal(0, probe.Executions);
+
+            Assert.Equal(0, probe.RequestBodyBytesRead);
+
+            await app.StopAsync();
+
+        }
+
+    }
+
+    /// <summary>
+    /// The same ordering defect surfaced as a status-code leak: binding failed before the key was ever
+    /// checked, so an anonymous caller got a body-parse 400 instead of the documented 401.
+    /// </summary>
+    [Fact]
+    public async Task Unauthenticated_requests_with_an_unparsable_body_still_return_401()
+    {
+
+        (WebApplication app, ExecutionProbe probe) = await CreateApiKeyGatedHostAsync();
+
+        await using (app)
+        {
+
+            using HttpClient client = app.GetTestClient();
+
+            HttpResponseMessage response = await client.SendAsync(BuildMalformedProbeRequest());
+
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+            Assert.Equal(0, probe.Executions);
+
+            await app.StopAsync();
+
+        }
+
+    }
+
+    [Fact]
+    public async Task Authenticated_requests_still_bind_the_body_and_reach_the_handler()
+    {
+
+        (WebApplication app, ExecutionProbe probe) = await CreateApiKeyGatedHostAsync();
+
+        await using (app)
+        {
+
+            using HttpClient client = app.GetTestClient();
+
+            HttpRequestMessage request = BuildProbeRequest();
+
+            request.Headers.Add(ArcanumApiHeaders.ApiKey, GatedHostApiKey);
+
+            HttpResponseMessage response = await client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            Assert.Equal(1, probe.Executions);
+
+            Assert.True(probe.RequestBodyBytesRead > 0);
+
+            await app.StopAsync();
+
+        }
+
+    }
+
     [Fact]
     public void Fingerprint_covers_the_query_string()
     {
@@ -435,6 +600,52 @@ public sealed class ApiSurfaceContractTests : IDisposable
     }
 
     [Fact]
+    public async Task NormalizeRoute_collapses_routing_equivalent_path_variants()
+    {
+
+        (WebApplication app, RouteProbe probe) = await CreateRouteProbeHostAsync();
+
+        await using (app)
+        {
+
+            using HttpClient client = app.GetTestClient();
+
+            await PostAsync(client, "/api/spells/build/execute");
+
+            await PostAsync(client, "/api/spells/build/execute/");
+
+            await PostAsync(client, "/API/Spells/build/EXECUTE");
+
+            await PostAsync(client, "/api/spells/Build/execute");
+
+            await app.StopAsync();
+
+            string[] routes = probe.Routes;
+
+            Assert.Equal(4, routes.Length);
+
+            // Routing matched the same endpoint for all three spellings, so claim identity and
+            // fingerprint must match too — otherwise one Idempotency-Key runs the billed side effect
+            // more than once instead of replaying.
+            Assert.Equal(routes[0], routes[1]);
+
+            Assert.Equal(routes[0], routes[2]);
+
+            // ...but a differently-cased route *value* is a different spell, and must never replay
+            // the first spell's cached response.
+            Assert.NotEqual(routes[0], routes[3]);
+
+            // Identity stays endpoint-specific: the group prefix and the pattern are both part of it.
+            Assert.Contains("/api/spells/{name}/execute", routes[0], StringComparison.Ordinal);
+
+            // ...and so is the route value, or two spells would share one claim key.
+            Assert.Contains("build", routes[0], StringComparison.Ordinal);
+
+        }
+
+    }
+
+    [Fact]
     public void ResolvePrincipal_ignores_the_client_supplied_host_header()
     {
 
@@ -450,6 +661,48 @@ public sealed class ApiSurfaceContractTests : IDisposable
         Assert.Equal(
             IdempotencyIdentity.ResolvePrincipal(localhost),
             IdempotencyIdentity.ResolvePrincipal(loopback));
+
+    }
+
+    private static async Task PostAsync(HttpClient client, string requestUri)
+    {
+
+        using HttpRequestMessage request = new(HttpMethod.Post, requestUri);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+    }
+
+    private static async Task<(WebApplication App, RouteProbe Probe)> CreateRouteProbeHostAsync()
+    {
+
+        RouteProbe probe = new();
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        builder.Services.AddSingleton(probe);
+
+        WebApplication app = builder.Build();
+
+        app.MapGroup("/api")
+            .MapPost(
+                "/spells/{name}/execute",
+                (HttpContext httpContext, RouteProbe routeProbe) =>
+                {
+
+                    routeProbe.Record(IdempotencyIdentity.NormalizeRoute(httpContext));
+
+                    return Results.Ok();
+
+                });
+
+        await app.StartAsync();
+
+        return (app, probe);
 
     }
 
@@ -474,6 +727,16 @@ public sealed class ApiSurfaceContractTests : IDisposable
         return new HttpRequestMessage(HttpMethod.Post, "/api/probe")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+
+    }
+
+    private static HttpRequestMessage BuildMalformedProbeRequest()
+    {
+
+        return new HttpRequestMessage(HttpMethod.Post, "/api/probe")
+        {
+            Content = new StringContent("""{"prompt":""", Encoding.UTF8, "application/json"),
         };
 
     }
@@ -508,6 +771,67 @@ public sealed class ApiSurfaceContractTests : IDisposable
                 })
             .AddEndpointFilter(
                 IdempotencyEndpointFilters.ForBoundArgument(0, ArcanumJsonContext.Default.PingRequest));
+
+        await app.StartAsync();
+
+        return (app, probe);
+
+    }
+
+    /// <summary>
+    /// Builds the API-key-gated pipeline the way <c>MapArcanumEndpoints</c> builds it, plus a
+    /// test-owned stream wrapper installed ahead of the gate that counts every byte anything pulls
+    /// from the request body.
+    /// </summary>
+    private static async Task<(WebApplication App, ExecutionProbe Probe)> CreateApiKeyGatedHostAsync()
+    {
+
+        ExecutionProbe probe = new();
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        builder.Services.AddSingleton(probe);
+
+        builder.Services.AddSingleton<ISecretStore>(new StubSecretStore(GatedHostApiKey));
+
+        builder.Services.AddSingleton<IApiKeyDigestCache>(new ApiKeyDigestCache(TimeProvider.System));
+
+        builder.Services.AddSingleton<ApiKeyAuthenticator>();
+
+        builder.Services.ConfigureHttpJsonOptions(static options =>
+            options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
+
+        WebApplication app = builder.Build();
+
+        app.Use(async (HttpContext context, Func<Task> next) =>
+        {
+
+            context.Request.Body = new CountingRequestBodyStream(
+                context.Request.Body,
+                context.RequestServices.GetRequiredService<ExecutionProbe>());
+
+            await next().ConfigureAwait(false);
+
+        });
+
+        app.UseArcanumApiKeyAuthentication();
+
+        RouteGroupBuilder apiGroup = app.MapGroup("/api").RequireArcanumApiKey();
+
+        apiGroup.MapPost(
+            "/probe",
+            (PingRequest body, ExecutionProbe executionProbe) =>
+            {
+
+                _ = body;
+
+                executionProbe.Record();
+
+                return Results.Ok();
+
+            });
 
         await app.StartAsync();
 
@@ -554,14 +878,126 @@ public sealed class ApiSurfaceContractTests : IDisposable
 
     }
 
+    private sealed class RouteProbe
+    {
+
+        private readonly List<string> _routes = [];
+
+        public string[] Routes
+        {
+            get
+            {
+
+                lock (_routes)
+                {
+
+                    return [.. _routes];
+
+                }
+
+            }
+        }
+
+        public void Record(string route)
+        {
+
+            lock (_routes)
+            {
+
+                _routes.Add(route);
+
+            }
+
+        }
+
+    }
+
     private sealed class ExecutionProbe
     {
 
         private int _executions;
 
+        private long _requestBodyBytesRead;
+
         public int Executions => Volatile.Read(ref _executions);
 
+        public long RequestBodyBytesRead => Interlocked.Read(ref _requestBodyBytesRead);
+
         public void Record() => Interlocked.Increment(ref _executions);
+
+        public void RecordRequestBodyBytes(int count) => Interlocked.Add(ref _requestBodyBytesRead, count);
+
+    }
+
+    /// <summary>
+    /// Read-only pass-through that tallies every byte the pipeline pulls from the request body, so a
+    /// test can prove authentication ran before anything buffered, spooled, or deserialized it.
+    /// </summary>
+    private sealed class CountingRequestBodyStream(Stream inner, ExecutionProbe probe) : Stream
+    {
+
+        public override bool CanRead => inner.CanRead;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() => inner.Flush();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+
+            int read = inner.Read(buffer, offset, count);
+
+            probe.RecordRequestBodyBytes(read);
+
+            return read;
+
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+
+            int read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+            probe.RecordRequestBodyBytes(read);
+
+            return read;
+
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    }
+
+    private sealed class StubSecretStore(string apiKey) : ISecretStore
+    {
+
+        public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(apiKey);
+
+        public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
+            Task.FromResult(SecretStoreReadResult.Ok(apiKey));
+
+        public Task SaveApiKeyAsync(string key) => Task.CompletedTask;
+
+        public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
+
+        public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
 
     }
 

@@ -444,7 +444,25 @@ internal sealed class TapestryWeaver(
 
             }
 
-            for (int index = 0; index < needsEmbedding.Count && index < embedded.Value.Length; index++)
+            // A response whose vector count does not match the request is a shape mismatch, not a
+            // benign edge case. Pairing it positionally would give every leaf from the omission
+            // onward its neighbour's vector, and those wrong-but-well-formed vectors pass the
+            // quarantine check below and get persisted as this generation's leaf embeddings.
+            if (embedded.Value.Length != needsEmbedding.Count)
+            {
+
+                logger.LogWarning(
+                    "Tapestry leaf embedding for {ScopeKind} {ScopeId} returned {ActualCount} vector(s) for {ExpectedCount} input(s); the previous complete generation remains current.",
+                    scope.Kind,
+                    scope.Id,
+                    embedded.Value.Length,
+                    needsEmbedding.Count);
+
+                return new LeafLayer([], 0, 0);
+
+            }
+
+            for (int index = 0; index < needsEmbedding.Count; index++)
             {
 
                 minted[needsEmbedding[index].SourceId] = embedded.Value[index].Vector.ToArray();
@@ -597,7 +615,7 @@ internal sealed class TapestryWeaver(
 
         }
 
-        MergeUndersized(candidates, bounds);
+        MergeUndersized(scope, candidates, layer, bounds);
 
         candidates.Sort(static (left, right) =>
             StringComparer.Ordinal.Compare(left.Members[0].StableKey, right.Members[0].StableKey));
@@ -654,12 +672,19 @@ internal sealed class TapestryWeaver(
         CancellationToken cancellationToken)
     {
 
-        bool withinChildCount = members.Count <= bounds.MaxChildrenPerSummary;
-
-        bool fits = summarizer.FitsOneRequest(
-            new TapestrySummaryRequest(scope.Kind, scope.Id, layer, [.. members.Select(static node => node.Content)]));
-
-        if (members.Count <= 1 || (withinChildCount && fits))
+        // The child-count bound is checked first and the fit estimate short-circuits behind it: a fit
+        // estimate concatenates, hashes, and tokenizes every member's text, and on an oversized
+        // cluster — the normal case on the way down — that whole-cluster string is built only to be
+        // discarded. It is also synchronous and takes no token, so it lengthens the one stretch of
+        // this sweep that cannot observe cancellation.
+        if (members.Count <= 1
+            || (members.Count <= bounds.MaxChildrenPerSummary
+                && summarizer.FitsOneRequest(
+                    new TapestrySummaryRequest(
+                        scope.Kind,
+                        scope.Id,
+                        layer,
+                        [.. members.Select(static node => node.Content)]))))
         {
 
             return [new PlanCandidate(members, inheritedReason)];
@@ -745,11 +770,16 @@ internal sealed class TapestryWeaver(
 
     /// <summary>
     /// One deterministic rule for undersized clusters: merge a singleton into the sibling whose
-    /// members it is most similar to, provided that sibling still has room. A singleton with nowhere
-    /// to go stays as its own one-child summary and is recorded as a carry — it is never dropped and
+    /// members it is most similar to, provided that sibling still has room — room being both the
+    /// child-count bound and the selected model's real context estimate. A singleton with nowhere to
+    /// go stays as its own one-child summary and is recorded as a carry — it is never dropped and
     /// never skips a layer.
     /// </summary>
-    private static void MergeUndersized(List<PlanCandidate> candidates, Bounds bounds)
+    private void MergeUndersized(
+        TapestryScope scope,
+        List<PlanCandidate> candidates,
+        int layer,
+        Bounds bounds)
     {
 
         if (candidates.Count < 2)
@@ -791,19 +821,44 @@ internal sealed class TapestryWeaver(
 
                 // Stable-id tie-break keeps the merge target reproducible when two siblings are
                 // equally close.
-                if (similarity > bestSimilarity
+                bool closer = similarity > bestSimilarity
                     || (similarity == bestSimilarity
                         && best >= 0
                         && StringComparer.Ordinal.Compare(
                             candidates[other].Members[0].StableKey,
-                            candidates[best].Members[0].StableKey) < 0))
+                            candidates[best].Members[0].StableKey) < 0);
+
+                if (!closer)
                 {
 
-                    bestSimilarity = similarity;
-
-                    best = other;
+                    continue;
 
                 }
+
+                // The child count is only half of "has room". Nothing re-checks a merged candidate —
+                // PlanLayer's fit check below only fires for singletons — so a merge that crosses the
+                // token bound produces a cluster that cannot be repartitioned and is handed to the
+                // summarizer anyway. It would also swallow the very singleton the carry exists to
+                // rescue: a node whose own text exceeds one summary request must stay alone. The
+                // estimate sits behind the cheap checks so it runs only for a new best.
+                if (!summarizer.FitsOneRequest(
+                    new TapestrySummaryRequest(
+                        scope.Kind,
+                        scope.Id,
+                        layer,
+                        [
+                            .. candidates[other].Members.Select(static member => member.Content),
+                            orphan.Content,
+                        ])))
+                {
+
+                    continue;
+
+                }
+
+                bestSimilarity = similarity;
+
+                best = other;
 
             }
 

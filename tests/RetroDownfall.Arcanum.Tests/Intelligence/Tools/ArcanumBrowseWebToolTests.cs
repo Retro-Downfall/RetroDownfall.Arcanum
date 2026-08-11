@@ -198,6 +198,41 @@ public sealed class ArcanumBrowseWebToolTests
         Assert.Contains("404", dto.Content);
     }
 
+    /// <summary>
+    /// <c>maxLinks</c> arrives as caller/model-supplied JSON, so a number that is not an
+    /// <see cref="int"/> must degrade to the configured maximum rather than throwing out of the
+    /// tool before the request is even attempted.
+    /// </summary>
+    [Theory]
+    [InlineData("10.0")]
+    [InlineData("1.5")]
+    [InlineData("5000000000")]
+    [InlineData("1e40")]
+    public async Task InvokeAsync_MaxLinksIsNotAnInt32_FallsBackToConfiguredMaximum(string rawMaxLinks)
+    {
+        ArcanumBrowseWebTool tool = CreateTool(
+            (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(SampleHtml),
+            }));
+
+        using JsonDocument maxLinks = JsonDocument.Parse(rawMaxLinks);
+
+        AIFunctionArguments args = new(new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["url"] = "https://example.com/page",
+            ["maxLinks"] = maxLinks.RootElement,
+        });
+
+        object? result = await tool.InvokeAsync(args, CancellationToken.None);
+
+        BrowseWebResult? dto = Deserialize(result);
+
+        Assert.NotNull(dto);
+        Assert.Equal("Retro Downfall", dto.Title);
+        Assert.Contains("https://example.com/absolute", dto.Links);
+    }
+
     private static ArcanumBrowseWebTool CreateTool(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler,
         ArcanumSettings? settings = null)

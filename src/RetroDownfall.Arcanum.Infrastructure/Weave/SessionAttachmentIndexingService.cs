@@ -27,6 +27,8 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
     private static readonly TimeSpan AutomaticRetryDelay = TimeSpan.FromSeconds(5);
 
+    private static readonly TimeSpan ReconciliationPeriod = TimeSpan.FromSeconds(30);
+
     private readonly IServiceScopeFactory _scopeFactory;
 
     private readonly IOptionsMonitor<ArcanumSettings> _options;
@@ -124,6 +126,8 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
         bool wasEnabled = false;
 
+        QueueWait wait = new();
+
         while (!stoppingToken.IsCancellationRequested)
         {
 
@@ -154,13 +158,13 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
                 }
 
-                Task<bool> waitToRead = _channel.Reader.WaitToReadAsync(stoppingToken).AsTask();
+                QueueSignal signal = await WaitForWorkAsync(
+                    _channel.Reader,
+                    wait,
+                    ReconciliationPeriod,
+                    stoppingToken).ConfigureAwait(false);
 
-                Task periodic = Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
-
-                Task completed = await Task.WhenAny(waitToRead, periodic).ConfigureAwait(false);
-
-                if (completed == periodic)
+                if (signal == QueueSignal.ReconciliationDue)
                 {
 
                     await ReconcileAndEnqueueAsync(embeddings, stoppingToken).ConfigureAwait(false);
@@ -169,7 +173,7 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
 
                 }
 
-                if (!await waitToRead.ConfigureAwait(false))
+                if (signal == QueueSignal.QueueCompleted)
                 {
 
                     return;
@@ -213,6 +217,70 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
             }
 
         }
+
+    }
+
+    /// <summary>Why <see cref="WaitForWorkAsync"/> returned.</summary>
+    internal enum QueueSignal
+    {
+
+        Work,
+
+        ReconciliationDue,
+
+        QueueCompleted,
+
+    }
+
+    /// <summary>
+    /// The one outstanding channel waiter and reconciliation delay, carried across loop iterations.
+    /// </summary>
+    internal sealed class QueueWait
+    {
+
+        public Task<bool>? PendingRead { get; set; }
+
+        public Task? PendingPeriod { get; set; }
+
+    }
+
+    /// <summary>
+    /// Waits for either queued work or the next reconciliation period, whichever comes first.
+    ///
+    /// <para>The loser of that race is kept rather than abandoned. An abandoned
+    /// <c>WaitToReadAsync</c> stays queued on the channel's waiting-reader list until a write finally
+    /// drains it — cancelling it marks it completed but does not unlink it — so re-issuing one every
+    /// reconciliation period would grow that list, and the stopping token's registration list, for
+    /// the life of a host nobody ever attaches a file to. Exactly one of each is outstanding here,
+    /// and each is replaced only once it has been consumed.</para>
+    /// </summary>
+    internal static async Task<QueueSignal> WaitForWorkAsync(
+        ChannelReader<SessionAttachmentIndexRequest> reader,
+        QueueWait wait,
+        TimeSpan reconciliationPeriod,
+        CancellationToken cancellationToken)
+    {
+
+        wait.PendingRead ??= reader.WaitToReadAsync(cancellationToken).AsTask();
+
+        wait.PendingPeriod ??= Task.Delay(reconciliationPeriod, cancellationToken);
+
+        Task completed = await Task.WhenAny(wait.PendingRead, wait.PendingPeriod).ConfigureAwait(false);
+
+        if (completed == wait.PendingPeriod)
+        {
+
+            wait.PendingPeriod = null;
+
+            return QueueSignal.ReconciliationDue;
+
+        }
+
+        bool hasWork = await wait.PendingRead.ConfigureAwait(false);
+
+        wait.PendingRead = null;
+
+        return hasWork ? QueueSignal.Work : QueueSignal.QueueCompleted;
 
     }
 

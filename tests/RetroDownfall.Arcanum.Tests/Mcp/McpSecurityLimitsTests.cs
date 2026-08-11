@@ -280,4 +280,17 @@ public sealed class McpSecurityLimitsTests
 
     }
 
+    // stdio framing for external MCP servers is owned by the SDK's StdioClientTransport
+    // (McpConnectionManager.Lifecycle). No first-party stdio line reader may survive alongside it:
+    // an uncalled one advertises itself as the framing path and misdirects anyone hardening it.
+    [Fact]
+    public void No_first_party_stdio_line_reader_shadows_the_sdk_transport()
+    {
+
+        Assert.Null(
+            typeof(McpSecurityLimits).Assembly.GetType(
+                "RetroDownfall.Arcanum.Infrastructure.Mcp.McpStdioLineReader"));
+
+    }
+
 }

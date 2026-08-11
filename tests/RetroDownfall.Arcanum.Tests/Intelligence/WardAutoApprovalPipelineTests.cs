@@ -19,7 +19,13 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// <summary>
 /// Issue #53: the Ward step's decision order is classify → hard deny → auto-approve → interactive,
 /// and an auto-approved call still runs every containment check a manually approved call runs.
+///
+/// The metric test asserts <c>Assert.Single</c> over <c>arcanum_ward_decisions_total</c>, which is a
+/// single process-wide instrument on the shared <c>"Arcanum"</c> meter — every ward decision recorded
+/// by any concurrently running class lands in the same listener. The <c>Telemetry</c> collection is
+/// the <c>DisableParallelization</c> guarantee that assertion depends on.
 /// </summary>
+[Collection("Telemetry")]
 public sealed class WardAutoApprovalPipelineTests
 {
 
@@ -318,6 +324,54 @@ public sealed class WardAutoApprovalPipelineTests
                 Tools = [.. tools],
             },
         };
+
+    /// <summary>
+    /// On the buffered path the Ward frames are accumulated rather than emitted live. If the tool
+    /// then throws under the tolerant-failure policy — an MCP transport fault, a workspace IO error
+    /// — the client must still learn that the call was gated and how it was resolved, not merely
+    /// that something failed.
+    /// </summary>
+    [Fact]
+    public async Task A_tolerated_invocation_failure_still_reports_the_ward_frames()
+    {
+
+        ToolExecutionPipeline pipeline = CreatePipeline(
+            new RecordingWard(),
+            new AllowAllSanctumGuard(),
+            AutoApprove(AutoApprovedTool));
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await pipeline
+            .ProcessSingleToolCallAsync(
+                new FunctionCallContent($"call-{AutoApprovedTool}", AutoApprovedTool, new Dictionary<string, object?>()),
+                new PingRequest("hi", WorkingDirectory: "/tmp"),
+                new ChatOptions
+                {
+                    Tools =
+                    [
+                        AIFunctionFactory.Create(
+                            () =>
+                            {
+                                throw new InvalidOperationException("mcp transport fault");
+#pragma warning disable CS0162
+                                return "unreachable";
+#pragma warning restore CS0162
+                            },
+                            AutoApprovedTool),
+                    ],
+                },
+                activeSpell: null,
+                sessionId: "session-1",
+                new ToolExecutionPipeline.TurnContext(),
+                suppressInvocationFailures: true,
+                CancellationToken.None);
+
+        Assert.True(processed.Failed);
+
+        Assert.Equal(
+            [IntelligenceEventType.Warded, IntelligenceEventType.WardResolved],
+            processed.WardEvents.Select(static e => e.Type));
+
+    }
 
     private static ToolExecutionPipeline CreatePipeline(
         IWard ward,

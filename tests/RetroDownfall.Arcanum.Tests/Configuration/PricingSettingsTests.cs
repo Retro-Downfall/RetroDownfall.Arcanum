@@ -34,4 +34,18 @@ public sealed class PricingSettingsTests
 
         Assert.Same(fallback, pricing.ResolveForModel(model));
     }
+
+    [Fact]
+    public void ModelPricing_NullAssignmentKeepsAnEmptyMap()
+    {
+        ModelPricingEntry fallback = new() { OutputPer1M = 11m };
+        PricingSettings pricing = new()
+        {
+            DefaultPricing = fallback,
+            ModelPricing = null!,
+        };
+
+        Assert.Empty(pricing.ModelPricing);
+        Assert.Same(fallback, pricing.ResolveForModel("mistral:latest"));
+    }
 }

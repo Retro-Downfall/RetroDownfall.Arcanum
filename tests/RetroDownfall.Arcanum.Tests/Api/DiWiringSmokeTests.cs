@@ -56,6 +56,10 @@ public sealed class DiWiringSmokeTests
 
         Assert.NotNull(services.GetRequiredService<ApiKeyEndpointFilter>());
 
+        // The pre-binding auth middleware resolves this per request; an unregistered authenticator
+        // would surface as a 500 on every gated route instead of a 401.
+        Assert.NotNull(services.GetRequiredService<ApiKeyAuthenticator>());
+
         Assert.NotNull(services.GetRequiredService<IProvingGroundsArbiter>());
 
         Assert.NotNull(services.GetRequiredService<ProvingGroundsRunner>());

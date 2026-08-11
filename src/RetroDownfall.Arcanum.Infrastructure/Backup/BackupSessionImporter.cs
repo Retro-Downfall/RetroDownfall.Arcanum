@@ -30,7 +30,10 @@ internal sealed record BackupSessionImportResult(
 /// configuration, secrets, and every Session it already had. Colliding primary keys are remapped
 /// rather than overwritten, foreign keys follow the remap, and attachment payloads that already
 /// exist byte-for-byte are deduplicated instead of copied again. The whole merge runs in one
-/// destination transaction, so a failure imports nothing.
+/// destination transaction, so a failure imports nothing. Payload bytes are the one part no
+/// transaction covers — they are copied into the live attachment tree before the commit — so they
+/// are unwound explicitly on every path that does not reach a successful commit, cancellation
+/// included.
 /// </remarks>
 internal static class BackupSessionImporter
 {
@@ -43,7 +46,8 @@ internal static class BackupSessionImporter
         string destinationAttachmentsRoot,
         string destinationGrimoireSecret,
         string sourceGrimoireSecret,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action? beforeCommitForTests = null)
     {
 
         if (!File.Exists(sourceDatabasePath) || sourceGrimoireSecret.Length == 0)
@@ -118,6 +122,11 @@ internal static class BackupSessionImporter
 
         List<PendingAttachmentCopy> copies = [];
 
+        // Payloads land in the live attachment tree, which no transaction can roll back. Nothing but
+        // a successful commit entitles them to stay, so the cleanup is keyed on this rather than on
+        // the exception types the catch below happens to name.
+        bool committed = false;
+
         try
         {
 
@@ -173,6 +182,8 @@ internal static class BackupSessionImporter
             foreach (PendingAttachmentCopy copy in copies)
             {
 
+                cancellationToken.ThrowIfCancellationRequested();
+
                 SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(
                     Path.GetDirectoryName(copy.Destination)!);
 
@@ -182,7 +193,11 @@ internal static class BackupSessionImporter
 
             }
 
+            beforeCommitForTests?.Invoke();
+
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            committed = true;
 
             return new BackupSessionImportResult(
                 sessions,
@@ -199,27 +214,45 @@ internal static class BackupSessionImporter
 
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
-            foreach (PendingAttachmentCopy copy in copies)
-            {
-
-                try
-                {
-
-                    File.Delete(copy.Destination);
-
-                }
-                catch (Exception cleanup) when (
-                    cleanup is IOException or UnauthorizedAccessException)
-                {
-
-                }
-
-            }
-
             return BackupSessionImportResult.Failed(
                 new BackupVerifyIssue(
                     "backup.restore_import_failed",
                     "The selected Sessions could not be imported; the destination is unchanged."));
+
+        }
+        finally
+        {
+
+            if (!committed)
+            {
+
+                // Cancellation unwinds here too, and it is the one failure the catch above never
+                // sees: the transaction is rolled back by its own disposal, but the bytes are not.
+                Discard(copies);
+
+            }
+
+        }
+
+    }
+
+    private static void Discard(List<PendingAttachmentCopy> copies)
+    {
+
+        foreach (PendingAttachmentCopy copy in copies)
+        {
+
+            try
+            {
+
+                File.Delete(copy.Destination);
+
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+
+            }
 
         }
 

@@ -220,7 +220,9 @@ public static class LongRunningOperationRecoveryRegistry
                 MinCheckpointVersion: 0,
                 MaxCheckpointVersion: 2,
                 LongRunningOperationStartupPriority.Readiness,
-                RecoveryIntent: "Reconcile a partially applied retention mutation against its durable journal.",
+                RecoveryIntent:
+                    "Reconcile a partially applied retention mutation against its durable journal; a row still at "
+                    + "version 0 never reached that journal, so it is abandoned rather than parked.",
                 ManualRepairGuidance: "Inspect 'arcanum retention status' before re-applying the policy change."),
 
             new LongRunningOperationRecoveryDescriptor(

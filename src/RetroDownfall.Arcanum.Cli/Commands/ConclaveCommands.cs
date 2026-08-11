@@ -35,7 +35,11 @@ public sealed class ConclaveCommands(
 
             console.WriteDiagnostic(result.Error.Message);
 
-            return (int)CliExitCode.NetworkError;
+            // Exit 3 means "the host was unreachable". A missing key or a server-side domain error
+            // is not a network fault and must not tell automation to retry the connection.
+            return result.Error.Code.StartsWith("Connection.", StringComparison.Ordinal)
+                ? (int)CliExitCode.NetworkError
+                : (int)CliExitCode.GenericError;
 
         }
 

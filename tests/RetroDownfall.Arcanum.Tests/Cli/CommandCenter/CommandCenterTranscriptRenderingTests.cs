@@ -299,4 +299,51 @@ public sealed class CommandCenterTranscriptRenderingTests
         Assert.Equal(["a", "b", "z"], target);
         Assert.Equal(3, mutations); // remove d, remove c, add z
     }
+
+    /// <summary>
+    /// Session titles are model-derived from the first user message, so an astral-plane glyph can
+    /// straddle the sidebar's cut. The sidebar row and the Ctrl+O picker both render this string.
+    /// </summary>
+    [Fact]
+    public void Session_title_truncation_never_splits_a_surrogate_pair()
+    {
+        SessionListItem item = new(
+            Guid.NewGuid(),
+            new string('a', 20) + "\U0001F680 before ship",
+            "Active",
+            DateTimeOffset.UnixEpoch,
+            EntryCount: 4);
+
+        string line = item.DisplayLine;
+
+        for (int i = 0; i < line.Length; i++)
+        {
+            if (char.IsHighSurrogate(line[i]))
+            {
+                Assert.True(
+                    i + 1 < line.Length && char.IsLowSurrogate(line[i + 1]),
+                    $"lone high surrogate at index {i} of `{line}`.");
+                i++;
+                continue;
+            }
+
+            Assert.False(char.IsLowSurrogate(line[i]), $"lone low surrogate at index {i}.");
+        }
+
+        Assert.Contains("…", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_short_session_title_is_left_intact()
+    {
+        SessionListItem item = new(
+            Guid.NewGuid(),
+            "Short title",
+            "Active",
+            DateTimeOffset.UnixEpoch,
+            EntryCount: 1);
+
+        Assert.StartsWith("Short title  ", item.DisplayLine, StringComparison.Ordinal);
+        Assert.DoesNotContain("…", item.DisplayLine, StringComparison.Ordinal);
+    }
 }

@@ -48,7 +48,6 @@ public sealed class AskCommand(
     /// <param name="preparedContext">Already-resolved effective context for an internal composed CLI route.</param>
     /// <param name="prompt">The prompt text: all words after ask, or after --.</param>
     public async Task<int> Ask(
-        string[] escapedArguments,
         CancellationToken cancellationToken,
         string? model = null,
         bool @new = false,
@@ -72,7 +71,7 @@ public sealed class AskCommand(
         CliEffectiveContext? preparedContext = null,
         params string[] prompt)
     {
-        string promptText = BuildPrompt(prompt, escapedArguments);
+        string promptText = BuildPrompt(prompt);
 
         if (string.IsNullOrWhiteSpace(promptText))
         {
@@ -542,26 +541,15 @@ public sealed class AskCommand(
         return 0;
     }
 
-    internal static string BuildPrompt(string[] promptWords, string[]? escapedArguments)
+    internal static string BuildPrompt(string[] promptWords)
     {
-        List<string> parts = new(promptWords.Length + 8);
+        List<string> parts = new(promptWords.Length);
 
         foreach (string word in promptWords)
         {
             if (!string.IsNullOrWhiteSpace(word))
             {
                 parts.Add(word.Trim());
-            }
-        }
-
-        if (escapedArguments is { } escaped)
-        {
-            foreach (string token in escaped)
-            {
-                if (!string.IsNullOrWhiteSpace(token))
-                {
-                    parts.Add(token.Trim());
-                }
             }
         }
 

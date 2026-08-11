@@ -204,7 +204,15 @@ internal sealed class CompletionCommands(
         string directory = Path.GetDirectoryName(target)
             ?? throw new IOException("Completion target has no directory.");
 
-        SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
+        // A completion script is not a secret and --target is an operator-supplied path Arcanum does
+        // not own, so an existing directory keeps whatever mode (and, on Windows, whatever inherited
+        // ACEs) its owner chose. Only a directory created here is hardened.
+        if (!Directory.Exists(directory))
+        {
+
+            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(directory);
+
+        }
 
         string temporary = target + ".tmp." + Guid.NewGuid().ToString("N");
 

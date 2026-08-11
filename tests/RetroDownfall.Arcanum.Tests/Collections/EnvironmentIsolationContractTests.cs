@@ -218,6 +218,32 @@ public sealed class EnvironmentIsolationContractTests
     }
 
     /// <summary>
+    /// The control above only pins the property-setter shape. Production exposes just as many
+    /// method-shaped seams — <c>SessionAttachmentToolAmbient.SetUtcTicksNowForTests</c>,
+    /// <c>WorkspacePathPolicy.SetSymlinkResolverForTests</c>,
+    /// <c>OutboundUrlGuard.SetPinnedAddressRewriterForTests</c> — and a predicate that recognises
+    /// only <c>set_</c> leaves every caller of those unguarded while still passing the control
+    /// above. Pin the second shape separately so neither branch can rot unnoticed.
+    /// </summary>
+    [Fact]
+    public void The_process_global_seam_scan_finds_the_method_shaped_seam_using_test_classes()
+    {
+
+        string[] found =
+        [
+            .. ProcessGlobalSeamMutatingTestClasses.Value
+                .Select(static type => type.Name),
+        ];
+
+        Assert.Contains("SessionAttachmentToolAmbientTtlTests", found);
+
+        Assert.Contains("WorkspacePathPolicySymlinkTests", found);
+
+        Assert.Contains("OutboundUrlGuardEgressConnectTests", found);
+
+    }
+
+    /// <summary>
     /// Guards the scanner itself: if the IL walk stopped resolving
     /// <c>Environment.SetEnvironmentVariable</c> call sites it would report an empty offender list
     /// and pass vacuously forever.
@@ -244,6 +270,12 @@ public sealed class EnvironmentIsolationContractTests
 
         Assert.Contains(
             typeof(RetroDownfall.Arcanum.Tests.Security.HostProcessToolPolicyTests).FullName,
+            found);
+
+        // The process working directory is the same class of shared state as a variable, and every
+        // relative path in the process resolves through it.
+        Assert.Contains(
+            typeof(RetroDownfall.Arcanum.Tests.Cli.FileBatchCommandTests).FullName,
             found);
     }
 
@@ -600,26 +632,40 @@ public sealed class EnvironmentIsolationContractTests
         }
     }
 
+    /// <summary>
+    /// Assignment to the process-global environment. <c>SetEnvironmentVariable</c> is the obvious
+    /// one; the working directory is the same shared cell wearing a property, and every relative
+    /// path resolved anywhere in the process reads it, so a test that repoints it is redirecting
+    /// whatever else is running.
+    /// </summary>
     private static bool IsEnvironmentMutation(
         MethodBase method) =>
         method.DeclaringType == typeof(global::System.Environment)
-        && string.Equals(
-            method.Name,
-            nameof(global::System.Environment.SetEnvironmentVariable),
-            StringComparison.Ordinal);
+        && (string.Equals(
+                method.Name,
+                nameof(global::System.Environment.SetEnvironmentVariable),
+                StringComparison.Ordinal)
+            || string.Equals(
+                method.Name,
+                $"set_{nameof(global::System.Environment.CurrentDirectory)}",
+                StringComparison.Ordinal));
 
     /// <summary>
     /// Assignment to a process-global seam that production code reads.
     ///
-    /// Two shapes qualify. The first is a static <c>…ForTests</c>/<c>…ForTesting</c> property setter
-    /// on production code — the deliberate test seams in <c>FileHandleIdentityInterop</c>,
+    /// Two shapes qualify. The first is a static <c>…ForTests</c>/<c>…ForTesting</c> seam on
+    /// production code — the deliberate test hooks in <c>FileHandleIdentityInterop</c>,
     /// <c>SecureFileReader</c>, <c>SecureFilePermissions</c>, <c>SessionWriteLock</c>,
     /// <c>SessionEntryPersistence</c>, <c>BackupService</c>, and <c>BackupDatabaseSnapshotter</c>.
     /// Each is a single static field that every caller in the process observes, so a test that
-    /// installs one is faking behaviour for every concurrently-running test as well as its own. The
-    /// second is Serilog's static <c>Log.Logger</c>, which routes every log record in the process,
-    /// so a test that swaps it and then asserts over what its sink captured is measuring the whole
-    /// suite rather than itself.
+    /// installs one is faking behaviour for every concurrently-running test as well as its own.
+    /// Whether the seam is spelled as a property or as a <c>Set…ForTests(…)</c> method is a
+    /// bookkeeping detail of the type that owns it — <c>SessionAttachmentToolAmbient</c>,
+    /// <c>OutboundUrlGuard</c>, and <c>WorkspacePathPolicy</c> use the method form for exactly the
+    /// same one static field — so both spellings have to count, or a whole class of seam slips
+    /// through while the scan still looks healthy. The second shape is Serilog's static
+    /// <c>Log.Logger</c>, which routes every log record in the process, so a test that swaps it and
+    /// then asserts over what its sink captured is measuring the whole suite rather than itself.
     /// </summary>
     private static bool IsProcessGlobalSeamMutation(MethodBase method)
     {
@@ -648,10 +694,19 @@ public sealed class EnvironmentIsolationContractTests
 
         }
 
-        return method.IsStatic
-            && method.Name.StartsWith("set_", StringComparison.Ordinal)
-            && (method.Name.EndsWith("ForTests", StringComparison.Ordinal)
-                || method.Name.EndsWith("ForTesting", StringComparison.Ordinal));
+        if (!method.IsStatic
+            || (!method.Name.EndsWith("ForTests", StringComparison.Ordinal)
+                && !method.Name.EndsWith("ForTesting", StringComparison.Ordinal)))
+        {
+
+            return false;
+
+        }
+
+        // Only the assigning shape: `…ForTests` also names pure read-only helpers that expose an
+        // internal calculation to a test, and those mutate nothing.
+        return method.Name.StartsWith("set_", StringComparison.Ordinal)
+            || method.Name.StartsWith("Set", StringComparison.Ordinal);
 
     }
 

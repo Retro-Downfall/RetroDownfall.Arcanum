@@ -740,6 +740,69 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ExecuteAsync_PermanentlyFailingExtraction_StopsRetryingAfterBoundedAttempts()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = await CreateSessionAsync();
+
+        await CreateEntryAsync(sessionId, "content this extraction model can never parse");
+
+        FakeWeaveService weave = new();
+
+        // A deterministically malformed response: every attempt fails identically, forever.
+        FakeIntelligenceProvider intelligence = new() { NextText = "not valid json at all" };
+
+        (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);
+
+        SagaExtractionService service = new(
+            scopeFactory,
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            NullLogger<SagaExtractionService>.Instance)
+        {
+
+            RetryBaseDelayForTests = TimeSpan.FromMilliseconds(5),
+
+        };
+
+        IHostedService hosted = service;
+
+        await hosted.StartAsync(CancellationToken.None);
+
+        try
+        {
+
+            service.EnqueueExtraction(sessionId);
+
+            int attempts = await WaitForStableCallCountAsync(intelligence, TimeSpan.FromSeconds(5));
+
+            // A permanent failure must not become an endless ladder of billable LLM round-trips.
+            Assert.InRange(attempts, 1, 8);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+
+            Assert.Equal(attempts, intelligence.CallCount);
+
+            // Abandoning the request is not permanent poisoning: the session's next successful turn
+            // enqueues it again and it gets a fresh bounded ladder.
+            service.EnqueueExtraction(sessionId);
+
+            int attemptsAfterReEnqueue = await WaitForStableCallCountAsync(intelligence, TimeSpan.FromSeconds(5));
+
+            Assert.True(attemptsAfterReEnqueue > attempts);
+
+        }
+        finally
+        {
+
+            await hosted.StopAsync(CancellationToken.None);
+
+        }
+
+    }
+
+    [SkippableFact]
     public async Task EnqueueExtraction_BeyondFormerQueueCapacity_EventuallyProcessesEverySession()
     {
 
@@ -1060,6 +1123,42 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         SagaMemoryStore store = CreateStore();
 
         return await store.GetWatermarkAsync(sessionId, CancellationToken.None);
+
+    }
+
+    /// <summary>
+    /// Returns the extraction call count once it stops moving, or whatever it has reached by
+    /// <paramref name="timeout"/> — an unbounded retry loop never settles, so the caller's bound
+    /// assertion is what fails rather than this helper hanging.
+    /// </summary>
+    private static async Task<int> WaitForStableCallCountAsync(
+        FakeIntelligenceProvider intelligence,
+        TimeSpan timeout)
+    {
+
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
+
+        int previous = -1;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+
+            int observed = intelligence.CallCount;
+
+            if (observed > 0 && observed == previous)
+            {
+
+                return observed;
+
+            }
+
+            previous = observed;
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250));
+
+        }
+
+        return intelligence.CallCount;
 
     }
 

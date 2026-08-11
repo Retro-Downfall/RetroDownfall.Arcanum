@@ -41,7 +41,7 @@ public sealed partial class McpConnectionManager
                 return exact;
             }
 
-            return new Error("Mcp.NotFound", $"MCP server '{name}' was not found.");
+            return new Error(ErrorCodes.Mcp.ServerNotFound, $"MCP server '{name}' was not found.");
         }
 
         List<ManagedMcpServerEntry> matches = _registry.Values
@@ -55,7 +55,7 @@ public sealed partial class McpConnectionManager
 
         if (matches.Count == 0)
         {
-            return new Error("Mcp.NotFound", $"MCP server '{name}' was not found.");
+            return new Error(ErrorCodes.Mcp.ServerNotFound, $"MCP server '{name}' was not found.");
         }
 
         return new Error(ErrorCodes.Mcp.AmbiguousServer, $"Multiple MCP servers named '{name}' exist; specify workingDirectory.");

@@ -226,6 +226,10 @@ public sealed class A2AServerCapabilityTests
 
         Assert.Equal([parked], harness.Runtime.CancelledApprenticeIds);
 
+        // ExecuteAsync already returned when the task parked, so no relay survives to drive the terminal
+        // transition. Cancelling the Apprentice without it leaves the peer's task at input-required forever.
+        Assert.Equal(TaskState.Canceled, await DrainStateAsync(cancelQueue));
+
     }
 
     // ── #62 durable task correspondence ────────────────────────────────────────────────────────────
@@ -719,6 +723,10 @@ public sealed class A2AServerCapabilityTests
         public Task<A2AOutboundCallback?> FindOutboundCallbackAsync(
             string callbackConfigId,
             CancellationToken cancellationToken = default) => Task.FromResult<A2AOutboundCallback?>(null);
+
+        public Task<A2ASendingLedgerEntry> FindOpenOutboundAsync(
+            string remoteTaskId,
+            CancellationToken cancellationToken = default) => Task.FromResult<A2ASendingLedgerEntry>(default);
 
         public Task ReleaseAsync(A2ASendingLedgerEntry entry, CancellationToken cancellationToken = default)
         {

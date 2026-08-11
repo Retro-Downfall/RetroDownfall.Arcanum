@@ -116,6 +116,37 @@ public sealed class BudgetEndpointTests
 
     }
 
+    [Fact]
+    public async Task GetBudget_ReportsCommittedSpendPlusOutstandingReservations_NotTheSessionProjection()
+    {
+
+        // A session opened yesterday that is still being worked in today contributes nothing to the
+        // Sessions.TotalCostUsd projection for today (it is keyed on Sessions.CreatedAt), and a call in
+        // flight has no completed BillableOperations row at all. The reported figure must be the same
+        // authority the gate enforces on: committed + outstanding (DESIGN §22.2).
+        await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
+            new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 20m },
+            todaySpend: 5m,
+            outstandingReservations: 2m,
+            sessionProjectionSpend: 0m);
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        ApiResponse<BudgetSummaryDto>? body = await (await client.GetAsync("/api/budget")).Content
+            .ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseBudgetSummaryDto);
+
+        BudgetSummaryDto summary = body!.Data!;
+
+        Assert.Equal(7m, summary.LocalSpendUsd);
+
+        Assert.Equal(7m, summary.TodaySpendUsd);
+
+        Assert.Equal(13m, summary.RemainingUsd);
+
+        Assert.Equal(35, summary.SpentPercent);
+
+    }
+
 }
 
 internal static class BudgetEndpointTestFactoryExtensions
@@ -125,7 +156,9 @@ internal static class BudgetEndpointTestFactoryExtensions
         this ArcanumWebApplicationFactory factory,
         BudgetPolicySettings budget,
         decimal todaySpend,
-        ExternalSpendSummary? externalSpend = null)
+        ExternalSpendSummary? externalSpend = null,
+        decimal outstandingReservations = 0m,
+        decimal? sessionProjectionSpend = null)
     {
 
         return new ArcanumWebApplicationFactory
@@ -141,7 +174,13 @@ internal static class BudgetEndpointTestFactoryExtensions
 
                 services.RemoveAll<IGrimoireRepository>();
 
-                services.AddScoped<IGrimoireRepository>(_ => new StubGrimoireRepository(todaySpend));
+                services.AddScoped<IGrimoireRepository>(
+                    _ => new StubGrimoireRepository(sessionProjectionSpend ?? todaySpend));
+
+                services.RemoveAll<IBudgetReservationService>();
+
+                services.AddScoped<IBudgetReservationService>(
+                    _ => new StubBudgetReservationService(todaySpend, outstandingReservations));
 
                 services.RemoveAll<IExternalSpendLedger>();
 
@@ -159,6 +198,35 @@ internal static class BudgetEndpointTestFactoryExtensions
 
         public Task<ExternalSpendSummary> GetTodayAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(summary);
+
+    }
+
+    private sealed class StubBudgetReservationService(decimal committedUsd, decimal outstandingUsd)
+        : IBudgetReservationService
+    {
+
+        public Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(committedUsd);
+
+        public Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(outstandingUsd);
+
+        // The remaining IBudgetReservationService members are not exercised by /api/budget.
+
+        public Task<Result<BudgetReservation>> ReserveAsync(BudgetReservationRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result> AdjustAsync(Guid reservationId, decimal reservedUsd, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
 
     }
 

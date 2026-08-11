@@ -82,9 +82,10 @@ internal sealed class McpTransportUnavailableException : Exception
 }
 
 /// <summary>
-/// Outbound line-size enforcement shared by the MCP transports. Centralizes the
-/// pre-write cap check so <see cref="InProcessMcpTransport"/> and <see cref="McpProcessTransport"/>
-/// cannot diverge, and so the check happens AFTER source-generated serialization but BEFORE
+/// Outbound line-size enforcement shared by the MCP transports Arcanum writes lines on
+/// (today <see cref="InProcessMcpTransport"/>; external stdio framing belongs to the SDK's
+/// <c>StdioClientTransport</c>). Centralizes the pre-write cap check so transports cannot
+/// diverge, and so the check happens AFTER source-generated serialization but BEFORE
 /// any byte is written to the wire/channel.
 /// </summary>
 internal static class McpOutboundLineGuard

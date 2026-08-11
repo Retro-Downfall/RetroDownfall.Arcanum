@@ -294,7 +294,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         Assert.True(removedStart.IsFailure);
 
-        Assert.Equal("Mcp.NotFound", removedStart.Error.Code);
+        Assert.Equal(ErrorCodes.Mcp.ServerNotFound, removedStart.Error.Code);
 
     }
 
@@ -351,6 +351,87 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         Assert.Equal(1, trust.AdmissionCalls);
         Assert.Equal(1, trust.SnapshotCalls);
+
+    }
+
+    [Fact]
+    public async Task Generation_move_during_a_workspace_build_leaves_internal_tools_callable()
+    {
+
+        string path = _workspace.WriteFile(
+            "mcp.json",
+            """
+            {
+              "mcpServers": {
+                "workspace-local": {
+                  "type": "sse",
+                  "url": "https://workspace.example.test/mcp",
+                  "alwaysOn": false
+                }
+              }
+            }
+            """);
+
+        DigestTrustStore trust = new()
+        {
+            ApprovedDigest =
+                await ComputeSha256HexAsync(path),
+        };
+
+        await using McpConnectionManager manager =
+            CreateManager(trust);
+
+        await manager.RegisterFromConfigAsync(
+            new McpConfig
+            {
+                McpServers = new Dictionary<string, McpServerConfig>
+                {
+                    ["generation-source"] = new()
+                    {
+                        Type = "sse",
+                        Url = "https://generation.example.test/mcp",
+                        AlwaysOn = false,
+                    },
+                },
+            },
+            scopeWorkingDirectory: null,
+            CancellationToken.None);
+
+        ManagedMcpServerEntry bumper =
+            Assert.IsType<ManagedMcpServerEntry>(
+                manager.GetManagedEntryForTests(
+                    "generation-source",
+                    null));
+
+        bumper.Client = new InertMcpClient();
+        bumper.State = McpServerState.Running;
+
+        // Production reaches this on the very first build for any workspace whose trusted mcp.json
+        // carries an alwaysOn server: the successful start moves the tool-surface generation from
+        // inside the build, after the partition's in-process arcanum-internal client is cached.
+        trust.BeforeAdmissionAsync = () =>
+            manager.StopAsync("generation-source", null);
+
+        IReadOnlyList<Microsoft.Extensions.AI.AITool> tools =
+            await manager.GetAvailableToolsAsync(_workspace.Root);
+
+        Microsoft.Extensions.AI.AIFunction listDirectory =
+            Assert.IsAssignableFrom<Microsoft.Extensions.AI.AIFunction>(
+                tools.Single(
+                    tool => string.Equals(
+                        tool.Name,
+                        "list_directory",
+                        StringComparison.Ordinal)));
+
+        object? listed = await listDirectory.InvokeAsync(
+            new Microsoft.Extensions.AI.AIFunctionArguments(
+                new Dictionary<string, object?>
+                {
+                    ["relativePath"] = ".",
+                }),
+            CancellationToken.None);
+
+        Assert.NotNull(listed);
 
     }
 
@@ -587,7 +668,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
             Assert.True(earlyStart.IsFailure);
             Assert.Equal(
-                "Mcp.NotFound",
+                ErrorCodes.Mcp.ServerNotFound,
                 earlyStart.Error.Code);
 
             Task<IReadOnlyList<Microsoft.Extensions.AI.AITool>>
@@ -828,7 +909,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Result startResult = await start.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(startResult.IsFailure);
-        Assert.Equal("Mcp.NotFound", startResult.Error.Code);
+        Assert.Equal(ErrorCodes.Mcp.ServerNotFound, startResult.Error.Code);
 
         await refresh.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -871,7 +952,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         Assert.True(start.IsFailure);
 
-        Assert.Equal("Mcp.NotFound", start.Error.Code);
+        Assert.Equal(ErrorCodes.Mcp.ServerNotFound, start.Error.Code);
 
     }
 
@@ -1050,6 +1131,8 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         public Action? BeforeAdmission { get; set; }
 
+        public Func<Task>? BeforeAdmissionAsync { get; set; }
+
         public int AdmissionCalls { get; private set; }
 
         public int SnapshotCalls { get; set; }
@@ -1090,7 +1173,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         }
 
-        public Task<bool> IsApprovedDigestAsync(
+        public async Task<bool> IsApprovedDigestAsync(
             string workspaceRootPath,
             string sourceDigest,
             CancellationToken cancellationToken = default)
@@ -1107,10 +1190,19 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
             beforeAdmission?.Invoke();
 
-            return Task.FromResult(string.Equals(
+            Func<Task>? beforeAdmissionAsync = BeforeAdmissionAsync;
+
+            BeforeAdmissionAsync = null;
+
+            if (beforeAdmissionAsync is not null)
+            {
+                await beforeAdmissionAsync();
+            }
+
+            return string.Equals(
                 sourceDigest,
                 ApprovedDigest,
-                StringComparison.OrdinalIgnoreCase));
+                StringComparison.OrdinalIgnoreCase);
 
         }
 
@@ -1344,6 +1436,25 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             await AllowDispose.Task;
             DisposeCompleted.TrySetResult();
         }
+    }
+
+    private sealed class InertMcpClient : IMcpClient
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<McpBridgeTool>> GetToolsAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<McpBridgeTool>>([]);
+
+        public Task<CallToolResult> CallToolAsync(
+            string toolName,
+            IReadOnlyDictionary<string, object?> arguments,
+            TimeSpan? requestTimeout = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class PermissiveSanctumGuard : ISanctumGuard

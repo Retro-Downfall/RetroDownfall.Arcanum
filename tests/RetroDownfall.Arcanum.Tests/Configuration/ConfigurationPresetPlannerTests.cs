@@ -512,6 +512,68 @@ public sealed class ConfigurationPresetPlannerTests
 
     }
 
+    [Fact]
+
+    public void Inspect_tolerates_null_policy_sections_that_the_validator_accepts()
+    {
+
+        ArcanumSettings settings = SettingsWithNullPolicySections();
+
+        Assert.True(new ConfigurationValidator().Validate(settings).IsSuccess);
+
+        ConfigurationPresetInspection inspection = new ConfigurationPresetPlanner().Inspect(
+            Snapshot(settings));
+
+        Assert.Equal(ConfigurationPresetEffectiveState.Custom, inspection.State);
+
+        Assert.Equal("Custom", inspection.CompletionSummary.ActivePreset);
+
+    }
+
+    [Fact]
+
+    public void Plan_tolerates_a_null_cost_section_when_evaluating_the_budget_prerequisite()
+    {
+
+        ArcanumSettings settings = SettingsWithNullPolicySections();
+
+        ConfigurationPresetDefinition preset = ConfigurationPresetCatalog.Find("automation")!;
+
+        Result<ConfigurationPresetPlanningResult> result = new ConfigurationPresetPlanner().Plan(
+            preset,
+            Snapshot(settings));
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.False(result.Value.Plan.IsApplicable);
+
+        Assert.Contains(
+            result.Value.Plan.Prerequisites,
+            static status =>
+                status.Prerequisite.Id == ConfigurationPresetCatalog.PositiveBudgetPrerequisite
+                && !status.IsSatisfied);
+
+    }
+
+    private static ArcanumSettings SettingsWithNullPolicySections()
+    {
+
+        ArcanumSettings settings = ValidSettings();
+
+        settings.Cost = null!;
+
+        settings.Features = null!;
+
+        settings.Security = null!;
+
+        settings.Workspaces = null!;
+
+        settings.Host = null!;
+
+        return settings;
+
+    }
+
     private static ConfigurationPresetSnapshot Snapshot(
         ArcanumSettings settings,
         ConfigurationPresetProvenance? provenance = null) =>

@@ -57,6 +57,14 @@ internal sealed record ContextCompressionRequest
 
     public IReadOnlyList<AIContent>? AppendedContents { get; init; }
 
+    /// <summary>
+    /// The Scrying foci the ledger accepted for this turn — the images
+    /// <see cref="InferenceContextBuilder.BuildInitialMeAiChatMessages"/> threaded onto the last
+    /// message. Compression rebuilds the transcript from Grimoire entries, which are text only, so
+    /// they have to be handed in separately or the turn reaches the model blind.
+    /// </summary>
+    public List<ScryingFocusDto>? ScryingFoci { get; init; }
+
     public SemanticContextChunk[]? SemanticContext { get; init; }
 
     public SagaMemory[]? SagaMemories { get; init; }
@@ -281,6 +289,11 @@ public sealed class InferenceContextBuilder(
             tapestryContext: context.TapestryContext);
 
         PrependDynamicSystemMessage(rebuilt, augmentedSystem);
+
+        // Grimoire entries are text, so the rebuilt transcript carries no images. Re-attach the
+        // turn's foci in the same order the uncompressed path uses — before the appended contents —
+        // or a Scrying turn silently reaches the model with nothing to look at.
+        AttachScryingFociToLastMessage(rebuilt, context.ScryingFoci);
 
         AppendContentsToLastMessage(rebuilt, context.AppendedContents);
 

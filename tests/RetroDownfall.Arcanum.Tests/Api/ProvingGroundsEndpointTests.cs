@@ -193,4 +193,26 @@ public sealed class ProvingGroundsEndpointTests
 
     }
 
+    /// <summary>
+    /// DESIGN §11.3: this route binds <c>Trial</c> from the body, so it is the shape that proves the
+    /// API key is checked before binding. While the gate was an endpoint filter — which minimal APIs
+    /// run <em>after</em> binding — an anonymous caller's body was deserialized first and the reply was
+    /// the framework's body-parse <c>400</c> instead of a <c>401</c>.
+    /// </summary>
+    [SkippableFact]
+    public async Task RunTrial_WithoutApiKey_AndUnparsableBody_Returns401NotABindingFailure()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/proving-grounds/trials/run",
+            new StringContent("""{"targetKind":""", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+    }
+
 }

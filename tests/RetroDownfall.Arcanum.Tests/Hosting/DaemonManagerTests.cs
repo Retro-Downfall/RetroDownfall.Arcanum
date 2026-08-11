@@ -54,6 +54,44 @@ public sealed class DaemonManagerTests
     }
 
     [Fact]
+    public async Task LinuxRunProcessAsync_MissingExecutable_ReturnsFatalErrorInsteadOfThrowing()
+    {
+
+        string missing = "arcanum-missing-" + Guid.NewGuid().ToString("N");
+
+        DaemonProcessOutcome outcome = await LinuxDaemonManager.RunProcessAsync(
+            missing,
+            [],
+            CancellationToken.None);
+
+        Assert.True(outcome.FatalError.HasValue);
+
+        Assert.Equal("DaemonProcessStart", outcome.FatalError.Value.Code);
+
+        Assert.Contains(missing, outcome.FatalError.Value.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
+    public async Task MacOsRunProcessAsync_MissingExecutable_ReturnsFatalErrorInsteadOfThrowing()
+    {
+
+        string missing = "arcanum-missing-" + Guid.NewGuid().ToString("N");
+
+        DaemonProcessOutcome outcome = await MacOsDaemonManager.RunProcessAsync(
+            missing,
+            [],
+            CancellationToken.None);
+
+        Assert.True(outcome.FatalError.HasValue);
+
+        Assert.Equal("DaemonProcessStart", outcome.FatalError.Value.Code);
+
+        Assert.Contains(missing, outcome.FatalError.Value.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public void FormatStateMessage_RunningState_ReturnsRunningMessage()
     {
 

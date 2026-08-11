@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Threading.Channels;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -101,7 +102,8 @@ internal sealed class IntelligenceEventProjection
                     ToolCall: new IntelligenceToolCallEvent(
                         proposed.CallId,
                         proposed.ToolName,
-                        proposed.ArgumentsJson)),
+                        proposed.ArgumentsJson,
+                        PreserveProviderCallId: proposed.PreserveProviderCallId)),
             ],
 
             ApprovalRequested approval =>
@@ -111,7 +113,7 @@ internal sealed class IntelligenceEventProjection
                     approval.ToolName,
                     WardId: approval.WardId,
                     WardToolName: approval.ToolName,
-                    WardArguments: null,
+                    WardArguments: TryReadWardArguments(approval.ArgumentsJson),
                     Timestamp: approval.Correlation.Timestamp,
                     WardOrigin: approval.Origin),
             ],
@@ -201,6 +203,39 @@ internal sealed class IntelligenceEventProjection
 
             _ => [],
         };
+
+    /// <summary>
+    /// Re-materializes the tool arguments the Ward gate is asking the operator to approve.
+    /// <see cref="ApprovalRequested"/> flattens them to text on the way through the streaming
+    /// mapper, and a <c>warded</c> frame without them leaves the operator consenting on a tool name
+    /// alone — with the <c>_arcanumRiskDisclosure</c> DESIGN §11.14 requires silently suppressed.
+    /// Empty or unparsable text is omitted rather than fatal: an unreadable argument document must
+    /// not take down a turn that is already waiting on a human.
+    /// </summary>
+    private static JsonElement? TryReadWardArguments(string? argumentsJson)
+    {
+
+        if (string.IsNullOrWhiteSpace(argumentsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+
+            using JsonDocument document = JsonDocument.Parse(argumentsJson);
+
+            return document.RootElement.Clone();
+
+        }
+        catch (JsonException)
+        {
+
+            return null;
+
+        }
+
+    }
 
     private static IEnumerable<IntelligenceEvent> MapCompleted(
         RunCompleted completed,

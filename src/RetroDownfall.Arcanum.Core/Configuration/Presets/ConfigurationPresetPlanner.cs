@@ -481,9 +481,7 @@ public sealed class ConfigurationPresetPlanner(
             ConfigurationPresetCatalog.LoopbackProviderPrerequisite =>
                 EvaluateLoopbackProvider(settings),
             ConfigurationPresetCatalog.PositiveBudgetPrerequisite =>
-                settings.Cost.Budget.Enabled && settings.Cost.Budget.DailyLimitUsd > 0m
-                    ? (true, $"Daily budget enforcement is enabled at {settings.Cost.Budget.DailyLimitUsd:0.00} USD.")
-                    : (false, "Enable budget enforcement with an explicit daily limit greater than zero."),
+                EvaluatePositiveBudget(settings),
             _ => (false, $"Unknown prerequisite '{prerequisite.Id}'."),
         };
 
@@ -491,6 +489,24 @@ public sealed class ConfigurationPresetPlanner(
             prerequisite,
             satisfied,
             detail);
+
+    }
+
+    /// <summary>
+    /// A section the operator wrote as explicit JSON <c>null</c> binds as <see langword="null"/> and
+    /// passes both configuration gates, so every settings section this planner reads is treated as
+    /// optional — exactly as <c>ConfigurationValidator</c> and <c>ArcanumRuntimeSettings.Resolve*</c>
+    /// already treat it. An absent <c>cost</c> section simply means budget enforcement is off.
+    /// </summary>
+    private static (bool Satisfied, string Detail) EvaluatePositiveBudget(
+        ArcanumSettings settings)
+    {
+
+        BudgetPolicySettings budget = settings.Cost?.Budget ?? new BudgetPolicySettings();
+
+        return budget.Enabled && budget.DailyLimitUsd > 0m
+            ? (true, $"Daily budget enforcement is enabled at {budget.DailyLimitUsd:0.00} USD.")
+            : (false, "Enable budget enforcement with an explicit daily limit greater than zero.");
 
     }
 
@@ -516,7 +532,7 @@ public sealed class ConfigurationPresetPlanner(
     {
 
         string? workspace = string.IsNullOrWhiteSpace(context.Workspace)
-            ? settings.Workspaces.DefaultRoot
+            ? settings.Workspaces?.DefaultRoot
             : context.Workspace;
 
         return string.IsNullOrWhiteSpace(workspace)
@@ -570,39 +586,45 @@ public sealed class ConfigurationPresetPlanner(
             : "Not configured";
 
         string workspace = string.IsNullOrWhiteSpace(context.Workspace)
-            ? settings.Workspaces.DefaultRoot ?? "Not selected"
+            ? settings.Workspaces?.DefaultRoot ?? "Not selected"
             : context.Workspace;
 
         string campaign = string.IsNullOrWhiteSpace(context.Campaign)
             ? "Not selected"
             : context.Campaign;
 
+        FeatureSettings features = settings.Features ?? new FeatureSettings();
+
+        SecuritySettings security = settings.Security ?? new SecuritySettings();
+
+        WardPolicySettings ward = security.Ward ?? new WardPolicySettings();
+
         List<string> memorySources = [];
 
-        AddWhen(memorySources, settings.Features.Lexicon, "Lexicon");
+        AddWhen(memorySources, features.Lexicon, "Lexicon");
 
-        AddWhen(memorySources, settings.Features.ArchiveSearch, "Archive search");
+        AddWhen(memorySources, features.ArchiveSearch, "Archive search");
 
-        AddWhen(memorySources, settings.Features.Saga, "Saga");
+        AddWhen(memorySources, features.Saga, "Saga");
 
-        AddWhen(memorySources, settings.Features.SessionSearch, "Session search");
+        AddWhen(memorySources, features.SessionSearch, "Session search");
 
-        AddWhen(memorySources, settings.Features.CodebaseRetrieval, "Weave codebase retrieval");
+        AddWhen(memorySources, features.CodebaseRetrieval, "Weave codebase retrieval");
 
-        AddWhen(memorySources, settings.Features.AttachmentRetrieval, "Attachment retrieval");
+        AddWhen(memorySources, features.AttachmentRetrieval, "Attachment retrieval");
 
-        string toolPolicy = settings.Security.Ward.Enabled
-            ? settings.Security.Ward.UnattendedMode
+        string toolPolicy = ward.Enabled
+            ? ward.UnattendedMode
                 ? "Ward enabled; unattended requests auto-deny actions that need approval; Sanctum path boundaries remain active."
                 : "Ward enabled; actions may request approval; Sanctum path boundaries remain active."
             : "Ward disabled; Sanctum path boundaries remain active.";
 
         string privacy = string.Join(
             "; ",
-            settings.Host.ListenAny ? "network host binding enabled" : "loopback host binding",
-            settings.Features.WebBrowsing ? "external web research enabled" : "external web research disabled",
-            settings.Features.EnterpriseTelemetry ? "enterprise telemetry enabled" : "enterprise telemetry disabled",
-            settings.Security.AllowUnsandboxedToolChildren
+            (settings.Host?.ListenAny ?? false) ? "network host binding enabled" : "loopback host binding",
+            features.WebBrowsing ? "external web research enabled" : "external web research disabled",
+            features.EnterpriseTelemetry ? "enterprise telemetry enabled" : "enterprise telemetry disabled",
+            security.AllowUnsandboxedToolChildren
                 ? "unsandboxed tool children allowed"
                 : "unsandboxed tool children denied");
 

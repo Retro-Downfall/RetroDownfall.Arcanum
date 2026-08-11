@@ -63,7 +63,7 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Attachment.TooLarge =>
                 StatusCodes.Status413PayloadTooLarge,
 
-            ErrorCodes.Scrying.VisionNotSupported or ErrorCodes.Scrying.TooManyImages or ErrorCodes.Scrying.UnsupportedMimeType or ErrorCodes.Files.InvalidMimeType or ErrorCodes.Batches.InvalidEndpoint or ErrorCodes.WebBrowsing.InvalidUrl or ErrorCodes.WebBrowsing.TooLarge or ErrorCodes.WebResearch.InvalidUrl or ErrorCodes.WebResearch.RequestRejected or ErrorCodes.ClientTools.Disabled or ErrorCodes.ClientTools.TooMany or ErrorCodes.ClientTools.InvalidSchema or ErrorCodes.Guardrails.PiiDetected or ErrorCodes.Guardrails.Blocked =>
+            ErrorCodes.Scrying.VisionNotSupported or ErrorCodes.Scrying.TooManyImages or ErrorCodes.Scrying.UnsupportedMimeType or ErrorCodes.Scrying.InvalidImageData or ErrorCodes.Files.InvalidMimeType or ErrorCodes.Batches.InvalidEndpoint or ErrorCodes.WebBrowsing.InvalidUrl or ErrorCodes.WebBrowsing.TooLarge or ErrorCodes.WebResearch.InvalidUrl or ErrorCodes.WebResearch.RequestRejected or ErrorCodes.ClientTools.Disabled or ErrorCodes.ClientTools.TooMany or ErrorCodes.ClientTools.InvalidSchema or ErrorCodes.Guardrails.PiiDetected or ErrorCodes.Guardrails.Blocked =>
                 StatusCodes.Status400BadRequest,
 
             ErrorCodes.Scrying.FeatureDisabled =>
@@ -103,7 +103,11 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Budget.Exceeded =>
                 StatusCodes.Status429TooManyRequests,
 
-            ErrorCodes.Security.MissingApiKey =>
+            // The server's own 401 is Auth.Unauthorized, written directly by ApiKeyEndpointFilter and
+            // never routed through this mapper. Security.MissingApiKey is client-synthesized (CLI /
+            // The Forge, when no key is configured locally); it is kept here so a Result carrying
+            // either code still resolves to 401 rather than the default 500 arm.
+            ErrorCodes.Auth.Unauthorized or ErrorCodes.Security.MissingApiKey =>
                 StatusCodes.Status401Unauthorized,
 
             ErrorCodes.Connection.Timeout or ErrorCodes.WebBrowsing.Timeout or ErrorCodes.WebResearch.Timeout or ErrorCodes.Mcp.DiagnosticTimeout =>

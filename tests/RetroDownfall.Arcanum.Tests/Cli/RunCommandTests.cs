@@ -1,3 +1,5 @@
+using System.CommandLine;
+
 using System.Net;
 
 using System.Text;
@@ -95,6 +97,77 @@ public sealed class RunCommandTests
         Assert.Contains("--session", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("--model", result.Output, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// <c>run</c> keeps System.CommandLine's default unmatched-token handling and its variadic
+    /// <c>prompt</c> argument absorbs every trailing token, so option-shaped prompt text escaped
+    /// after <c>--</c> arrives through that one channel and nothing survives as an unmatched token.
+    /// </summary>
+    [Fact]
+
+    public void Run_binds_escaped_prompt_tokens_through_the_prompt_argument()
+    {
+
+        using ServiceProvider provider = CliServices();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
+        ParseResult parsed = ParseRun(root, "run", "--", "--model", "foo");
+
+        Assert.Empty(parsed.Errors);
+
+        Assert.Empty(parsed.UnmatchedTokens);
+
+        Argument<string[]> prompt = (Argument<string[]>)FindRun(root)
+            .Arguments
+            .Single(argument => argument.Name == "prompt");
+
+        Assert.Equal(["--model", "foo"], parsed.GetValue(prompt) ?? []);
+
+    }
+
+    /// <summary>
+    /// Every token array on the request has to be fillable from the command surface. A member with
+    /// no matching argument or option can only ever be handed a constant — <c>UnmatchedTokens</c> is
+    /// always empty here — while advertising a second escape channel <c>run</c> does not have.
+    /// </summary>
+    [Fact]
+
+    public void Run_request_token_arrays_are_all_bound_from_the_run_command_surface()
+    {
+
+        using ServiceProvider provider = CliServices();
+
+        Command run = FindRun(CliCommandTree.Build(provider, out _));
+
+        HashSet<string> bindable = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (Argument argument in run.Arguments)
+        {
+
+            bindable.Add(argument.Name);
+
+        }
+
+        foreach (Option option in run.Options)
+        {
+
+            bindable.Add(option.Name.TrimStart('-'));
+
+        }
+
+        string[] unbound =
+        [
+            .. typeof(RunCommandRequest)
+                .GetProperties()
+                .Where(static property => property.PropertyType == typeof(string[]))
+                .Select(static property => property.Name)
+                .Where(name => !bindable.Contains(name)),
+        ];
+
+        Assert.Empty(unbound);
 
     }
 
@@ -334,6 +407,49 @@ public sealed class RunCommandTests
 
     }
 
+    /// <summary>
+    /// A malformed <c>--attachment</c> is invalid input, so it must be rejected with exit 2 on
+    /// stderr before the host is launched — not left to the inference path, which reports it as a
+    /// generic runtime error on stdout after paying for a host start.
+    /// </summary>
+    [Fact]
+
+    public async Task RunAsync_rejects_a_malformed_attachment_reference_before_startup()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("prompt", null));
+
+        NoopGrimoireInitialization grimoire = new();
+
+        NoopServeLauncher serve = new();
+
+        RecordingConsole console = new();
+
+        RunCommand command = CreateCommand(
+            input.Result,
+            SuccessStage([]),
+            input: input,
+            grimoire: grimoire,
+            serve: serve,
+            console: console);
+
+        int exitCode = await command.RunAsync(
+            Request(attachment: ["not-a-guid"]),
+            CancellationToken.None);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, exitCode);
+
+        Assert.Equal(0, grimoire.CallCount);
+
+        Assert.Equal(0, serve.CallCount);
+
+        Assert.Contains(
+            console.Diagnostics,
+            static diagnostic => diagnostic.Contains("not-a-guid", StringComparison.Ordinal));
+
+    }
+
     [Fact]
 
     public async Task RunAsync_new_session_permissively_ignores_an_explicit_continuation_session()
@@ -362,6 +478,92 @@ public sealed class RunCommandTests
         Assert.True(resolver.Request.NewSession);
 
         Assert.Null(resolver.Request.Session);
+
+    }
+
+    /// <summary>
+    /// <c>--new</c> wins over any session selector rather than adding a second conflict, so
+    /// <c>--new --continue</c> on a fresh install starts a session instead of failing on the
+    /// continuation it was told to ignore.
+    /// </summary>
+    [Fact]
+
+    public async Task RunAsync_new_session_wins_over_continue_when_there_is_nothing_to_continue()
+    {
+
+        string contextFilePath = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-tests-cli-context-{Guid.NewGuid():N}.json");
+
+        // Present but session-less: pins "no previous session" without touching a real Grimoire.
+        File.WriteAllText(contextFilePath, "{}");
+
+        try
+        {
+
+            FakeContextResolver resolver = new(
+                CliInferenceContextResult.Success(
+                    EffectiveContext(null, null, null, null),
+                    []));
+
+            RunCommand command = CreateCommand(
+                SuccessInput("start fresh", null),
+                SuccessStage([]),
+                resolver: resolver,
+                contextFilePath: contextFilePath);
+
+            int exitCode = await command.RunAsync(
+                Request(
+                    newSession: true,
+                    continueSession: true),
+                CancellationToken.None);
+
+            Assert.Equal((int)CliExitCode.Success, exitCode);
+
+            Assert.NotNull(resolver.Request);
+
+            Assert.True(resolver.Request.NewSession);
+
+            Assert.Null(resolver.Request.Session);
+
+        }
+        finally
+        {
+
+            File.Delete(contextFilePath);
+
+        }
+
+    }
+
+    /// <summary>
+    /// With a previous session present the same combination must not claim it is continuing one —
+    /// the selector it resolved is thrown away moments later.
+    /// </summary>
+    [Fact]
+
+    public async Task RunAsync_new_session_with_continue_does_not_announce_a_continuation()
+    {
+
+        RecordingConsole console = new();
+
+        RunCommand command = CreateCommand(
+            SuccessInput("start fresh", null),
+            SuccessStage([]),
+            console: console,
+            lastSessionId: Guid.Parse("11111111-1111-1111-1111-111111111111"));
+
+        int exitCode = await command.RunAsync(
+            Request(
+                newSession: true,
+                continueSession: true),
+            CancellationToken.None);
+
+        Assert.Equal((int)CliExitCode.Success, exitCode);
+
+        Assert.DoesNotContain(
+            console.Verbose,
+            static line => line.Contains("Continuing session", StringComparison.Ordinal));
 
     }
 
@@ -513,6 +715,189 @@ public sealed class RunCommandTests
         Assert.Equal(
             "explain --configuration Release",
             input.PositionalInstruction);
+
+        Assert.NotNull(execution.Request);
+
+    }
+
+    /// <summary>
+    /// The prompt is a <c>ZeroOrMore</c> positional, so System.CommandLine binds every remaining
+    /// token to it — a mistyped flag included. <c>arcanum run --dryrun "Rewrite every file under
+    /// src"</c> therefore parsed cleanly, carried <c>--dryrun</c> into the prompt text, and ran a
+    /// live, billed turn with real tool calls precisely when the operator was asking for a preview.
+    /// A dash-led token before the terminator is a command-line error, not prompt text.
+    /// </summary>
+    [Fact]
+
+    public async Task Run_parser_refuses_a_mistyped_option_rather_than_prompting_with_it()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("Rewrite every file under src", null));
+
+        FakeRunExecutionDispatcher execution = new();
+
+        ServiceCollection services = ConfigureRunParserServices(
+            input,
+            execution: execution);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [
+                "run",
+                "--dryrun",
+                "Rewrite every file under src",
+            ]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("--dryrun", result.Error, StringComparison.Ordinal);
+
+        Assert.Contains("--dry-run", result.Error, StringComparison.Ordinal);
+
+        Assert.Null(execution.Request);
+
+    }
+
+    /// <summary>
+    /// An unknown flag with no near spelling is refused just the same, and a valid flag standing
+    /// beside it does not launder it into the prompt.
+    /// </summary>
+    [Fact]
+
+    public async Task Run_parser_refuses_an_unknown_option_beside_a_valid_one()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("hi", null));
+
+        FakeRunExecutionDispatcher execution = new();
+
+        ServiceCollection services = ConfigureRunParserServices(
+            input,
+            execution: execution);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [
+                "run",
+                "--bogusflag",
+                "--dry-run",
+                "hi",
+            ]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        Assert.Contains("--bogusflag", result.Error, StringComparison.Ordinal);
+
+        Assert.Null(execution.Request);
+
+    }
+
+    /// <summary>
+    /// Automation reads stdout, so the refusal owes it the same single typed document every other
+    /// invalid command line writes.
+    /// </summary>
+    [Fact]
+
+    public async Task Run_parser_writes_typed_json_when_it_refuses_a_mistyped_option()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("hi", null));
+
+        FakeRunExecutionDispatcher execution = new();
+
+        ServiceCollection services = ConfigureRunParserServices(
+            input,
+            execution: execution);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            ["--json", "run", "--dryrun", "hi"]);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        CliErrorPayload? error = JsonSerializer.Deserialize(
+            result.Output,
+            CliJsonContext.Default.CliErrorPayload);
+
+        Assert.NotNull(error);
+
+        Assert.Equal(result.ExitCode, error.ExitCode);
+
+        Assert.Contains("--dryrun", error.Error, StringComparison.Ordinal);
+
+        Assert.Null(execution.Request);
+
+    }
+
+    /// <summary>
+    /// The terminator stays the escape hatch, including when the very first word of the prompt is
+    /// dash-led — otherwise refusing mistyped flags would make that prompt untypeable.
+    /// </summary>
+    [Fact]
+
+    public async Task Run_parser_accepts_dash_led_prompt_text_after_the_option_terminator()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("--dryrun is the typo", null));
+
+        FakeRunExecutionDispatcher execution = new();
+
+        ServiceCollection services = ConfigureRunParserServices(
+            input,
+            execution: execution);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [
+                "run",
+                "--",
+                "--dryrun",
+                "is",
+                "the",
+                "typo",
+            ]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Equal("--dryrun is the typo", input.PositionalInstruction);
+
+        Assert.NotNull(execution.Request);
+
+    }
+
+    /// <summary>
+    /// A prompt that opens with a negative number is ordinary text, not an option spelling, and
+    /// must not need the terminator.
+    /// </summary>
+    [Fact]
+
+    public async Task Run_parser_accepts_a_prompt_that_opens_with_a_negative_number()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("-40 degrees in Fahrenheit?", null));
+
+        FakeRunExecutionDispatcher execution = new();
+
+        ServiceCollection services = ConfigureRunParserServices(
+            input,
+            execution: execution);
+
+        CliTestResult result = await CliTestHarness.RunAsync(
+            services,
+            [
+                "run",
+                "-40",
+                "degrees",
+                "in",
+                "Fahrenheit?",
+            ]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
 
         Assert.NotNull(execution.Request);
 
@@ -1182,7 +1567,8 @@ public sealed class RunCommandTests
         NoopGrimoireInitialization? grimoire = null,
         NoopServeLauncher? serve = null,
         RecordingConsole? console = null,
-        Guid? lastSessionId = null) =>
+        Guid? lastSessionId = null,
+        string? contextFilePath = null) =>
         new(
             input ?? new FakeRunInputReader(inputResult),
             new FakeRunAttachmentStager(stageResult),
@@ -1193,32 +1579,67 @@ public sealed class RunCommandTests
             execution ?? new FakeRunExecutionDispatcher(),
             grimoire ?? new NoopGrimoireInitialization(),
             serve ?? new NoopServeLauncher(),
-            SessionManager(lastSessionId),
+            SessionManager(lastSessionId, contextFilePath),
             console ?? new RecordingConsole());
 
     /// <summary>
     /// Backed by an in-memory context store so <c>--continue</c> resolution never reads or writes a
     /// real operator Grimoire (DESIGN 13.5).
     /// </summary>
-    private static CliSessionManager SessionManager(Guid? lastSessionId = null) =>
+    private static CliSessionManager SessionManager(
+        Guid? lastSessionId = null,
+        string? contextFilePath = null) =>
         new(
-            new ConfiguredThemePalette(new ThemeSemanticColors(), new ThemeSemanticColors()),
+            new ConsoleDispatcher(new CliInvocationContext()),
             logger: null,
-            new InMemoryContextStore(lastSessionId));
+            new InMemoryContextStore(lastSessionId, contextFilePath));
 
-    private sealed class InMemoryContextStore(Guid? sessionId) : ICliContextStore
+    private sealed class InMemoryContextStore(
+        Guid? sessionId,
+        string? filePath = null) : ICliContextStore
     {
 
         private CliContextDocument _document =
             CliContextDocument.Empty with { SessionId = sessionId };
 
-        public string FilePath => Path.Combine(Path.GetTempPath(), "arcanum-tests-cli-context.json");
+        public string FilePath =>
+            filePath ?? Path.Combine(Path.GetTempPath(), "arcanum-tests-cli-context.json");
 
         public CliContextDocument Load() => _document;
 
         public void Save(CliContextDocument document) => _document = document;
 
     }
+
+    private static ServiceProvider CliServices()
+    {
+
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(
+            services,
+            new ConfigurationManager());
+
+        return services.BuildServiceProvider();
+
+    }
+
+    private static Command FindRun(RootCommand root) =>
+        root.Subcommands.Single(command => command.Name == "run");
+
+    /// <summary>
+    /// Matches production: <see cref="CliApplicationFactory"/> disables response-file expansion, so
+    /// a leading <c>@</c> stays application syntax rather than a token replacer.
+    /// </summary>
+    private static ParseResult ParseRun(RootCommand root, params string[] tokens) =>
+        root.Parse(
+            tokens,
+            new ParserConfiguration
+            {
+
+                ResponseFileTokenReplacer = null,
+
+            });
 
     private static RunCommandRequest Request(
         bool research = false,
@@ -1230,14 +1651,14 @@ public sealed class RunCommandTests
         string[]? prompt = null,
         bool continueSession = false,
         bool resume = false,
-        string? resumeTarget = null) =>
+        string? resumeTarget = null,
+        string[]? attachment = null) =>
         new(
             prompt ?? ["prompt"],
-            EscapedArguments: [],
             research,
             spell,
             with ?? [],
-            Attachment: [],
+            attachment ?? [],
             dryRun,
             ShowContent: false,
             Model: null,

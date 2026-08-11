@@ -148,8 +148,19 @@ internal static class TurnContextGuards
                 break;
             }
 
-            messages.RemoveAt(removeAt + 1);
-            messages.RemoveAt(removeAt);
+            // A stateless transcript maps N parallel tool calls to ONE assistant message followed by
+            // N tool messages, so removing a fixed pair would split the turn and leave orphan tool
+            // results that every OpenAI-compatible provider rejects. Take the whole contiguous run.
+            int removeCount = 1;
+
+            while (removeAt + removeCount < messages.Count
+                && (messages[removeAt + removeCount].Role == ChatRole.Tool
+                    || messages[removeAt + removeCount].Contents.Any(static c => c is FunctionResultContent)))
+            {
+                removeCount++;
+            }
+
+            messages.RemoveRange(removeAt, removeCount);
         }
 
         return countTokens(messages) <= maxTokens;

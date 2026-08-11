@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using RetroDownfall.Compendium.Ux.Models;
 
@@ -39,11 +40,32 @@ public sealed class GenericSectionViewModel : ObservableObject
 
             newFields.Add(field);
 
-            field.PropertyChanged += (_, _) => Root.MarkDirty();
+            field.PropertyChanged += OnFieldPropertyChanged;
 
         }
 
         Fields = newFields;
+
+    }
+
+    /// <summary>
+    /// Only the value itself and its validation outcome change the editor's dirty or error state. Every
+    /// edit also raises the derived projections (StringValue, BoolValue, NumericValue, IsSet, HasError),
+    /// and relaying those would run one full validation sweep of every field of every opened section per
+    /// projection instead of once per edit.
+    /// </summary>
+    private void OnFieldPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+
+        if (e.PropertyName is not (nameof(GenericSettingFieldViewModel.Value)
+            or nameof(GenericSettingFieldViewModel.ErrorMessage)))
+        {
+
+            return;
+
+        }
+
+        Root.MarkDirty();
 
     }
 

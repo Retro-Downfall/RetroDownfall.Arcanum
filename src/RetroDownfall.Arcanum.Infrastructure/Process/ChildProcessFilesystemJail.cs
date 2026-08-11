@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -40,6 +41,12 @@ internal sealed class ChildProcessSandboxApplyResult
     internal IReadOnlyList<IdentityOwnedFileSystemArtifact>
         OwnedArtifactsToCleanup
     { get; init; } = [];
+
+    /// <summary>
+    /// Owner-only undo log the Windows broker journals its ACL grants and profile creation to. The
+    /// host replays whatever survives the child, because a killed broker never runs its own restore.
+    /// </summary>
+    internal string? WindowsRestoreJournalPath { get; init; }
 
     internal string? Detail { get; init; }
 
@@ -166,6 +173,56 @@ internal static class ChildProcessFilesystemJail
         }
     }
 
+    /// <summary>
+    /// Undoes whatever the Windows broker did not undo itself. The broker restores the directory
+    /// ACLs it granted and deletes the per-run AppContainer profile in a <c>finally</c>, but the
+    /// runner kills it with TerminateProcess on timeout, cancellation, or a Job Object resource kill,
+    /// and managed finally blocks do not run then. Left alone, the workspace root would keep one
+    /// inheritable Allow ACE for a dead AppContainer SID per killed run until the DACL hits the
+    /// 64 KiB limit and the jail stops working. Returns <c>false</c> when residue remains.
+    /// </summary>
+    internal static bool RestoreWindowsAppContainerState(
+        ChildProcessSandboxApplyResult? sandboxResult,
+        ILogger? logger)
+    {
+        string? journalPath = sandboxResult?.WindowsRestoreJournalPath;
+        if (string.IsNullOrWhiteSpace(journalPath)
+            || !OperatingSystem.IsWindows())
+        {
+            return true;
+        }
+
+        return ReplayWindowsRestoreJournal(journalPath, logger);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static bool ReplayWindowsRestoreJournal(
+        string journalPath,
+        ILogger? logger)
+    {
+        bool restored;
+        try
+        {
+            restored = WindowsAppContainerRestoreJournal.Replay(
+                journalPath,
+                WindowsAppContainerLauncher.RestoreDirectorySecurity,
+                WindowsAppContainerLauncher.DeleteProfile);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "Failed to read the Windows AppContainer undo log.");
+            return false;
+        }
+
+        if (!restored)
+        {
+            logger?.LogError(
+                "Windows AppContainer residue could not be fully undone from the broker undo log; an allowed root may retain an AppContainer access-control entry or the per-run profile may remain registered.");
+        }
+
+        return restored;
+    }
+
     private static ChildProcessSandboxApplyResult ApplyWindows(
         ProcessStartInfo startInfo,
         ChildProcessSandboxRequest request,
@@ -178,6 +235,7 @@ internal static class ChildProcessFilesystemJail
 
         IdentityOwnedFileSystemArtifact? temp = null;
         IdentityOwnedFileSystemArtifact? config = null;
+        IdentityOwnedFileSystemArtifact? journal = null;
         try
         {
             List<string> readWrite = NormalizeExistingRoots(request.ReadWriteRoots);
@@ -194,6 +252,10 @@ internal static class ChildProcessFilesystemJail
             startInfo.Environment["TMP"] = temp.Value.Path;
             startInfo.Environment["TEMP"] = temp.Value.Path;
 
+            // The undo log lives outside the jailed roots and is created here, by the host, so it
+            // survives the broker being terminated without ever being reachable from the child.
+            journal = WriteOwnerOnlyTempFile("arcanum-win-acl-", ".journal", string.Empty);
+
             SandboxExecHelperPayload payload = new()
             {
                 Target = startInfo.FileName,
@@ -203,6 +265,7 @@ internal static class ChildProcessFilesystemJail
                 ReadOnlyRoots = [.. readOnly],
                 ReadExecuteRoots = [.. readExecute],
                 WindowsProfileName = WindowsAppContainerPolicy.CreateProfileName(),
+                WindowsRestoreJournalPath = journal.Value.Path,
             };
             string json = System.Text.Json.JsonSerializer.Serialize(
                 payload,
@@ -225,7 +288,8 @@ internal static class ChildProcessFilesystemJail
             return new ChildProcessSandboxApplyResult
             {
                 Status = ChildProcessSandboxApplyStatus.Applied,
-                OwnedArtifactsToCleanup = [config.Value, temp.Value],
+                OwnedArtifactsToCleanup = [config.Value, temp.Value, journal.Value],
+                WindowsRestoreJournalPath = journal.Value.Path,
             };
         }
         catch (Exception ex)
@@ -233,6 +297,7 @@ internal static class ChildProcessFilesystemJail
             List<IdentityOwnedFileSystemArtifact> cleanup = [];
             if (config is not null) cleanup.Add(config.Value);
             if (temp is not null) cleanup.Add(temp.Value);
+            if (journal is not null) cleanup.Add(journal.Value);
             CleanupTempPaths(cleanup);
             logger?.LogError(ex, "Failed to prepare Windows AppContainer broker.");
             return WindowsFailClosedOrEscape(request, logger, "Windows AppContainer setup failed.");

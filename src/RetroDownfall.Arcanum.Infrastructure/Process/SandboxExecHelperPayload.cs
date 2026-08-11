@@ -18,6 +18,12 @@ internal sealed class SandboxExecHelperPayload
 
     public string? WindowsProfileName { get; init; }
 
+    /// <summary>
+    /// Owner-only undo log the Windows broker appends to before each ACL mutation, so the host can
+    /// restore the roots and delete the profile when the broker is killed before its own cleanup.
+    /// </summary>
+    public string? WindowsRestoreJournalPath { get; init; }
+
     public string[] ReadOnlyRoots { get; init; } = [];
 
 }
