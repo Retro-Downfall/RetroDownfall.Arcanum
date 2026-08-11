@@ -307,6 +307,69 @@ public sealed class OpenAiV1FilesEndpointTests
 
     }
 
+    [SkippableTheory]
+    [InlineData("batch_output")]
+    [InlineData("error")]
+    public async Task PostFiles_ReservedBatchArtifactPurpose_Returns400RatherThanStoringUnreadableBytes(string reservedPurpose)
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // These purposes are owned by /v1/batches' artifact publisher: their envelopes are written
+        // with EncryptedBlobPurpose.BatchArtifact. An upload always writes
+        // EncryptedBlobPurpose.UploadedFile, so accepting one of these strings would persist bytes
+        // whose header purpose can never match the read purpose GET /v1/files/{id}/content derives
+        // from the stored string — a permanent 500 encrypted_file_corrupt.
+        Assert.Equal(
+            EncryptedBlobPurpose.BatchArtifact,
+            UploadedFileStorage.ResolveEncryptionPurpose(reservedPurpose));
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string filename = $"reserved-{Guid.NewGuid():N}.jsonl";
+
+        using MultipartFormDataContent form = new();
+
+        ByteArrayContent fileContent = new(Encoding.UTF8.GetBytes("{}\n"));
+
+        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/jsonl");
+
+        form.Add(fileContent, "file", filename);
+
+        form.Add(new StringContent(reservedPurpose), "purpose");
+
+        HttpResponseMessage response = await client.PostAsync("/v1/files", form);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.True(
+            response.StatusCode == HttpStatusCode.BadRequest,
+            $"Expected BadRequest for reserved purpose '{reservedPurpose}', got {response.StatusCode}: {json}");
+
+        OpenAiErrorResponse? error = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+        Assert.NotNull(error);
+
+        Assert.Equal("invalid_value", error.Error.Code);
+
+        Assert.Equal("purpose", error.Error.Param);
+
+        HttpResponseMessage listResponse = await client.GetAsync($"/v1/files?purpose={reservedPurpose}");
+
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+
+        OpenAiFileListResponse? listBody = JsonSerializer.Deserialize(
+            await listResponse.Content.ReadAsStringAsync(),
+            ArcanumJsonContext.Default.OpenAiFileListResponse);
+
+        Assert.NotNull(listBody);
+
+        Assert.DoesNotContain(listBody.Data, f => f.Filename == filename);
+
+    }
+
     [SkippableFact]
     public async Task PostFiles_ExtensionMimeMismatch_Returns400()
     {

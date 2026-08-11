@@ -93,8 +93,17 @@ public static class UploadedFileStorage
     /// <summary><c>{ArcanumPaths.FilesDirectory}/{id:N}</c> — never the client-supplied filename.</summary>
     public static string ResolvePath(Guid id) => Path.Combine(ArcanumPaths.FilesDirectory, id.ToString("N"));
 
+    /// <summary>
+    /// Purposes owned by <c>/v1/batches</c>' artifact publisher, whose envelopes are written with
+    /// <see cref="EncryptedBlobPurpose.BatchArtifact"/>. <c>POST /v1/files</c> always writes
+    /// <see cref="EncryptedBlobPurpose.UploadedFile"/>, so an upload must never claim one of these
+    /// — its bytes would be stored under a purpose the reader could never match again.
+    /// </summary>
+    public static bool IsReservedEncryptionPurpose(string purpose) =>
+        purpose is "batch_output" or "error";
+
     public static EncryptedBlobPurpose ResolveEncryptionPurpose(string purpose) =>
-        purpose is "batch_output" or "error"
+        IsReservedEncryptionPurpose(purpose)
             ? EncryptedBlobPurpose.BatchArtifact
             : EncryptedBlobPurpose.UploadedFile;
 

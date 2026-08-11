@@ -105,7 +105,7 @@ internal static class ApprenticeEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<ApprenticeDetailDto>.FromResult(
-                            Result<ApprenticeDetailDto>.Failure(new Error("Apprentice.InvalidName", "Apprentice name is required.")),
+                            Result<ApprenticeDetailDto>.Failure(new Error(ErrorCodes.Apprentice.InvalidName, "Apprentice name is required.")),
                             traceId));
                 }
 

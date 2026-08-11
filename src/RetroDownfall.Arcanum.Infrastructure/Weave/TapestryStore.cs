@@ -952,13 +952,22 @@ internal sealed class TapestryStore(
             // Leaf content is resolved from its corpus row rather than duplicated onto the node, so
             // the join target depends on the generation's scope kind. Summary content lives on the
             // node itself and needs no join.
+            //
+            // The attachment join repeats EnumerateLeafSourcesAsync's scope predicate: a superseded
+            // attachment version keeps its rows and its bytes and only loses RetrievalScope, so the
+            // stale-leaf hash guard below cannot see it. Without the predicate a version the operator
+            // has already replaced would be injected as turn context. The predicate belongs in the ON
+            // clause, not the WHERE: a summary node has no SourceId and must still hydrate.
             string leafJoin = generation.ScopeKind switch
             {
                 TapestryScopeKind.Workspace =>
                     """LEFT JOIN "workspace_file_chunks" s ON s."ChunkId" = n."SourceId" """,
 
                 TapestryScopeKind.SessionAttachment =>
-                    """LEFT JOIN "session_attachment_chunks" s ON s."ChunkId" = n."SourceId" """,
+                    """
+                    LEFT JOIN "session_attachment_chunks" s
+                        ON s."ChunkId" = n."SourceId" AND s."RetrievalScope" IS NOT NULL
+                    """,
 
                 _ => """LEFT JOIN "Entries" s ON s."Id" = n."SourceId" """,
             };

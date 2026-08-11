@@ -1388,6 +1388,54 @@ public sealed class ArcanumInternalToolServerTests : IAsyncLifetime
 
     }
 
+    [Fact]
+    public async Task Outbound_response_that_exceeds_the_line_budget_after_escaping_returns_an_error_instead_of_vanishing()
+    {
+
+        // The tool-output cap assumes JSON escaping expands a result at most 2x, but the default
+        // encoder turns '<' into a six-byte < escape. A payload that legitimately clears the cap
+        // can therefore still serialize past the JSON-RPC line budget, and every inbound reader drops
+        // an oversized line silently — so the caller must still get a response frame it can act on.
+        _workspace.WriteFile("notes/escaped.txt", new string('<', 4_000) + "\nsecond line");
+
+        IntelligenceSettings intelligenceSettings = ArcanumRuntimeDefaults.Intelligence with
+        {
+            EnableLexiconSystem = false,
+            EnableArchiveSearch = false,
+            ToolOutputCapBytes = 65_536,
+        };
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            configureWorkspace: true,
+            intelligenceSettings: intelligenceSettings,
+            maxJsonRpcLineBytes: 16_384);
+
+        JsonElement arguments = JsonSerializer.SerializeToElement(
+            new ReadFileChunkParams
+            {
+                RelativePath = "notes/escaped.txt",
+                StartLine = 1,
+                EndLine = 1,
+            },
+            McpJsonSerializerContext.Default.ReadFileChunkParams);
+
+        JsonElement callParams = JsonSerializer.SerializeToElement(
+            new McpToolsCallParams { Name = "read_file_chunk", Arguments = arguments },
+            McpJsonSerializerContext.Default.McpToolsCallParams);
+
+        JsonRpcResponse? response = await session.SendRequestWithTimeoutAsync(
+            "tools/call",
+            callParams,
+            TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(response);
+
+        Assert.NotNull(response!.Error);
+
+        Assert.Contains("too large", response.Error!.Message, StringComparison.OrdinalIgnoreCase);
+
+    }
+
     // Net-new coverage for the ModelContextProtocol SDK migration: ArcanumInternalToolServer now
     // reads inbound notifications/cancelled directly off the wire (replacing the pre-migration
     // McpRequestCancellationBroker, which correlated ids on the client side before the SDK existed).

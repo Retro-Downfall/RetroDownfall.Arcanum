@@ -1,3 +1,5 @@
+using System.CommandLine;
+
 using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -275,7 +277,7 @@ public sealed class OpenCommandTests
             StringComparison.Ordinal);
 
         Assert.Equal(
-            $"arcanum spell get --workspace {CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(WorkspaceId)} {CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(SpellName)}",
+            $"arcanum spell show --workspace {CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(WorkspaceId)} {CommandDisplayFormatter.QuoteArgumentForCurrentPlatform(SpellName)}",
             request.CliFallbackCommand);
 
         Assert.DoesNotContain(
@@ -422,13 +424,39 @@ public sealed class OpenCommandTests
         Assert.Equal(
             [
                 $"arcanum session show {sessionId:D}",
-                $"arcanum campaign get {campaignId:D}",
-                $"arcanum spell get {CommandDisplayFormatter.QuoteArgumentForCurrentPlatform("Review Changes")}",
-                $"arcanum prompt get {promptId:D}",
-                $"arcanum apprentice get {apprenticeId:D}",
+                $"arcanum campaign show {campaignId:D}",
+                $"arcanum spell show {CommandDisplayFormatter.QuoteArgumentForCurrentPlatform("Review Changes")}",
+                $"arcanum prompt show {promptId:D}",
+                $"arcanum apprentice show {apprenticeId:D}",
                 "arcanum config edit",
             ],
             launcher.Requests.Select(static request => request.CliFallbackCommand));
+
+        // A fallback is printed as the remedy when the desktop app cannot start, so a spelling the
+        // parser rejects would send the operator straight to exit 2.
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
+        List<string> broken = [];
+
+        foreach (string fallback in launcher.Requests.Select(static request => request.CliFallbackCommand))
+        {
+
+            ParseResult parsed = root.Parse(
+                TokenizeFallback(fallback),
+                new ParserConfiguration { ResponseFileTokenReplacer = null });
+
+            if (parsed.Errors.Count > 0)
+            {
+
+                broken.Add($"{fallback} -> {parsed.Errors[0].Message}");
+
+            }
+
+        }
+
+        Assert.True(broken.Count == 0, string.Join("\n", broken));
 
     }
 
@@ -481,6 +509,74 @@ public sealed class OpenCommandTests
         Assert.Equal(1, center.RunCount);
 
         Assert.Empty(launcher.Requests);
+
+    }
+
+    /// <summary>
+    /// Splits a printed fallback the way a shell would. Fallback arguments are quoted by
+    /// <see cref="CommandDisplayFormatter"/>, which uses apostrophes on POSIX and PowerShell alike,
+    /// so both quote characters have to be honoured.
+    /// </summary>
+    private static string[] TokenizeFallback(string fallback)
+    {
+
+        string command = fallback["arcanum".Length..].TrimStart();
+
+        List<string> tokens = [];
+
+        System.Text.StringBuilder current = new();
+
+        char quote = '\0';
+
+        foreach (char character in command)
+        {
+
+            if (quote == '\0' && character is '"' or '\'')
+            {
+
+                quote = character;
+
+                continue;
+
+            }
+
+            if (quote == character)
+            {
+
+                quote = '\0';
+
+                continue;
+
+            }
+
+            if (character == ' ' && quote == '\0')
+            {
+
+                if (current.Length > 0)
+                {
+
+                    tokens.Add(current.ToString());
+
+                    current.Clear();
+
+                }
+
+                continue;
+
+            }
+
+            current.Append(character);
+
+        }
+
+        if (current.Length > 0)
+        {
+
+            tokens.Add(current.ToString());
+
+        }
+
+        return [.. tokens];
 
     }
 

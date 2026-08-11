@@ -2,6 +2,13 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Tests.Storage;
 
+/// <summary>
+/// Installs a fake clock and TTL on <see cref="SessionAttachmentToolAmbient"/> and clears its two
+/// binding maps around every test. Clock, TTL, and both maps are statics the whole process shares,
+/// and the real in-process MCP path binds into and resolves out of those same maps, so this has to
+/// be serialized against everything else.
+/// </summary>
+[Collection(ProcessGlobalSeamCollectionName.Value)]
 public sealed class SessionAttachmentToolAmbientTtlTests : IDisposable
 {
 

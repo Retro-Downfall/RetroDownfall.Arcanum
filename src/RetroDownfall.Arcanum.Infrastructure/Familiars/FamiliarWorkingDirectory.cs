@@ -17,6 +17,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Familiars;
 /// account could plant those files. <see cref="Directory.CreateTempSubdirectory"/> creates an
 /// owner-only directory, which gives each turn a root nobody else can write.
 /// </para>
+/// <para>
+/// There is no fallback. A host that cannot provide such a directory refuses the invocation, because
+/// every alternative is a directory somebody else can write to.
+/// </para>
 /// </remarks>
 public sealed class FamiliarWorkingDirectory : IDisposable
 {
@@ -42,10 +46,7 @@ public sealed class FamiliarWorkingDirectory : IDisposable
         {
 
             return new FamiliarWorkingDirectory(
-                Directory.CreateTempSubdirectory("arcanum-familiar-").FullName)
-            {
-                Owned = true,
-            };
+                Directory.CreateTempSubdirectory("arcanum-familiar-").FullName);
 
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -61,11 +62,6 @@ public sealed class FamiliarWorkingDirectory : IDisposable
 
     public void Dispose()
     {
-
-        if (!Owned)
-        {
-            return;
-        }
 
         try
         {

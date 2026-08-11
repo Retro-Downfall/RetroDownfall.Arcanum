@@ -139,5 +139,5 @@ public sealed partial class McpConnectionManager
             + "POST /api/mcp/trust-workspace for this workspace before starting.");
 
     private static Error EntryNotFoundError(ManagedMcpServerEntry entry) =>
-        new("Mcp.NotFound", $"MCP server '{entry.Name}' was not found.");
+        new(ErrorCodes.Mcp.ServerNotFound, $"MCP server '{entry.Name}' was not found.");
 }

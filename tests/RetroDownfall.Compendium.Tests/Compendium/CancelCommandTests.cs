@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -69,6 +70,70 @@ public sealed class CancelCommandTests : IDisposable
         Assert.Equal("http://localhost:5001, http://127.0.0.1:5001", vm.Host.CorsAllowedOrigins);
 
         Assert.False(vm.CancelCommand.CanExecute(null));
+
+    }
+
+    [Fact]
+    public async Task CancelCommand_releases_the_discarded_provider_generation()
+    {
+
+        await SeedAsync(new ArcanumSettings
+        {
+            Providers =
+            [
+                new ProviderSettings
+                {
+                    Name = "primary",
+                    Type = AiProviderKind.OpenAICompatible,
+                    Endpoint = "https://primary.example/v1",
+                    Models = [new ModelEntry("scribe")],
+                },
+            ],
+        });
+
+        ConfigurationViewModel vm = CreateViewModel();
+
+        await WaitForLoadAsync(vm);
+
+        ProvidersSectionViewModel.ProviderViewModel discarded = Assert.Single(vm.Providers.Providers);
+
+        vm.Host.Port = 5100;
+
+        Assert.True(vm.IsDirty);
+
+        await vm.CancelCommand.ExecuteAsync(null);
+
+        Assert.False(vm.IsDirty);
+
+        Assert.DoesNotContain(discarded, vm.Providers.Providers);
+
+        // A provider that is no longer bound must not be able to dirty the editor.
+        discarded.AddModelCommand.Execute(null);
+
+        Assert.False(vm.IsDirty);
+
+        Assert.DoesNotContain(discarded, SubscribedProviders(vm));
+
+        // The generation that replaced it is still tracked.
+        ProvidersSectionViewModel.ProviderViewModel current = Assert.Single(vm.Providers.Providers);
+
+        current.AddModelCommand.Execute(null);
+
+        Assert.True(vm.IsDirty);
+
+    }
+
+    private static IReadOnlyCollection<ProvidersSectionViewModel.ProviderViewModel> SubscribedProviders(
+        ConfigurationViewModel vm)
+    {
+
+        FieldInfo field = typeof(ConfigurationViewModel).GetField(
+                "_modelsSubscribedProviders",
+                BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(
+                "ConfigurationViewModel no longer declares _modelsSubscribedProviders.");
+
+        return Assert.IsType<HashSet<ProvidersSectionViewModel.ProviderViewModel>>(field.GetValue(vm));
 
     }
 

@@ -74,6 +74,7 @@ OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/arcanum-pack.XXXXXX")"
 cleanup() {
+  notarize_cleanup
   rm -rf "$WORK"
 }
 trap cleanup EXIT

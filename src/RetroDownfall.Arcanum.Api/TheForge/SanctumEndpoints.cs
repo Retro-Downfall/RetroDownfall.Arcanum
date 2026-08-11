@@ -175,7 +175,7 @@ internal static class SanctumEndpoints
         {
             return Result<SanctumConfig>.Failure(
                 new Error(
-                    "Sanctum.InvalidConfig",
+                    ErrorCodes.Sanctum.InvalidConfig,
                     "AllowedDomains must not be empty when NetworkPolicy is AllowList."));
         }
 
@@ -185,7 +185,7 @@ internal static class SanctumEndpoints
             {
                 return Result<SanctumConfig>.Failure(
                     new Error(
-                        "Sanctum.InvalidConfig",
+                        ErrorCodes.Sanctum.InvalidConfig,
                         "Each AllowedPaths entry must be an absolute path."));
             }
         }

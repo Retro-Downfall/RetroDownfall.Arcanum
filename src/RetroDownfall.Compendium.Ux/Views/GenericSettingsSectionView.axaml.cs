@@ -185,6 +185,15 @@ public partial class GenericSettingsSectionView : UserControl
 
         SettingDescriptor descriptor = field.Descriptor;
 
+        // A per-element template names no single path Save can write. Offering a box here accepts the
+        // operator's text and drops it while the save still reports success.
+        if (field.CollectionTemplatePath is string collectionPath)
+        {
+
+            return CreateCollectionTemplateNotice(descriptor, collectionPath);
+
+        }
+
         return descriptor.Kind switch
         {
             SettingKind.Bool => CreateToggle(field),
@@ -195,6 +204,40 @@ public partial class GenericSettingsSectionView : UserControl
             SettingKind.Color => CreateColor(field, root),
             SettingKind.Secret => CreateEntry(field, root, isPassword: true),
             _ => CreateEntry(field, root, isPassword: false),
+        };
+
+    }
+
+    private static Control CreateCollectionTemplateNotice(SettingDescriptor descriptor, string collectionPath)
+    {
+
+        string leaf = descriptor.Key[(collectionPath.Length + 1)..];
+
+        return new StackPanel
+        {
+            Spacing = 4,
+            Margin = new Avalonia.Thickness(0, 0, 0, 8),
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = descriptor.Label,
+                    FontWeight = FontWeight.SemiBold,
+                },
+                new TextBlock
+                {
+                    Text = descriptor.Description,
+                    TextWrapping = TextWrapping.Wrap,
+                },
+                new TextBlock
+                {
+                    Text = "Compendium has no per-entry editor for this list. Set it from a terminal with"
+                        + $" 'arcanum config set {collectionPath}.0.{leaf} <value>', or"
+                        + $" 'arcanum config set {collectionPath} <json>' to create the entries.",
+                    TextWrapping = TextWrapping.Wrap,
+                    FontStyle = FontStyle.Italic,
+                },
+            },
         };
 
     }

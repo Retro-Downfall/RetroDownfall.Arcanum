@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Models;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -18,7 +19,6 @@ internal static class BudgetEndpoints
     {
 
         apiGroup.MapGet("/budget", async (
-            IGrimoireRepository grimoire,
             IExternalSpendLedger externalSpend,
             IOptionsSnapshot<ArcanumSettings> settings,
             HttpContext httpContext,
@@ -35,8 +35,13 @@ internal static class BudgetEndpoints
 
             int alertThreshold = ArcanumSettingClamps.BudgetAlertThresholdPercent(budget.AlertThresholdPercent);
 
+            // Reported through the same authority the gate enforces on — committed BillableOperations for
+            // the UTC day plus outstanding reservations — so an operator is never shown a figure that the
+            // very next turn is refused on (DESIGN §22.2).
             decimal localSpend = enabled && dailyLimit > 0
-                ? await grimoire.GetTodaySpendAsync(cancellationToken).ConfigureAwait(false)
+                ? await DailySpendAuthority
+                    .ResolveLocalSpendAsync(httpContext.RequestServices, cancellationToken)
+                    .ConfigureAwait(false)
                 : 0m;
 
             // Delegated work is real money on someone else's hardware. Reported separately so an operator

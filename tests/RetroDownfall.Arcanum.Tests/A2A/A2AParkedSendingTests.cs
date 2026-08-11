@@ -221,6 +221,190 @@ public sealed class A2AParkedSendingTests
 
     }
 
+    [Fact]
+    public async Task TaskStore_RetainsOnlyABoundedNumberOfSettledTasks()
+    {
+
+        ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
+
+        await store.SaveTaskAsync("still-working", Retained("still-working", TaskState.Working));
+
+        for (int i = 0; i < ArcanumA2ATaskStore.RetainedTaskCap + 50; i++)
+        {
+
+            await store.SaveTaskAsync($"settled-{i}", Retained($"settled-{i}", TaskState.Completed));
+
+        }
+
+        // The SDK documents that it never calls DeleteTaskAsync and leaves pruning to the store, and
+        // nothing in Arcanum calls it either — so without a retention policy every inbound Sending's
+        // whole relayed history and final artifact is pinned until the host restarts.
+        Assert.Null(await store.GetTaskAsync("settled-0"));
+
+        Assert.NotNull(await store.GetTaskAsync($"settled-{ArcanumA2ATaskStore.RetainedTaskCap + 49}"));
+
+        // A task that has not settled is never a candidate: it is live state nothing can rebuild, and
+        // the peer driving it is still entitled to a tasks/get.
+        Assert.NotNull(await store.GetTaskAsync("still-working"));
+
+    }
+
+    [Fact]
+    public async Task TaskStore_NeverEvictsAnUnsettledTaskToStayUnderTheCap()
+    {
+
+        ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
+
+        for (int i = 0; i < ArcanumA2ATaskStore.RetainedTaskCap + 50; i++)
+        {
+
+            await store.SaveTaskAsync($"working-{i}", Retained($"working-{i}", TaskState.Working));
+
+        }
+
+        // Genuinely that much in-flight work is real work, and dropping any of it would answer a live
+        // peer TaskNotFound. The cap bounds what is kept for nothing, not what is being served.
+        Assert.NotNull(await store.GetTaskAsync("working-0"));
+
+        Assert.NotNull(await store.GetTaskAsync($"working-{ArcanumA2ATaskStore.RetainedTaskCap + 49}"));
+
+    }
+
+    private static AgentTask Retained(string taskId, TaskState state) => new()
+    {
+        Id = taskId,
+        ContextId = "ctx-retention",
+        Status = new A2ATaskStatus { State = state },
+    };
+
+    // ── tasks/list is a query, not a dump ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task TaskStore_ListTasks_HonoursTheContextAndStatusFiltersItIsGiven()
+    {
+
+        ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
+
+        await SeedListableAsync(store, "mine-1", "ctx-mine", TaskState.Completed, minute: 1);
+
+        await SeedListableAsync(store, "mine-2", "ctx-mine", TaskState.Working, minute: 2);
+
+        await SeedListableAsync(store, "theirs-1", "ctx-theirs", TaskState.Completed, minute: 3);
+
+        ListTasksResponse scoped = await store.ListTasksAsync(new ListTasksRequest { ContextId = "ctx-mine" });
+
+        // A peer that scopes tasks/list to its own context is asking a question; answering with every
+        // task the process happens to be holding is not an answer to it.
+        Assert.Equal(["mine-2", "mine-1"], scoped.Tasks.Select(static task => task.Id));
+
+        Assert.Equal(2, scoped.TotalSize);
+
+        ListTasksResponse working = await store.ListTasksAsync(new ListTasksRequest { Status = TaskState.Working });
+
+        Assert.Equal(["mine-2"], working.Tasks.Select(static task => task.Id));
+
+        ListTasksResponse recent = await store.ListTasksAsync(
+            new ListTasksRequest { StatusTimestampAfter = ListBaseTime.AddMinutes(2) });
+
+        Assert.Equal(["theirs-1"], recent.Tasks.Select(static task => task.Id));
+
+    }
+
+    [Fact]
+    public async Task TaskStore_ListTasks_PagesAndReportsWhereTheNextPageStarts()
+    {
+
+        ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
+
+        for (int i = 0; i < 5; i++)
+        {
+
+            await SeedListableAsync(store, $"task-{i}", "ctx", TaskState.Completed, minute: i);
+
+        }
+
+        ListTasksResponse first = await store.ListTasksAsync(new ListTasksRequest { PageSize = 2 });
+
+        Assert.Equal(["task-4", "task-3"], first.Tasks.Select(static task => task.Id));
+
+        // All three are [JsonRequired] on the wire: leaving them at their defaults while handing back N
+        // tasks makes a compliant client's pagination arithmetic wrong.
+        Assert.Equal(2, first.PageSize);
+
+        Assert.Equal(5, first.TotalSize);
+
+        Assert.NotEqual(string.Empty, first.NextPageToken);
+
+        ListTasksResponse second = await store.ListTasksAsync(
+            new ListTasksRequest { PageSize = 2, PageToken = first.NextPageToken });
+
+        Assert.Equal(["task-2", "task-1"], second.Tasks.Select(static task => task.Id));
+
+        ListTasksResponse last = await store.ListTasksAsync(
+            new ListTasksRequest { PageSize = 2, PageToken = second.NextPageToken });
+
+        Assert.Equal(["task-0"], last.Tasks.Select(static task => task.Id));
+
+        Assert.Equal(string.Empty, last.NextPageToken);
+
+    }
+
+    [Fact]
+    public async Task TaskStore_ListTasks_TrimsHistoryAndOmitsArtifactsUnlessAsked()
+    {
+
+        ArcanumA2ATaskStore store = new(scopeFactory: null, NullLogger<ArcanumA2ATaskStore>.Instance);
+
+        await SeedListableAsync(store, "task-1", "ctx", TaskState.Completed, minute: 1);
+
+        ListTasksResponse defaulted = await store.ListTasksAsync(new ListTasksRequest());
+
+        // The Apprentice's whole final answer rides in Artifacts; a listing is not the place to hand it
+        // out unasked, and the SDK's own reference store does not.
+        Assert.Null(Assert.Single(defaulted.Tasks).Artifacts);
+
+        ListTasksResponse trimmed = await store.ListTasksAsync(
+            new ListTasksRequest { HistoryLength = 1, IncludeArtifacts = true });
+
+        AgentTask listed = Assert.Single(trimmed.Tasks);
+
+        Assert.Equal(["m3"], listed.History!.Select(static message => message.MessageId));
+
+        Assert.NotNull(listed.Artifacts);
+
+        // Projecting a listing must not edit the task this process is still serving.
+        AgentTask? stored = await store.GetTaskAsync("task-1");
+
+        Assert.Equal(3, stored!.History!.Count);
+
+        Assert.NotNull(stored.Artifacts);
+
+    }
+
+    private static readonly DateTimeOffset ListBaseTime = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    private static Task SeedListableAsync(
+        ArcanumA2ATaskStore store,
+        string taskId,
+        string contextId,
+        TaskState state,
+        int minute) =>
+        store.SaveTaskAsync(
+            taskId,
+            new AgentTask
+            {
+                Id = taskId,
+                ContextId = contextId,
+                Status = new A2ATaskStatus { State = state, Timestamp = ListBaseTime.AddMinutes(minute) },
+                History =
+                [
+                    new Message { Role = Role.User, MessageId = "m1", Parts = [Part.FromText("goal")] },
+                    new Message { Role = Role.Agent, MessageId = "m2", Parts = [Part.FromText("working")] },
+                    new Message { Role = Role.Agent, MessageId = "m3", Parts = [Part.FromText("done")] },
+                ],
+                Artifacts = [new Artifact { ArtifactId = "a1", Parts = [Part.FromText("the answer")] }],
+            });
+
     // ── end to end, through the protocol ───────────────────────────────────────────────────────────
 
     [Fact]
@@ -630,6 +814,10 @@ public sealed class A2AParkedSendingTests
         public Task<A2AOutboundCallback?> FindOutboundCallbackAsync(
             string callbackConfigId,
             CancellationToken cancellationToken = default) => Task.FromResult<A2AOutboundCallback?>(null);
+
+        public Task<A2ASendingLedgerEntry> FindOpenOutboundAsync(
+            string remoteTaskId,
+            CancellationToken cancellationToken = default) => Task.FromResult<A2ASendingLedgerEntry>(default);
 
         public Task ReleaseAsync(A2ASendingLedgerEntry entry, CancellationToken cancellationToken = default)
         {

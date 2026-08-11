@@ -76,6 +76,23 @@ internal static partial class OpenAiV1Endpoints
 
         }
 
+        string requestedPurpose = purpose.Trim();
+
+        // The bytes below are always written with EncryptedBlobPurpose.UploadedFile, while the read
+        // purpose is derived from the stored string. A reserved batch-artifact purpose would
+        // therefore store bytes GET /v1/files/{id}/content could never open again.
+        if (UploadedFileStorage.IsReservedEncryptionPurpose(requestedPurpose))
+        {
+
+            return JsonError(
+                $"'purpose' value '{requestedPurpose}' is reserved for batch artifacts published by /v1/batches.",
+                "invalid_request_error",
+                "invalid_value",
+                "purpose",
+                StatusCodes.Status400BadRequest);
+
+        }
+
         string filename = string.IsNullOrWhiteSpace(file.FileName) ? "upload.bin" : file.FileName;
 
         if (filename.Contains('\0', StringComparison.Ordinal))
@@ -166,7 +183,7 @@ internal static partial class OpenAiV1Endpoints
                 id,
                 filename,
                 file.Length,
-                purpose.Trim(),
+                requestedPurpose,
                 declaredMimeType,
                 DateTimeOffset.UtcNow,
                 descriptor.Version,

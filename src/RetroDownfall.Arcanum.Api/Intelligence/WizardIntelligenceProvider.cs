@@ -4276,7 +4276,7 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 return Result<ResolvedSpell?>.Failure(
                     new Error(
-                        "Validation.SpellOverride",
+                        ErrorCodes.Validation.SpellOverride,
                         $"No spell matches OverrideSpellName '{request.OverrideSpellName.Trim()}'. Expected a SPELL.md frontmatter name or parent folder name."));
             }
 

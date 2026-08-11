@@ -40,6 +40,24 @@ public static class ErrorCodes
 
         public const string UnsupportedReasoningOutput = "Validation.UnsupportedReasoningOutput";
 
+        /// <summary>A lore key was empty or exceeded the 256-character bound.</summary>
+        public const string InvalidKey = "Validation.InvalidKey";
+
+        /// <summary>A lore upsert omitted the key or the value.</summary>
+        public const string InvalidLore = "Validation.InvalidLore";
+
+        /// <summary>A CommLink send omitted the title or the body.</summary>
+        public const string InvalidFields = "Validation.InvalidFields";
+
+        /// <summary>An Unseen Servant initiative route received an empty job name.</summary>
+        public const string InvalidJobName = "Validation.InvalidJobName";
+
+        /// <summary>A human-response submission omitted <c>promptId</c> or <c>answer</c>.</summary>
+        public const string InvalidHumanResponse = "Validation.InvalidHumanResponse";
+
+        /// <summary>The requested override spell name matches no spell in the catalog.</summary>
+        public const string SpellOverride = "Validation.SpellOverride";
+
     }
 
     /// <summary>Hub — intelligence provider / inference pipeline failures.</summary>
@@ -57,6 +75,9 @@ public static class ErrorCodes
 
         public const string Error = "Hub.Error";
 
+        /// <summary>Last-resort code for an exception that escaped every endpoint.</summary>
+        public const string Unhandled = "Hub.Unhandled";
+
     }
 
     /// <summary>Campaign — forge workspace registration and paths.</summary>
@@ -70,6 +91,18 @@ public static class ErrorCodes
         public const string PathNotAllowed = "Campaign.PathNotAllowed";
 
         public const string MaxReached = "Campaign.MaxReached";
+
+        public const string InvalidName = "Campaign.InvalidName";
+
+        public const string DuplicateName = "Campaign.DuplicateName";
+
+        public const string DuplicatePath = "Campaign.DuplicatePath";
+
+        /// <summary>The campaign's <c>.arcanum</c> directory could not be created on disk.</summary>
+        public const string DirectoryCreateFailed = "Campaign.DirectoryCreateFailed";
+
+        /// <summary>No import payload was supplied and no readable <c>campaign.json</c> was found.</summary>
+        public const string ImportFailed = "Campaign.ImportFailed";
 
     }
 
@@ -170,6 +203,8 @@ public static class ErrorCodes
 
         public const string ConclaveDisabled = "Apprentice.ConclaveDisabled";
 
+        public const string InvalidName = "Apprentice.InvalidName";
+
     }
 
     /// <summary>Workspace — registered filesystem roots.</summary>
@@ -212,6 +247,15 @@ public static class ErrorCodes
 
         public const string ContinuationCheckpointMissing =
             "Workspace.ContinuationCheckpointMissing";
+
+    }
+
+    /// <summary>Perception — filesystem pattern snapshots.</summary>
+    public static class Perception
+    {
+
+        /// <summary>The requested directory could not be resolved, or does not exist.</summary>
+        public const string InvalidPath = "Perception.InvalidPath";
 
     }
 
@@ -268,6 +312,15 @@ public static class ErrorCodes
 
     }
 
+    /// <summary>Codex — the per-campaign CODEX context document.</summary>
+    public static class Codex
+    {
+
+        /// <summary>The submitted CODEX body exceeds the configured UTF-8 byte ceiling.</summary>
+        public const string ContentTooLarge = "Codex.ContentTooLarge";
+
+    }
+
     /// <summary>Intelligence — cross-surface inference helpers.</summary>
     public static class Intelligence
     {
@@ -317,6 +370,9 @@ public static class ErrorCodes
         /// <summary>Diagnostic MCP Invocation: the request exceeded the configured timeout.</summary>
         public const string DiagnosticTimeout = "Mcp.DiagnosticTimeout";
 
+        /// <summary>Diagnostic MCP Invocation: the route exists only on the Development edition.</summary>
+        public const string DiagnosticDisabled = "Mcp.DiagnosticDisabled";
+
     }
 
     /// <summary>Daemon — background job orchestration.</summary>
@@ -324,6 +380,17 @@ public static class ErrorCodes
     {
 
         public const string NotFound = "Daemon.NotFound";
+
+        /// <summary>Cancellation was requested for an execution that is absent or already terminal.</summary>
+        public const string NotRunning = "Daemon.NotRunning";
+
+    }
+
+    /// <summary>Execution — individual daemon execution records.</summary>
+    public static class Execution
+    {
+
+        public const string NotFound = "Execution.NotFound";
 
     }
 
@@ -659,6 +726,25 @@ public static class ErrorCodes
 
         /// <summary>A toxicity-blocklist hit or an allowed/blocked-topic rule matched, rejecting the turn.</summary>
         public const string Blocked = "Guardrails.Blocked";
+
+    }
+
+    /// <summary>Ward — operator approval gates for risky tool invocations.</summary>
+    public static class Ward
+    {
+
+        public const string NotFound = "Ward.NotFound";
+
+        public const string AlreadyResolved = "Ward.AlreadyResolved";
+
+    }
+
+    /// <summary>Sanctum — tool execution containment policy.</summary>
+    public static class Sanctum
+    {
+
+        /// <summary>The submitted Sanctum configuration is internally inconsistent.</summary>
+        public const string InvalidConfig = "Sanctum.InvalidConfig";
 
     }
 

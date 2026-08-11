@@ -54,6 +54,10 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
         Task errorPump = DrainStandardErrorAsync(process, standardError, deadline.Token);
 
+        FamiliarStdoutLineReader reader = new(
+            process.StandardOutput,
+            FamiliarProcessLimits.MaxLineCharacters);
+
         try
         {
 
@@ -67,14 +71,12 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
             while (true)
             {
 
-                string? line;
+                FamiliarStdoutLine? frame;
 
                 try
                 {
 
-                    line = await process.StandardOutput
-                        .ReadLineAsync(deadline.Token)
-                        .ConfigureAwait(false);
+                    frame = await reader.ReadLineAsync(deadline.Token).ConfigureAwait(false);
 
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -84,17 +86,33 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
                 }
 
-                if (line is null)
+                if (frame is not { } line)
                 {
                     break;
                 }
 
-                if (string.IsNullOrWhiteSpace(line))
+                if (line.Exceeded)
+                {
+
+                    // Dropped whole rather than passed on cut at a character offset: the fragment is
+                    // not valid JSON, so projection would discard it silently. Said out loud instead,
+                    // and a turn whose terminal frame went this way still fails closed on the
+                    // missing-terminal-frame check rather than reading as a short answer.
+                    logger?.LogWarning(
+                        "Familiar '{FileName}' emitted a frame longer than {Limit} characters; the frame was dropped.",
+                        request.FileName,
+                        FamiliarProcessLimits.MaxLineCharacters);
+
+                    continue;
+
+                }
+
+                if (string.IsNullOrWhiteSpace(line.Text))
                 {
                     continue;
                 }
 
-                yield return Clamp(line, FamiliarProcessLimits.MaxLineCharacters);
+                yield return line.Text;
 
             }
 
@@ -556,9 +574,6 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
 
     }
 
-    private static string Clamp(string line, int limit) =>
-        line.Length <= limit ? line : line[..limit];
-
     private static void KillQuietly(Process process)
     {
 
@@ -579,5 +594,104 @@ public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger
         }
 
     }
+
+}
+
+/// <summary>One NDJSON frame from a Familiar, and whether it outgrew the frame ceiling.</summary>
+internal readonly record struct FamiliarStdoutLine(string Text, bool Exceeded);
+
+/// <summary>
+/// Reads NDJSON frames from a Familiar's stdout with the frame ceiling applied while reading.
+/// </summary>
+/// <remarks>
+/// <see cref="StreamReader.ReadLineAsync(CancellationToken)"/> accumulates a whole line before
+/// anything can clamp it, so a CLI that writes without a newline grows the host's heap until EOF or
+/// the deadline — a quarter of an hour, by default, in which to OOM a host that is serving every
+/// other request too. Reading fixed chunks and splitting them here makes
+/// <see cref="FamiliarProcessLimits.MaxLineCharacters"/> the allocation ceiling it says it is: once
+/// a frame passes it the rest is discarded as it arrives rather than accumulated, and the frame is
+/// reported as oversize instead of being handed on as an unparseable fragment.
+/// </remarks>
+internal sealed class FamiliarStdoutLineReader(TextReader reader, int maxLineCharacters)
+{
+
+    private readonly char[] _buffer = new char[4096];
+
+    private int _length;
+
+    private int _index;
+
+    /// <summary>The next frame, or null once the stream has ended.</summary>
+    public async ValueTask<FamiliarStdoutLine?> ReadLineAsync(CancellationToken cancellationToken)
+    {
+
+        StringBuilder line = new();
+
+        bool exceeded = false;
+
+        while (true)
+        {
+
+            if (_index >= _length)
+            {
+
+                _length = await reader.ReadAsync(_buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+
+                _index = 0;
+
+                if (_length <= 0)
+                {
+
+                    return line.Length == 0 && !exceeded
+                        ? null
+                        : new FamiliarStdoutLine(Render(line), exceeded);
+
+                }
+
+            }
+
+            int start = _index;
+
+            int newline = Array.IndexOf(_buffer, '\n', start, _length - start);
+
+            int segment = newline >= 0 ? newline - start : _length - start;
+
+            int room = maxLineCharacters - line.Length;
+
+            if (segment > room)
+            {
+
+                // Past the ceiling the remainder is read and thrown away rather than kept, so the
+                // rest of this frame costs the pipe buffer and nothing more.
+                exceeded = true;
+
+            }
+
+            _ = line.Append(_buffer, start, Math.Min(segment, room));
+
+            _index = start + segment;
+
+            if (newline >= 0)
+            {
+
+                _index++;
+
+                return new FamiliarStdoutLine(Render(line), exceeded);
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Drops the carriage return of a CRLF terminator, which is what
+    /// <see cref="StreamReader.ReadLineAsync(CancellationToken)"/> did and what a Windows-hosted CLI
+    /// still emits.
+    /// </summary>
+    private static string Render(StringBuilder line) =>
+        line.Length > 0 && line[^1] == '\r'
+            ? line.ToString(0, line.Length - 1)
+            : line.ToString();
 
 }

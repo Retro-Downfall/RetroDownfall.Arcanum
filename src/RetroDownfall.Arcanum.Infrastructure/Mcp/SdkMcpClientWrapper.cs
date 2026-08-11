@@ -171,11 +171,13 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
             throw new InvalidOperationException("SdkMcpClientWrapper must be initialized before calling GetToolsAsync.");
         }
 
-        List<Tool> collected = [];
+        List<McpBridgeTool> bridgeTools = [];
 
         string? cursor = null;
 
         HashSet<string> seenCursors = new(StringComparer.Ordinal);
+
+        long totalBytes = 0L;
 
         while (true)
         {
@@ -189,6 +191,10 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
                 .ListToolsAsync(new ListToolsRequestParams { Cursor = cursor }, cancellationToken)
                 .ConfigureAwait(false);
 
+            // Per-tool and cumulative byte accounting runs as each page lands, not after the walk
+            // finishes: deferring it to the end would let a server that keeps handing back fresh
+            // cursors accumulate an unbounded catalog before the cap that is supposed to bound the
+            // allocation is ever consulted.
             foreach (Tool tool in pageResult.Tools)
             {
                 if (string.IsNullOrWhiteSpace(tool.Name))
@@ -196,7 +202,23 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
                     continue;
                 }
 
-                collected.Add(tool);
+                string description = McpSecurityLimits.BoundToolDescription(tool.Description ?? string.Empty);
+
+                System.Text.Json.JsonElement inputSchema = McpSecurityLimits.BoundToolInputSchema(
+                    tool.InputSchema,
+                    McpJsonSerializerContext.Default);
+
+                long toolBytes = Encoding.UTF8.GetByteCount(description) + Encoding.UTF8.GetByteCount(inputSchema.GetRawText());
+
+                if (totalBytes + toolBytes > _maxToolsTotalBytes)
+                {
+                    throw new InvalidDataException(
+                        $"The MCP tool catalog exceeded the physical metadata allocation boundary of {_maxToolsTotalBytes} UTF-8 bytes; the server must expose a smaller or paged schema catalog.");
+                }
+
+                totalBytes += toolBytes;
+
+                bridgeTools.Add(new McpBridgeTool(tool.Name, description, inputSchema, this, _toolOutputCapBytes));
             }
 
             cursor = pageResult.NextCursor;
@@ -205,31 +227,6 @@ internal sealed class SdkMcpClientWrapper : IMcpClient
             {
                 break;
             }
-        }
-
-        List<McpBridgeTool> bridgeTools = new(collected.Count);
-
-        long totalBytes = 0L;
-
-        foreach (Tool tool in collected)
-        {
-            string description = McpSecurityLimits.BoundToolDescription(tool.Description ?? string.Empty);
-
-            System.Text.Json.JsonElement inputSchema = McpSecurityLimits.BoundToolInputSchema(
-                tool.InputSchema,
-                McpJsonSerializerContext.Default);
-
-            long toolBytes = Encoding.UTF8.GetByteCount(description) + Encoding.UTF8.GetByteCount(inputSchema.GetRawText());
-
-            if (totalBytes + toolBytes > _maxToolsTotalBytes)
-            {
-                throw new InvalidDataException(
-                    $"The MCP tool catalog exceeded the physical metadata allocation boundary of {_maxToolsTotalBytes} UTF-8 bytes; the server must expose a smaller or paged schema catalog.");
-            }
-
-            totalBytes += toolBytes;
-
-            bridgeTools.Add(new McpBridgeTool(tool.Name, description, inputSchema, this, _toolOutputCapBytes));
         }
 
         return bridgeTools;

@@ -216,5 +216,11 @@ jobs:
       - name: Install ripgrep
         run: command -v rg >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y ripgrep)
 
+      # The gate itself has silent failure modes (a warning misfiled as third-party, an ILC
+      # assertion satisfied by another project's log). Test the gate before trusting it; this
+      # stubs `dotnet` and compiles nothing.
+      - name: Test the AOT IL gate
+        run: ./scripts/verify_aot_il_warnings_test.sh
+
       - name: Verify AOT IL warnings and regex smoke (host RID)
         run: ./scripts/verify-aot-il-warnings.sh

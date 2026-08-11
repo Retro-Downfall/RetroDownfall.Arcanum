@@ -196,6 +196,18 @@ internal static partial class OpenAiV1Endpoints
 
             }
 
+            // OpenAI-compatible providers are not guaranteed to answer with one vector per input
+            // (and Microsoft.Extensions.AI does not enforce it), so a short array must fail as a
+            // sanitized 503 rather than indexing off the end of the batch.
+            if (batchResult.Value.Length != shortTexts.Count)
+            {
+
+                return WeaveErrorToOpenAiResult(new Error(
+                    ErrorCodes.Embeddings.ProviderUnavailable,
+                    "The embedding provider returned a mismatched number of vectors."));
+
+            }
+
             for (int i = 0; i < shortIndexes.Count; i++)
             {
 
@@ -337,6 +349,18 @@ internal static partial class OpenAiV1Endpoints
         {
 
             return Result<float[]>.Failure(batch.Error);
+
+        }
+
+        // A chunk batch that comes back short would silently mean-pool fewer chunks than the
+        // document actually has (an empty one would throw), so treat any count mismatch as a
+        // provider failure instead.
+        if (batch.Value.Length == 0 || batch.Value.Length != chunkTexts.Length)
+        {
+
+            return Result<float[]>.Failure(new Error(
+                ErrorCodes.Embeddings.ProviderUnavailable,
+                "The embedding provider returned a mismatched number of vectors."));
 
         }
 

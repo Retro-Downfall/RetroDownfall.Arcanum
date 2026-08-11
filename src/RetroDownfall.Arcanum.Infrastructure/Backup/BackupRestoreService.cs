@@ -488,8 +488,14 @@ internal sealed class BackupRestoreService : IBackupRestoreService
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(stagingParent);
 
-        OwnedTemporaryDirectory staging = OwnedTemporaryDirectory.Create(
-            Path.Combine(stagingParent, BackupRestoreJournal.CreateStagingName()));
+        string stagingPath = Path.Combine(stagingParent, BackupRestoreJournal.CreateStagingName());
+
+        // Recorded before the root exists, and beside the live installation rather than inside it: a
+        // new-profile restore stages beside its destination, where the startup sweep of the live
+        // root's parent would never look for it.
+        BackupRestoreStagingIndex.Add(liveRoot, stagingPath);
+
+        OwnedTemporaryDirectory staging = OwnedTemporaryDirectory.Create(stagingPath);
 
         string stagedRoot = Path.Combine(staging.Path, BackupRestoreJournal.StagedDirectoryName);
 
@@ -902,6 +908,8 @@ internal sealed class BackupRestoreService : IBackupRestoreService
                 BackupRestoreJournal.Delete(staging.Path);
 
                 _ = staging.TryDelete();
+
+                BackupRestoreStagingIndex.Remove(liveRoot, staging.Path);
 
             }
 

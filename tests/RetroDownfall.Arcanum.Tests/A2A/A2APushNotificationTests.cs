@@ -417,6 +417,41 @@ public sealed class A2APushNotificationTests : IDisposable
     }
 
     [Fact]
+    public async Task DispatchSendingAsync_CallbackModeWhenThePeerSettlesBeforeTheCallbackIsRegistered_StillSettles()
+    {
+
+        using SettleBeforeRegistrationAgentHandler agentHandler = new();
+
+        using TestServer server = await CreateFakeRemoteAgentServerAsync(agentHandler, advertisesPush: true);
+
+        using HttpMessageHandler serverHandler = server.CreateHandler();
+
+        // The peer finishes in the window between SendMessage and the callback registration, so the
+        // transition that would have notified this instance happened before there was anywhere to post it.
+        using CallbackRegistrationCapturingHandler handler = new(
+            serverHandler,
+            agentHandler.SendMessageAnswered,
+            agentHandler.Settled);
+
+        A2AClientService client = CreateClient(
+            handler,
+            Settings(pushEnabled: true, callbackBaseUrl: $"https://{PeerCallbackHost}"),
+            new A2ASendingCallbackRegistry(NullLogger<A2ASendingCallbackRegistry>.Instance));
+
+        Result<A2ADispatchResult> result = await client
+            .DispatchSendingAsync("work the peer finishes instantly", null, DiscoveryUrl, mode: A2ADispatchMode.Callback)
+            .WaitAsync(Patience);
+
+        // The snapshot SendMessage handed back said `submitted`, and no notification will ever arrive for
+        // a transition that predates the registration — so trusting it is a permanent wait. The
+        // authoritative state has to be read once before waiting on a signal that has been and gone.
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("instant answer", result.Value.ResponseText);
+
+    }
+
+    [Fact]
     public async Task DispatchSendingAsync_CallbackModeAgainstAPeerThatCannotAcceptOne_WaitsInlineInstead()
     {
 
@@ -648,7 +683,18 @@ public sealed class A2APushNotificationTests : IDisposable
     }
 
     /// <summary>Records the config id and secret the client handed the peer.</summary>
-    private sealed class CallbackRegistrationCapturingHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    /// <param name="sendAnswered">
+    /// Completed once the peer has answered a <c>SendMessage</c>, so a test double can hold its remote
+    /// task open until the client has the submitted snapshot in hand.
+    /// </param>
+    /// <param name="beforeRegistering">
+    /// Awaited before the callback registration reaches the peer, so a test can put a remote transition
+    /// inside the window between the send and the registration.
+    /// </param>
+    private sealed class CallbackRegistrationCapturingHandler(
+        HttpMessageHandler inner,
+        TaskCompletionSource? sendAnswered = null,
+        Task? beforeRegistering = null) : DelegatingHandler(inner)
     {
 
         private readonly TaskCompletionSource _registered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -688,6 +734,13 @@ public sealed class A2APushNotificationTests : IDisposable
 
                 Token = config.GetProperty("token").GetString();
 
+                if (beforeRegistering is not null)
+                {
+
+                    await beforeRegistering.ConfigureAwait(false);
+
+                }
+
                 // Signalled only after the peer has answered, so a test that acts on this knows the
                 // client has finished registering rather than merely started.
                 HttpResponseMessage registration = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -698,7 +751,16 @@ public sealed class A2APushNotificationTests : IDisposable
 
             }
 
-            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            HttpResponseMessage response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+            if (body.Contains("\"SendMessage\"", StringComparison.Ordinal))
+            {
+
+                sendAnswered?.TrySetResult();
+
+            }
+
+            return response;
 
         }
 
@@ -773,6 +835,57 @@ public sealed class A2APushNotificationTests : IDisposable
         public void Release(string text) => _release.TrySetResult(text);
 
         public void Dispose() => _release.TrySetCanceled();
+
+    }
+
+    /// <summary>
+    /// Finishes its remote task in the window between the client's <c>SendMessage</c> and its callback
+    /// registration — the fast-peer race a callback can never report, because there was nowhere to post it
+    /// when the transition happened.
+    /// </summary>
+    private sealed class SettleBeforeRegistrationAgentHandler : IAgentHandler, IDisposable
+    {
+
+        private readonly TaskCompletionSource _settled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource SendMessageAnswered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Settled => _settled.Task;
+
+        public async Task ExecuteAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken)
+        {
+
+            TaskUpdater updater = new(eventQueue, context.TaskId, context.ContextId);
+
+            await updater.SubmitAsync(cancellationToken).ConfigureAwait(false);
+
+            // Held only until the client owns the submitted snapshot, so the race is deterministic rather
+            // than a hope about which side wins.
+            await SendMessageAnswered.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            await updater.StartWorkAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            await updater
+                .AddArtifactAsync([Part.FromText("instant answer")], cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            await updater.CompleteAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            _settled.TrySetResult();
+
+        }
+
+        public Task CancelAsync(RequestContext context, AgentEventQueue eventQueue, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public void Dispose()
+        {
+
+            SendMessageAnswered.TrySetCanceled();
+
+            _settled.TrySetCanceled();
+
+        }
 
     }
 

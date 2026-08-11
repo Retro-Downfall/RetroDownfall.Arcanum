@@ -667,6 +667,66 @@ public sealed class BackupRestoreServiceTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A new-profile restore must stage beside its destination so commit stays a same-volume rename,
+    /// which is somewhere startup recovery's sweep of the live root's parent can never reach. The
+    /// staging index is the trail back, so a process death does not strand decrypted archive
+    /// contents on disk forever.
+    /// </summary>
+    [Fact]
+    public async Task A_new_profile_restore_records_its_distant_staging_root_for_startup_recovery()
+    {
+
+        Fixture fixture = await CreateFixtureAsync();
+
+        string archive = await fixture.CreateBackupAsync("indexed-profile.arcbackup");
+
+        string elsewhere = Path.Combine(_root, "another-volume");
+
+        List<string> recordedDuringRestore = [];
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore(),
+                new BackupRestoreServiceOptions
+                {
+
+                    BeforePhaseForTests = phase =>
+                    {
+
+                        if (phase == BackupRestorePhase.Commit)
+                        {
+
+                            recordedDuringRestore.AddRange(
+                                BackupRestoreStagingIndex.Read(_installation));
+
+                        }
+
+                    },
+
+                })
+            .RestoreAsync(
+                new BackupRestoreRequest(
+                    archive,
+                    BackupRestoreConflictMode.NewProfileRoot,
+                    Path.Combine(elsewhere, "second-profile"),
+                    Confirmed: true,
+                    CreateSafetyBackup: false),
+                Passphrase.AsMemory(),
+                CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.Completed, result.Status);
+
+        string staging = Assert.Single(recordedDuringRestore);
+
+        Assert.Equal(Path.GetFullPath(elsewhere), Path.GetDirectoryName(staging));
+
+        Assert.True(
+            BackupRestoreJournal.IsCanonicalStagingName(Path.GetFileName(staging)));
+
+        Assert.Empty(BackupRestoreStagingIndex.Read(_installation));
+
+    }
+
     [Fact]
     public async Task A_new_profile_root_must_be_empty_and_may_not_be_the_current_installation()
     {

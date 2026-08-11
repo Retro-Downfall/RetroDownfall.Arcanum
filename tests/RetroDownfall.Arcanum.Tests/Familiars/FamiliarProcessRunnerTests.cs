@@ -42,6 +42,77 @@ public sealed class FamiliarProcessRunnerTests
     }
 
     /// <summary>
+    /// The frame ceiling has to bound what is <em>held</em>, not just what is handed on. A frame
+    /// that outgrows it is dropped whole rather than cut at a character offset: a truncated fragment
+    /// is not valid JSON, so passing it on would discard the frame silently anyway while the
+    /// allocation it forced had already happened.
+    /// </summary>
+    [Fact]
+    public async Task A_frame_that_outgrows_the_ceiling_is_dropped_rather_than_delivered_truncated()
+    {
+
+        string oversize = new('x', FamiliarProcessLimits.MaxLineCharacters + 64);
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create(["one", oversize, "two"]);
+
+        List<string> lines = await CollectAsync(stub);
+
+        // Compared by length so a failure prints three integers rather than the whole frame.
+        Assert.Equal([3, 3], [.. lines.Select(static line => line.Length)]);
+
+        Assert.Equal(["one", "two"], lines);
+
+    }
+
+    /// <summary>
+    /// The reader stops accumulating at the ceiling and says so, rather than letting an unterminated
+    /// run grow until end of stream. Pinned with a small limit, where the whole property fits in a
+    /// test that does not need a megabyte to be meaningful.
+    /// </summary>
+    [Fact]
+    public async Task An_unterminated_run_stops_accumulating_at_the_ceiling()
+    {
+
+        FamiliarStdoutLineReader reader = new(new StringReader(new string('x', 64 * 1024)), 16);
+
+        FamiliarStdoutLine? frame = await reader.ReadLineAsync(CancellationToken.None);
+
+        Assert.NotNull(frame);
+
+        Assert.True(frame.Value.Exceeded);
+
+        Assert.Equal(16, frame.Value.Text.Length);
+
+    }
+
+    /// <summary>
+    /// An over-long frame costs its own frame and no more: the remainder is drained to the next
+    /// newline so the frames behind it still arrive, and a CRLF terminator renders the same way
+    /// <c>ReadLineAsync</c> rendered it.
+    /// </summary>
+    [Fact]
+    public async Task The_reader_resumes_at_the_next_frame_after_an_over_long_one()
+    {
+
+        FamiliarStdoutLineReader reader = new(
+            new StringReader($"{new string('x', 8192)}\r\nafter\r\n"),
+            16);
+
+        FamiliarStdoutLine? oversize = await reader.ReadLineAsync(CancellationToken.None);
+
+        Assert.True(oversize!.Value.Exceeded);
+
+        FamiliarStdoutLine? next = await reader.ReadLineAsync(CancellationToken.None);
+
+        Assert.Equal("after", next!.Value.Text);
+
+        Assert.False(next.Value.Exceeded);
+
+        Assert.Null(await reader.ReadLineAsync(CancellationToken.None));
+
+    }
+
+    /// <summary>
     /// The prompt goes in on stdin, so nothing about the conversation can be mistaken for an option
     /// and no argv length limit applies.
     /// </summary>

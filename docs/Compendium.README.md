@@ -603,6 +603,15 @@ source-generated configuration JSON context. Allowlists use chip editors.
 `retention.protectedSessionIds` uses the same comma-separated editor while converting each value to
 a `Guid`; the stored contract remains a typed `Guid[]`.
 
+A descriptor whose key crosses a collection describes every element rather than one path — for
+example `integrations.a2A.skills.id` describes each entry of `integrations.a2A.skills`. Sections
+whose collections have a structured editor (providers, models, daemon schedules) bind those
+descriptors per row. Anywhere else the generic view renders the descriptor read-only with its label,
+description, and the `arcanum config set integrations.a2A.skills.0.id <value>` form that does write
+it, because an editable box there would accept text no save could apply.
+`GenericSettingsSectionViewTests.Every_input_control_the_generic_editor_renders_addresses_a_settable_path`
+pins that: every control the generic view offers addresses a path Save can write.
+
 `ConfigurationViewModel` keeps the last loaded settings as a snapshot. Polished
 pages rebuild only their owned records; generic edits clone and update only the
 selected public property path. Unopened sections and provider facts therefore

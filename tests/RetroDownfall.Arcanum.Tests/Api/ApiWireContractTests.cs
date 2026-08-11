@@ -250,6 +250,91 @@ public sealed class ApiWireContractTests
     }
 
     [SkippableFact]
+    public async Task GetPerceptionLook_OutsideAllowedRoots_DoesNotLeakDirectoryExistence()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        // Both live outside Arcanum:Security:PerceptionWorkspaceRoots (which is the factory's TempHome).
+        string existingOutside = Path.Combine(Path.GetTempPath(), $"arcanum-perception-oracle-{Guid.NewGuid():N}");
+
+        string missingOutside = Path.Combine(Path.GetTempPath(), $"arcanum-perception-oracle-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(existingOutside);
+
+        try
+        {
+
+            HttpResponseMessage existingResponse = await client.GetAsync(
+                $"/api/perception/look?directory={Uri.EscapeDataString(existingOutside)}");
+
+            HttpResponseMessage missingResponse = await client.GetAsync(
+                $"/api/perception/look?directory={Uri.EscapeDataString(missingOutside)}");
+
+            Assert.Equal(HttpStatusCode.Forbidden, existingResponse.StatusCode);
+
+            // A path the policy denies must not reveal whether it exists on the host.
+            Assert.Equal(HttpStatusCode.Forbidden, missingResponse.StatusCode);
+
+            Assert.Equal(
+                "Perception.PathNotAllowed",
+                await ReadPerceptionErrorCodeAsync(existingResponse));
+
+            Assert.Equal(
+                "Perception.PathNotAllowed",
+                await ReadPerceptionErrorCodeAsync(missingResponse));
+
+        }
+        finally
+        {
+
+            Directory.Delete(existingOutside, recursive: true);
+
+        }
+
+    }
+
+    [SkippableFact]
+    public async Task GetPerceptionLook_MissingDirectoryInsideAllowedRoots_StillReturns400()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string missingInside = Path.Combine(_factory.TempHome, $"missing-{Guid.NewGuid():N}");
+
+        HttpResponseMessage response = await client.GetAsync(
+            $"/api/perception/look?directory={Uri.EscapeDataString(missingInside)}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Equal("Perception.InvalidPath", await ReadPerceptionErrorCodeAsync(response));
+
+    }
+
+    private static async Task<string?> ReadPerceptionErrorCodeAsync(HttpResponseMessage response)
+    {
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<PatternSnapshot>? body = JsonSerializer.Deserialize(
+            json,
+            ArcanumJsonContext.Default.ApiResponsePatternSnapshot);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.NotNull(body.Error);
+
+        return body.Error!.Value.Code;
+
+    }
+
+    [SkippableFact]
     public async Task GetEventsLogs_WithAvailableGate_ReturnsEventStream()
     {
 

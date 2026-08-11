@@ -210,6 +210,18 @@ public interface IA2ASendingLedger
         string callbackConfigId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Finds the still-open record for a remote task this instance already dispatched, so a continuation
+    /// closes the row its dispatch opened instead of opening a second one for the same Sending.
+    /// </summary>
+    /// <returns>
+    /// A handle this process can actually close the row with, or an unrecorded handle when there is no
+    /// such row — or when it belongs to a process that is still alive and holding its lease.
+    /// </returns>
+    Task<A2ASendingLedgerEntry> FindOpenOutboundAsync(
+        string remoteTaskId,
+        CancellationToken cancellationToken = default);
+
 }
 
 /// <summary>
@@ -246,6 +258,20 @@ internal sealed class A2ASendingLedger(
     private static readonly TimeSpan LeaseDuration = A2ASendingLeaseRenewer.LeaseDuration;
 
     private static readonly string OwnerId = $"a2a-{Environment.ProcessId}";
+
+    /// <summary>
+    /// Every ledger state a Sending that is still a live correspondence can be in — the exact complement
+    /// of the three closed ones, so asking for these is the same question the in-memory skip used to ask
+    /// and only the cost differs.
+    /// </summary>
+    private static readonly LongRunningOperationState[] OpenStates =
+    [
+        LongRunningOperationState.Pending,
+        LongRunningOperationState.Running,
+        LongRunningOperationState.Waiting,
+        LongRunningOperationState.Cancelling,
+        LongRunningOperationState.ReconciliationRequired,
+    ];
 
     /// <summary>Rows fetched per lookup round-trip. A paging step, not a cap on in-flight Sendings.</summary>
     private const int PageSize = 200;
@@ -669,64 +695,30 @@ internal sealed class A2ASendingLedger(
         try
         {
 
-            for (int offset = 0; ; offset += PageSize)
-            {
-
-                IReadOnlyList<LongRunningOperation> page = await store
-                    .ListAsync(
-                        new LongRunningOperationQuery(
-                            LongRunningOperationKinds.A2AOutboundSending,
-                            Limit: PageSize,
-                            Offset: offset),
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (page.Count == 0)
-                {
-
-                    return null;
-
-                }
-
-                foreach (LongRunningOperation candidate in page)
-                {
-
-                    if (candidate.State is LongRunningOperationState.Completed
-                        or LongRunningOperationState.Failed
-                        or LongRunningOperationState.Abandoned)
-                    {
-
-                        continue;
-
-                    }
-
-                    if (TryRead(candidate) is
+            LongRunningOperation? match = await FindOpenAsync(
+                    LongRunningOperationKinds.A2AOutboundSending,
+                    record => record is
                         {
                             Direction: A2ASendingRecordDirection.Outbound,
                             CallbackConfigId: { Length: > 0 } configId,
-                            CallbackTokenHash: { Length: > 0 } tokenHash,
-                        } record
-                        && string.Equals(configId, callbackConfigId, StringComparison.Ordinal))
-                    {
+                            CallbackTokenHash.Length: > 0,
+                        }
+                        && string.Equals(configId, callbackConfigId, StringComparison.Ordinal),
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-                        return new A2AOutboundCallback(
-                            record.TaskId,
-                            record.AgentUrl ?? string.Empty,
-                            tokenHash,
-                            new A2ASendingLedgerEntry(candidate.Id, OwnerId));
+            if (match is null || TryRead(match) is not { CallbackTokenHash: { Length: > 0 } tokenHash } found)
+            {
 
-                    }
-
-                }
-
-                if (page.Count < PageSize)
-                {
-
-                    return null;
-
-                }
+                return null;
 
             }
+
+            return new A2AOutboundCallback(
+                found.TaskId,
+                found.AgentUrl ?? string.Empty,
+                tokenHash,
+                new A2ASendingLedgerEntry(match.Id, OwnerId));
 
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -743,78 +735,145 @@ internal sealed class A2ASendingLedger(
 
     }
 
+    public async Task<A2ASendingLedgerEntry> FindOpenOutboundAsync(
+        string remoteTaskId,
+        CancellationToken cancellationToken = default)
+    {
+
+        if (string.IsNullOrWhiteSpace(remoteTaskId))
+        {
+
+            return default;
+
+        }
+
+        try
+        {
+
+            LongRunningOperation? match = await FindOpenAsync(
+                    LongRunningOperationKinds.A2AOutboundSending,
+                    record => record.Direction == A2ASendingRecordDirection.Outbound
+                        && string.Equals(record.TaskId, remoteTaskId, StringComparison.Ordinal),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (match is null)
+            {
+
+                return default;
+
+            }
+
+            // Already ours when the dispatch that opened the row ran in this process, which is the common
+            // case; otherwise the row is only adoptable if its previous owner's lease has lapsed.
+            if (string.Equals(match.LeaseOwner, OwnerId, StringComparison.Ordinal))
+            {
+
+                return new A2ASendingLedgerEntry(match.Id, OwnerId);
+
+            }
+
+            DateTimeOffset now = timeProvider.GetUtcNow();
+
+            LongRunningOperationLeaseResult lease = await store
+                .TryAcquireLeaseAsync(match.Id, OwnerId, now, now.Add(LeaseDuration), cancellationToken)
+                .ConfigureAwait(false);
+
+            return lease.Acquired ? new A2ASendingLedgerEntry(match.Id, OwnerId) : default;
+
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+
+            logger.LogWarning(
+                ex,
+                "A2A: could not resolve the open durable record for remote task {TaskId}.",
+                remoteTaskId);
+
+            return default;
+
+        }
+
+    }
+
     /// <summary>
     /// Finds the still-open inbound record for <paramref name="taskId"/> that satisfies
     /// <paramref name="predicate"/>.
     /// </summary>
+    private Task<LongRunningOperation?> FindOpenInboundAsync(
+        string taskId,
+        Func<A2ASendingRecord, bool> predicate,
+        CancellationToken cancellationToken) =>
+        FindOpenAsync(
+            LongRunningOperationKinds.A2AInboundSending,
+            record => record.Direction == A2ASendingRecordDirection.Inbound
+                && string.Equals(record.TaskId, taskId, StringComparison.Ordinal)
+                && record.ApprenticeId is not null
+                && predicate(record),
+            cancellationToken);
+
+    /// <summary>
+    /// Finds the still-open record of <paramref name="kind"/> that satisfies <paramref name="predicate"/>.
+    /// </summary>
     /// <remarks>
-    /// Paged to exhaustion rather than capped: a lookup that quietly stopped after N rows would be a
-    /// hidden ceiling on how many Sendings an operator may have in flight, and the peer whose task fell
-    /// past it would be told "nothing to cancel" while the work kept running.
+    /// The open states are asked for one at a time so a settled Sending never leaves SQLite. A lookup
+    /// that read every row of the kind and discarded the terminal ones in memory decrypted and
+    /// deserialized the whole history of the host to answer a question only an in-flight Sending can
+    /// answer — and the outbound-callback lookup is reached from the one A2A route that is deliberately
+    /// anonymous (&#167;5.7.1.4), so the cost of a miss is a cost anyone can impose.
     /// <para>
-    /// <see cref="LongRunningOperationState.ReconciliationRequired"/> is deliberately <em>not</em> a
-    /// closed state here: that is what reconciliation records for a Sending parked awaiting an answer,
-    /// and such a record is still the live correspondence (issue #68).
+    /// Each state is still paged to exhaustion rather than capped: a lookup that quietly stopped after N
+    /// rows would be a hidden ceiling on how many Sendings an operator may have in flight, and the peer
+    /// whose task fell past it would be told "nothing to cancel" while the work kept running.
+    /// </para>
+    /// <para>
+    /// <see cref="LongRunningOperationState.ReconciliationRequired"/> is deliberately one of the open
+    /// states: that is what reconciliation records for a Sending parked awaiting an answer, and such a
+    /// record is still the live correspondence (issue #68).
     /// </para>
     /// </remarks>
-    private async Task<LongRunningOperation?> FindOpenInboundAsync(
-        string taskId,
+    private async Task<LongRunningOperation?> FindOpenAsync(
+        string kind,
         Func<A2ASendingRecord, bool> predicate,
         CancellationToken cancellationToken)
     {
 
-        for (int offset = 0; ; offset += PageSize)
+        foreach (LongRunningOperationState state in OpenStates)
         {
 
-            IReadOnlyList<LongRunningOperation> page = await store
-                .ListAsync(
-                    new LongRunningOperationQuery(
-                        LongRunningOperationKinds.A2AInboundSending,
-                        Limit: PageSize,
-                        Offset: offset),
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (page.Count == 0)
+            for (int offset = 0; ; offset += PageSize)
             {
 
-                return null;
+                IReadOnlyList<LongRunningOperation> page = await store
+                    .ListAsync(
+                        new LongRunningOperationQuery(kind, state, Limit: PageSize, Offset: offset),
+                        cancellationToken)
+                    .ConfigureAwait(false);
 
-            }
-
-            foreach (LongRunningOperation candidate in page)
-            {
-
-                if (candidate.State is LongRunningOperationState.Completed
-                    or LongRunningOperationState.Failed
-                    or LongRunningOperationState.Abandoned)
+                foreach (LongRunningOperation candidate in page)
                 {
 
-                    continue;
+                    if (TryRead(candidate) is { } record && predicate(record))
+                    {
+
+                        return candidate;
+
+                    }
 
                 }
 
-                if (TryRead(candidate) is { } record
-                    && record.Direction == A2ASendingRecordDirection.Inbound
-                    && string.Equals(record.TaskId, taskId, StringComparison.Ordinal)
-                    && record.ApprenticeId is not null
-                    && predicate(record))
+                if (page.Count < PageSize)
                 {
 
-                    return candidate;
+                    break;
 
                 }
-
-            }
-
-            if (page.Count < PageSize)
-            {
-
-                return null;
 
             }
 
         }
+
+        return null;
 
     }
 

@@ -188,7 +188,7 @@ public sealed class ApiKeyAuthenticator(
     {
         string? traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
-        ApiResponse<string> body = new(null, false, new Error("Auth.Unauthorized", "Invalid or missing API key."), traceId);
+        ApiResponse<string> body = new(null, false, new Error(ErrorCodes.Auth.Unauthorized, "Invalid or missing API key."), traceId);
 
         return Results.Json(body, ArcanumJsonContext.Default.ApiResponseString, statusCode: StatusCodes.Status401Unauthorized);
     }

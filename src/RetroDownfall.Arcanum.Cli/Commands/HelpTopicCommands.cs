@@ -74,7 +74,7 @@ internal static class HelpTopics
             ],
             [
                 "arcanum session rest",
-                "arcanum memory list",
+                "arcanum memory lexicon list",
                 "arcanum lore list",
                 "arcanum session compact",
             ]),

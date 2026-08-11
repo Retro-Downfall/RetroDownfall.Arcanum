@@ -26,7 +26,7 @@ public sealed class BackupRestoreCapacityPlannerTests : IDisposable
     }
 
     [Fact]
-    public void Required_bytes_cover_the_staged_copy_the_displaced_copy_and_headroom()
+    public void Required_bytes_cover_both_concurrent_copies_the_safety_backup_and_headroom()
     {
 
         BackupRestoreCapacity capacity = BackupRestoreCapacityPlanner.Plan(
@@ -36,10 +36,33 @@ public sealed class BackupRestoreCapacityPlannerTests : IDisposable
             availableBytesOverride: long.MaxValue);
 
         Assert.Equal(
-            1_000 + 400 + BackupRestoreCapacityPlanner.HeadroomBytes,
+            (1_000 * 2) + 400 + BackupRestoreCapacityPlanner.HeadroomBytes,
             capacity.RequiredBytes);
 
         Assert.Null(capacity.Issue);
+
+    }
+
+    /// <summary>
+    /// A restore materializes the archive twice at once — the extraction tree and the staged tree —
+    /// so a volume with room for exactly one copy must be refused before staging, not discovered to
+    /// be full halfway through.
+    /// </summary>
+    [Fact]
+    public void A_volume_holding_only_one_copy_of_the_archive_is_refused()
+    {
+
+        long restored = 40_000;
+
+        BackupRestoreCapacity capacity = BackupRestoreCapacityPlanner.Plan(
+            _root,
+            restored,
+            displacedBytes: 0,
+            availableBytesOverride: restored + BackupRestoreCapacityPlanner.HeadroomBytes + 1_000);
+
+        BackupVerifyIssue issue = Assert.IsType<BackupVerifyIssue>(capacity.Issue);
+
+        Assert.Equal("backup.restore_insufficient_disk", issue.Code);
 
     }
 
@@ -69,7 +92,7 @@ public sealed class BackupRestoreCapacityPlannerTests : IDisposable
 
         long restored = 2_048;
 
-        long required = restored + BackupRestoreCapacityPlanner.HeadroomBytes;
+        long required = (restored * 2) + BackupRestoreCapacityPlanner.HeadroomBytes;
 
         BackupRestoreCapacity capacity = BackupRestoreCapacityPlanner.Plan(
             _root,

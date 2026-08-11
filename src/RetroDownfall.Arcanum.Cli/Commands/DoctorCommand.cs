@@ -358,8 +358,10 @@ public sealed class DoctorCommand(
 
         // Show the plan before asking. A confirmation prompt that does not say what will change is
         // not consent, and the plan is free \u2014 it is the same side-effect-free call --repair makes.
+        // The preview keeps --only/--skip: clearing them would run exactly the probes the operator
+        // excluded, before they have even agreed to the repair.
         Result<DoctorReport> plan = await BuildReportAsync(
-                request with { Apply = false, Only = [], Skip = [] },
+                request with { Apply = false },
                 cancellationToken)
             .ConfigureAwait(false);
 

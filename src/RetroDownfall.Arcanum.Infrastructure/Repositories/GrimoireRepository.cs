@@ -874,7 +874,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
             .OrderBy(m => m.Key)
             .Skip(skip)
             .Take(pageSize + 1)
-            .Select(m => new LoreDto(m.Key, m.Value, m.UpdatedAt))
+            .Select(m => new LoreDto(m.Key, m.Value, DateTime.SpecifyKind(m.UpdatedAt, DateTimeKind.Utc)))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -895,7 +895,7 @@ public sealed class GrimoireRepository : IGrimoireRepository
         return await _db.MageSettings
             .AsNoTracking()
             .Where(m => m.Key == key)
-            .Select(m => new LoreDto(m.Key, m.Value, m.UpdatedAt))
+            .Select(m => new LoreDto(m.Key, m.Value, DateTime.SpecifyKind(m.UpdatedAt, DateTimeKind.Utc)))
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
     }

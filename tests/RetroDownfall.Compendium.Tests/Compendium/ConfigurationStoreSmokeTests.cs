@@ -363,6 +363,74 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A save has to leave <c>arcanum.json</c> owner-only whatever it started as. Hardening only the
+    /// staging file is not enough: on Windows <c>ReplaceFile</c> keeps the replaced file's DACL, so a
+    /// destination that arrived with a loose ACL (restored from a backup, dropped in by an installer,
+    /// created before the directory was hardened) would stay readable by other principals — while the
+    /// same edit through <c>arcanum config set</c> tightens it, because <c>ConfigurationWriter</c>
+    /// re-applies owner-only permissions to the destination after the replace.
+    /// </summary>
+    [Fact]
+
+    public async Task WriteAsync_hardens_the_destination_that_arrived_with_loose_permissions()
+    {
+
+        string configPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.json");
+
+        _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        await File.WriteAllTextAsync(
+            configPath,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        if (!OperatingSystem.IsWindows())
+        {
+
+            File.SetUnixFileMode(
+                configPath,
+                UnixFileMode.UserRead
+                | UnixFileMode.UserWrite
+                | UnixFileMode.GroupRead
+                | UnixFileMode.OtherRead);
+
+        }
+
+        using ArcanumConfigurationStore store = new(enableWatcher: false);
+
+        _ = await store.ReadAsync(CancellationToken.None);
+
+        ConfigurationWriteResult result = await store.WriteAsync(
+            new ArcanumSettings
+            {
+
+                Host = new HostSettings { Port = 6124 },
+
+            },
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            Assert.True(
+                new FileInfo(configPath)
+                    .GetAccessControl()
+                    .AreAccessRulesProtected);
+
+            return;
+
+        }
+
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            File.GetUnixFileMode(configPath));
+
+    }
+
     [Fact]
 
     public async Task Mutation_reload_acknowledges_atomic_replacement_without_hiding_later_external_edit()

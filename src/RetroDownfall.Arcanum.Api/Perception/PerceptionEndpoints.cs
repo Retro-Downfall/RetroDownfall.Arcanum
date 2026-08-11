@@ -40,21 +40,13 @@ internal static class PerceptionEndpoints
                     string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
                     Result<PatternSnapshot> invalid = Result<PatternSnapshot>.Failure(
-                        new Error("Perception.InvalidPath", "The specified directory could not be resolved."));
+                        new Error(ErrorCodes.Perception.InvalidPath, "The specified directory could not be resolved."));
 
                     return Results.BadRequest(ApiResponse<PatternSnapshot>.FromResult(invalid, badTraceId));
                 }
 
-                if (!Directory.Exists(resolved))
-                {
-                    string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-                    Result<PatternSnapshot> invalid = Result<PatternSnapshot>.Failure(
-                        new Error("Perception.InvalidPath", "The specified directory does not exist or is inaccessible."));
-
-                    return Results.BadRequest(ApiResponse<PatternSnapshot>.FromResult(invalid, badTraceId));
-                }
-
+                // The allowed-roots check runs before any existence probe so a denied path cannot be used
+                // as a filesystem existence oracle (403 for "exists" vs 400 for "missing").
                 string[] allowedRoots = settings.Value.ResolvePerceptionRoots();
 
                 Result<string> allowed = WorkspaceRootPolicy.EnforceAllowedRoots(
@@ -73,6 +65,16 @@ internal static class PerceptionEndpoints
                             deniedTraceId),
                         ArcanumJsonContext.Default.ApiResponsePatternSnapshot,
                         statusCode: StatusCodes.Status403Forbidden);
+                }
+
+                if (!Directory.Exists(resolved))
+                {
+                    string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+                    Result<PatternSnapshot> invalid = Result<PatternSnapshot>.Failure(
+                        new Error(ErrorCodes.Perception.InvalidPath, "The specified directory does not exist or is inaccessible."));
+
+                    return Results.BadRequest(ApiResponse<PatternSnapshot>.FromResult(invalid, badTraceId));
                 }
 
                 PatternSnapshot snapshot = await eye.PerceivePatternAsync(resolved, cancellationToken).ConfigureAwait(false);

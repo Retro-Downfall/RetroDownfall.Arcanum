@@ -184,6 +184,81 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
     }
 
+    private async Task SeedAttachmentChunkAsync(string sessionId, string chunkId, string content)
+    {
+
+        string attachmentId = Guid.NewGuid().ToString();
+
+        await ExecuteAsync(
+            """
+            INSERT INTO "SessionAttachments"
+                ("Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey",
+                 "OriginalFileName", "Version", "RelativePath", "ContentSha256", "MimeType",
+                 "ByteLength", "Kind", "CreatedAt")
+            VALUES (@attachmentId, @sessionId, NULL, NULL, 'Bound', 'notes', 'notes.md', 1,
+                    'notes.md', 'ATTACHMENT-HASH', 'text/plain', 16, 'Text',
+                    '2026-01-01T00:00:00Z')
+            """,
+            ("@attachmentId", attachmentId),
+            ("@sessionId", sessionId));
+
+        await ExecuteAsync(
+            """
+            INSERT OR REPLACE INTO session_attachment_chunks
+                (ChunkId, GenerationId, SessionId, AttachmentId, LogicalKey, Version,
+                 OriginalFileName, MimeType, ContentSha256, ChunkIndex, CharacterStart, CharacterEnd,
+                 StartLine, EndLine, Content, EmbeddingDimension, ExtractedAt, IndexedAt,
+                 RetrievalScope)
+            VALUES (@chunkId, 'generation-1', @sessionId, @attachmentId, 'notes', 1, 'notes.md',
+                    'text/plain', 'ATTACHMENT-HASH', 0, 0, 16, 1, 1, @content, @dimensions,
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'Latest')
+            """,
+            ("@chunkId", chunkId),
+            ("@sessionId", sessionId),
+            ("@attachmentId", attachmentId),
+            ("@content", content),
+            ("@dimensions", TestDimensions));
+
+    }
+
+    private Task RetireAttachmentChunkAsync(string chunkId) =>
+        ExecuteAsync(
+            """UPDATE session_attachment_chunks SET RetrievalScope = NULL WHERE ChunkId = @chunkId""",
+            ("@chunkId", chunkId));
+
+    private async Task ExecuteAsync(string sql, params (string Name, object Value)[] parameters)
+    {
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+
+            await connection.OpenAsync();
+
+        }
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        foreach ((string name, object value) in parameters)
+        {
+
+            DbParameter parameter = command.CreateParameter();
+
+            parameter.ParameterName = name;
+
+            parameter.Value = value;
+
+            command.Parameters.Add(parameter);
+
+        }
+
+        _ = await command.ExecuteNonQueryAsync();
+
+    }
+
     [SkippableFact]
     public async Task BuildingGenerationIsInvisibleUntilPublished()
     {
@@ -436,6 +511,88 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         await SeedWorkspaceChunkAsync("c1", "edited out from under the tree");
 
         TapestryGeneration current = (await _store.GetCurrentGenerationAsync(WorkspaceScope, CancellationToken.None))!;
+
+        IReadOnlyList<TapestryRetrievedNode> hydrated = await _store.HydrateRetrievedNodesAsync(
+            current,
+            [("n1", 0.9f)],
+            TapestryRetrievalMode.CollapsedTree,
+            CancellationToken.None);
+
+        Assert.Empty(hydrated);
+
+    }
+
+    [SkippableFact]
+    public async Task HydrationDropsAnAttachmentLeafWhoseVersionHasBeenSuperseded()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string sessionId = Guid.NewGuid().ToString();
+
+        TapestryScope attachmentScope = new(TapestryScopeKind.SessionAttachment, sessionId);
+
+        const string ChunkId = "attachment-1:generation-1:0";
+
+        const string Body = "the note body as it stood in version one";
+
+        await SeedAttachmentChunkAsync(sessionId, ChunkId, Body);
+
+        string generationId = await _store!.BeginGenerationAsync(
+            attachmentScope,
+            SphericalKMeans.AlgorithmVersion,
+            "settings-1",
+            "fast",
+            TapestryHash.SummaryRecipeVersion,
+            TestDimensions,
+            "corpus-1",
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        await _store.AppendNodesAsync(
+            [
+                new TapestryNodeWrite(
+                    new TapestryNode(
+                        "n1",
+                        generationId,
+                        attachmentScope.Kind,
+                        attachmentScope.Id,
+                        0,
+                        TapestryNodeKind.Leaf,
+                        null,
+                        TapestryLeafSourceKind.SessionAttachmentChunk,
+                        ChunkId,
+                        "notes.md",
+                        null,
+                        TapestryHash.OfContent(Body),
+                        null,
+                        1,
+                        0,
+                        TapestryPartitionReason.None,
+                        TestDimensions,
+                        DateTimeOffset.UtcNow),
+                    Vec(1f)),
+            ],
+            CancellationToken.None);
+
+        await _store.PublishGenerationAsync(
+            generationId,
+            1,
+            1,
+            1,
+            TapestryTerminalReason.LeafOnly,
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+
+        TapestryGeneration current = (await _store.GetCurrentGenerationAsync(
+            attachmentScope,
+            CancellationToken.None))!;
+
+        // A newer attachment version soft-retires the prior one: the old rows keep their bytes and
+        // only lose RetrievalScope, which is exactly what removes them from flat attachment RAG. The
+        // tree is woven from the same scoped corpus, so hydration must honour the same predicate —
+        // otherwise a superseded version is injected as turn context under an unchanged hash.
+        await RetireAttachmentChunkAsync(ChunkId);
 
         IReadOnlyList<TapestryRetrievedNode> hydrated = await _store.HydrateRetrievedNodesAsync(
             current,

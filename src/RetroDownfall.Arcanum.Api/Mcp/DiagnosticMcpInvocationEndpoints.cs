@@ -49,7 +49,7 @@ internal static class DiagnosticMcpInvocationEndpoints
             return Results.Json(
                 ApiResponse<McpToolInvokeResponse>.FromResult(
                     Result<McpToolInvokeResponse>.Failure(new Error(
-                        "Mcp.DiagnosticDisabled",
+                        ErrorCodes.Mcp.DiagnosticDisabled,
                         "Diagnostic MCP invocation is available only when Arcanum:Edition=Development (or ARCANUM_EDITION=development).")),
                     traceId),
                 ArcanumJsonContext.Default.ApiResponseMcpToolInvokeResponse,

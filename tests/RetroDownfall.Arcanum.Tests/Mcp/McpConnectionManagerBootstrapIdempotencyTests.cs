@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -308,6 +309,23 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
     }
 
+    [Fact]
+    public async Task Dispose_stops_registry_client_that_was_never_attached_to_a_partition()
+    {
+
+        TrackingMcpClient orphanedClient = new();
+
+        AddRunningRegistryEntry(
+            _manager,
+            "never-attached",
+            orphanedClient);
+
+        await _manager.DisposeAsync();
+
+        Assert.Equal(1, orphanedClient.DisposeCount);
+
+    }
+
     private async Task<AIFunction> GetToolAsync(
         string workspaceRoot,
         string toolName)
@@ -322,6 +340,44 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
                     tool.Name,
                     toolName,
                     StringComparison.Ordinal)));
+
+    }
+
+    /// <summary>
+    /// Mirrors what <c>StartAsync</c> leaves behind for a global <c>alwaysOn: false</c> server: a
+    /// running registry entry holding a live client that no surface build has attached to a
+    /// partition yet.
+    /// </summary>
+    private static void AddRunningRegistryEntry(
+        McpConnectionManager manager,
+        string name,
+        IMcpClient client)
+    {
+
+        System.Reflection.FieldInfo? field =
+            typeof(McpConnectionManager).GetField(
+                "_registry",
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(field);
+
+        ConcurrentDictionary<(string Name, string? WorkingDirectory), ManagedMcpServerEntry> registry =
+            Assert.IsType<ConcurrentDictionary<(string Name, string? WorkingDirectory), ManagedMcpServerEntry>>(
+                field!.GetValue(manager));
+
+        ManagedMcpServerEntry entry = new(
+            name,
+            scopeWorkingDirectory: null,
+            new McpServerConfig { Command = "never-attached-server", AlwaysOn = false },
+            McpServerTransport.Stdio,
+            alwaysOn: false,
+            sourceDigest: null)
+        {
+            State = McpServerState.Running,
+            Client = client,
+        };
+
+        registry[(name, null)] = entry;
 
     }
 

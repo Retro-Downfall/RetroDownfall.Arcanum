@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
@@ -114,6 +116,130 @@ public sealed class SdkMcpClientWrapperTests : IAsyncLifetime
 
         await Assert.ThrowsAsync<ObjectDisposedException>(
             () => client.CallToolAsync("read_file_chunk", new Dictionary<string, object?>()));
+    }
+
+    [Fact]
+    public async Task GetToolsAsync_stops_paging_once_the_tool_metadata_budget_is_exhausted()
+    {
+        PagingToolsListServer server = new(descriptionBytes: 2000, maxPages: 400);
+
+        using CancellationTokenSource serverLifetime = new();
+
+        await using SdkMcpClientWrapper client = await CreatePagingClientAsync(
+            server,
+            maxToolsTotalBytes: 8192,
+            serverLifetime.Token);
+
+        _ = await Assert.ThrowsAsync<InvalidDataException>(() => client.GetToolsAsync());
+
+        await serverLifetime.CancelAsync();
+
+        // Each page carries ~2 KiB of tool metadata against an 8 KiB budget, so the fifth page is the
+        // one that blows it. Anything materially beyond that means the byte cap is being applied after
+        // the whole catalog has already been accumulated instead of bounding the allocation.
+        Assert.InRange(server.PagesServed, 1, 8);
+    }
+
+    private async Task<SdkMcpClientWrapper> CreatePagingClientAsync(
+        PagingToolsListServer server,
+        int maxToolsTotalBytes,
+        CancellationToken serverLifetime)
+    {
+        Channel<string> toServer = Channel.CreateUnbounded<string>();
+
+        Channel<string> fromServer = Channel.CreateUnbounded<string>();
+
+        _ = Task.Run(
+            () => server.RunAsync(toServer.Reader, fromServer.Writer, serverLifetime),
+            CancellationToken.None);
+
+        ChannelClientTransport clientTransport = new(
+            toServer.Writer,
+            fromServer.Reader,
+            maxJsonRpcLineBytes: 2_097_152);
+
+        SdkMcpClientWrapper client = new(
+            clientTransport,
+            new McpClientOptions
+            {
+                ClientInfo = new Implementation { Name = "arcanum-tests", Version = "1.0.0" },
+            },
+            initializationTimeout: TimeSpan.FromSeconds(10),
+            toolOutputCapBytes: 65536,
+            maxToolsTotalBytes: maxToolsTotalBytes);
+
+        await client.InitializeAsync();
+
+        return client;
+    }
+
+    /// <summary>
+    /// A minimal JSON-RPC peer that answers every <c>tools/list</c> with one fresh page and a brand new
+    /// cursor, so the cursor-cycle guard never fires and only a byte budget can end the walk.
+    /// </summary>
+    private sealed class PagingToolsListServer(int descriptionBytes, int maxPages)
+    {
+        private readonly string _description = new('d', descriptionBytes);
+
+        private int _pagesServed;
+
+        public int PagesServed => Volatile.Read(ref _pagesServed);
+
+        public async Task RunAsync(
+            ChannelReader<string> fromClient,
+            ChannelWriter<string> toClient,
+            CancellationToken cancellationToken)
+        {
+            await foreach (string line in fromClient.ReadAllAsync(cancellationToken))
+            {
+                using JsonDocument document = JsonDocument.Parse(line);
+
+                JsonElement root = document.RootElement;
+
+                if (!root.TryGetProperty("method", out JsonElement methodElement)
+                    || !root.TryGetProperty("id", out JsonElement idElement))
+                {
+                    continue;
+                }
+
+                string id = idElement.GetRawText();
+
+                string method = methodElement.GetString() ?? string.Empty;
+
+                if (string.Equals(method, "initialize", StringComparison.Ordinal))
+                {
+                    string protocolVersion =
+                        root.TryGetProperty("params", out JsonElement initParams)
+                        && initParams.TryGetProperty("protocolVersion", out JsonElement versionElement)
+                            ? versionElement.GetString() ?? "2024-11-05"
+                            : "2024-11-05";
+
+                    await toClient.WriteAsync(
+                        "{\"jsonrpc\":\"2.0\",\"id\":" + id
+                        + ",\"result\":{\"protocolVersion\":\"" + protocolVersion
+                        + "\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"paging-fake\",\"version\":\"1.0.0\"}}}\n",
+                        cancellationToken);
+
+                    continue;
+                }
+
+                if (!string.Equals(method, "tools/list", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                int page = Interlocked.Increment(ref _pagesServed);
+
+                string nextCursor = page >= maxPages ? string.Empty : $",\"nextCursor\":\"p{page}\"";
+
+                await toClient.WriteAsync(
+                    "{\"jsonrpc\":\"2.0\",\"id\":" + id
+                    + ",\"result\":{\"tools\":[{\"name\":\"paged_tool_" + page
+                    + "\",\"description\":\"" + _description
+                    + "\",\"inputSchema\":{\"type\":\"object\"}}]" + nextCursor + "}}\n",
+                    cancellationToken);
+            }
+        }
     }
 
     private async Task<SdkMcpClientWrapper> CreateInitializedClientAsync()

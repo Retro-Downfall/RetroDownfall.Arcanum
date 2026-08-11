@@ -122,7 +122,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Campaign.InvalidName", "Campaign name is required.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.InvalidName, "Campaign name is required.")),
                             traceId));
                 }
 
@@ -139,7 +139,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Campaign.DuplicateName", "A campaign with this name already exists.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.DuplicateName, "A campaign with this name already exists.")),
                             traceId));
                 }
 
@@ -147,7 +147,7 @@ internal static class CampaignEndpoints
                 {
                     return Results.BadRequest(
                         ApiResponse<CampaignDto>.FromResult(
-                            Result<CampaignDto>.Failure(new Error("Campaign.DuplicatePath", "A campaign with this path already exists.")),
+                            Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.DuplicatePath, "A campaign with this path already exists.")),
                             traceId));
                 }
 
@@ -163,7 +163,7 @@ internal static class CampaignEndpoints
                         ApiResponse<CampaignDto>.FromResult(
                             Result<CampaignDto>.Failure(
                                 new Error(
-                                    "Campaign.DirectoryCreateFailed",
+                                    ErrorCodes.Campaign.DirectoryCreateFailed,
                                     "Could not create the campaign .arcanum directory at the requested path.")),
                             traceId));
                 }
@@ -230,7 +230,7 @@ internal static class CampaignEndpoints
                     {
                         return Results.BadRequest(
                             ApiResponse<CampaignDto>.FromResult(
-                                Result<CampaignDto>.Failure(new Error("Campaign.InvalidName", "Campaign name cannot be empty.")),
+                                Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.InvalidName, "Campaign name cannot be empty.")),
                                 traceId));
                     }
 
@@ -242,7 +242,7 @@ internal static class CampaignEndpoints
                     {
                         return Results.BadRequest(
                             ApiResponse<CampaignDto>.FromResult(
-                                Result<CampaignDto>.Failure(new Error("Campaign.DuplicateName", "A campaign with this name already exists.")),
+                                Result<CampaignDto>.Failure(new Error(ErrorCodes.Campaign.DuplicateName, "A campaign with this name already exists.")),
                                 traceId));
                     }
 
@@ -530,7 +530,7 @@ internal static class CampaignEndpoints
                         return Results.BadRequest(
                             ApiResponse<CampaignImportResultDto>.FromResult(
                                 Result<CampaignImportResultDto>.Failure(
-                                    new Error("Campaign.ImportFailed", "No import payload and no campaign.json on disk.")),
+                                    new Error(ErrorCodes.Campaign.ImportFailed, "No import payload and no campaign.json on disk.")),
                                 traceId));
                     }
 
@@ -543,7 +543,7 @@ internal static class CampaignEndpoints
                         return Results.BadRequest(
                             ApiResponse<CampaignImportResultDto>.FromResult(
                                 Result<CampaignImportResultDto>.Failure(
-                                    new Error("Campaign.ImportFailed", "Could not parse campaign.json.")),
+                                    new Error(ErrorCodes.Campaign.ImportFailed, "Could not parse campaign.json.")),
                                 traceId));
                     }
                 }

@@ -519,6 +519,34 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task WeaveAsync_NeverEstimatesTheFitOfAClusterTheChildCountBoundAlreadyRulesOut()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // Identical directions collapse k to 1, so the whole layer arrives at the splitter as one
+        // cluster. Estimating that cluster's fit means concatenating, hashing, and tokenizing every
+        // member's text — synchronous, uncancellable work whose answer the child-count bound has
+        // already decided (DESIGN §21.11: "the child-count check comes first").
+        _weave!.ConstantVector = UnitVector();
+
+        await SeedChunksAsync(
+            [.. Enumerable.Range(0, 9).Select(index => ($"c{index:D2}", "same.cs", $"identical body {index}"))]);
+
+        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
+            Scope,
+            Settings(target: 2, maxChildren: 3),
+            CancellationToken.None);
+
+        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+
+        Assert.True(
+            _summarizer!.LargestFitEstimate <= 3,
+            $"a fit estimate was built for {_summarizer.LargestFitEstimate} children, above the bound of 3");
+
+    }
+
+    [SkippableFact]
     public async Task WeaveAsync_ByteIdenticalLeavesDoNotCollideOnNodeId()
     {
 
@@ -559,9 +587,9 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        // A summarizer that never accepts a whole layer forces recursion to run to the depth cap.
-        _summarizer!.NeverFitsWholeLayer = true;
-
+        // Sixteen leaves against a child-count bound of three: the whole-layer root shortcut cannot
+        // fire, so layer 1 is written as several summaries and the depth cap stops recursion there
+        // with an honest multi-root terminal layer.
         await SeedChunksAsync(
             [.. Enumerable.Range(0, 16).Select(index => ($"c{index:D2}", "f.cs", $"body {index}"))]);
 
@@ -665,6 +693,30 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
         TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
 
         Assert.Equal(9, (await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None)).Count);
+
+    }
+
+    [SkippableFact]
+    public async Task WeaveAsync_AShortEmbeddingBatchAbandonsTheBuildInsteadOfPairingVectorsPositionally()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedTenChunksAsync(this);
+
+        // The provider answers a 10-input batch with 9 vectors. Zipping the response against the
+        // request by index would hand every leaf from the omission onward its neighbour's vector, and
+        // those wrong-but-well-formed vectors pass the quarantine check and are persisted as this
+        // generation's leaf embeddings — poisoning clustering, retrieval, and summary provenance.
+        _weave!.OmitBatchIndex = 3;
+
+        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.EmbeddingUnavailable, outcome.Status);
+
+        Assert.Null(await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None));
+
+        Assert.Equal(0, await _store.ReconcileGenerationsAsync(CancellationToken.None));
 
     }
 
@@ -779,6 +831,36 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
     }
 
+    [SkippableFact]
+    public async Task WeaveAsync_MergingAnUndersizedClusterNeverCrossesTheTokenBound()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // Undersized-cluster merging weighs only the child-count bound, so the oversized excerpt's
+        // singleton can be absorbed into a sibling before the carry check ever sees it. That both
+        // defeats the documented escape hatch for a node whose own text exceeds one summary request
+        // and hands the summarizer a cluster that is guaranteed not to fit — which, against a real
+        // provider, fails the generation permanently and re-bills every summary before it.
+        _summarizer!.OversizedContentSubstring = "gigantic";
+
+        await SeedChunksAsync(
+            [
+                ("huge", "big.cs", "a gigantic excerpt that no summary request could ever hold"),
+                .. Enumerable.Range(0, 8).Select(index => ($"c{index:D2}", "f.cs", $"ordinary body {index}")),
+            ]);
+
+        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(
+            Scope,
+            Settings(target: 2, maxChildren: 3),
+            CancellationToken.None);
+
+        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+
+        Assert.Equal(0, _summarizer.OversizedSummaryCalls);
+
+    }
+
     /// <summary>
     /// A deterministic stand-in for The Weave: content-derived vectors so the same corpus always
     /// yields the same directions, with switches for the degradation paths.
@@ -792,6 +874,9 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public string? PoisonContentSubstring { get; set; }
 
+        /// <summary>Drops one input from the middle of every batch response, shortening it by one.</summary>
+        public int? OmitBatchIndex { get; set; }
+
         public bool IsAvailable => Available;
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
@@ -804,14 +889,26 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public Task<Result<Embedding<float>[]>> EmbedBatchAsync(
             IReadOnlyList<string> texts,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(
-                Available
-                    ? Result<Embedding<float>[]>.Success(
-                        [.. texts.Select(text => new Embedding<float>(Vector(text)))])
-                    : Result<Embedding<float>[]>.Failure(new Error(
-                        ErrorCodes.Embeddings.ProviderUnavailable,
-                        "unavailable")));
+            CancellationToken cancellationToken)
+        {
+
+            if (!Available)
+            {
+
+                return Task.FromResult(Result<Embedding<float>[]>.Failure(new Error(
+                    ErrorCodes.Embeddings.ProviderUnavailable,
+                    "unavailable")));
+
+            }
+
+            IEnumerable<string> answered = OmitBatchIndex is { } omitted
+                ? texts.Where((_, index) => index != omitted)
+                : texts;
+
+            return Task.FromResult(Result<Embedding<float>[]>.Success(
+                [.. answered.Select(text => new Embedding<float>(Vector(text)))]));
+
+        }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(
             string text,
@@ -887,13 +984,17 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public bool FailEverySummary { get; set; }
 
-        public bool NeverFitsWholeLayer { get; set; }
-
         public bool AlwaysFits { get; set; }
 
         public string? OversizedContentSubstring { get; set; }
 
         public int CallCount { get; private set; }
+
+        /// <summary>The largest child count any fit estimate was asked about.</summary>
+        public int LargestFitEstimate { get; private set; }
+
+        /// <summary>Summary calls the summarizer's own admission check would have rejected.</summary>
+        public int OversizedSummaryCalls { get; private set; }
 
         public Action? OnSummarize { get; set; }
 
@@ -901,6 +1002,8 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         public bool FitsOneRequest(TapestrySummaryRequest request)
         {
+
+            LargestFitEstimate = Math.Max(LargestFitEstimate, request.ChildTexts.Count);
 
             if (OversizedContentSubstring is { } oversized
                 && request.ChildTexts.Any(text => text.Contains(oversized, StringComparison.Ordinal)))
@@ -910,7 +1013,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
             }
 
-            return AlwaysFits || (!NeverFitsWholeLayer && request.ChildTexts.Count <= 3);
+            return AlwaysFits || request.ChildTexts.Count <= 3;
 
         }
 
@@ -924,6 +1027,16 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             cancellationToken.ThrowIfCancellationRequested();
 
             CallCount++;
+
+            // The real summarizer does not re-check the fit here: an over-budget request goes to the
+            // provider, fails there, and fails the whole generation. Recording it is how a cluster
+            // that escaped repartitioning becomes visible to a test.
+            if (!FitsOneRequest(request))
+            {
+
+                OversizedSummaryCalls++;
+
+            }
 
             return Task.FromResult(
                 FailEverySummary

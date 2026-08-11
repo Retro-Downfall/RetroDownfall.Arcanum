@@ -1434,7 +1434,9 @@ binary accepts. Removed spellings cannot reappear through it.
 Installation names the exact target on stderr before asking, reports when an existing file will be
 replaced, writes through a temp file and atomic replace, and prints the sourcing step for that
 shell. It is a mutation, so a redirected invocation without `--yes` fails closed rather than
-writing to a shell configuration unattended.
+writing to a shell configuration unattended. A completion script is not a secret and `--target` is
+an operator-owned path, so an existing target directory keeps whatever permissions its owner chose;
+only a directory the install itself has to create is made owner-only.
 
 Default targets, all under the operator's own home directory:
 

@@ -17,6 +17,8 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         Group = descriptor.Group
             ?? DeriveGroup(descriptor.Key);
 
+        CollectionTemplatePath = GenericSettingsUpdater.ResolveCollectionTemplatePath(descriptor.Key);
+
         _value = descriptor.Kind == SettingKind.Dictionary
             ? SerializeDictionary(value)
             : value;
@@ -35,6 +37,15 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
     public SettingDescriptor Descriptor { get; }
 
     public string Group { get; }
+
+    /// <summary>
+    /// Dotted path of the collection this descriptor describes an element field of, or <c>null</c> for
+    /// an ordinary single-value setting. The generic editor has no per-element UI, so such a field is
+    /// rendered read-only rather than as a box whose contents Save would drop.
+    /// </summary>
+    public string? CollectionTemplatePath { get; }
+
+    public bool IsCollectionTemplate => CollectionTemplatePath is not null;
 
     public IReadOnlyList<object> EnumValues { get; } = [];
 

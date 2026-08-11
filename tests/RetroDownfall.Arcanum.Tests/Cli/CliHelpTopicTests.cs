@@ -1,3 +1,4 @@
+using System.CommandLine;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Commands;
@@ -99,6 +100,14 @@ public sealed class CliHelpTopicTests
     public void Every_topic_command_is_a_real_arcanum_invocation()
     {
 
+        ServiceCollection services = CreateServices();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
+        List<string> broken = [];
+
         foreach (HelpTopic topic in HelpTopics.All)
         {
 
@@ -107,9 +116,24 @@ public sealed class CliHelpTopicTests
 
                 Assert.Contains("arcanum", command, StringComparison.Ordinal);
 
+                // Must match production exactly: RunAsync disables response-file expansion, so a
+                // documented `@path` value is application syntax rather than a token replacer.
+                ParseResult parsed = root.Parse(
+                    CliSuggestionTests.Tokenize(command),
+                    new ParserConfiguration { ResponseFileTokenReplacer = null });
+
+                if (parsed.Errors.Count > 0)
+                {
+
+                    broken.Add($"{topic.Name}: {command} -> {parsed.Errors[0].Message}");
+
+                }
+
             }
 
         }
+
+        Assert.True(broken.Count == 0, string.Join("\n", broken));
 
     }
 

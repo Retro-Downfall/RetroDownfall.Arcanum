@@ -49,7 +49,7 @@ internal static class LoreEndpoints
                     string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
                     Result<LoreDto> invalid = Result<LoreDto>.Failure(
-                        new Error("Validation.InvalidKey", "Key must be between 1 and 256 characters."));
+                        new Error(ErrorCodes.Validation.InvalidKey, "Key must be between 1 and 256 characters."));
 
                     return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, badTraceId));
                 }
@@ -112,7 +112,7 @@ internal static class LoreEndpoints
                     || string.IsNullOrWhiteSpace(body.Value))
                 {
                     Result<LoreDto> invalid = Result<LoreDto>.Failure(
-                        new Error("Validation.InvalidLore", "Key and value are required."));
+                        new Error(ErrorCodes.Validation.InvalidLore, "Key and value are required."));
 
                     return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, traceId));
                 }
@@ -122,7 +122,7 @@ internal static class LoreEndpoints
                 if (trimmedKey.Length > 256)
                 {
                     Result<LoreDto> invalid = Result<LoreDto>.Failure(
-                        new Error("Validation.InvalidKey", "Key must not exceed 256 characters."));
+                        new Error(ErrorCodes.Validation.InvalidKey, "Key must not exceed 256 characters."));
 
                     return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, traceId));
                 }
@@ -149,7 +149,7 @@ internal static class LoreEndpoints
                     string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
                     Result<bool> invalid = Result<bool>.Failure(
-                        new Error("Validation.InvalidKey", "Key must be between 1 and 256 characters."));
+                        new Error(ErrorCodes.Validation.InvalidKey, "Key must be between 1 and 256 characters."));
 
                     return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, badTraceId));
                 }

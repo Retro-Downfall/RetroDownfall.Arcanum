@@ -238,12 +238,57 @@ publish_regex_smoke_rid() {
   return 0
 }
 
+# Cli.csproj turns PublishAot off for osx RIDs (the linker cannot handle the closure), so the
+# macOS CLI publish runs no ILC and no trimmer closure analysis at all. Ask MSBuild for the
+# resolved value rather than duplicating that condition here. Anything that cannot be evaluated
+# counts as enabled, so the ILC evidence check downstream stays fail-closed.
+cli_publish_aot_enabled() {
+  local rid="$1"
+  local value
+
+  if ! value="$(dotnet msbuild "$PROJECT" \
+    -getProperty:PublishAot \
+    -p:Configuration=Release \
+    -p:RuntimeIdentifier="$rid" \
+    -nologo 2>/dev/null)"; then
+    echo "  Could not evaluate PublishAot for $rid; treating the CLI as Native AOT." >&2
+    echo true
+    return 0
+  fi
+
+  value="$(printf '%s' "$value" | tr -d '[:space:]')"
+
+  if [[ "$value" == false || -z "$value" ]]; then
+    echo false
+    return 0
+  fi
+
+  echo true
+}
+
+# Each publish gets its own log as well as the shared one. The regex smoke project is always
+# Native AOT, so if the two legs shared a single log its "Generating native code" lines would
+# satisfy the ILC evidence check on behalf of a CLI publish that never invoked ILC — a vacuous
+# pass that looks identical to a clean AOT closure.
 publish_rid() {
   local rid="$1"
   local log="$2"
+  local cli_log="$3"
+  local smoke_log="$4"
 
-  publish_cli_rid "$rid" "$log" \
-    && publish_regex_smoke_rid "$rid" "$log"
+  local status=0
+
+  publish_cli_rid "$rid" "$cli_log" || status=1
+  cat "$cli_log" >>"$log"
+
+  if [[ "$status" -ne 0 ]]; then
+    return 1
+  fi
+
+  publish_regex_smoke_rid "$rid" "$smoke_log" || status=1
+  cat "$smoke_log" >>"$log"
+
+  return "$status"
 }
 
 # ripgrep exits 1 for "no match" and >1 for a real failure (missing file, bad pattern, and
@@ -296,11 +341,68 @@ assert_log_has_ilc_output() {
   return 0
 }
 
+# MSBuild suffixes every warning with "[/…/RetroDownfall.Arcanum.*.csproj]", so matching a whole
+# line cannot tell the offending member from the file path or from the owning project. Split each
+# warning at its diagnostic code instead: everything before it is the origin (a source path,
+# "ILC :", or a project file), everything after it is the message.
+il_warning_origin() {
+  local line="$1"
+
+  if [[ "$line" =~ ^(.*)warning\ IL[0-9]{4} ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
+}
+
+il_warning_message() {
+  local line="$1"
+
+  if [[ "$line" =~ warning\ IL[0-9]{4}:?(.*)$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  printf '%s' "$line"
+}
+
+# The ALLOWED tokens name third-party components that own a warning, so they may only be matched
+# against the message. Matching the whole line also matched first-party file paths — 'Serilog'
+# appears in Infrastructure/Logging/SerilogLogRingBufferSink.cs — which silently dropped every IL
+# warning raised in those files.
+il_warning_is_allowed() {
+  local line="$1"
+  local message
+  message="$(il_warning_message "$line")"
+  local allowed
+
+  for allowed in "${ALLOWED[@]}"; do
+    if [[ "$message" == *"$allowed"* ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Analyzer diagnostics carry a real source path, and that path alone decides ownership. ILC
+# closure diagnostics have no source location ("ILC :" or a project file), so MSBuild's trailing
+# "[…csproj]" is the only ownership signal they carry.
+il_warning_is_first_party() {
+  local line="$1"
+  local origin
+  origin="$(il_warning_origin "$line")"
+
+  if [[ "$origin" == *".cs("* ]]; then
+    [[ "$origin" == *"RetroDownfall."* ]]
+    return
+  fi
+
+  [[ "$line" == *"RetroDownfall.Arcanum"* ]]
+}
+
 count_il_violations() {
   local log="$1"
   local violations=0
   local line
-  local skip
   local matches
 
   if ! matches="$(rg_capture "warning IL[0-9]{4}|ILC :" "$log")"; then
@@ -309,16 +411,11 @@ count_il_violations() {
 
   while IFS= read -r line; do
     if [[ "$line" =~ warning\ IL[0-9]{4}|ILC\ :\ (warning\ )?IL[0-9]{4} ]]; then
-      skip=0
+      if il_warning_is_allowed "$line"; then
+        continue
+      fi
 
-      for allowed in "${ALLOWED[@]}"; do
-        if [[ "$line" == *"$allowed"* ]]; then
-          skip=1
-          break
-        fi
-      done
-
-      if [[ "$skip" -eq 0 && "$line" == *"RetroDownfall.Arcanum"* ]]; then
+      if il_warning_is_first_party "$line"; then
         echo "$line" >&2
         violations=$((violations + 1))
       fi
@@ -364,16 +461,38 @@ run_single_rid() {
 
   local log
   log="$(mktemp)"
+  local cli_log
+  cli_log="$(mktemp)"
+  local smoke_log
+  smoke_log="$(mktemp)"
 
-  if ! publish_rid "$rid" "$log"; then
-    rm -f "$log"
+  local logs=("$log" "$cli_log" "$smoke_log")
+
+  if ! publish_rid "$rid" "$log" "$cli_log" "$smoke_log"; then
+    rm -f "${logs[@]}"
     echo
     return 1
   fi
 
-  if ! assert_log_has_ilc_output "$log" "$rid"; then
-    rm -f "$log"
-    echo "AOT IL gate failed: cannot verify RID $rid" >&2
+  local cli_aot
+  cli_aot="$(cli_publish_aot_enabled "$rid")"
+
+  if [[ "$cli_aot" == true ]]; then
+    if ! assert_log_has_ilc_output "$cli_log" "$rid"; then
+      rm -f "${logs[@]}"
+      echo "AOT IL gate failed: cannot verify the CLI closure on RID $rid" >&2
+      echo
+      return 1
+    fi
+  else
+    echo "  NOTE: PublishAot is off for the CLI on $rid, so this publish ran the Roslyn trim/AOT"
+    echo "        analyzers but no ILC closure analysis. Warnings only the whole-program view can"
+    echo "        raise (IL2104/IL3053, package IL) are checked on a RID that AOT-compiles."
+  fi
+
+  if ! assert_log_has_ilc_output "$smoke_log" "$rid"; then
+    rm -f "${logs[@]}"
+    echo "AOT IL gate failed: cannot verify the regex smoke publish on RID $rid" >&2
     echo
     return 1
   fi
@@ -381,13 +500,13 @@ run_single_rid() {
   local violations
 
   if ! violations="$(count_il_violations "$log")"; then
-    rm -f "$log"
+    rm -f "${logs[@]}"
     echo "AOT IL gate failed: cannot scan the publish log for RID $rid" >&2
     echo
     return 1
   fi
 
-  rm -f "$log"
+  rm -f "${logs[@]}"
 
   if [[ "$violations" -gt 0 ]]; then
     echo "AOT IL gate failed: $violations unapproved first-party IL warning(s) on RID $rid" >&2
@@ -395,7 +514,12 @@ run_single_rid() {
     return 1
   fi
 
-  echo "AOT IL gate passed for RID $rid"
+  if [[ "$cli_aot" == true ]]; then
+    echo "AOT IL gate passed for RID $rid"
+  else
+    echo "AOT IL gate passed for RID $rid (CLI: analyzer diagnostics only — no ILC closure analysis)"
+  fi
+
   echo
   return 0
 }
@@ -525,4 +649,8 @@ main() {
   exit 0
 }
 
-main "$@"
+# Guard so verify_aot_il_warnings_test.sh can source this file for its classification helpers
+# without triggering a publish.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

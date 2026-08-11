@@ -389,3 +389,122 @@ public sealed class A2ASendingLedgerTests : IAsyncLifetime
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
 }
+
+/// <summary>
+/// Counts the rows a ledger lookup actually pulls out of SQLite, so a test can assert what a lookup
+/// costs rather than only what it answers.
+/// </summary>
+internal sealed class CountingOperationStore(ILongRunningOperationStore inner) : ILongRunningOperationStore
+{
+
+    private int _rowsRead;
+
+    public int RowsRead => Volatile.Read(ref _rowsRead);
+
+    public async Task<IReadOnlyList<LongRunningOperation>> ListAsync(
+        LongRunningOperationQuery query,
+        CancellationToken cancellationToken = default)
+    {
+
+        IReadOnlyList<LongRunningOperation> page = await inner.ListAsync(query, cancellationToken);
+
+        Interlocked.Add(ref _rowsRead, page.Count);
+
+        return page;
+
+    }
+
+    public Task<LongRunningOperation> CreateAsync(
+        LongRunningOperationCreateRequest request,
+        CancellationToken cancellationToken = default) =>
+        inner.CreateAsync(request, cancellationToken);
+
+    public Task<LongRunningOperation?> TryStartSingleFlightAsync(
+        LongRunningOperationCreateRequest request,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        inner.TryStartSingleFlightAsync(request, ownerId, utcNow, leaseExpiresAt, cancellationToken);
+
+    public Task<LongRunningOperation?> GetAsync(Guid operationId, CancellationToken cancellationToken = default) =>
+        inner.GetAsync(operationId, cancellationToken);
+
+    public Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
+        DateTimeOffset utcNow,
+        int limit,
+        CancellationToken cancellationToken = default) =>
+        inner.FindExpiredAsync(utcNow, limit, cancellationToken);
+
+    public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        inner.TryAcquireLeaseAsync(operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken);
+
+    public Task<bool> HeartbeatAsync(
+        Guid operationId,
+        string ownerId,
+        DateTimeOffset utcNow,
+        DateTimeOffset leaseExpiresAt,
+        CancellationToken cancellationToken = default) =>
+        inner.HeartbeatAsync(operationId, ownerId, utcNow, leaseExpiresAt, cancellationToken);
+
+    public Task<bool> SaveCheckpointAsync(
+        Guid operationId,
+        string ownerId,
+        int expectedCheckpointVersion,
+        int checkpointVersion,
+        byte[]? checkpointPayload,
+        string? checkpointReference,
+        string publicSummary,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        inner.SaveCheckpointAsync(
+            operationId,
+            ownerId,
+            expectedCheckpointVersion,
+            checkpointVersion,
+            checkpointPayload,
+            checkpointReference,
+            publicSummary,
+            utcNow,
+            cancellationToken);
+
+    public Task<bool> TryTransitionAsync(
+        Guid operationId,
+        long expectedRevision,
+        string? ownerId,
+        LongRunningOperationState state,
+        DateTimeOffset utcNow,
+        string? terminalErrorCode = null,
+        CancellationToken cancellationToken = default) =>
+        inner.TryTransitionAsync(
+            operationId,
+            expectedRevision,
+            ownerId,
+            state,
+            utcNow,
+            terminalErrorCode,
+            cancellationToken);
+
+    public Task<bool> RequestCancellationAsync(
+        Guid operationId,
+        long expectedRevision,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        inner.RequestCancellationAsync(operationId, expectedRevision, utcNow, cancellationToken);
+
+    public Task<bool> ResetForRetryAsync(
+        Guid operationId,
+        long expectedRevision,
+        DateTimeOffset utcNow,
+        CancellationToken cancellationToken = default) =>
+        inner.ResetForRetryAsync(operationId, expectedRevision, utcNow, cancellationToken);
+
+    public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(CancellationToken cancellationToken = default) =>
+        inner.GetCountsAsync(cancellationToken);
+
+}

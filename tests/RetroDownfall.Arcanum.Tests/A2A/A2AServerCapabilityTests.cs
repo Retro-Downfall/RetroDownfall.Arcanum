@@ -724,6 +724,10 @@ public sealed class A2AServerCapabilityTests
             string callbackConfigId,
             CancellationToken cancellationToken = default) => Task.FromResult<A2AOutboundCallback?>(null);
 
+        public Task<A2ASendingLedgerEntry> FindOpenOutboundAsync(
+            string remoteTaskId,
+            CancellationToken cancellationToken = default) => Task.FromResult<A2ASendingLedgerEntry>(default);
+
         public Task ReleaseAsync(A2ASendingLedgerEntry entry, CancellationToken cancellationToken = default)
         {
 

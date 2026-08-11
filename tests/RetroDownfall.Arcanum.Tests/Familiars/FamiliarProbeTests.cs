@@ -226,6 +226,35 @@ public sealed class FamiliarProbeTests
     }
 
     /// <summary>
+    /// A status command that never answered is not a sign-out. A wedged CLI that hits the probe
+    /// deadline, or a binary the OS refused to start, must not send the operator to `auth login` to
+    /// fix something that is not broken — the clean non-zero exit above is the one failure that
+    /// really does mean "sign in".
+    /// </summary>
+    [Theory]
+    [InlineData(FamiliarProcessFailure.TimedOut)]
+    [InlineData(FamiliarProcessFailure.StartFailed)]
+    public async Task A_claude_status_command_that_could_not_answer_is_not_reported_as_signed_out(
+        FamiliarProcessFailure failure)
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create([]);
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.SetBufferedOutput(new FamiliarProcessOutput(failure, 0, string.Empty, string.Empty));
+
+        FamiliarProbeResult result = await Probe(runner, AiProviderKind.ClaudeCodeCli, stub.FileName);
+
+        Assert.Equal(FamiliarProbeStatus.NotConfigured, result.Status);
+
+        Assert.DoesNotContain("not signed in", result.Summary, StringComparison.OrdinalIgnoreCase);
+
+        Assert.NotEqual("claude auth login", result.RemediationCommand);
+
+    }
+
+    /// <summary>
     /// Neither CLI publishes a machine-readable catalogue, so "unknown" has to be a first-class,
     /// working outcome — and every surface downstream falls back to free text rather than blocking.
     /// </summary>
@@ -284,6 +313,29 @@ public sealed class FamiliarProbeTests
         // A hidden model the probe does not currently report is retained, not pruned — otherwise a
         // model that vanished for a release would come back unhidden.
         Assert.Equal(["claude-legacy", "claude-retired"], result.HiddenModels);
+
+    }
+
+    /// <summary>
+    /// The probe answers a question; it never takes down the surface that asked. A host that cannot
+    /// give a Familiar a private directory to run in is reported as unready — and nothing is
+    /// spawned, because running the CLI anywhere else is the thing being refused.
+    /// </summary>
+    [Fact]
+    public async Task A_host_that_cannot_provide_a_private_directory_is_reported_not_thrown()
+    {
+
+        using StubFamiliarCli stub = StubFamiliarCli.Create([]);
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        using TempRootScope scope = new();
+
+        FamiliarProbeResult result = await Probe(runner, AiProviderKind.ClaudeCodeCli, stub.FileName);
+
+        Assert.Equal(FamiliarProbeStatus.NotConfigured, result.Status);
+
+        Assert.Empty(runner.Requests);
 
     }
 

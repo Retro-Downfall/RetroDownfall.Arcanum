@@ -105,7 +105,7 @@ internal static class DaemonEndpoints
                 return execution is null
                     ? Results.Json(
                         ApiResponse<DaemonExecutionDetail>.FromResult(
-                            Result<DaemonExecutionDetail>.Failure(new Error("Execution.NotFound", "No execution exists with that id.")),
+                            Result<DaemonExecutionDetail>.Failure(new Error(ErrorCodes.Execution.NotFound, "No execution exists with that id.")),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseDaemonExecutionDetail,
                         statusCode: StatusCodes.Status404NotFound)
@@ -133,7 +133,7 @@ internal static class DaemonEndpoints
                 {
                     return Results.BadRequest(ApiResponse<DaemonExecutionSummary>.FromResult(
                         Result<DaemonExecutionSummary>.Failure(
-                            new Error("Daemon.NotRunning", "Execution is not running or does not exist.")),
+                            new Error(ErrorCodes.Daemon.NotRunning, "Execution is not running or does not exist.")),
                         traceId));
                 }
             })
@@ -176,7 +176,7 @@ internal static class DaemonEndpoints
                 if (string.IsNullOrWhiteSpace(body.Title) || string.IsNullOrWhiteSpace(body.Body))
                 {
                     Result<bool> invalid = Result<bool>.Failure(
-                        new Error("Validation.InvalidFields", "Title and body must not be empty."));
+                        new Error(ErrorCodes.Validation.InvalidFields, "Title and body must not be empty."));
 
                     return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
                 }
@@ -295,7 +295,7 @@ internal static class DaemonEndpoints
                 if (trimmedName.Length == 0)
                 {
                     Result<UnseenServantJobStatusDto> invalid = Result<UnseenServantJobStatusDto>.Failure(
-                        new Error("Validation.InvalidJobName", "Job name must not be empty."));
+                        new Error(ErrorCodes.Validation.InvalidJobName, "Job name must not be empty."));
 
                     return Results.BadRequest(ApiResponse<UnseenServantJobStatusDto>.FromResult(invalid, traceId));
                 }

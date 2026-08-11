@@ -693,7 +693,16 @@ public sealed class PromptCommands(
         }
         else
         {
-            await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await File.WriteAllTextAsync(output, json, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+            {
+                AnsiConsole.MarkupLine(themePalette.ErrorMarkup(Markup.Escape($"Could not write '{output}': {ex.Message}")));
+
+                return 1;
+            }
 
             AnsiConsole.MarkupLine(
                 themePalette.HighlightLabelMarkup(Markup.Escape("Prompt exported to:"), Markup.Escape(output)));

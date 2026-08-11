@@ -148,7 +148,7 @@ internal static class IntelligenceEndpoints
                     || string.IsNullOrWhiteSpace(body.Answer))
                 {
                     Result<bool> invalid = Result<bool>.Failure(
-                        new Error("Validation.InvalidHumanResponse", "promptId and answer are required."));
+                        new Error(ErrorCodes.Validation.InvalidHumanResponse, "promptId and answer are required."));
 
                     return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, traceId));
                 }

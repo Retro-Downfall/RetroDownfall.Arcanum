@@ -2,10 +2,15 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Cli.Commands;
+using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
+using Spectre.Console;
+using Spectre.Console.Testing;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
+[Collection("GlobalConsole")]
 public sealed class ServeCommandConfigReaderTests
 {
 
@@ -138,6 +143,75 @@ public sealed class ServeCommandConfigReaderTests
         int port = ServeCommand.ReadConfiguredHttpsPort(configuration);
 
         Assert.Equal(new HttpsSettings().Port, port);
+
+    }
+
+    /// <summary>
+    /// An acknowledgement that cannot be obtained because the console is not interactive is the
+    /// documented exit-2 case, not a generic runtime failure — automation keys on the difference.
+    /// </summary>
+    [Fact]
+    public void EnforceListenAnyPolicy_refuses_non_interactively_with_the_configuration_exit_code()
+    {
+
+        TestConsole console = new();
+
+        IAnsiConsole prior = AnsiConsole.Console;
+
+        AnsiConsole.Console = console;
+
+        try
+        {
+
+            ServeCommand command = new(
+                new ConfiguredThemePalette(new ThemeSemanticColors(), new ThemeSemanticColors()),
+                apiClient: null!);
+
+            int? refusal = command.EnforceListenAnyPolicy(requiresInteractiveConfirmation: true);
+
+            Assert.Equal((int)CliExitCode.ConfigurationError, refusal);
+
+            Assert.Contains("ARCANUM_LISTEN_ANY_ACK", console.Output, StringComparison.Ordinal);
+
+        }
+        finally
+        {
+
+            AnsiConsole.Console = prior;
+
+        }
+
+    }
+
+    /// <summary>
+    /// An already-acknowledged binding still prints the banner but must let the host start.
+    /// </summary>
+    [Fact]
+    public void EnforceListenAnyPolicy_allows_startup_when_no_confirmation_is_required()
+    {
+
+        TestConsole console = new();
+
+        IAnsiConsole prior = AnsiConsole.Console;
+
+        AnsiConsole.Console = console;
+
+        try
+        {
+
+            ServeCommand command = new(
+                new ConfiguredThemePalette(new ThemeSemanticColors(), new ThemeSemanticColors()),
+                apiClient: null!);
+
+            Assert.Null(command.EnforceListenAnyPolicy(requiresInteractiveConfirmation: false));
+
+        }
+        finally
+        {
+
+            AnsiConsole.Console = prior;
+
+        }
 
     }
 

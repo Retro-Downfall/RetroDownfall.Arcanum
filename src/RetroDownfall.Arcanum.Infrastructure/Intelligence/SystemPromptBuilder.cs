@@ -900,7 +900,8 @@ public static class SystemPromptBuilder
     /// Positioned after Attached Files and before Data Streams in the DATA block
     /// (<c>docs/Arcanum.DESIGN.md</c> §10.5).
     /// Retrieved content is adaptively fenced as DATA so headings inside source files cannot alter
-    /// prompt structure or token-source attribution.
+    /// prompt structure or token-source attribution. The unfenced <c>File:</c> label is hardened the
+    /// same way, because workspace file names may legally contain newlines and <c>#</c>.
     /// </summary>
     private static void AppendSemanticContext(StringBuilder sb, SemanticContextChunk[] chunks)
     {
@@ -919,9 +920,16 @@ public static class SystemPromptBuilder
         foreach (SemanticContextChunk chunk in chunks)
         {
 
+            string label = HardenAttachmentIndexName(chunk.RelativePath);
+
+            if (label.Length == 0)
+            {
+                label = "workspace-file";
+            }
+
             sb.Append("File: ");
 
-            sb.Append(chunk.RelativePath);
+            sb.Append(label);
 
             sb.Append(" (chunk ");
 

@@ -29,9 +29,14 @@ jobs:
 
       - name: Validate version
         id: ver
+        env:
+          # Never interpolate a workflow_dispatch input into the run: script — the templating
+          # engine expands it into the shell source, so injected commands execute before the
+          # SemVer validation below can reject them. Read it from the environment instead.
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
+          VERSION="$VERSION_INPUT"
           if [[ "$VERSION" == *+* ]]; then
             echo "error: SemVer build metadata (+...) is not allowed: '$VERSION'" >&2
             exit 1
@@ -77,9 +82,14 @@ jobs:
       - name: Validate version
         id: ver
         shell: bash
+        env:
+          # Never interpolate a workflow_dispatch input into the run: script — the templating
+          # engine expands it into the shell source, so injected commands execute before the
+          # SemVer validation below can reject them. Read it from the environment instead.
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ inputs.version }}"
+          VERSION="$VERSION_INPUT"
           if [[ "$VERSION" == *+* ]]; then
             echo "error: SemVer build metadata (+...) is not allowed: '$VERSION'" >&2
             exit 1

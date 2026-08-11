@@ -294,7 +294,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         Assert.True(removedStart.IsFailure);
 
-        Assert.Equal("Mcp.NotFound", removedStart.Error.Code);
+        Assert.Equal(ErrorCodes.Mcp.ServerNotFound, removedStart.Error.Code);
 
     }
 
@@ -668,7 +668,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
             Assert.True(earlyStart.IsFailure);
             Assert.Equal(
-                "Mcp.NotFound",
+                ErrorCodes.Mcp.ServerNotFound,
                 earlyStart.Error.Code);
 
             Task<IReadOnlyList<Microsoft.Extensions.AI.AITool>>
@@ -909,7 +909,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
         Result startResult = await start.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(startResult.IsFailure);
-        Assert.Equal("Mcp.NotFound", startResult.Error.Code);
+        Assert.Equal(ErrorCodes.Mcp.ServerNotFound, startResult.Error.Code);
 
         await refresh.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -952,7 +952,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 
         Assert.True(start.IsFailure);
 
-        Assert.Equal("Mcp.NotFound", start.Error.Code);
+        Assert.Equal(ErrorCodes.Mcp.ServerNotFound, start.Error.Code);
 
     }
 

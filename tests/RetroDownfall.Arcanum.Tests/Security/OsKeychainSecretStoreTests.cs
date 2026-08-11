@@ -221,7 +221,54 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         Assert.Equal(secret, direct.Value);
     }
 
-    private OsKeychainSecretStore CreateStore(IOsCredentialStore os, DataProtectionSecretStore? legacy = null)
+    // The keychain write owns its own invalidation: the security.dat mirror is best-effort and its
+    // failure is swallowed, so a rotation that only reached the OS store must still retire the
+    // cached digest of the old key. The store under test gets a digest cache of its own so the
+    // mirror's invalidation cannot stand in for the one being asserted.
+    [Fact]
+    public async Task SaveApiKeyAsync_OsStoreAccepts_InvalidatesDigestCache()
+    {
+
+        ApiKeyDigestCache digestCache = new(new FakeTimeProvider());
+
+        InMemoryOsCredentialStore os = new();
+
+        using OsKeychainSecretStore store = CreateStore(os, apiKeyDigestCache: digestCache);
+
+        digestCache.StoreDigest([1, 2, 3, 4], ttlSeconds: 600);
+
+        await store.SaveApiKeyAsync("rotated-key");
+
+        Assert.False(digestCache.TryGetDigest(out byte[]? retiredDigest));
+
+        Assert.Null(retiredDigest);
+
+    }
+
+    [Fact]
+    public async Task SaveApiKeyAsync_OsStoreUnavailable_StillInvalidatesDigestCache()
+    {
+
+        ApiKeyDigestCache digestCache = new(new FakeTimeProvider());
+
+        UnavailableStore os = new();
+
+        using OsKeychainSecretStore store = CreateStore(os, apiKeyDigestCache: digestCache);
+
+        digestCache.StoreDigest([1, 2, 3, 4], ttlSeconds: 600);
+
+        await store.SaveApiKeyAsync("rotated-key");
+
+        Assert.False(digestCache.TryGetDigest(out byte[]? retiredDigest));
+
+        Assert.Null(retiredDigest);
+
+    }
+
+    private OsKeychainSecretStore CreateStore(
+        IOsCredentialStore os,
+        DataProtectionSecretStore? legacy = null,
+        IApiKeyDigestCache? apiKeyDigestCache = null)
     {
 
         DataProtectionSecretStore dp = legacy ?? CreateDataProtectionStore();
@@ -229,7 +276,7 @@ public sealed class OsKeychainSecretStoreTests : IDisposable
         return new OsKeychainSecretStore(
             os,
             dp,
-            new ApiKeyDigestCache(new FakeTimeProvider()),
+            apiKeyDigestCache ?? new ApiKeyDigestCache(new FakeTimeProvider()),
             NullLogger<OsKeychainSecretStore>.Instance);
 
     }

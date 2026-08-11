@@ -506,6 +506,63 @@ public sealed class CliCompletionTests
 
     }
 
+    /// <summary>
+    /// <c>--target</c> is an operator-supplied path Arcanum does not own — a system-wide
+    /// <c>site-functions</c> directory, or a home directory. A completion script is not a secret, so
+    /// installing one must never silently re-permission the directory it lands in.
+    /// </summary>
+    [Fact]
+    public void Completion_install_leaves_an_existing_target_directory_permissions_alone()
+    {
+
+        if (OperatingSystem.IsWindows())
+        {
+
+            return;
+
+        }
+
+        string directory = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-completion-dir-{Guid.NewGuid():N}");
+
+        Directory.CreateDirectory(directory);
+
+        const UnixFileMode shared =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+            | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+
+        File.SetUnixFileMode(directory, shared);
+
+        string target = Path.Combine(directory, "arcanum");
+
+        try
+        {
+
+            CliTestResult result = CliTestHarness.Run(
+                CreateServices(),
+                "completion",
+                "install",
+                "bash",
+                "--target",
+                target,
+                "--yes");
+
+            Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+            Assert.Equal(shared, File.GetUnixFileMode(directory));
+
+        }
+        finally
+        {
+
+            Directory.Delete(directory, recursive: true);
+
+        }
+
+    }
+
     private static ServiceCollection CreateServices()
     {
 

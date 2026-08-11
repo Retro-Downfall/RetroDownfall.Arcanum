@@ -90,14 +90,15 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
 
     }
 
-    private DataProtectionSecretStore CreateStore()
+    private DataProtectionSecretStore CreateStore() =>
+        CreateStore(new ApiKeyDigestCache(new FakeTimeProvider()));
+
+    private DataProtectionSecretStore CreateStore(IApiKeyDigestCache apiKeyDigestCache)
     {
 
         IDataProtectionProvider dataProtectionProvider = DataProtectionProvider.Create(
             new DirectoryInfo(_storeDir),
             _ => { });
-
-        IApiKeyDigestCache apiKeyDigestCache = new ApiKeyDigestCache(new FakeTimeProvider());
 
         return new DataProtectionSecretStore(dataProtectionProvider, apiKeyDigestCache);
 
@@ -385,15 +386,25 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
 
     }
 
+    // Rotation must drop the cached digest of the retired key. Without the invalidation the
+    // ApiKeyEndpointFilter keeps authenticating the OLD key for the remainder of the cache TTL.
     [Fact]
     public async Task SaveApiKeyAsync_InvalidatesDigestCache()
     {
 
-        using DataProtectionSecretStore store = CreateStore();
+        ApiKeyDigestCache digestCache = new(new FakeTimeProvider());
+
+        using DataProtectionSecretStore store = CreateStore(digestCache);
+
+        digestCache.StoreDigest([1, 2, 3, 4], ttlSeconds: 600);
+
+        Assert.True(digestCache.TryGetDigest(out _));
 
         await store.SaveApiKeyAsync(Guid.NewGuid().ToString("N"));
 
-        Assert.True(true);
+        Assert.False(digestCache.TryGetDigest(out byte[]? retiredDigest));
+
+        Assert.Null(retiredDigest);
 
     }
 

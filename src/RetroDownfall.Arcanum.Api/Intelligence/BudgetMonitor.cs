@@ -9,10 +9,10 @@ using RetroDownfall.Arcanum.Core.Storage;
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
-/// Stateless singleton that compares today's committed spend + outstanding reservations against
-/// <see cref="BudgetSettings"/>. Falls back to <see cref="IGrimoireRepository.GetTodaySpendAsync"/>
-/// when the reservation service is unavailable (tests / early bootstrap). At 100% of the daily limit,
-/// <see cref="CheckAsync"/> returns <see cref="ErrorCodes.Budget.Exceeded"/> before provider calls.
+/// Stateless singleton that compares today's spend — resolved through
+/// <see cref="DailySpendAuthority"/>, the same resolver <c>GET /api/budget</c> reports from — against
+/// <see cref="BudgetSettings"/>. At 100% of the daily limit, <see cref="CheckAsync"/> returns
+/// <see cref="ErrorCodes.Budget.Exceeded"/> before provider calls.
 /// </summary>
 public sealed class BudgetMonitor(
     IServiceScopeFactory scopeFactory,
@@ -46,7 +46,9 @@ public sealed class BudgetMonitor(
 
         IBudgetAlertRepository budgetAlerts = scope.ServiceProvider.GetRequiredService<IBudgetAlertRepository>();
 
-        decimal spend = await ResolveSpendAsync(scope.ServiceProvider, cancellationToken).ConfigureAwait(false);
+        decimal spend = await DailySpendAuthority
+            .ResolveLocalSpendAsync(scope.ServiceProvider, cancellationToken)
+            .ConfigureAwait(false);
 
         ExternalSpendSummary external = await ResolveExternalSpendAsync(scope.ServiceProvider, cancellationToken)
             .ConfigureAwait(false);
@@ -115,26 +117,6 @@ public sealed class BudgetMonitor(
             ? $" {external.UnpricedSendings} delegated Sending(s) today reported no cost at all, so actual "
                 + "spend is higher than this figure."
             : string.Empty;
-
-    private static async Task<decimal> ResolveSpendAsync(
-        IServiceProvider services,
-        CancellationToken cancellationToken)
-    {
-        IBudgetReservationService? reservations = services.GetService<IBudgetReservationService>();
-
-        if (reservations is not null)
-        {
-            decimal committed = await reservations.GetTodayCommittedSpendAsync(cancellationToken).ConfigureAwait(false);
-            decimal outstanding = await reservations.GetTodayOutstandingReservationsAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            return committed + outstanding;
-        }
-
-        IGrimoireRepository grimoire = services.GetRequiredService<IGrimoireRepository>();
-
-        return await grimoire.GetTodaySpendAsync(cancellationToken).ConfigureAwait(false);
-    }
 
     private async Task TryDispatchAlertAsync(
         IBudgetAlertRepository budgetAlerts,

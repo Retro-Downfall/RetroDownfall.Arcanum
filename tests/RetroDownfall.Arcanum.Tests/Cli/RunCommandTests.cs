@@ -334,6 +334,49 @@ public sealed class RunCommandTests
 
     }
 
+    /// <summary>
+    /// A malformed <c>--attachment</c> is invalid input, so it must be rejected with exit 2 on
+    /// stderr before the host is launched — not left to the inference path, which reports it as a
+    /// generic runtime error on stdout after paying for a host start.
+    /// </summary>
+    [Fact]
+
+    public async Task RunAsync_rejects_a_malformed_attachment_reference_before_startup()
+    {
+
+        FakeRunInputReader input = new(
+            SuccessInput("prompt", null));
+
+        NoopGrimoireInitialization grimoire = new();
+
+        NoopServeLauncher serve = new();
+
+        RecordingConsole console = new();
+
+        RunCommand command = CreateCommand(
+            input.Result,
+            SuccessStage([]),
+            input: input,
+            grimoire: grimoire,
+            serve: serve,
+            console: console);
+
+        int exitCode = await command.RunAsync(
+            Request(attachment: ["not-a-guid"]),
+            CancellationToken.None);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, exitCode);
+
+        Assert.Equal(0, grimoire.CallCount);
+
+        Assert.Equal(0, serve.CallCount);
+
+        Assert.Contains(
+            console.Diagnostics,
+            static diagnostic => diagnostic.Contains("not-a-guid", StringComparison.Ordinal));
+
+    }
+
     [Fact]
 
     public async Task RunAsync_new_session_permissively_ignores_an_explicit_continuation_session()
@@ -362,6 +405,92 @@ public sealed class RunCommandTests
         Assert.True(resolver.Request.NewSession);
 
         Assert.Null(resolver.Request.Session);
+
+    }
+
+    /// <summary>
+    /// <c>--new</c> wins over any session selector rather than adding a second conflict, so
+    /// <c>--new --continue</c> on a fresh install starts a session instead of failing on the
+    /// continuation it was told to ignore.
+    /// </summary>
+    [Fact]
+
+    public async Task RunAsync_new_session_wins_over_continue_when_there_is_nothing_to_continue()
+    {
+
+        string contextFilePath = Path.Combine(
+            Path.GetTempPath(),
+            $"arcanum-tests-cli-context-{Guid.NewGuid():N}.json");
+
+        // Present but session-less: pins "no previous session" without touching a real Grimoire.
+        File.WriteAllText(contextFilePath, "{}");
+
+        try
+        {
+
+            FakeContextResolver resolver = new(
+                CliInferenceContextResult.Success(
+                    EffectiveContext(null, null, null, null),
+                    []));
+
+            RunCommand command = CreateCommand(
+                SuccessInput("start fresh", null),
+                SuccessStage([]),
+                resolver: resolver,
+                contextFilePath: contextFilePath);
+
+            int exitCode = await command.RunAsync(
+                Request(
+                    newSession: true,
+                    continueSession: true),
+                CancellationToken.None);
+
+            Assert.Equal((int)CliExitCode.Success, exitCode);
+
+            Assert.NotNull(resolver.Request);
+
+            Assert.True(resolver.Request.NewSession);
+
+            Assert.Null(resolver.Request.Session);
+
+        }
+        finally
+        {
+
+            File.Delete(contextFilePath);
+
+        }
+
+    }
+
+    /// <summary>
+    /// With a previous session present the same combination must not claim it is continuing one —
+    /// the selector it resolved is thrown away moments later.
+    /// </summary>
+    [Fact]
+
+    public async Task RunAsync_new_session_with_continue_does_not_announce_a_continuation()
+    {
+
+        RecordingConsole console = new();
+
+        RunCommand command = CreateCommand(
+            SuccessInput("start fresh", null),
+            SuccessStage([]),
+            console: console,
+            lastSessionId: Guid.Parse("11111111-1111-1111-1111-111111111111"));
+
+        int exitCode = await command.RunAsync(
+            Request(
+                newSession: true,
+                continueSession: true),
+            CancellationToken.None);
+
+        Assert.Equal((int)CliExitCode.Success, exitCode);
+
+        Assert.DoesNotContain(
+            console.Verbose,
+            static line => line.Contains("Continuing session", StringComparison.Ordinal));
 
     }
 
@@ -1365,7 +1494,8 @@ public sealed class RunCommandTests
         NoopGrimoireInitialization? grimoire = null,
         NoopServeLauncher? serve = null,
         RecordingConsole? console = null,
-        Guid? lastSessionId = null) =>
+        Guid? lastSessionId = null,
+        string? contextFilePath = null) =>
         new(
             input ?? new FakeRunInputReader(inputResult),
             new FakeRunAttachmentStager(stageResult),
@@ -1376,26 +1506,31 @@ public sealed class RunCommandTests
             execution ?? new FakeRunExecutionDispatcher(),
             grimoire ?? new NoopGrimoireInitialization(),
             serve ?? new NoopServeLauncher(),
-            SessionManager(lastSessionId),
+            SessionManager(lastSessionId, contextFilePath),
             console ?? new RecordingConsole());
 
     /// <summary>
     /// Backed by an in-memory context store so <c>--continue</c> resolution never reads or writes a
     /// real operator Grimoire (DESIGN 13.5).
     /// </summary>
-    private static CliSessionManager SessionManager(Guid? lastSessionId = null) =>
+    private static CliSessionManager SessionManager(
+        Guid? lastSessionId = null,
+        string? contextFilePath = null) =>
         new(
             new ConsoleDispatcher(new CliInvocationContext()),
             logger: null,
-            new InMemoryContextStore(lastSessionId));
+            new InMemoryContextStore(lastSessionId, contextFilePath));
 
-    private sealed class InMemoryContextStore(Guid? sessionId) : ICliContextStore
+    private sealed class InMemoryContextStore(
+        Guid? sessionId,
+        string? filePath = null) : ICliContextStore
     {
 
         private CliContextDocument _document =
             CliContextDocument.Empty with { SessionId = sessionId };
 
-        public string FilePath => Path.Combine(Path.GetTempPath(), "arcanum-tests-cli-context.json");
+        public string FilePath =>
+            filePath ?? Path.Combine(Path.GetTempPath(), "arcanum-tests-cli-context.json");
 
         public CliContextDocument Load() => _document;
 
@@ -1413,14 +1548,15 @@ public sealed class RunCommandTests
         string[]? prompt = null,
         bool continueSession = false,
         bool resume = false,
-        string? resumeTarget = null) =>
+        string? resumeTarget = null,
+        string[]? attachment = null) =>
         new(
             prompt ?? ["prompt"],
             EscapedArguments: [],
             research,
             spell,
             with ?? [],
-            Attachment: [],
+            attachment ?? [],
             dryRun,
             ShowContent: false,
             Model: null,

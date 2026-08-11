@@ -359,13 +359,181 @@ public sealed class A2ASendingOutcomeTests : IDisposable
 
     }
 
+    [Fact]
+    public async Task ContinuedSending_KeepsTheOneDurableRecordTheDispatchOpened()
+    {
+
+        using ContinuableAgentHandler agent = new("which environment?", "deployed to staging");
+
+        using TestServer server = await CreateAgentAsync(agent);
+
+        using HttpMessageHandler handler = server.CreateHandler();
+
+        OutboundSendingLedger ledger = new();
+
+        A2AClientService client = CreateClient(handler, ledger: ledger);
+
+        Result<A2ADispatchResult> parked = await client
+            .DispatchSendingAsync("deploy the thing", null, DiscoveryUrl, mode: A2ADispatchMode.Continuable)
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(parked.IsSuccess);
+
+        string taskId = parked.Value.Continuation!.TaskId;
+
+        // The continuable branch deliberately leaves the row open so the answer can find it.
+        Assert.Equal([taskId], ledger.Registered);
+
+        Result<A2ADispatchResult> finished = await client
+            .ContinueSendingAsync(DiscoveryUrl, taskId, "staging")
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.True(finished.IsSuccess, finished.IsFailure ? $"{finished.Error.Code}: {finished.Error.Message}" : string.Empty);
+
+        // One remote task is one Sending, and DESIGN §22.2 counts one record per Sending exactly once. A
+        // second row for the same task is an orphan nothing ever closes: reconciliation eventually claims
+        // it, issues tasks/cancel against a task that may still be running, and tallies an extra unpriced
+        // delegated Sending against the operator's budget.
+        Assert.Equal([taskId], ledger.Registered);
+
+        Assert.Single(ledger.Settled);
+
+        Assert.Empty(ledger.OpenEntries);
+
+    }
+
     // ── harness ────────────────────────────────────────────────────────────────────────────────────
 
-    private static A2AClientService CreateClient(HttpMessageHandler handler, ArcanumSettings? settings = null) =>
+    private static A2AClientService CreateClient(
+        HttpMessageHandler handler,
+        ArcanumSettings? settings = null,
+        IA2ASendingLedger? ledger = null) =>
         new(
             new SingleHandlerHttpClientFactory(handler),
             new TestOptionsMonitor<ArcanumSettings>(settings ?? EnabledSettings()),
-            NullLogger<A2AClientService>.Instance);
+            NullLogger<A2AClientService>.Instance,
+            ledger is null ? null : ScopeFactoryFor(ledger));
+
+    private static IServiceScopeFactory ScopeFactoryFor(IA2ASendingLedger ledger)
+    {
+
+        ServiceCollection services = new();
+
+        services.AddSingleton(ledger);
+
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+
+    }
+
+    /// <summary>
+    /// The outbound half of the durable ledger, kept honestly enough that "one row per Sending" is a
+    /// claim this test can actually check.
+    /// </summary>
+    private sealed class OutboundSendingLedger : IA2ASendingLedger
+    {
+
+        private readonly Dictionary<Guid, string> _open = [];
+
+        public List<string> Registered { get; } = [];
+
+        public List<string> Settled { get; } = [];
+
+        public IReadOnlyCollection<Guid> OpenEntries => _open.Keys;
+
+        public Task<A2ASendingLedgerEntry> RegisterOutboundAsync(
+            string remoteTaskId,
+            string agentUrl,
+            Guid? budgetReservationId = null,
+            CancellationToken cancellationToken = default)
+        {
+
+            Registered.Add(remoteTaskId);
+
+            A2ASendingLedgerEntry entry = new(Guid.NewGuid(), "test");
+
+            _open[entry.OperationId] = remoteTaskId;
+
+            return Task.FromResult(entry);
+
+        }
+
+        public Task SettleOutboundAsync(
+            A2ASendingLedgerEntry entry,
+            A2ARemoteCost cost,
+            CancellationToken cancellationToken = default)
+        {
+
+            if (_open.Remove(entry.OperationId, out string? taskId))
+            {
+
+                Settled.Add(taskId);
+
+            }
+
+            return Task.CompletedTask;
+
+        }
+
+        public Task ReleaseAsync(A2ASendingLedgerEntry entry, CancellationToken cancellationToken = default)
+        {
+
+            _open.Remove(entry.OperationId);
+
+            return Task.CompletedTask;
+
+        }
+
+        public Task<A2ASendingLedgerEntry> RegisterInboundAsync(
+            string taskId,
+            Guid apprenticeId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new A2ASendingLedgerEntry(Guid.NewGuid(), "test"));
+
+        public Task MarkParkedAsync(
+            A2ASendingLedgerEntry entry,
+            string? contextId,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<A2AParkedSending?> FindParkedInboundAsync(
+            string taskId,
+            bool takeLease = true,
+            CancellationToken cancellationToken = default) => Task.FromResult<A2AParkedSending?>(null);
+
+        public Task<Guid?> FindInboundApprenticeAsync(string taskId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Guid?>(null);
+
+        public Task RecordOutboundCallbackAsync(
+            A2ASendingLedgerEntry entry,
+            string callbackConfigId,
+            string callbackTokenHash,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<A2AOutboundCallback?> FindOutboundCallbackAsync(
+            string callbackConfigId,
+            CancellationToken cancellationToken = default) => Task.FromResult<A2AOutboundCallback?>(null);
+
+        public Task<A2ASendingLedgerEntry> FindOpenOutboundAsync(
+            string remoteTaskId,
+            CancellationToken cancellationToken = default)
+        {
+
+            foreach ((Guid operationId, string taskId) in _open)
+            {
+
+                if (string.Equals(taskId, remoteTaskId, StringComparison.Ordinal))
+                {
+
+                    return Task.FromResult(new A2ASendingLedgerEntry(operationId, "test"));
+
+                }
+
+            }
+
+            return Task.FromResult<A2ASendingLedgerEntry>(default);
+
+        }
+
+    }
 
     private static async Task<TestServer> CreateAgentAsync(IAgentHandler agentHandler)
     {

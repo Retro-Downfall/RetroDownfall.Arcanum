@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -97,7 +98,7 @@ internal static class McpEndpoints
 
             return result.IsSuccess
                 ? Results.Ok(ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId))
-                : Results.BadRequest(ApiResponse<bool>.FromResult(Result<bool>.Failure(result.Error), traceId));
+                : MapLifecycleFailure(result.Error, traceId);
         })
         .WithName("StartMcpServer");
 
@@ -109,7 +110,7 @@ internal static class McpEndpoints
 
             return result.IsSuccess
                 ? Results.Ok(ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId))
-                : Results.BadRequest(ApiResponse<bool>.FromResult(Result<bool>.Failure(result.Error), traceId));
+                : MapLifecycleFailure(result.Error, traceId);
         })
         .WithName("StopMcpServer");
 
@@ -121,7 +122,7 @@ internal static class McpEndpoints
 
             return result.IsSuccess
                 ? Results.Ok(ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId))
-                : Results.BadRequest(ApiResponse<bool>.FromResult(Result<bool>.Failure(result.Error), traceId));
+                : MapLifecycleFailure(result.Error, traceId);
         })
         .WithName("RestartMcpServer");
 
@@ -144,12 +145,27 @@ internal static class McpEndpoints
 
             return result.IsSuccess
                 ? Results.Ok(ApiResponse<bool>.FromResult(Result<bool>.Success(true), traceId))
-                : Results.BadRequest(ApiResponse<bool>.FromResult(Result<bool>.Failure(result.Error), traceId));
+                : MapLifecycleFailure(result.Error, traceId);
 
         })
         .WithName("TrustMcpWorkspace");
 
         return apiGroup;
+    }
+
+    /// <summary>
+    /// Turns an MCP lifecycle failure into the envelope plus the status code the published error-code
+    /// table promises — notably 403 for <see cref="ErrorCodes.Mcp.WorkspaceNotTrusted"/> and 404 for
+    /// <see cref="ErrorCodes.Mcp.ServerNotFound"/> — while codes with no mapping stay 400.
+    /// </summary>
+    private static IResult MapLifecycleFailure(Error error, string traceId)
+    {
+
+        return Results.Json(
+            ApiResponse<bool>.FromResult(Result<bool>.Failure(error), traceId),
+            ArcanumJsonContext.Default.ApiResponseBoolean,
+            statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(error.Code));
+
     }
 
 }

@@ -1,0 +1,460 @@
+using System.Text.RegularExpressions;
+
+namespace RetroDownfall.Arcanum.Tests.Packaging;
+
+/// <summary>
+/// Guards the release/packaging pipeline against the failure modes that only show up on a
+/// signing runner: Actions script injection, credentials on a command line, and archives whose
+/// signature covers less code than the operator believes.
+/// </summary>
+public sealed class ReleasePipelineTests
+{
+
+    /// <summary>
+    /// Expression contexts an outside party can influence. Expanded by the Actions templating
+    /// engine into the generated script's source text, so they may never appear inside a
+    /// <c>run:</c> block — the value has to arrive through <c>env:</c> instead.
+    /// </summary>
+    private static readonly string[] UntrustedExpressionContexts =
+    [
+        "inputs.",
+
+        "github.event.",
+
+        "github.head_ref",
+    ];
+
+    [Fact]
+    public void Workflow_run_blocks_never_interpolate_untrusted_expressions()
+    {
+
+        List<string> offenders = [];
+
+        foreach (string workflow in WorkflowFiles())
+        {
+
+            foreach ((int number, string text) in ShellScriptLines(File.ReadAllLines(workflow)))
+            {
+
+                foreach (string context in UntrustedExpressionContexts)
+                {
+
+                    if (ContainsExpression(text, context))
+                    {
+
+                        offenders.Add($"{Path.GetFileName(workflow)}:{number}: {text.Trim()}");
+
+                    }
+
+                }
+
+            }
+
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "Untrusted workflow expressions are expanded into shell source before any validation "
+            + "runs (Actions script injection). Pass them through the step's env: mapping and read "
+            + "the environment variable instead:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+
+    }
+
+    /// <summary>
+    /// Credentials that arrive from a repository secret. A process command line is world-readable
+    /// on the build host (CWE-214), and log masking does not reach the process table, so these
+    /// may never be handed to a tool as an argv element — feed them on stdin or via env instead.
+    /// <c>KEYCHAIN_PASSWORD</c> is deliberately absent: it is derived from the public run id and
+    /// guards a keychain that is created and deleted inside a single job.
+    /// </summary>
+    private static readonly string[] SecretVariables =
+    [
+        "APPLE_APP_SPECIFIC_PASSWORD",
+
+        "APPLE_CERTIFICATE_PASSWORD",
+
+        "WINDOWS_CERT_PASSWORD",
+    ];
+
+    [Fact]
+    public void Packaging_never_passes_a_secret_as_a_command_line_argument()
+    {
+
+        List<string> offenders = [];
+
+        foreach ((string file, int number, string text) in PackagingShellLines())
+        {
+
+            foreach (string secret in SecretVariables)
+            {
+
+                Regex option = new(
+                    "(^|\\s)-{1,2}[A-Za-z][A-Za-z0-9-]*[=\\s]+\"?\\$(env:|\\{)?"
+                    + Regex.Escape(secret)
+                    + "\\b",
+                    RegexOptions.None,
+                    TimeSpan.FromSeconds(5));
+
+                if (option.IsMatch(text))
+                {
+
+                    offenders.Add($"{file}:{number}: {text.Trim()}");
+
+                }
+
+            }
+
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "A repository secret is passed to a tool on its command line, where the whole process "
+            + "table can read it. Feed it on stdin (both notarytool and security prompt for the "
+            + "value when the option is omitted) or hand it over through the environment:"
+            + global::System.Environment.NewLine
+            + string.Join(global::System.Environment.NewLine, offenders));
+
+    }
+
+    [Fact]
+    public void Windows_packaging_signs_every_portable_executable_it_ships()
+    {
+
+        string script = File.ReadAllText(WindowsPackagingScript());
+
+        // Every product that gets staged and archived must be signed as a whole tree. Signing an
+        // individually named file leaves the first-party managed assemblies and the
+        // SQLCipher/oniguruma native libraries unsigned inside a zip that looks signed, so
+        // WDAC/AppLocker publisher rules cannot cover the code that actually executes.
+        string[] publishers = ["Publish-Cli", "Publish-Gui"];
+
+        foreach (string publisher in publishers)
+        {
+
+            string body = Assert.Single(BracedBlocksAfter(script, $"function {publisher}"));
+
+            Assert.True(
+                body.Contains("Invoke-StageAuthenticodeSign", StringComparison.Ordinal),
+                $"{publisher} archives a stage directory without a full-tree Authenticode pass "
+                + "over it.");
+
+            Assert.False(
+                body.Contains("Invoke-AuthenticodeSign ", StringComparison.Ordinal),
+                $"{publisher} signs an individually named file; sign the staged tree instead so "
+                + "every shipped .exe and .dll is covered.");
+
+        }
+
+        string helper = Assert.Single(BracedBlocksAfter(script, "function Invoke-StageAuthenticodeSign"));
+
+        Assert.Contains("-Recurse", helper, StringComparison.Ordinal);
+
+        Assert.Contains(".exe", helper, StringComparison.Ordinal);
+
+        Assert.Contains(".dll", helper, StringComparison.Ordinal);
+
+        Assert.Contains("signtool verify", helper, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// Bodies of every brace-delimited block that follows <paramref name="header"/>, brace-matched
+    /// so a nested block does not terminate its parent.
+    /// </summary>
+    private static IReadOnlyList<string> BracedBlocksAfter(string script, string header)
+    {
+
+        List<string> blocks = [];
+
+        int search = 0;
+
+        while (true)
+        {
+
+            int start = script.IndexOf(header, search, StringComparison.Ordinal);
+
+            if (start < 0)
+            {
+
+                return blocks;
+
+            }
+
+            search = start + header.Length;
+
+            int open = script.IndexOf('{', search);
+
+            if (open < 0)
+            {
+
+                return blocks;
+
+            }
+
+            int depth = 0;
+
+            for (int i = open; i < script.Length; i++)
+            {
+
+                if (script[i] == '{')
+                {
+
+                    depth++;
+
+                }
+                else if (script[i] == '}')
+                {
+
+                    depth--;
+
+                    if (depth == 0)
+                    {
+
+                        blocks.Add(script[(open + 1)..i]);
+
+                        search = i;
+
+                        break;
+
+                    }
+
+                }
+
+            }
+
+        }
+
+    }
+
+    private static string WindowsPackagingScript()
+    {
+
+        string path = Path.Combine(
+            RepositoryRoot(),
+            "scripts",
+            "packaging",
+            "windows",
+            "package-windows.ps1");
+
+        Assert.True(File.Exists(path), $"Missing Windows packaging script: {path}");
+
+        return path;
+
+    }
+
+    /// <summary>
+    /// Every line of shell the packaging pipeline executes: the packaging scripts themselves plus
+    /// the inline scripts the workflows run.
+    /// </summary>
+    private static IEnumerable<(string File, int Number, string Text)> PackagingShellLines()
+    {
+
+        string root = RepositoryRoot();
+
+        string scripts = Path.Combine(root, "scripts");
+
+        foreach (string file in Directory.EnumerateFiles(scripts, "*.*", SearchOption.AllDirectories))
+        {
+
+            if (Path.GetExtension(file) is not (".sh" or ".ps1"))
+            {
+
+                continue;
+
+            }
+
+            string[] lines = File.ReadAllLines(file);
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+
+                yield return (Path.GetRelativePath(root, file), i + 1, lines[i]);
+
+            }
+
+        }
+
+        foreach (string workflow in WorkflowFiles())
+        {
+
+            foreach ((int number, string text) in ShellScriptLines(File.ReadAllLines(workflow)))
+            {
+
+                yield return (Path.GetRelativePath(root, workflow), number, text);
+
+            }
+
+        }
+
+    }
+
+    private static bool ContainsExpression(string line, string context)
+    {
+
+        int index = 0;
+
+        while (true)
+        {
+
+            index = line.IndexOf("${{", index, StringComparison.Ordinal);
+
+            if (index < 0)
+            {
+
+                return false;
+
+            }
+
+            index += 3;
+
+            int end = line.IndexOf("}}", index, StringComparison.Ordinal);
+
+            if (end < 0)
+            {
+
+                return false;
+
+            }
+
+            if (line[index..end].TrimStart().StartsWith(context, StringComparison.Ordinal))
+            {
+
+                return true;
+
+            }
+
+        }
+
+    }
+
+    /// <summary>
+    /// Yields every line that ends up inside a step's shell script, whether it was written as a
+    /// block scalar (<c>run: |</c>) or as an inline value (<c>run: echo hi</c>).
+    /// </summary>
+    private static IEnumerable<(int Number, string Text)> ShellScriptLines(string[] lines)
+    {
+
+        int blockIndent = -1;
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+
+            string line = lines[i];
+
+            if (blockIndent >= 0)
+            {
+
+                if (line.Trim().Length == 0)
+                {
+
+                    continue;
+
+                }
+
+                if (IndentOf(line) > blockIndent)
+                {
+
+                    yield return (i + 1, line);
+
+                    continue;
+
+                }
+
+                blockIndent = -1;
+
+            }
+
+            int indent = IndentOf(line);
+
+            string trimmed = line.TrimStart();
+
+            if (trimmed.StartsWith("- ", StringComparison.Ordinal))
+            {
+
+                indent += 2;
+
+                trimmed = trimmed[2..].TrimStart();
+
+            }
+
+            if (!trimmed.StartsWith("run:", StringComparison.Ordinal))
+            {
+
+                continue;
+
+            }
+
+            string value = trimmed[4..].Trim();
+
+            if (value.Length == 0 || value[0] is '|' or '>')
+            {
+
+                blockIndent = indent;
+
+                continue;
+
+            }
+
+            yield return (i + 1, line);
+
+        }
+
+    }
+
+    private static int IndentOf(string line)
+    {
+
+        int indent = 0;
+
+        while (indent < line.Length && line[indent] == ' ')
+        {
+
+            indent++;
+
+        }
+
+        return indent;
+
+    }
+
+    private static IReadOnlyList<string> WorkflowFiles()
+    {
+
+        string directory = Path.Combine(RepositoryRoot(), ".github", "workflows");
+
+        Assert.True(Directory.Exists(directory), $"Missing workflow directory: {directory}");
+
+        string[] files = Directory.GetFiles(directory, "*.yml");
+
+        Assert.NotEmpty(files);
+
+        return files;
+
+    }
+
+    private static string RepositoryRoot()
+    {
+
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+
+        while (directory is not null)
+        {
+
+            if (File.Exists(Path.Combine(directory.FullName, "RetroDownfall.Arcanum.slnx")))
+            {
+
+                return directory.FullName;
+
+            }
+
+            directory = directory.Parent;
+
+        }
+
+        throw new InvalidOperationException("Could not locate the repository root.");
+
+    }
+
+}

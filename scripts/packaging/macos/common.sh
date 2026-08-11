@@ -148,12 +148,63 @@ sign_publish_dir() {
   codesign --verify --strict --verbose=2 "$main_path"
 }
 
+# Notarization credentials are handed over through a keychain item, never as an argv element:
+# a command line is readable from the whole process table for as long as the process lives, and
+# `notarytool submit --wait` lives for the entire notarization. Same rule the Windows packager
+# follows for signtool. Both `notarytool` and `security` prompt for the value when the option is
+# omitted, and both read the answer from stdin, so every secret below arrives on a pipe.
+NOTARY_KEYCHAIN_PROFILE="arcanum-notarytool"
+NOTARY_KEYCHAIN=""
+NOTARY_KEYCHAIN_OWNED=0
+
+notarize_prepare_credentials() {
+  if [[ -n "$NOTARY_KEYCHAIN" ]]; then
+    return 0
+  fi
+
+  require_cmd security
+  require_cmd xcrun
+
+  if [[ -n "${KEYCHAIN_PATH:-}" && -f "${KEYCHAIN_PATH:-}" ]]; then
+    # CI already built an ephemeral signing keychain for this run and deletes it afterwards.
+    NOTARY_KEYCHAIN="$KEYCHAIN_PATH"
+  else
+    require_cmd openssl
+    local keychain_password
+    keychain_password="$(openssl rand -hex 24)"
+    NOTARY_KEYCHAIN="$(mktemp -d "${TMPDIR:-/tmp}/arcanum-notary.XXXXXX")/notary.keychain-db"
+    printf '%s\n%s\n' "$keychain_password" "$keychain_password" |
+      security create-keychain "$NOTARY_KEYCHAIN"
+    NOTARY_KEYCHAIN_OWNED=1
+    security set-keychain-settings -lut 21600 "$NOTARY_KEYCHAIN"
+    printf '%s\n' "$keychain_password" | security unlock-keychain "$NOTARY_KEYCHAIN"
+  fi
+
+  echo "==> Storing notarization credentials in keychain profile '$NOTARY_KEYCHAIN_PROFILE'"
+  printf '%s\n' "$APPLE_APP_SPECIFIC_PASSWORD" |
+    xcrun notarytool store-credentials "$NOTARY_KEYCHAIN_PROFILE" \
+      --apple-id "$APPLE_ID" \
+      --team-id "$APPLE_TEAM_ID" \
+      --keychain "$NOTARY_KEYCHAIN"
+}
+
+# Callers own an EXIT trap; they must call this from it. Deletes only a keychain this script
+# created — a CI-provided KEYCHAIN_PATH is the workflow's to clean up.
+notarize_cleanup() {
+  if [[ "$NOTARY_KEYCHAIN_OWNED" -eq 1 && -n "$NOTARY_KEYCHAIN" && -f "$NOTARY_KEYCHAIN" ]]; then
+    security delete-keychain "$NOTARY_KEYCHAIN" >/dev/null 2>&1 || true
+    rm -rf "$(dirname "$NOTARY_KEYCHAIN")"
+  fi
+  NOTARY_KEYCHAIN=""
+  NOTARY_KEYCHAIN_OWNED=0
+}
+
 notarize_submit() {
   local archive="$1"
+  notarize_prepare_credentials
   xcrun notarytool submit "$archive" \
-    --apple-id "$APPLE_ID" \
-    --team-id "$APPLE_TEAM_ID" \
-    --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+    --keychain-profile "$NOTARY_KEYCHAIN_PROFILE" \
+    --keychain "$NOTARY_KEYCHAIN" \
     --wait
 }
 

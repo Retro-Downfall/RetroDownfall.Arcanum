@@ -409,6 +409,12 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
                 }
 
+                // Hardening the staging file is not enough. On Windows ReplaceFile keeps the
+                // replaced file's DACL, so a destination that arrived with a loose ACL would survive
+                // the save still readable by other principals — the CLI's ConfigurationWriter
+                // re-applies owner-only permissions to the destination for exactly this reason.
+                SecureFilePermissions.ApplyOwnerOnlyFile(_filePath);
+
             }
             catch (IOException ioEx)
             {

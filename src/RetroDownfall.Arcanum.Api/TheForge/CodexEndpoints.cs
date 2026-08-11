@@ -309,7 +309,7 @@ internal static class CodexEndpoints
             return Results.BadRequest(
                 ApiResponse<CodexContentDto>.FromResult(
                     Result<CodexContentDto>.Failure(
-                        new Error("Codex.ContentTooLarge", $"CODEX content exceeds the configured maximum of {maxBytes} bytes (UTF-8).")),
+                        new Error(ErrorCodes.Codex.ContentTooLarge, $"CODEX content exceeds the configured maximum of {maxBytes} bytes (UTF-8).")),
                     traceId));
         }
 

@@ -729,6 +729,17 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
 
+            // A Reset carries no OldItems, so the subscription set is the only remaining handle on the
+            // discarded generation. Detaching through it is what removes each provider's
+            // Models.CollectionChanged hook — without it the editor keeps every previously loaded
+            // provider alive and a stale one can still mark the configuration dirty.
+            foreach (ProvidersSectionViewModel.ProviderViewModel discarded in _modelsSubscribedProviders.ToArray())
+            {
+
+                UnsubscribeProviderDirty(discarded);
+
+            }
+
             foreach (INotifyPropertyChanged nested in _nestedDirtySubscriptions.ToArray())
             {
 
