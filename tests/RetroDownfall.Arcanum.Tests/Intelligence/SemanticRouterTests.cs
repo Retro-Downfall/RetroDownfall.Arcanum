@@ -194,9 +194,14 @@ public sealed class SemanticRouterTests
     [Fact]
     public async Task DetermineActiveSpellAsync_Timeout_ReturnsNull()
     {
+        // Both sides of this race are timer-driven, so a starved thread pool delays the 50 ms
+        // routing timeout and the client's delay alike. At a 2-second delay the ordering can
+        // invert under load and the router returns the answer it was supposed to abandon; the
+        // margin is wide enough here that no plausible scheduling skew reaches it. The test still
+        // completes in about 50 ms, because a working timeout never waits for this delay.
         FakeChatClient client = new()
         {
-            Delay = TimeSpan.FromSeconds(2),
+            Delay = TimeSpan.FromSeconds(30),
             NextText = """{"spellName":"Summoner","entities":[]}""",
         };
 
