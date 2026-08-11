@@ -591,6 +591,29 @@ public sealed class FamiliarChatClientTests
     }
 
     /// <summary>
+    /// Codex reads execpolicy <c>.rules</c> files out of its working root, and they widen what the
+    /// CLI may run. Ignoring them is what keeps a planted rules file from steering a turn — the
+    /// Codex counterpart to Claude Code's <c>--setting-sources user</c>.
+    /// </summary>
+    [Fact]
+    public async Task Codex_ignores_repository_execpolicy_rules()
+    {
+
+        RecordingFamiliarProcessRunner runner = new();
+
+        runner.EnqueueFixture(FamiliarFixtures.CodexSuccess);
+
+        using IChatClient client = CreateCodex(runner, "gpt-5.6");
+
+        _ = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            cancellationToken: CancellationToken.None);
+
+        Assert.Contains("--ignore-rules", runner.LastRequest.Arguments);
+
+    }
+
+    /// <summary>
     /// Defence in depth for the above. Feature suppression is best-effort against a CLI Arcanum does
     /// not version-pin, so the projection refuses a turn that ran a vendor tool anyway. Returning the
     /// agent message would launder output produced by a shell command that escaped

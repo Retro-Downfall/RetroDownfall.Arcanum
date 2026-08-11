@@ -35,12 +35,3 @@ internal enum ToolCallDisposition
     ClientForwarded = 1,
     DeniedByPolicy = 2,
 }
-
-internal enum ProviderAttemptState
-{
-    Pending = 0,
-    Started = 1,
-    Committed = 2,
-    Completed = 3,
-    Failed = 4,
-}

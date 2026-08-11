@@ -206,6 +206,11 @@ public interface IA2ASendingLedger
     /// <summary>
     /// Finds the still-open outbound Sending a callback config id belongs to.
     /// </summary>
+    /// <remarks>
+    /// Reached from the deliberately anonymous callback route (&#167;5.7.1.4), so
+    /// <paramref name="callbackConfigId"/> is peer-supplied and unauthenticated. An id outside the shape
+    /// <see cref="A2ACallbackConfigId.Mint"/> produces resolves to nothing without a lookup.
+    /// </remarks>
     Task<A2AOutboundCallback?> FindOutboundCallbackAsync(
         string callbackConfigId,
         CancellationToken cancellationToken = default);
@@ -685,7 +690,10 @@ internal sealed class A2ASendingLedger(
         CancellationToken cancellationToken = default)
     {
 
-        if (string.IsNullOrWhiteSpace(callbackConfigId))
+        // The caller is the anonymous callback route, so this id is an unauthenticated peer-supplied
+        // string and the paging scan below is the most expensive thing it can reach. An id this instance
+        // could never have minted is answered from its shape alone rather than by reading the ledger.
+        if (!A2ACallbackConfigId.IsWellFormed(callbackConfigId))
         {
 
             return null;

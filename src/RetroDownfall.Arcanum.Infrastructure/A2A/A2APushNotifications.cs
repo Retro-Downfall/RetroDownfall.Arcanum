@@ -353,6 +353,27 @@ public sealed record A2APushNotificationPayload
 internal sealed partial class A2APushNotificationJsonContext : JsonSerializerContext;
 
 /// <summary>
+/// The identifier an outbound Sending's callback URL is addressed by, minted and recognised in one
+/// place so the two can never disagree about what a real one looks like.
+/// </summary>
+/// <remarks>
+/// <c>POST {ServerPath}/callbacks/{configId}</c> is the single deliberately anonymous A2A route
+/// (&#167;5.7.1.4), so <c>configId</c> is an unauthenticated, peer-supplied string that reaches a durable
+/// lookup before any secret is compared. Checking its shape first means an id this instance could never
+/// have minted costs nothing, instead of paging every outbound Sending the retention window still holds.
+/// </remarks>
+public static class A2ACallbackConfigId
+{
+
+    /// <summary>Mints the id a peer posts its notifications back to.</summary>
+    public static string Mint() => Guid.NewGuid().ToString("N");
+
+    /// <summary>Whether <paramref name="configId"/> has the shape <see cref="Mint"/> produces.</summary>
+    public static bool IsWellFormed(string? configId) => Guid.TryParseExact(configId, "N", out _);
+
+}
+
+/// <summary>
 /// Hashes and compares the per-task secret an outbound callback is authenticated by.
 /// </summary>
 /// <remarks>

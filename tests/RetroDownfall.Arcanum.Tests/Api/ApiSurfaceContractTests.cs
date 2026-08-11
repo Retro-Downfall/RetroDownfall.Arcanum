@@ -16,11 +16,15 @@ using Microsoft.Extensions.Hosting;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.TheForge;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
 
@@ -336,6 +340,73 @@ public sealed class ApiSurfaceContractTests : IDisposable
         Assert.NotNull(formOptions.MultipartBodyLengthLimit);
 
         Assert.True(formOptions.MultipartBodyLengthLimit >= OpenAiV1Endpoints.ResolveMaxUploadBytes());
+
+    }
+
+    /// <summary>
+    /// AGENTS.md's "New endpoint" checklist requires <c>.WithName(...)</c> on every route; the memory
+    /// group was the only route file in the Api project that registered none, so its ten documented
+    /// routes emitted no <c>operationId</c> in <c>/api/openapi/v1.json</c> and were unaddressable by
+    /// <see cref="LinkGenerator"/>.
+    /// </summary>
+    [Fact]
+    public async Task MemoryEndpoints_are_registered_with_unique_endpoint_names()
+    {
+
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
+
+        builder.WebHost.UseTestServer();
+
+        // Registration alone is what endpoint building inspects; these are never resolved here.
+        builder.Services.AddScoped<ArcanumDbContext>(static _ => throw new NotSupportedException());
+
+        builder.Services.AddScoped<ILexiconService>(static _ => throw new NotSupportedException());
+
+        builder.Services.AddScoped<ISagaMemoryStore>(static _ => throw new NotSupportedException());
+
+        builder.Services.ConfigureHttpJsonOptions(static options =>
+            options.SerializerOptions.TypeInfoResolverChain.Insert(0, ArcanumJsonContext.Default));
+
+        await using WebApplication app = builder.Build();
+
+        _ = app.MapGroup("/api").MapMemoryEndpoints();
+
+        await app.StartAsync();
+
+        RouteEndpoint[] memoryRoutes =
+        [
+            .. app.Services
+                .GetRequiredService<EndpointDataSource>()
+                .Endpoints
+                .OfType<RouteEndpoint>()
+                .Where(static endpoint => endpoint.RoutePattern.RawText is { } raw
+                    && raw.StartsWith("/api/memory", StringComparison.Ordinal)),
+        ];
+
+        await app.StopAsync();
+
+        Assert.Equal(10, memoryRoutes.Length);
+
+        string[] unnamed =
+        [
+            .. memoryRoutes
+                .Where(static endpoint => string.IsNullOrEmpty(
+                    endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName))
+                .Select(static endpoint => endpoint.RoutePattern.RawText ?? endpoint.DisplayName ?? "?"),
+        ];
+
+        Assert.True(
+            unnamed.Length == 0,
+            $"Memory routes registered without .WithName(...): {string.Join(", ", unnamed)}");
+
+        string[] names =
+        [
+            .. memoryRoutes.Select(static endpoint =>
+                endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()!.EndpointName),
+        ];
+
+        // Duplicate endpoint names throw at routing-table build time, so uniqueness is part of the fix.
+        Assert.Equal(names.Length, names.Distinct(StringComparer.Ordinal).Count());
 
     }
 

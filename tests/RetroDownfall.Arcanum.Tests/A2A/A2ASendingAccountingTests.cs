@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.A2A;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Operations;
 
 namespace RetroDownfall.Arcanum.Tests.A2A;
 
@@ -244,12 +245,15 @@ public sealed class A2ASendingAccountingTests : IAsyncLifetime
 
         string token = A2ACallbackToken.Mint();
 
-        await ledger.RecordOutboundCallbackAsync(entry, "config-77", A2ACallbackToken.Hash(token));
+        // The id a peer is actually handed, minted the one way a callback config id is ever minted.
+        string configId = A2ACallbackConfigId.Mint();
+
+        await ledger.RecordOutboundCallbackAsync(entry, configId, A2ACallbackToken.Hash(token));
 
         // The fresh ledger is the restart: the awaiting process is gone and only the record remains.
         IA2ASendingLedger afterRestart = CreateLedger();
 
-        A2AOutboundCallback? recovered = await afterRestart.FindOutboundCallbackAsync("config-77");
+        A2AOutboundCallback? recovered = await afterRestart.FindOutboundCallbackAsync(configId);
 
         Assert.NotNull(recovered);
 
@@ -266,7 +270,7 @@ public sealed class A2ASendingAccountingTests : IAsyncLifetime
         await afterRestart.SettleOutboundAsync(recovered.Value.Ledger, A2ARemoteCost.Unknown);
 
         // Settled, so a later callback for the same config finds nothing to settle twice.
-        Assert.Null(await CreateLedger().FindOutboundCallbackAsync("config-77"));
+        Assert.Null(await CreateLedger().FindOutboundCallbackAsync(configId));
 
     }
 
@@ -276,9 +280,32 @@ public sealed class A2ASendingAccountingTests : IAsyncLifetime
 
         RequireSqlCipher();
 
-        Assert.Null(await CreateLedger().FindOutboundCallbackAsync("never-registered"));
+        Assert.Null(await CreateLedger().FindOutboundCallbackAsync(A2ACallbackConfigId.Mint()));
 
         Assert.Null(await CreateLedger().FindOutboundCallbackAsync("   "));
+
+    }
+
+    [Fact]
+    public async Task CallbackConfigIdNothingCouldHaveMinted_IsRefusedWithoutScanningTheLedger()
+    {
+
+        FakeLongRunningOperationStore store = new(TimeProvider.System);
+
+        IA2ASendingLedger ledger = new A2ASendingLedger(
+            store,
+            TimeProvider.System,
+            NullLogger<A2ASendingLedger>.Instance);
+
+        // POST {ServerPath}/callbacks/{configId} is the one deliberately anonymous A2A route (§5.7.1.4),
+        // so {configId} is an unauthenticated peer-supplied string. An id outside the shape this
+        // instance mints must be answered from its shape alone, not by paging every outbound Sending
+        // the retention window still holds.
+        Assert.Null(await ledger.FindOutboundCallbackAsync("never-registered"));
+
+        Assert.Null(await ledger.FindOutboundCallbackAsync(new string('a', 4096)));
+
+        Assert.Equal(0, store.ListCallCount);
 
     }
 

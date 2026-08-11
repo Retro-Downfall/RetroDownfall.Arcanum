@@ -624,8 +624,9 @@ internal sealed class CommandCenterChatRunner(
     {
         string? callId = evt.ToolCall?.CallId;
         string? name = NormalizeToolName(evt.ToolCall?.Name ?? evt.Message);
-        // Prefer structured public failure text on ToolCall payload over the generic Data blurb.
-        string? error = evt.ToolCall?.ArgumentsJson ?? evt.Data ?? evt.Message;
+        // toolCall.argumentsJson is the serialized call arguments, never failure text — the human
+        // readable reason rides on Data, with Message (the tool name) as the last resort.
+        string? error = evt.Data ?? evt.Message;
         _ = state.Incantations.UpsertError(callId, name, error);
     }
 

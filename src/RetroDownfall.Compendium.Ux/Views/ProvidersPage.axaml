@@ -84,7 +84,7 @@
                              IsVisible="{Binding HasProbeRemediation}" />
 
                   <SelectableTextBlock Text="{Binding ProbeRemediationCommand}"
-                                       FontFamily="{DynamicResource ForgeMonospaceFontFamily}"
+                                       FontFamily="{DynamicResource ForgeCodeFontFamily}"
                                        IsVisible="{Binding HasProbeRemediationCommand}" />
 
                   <Button Content="Re-probe"

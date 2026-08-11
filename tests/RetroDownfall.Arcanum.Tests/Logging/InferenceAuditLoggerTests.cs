@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Reflection;
 using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -642,6 +643,30 @@ public sealed class InferenceAuditLoggerTests : IDisposable
         Assert.True(Directory.Exists(blockedDirectory));
 
         Assert.NotEmpty(Directory.EnumerateFiles(blockedDirectory));
+
+    }
+
+    /// <summary>
+    /// <see cref="AuditLogPageReader"/> is the sole owner of dated-file discovery — QueryPageAsync
+    /// delegates to it wholesale. A private copy on the logger is unreachable code that parses file
+    /// stamps by different rules, so a maintainer editing the copy changes nothing at runtime.
+    /// </summary>
+    [Fact]
+    public void InferenceAuditLogger_DeclaresNoDatedLogFileDiscoveryOfItsOwn()
+    {
+
+        string[] declared = typeof(InferenceAuditLogger)
+            .GetMethods(
+                BindingFlags.Public
+                | BindingFlags.NonPublic
+                | BindingFlags.Static
+                | BindingFlags.Instance
+                | BindingFlags.DeclaredOnly)
+            .Select(static method => method.Name)
+            .Where(static name => name is "EnumerateDatedLogFiles" or "ParseDatedLogFile")
+            .ToArray();
+
+        Assert.Empty(declared);
 
     }
 

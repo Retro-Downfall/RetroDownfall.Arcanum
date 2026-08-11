@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using System.Reflection;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
@@ -147,6 +148,39 @@ public sealed class GrimoireFixtureConcurrencyTests(GrimoireFixture fixture)
         Assert.True(File.Exists(copyPath));
 
         Assert.True(File.Exists(copyPath + ".kdf"));
+
+    }
+
+    [SkippableFact]
+    public async Task Dispose_deletes_the_wal_and_shm_sidecars_of_every_copy()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        GrimoireFixture scoped = new();
+
+        string copyPath = scoped.CopyDatabase();
+
+        ArcanumDbContext context = scoped.CreateContext(copyPath);
+
+        Assert.True(await context.Database.CanConnectAsync());
+
+        await context.DisposeAsync();
+
+        Assert.True(
+            File.Exists(copyPath + "-wal"),
+            "The copy was not opened in WAL mode, so this test no longer reproduces the sidecar leak.");
+
+        scoped.Dispose();
+
+        string[] suffixes = ["", ".kdf", "-wal", "-shm"];
+
+        foreach (string suffix in suffixes)
+        {
+
+            Assert.False(File.Exists(copyPath + suffix), copyPath + suffix);
+
+        }
 
     }
 

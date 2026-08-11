@@ -94,16 +94,19 @@ public sealed record HostAuditLogSettings
 }
 
 /// <summary>
-/// Code-owned rate-limit mechanics; partitions requests by API key (or IP when no key header is present).
+/// Code-owned rate-limit mechanics (DESIGN §11.13). No member here is bound from configuration —
+/// there is no <c>Arcanum:Host:RateLimit</c> section; the host reads these values only through
+/// <c>ArcanumRuntimeDefaults.HostRateLimit</c>, then clamps them via <c>ArcanumSettingClamps</c>.
+/// Partition keys use the <em>remote IP address only</em>; there is no API-key partitioning.
 /// </summary>
 public sealed record HostRateLimitSettings
 {
 
     /// <summary>
-    /// When <c>true</c>, registers <c>AddRateLimiter</c> and applies a fixed-window limiter to
-    /// the <c>/api</c> and <c>/v1</c> endpoint groups. Default <c>false</c>. Also enabled
-    /// automatically when the host binds to all interfaces (<see cref="HostSettings.ListenAny"/>
-    /// or <c>ARCANUM_HOST_ANY</c>).
+    /// Unused as an operator toggle: whether the fixed-window limiter is applied to the <c>/api</c>
+    /// and <c>/v1</c> endpoint groups is decided solely by the effective bind — an all-interfaces
+    /// bind (<see cref="HostSettings.ListenAny"/> or <c>ARCANUM_HOST_ANY</c>) turns it on, a
+    /// loopback bind leaves it off. See <c>ArcanumEnvironment.IsRateLimitEnabled</c>.
     /// </summary>
     public bool Enabled { get; set; } = false;
 

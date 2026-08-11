@@ -512,6 +512,108 @@ public sealed class WorkspaceCheckToolTests : IDisposable
             path => Assert.True(Directory.Exists(path)));
     }
 
+    [SkippableFact]
+    public void Workspace_check_removes_its_partial_run_root_when_the_tree_cannot_be_created()
+    {
+
+        Skip.If(
+            OperatingSystem.IsWindows(),
+            "The failure is forced against the POSIX path-length boundary.");
+
+        using TestTree tree = new();
+
+        // A run root right on the path-length boundary is creatable but its sub-roots are not, so the
+        // failure lands after the owner-only root has already been materialized.
+        int boundary = ProbeLongestCreatableDirectoryPath(
+            tree.CreateDirectory("probe"));
+        int runRootNameLength =
+            "arcanum-workspace-check-".Length + 32;
+        int parentLength = boundary - 1 - runRootNameLength;
+        string parent = tree.CreateDirectory("run");
+
+        Skip.If(
+            parent.Length > parentLength,
+            "The host temp path is too long to build the path-length boundary.");
+
+        while (parent.Length < parentLength)
+        {
+
+            int segment = Math.Min(
+                200,
+                parentLength - parent.Length - 1);
+
+            if (segment < 1)
+            {
+
+                break;
+            }
+
+            parent = Path.Combine(parent, new string('d', segment));
+        }
+
+        Directory.CreateDirectory(parent);
+
+        Assert.ThrowsAny<IOException>(
+            () => WorkspaceCheckRunDirectories.Create(parent));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(parent));
+    }
+
+    private static int ProbeLongestCreatableDirectoryPath(
+        string baseDirectory)
+    {
+
+        string chain = baseDirectory;
+
+        while (TryCreateDirectory(
+                   Path.Combine(chain, new string('p', 200)),
+                   out string created))
+        {
+
+            chain = created;
+        }
+
+        int longest = chain.Length;
+
+        for (int extra = 1; extra <= 200; extra++)
+        {
+
+            if (!TryCreateDirectory(
+                    Path.Combine(chain, new string('x', extra)),
+                    out _))
+            {
+
+                break;
+            }
+
+            longest = chain.Length + 1 + extra;
+        }
+
+        return longest;
+    }
+
+    private static bool TryCreateDirectory(
+        string path,
+        out string created)
+    {
+
+        created = path;
+
+        try
+        {
+
+            Directory.CreateDirectory(path);
+
+            return true;
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or UnauthorizedAccessException)
+        {
+
+            return false;
+        }
+    }
+
     [Fact]
     public void Diagnostic_parser_extracts_mixed_msbuild_severities_and_caps_results()
     {

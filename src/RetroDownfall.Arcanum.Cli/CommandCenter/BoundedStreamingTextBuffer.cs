@@ -1,4 +1,5 @@
 using System.Text;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -38,7 +39,15 @@ internal sealed class BoundedStreamingTextBuffer
         int available = contentLimit - _text.Length;
         if (available > 0)
         {
-            _ = _text.Append(value.AsSpan(0, Math.Min(available, value.Length)));
+            _ = _text.Append(value.AsSpan(0, Utf8Truncation.SafeCharSliceLength(value, available)));
+        }
+
+        // Both cuts above land on a raw UTF-16 code unit, which can fall between the halves of a
+        // surrogate pair. Drop an orphaned high surrogate so the astral-plane glyph is dropped
+        // whole rather than rendering as a replacement character before the marker (DESIGN §16.7).
+        if (_text.Length > 0 && char.IsHighSurrogate(_text[_text.Length - 1]))
+        {
+            _text.Length--;
         }
 
         _ = _text.Append(_truncationMarker);

@@ -53,6 +53,90 @@ public sealed class CliOperatorSurfaceTests
 
     }
 
+    /// <summary>
+    /// A terminal erases columns, not UTF-16 code units. Four ideographs paint eight columns, so
+    /// Ctrl+U must walk the cursor back eight cells or half the line stays on screen.
+    /// </summary>
+    [Fact]
+    public void ClearLine_erases_the_columns_a_wide_line_painted()
+    {
+
+        StringBuilder buffer = new("你好世界");
+
+        int erased = CliLineReader.ClearLine(buffer);
+
+        Assert.Equal(8, erased);
+
+        Assert.Equal(0, buffer.Length);
+
+    }
+
+    /// <summary>
+    /// The mirror hazard: a narrow astral character is two code units but one column, so erasing by
+    /// code unit walks the cursor back into the prompt.
+    /// </summary>
+    [Fact]
+    public void ClearLine_erases_one_column_for_a_narrow_astral_character()
+    {
+
+        StringBuilder buffer = new("\U0001D400");
+
+        Assert.Equal(1, CliLineReader.ClearLine(buffer));
+
+    }
+
+    [Fact]
+    public void ClearLine_on_an_empty_buffer_erases_nothing()
+    {
+
+        StringBuilder buffer = new();
+
+        Assert.Equal(0, CliLineReader.ClearLine(buffer));
+
+    }
+
+    [Fact]
+    public void DeleteLastWord_erases_the_columns_the_word_painted()
+    {
+
+        StringBuilder buffer = new("hi 世界");
+
+        int erased = CliLineReader.DeleteLastWord(buffer);
+
+        Assert.Equal(4, erased);
+
+        Assert.Equal("hi ", buffer.ToString());
+
+    }
+
+    [Fact]
+    public void EraseLastCharacter_erases_both_columns_of_a_wide_glyph()
+    {
+
+        StringBuilder buffer = new("a好");
+
+        int erased = CliLineReader.EraseLastCharacter(buffer);
+
+        Assert.Equal(2, erased);
+
+        Assert.Equal("a", buffer.ToString());
+
+    }
+
+    [Fact]
+    public void EraseLastCharacter_erases_one_column_for_a_narrow_astral_character()
+    {
+
+        StringBuilder buffer = new("a\U0001D400");
+
+        int erased = CliLineReader.EraseLastCharacter(buffer);
+
+        Assert.Equal(1, erased);
+
+        Assert.Equal("a", buffer.ToString());
+
+    }
+
     [Theory]
     [InlineData("campaign", CliContextScope.Campaign)]
     [InlineData("WORKSPACE", CliContextScope.Workspace)]

@@ -146,19 +146,20 @@ public static class ApiBootstrapper
                     cancellationToken: cancellationToken).ConfigureAwait(false);
             };
 
+            // §11.13: the window is code-owned — every value comes from ArcanumRuntimeDefaults and
+            // nothing is bound from Arcanum:Host:RateLimit — so it is clamped once here at
+            // registration. The per-request delegate must stay allocation- and DI-free; the only
+            // thing that varies per request is the partition key.
+            HostRateLimitSettings rl = ArcanumRuntimeDefaults.HostRateLimit;
+
+            int permitLimit = ArcanumSettingClamps.RateLimitPermitLimit(rl.PermitLimit);
+
+            int windowSeconds = ArcanumSettingClamps.RateLimitWindowSeconds(rl.WindowSeconds);
+
+            int queueLimit = ArcanumSettingClamps.RateLimitQueueLimit(rl.QueueLimit);
+
             options.AddPolicy(ArcanumRateLimiterPolicyName, ctx =>
             {
-                IOptionsMonitor<ArcanumSettings> monitor = ctx.RequestServices
-                    .GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
-
-                HostRateLimitSettings rl = ArcanumRuntimeDefaults.HostRateLimit;
-
-                int permitLimit = ArcanumSettingClamps.RateLimitPermitLimit(rl.PermitLimit);
-
-                int windowSeconds = ArcanumSettingClamps.RateLimitWindowSeconds(rl.WindowSeconds);
-
-                int queueLimit = ArcanumSettingClamps.RateLimitQueueLimit(rl.QueueLimit);
-
                 string partitionKey = ResolveRateLimitPartitionKey(ctx);
 
                 return RateLimitPartition.GetFixedWindowLimiter(

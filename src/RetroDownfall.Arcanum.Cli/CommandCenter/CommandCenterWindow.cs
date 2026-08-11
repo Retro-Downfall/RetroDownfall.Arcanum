@@ -544,7 +544,58 @@ internal sealed class CommandCenterWindow : Window
         return Input.Text?.ToString() ?? string.Empty;
     }
 
-    public bool ComposerHasText => !string.IsNullOrWhiteSpace(GetComposerText());
+    /// <summary>
+    /// Whether the composer holds anything but whitespace. Evaluated on every mapped key event and
+    /// once more per layout pass, so it inspects the live cells in place instead of rebuilding a
+    /// pasted buffer into a string each time.
+    /// </summary>
+    public bool ComposerHasText
+    {
+        get
+        {
+            try
+            {
+                var lines = Input.GetAllLines();
+                if (lines is { Count: > 0 })
+                {
+                    return ComposerLinesHaveContent(lines);
+                }
+            }
+            catch
+            {
+            }
+
+            return !string.IsNullOrWhiteSpace(Input.Text?.ToString());
+        }
+    }
+
+    /// <summary>
+    /// True as soon as one composer cell holds a non-whitespace grapheme. The scan stops there, so
+    /// the cost is proportional to the leading whitespace rather than to the whole buffer.
+    /// </summary>
+    internal static bool ComposerLinesHaveContent(System.Collections.IList lines)
+    {
+        for (int i = 0; i < lines.Count; i++)
+        {
+            object? line = lines[i];
+            if (line is System.Collections.Generic.List<Cell> cells)
+            {
+                foreach (Cell cell in cells)
+                {
+                    if (!string.IsNullOrWhiteSpace(cell.Grapheme))
+                    {
+                        return true;
+                    }
+                }
+            }
+            else if (line is string text && !string.IsNullOrWhiteSpace(text))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public void ClearComposer()
     {

@@ -202,6 +202,21 @@ internal static partial class OpenAiV1Endpoints
                 statusCode: StatusCodes.Status201Created);
 
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+
+            // A caller that walked away is not a storage failure: no error log, and no 500 written to a
+            // connection that is already gone.
+            if (!publicationOwnsCleanup)
+            {
+
+                TryDeleteFile(path);
+
+            }
+
+            throw;
+
+        }
         catch (Exception ex)
         {
 

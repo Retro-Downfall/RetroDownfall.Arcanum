@@ -775,29 +775,39 @@ public static class ConfigurationPathAccessor
 
         }
 
-        if (targetType == typeof(string[]))
+        if (TryGetElementType(targetType, out Type? elementType)
+            && (elementType == typeof(string) || elementType == typeof(Guid)))
         {
 
-            string[] items;
-
-            try
-            {
-
-                items = trimmed.StartsWith("[", StringComparison.Ordinal)
-                    ? JsonSerializer.Deserialize(trimmed, ConfigurationJsonContext.Default.StringArray) ?? []
-                    : rawValue.Split(
-                        ',',
-                        StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-            }
-            catch (JsonException exception)
+            if (!TryParseListItems(rawValue, out string[] items, out error))
             {
 
                 value = null;
 
-                error = $"Expected a comma-separated list or valid JSON string array: {exception.Message}";
-
                 return false;
+
+            }
+
+            if (elementType == typeof(Guid))
+            {
+
+                for (int index = 0; index < items.Length; index++)
+                {
+
+                    if (!Guid.TryParse(items[index], out Guid parsedIdentifier))
+                    {
+
+                        value = null;
+
+                        error = $"Expected a comma-separated list or valid JSON array of GUIDs: '{items[index]}' is not a GUID.";
+
+                        return false;
+
+                    }
+
+                    items[index] = parsedIdentifier.ToString();
+
+                }
 
             }
 
@@ -854,7 +864,48 @@ public static class ConfigurationPathAccessor
 
             value = null;
 
-            error = $"Expected valid JSON for configuration type '{targetType.Name}': {exception.Message}";
+            error = TryGetElementType(targetType, out _)
+                ? $"Expected a valid JSON array: {exception.Message}"
+                : $"Expected valid JSON for configuration type '{targetType.Name}': {exception.Message}";
+
+            return false;
+
+        }
+
+    }
+
+    /// <summary>
+    /// Accepts either the plain comma-separated form or an explicit JSON array for any collection
+    /// key, so a single-valued list never has to be spelled as JSON.
+    /// </summary>
+    private static bool TryParseListItems(
+        string rawValue,
+        out string[] items,
+        out string? error)
+    {
+
+        string trimmed = rawValue.Trim();
+
+        try
+        {
+
+            items = trimmed.StartsWith("[", StringComparison.Ordinal)
+                ? JsonSerializer.Deserialize(trimmed, ConfigurationJsonContext.Default.StringArray) ?? []
+                : rawValue.Split(
+                    ',',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            error = null;
+
+            return true;
+
+        }
+        catch (JsonException exception)
+        {
+
+            items = [];
+
+            error = $"Expected a comma-separated list or valid JSON array: {exception.Message}";
 
             return false;
 

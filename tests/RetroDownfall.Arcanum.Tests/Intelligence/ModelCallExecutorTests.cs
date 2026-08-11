@@ -922,9 +922,7 @@ public sealed class ModelCallExecutorTests
         };
         InferenceTokenizerResolver tokenizer = new(
             NullLogger<InferenceTokenizerResolver>.Instance);
-        ModelTokenEstimator estimator = new(
-            tokenizer,
-            new TestOptionsMonitor<ArcanumSettings>(settings));
+        ModelTokenEstimator estimator = new(tokenizer);
 
         TestOptionsMonitor<ArcanumSettings> monitor = new(settings);
 

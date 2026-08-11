@@ -43,6 +43,12 @@ internal static class CliSuggestionEngine
     };
 
     /// <summary>
+    /// Every removed command path, so operator-facing prose elsewhere can assert it never teaches a
+    /// spelling this engine would reject.
+    /// </summary>
+    public static IReadOnlyCollection<string> RemovedSpellings => Removed.Keys;
+
+    /// <summary>
     /// Builds the diagnostic for a failed parse, or <c>null</c> when the failure is not an
     /// unrecognized command and System.CommandLine's own message is already the better one.
     /// </summary>

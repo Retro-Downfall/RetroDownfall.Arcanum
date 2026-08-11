@@ -175,6 +175,43 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ReserveAsync_CountsOnlyBillableOperationsAndIgnoresCostAdjustments()
+    {
+        RequireSqlCipher();
+
+        DateTimeOffset dayStart = new(2035, 4, 7, 0, 0, 0, TimeSpan.Zero);
+        string period = BudgetReservationService.UtcBudgetPeriod(dayStart);
+        TurnRunWriter runs = new(_db!);
+        Guid runId = await runs.StartRunAsync(new InferenceRunStart(
+            RequestId: "budget-adjustments",
+            SessionId: null,
+            Surface: "test",
+            Purpose: "coverage",
+            IdempotencyClaimId: null,
+            StartedAt: dayStart));
+
+        await InsertBillableOperationAsync(runId, dayStart.AddHours(1), 0.60m);
+        await InsertCostAdjustmentAsync(runId, dayStart.AddHours(2), 50m);
+
+        BudgetReservationService service = CreateService(new BudgetPolicySettings
+        {
+            Enabled = true,
+            DailyLimitUsd = 1m,
+        });
+
+        Result<BudgetReservation> result = await service.ReserveAsync(
+            new BudgetReservationRequest(
+                Guid.NewGuid(),
+                ReservedUsd: 0.40m,
+                ExpiresAt: dayStart.AddHours(3),
+                BudgetPeriod: period));
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+        Assert.Equal(BudgetReservationStatus.Reserved, result.Value.Status);
+        Assert.Equal(1L, await CountReservationsAsync());
+    }
+
+    [SkippableFact]
     public async Task ReservationLifecycle_ReconcilesReleasesAndExpiresOnlyEligibleRows()
     {
         RequireSqlCipher();
@@ -329,6 +366,27 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         AddParameter(command, "@completedAt", completedAt.ToString("o", CultureInfo.InvariantCulture));
         AddParameter(command, "@actualCostUsd", actualCostUsd);
         AddParameter(command, "@status", (int)BillableOperationStatus.Completed);
+
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+    }
+
+    private async Task InsertCostAdjustmentAsync(
+        Guid runId,
+        DateTimeOffset createdAt,
+        decimal amountUsd)
+    {
+        await using DbCommand command = _db!.Database.GetDbConnection().CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO "CostAdjustments"
+                ("Id", "BillableOperationId", "RunId", "AmountUsd", "Reason", "CreatedAt")
+            VALUES
+                (@id, NULL, @runId, @amountUsd, 'coverage', @createdAt);
+            """;
+        AddParameter(command, "@id", Guid.NewGuid().ToString("N"));
+        AddParameter(command, "@runId", runId.ToString("N"));
+        AddParameter(command, "@amountUsd", amountUsd);
+        AddParameter(command, "@createdAt", createdAt.ToString("o", CultureInfo.InvariantCulture));
 
         Assert.Equal(1, await command.ExecuteNonQueryAsync());
     }

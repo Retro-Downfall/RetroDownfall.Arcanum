@@ -111,7 +111,7 @@ public class BoundedLruCacheTests
             }
         }
 
-        Assert.InRange(found, 0, 10);
+        Assert.Equal(10, found);
     }
 
     [Fact]

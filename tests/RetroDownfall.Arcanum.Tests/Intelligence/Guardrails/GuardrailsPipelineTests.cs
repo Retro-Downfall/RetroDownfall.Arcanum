@@ -271,6 +271,42 @@ public sealed class GuardrailsPipelineTests
     }
 
     [Fact]
+    public async Task FilterOutputAsync_Blocked_ReportsOutputStageInErrorMessage()
+    {
+
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
+        {
+            Enabled = true,
+            DetectPii = false,
+            BlockToxicity = true,
+            ToxicityBlocklist = ["bad-word"],
+        });
+
+        Result<GuardrailsResult> outputResult = await pipeline.FilterOutputAsync(
+            "The model says bad-word here.",
+            CancellationToken.None);
+
+        Assert.True(outputResult.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, outputResult.Error.Code);
+
+        Assert.DoesNotContain("Input rejected", outputResult.Error.Message, StringComparison.Ordinal);
+
+        Assert.StartsWith("Response blocked", outputResult.Error.Message, StringComparison.Ordinal);
+
+        Result<GuardrailsResult> inputResult = await pipeline.FilterInputAsync(
+            [new CoreChatMessage("user", "The user says bad-word here.")],
+            CancellationToken.None);
+
+        Assert.True(inputResult.IsFailure);
+
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, inputResult.Error.Code);
+
+        Assert.StartsWith("Input rejected", inputResult.Error.Message, StringComparison.Ordinal);
+
+    }
+
+    [Fact]
     public async Task FilterOutputAsync_Pii_IsNotReScannedOnOutput()
     {
 

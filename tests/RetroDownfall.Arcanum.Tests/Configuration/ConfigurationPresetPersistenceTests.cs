@@ -1025,6 +1025,56 @@ public sealed class ConfigurationPresetPersistenceTests : IAsyncLifetime
 
     [Fact]
 
+    public async Task Recovery_completes_a_committed_apply_when_arcanum_json_is_unparseable()
+    {
+
+        ConfigurationWriter writer = CreateWriter();
+
+        ArcanumSettings baseline = Settings(
+            saga: false,
+            attachments: false,
+            defaultModel: "local-model",
+            wardEnabled: false);
+
+        ConfigurationPresetPlanningResult plan = GeneralAssistantPlan(baseline);
+
+        ConfigurationPresetProvenance provenance = Provenance(plan);
+
+        Assert.True((await writer.WriteAsync(
+            plan.CandidateSettings,
+            CancellationToken.None)).IsSuccess);
+
+        ConfigurationPresetJournalDocument journal = new(
+            "apply",
+            plan.BaselineValues,
+            plan.AppliedValues,
+            ConfigurationPresetHash.ComputeCanonicalValues(plan.BaselineValues),
+            ConfigurationPresetHash.ComputeCanonicalValues(plan.AppliedValues),
+            PreviousProvenance: null,
+            provenance,
+            DateTimeOffset.Parse("2026-08-03T12:00:00Z"));
+
+        await WriteJournalAsync(journal);
+
+        await WriteProvenanceAsync(
+            ArcanumPaths.ConfigurationPresetStateFile,
+            provenance);
+
+        await File.WriteAllTextAsync(ArcanumPaths.ConfigurationFile, "{ \"Arcanum\": ");
+
+        Result<ConfigurationPresetSnapshot> result = await CreatePersistence(writer)
+            .ReadAsync();
+
+        Assert.True(result.IsFailure);
+
+        Assert.True(File.Exists(ArcanumPaths.ConfigurationPresetRollbackFile));
+
+        Assert.False(File.Exists(ArcanumPaths.ConfigurationPresetJournalFile));
+
+    }
+
+    [Fact]
+
     public async Task Read_rejects_state_and_rollback_records_that_differ_only_by_timestamp()
     {
 

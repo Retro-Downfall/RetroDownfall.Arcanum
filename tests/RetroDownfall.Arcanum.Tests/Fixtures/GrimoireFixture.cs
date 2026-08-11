@@ -235,6 +235,14 @@ public sealed class GrimoireFixture : IDisposable
         return new CrossProcessMutexLease();
     }
 
+    /// <summary>
+    /// Every file a handed-out copy can put on disk, relative to its database path. The copies are
+    /// opened in <c>journal_mode=WAL</c> (see <see cref="SqlitePragmaConnectionInterceptor"/>), and
+    /// the <c>-wal</c>/<c>-shm</c> pair outlives the connection, so cleanup that only knew about the
+    /// database and its KDF sidecar left two orphans under the temp directory per copy.
+    /// </summary>
+    private static readonly string[] CopySuffixes = ["", "-wal", "-shm", ".kdf"];
+
     public string CopyDatabase()
     {
 
@@ -243,8 +251,6 @@ public sealed class GrimoireFixture : IDisposable
         string copySidecarPath = copyPath + ".kdf";
 
         _copyPaths.Add(copyPath);
-
-        _copyPaths.Add(copySidecarPath);
 
         lock (BuildLock)
         {
@@ -263,11 +269,39 @@ public sealed class GrimoireFixture : IDisposable
             catch
             {
 
-                File.Delete(copyPath);
-
-                File.Delete(copySidecarPath);
+                DeleteCopyFiles(copyPath);
 
                 throw;
+
+            }
+
+        }
+
+    }
+
+    private static void DeleteCopyFiles(string copyPath)
+    {
+
+        foreach (string suffix in CopySuffixes)
+        {
+
+            try
+            {
+
+                string path = copyPath + suffix;
+
+                if (File.Exists(path))
+                {
+
+                    File.Delete(path);
+
+                }
+
+            }
+            catch
+            {
+
+                // Best-effort cleanup; another test may still hold the handle.
 
             }
 
@@ -419,23 +453,7 @@ public sealed class GrimoireFixture : IDisposable
         foreach (string copyPath in _copyPaths)
         {
 
-            try
-            {
-
-                if (File.Exists(copyPath))
-                {
-
-                    File.Delete(copyPath);
-
-                }
-
-            }
-            catch
-            {
-
-                // Best-effort cleanup; another test may still hold the handle.
-
-            }
+            DeleteCopyFiles(copyPath);
 
         }
 

@@ -866,7 +866,7 @@ public sealed class A2AClientService : IA2AClientService
 
         }
 
-        string configId = Guid.NewGuid().ToString("N");
+        string configId = A2ACallbackConfigId.Mint();
 
         string token = A2ACallbackToken.Mint();
 
@@ -920,20 +920,13 @@ public sealed class A2AClientService : IA2AClientService
     }
 
     /// <summary>The absolute path peers post outbound-Sending callbacks to.</summary>
-    internal static string ResolveCallbackPath(ConclaveA2ASettings a2a)
-    {
-
-        string configured = string.IsNullOrWhiteSpace(a2a.ServerPath)
-            ? ArcanumRuntimeDefaults.Conclave.A2A.ServerPath
-            : a2a.ServerPath.Trim();
-
-        string normalized = configured.StartsWith("/api", StringComparison.Ordinal)
-            ? configured
-            : $"/api/{configured.Trim('/')}";
-
-        return $"{normalized.TrimEnd('/')}/callbacks";
-
-    }
+    /// <remarks>
+    /// Resolved through <see cref="A2APathPolicy"/> rather than normalized here a second time: this
+    /// value both maps the route and is advertised to the peer, so any disagreement with where the
+    /// server was actually mounted hands a peer an address nothing answers (&#167;5.7.1.4).
+    /// </remarks>
+    internal static string ResolveCallbackPath(ConclaveA2ASettings a2a) =>
+        $"{A2APathPolicy.ResolveServerPath(a2a.ServerPath)}/callbacks";
 
     /// <summary>
     /// Waits for the peer to report back, re-reading the task on each notification until it settles.

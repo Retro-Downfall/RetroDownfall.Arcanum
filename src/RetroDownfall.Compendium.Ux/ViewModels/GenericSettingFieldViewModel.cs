@@ -146,7 +146,9 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         {
             SettingKind.Int => (int)Math.Round(value),
             SettingKind.Long => (long)Math.Round(value),
-            SettingKind.Float => (float)value,
+            // Float settings are money backed by decimal properties. Narrowing to float would keep only
+            // ~7 significant digits, silently rounding a six-figure limit typed to the cent.
+            SettingKind.Float => (decimal)value,
             _ => value,
         };
 

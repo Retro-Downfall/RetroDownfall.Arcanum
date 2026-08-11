@@ -186,7 +186,48 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         HasFieldErrors = anyFieldError;
 
+        if (SameErrors(ValidationErrorsByPointer, merged))
+        {
+
+            return;
+
+        }
+
         ValidationErrorsByPointer = merged;
+
+    }
+
+    /// <summary>
+    /// <c>[ObservableProperty]</c> falls back to reference equality for a dictionary, so a freshly built
+    /// map never compares equal and would re-notify every bound control on every keystroke. Compare the
+    /// contents instead, and republish only when the error surface genuinely moved.
+    /// </summary>
+    private static bool SameErrors(
+        IReadOnlyDictionary<string, string> published,
+        Dictionary<string, string> candidate)
+    {
+
+        if (published.Count != candidate.Count)
+        {
+
+            return false;
+
+        }
+
+        foreach (KeyValuePair<string, string> entry in candidate)
+        {
+
+            if (!published.TryGetValue(entry.Key, out string? existing)
+                || !string.Equals(existing, entry.Value, StringComparison.Ordinal))
+            {
+
+                return false;
+
+            }
+
+        }
+
+        return true;
 
     }
 

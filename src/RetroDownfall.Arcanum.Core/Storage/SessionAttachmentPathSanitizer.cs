@@ -1,4 +1,5 @@
 using System.Text;
+using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Storage;
 
@@ -109,7 +110,7 @@ public static class SessionAttachmentPathSanitizer
         if (candidate.Length > MaxLength)
         {
 
-            candidate = candidate[..MaxLength];
+            candidate = candidate[..Utf8Truncation.SafeCharSliceLength(candidate, MaxLength)];
 
         }
 

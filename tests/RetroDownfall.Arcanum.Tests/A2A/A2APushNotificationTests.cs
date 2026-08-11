@@ -567,6 +567,13 @@ public sealed class A2APushNotificationTests : IDisposable
             "/api/peers/callbacks",
             A2AClientService.ResolveCallbackPath(new ConclaveA2ASettings { ServerPath = "/peers" }));
 
+        // "/apiary" merely starts with the same four characters as "/api"; it is not a path inside it.
+        // A2AServerEndpoints.ResolveServerPath mounts it at /api/apiary/a2a, and the callback route has
+        // to land in the same place or a peer is handed a URL nothing is listening on.
+        Assert.Equal(
+            "/api/apiary/a2a/callbacks",
+            A2AClientService.ResolveCallbackPath(new ConclaveA2ASettings { ServerPath = "/apiary/a2a" }));
+
     }
 
     // ── harness ────────────────────────────────────────────────────────────────────────────────────

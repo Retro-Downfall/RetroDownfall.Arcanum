@@ -37,13 +37,15 @@ jobs:
       - name: Restore tools
         run: dotnet tool restore
 
-      - name: Restore and build Arcanum + Compendium
+      - name: Restore and build Arcanum + Compendium + The Forge
         run: |
           set -euo pipefail
-          # The Forge is temporarily excluded from CI build/test while its suite is repaired.
-          # Build the test projects (and Cli) so dependencies are compiled without TheForge.Ux.
+          # The Forge's test suite is temporarily excluded from CI while it is repaired, but
+          # TheForge.Ux (and through it TheForge.Core) is compiled here because both release
+          # workflows package and ship it; without this a compile break merges green.
           for project in \
             src/RetroDownfall.Arcanum.Cli/RetroDownfall.Arcanum.Cli.csproj \
+            src/RetroDownfall.TheForge.Ux/RetroDownfall.TheForge.Ux.csproj \
             tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
             tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj
           do

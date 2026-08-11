@@ -5,7 +5,10 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Performance;
 
 /// <summary>
-/// Manual baseline harness; excluded from default CI via category filter.
+/// Manual baseline harness. The wall-clock assertions are machine-load sensitive, so the CI
+/// coverage gate excludes this category through <c>--filter "Category!=Perf"</c> in
+/// <c>scripts/coverage.sh</c>; <see cref="PerfCategoryExclusionTests"/> guards that filter.
+/// A plain <c>dotnet test</c> with no filter still runs them.
 /// </summary>
 [Trait("Category", "Perf")]
 [Collection("ApiHost")]

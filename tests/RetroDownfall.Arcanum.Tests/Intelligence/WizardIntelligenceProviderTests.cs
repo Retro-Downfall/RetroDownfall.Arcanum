@@ -436,7 +436,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         IntelligenceEvent error = Assert.Single(events, e => e.Type == IntelligenceEventType.Error);
 
-        Assert.Contains("content matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
+        // Output-stage rejection: the message must blame the model's response, not the prompt.
+        Assert.Contains("Response blocked", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -477,7 +480,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         IntelligenceEvent error = Assert.Single(events, e => e.Type == IntelligenceEventType.Error);
 
-        Assert.Contains("content matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
+        // Output-stage rejection: the message must blame the model's response, not the prompt.
+        Assert.Contains("Response blocked", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
 
         Assert.Equal(1, grimoire.DiscardCallCount);
 
@@ -510,7 +516,10 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         IntelligenceEvent error = Assert.Single(events, e => e.Type == IntelligenceEventType.Error);
 
-        Assert.Contains("content matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
+        // Output-stage rejection: the message must blame the model's response, not the prompt.
+        Assert.Contains("Response blocked", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("matched a guardrail policy", error.Message, StringComparison.OrdinalIgnoreCase);
 
     }
 
@@ -3410,6 +3419,83 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
             events,
             static e => e.Type == IntelligenceEventType.ToolError
                 && (e.Message?.Contains("Too many ask_human", StringComparison.Ordinal) ?? false));
+
+    }
+
+    [Fact]
+    public async Task StreamingAskHuman_WithoutLiveChannel_KeepsDenialTextOutOfArgumentsJson()
+    {
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueStreamToolCall(
+            "ask_human",
+            callId: "call_ask_denied",
+            arguments: new Dictionary<string, object?>
+            {
+                ["question"] = "What is the passphrase?",
+            });
+
+        chat.EnqueueStreamTokens("done");
+
+        FakeMcpConnectionManager mcp = new();
+
+        mcp.Tools.Add(CreateMcpTool("ask_human"));
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, mcp: mcp);
+
+        List<IntelligenceEvent> events = await CollectStreamAsync(
+            wizard,
+            BaseRequest() with
+            {
+                Prompt = "ask",
+                SkipSpellRouting = true,
+                UnattendedMode = true,
+            });
+
+        // toolCall.argumentsJson is the serialized call arguments on every frame — the denial text
+        // is the human-readable failure and belongs on Data, not in the arguments position.
+        IntelligenceEvent toolError = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.ToolError);
+
+        Assert.NotNull(toolError.ToolCall);
+
+        Assert.Contains(
+            "What is the passphrase?",
+            toolError.ToolCall.ArgumentsJson,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "only available during attended",
+            toolError.ToolCall.ArgumentsJson,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "only available during attended",
+            toolError.Data ?? string.Empty,
+            StringComparison.Ordinal);
+
+        IntelligenceEvent toolResult = Assert.Single(
+            events,
+            static e => e.Type == IntelligenceEventType.ToolResult);
+
+        Assert.NotNull(toolResult.ToolCall);
+
+        Assert.Contains(
+            "What is the passphrase?",
+            toolResult.ToolCall.ArgumentsJson,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "only available during attended",
+            toolResult.ToolCall.ArgumentsJson,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "only available during attended",
+            toolResult.Data ?? string.Empty,
+            StringComparison.Ordinal);
 
     }
 
@@ -7167,7 +7253,7 @@ public sealed class WizardIntelligenceProviderTests : IAsyncLifetime
 
         ProviderSettings provider = settings.Providers[0];
         string model = provider.Models[0].Name;
-        return new ModelTokenEstimator(resolver, options)
+        return new ModelTokenEstimator(resolver)
             .EstimateContext(new ModelTokenizationRequest(
                 provider,
                 model,

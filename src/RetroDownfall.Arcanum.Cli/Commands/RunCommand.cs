@@ -10,8 +10,6 @@ public sealed record RunCommandRequest(
 
     string[] Prompt,
 
-    string[] EscapedArguments,
-
     bool Research,
 
     string? Spell,
@@ -135,9 +133,7 @@ internal sealed class RunCommand(
 
         }
 
-        string positionalInstruction = AskCommand.BuildPrompt(
-            request.Prompt,
-            request.EscapedArguments);
+        string positionalInstruction = AskCommand.BuildPrompt(request.Prompt);
 
         RunInputReadResult input = await inputReader
             .ReadAsync(

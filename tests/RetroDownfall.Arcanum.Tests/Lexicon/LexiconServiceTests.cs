@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -5,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using SQLitePCL;
 
 namespace RetroDownfall.Arcanum.Tests.Lexicon;
 
@@ -452,5 +455,129 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             result.Value.Select(static entry => entry.Name).ToArray());
 
     }
+
+    [SkippableFact]
+    public async Task ListAsync_HydratesProvenanceForEveryEntityWithOneQuery()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedProvenancedEntitiesAsync(SeededEntityCount);
+
+        List<string> statements = CaptureStatements();
+
+        Result<IReadOnlyList<LexiconEntryDto>> result = await _service!.ListAsync(CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(SeededEntityCount, result.Value.Count);
+
+        AssertProvenanceMatchesFacts(result.Value);
+
+        Assert.Equal(1, CountProvenanceQueries(statements));
+
+    }
+
+    [SkippableFact]
+    public async Task MatchEntitiesAsync_HydratesProvenanceForEveryMatchWithOneQuery()
+    {
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string[] names = await SeedProvenancedEntitiesAsync(SeededEntityCount);
+
+        List<string> statements = CaptureStatements();
+
+        Result<IReadOnlyList<LexiconEntryDto>> matches = await _service!.MatchEntitiesAsync(
+            names,
+            10,
+            CancellationToken.None);
+
+        Assert.True(matches.IsSuccess);
+
+        Assert.Equal(SeededEntityCount, matches.Value.Count);
+
+        AssertProvenanceMatchesFacts(matches.Value);
+
+        Assert.Equal(1, CountProvenanceQueries(statements));
+
+    }
+
+    private const int SeededEntityCount = 5;
+
+    private async Task<string[]> SeedProvenancedEntitiesAsync(int count)
+    {
+
+        Guid sessionId = Guid.NewGuid();
+
+        string[] names = new string[count];
+
+        for (int index = 0; index < count; index++)
+        {
+
+            AttachmentMemoryProvenance provenance = new(
+                sessionId,
+                Guid.NewGuid(),
+                $"source-{index}",
+                1,
+                $"content-hash-{index}",
+                DateTimeOffset.Parse("2026-08-01T12:00:00Z"),
+                "WorkspaceFile",
+                AttachmentSourceAvailability.Available);
+
+            names[index] = $"Entity {index}";
+
+            Result<LexiconEntryDto> seeded = await _service!.UpsertAsync(
+                names[index],
+                "Project",
+                [$"Fact {index}."],
+                provenance,
+                CancellationToken.None);
+
+            Assert.True(seeded.IsSuccess);
+
+        }
+
+        return names;
+
+    }
+
+    private static void AssertProvenanceMatchesFacts(IReadOnlyList<LexiconEntryDto> entries)
+    {
+
+        foreach (LexiconEntryDto entry in entries)
+        {
+
+            LexiconFactProvenance provenance = Assert.Single(entry.FactProvenance ?? []);
+
+            Assert.Equal(Assert.Single(entry.Facts), provenance.Fact);
+
+        }
+
+    }
+
+    /// <summary>
+    /// Records every statement SQLite prepares on the fixture connection from this point on. Batched
+    /// provenance hydration is indistinguishable from the per-entry (N+1) shape in the returned DTOs,
+    /// so the only place the regression is observable is the statement stream itself.
+    /// </summary>
+    private List<string> CaptureStatements()
+    {
+
+        List<string> statements = [];
+
+        SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+        strdelegate_trace trace = (object _, string statement) => statements.Add(statement);
+
+        raw.sqlite3_trace(connection.Handle, trace, null);
+
+        return statements;
+
+    }
+
+    private static int CountProvenanceQueries(List<string> statements) =>
+        statements.Count(static statement =>
+            statement.Contains("lexicon_fact_attachment_provenance", StringComparison.Ordinal));
 
 }

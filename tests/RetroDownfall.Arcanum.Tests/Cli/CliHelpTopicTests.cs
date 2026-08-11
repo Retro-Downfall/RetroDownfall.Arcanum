@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Core.Cli;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -94,7 +95,8 @@ public sealed class CliHelpTopicTests
 
     /// <summary>
     /// Topic commands are advertised as runnable, so they carry the same parse obligation as the
-    /// per-command examples.
+    /// per-command examples: every one must still parse against the live tree, so a renamed verb
+    /// breaks the build instead of sending an operator to a command that exits 2.
     /// </summary>
     [Fact]
     public void Every_topic_command_is_a_real_arcanum_invocation()
@@ -125,7 +127,7 @@ public sealed class CliHelpTopicTests
                 if (parsed.Errors.Count > 0)
                 {
 
-                    broken.Add($"{topic.Name}: {command} -> {parsed.Errors[0].Message}");
+                    broken.Add($"[{topic.Name}] {command} -> {parsed.Errors[0].Message}");
 
                 }
 
@@ -134,6 +136,61 @@ public sealed class CliHelpTopicTests
         }
 
         Assert.True(broken.Count == 0, string.Join("\n", broken));
+
+    }
+
+    /// <summary>
+    /// A doctor selector parses as free text, so a topic can advertise `--only &lt;subsystem&gt;` for a
+    /// subsystem that does not exist and still look correct to the parser. The runner rejects it at
+    /// execution time with exit 2, so the vocabulary has to be checked here instead.
+    /// </summary>
+    [Fact]
+    public void Every_advertised_doctor_selector_names_a_real_subsystem()
+    {
+
+        HashSet<string> subsystems =
+        [
+            .. Enum.GetNames<DoctorSubsystem>(),
+        ];
+
+        List<string> unknown = [];
+
+        foreach (HelpTopic topic in HelpTopics.All)
+        {
+
+            foreach (string command in topic.Commands)
+            {
+
+                string[] tokens = CliSuggestionTests.Tokenize(command);
+
+                for (int index = 0; index < tokens.Length - 1; index++)
+                {
+
+                    if (tokens[index] is not ("--only" or "--skip"))
+                    {
+
+                        continue;
+
+                    }
+
+                    string selector = tokens[index + 1];
+
+                    string ns = selector.Split('.', 2)[0];
+
+                    if (!subsystems.Contains(ns, StringComparer.OrdinalIgnoreCase))
+                    {
+
+                        unknown.Add($"[{topic.Name}] {command} -> '{selector}' is not a DoctorSubsystem.");
+
+                    }
+
+                }
+
+            }
+
+        }
+
+        Assert.True(unknown.Count == 0, string.Join("\n", unknown));
 
     }
 

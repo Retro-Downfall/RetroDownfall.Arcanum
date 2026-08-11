@@ -186,7 +186,11 @@ The Native-AOT-safe CLI configuration surface is `arcanum config path|show|get|s
 indices such as `providers.0.endpoint`) through `ConfigurationJsonContext` property metadata; it
 does not walk settings POCOs with `PropertyInfo`. Values are parsed to the generated target type,
 then the complete snapshot passes the same outbound and semantic validation used by the API before
-any write. `show` and `get` apply `ConfigurationRedactor`; provider endpoint updates reject argv
+any write. Collection-valued keys accept either an explicit JSON array or the plain comma-separated
+form, decided by the declared *element* type rather than the declared collection type, so
+`string[]`, `List<string>`, and `Guid[]` keys behave identically — `security.ward.autoApprove.tools`
+and `retention.protectedSessionIds` are not special cases. GUID elements are validated and
+normalized per entry, and the rejection names the offending entry rather than the CLR type. `show` and `get` apply `ConfigurationRedactor`; provider endpoint updates reject argv
 values and accept only redirected stdin or a hidden terminal prompt. Successful `set` output shows
 the effective value, or `***` for a sensitive field.
 
@@ -1949,7 +1953,9 @@ Off unless an operator sets `Arcanum:Integrations:A2A:PushNotifications`; the Ag
 - **Inbound.** A peer may supply a callback on the send itself (`SendMessageConfiguration.PushNotificationConfig`) or through `tasks/pushNotificationConfig/*`, which `ArcanumA2AServer` implements over the SDK's own refusal. The URL is a remote-controlled address this instance will POST to on a schedule the peer chooses — an SSRF primitive — so it goes through exactly the same gate as any other egress: `OutboundUrlGuard` plus `AllowedRemoteAgents` when one is configured (§11.11), **re-checked at delivery**, because DNS and the allowlist can both change while a long Sending runs. Notifications carry the task id and the protocol state name and nothing else, for the same reason a `sendingProgress` frame does. Only states a waiting peer can act on are posted — the terminal ones and `input-required` — rather than every step-level `working` update. Delivery is best-effort: a peer whose endpoint is down never fails the Apprentice doing the actual work, which the peer can always poll for anyway. A refused callback is logged and the Sending continues without notifications.
 - **Outbound.** `A2ADispatchMode.Callback` asks the peer to report back, then **releases the concurrency slot** — the gate bounds simultaneous *work*, and a Sending waiting on a peer is not work. The caller still awaits the outcome; what it stops doing is occupying one of `MaxConcurrentA2ATasks` for the whole remote run. All three of these must hold or the dispatch keeps its slot and waits inline exactly as before: this instance has the surface enabled, `PushCallbackBaseUrl` names somewhere a peer can actually reach, and the peer's card advertises `pushNotifications`. Peer capability decides, as it does for streaming. A notification is never trusted as the outcome — it is a remote-authored claim about state — so each one triggers a `tasks/get`, and the authoritative answer (including artifacts and the usage block) comes from there. The same `tasks/get` also runs **once before the first wait**: a fast peer can settle in the window between the send and the registration round-trip, and the notification for that transition fired while there was still nowhere to post it, so believing the send's snapshot would be a wait nothing could ever end — the streaming path answers the identical race by falling back to a poll whose first read finds the settled task. **A callback that never arrives leaves the Sending waiting**, which is the same no-whole-operation-deadline contract every other mode has (#55); what it does not do is hold capacity while it waits. Local cancellation still issues `tasks/cancel`.
 
-**Callback endpoint (`POST {ServerPath}/callbacks/{configId}`).** Deliberately the **one** A2A route outside `ApiKeyEndpointFilter`: the caller is a peer agent, which by definition does not hold this instance's operator API key. It authenticates on a 256-bit secret minted per Sending, handed to the peer inside the push config, and compared in constant time against a **stored digest** — the token itself is never persisted, so a Grimoire read cannot yield a working callback credential (§11.2). A post with the wrong secret, or naming a callback nobody is waiting on, is answered `404`, so the endpoint never confirms which config ids exist. The route inherits the rate limiter when one is configured, and is not mapped at all when the surface is off.
+**Callback endpoint (`POST {ServerPath}/callbacks/{configId}`).** Deliberately the **one** A2A route outside `ApiKeyEndpointFilter`: the caller is a peer agent, which by definition does not hold this instance's operator API key. It authenticates on a 256-bit secret minted per Sending, handed to the peer inside the push config, and compared in constant time against a **stored digest** — the token itself is never persisted, so a Grimoire read cannot yield a working callback credential (§11.2). A post with the wrong secret, or naming a callback nobody is waiting on, is answered `404`, so the endpoint never confirms which config ids exist. `{configId}` is unauthenticated peer-supplied input reaching a durable lookup, so an id outside the shape this instance mints one in is refused on its shape alone rather than by paging the outbound Sendings the retention window still holds — minting and recognising it live in one place (`A2ACallbackConfigId`) so they cannot drift. The route inherits the rate limiter when one is configured, and is not mapped at all when the surface is off.
+
+Its path is resolved from `ServerPath` by the **same** normalization that mounts the server itself (`A2APathPolicy.ResolveServerPath`), because this one value both maps the route and is the URL advertised to the peer: two copies of that rule disagreed on a path like `/apiary/a2a`, which merely starts with the same four characters as `/api` without being inside it.
 
 A callback that arrives **after the process which dispatched the Sending has gone** finds no live waiter and is matched instead against the durable outbound record's `callbackConfigId` + token digest, which settles that row. Its cost is recorded as **unknown**: this process never observed the remote task, and inventing a figure — or a zero — is exactly what #60 removed.
 
@@ -3939,7 +3945,14 @@ deduplicated. Each provider search keeps its own result-page bound, but another 
 discovers at least one new URL. Research stops when the optional `sourceTarget` is reached, a pass
 discovers no new URLs, the caller/host cancels, reported cost exceeds an explicit ceiling, or a
 provider/safety failure occurs. The selected citations are then read and the final
-model call receives a bounded untrusted-data prompt with all tools disabled. The synthesis model,
+model call receives a bounded untrusted-data prompt with all tools disabled. Each search answer and
+fetched page — including its URL and title — is wrapped by `SystemPromptBuilder.AppendUntrusted` in
+the same adaptive backtick fence (`ComputeFenceBacktickLength`) used for attachments and Data
+Streams, under a code-owned `Source [n]` label that stays outside the fence for citation mapping, so
+a hostile page cannot forge additional `[n]` sources or append its own instruction block. The
+code-owned trailing synthesis instruction is reserved out of the character budget before any source
+is appended, and a block that will not fit once framed is re-framed around a shortened payload
+rather than trimmed in place, so the closing fence is never cut away. The synthesis model,
 token accounting, inference audit (`requestType:research`), and optional existing `SessionId` stay
 inside the host. The request also accepts effective `WorkingDirectory` / `CampaignId`, current-turn
 `AttachedFiles` / `ScryingFoci`, and production temperature, top-p, stop, seed, response-format,
@@ -4179,8 +4192,9 @@ env:
 
 Do not publish a historical test count or coverage percentage as a release claim. GitHub Actions
 uploads HTML + Cobertura as `arcanum-coverage-report`. Compendium runs as a separate `dotnet test`
-step. The Forge remains excluded from CI build/test until its test project and Ux solution build are
-re-enabled in `.github/workflows/ci.yml`; use the Windows command above meanwhile.
+step. `TheForge.Ux` — and through it `TheForge.Core` — is compiled by the `build-test` job because the
+release workflows package and ship it; only the Forge test suite remains excluded from
+`.github/workflows/ci.yml` until it is repaired, so use the Windows command above to run it meanwhile.
 
 ### 13.2 Test data, ownership, and parallel collections
 
@@ -4414,10 +4428,21 @@ artifacts are likewise excluded there. Full-suite duration is host-dependent; th
 costs are Grimoire template creation and ApiHost startup. Use the serial Windows command when
 validating shared process state.
 
+`ArcanumPerfBaselineTests` is a manual wall-clock baseline harness, not a gate: its budgets are
+machine-load sensitive and would fail the CI run for reasons unrelated to any code change. It is
+excluded from the coverage run by `--filter "Category!=Perf"` in `scripts/coverage.sh`, and
+`PerfCategoryExclusionTests` guards both halves of that contract — the filter must exist in the
+script, and every test class in `Tests.Performance` must carry `[Trait("Category", "Perf")]`. A
+plain unfiltered `dotnet test` still runs the baselines; the production paths they touch
+(`GET /api/health`, `ManaPreflight.CountTokens`) are separately covered by non-`Perf` tests, so the
+exclusion costs the gate no coverage.
+
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and manual dispatch:
 
-1. `build-test` (Linux) restores/builds Arcanum + Compendium, tests Compendium, then runs Arcanum once
-   through the coverage threshold script and uploads the report. The Forge is temporarily excluded.
+1. `build-test` (Linux) restores/builds Arcanum + Compendium + `TheForge.Ux`, tests Compendium, then
+   runs Arcanum once through the coverage threshold script and uploads the report. Only the Forge
+   *test suite* is excluded; `TheForge.Ux` is compiled because both release workflows ship it, and
+   without that a compile break would merge green.
 2. `macos-workspace-check` (macOS 14) pins a root-owned dotnet host and exercises the production
    `sandbox-exec` jail, then runs the AOT gate for the macOS RID.
 3. `windows-suite` (Windows) runs the full Arcanum and Compendium suites.
@@ -4675,17 +4700,30 @@ Non-`Unknown` domains: merge buckets in priority order (solutions → projects �
   differing suffix of the `ObservableCollection` bound to the Terminal.Gui `ListView`, because that
   list wrapper rescans the whole collection on every change notification. Transcript and Incantations
   refreshes therefore cost work proportional to the appended text, not `O(transcript)`.
-- **Command Center panes are cell-correct.** Transcript wrap, header/footer/thinking truncation, and
+- **Command Center panes are cell-correct.** Transcript wrap, header/footer/thinking truncation,
+  session sidebar rows (`SessionListItem.DisplayLine`, also reused by the Ctrl+O picker), and
   overlay wrap and width all measure terminal *display cells* and slice on grapheme boundaries
   through the shared `CommandCenter/TerminalCellMetrics`, which `ComposerLayout` delegates to. CJK,
   fullwidth, and emoji content therefore sizes correctly and no slice splits a surrogate pair.
   (§16.5's naive line-counter caveat is scoped to the Spectre swap renderer and does not apply here.)
+- **Operator guidance names only live spellings.** Arcanum ships no compatibility aliases, so every
+  Command Center message that tells the operator what to type — the size gate and start-failure
+  diagnostics, the F1 slash summary, `/help` usage strings, and the resume hints — is pinned by test
+  against `ShellCommandParser` and `CliSuggestionEngine.RemovedSpellings`. Help cannot document a
+  form the grammar denies.
+- **Composer measurement is proportional to what changed, not to what is pasted.** `ComposerHasText`
+  scans the live cells and stops at the first non-whitespace one instead of rebuilding the buffer,
+  and `ComposerLayout` counts a printable-ASCII line arithmetically rather than walking grapheme
+  clusters. A large paste therefore does not make each subsequent keystroke re-measure the whole
+  buffer.
 
 ### 16.7 Reliability & Performance Hardening
 
 `EmbeddingBlobCodec` uses SIMD cosine; `/v1` SSE classifies disconnects; RAG chunking/truncation is
-surrogate-safe, and `SessionLogBuffer.ClampForKind` routes through
-`Utf8Truncation.SafeCharSliceLength` so Command Center transcript clamping is surrogate-safe too;
+surrogate-safe, and both Command Center transcript clamps are surrogate-safe —
+`SessionLogBuffer.ClampForKind` routes through `Utf8Truncation.SafeCharSliceLength`, and
+`BoundedStreamingTextBuffer` rewinds off an orphaned high surrogate before appending its truncation
+marker so a capped stream never ends in half a glyph;
 SQLCipher contention uses `SqliteBusyRetry`; and
 `scripts/verify-aot-il-warnings.sh` gates first-party AOT purity.
 

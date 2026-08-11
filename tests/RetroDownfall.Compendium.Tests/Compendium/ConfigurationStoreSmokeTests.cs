@@ -507,6 +507,58 @@ public sealed class ConfigurationStoreSmokeTests : IDisposable
 
     }
 
+    /// <summary>
+    /// A read never joins the cross-process configuration mutex, so the handle it holds must leave the
+    /// host free to replace arcanum.json atomically. Windows enforces share modes, so a reader that
+    /// withheld write or delete access would turn a perfectly good <c>arcanum config set</c> into a
+    /// spurious write failure.
+    /// </summary>
+    [Fact]
+
+    public async Task Configuration_reads_do_not_deny_a_concurrent_atomic_replacement()
+    {
+
+        string configPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            "arcanum.json");
+
+        _ = Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        await File.WriteAllTextAsync(
+            configPath,
+            """{"Arcanum":{"host":{"port":5001}}}""");
+
+        string replacementPath = Path.Combine(
+            ArcanumPaths.GrimoireDirectory,
+            ".host-replacement.tmp");
+
+        await File.WriteAllTextAsync(
+            replacementPath,
+            """{"Arcanum":{"host":{"port":6124}}}""");
+
+        await using FileStream reader =
+            ArcanumConfigurationStore.OpenConfigurationForRead(configPath);
+
+        await using (FileStream competingWriter = new(
+            configPath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.ReadWrite | FileShare.Delete))
+        {
+
+            Assert.True(competingWriter.CanWrite);
+
+        }
+
+        File.Replace(replacementPath, configPath, destinationBackupFileName: null);
+
+        Assert.Contains(
+            "6124",
+            await File.ReadAllTextAsync(configPath),
+            StringComparison.Ordinal);
+
+    }
+
     public void Dispose() => _home.Dispose();
 
 }

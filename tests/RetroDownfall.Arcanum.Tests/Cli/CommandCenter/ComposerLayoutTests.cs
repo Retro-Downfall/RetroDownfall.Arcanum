@@ -156,6 +156,47 @@ public sealed class ComposerLayoutTests
         Assert.Equal(3, two.ContentRows);
         Assert.False(two.ReserveScrollbar);
     }
+
+    /// <summary>
+    /// Row counting runs up to three times per layout pass, and a layout pass follows every composer
+    /// mutation. A pasted log must therefore not cost a grapheme-cluster string per character — the
+    /// plain-ASCII line, which is the overwhelmingly common case, has to be counted arithmetically.
+    /// </summary>
+    [Fact]
+    public void Counting_a_large_ascii_paste_does_not_allocate_per_character()
+    {
+        string pasted = new('x', 200_000);
+
+        // Warm any one-time state so the measured window contains only the counting work.
+        _ = ComposerLayout.CountWrappedRows("warmup", 80);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        int rows = ComposerLayout.CountWrappedRows(pasted, 80);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(2_500, rows);
+        Assert.True(allocated < 100_000, $"counting allocated {allocated} bytes for a 200k-char paste.");
+    }
+
+    /// <summary>The arithmetic path must agree with the grapheme walk it replaces.</summary>
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(7, 8)]
+    [InlineData(8, 8)]
+    [InlineData(9, 8)]
+    [InlineData(16, 8)]
+    [InlineData(17, 8)]
+    [InlineData(80, 20)]
+    public void Ascii_row_counts_match_the_grapheme_walk(int length, int width)
+    {
+        // A trailing combining mark forces the grapheme walk while adding zero cells, so both paths
+        // must report the same row count for the same visible content.
+        string ascii = new('x', length);
+
+        Assert.Equal(
+            ComposerLayout.CountWrappedRows(ascii + "́", width),
+            ComposerLayout.CountWrappedRows(ascii, width));
+    }
 }
 
 public sealed class CommandCenterSubmitTextTests

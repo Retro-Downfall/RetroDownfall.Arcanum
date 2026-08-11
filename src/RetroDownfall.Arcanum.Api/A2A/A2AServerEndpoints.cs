@@ -38,7 +38,7 @@ namespace RetroDownfall.Arcanum.Api.A2A;
 internal static class A2AServerEndpoints
 {
 
-    private const string ApiGroupPrefix = "/api";
+    private const string ApiGroupPrefix = A2APathPolicy.ApiGroupPrefix;
 
     /// <summary>
     /// Resolves the absolute path the A2A server is mounted at from the configured
@@ -51,32 +51,13 @@ internal static class A2AServerEndpoints
     /// server. Refusing to map (the previous behavior) left the operator with a silently dead surface and no
     /// diagnostic — the effective path is reported through <c>GET /api/meta</c> and <c>GET /api/health</c>
     /// so the mount point is never a guess (issue #12).
+    /// <para>
+    /// The normalization itself lives on <see cref="A2APathPolicy"/> because the outbound-Sending callback
+    /// route resolves the same setting from Infrastructure, and two copies of it drifted (&#167;5.7.1.4).
+    /// </para>
     /// </remarks>
-    internal static string ResolveServerPath(string? configuredPath)
-    {
-
-        string trimmed = configuredPath?.Trim() ?? string.Empty;
-
-        if (trimmed.Length == 0)
-        {
-
-            return ArcanumRuntimeDefaults.Conclave.A2A.ServerPath;
-
-        }
-
-        if (trimmed == ApiGroupPrefix
-            || trimmed.StartsWith($"{ApiGroupPrefix}/", StringComparison.Ordinal))
-        {
-
-            return trimmed.TrimEnd('/') is { Length: > 0 } normalized ? normalized : ApiGroupPrefix;
-
-        }
-
-        string relative = trimmed.Trim('/');
-
-        return relative.Length == 0 ? ApiGroupPrefix : $"{ApiGroupPrefix}/{relative}";
-
-    }
+    internal static string ResolveServerPath(string? configuredPath) =>
+        A2APathPolicy.ResolveServerPath(configuredPath);
 
     public static RouteGroupBuilder MapA2AServer(this RouteGroupBuilder apiGroup, ArcanumSettings startupSettings)
     {

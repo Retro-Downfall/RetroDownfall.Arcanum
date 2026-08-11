@@ -946,8 +946,6 @@ internal sealed class FileConfigurationPresetPersistence(
 
         }
 
-        ArcanumSettings current = ConfigurationBootstrapper.LoadPersistedArcanumSettings();
-
         Result<ConfigurationPresetProvenance?> state = await ReadProvenanceAsync(
                 ArcanumPaths.ConfigurationPresetStateFile,
                 optional: true,

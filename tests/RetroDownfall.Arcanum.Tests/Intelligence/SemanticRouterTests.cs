@@ -2,6 +2,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Tests.Support;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
@@ -427,6 +428,36 @@ public sealed class SemanticRouterTests
             NullLogger.Instance);
 
         Assert.Empty(entities);
+    }
+
+    [Fact]
+    public async Task LexiconEntityExtractor_InvalidJson_ClipsLoggedResponseSnippet()
+    {
+        string oversized = new string('x', 250) + "TAIL-MARKER";
+
+        FakeChatClient client = new()
+        {
+            NextText = oversized,
+        };
+
+        TestCapturingLogger<SemanticRouterTests> logger = new();
+
+        (IReadOnlyList<string> entities, _) = await LexiconEntityExtractor.ExtractAsync(
+            client,
+            "prompt",
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None,
+            logger);
+
+        Assert.Empty(entities);
+
+        TestLogEntry entry = Assert.Single(
+            logger.Entries,
+            e => e.Message.Contains("failed to parse JSON response", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("TAIL-MARKER", entry.Message, StringComparison.Ordinal);
+
+        Assert.Contains(new string('x', 200), entry.Message, StringComparison.Ordinal);
     }
 
     [Fact]

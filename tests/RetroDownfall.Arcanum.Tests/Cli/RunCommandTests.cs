@@ -1,3 +1,5 @@
+using System.CommandLine;
+
 using System.Net;
 
 using System.Text;
@@ -95,6 +97,77 @@ public sealed class RunCommandTests
         Assert.Contains("--session", result.Output, StringComparison.Ordinal);
 
         Assert.Contains("--model", result.Output, StringComparison.Ordinal);
+
+    }
+
+    /// <summary>
+    /// <c>run</c> keeps System.CommandLine's default unmatched-token handling and its variadic
+    /// <c>prompt</c> argument absorbs every trailing token, so option-shaped prompt text escaped
+    /// after <c>--</c> arrives through that one channel and nothing survives as an unmatched token.
+    /// </summary>
+    [Fact]
+
+    public void Run_binds_escaped_prompt_tokens_through_the_prompt_argument()
+    {
+
+        using ServiceProvider provider = CliServices();
+
+        RootCommand root = CliCommandTree.Build(provider, out _);
+
+        ParseResult parsed = ParseRun(root, "run", "--", "--model", "foo");
+
+        Assert.Empty(parsed.Errors);
+
+        Assert.Empty(parsed.UnmatchedTokens);
+
+        Argument<string[]> prompt = (Argument<string[]>)FindRun(root)
+            .Arguments
+            .Single(argument => argument.Name == "prompt");
+
+        Assert.Equal(["--model", "foo"], parsed.GetValue(prompt) ?? []);
+
+    }
+
+    /// <summary>
+    /// Every token array on the request has to be fillable from the command surface. A member with
+    /// no matching argument or option can only ever be handed a constant — <c>UnmatchedTokens</c> is
+    /// always empty here — while advertising a second escape channel <c>run</c> does not have.
+    /// </summary>
+    [Fact]
+
+    public void Run_request_token_arrays_are_all_bound_from_the_run_command_surface()
+    {
+
+        using ServiceProvider provider = CliServices();
+
+        Command run = FindRun(CliCommandTree.Build(provider, out _));
+
+        HashSet<string> bindable = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (Argument argument in run.Arguments)
+        {
+
+            bindable.Add(argument.Name);
+
+        }
+
+        foreach (Option option in run.Options)
+        {
+
+            bindable.Add(option.Name.TrimStart('-'));
+
+        }
+
+        string[] unbound =
+        [
+            .. typeof(RunCommandRequest)
+                .GetProperties()
+                .Where(static property => property.PropertyType == typeof(string[]))
+                .Select(static property => property.Name)
+                .Where(name => !bindable.Contains(name)),
+        ];
+
+        Assert.Empty(unbound);
 
     }
 
@@ -1538,6 +1611,36 @@ public sealed class RunCommandTests
 
     }
 
+    private static ServiceProvider CliServices()
+    {
+
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(
+            services,
+            new ConfigurationManager());
+
+        return services.BuildServiceProvider();
+
+    }
+
+    private static Command FindRun(RootCommand root) =>
+        root.Subcommands.Single(command => command.Name == "run");
+
+    /// <summary>
+    /// Matches production: <see cref="CliApplicationFactory"/> disables response-file expansion, so
+    /// a leading <c>@</c> stays application syntax rather than a token replacer.
+    /// </summary>
+    private static ParseResult ParseRun(RootCommand root, params string[] tokens) =>
+        root.Parse(
+            tokens,
+            new ParserConfiguration
+            {
+
+                ResponseFileTokenReplacer = null,
+
+            });
+
     private static RunCommandRequest Request(
         bool research = false,
         string? spell = null,
@@ -1552,7 +1655,6 @@ public sealed class RunCommandTests
         string[]? attachment = null) =>
         new(
             prompt ?? ["prompt"],
-            EscapedArguments: [],
             research,
             spell,
             with ?? [],

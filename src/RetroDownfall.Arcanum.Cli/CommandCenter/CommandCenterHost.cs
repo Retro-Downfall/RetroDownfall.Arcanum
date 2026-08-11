@@ -53,6 +53,20 @@ internal sealed class CommandCenterHost(
         "Quit",
     ];
 
+    /// <summary>
+    /// Diagnostic for the viewport size gate. The recovery it names must be a spelling the CLI still
+    /// parses, so it never points the operator at a removed command.
+    /// </summary>
+    internal static string DescribeTerminalTooSmall(int detectedCols, int detectedRows) =>
+        "Terminal too small for Command Center. "
+        + $"Detected {detectedCols}x{detectedRows}; "
+        + $"need at least {CommandCenterApp.MinCols}x{CommandCenterApp.MinRows}. "
+        + "Resize the terminal, or run a direct command (e.g. `arcanum run`).";
+
+    /// <summary>Diagnostic for a Command Center that could not start at all.</summary>
+    internal const string StartFailureMessage =
+        "Command Center failed to start. Try `arcanum run` or another direct command.";
+
     private PendingConfirm? _pendingConfirm;
 
     private readonly SemaphoreSlim _actionGate = new(1, 1);
@@ -665,17 +679,15 @@ internal sealed class CommandCenterHost(
             if (tgCode == -2)
             {
                 Console.Error.WriteLine(
-                    "Terminal too small for Command Center. "
-                    + $"Detected {commandCenterApp.LastDetectedCols}x{commandCenterApp.LastDetectedRows}; "
-                    + $"need at least {CommandCenterApp.MinCols}x{CommandCenterApp.MinRows}. "
-                    + "Resize the terminal, or run a direct command (e.g. `arcanum chat`).");
+                    DescribeTerminalTooSmall(
+                        commandCenterApp.LastDetectedCols,
+                        commandCenterApp.LastDetectedRows));
                 return 1;
             }
 
             if (tgCode == -1)
             {
-                Console.Error.WriteLine(
-                    "Command Center failed to start. Try `arcanum chat` or another direct command.");
+                Console.Error.WriteLine(StartFailureMessage);
                 return 1;
             }
 
@@ -1526,6 +1538,42 @@ internal sealed class CommandCenterHost(
         });
     }
 
+    /// <summary>
+    /// Body of the F1 overlay. The <c>Slash:</c> line is operator instruction, so every spelling it
+    /// lists must be one <see cref="ShellCommandParser"/> still accepts.
+    /// </summary>
+    internal static readonly string[] HelpOverlayLines =
+    [
+        "F1 Help",
+        "Ctrl+K Command palette",
+        "Ctrl+O Sessions",
+        "Ctrl+N New session",
+        "Ctrl+R / F5 Refresh",
+        "Tab / Shift+Tab Cycle focus (Composer→Sessions→Transcript→Incantations→Model)",
+        "Enter/Space     Open the model drop-down when the Model header control has focus",
+        "Ctrl+Enter Send (composer)",
+        "Enter Newline (composer)",
+        "Enter Resume (sessions)",
+        "Ctrl+C Cancel turn / clear input / quit hint",
+        "Ctrl+Q Quit",
+        "Esc Close overlay / focus composer",
+        "PgUp/PgDn Transcript scroll (also from composer)",
+        "Ctrl+PgUp/PgDn Load adjacent Transcript or Sessions page",
+        "↑↓/Home/End Scroll focused Transcript or Incantations",
+        "",
+        "Slash: /help /keys /session list /clear /resume <id>",
+        "Denied: /serve /daemon… /key…",
+        "",
+        "Incantations: tool calls by CallId (heavy args suppressed)",
+        "Thinking ⠋ while waiting for first token",
+        "",
+        "ask_human: Ctrl+Enter submit · Enter newline · Ctrl+C cancel turn",
+    ];
+
+    /// <summary>The <c>Slash:</c> summary line of <see cref="HelpOverlayLines"/>.</summary>
+    internal static string HelpOverlaySlashSummary =>
+        HelpOverlayLines.First(static line => line.StartsWith("Slash:", StringComparison.Ordinal));
+
     private void ShowHelpOverlay(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
         state.Overlay = CommandCenterOverlayKind.Help;
@@ -1534,32 +1582,7 @@ internal sealed class CommandCenterHost(
         {
             window.ShowOverlay(
                 CommandCenterOverlayKind.Help,
-                [
-                    "F1 Help",
-                    "Ctrl+K Command palette",
-                    "Ctrl+O Sessions",
-                    "Ctrl+N New session",
-                    "Ctrl+R / F5 Refresh",
-                    "Tab / Shift+Tab Cycle focus (Composer→Sessions→Transcript→Incantations→Model)",
-                    "Enter/Space     Open the model drop-down when the Model header control has focus",
-                    "Ctrl+Enter Send (composer)",
-                    "Enter Newline (composer)",
-                    "Enter Resume (sessions)",
-                    "Ctrl+C Cancel turn / clear input / quit hint",
-                    "Ctrl+Q Quit",
-                    "Esc Close overlay / focus composer",
-                    "PgUp/PgDn Transcript scroll (also from composer)",
-                    "Ctrl+PgUp/PgDn Load adjacent Transcript or Sessions page",
-                    "↑↓/Home/End Scroll focused Transcript or Incantations",
-                    "",
-                    "Slash: /help /keys /session list|new|resume",
-                    "Denied: /serve /daemon… /key…",
-                    "",
-                    "Incantations: tool calls by CallId (heavy args suppressed)",
-                    "Thinking ⠋ while waiting for first token",
-                    "",
-                    "ask_human: Ctrl+Enter submit · Enter newline · Ctrl+C cancel turn",
-                ],
+                HelpOverlayLines,
                 "Help",
                 showFilter: false);
             window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshFooter);

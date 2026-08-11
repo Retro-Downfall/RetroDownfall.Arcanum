@@ -997,7 +997,6 @@ internal sealed class WorkspaceSearchEngine
 
         int desiredStart = matchIndex - Math.Max(1, (_maxPreviewChars - matchLength) / 2);
         int start = Math.Clamp(desiredStart, 0, line.Length - _maxPreviewChars);
-        int end = start + _maxPreviewChars;
 
         if (start > 0 && char.IsLowSurrogate(line[start]))
         {
@@ -1006,6 +1005,10 @@ internal sealed class WorkspaceSearchEngine
 
         }
 
+        // The budget is measured from the adjusted start, so stepping past a split pair never costs a
+        // character of the preview.
+        int end = Math.Min(line.Length, start + _maxPreviewChars);
+
         if (end < line.Length && end > start && char.IsHighSurrogate(line[end - 1]))
         {
 
@@ -1013,25 +1016,51 @@ internal sealed class WorkspaceSearchEngine
 
         }
 
-        string preview = line[start..end].ToString();
+        ReadOnlySpan<char> window = line[start..end];
+        bool leading = start > 0;
+        bool trailing = end < line.Length;
 
-        if (start > 0 && preview.Length > 0)
+        // Each ellipsis replaces a whole code point: taking a single char would strand the other half
+        // of an astral pair and emit an unpaired surrogate.
+        if (leading && window.Length > 0)
         {
 
-            preview = $"…{preview[1..]}";
+            window = window[LeadingCodePointLength(window)..];
 
         }
 
-        if (end < line.Length && preview.Length > 0)
+        if (trailing && window.Length > 0)
         {
 
-            preview = $"{preview[..^1]}…";
+            window = window[..^TrailingCodePointLength(window)];
 
         }
 
-        return preview;
+        return leading
+            ? trailing
+                ? $"…{window}…"
+                : $"…{window}"
+            : trailing
+                ? $"{window}…"
+                : window.ToString();
 
     }
+
+    private static int LeadingCodePointLength(
+        ReadOnlySpan<char> value) =>
+        value.Length > 1
+        && char.IsHighSurrogate(value[0])
+        && char.IsLowSurrogate(value[1])
+            ? 2
+            : 1;
+
+    private static int TrailingCodePointLength(
+        ReadOnlySpan<char> value) =>
+        value.Length > 1
+        && char.IsLowSurrogate(value[^1])
+        && char.IsHighSurrogate(value[^2])
+            ? 2
+            : 1;
 
     private static bool MatchesFilters(
         string relativePath,

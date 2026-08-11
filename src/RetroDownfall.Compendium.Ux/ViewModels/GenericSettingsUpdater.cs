@@ -225,7 +225,7 @@ public static class GenericSettingsUpdater
             SettingKind.StringArray when value is string[] arr => arr,
             SettingKind.Int when value is double d => (int)Math.Round(d),
             SettingKind.Long when value is double d => (long)Math.Round(d),
-            SettingKind.Float when value is double d => (float)d,
+            SettingKind.Float when value is double d => (decimal)d,
             SettingKind.Bool => value is true,
             _ => value,
         };

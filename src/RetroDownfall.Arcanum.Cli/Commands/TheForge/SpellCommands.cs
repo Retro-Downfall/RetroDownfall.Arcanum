@@ -199,7 +199,9 @@ public sealed class SpellCommands(
 
         string bodyPreview = string.IsNullOrEmpty(body)
             ? "(empty)"
-            : body.Length > bodyPreviewChars ? body[..bodyPreviewChars] + "\u2026" : body;
+            : body.Length > bodyPreviewChars
+                ? body[..Utf8Truncation.SafeCharSliceLength(body, bodyPreviewChars)] + "\u2026"
+                : body;
 
         table.AddRow(themePalette.MutedMarkup(Markup.Escape("Body:")), themePalette.TextMarkup(Markup.Escape(bodyPreview)));
 

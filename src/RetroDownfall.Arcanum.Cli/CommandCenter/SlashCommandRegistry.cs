@@ -42,7 +42,7 @@ internal static class SlashCommandRegistry
         new("arsenal", "/arsenal", "Show the effective workspace arsenal.", []),
         new("look", "/look", "Show an Eye of the World snapshot of the working directory.", []),
         new("resume", "/resume <id>", "Load a transcript and continue that session.", []),
-        new("session", "/session list|new|archive <id>", "Manage sessions without leaving Command Center.", []),
+        new("session", "/session list|archive <id>", "Manage sessions without leaving Command Center.", []),
         new("campaign", "/campaign list [offset]", "List a bounded display page of campaigns.", []),
         new("spell", "/spell list [cursor]", "List a bounded display page of spells.", []),
         new("ward", "/ward list|allow|deny [<id>]", "Review and resolve Ward approvals.", []),

@@ -264,7 +264,6 @@ internal static partial class CliCommandTree
                 ?? await handler.RunAsync(
                     new RunCommandRequest(
                         result.GetValue(prompt) ?? [],
-                        result.UnmatchedTokens.ToArray(),
                         result.GetValue(research),
                         result.GetValue(spell),
                         result.GetValue(with) ?? [],

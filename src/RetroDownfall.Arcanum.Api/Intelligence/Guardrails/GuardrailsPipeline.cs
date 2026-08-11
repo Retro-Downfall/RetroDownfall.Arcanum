@@ -88,7 +88,7 @@ public sealed partial class GuardrailsPipeline(
 
         await LogViolationsAsync(StageInput, result.Violations, auditContext, cancellationToken).ConfigureAwait(false);
 
-        Error error = BuildError(result.Violations[0]);
+        Error error = BuildError(result.Violations[0], StageInput);
 
         return Result<GuardrailsResult>.Failure(error);
 
@@ -128,7 +128,7 @@ public sealed partial class GuardrailsPipeline(
 
         await LogViolationsAsync(StageOutput, result.Violations, auditContext, cancellationToken).ConfigureAwait(false);
 
-        Error error = BuildError(result.Violations[0]);
+        Error error = BuildError(result.Violations[0], StageOutput);
 
         return Result<GuardrailsResult>.Failure(error);
 
@@ -508,10 +508,29 @@ public sealed partial class GuardrailsPipeline(
 
     }
 
-    private static Error BuildError(GuardrailsViolation violation) =>
-        violation.Type.StartsWith("pii-", StringComparison.Ordinal)
-            ? new Error(ErrorCodes.Guardrails.PiiDetected, "Input rejected: personally identifiable information detected. Redact PII and retry.")
-            : new Error(ErrorCodes.Guardrails.Blocked, "Input rejected: content matched a guardrail policy (toxicity or topic).");
+    /// <summary>
+    /// Builds the caller-facing failure for the first violation. The <see cref="ErrorCodes.Guardrails"/>
+    /// code is stage-independent (the wire contract is unchanged); only the human-readable text names
+    /// the stage, so an output-gate rejection is not misreported as a rejected prompt.
+    /// </summary>
+    private static Error BuildError(GuardrailsViolation violation, string stage)
+    {
+
+        bool isOutput = string.Equals(stage, StageOutput, StringComparison.Ordinal);
+
+        return violation.Type.StartsWith("pii-", StringComparison.Ordinal)
+            ? new Error(
+                ErrorCodes.Guardrails.PiiDetected,
+                isOutput
+                    ? "Response blocked: personally identifiable information detected in the model output."
+                    : "Input rejected: personally identifiable information detected. Redact PII and retry.")
+            : new Error(
+                ErrorCodes.Guardrails.Blocked,
+                isOutput
+                    ? "Response blocked: model output matched a guardrail policy (toxicity or topic)."
+                    : "Input rejected: content matched a guardrail policy (toxicity or topic).");
+
+    }
 
     /// <summary>
     /// Redacts a matched span so the audit log and any error envelope never persist raw PII. PII

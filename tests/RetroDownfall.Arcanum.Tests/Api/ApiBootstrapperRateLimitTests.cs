@@ -1,7 +1,9 @@
+using System.Collections;
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using System.Runtime.ExceptionServices;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Configuration;
@@ -226,6 +228,113 @@ public sealed class ApiBootstrapperRateLimitTests : IDisposable
 
         }
 
+    }
+
+    /// <summary>
+    /// The limiter's mechanics are entirely code-owned (<c>ArcanumRuntimeDefaults.HostRateLimit</c>
+    /// plus the remote IP), so the per-request partitioner must not reach into
+    /// <see cref="HttpContext.RequestServices"/> at all — a DI resolve on the hottest path in the
+    /// host that no limit value is ever read from is pure waste.
+    /// </summary>
+    [Fact]
+    public void RateLimitPartitioner_does_not_resolve_request_services()
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Arcanum:Host:ListenAny"] = "true",
+            })
+            .Build();
+
+        ServiceCollection services = new();
+
+        InvokeRegisterRateLimiter(services, configuration);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        RateLimiterOptions options = provider.GetRequiredService<IOptions<RateLimiterOptions>>().Value;
+
+        object policy = ResolveRegisteredPolicy(options, ApiBootstrapper.ArcanumRateLimiterPolicyName, provider);
+
+        using ServiceProvider emptyRequestServices = new ServiceCollection().BuildServiceProvider();
+
+        DefaultHttpContext context = new()
+        {
+            RequestServices = emptyRequestServices,
+        };
+
+        context.Connection.RemoteIpAddress = IPAddress.Parse("198.51.100.7");
+
+        object? partition = InvokeGetPartition(policy, context);
+
+        Assert.NotNull(partition);
+    }
+
+    private static void InvokeRegisterRateLimiter(IServiceCollection services, IConfiguration configuration)
+    {
+        MethodInfo? method = typeof(ApiBootstrapper).GetMethod(
+            "RegisterRateLimiter",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        Invoke(method, null, [services, configuration]);
+    }
+
+    private static object ResolveRegisteredPolicy(
+        RateLimiterOptions options,
+        string policyName,
+        IServiceProvider provider)
+    {
+        PropertyInfo? policyMapProperty = typeof(RateLimiterOptions).GetProperty(
+            "PolicyMap",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(policyMapProperty);
+
+        IDictionary? policyMap = policyMapProperty.GetValue(options) as IDictionary;
+
+        Assert.NotNull(policyMap);
+
+        object? entry = policyMap[policyName];
+
+        Assert.NotNull(entry);
+
+        // Depending on the AddPolicy overload the framework stores either the policy itself or a
+        // factory over IServiceProvider; both shapes end at the same partitioner.
+        if (entry is Delegate factory)
+        {
+            entry = factory.DynamicInvoke(provider);
+
+            Assert.NotNull(entry);
+        }
+
+        return entry;
+    }
+
+    private static object? InvokeGetPartition(object policy, HttpContext context)
+    {
+        MethodInfo? method = policy.GetType().GetMethod(
+            "GetPartition",
+            BindingFlags.Public | BindingFlags.Instance);
+
+        Assert.NotNull(method);
+
+        return Invoke(method, policy, [context]);
+    }
+
+    private static object? Invoke(MethodInfo method, object? target, object?[] arguments)
+    {
+        try
+        {
+            return method.Invoke(target, arguments);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+
+            throw;
+        }
     }
 
     private static string InvokeResolveRateLimitPartitionKey(HttpContext context)

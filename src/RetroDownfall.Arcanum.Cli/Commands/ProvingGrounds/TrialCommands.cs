@@ -189,7 +189,7 @@ public sealed class TrialCommands(ArcanumApiClient apiClient, IThemePalette them
         const int outputPreviewChars = 500;
 
         string outputPreview = trial.Output.Length > outputPreviewChars
-            ? trial.Output[..outputPreviewChars] + "\u2026"
+            ? trial.Output[..Utf8Truncation.SafeCharSliceLength(trial.Output, outputPreviewChars)] + "\u2026"
             : trial.Output;
 
         AnsiConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Output:")));

@@ -82,6 +82,66 @@ public sealed class ConfigurationPathAccessorTests
 
     }
 
+    [Theory]
+
+    [InlineData("security.ward.forbiddenArts", "shell_exec,apply_patch", """["shell_exec","apply_patch"]""")]
+
+    [InlineData("security.ward.autoApprove.tools", "apply_patch", """["apply_patch"]""")]
+
+    public void Set_parses_comma_separated_values_for_string_list_paths(
+        string key,
+        string value,
+        string expected)
+    {
+
+        ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
+            new ArcanumSettings(),
+            key,
+            value);
+
+        Assert.True(result.IsSuccess, result.Error);
+
+        Assert.Equal(expected, ConfigurationPathAccessor.GetCanonicalValue(result.Settings!, key));
+
+    }
+
+    [Fact]
+
+    public void Set_parses_comma_separated_values_for_guid_collection_paths()
+    {
+
+        ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
+            new ArcanumSettings(),
+            "retention.protectedSessionIds",
+            "11111111-1111-1111-1111-111111111111,22222222-2222-2222-2222-222222222222");
+
+        Assert.True(result.IsSuccess, result.Error);
+
+        Assert.Equal(
+            [
+                new Guid("11111111-1111-1111-1111-111111111111"),
+                new Guid("22222222-2222-2222-2222-222222222222"),
+            ],
+            result.Settings!.Retention.ProtectedSessionIds);
+
+    }
+
+    [Fact]
+
+    public void Set_rejects_a_malformed_guid_collection_entry_with_actionable_guidance()
+    {
+
+        ConfigurationPathUpdate result = ConfigurationPathAccessor.Set(
+            new ArcanumSettings(),
+            "retention.protectedSessionIds",
+            "11111111-1111-1111-1111-111111111111,not-a-guid");
+
+        Assert.False(result.IsSuccess);
+
+        Assert.Contains("not-a-guid", result.Error, StringComparison.Ordinal);
+
+    }
+
     [Fact]
 
     public void Set_rejects_unknown_paths_without_mutating_snapshot()

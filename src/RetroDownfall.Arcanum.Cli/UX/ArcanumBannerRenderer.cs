@@ -7,7 +7,7 @@ using Spectre.Console.Rendering;
 namespace RetroDownfall.Arcanum.Cli.UX;
 
 /// <summary>
-/// Startup banner for interactive CLI sessions (<c>arcanum chat</c> et al.). Pure
+/// Startup banner for interactive CLI sessions (bare <c>arcanum</c> et al.). Pure
 /// rendering — callers gather state (serve launch result, health probe, MCP counts,
 /// inference overrides) into a <see cref="BannerContext"/> and hand it here.
 /// </summary>

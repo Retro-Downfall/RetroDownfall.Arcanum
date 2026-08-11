@@ -1,4 +1,5 @@
 using System.Text;
+using RetroDownfall.Arcanum.Cli.CommandCenter;
 using Spectre.Console;
 
 namespace RetroDownfall.Arcanum.Cli.UX;
@@ -99,7 +100,7 @@ internal static class CliLineReader
 
                 bool hadPendingText = sb.Length > 0;
 
-                ClearLine(sb);
+                _ = ClearLine(sb);
 
                 Console.WriteLine();
 
@@ -144,14 +145,7 @@ internal static class CliLineReader
             if (key.Key == ConsoleKey.Backspace)
             {
 
-                int removed = RemoveLastCharacter(sb);
-
-                if (removed > 0)
-                {
-
-                    Console.Write("\b \b");
-
-                }
+                _ = EraseLastCharacter(sb);
 
                 continue;
 
@@ -160,7 +154,7 @@ internal static class CliLineReader
             if (key.Key == ConsoleKey.U && (key.Modifiers & ConsoleModifiers.Control) != 0)
             {
 
-                ClearLine(sb);
+                _ = ClearLine(sb);
 
                 continue;
 
@@ -169,7 +163,7 @@ internal static class CliLineReader
             if (key.Key == ConsoleKey.W && (key.Modifiers & ConsoleModifiers.Control) != 0)
             {
 
-                DeleteLastWord(sb);
+                _ = DeleteLastWord(sb);
 
                 continue;
 
@@ -238,27 +232,35 @@ internal static class CliLineReader
 
     }
 
-    private static void ClearLine(StringBuilder sb)
+    /// <summary>
+    /// Removes the final character and repaints the columns it occupied. Returns the number of
+    /// terminal columns erased.
+    /// </summary>
+    internal static int EraseLastCharacter(StringBuilder sb)
     {
 
-        int length = sb.Length;
-
-        sb.Clear();
-
-        if (length == 0)
+        if (sb.Length == 0)
         {
 
-            return;
+            return 0;
 
         }
 
-        Console.Write(new string('\b', length));
-        Console.Write(new string(' ', length));
-        Console.Write(new string('\b', length));
+        int peek = Math.Min(2, sb.Length);
+
+        string tail = sb.ToString(sb.Length - peek, peek);
+
+        int removed = RemoveLastCharacter(sb);
+
+        return EraseCells(TerminalCellMetrics.MeasureWidth(tail[^removed..]));
 
     }
 
-    private static void DeleteLastWord(StringBuilder sb)
+    /// <summary>Erases the whole composed line. Returns the number of terminal columns erased.</summary>
+    internal static int ClearLine(StringBuilder sb) => EraseTrailing(sb, 0);
+
+    /// <summary>Erases the trailing word. Returns the number of terminal columns erased.</summary>
+    internal static int DeleteLastWord(StringBuilder sb)
     {
 
         int end = sb.Length - 1;
@@ -279,13 +281,55 @@ internal static class CliLineReader
 
         }
 
-        int removed = sb.Length - (start + 1);
+        return EraseTrailing(sb, start + 1);
 
-        sb.Length = start + 1;
+    }
 
-        Console.Write(new string('\b', removed));
-        Console.Write(new string(' ', removed));
-        Console.Write(new string('\b', removed));
+    /// <summary>
+    /// Drops everything from <paramref name="start"/> onward and repaints the columns that text
+    /// occupied. Returns the number of terminal columns erased.
+    /// </summary>
+    private static int EraseTrailing(StringBuilder sb, int start)
+    {
+
+        int from = Math.Clamp(start, 0, sb.Length);
+
+        if (from >= sb.Length)
+        {
+
+            return 0;
+
+        }
+
+        string removed = sb.ToString(from, sb.Length - from);
+
+        sb.Length = from;
+
+        return EraseCells(TerminalCellMetrics.MeasureWidth(removed));
+
+    }
+
+    /// <summary>
+    /// Walks the cursor back over <paramref name="cells"/> painted columns, blanks them, and returns.
+    /// The count must be display columns rather than UTF-16 code units: an ideograph paints two
+    /// columns from one code unit, an astral letter paints one column from two, and a combining mark
+    /// paints none, so erasing by code unit either strands text on the line or eats the prompt.
+    /// </summary>
+    private static int EraseCells(int cells)
+    {
+
+        if (cells <= 0)
+        {
+
+            return 0;
+
+        }
+
+        Console.Write(new string('\b', cells));
+        Console.Write(new string(' ', cells));
+        Console.Write(new string('\b', cells));
+
+        return cells;
 
     }
 

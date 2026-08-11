@@ -112,6 +112,82 @@ public sealed class WorkspaceSearchToolTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Search_previews_trim_astral_characters_whole_at_the_ellipsis_boundary()
+    {
+
+        string astral = char.ConvertFromUtf32(0x1F600);
+
+        // Line 1 opens the window on the high half of a pair, line 2 closes it on the low half, and
+        // line 3 makes the leading-low-surrogate guard fire.
+        _workspace.WriteFile(
+            "astral.txt",
+            string.Join(
+                '\n',
+                new string('a', 10) + astral + "cccccMAGIC" + new string('z', 20),
+                new string('a', 10)
+                    + "bbcccccMAGIC"
+                    + new string('y', 6)
+                    + astral
+                    + new string('z', 20),
+                new string('a', 9) + astral + "ccccccMAGIC" + new string('z', 20)));
+
+        WorkspaceSearchSettings settings = DefaultSettings() with
+        {
+            MaxPreviewChars = 20,
+        };
+
+        WorkspaceSearchToolResultEnvelope result = await SearchAsync(
+            "MAGIC",
+            WorkspaceSearchMode.Literal,
+            caseSensitive: true,
+            settings);
+
+        Assert.Equal(3, result.Matches.Length);
+        Assert.All(
+            result.Matches,
+            static match =>
+            {
+
+                Assert.Contains("MAGIC", match.Preview, StringComparison.Ordinal);
+                Assert.InRange(match.Preview.Length, 1, 20);
+                AssertNoUnpairedSurrogate(match.Preview);
+
+            });
+
+        // Stepping the window past a leading low surrogate must not cost a character of the budget.
+        Assert.Equal(20, result.Matches[2].Preview.Length);
+
+    }
+
+    private static void AssertNoUnpairedSurrogate(string value)
+    {
+
+        for (int index = 0; index < value.Length; index++)
+        {
+
+            if (char.IsHighSurrogate(value[index]))
+            {
+
+                Assert.True(
+                    index + 1 < value.Length
+                    && char.IsLowSurrogate(value[index + 1]),
+                    $"Unpaired high surrogate at index {index} of '{value}'.");
+
+                index++;
+
+                continue;
+
+            }
+
+            Assert.False(
+                char.IsLowSurrogate(value[index]),
+                $"Unpaired low surrogate at index {index} of '{value}'.");
+
+        }
+
+    }
+
+    [Fact]
     public void Runtime_regex_factory_uses_non_backtracking_without_compilation()
     {
 

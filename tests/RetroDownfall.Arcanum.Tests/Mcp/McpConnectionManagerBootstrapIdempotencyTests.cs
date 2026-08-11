@@ -19,9 +19,13 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifetime
 {
 
+    private const string BootstrapProbeServer = "bootstrap-idempotency-probe";
+
     private McpConnectionManager _manager = null!;
 
     private MutableOptionsMonitor _settings = null!;
+
+    private RecordingEventBus _events = null!;
 
     public Task InitializeAsync()
     {
@@ -52,12 +56,14 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             scopeFactory,
             NullLogger<UnseenServantPacer>.Instance);
 
+        _events = new RecordingEventBus();
+
         _manager = new McpConnectionManager(
             NullLogger<McpConnectionManager>.Instance,
             humanPrompts,
             scopeFactory,
             pacer,
-            new FakeEventBus(),
+            _events,
             new AlwaysTrustedWorkspaceStore(),
             new FakeHttpClientFactory(),
             _settings);
@@ -74,20 +80,65 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
     }
 
     [Fact]
-    public async Task ConcurrentInitializeAsync_CompletesOnce_WithoutThrowing()
+    public async Task ConcurrentInitializeAsync_StartsEachGlobalServerOnce_WithoutThrowing()
     {
 
-        Task first = _manager.InitializeAsync();
+        // An SSE probe is the cheapest observable bootstrap: StartAsync refuses the transport
+        // in-process (no child process, no socket) and publishes exactly one server event per
+        // attempt, so the published event count *is* the bootstrap count.
+        await _manager.RegisterFromConfigAsync(
+            new McpConfig
+            {
+                McpServers = new Dictionary<string, McpServerConfig>(StringComparer.Ordinal)
+                {
+                    [BootstrapProbeServer] = new()
+                    {
+                        Type = "sse",
+                        Url = "https://mcp.invalid/rpc",
+                    },
+                },
+            },
+            scopeWorkingDirectory: null,
+            CancellationToken.None);
 
-        Task second = _manager.InitializeAsync();
+        using ManualResetEventSlim parked = new(initialState: false);
 
-        await Task.WhenAll(first, second);
+        _events.ParkEventsFor(BootstrapProbeServer, parked);
+
+        // Task.Run because the parked bootstrap blocks the thread that publishes the event; the
+        // block is what keeps the shared operation genuinely in flight for the second caller.
+        Task first = Task.Run(() => _manager.InitializeAsync());
+
+        await _events.ParkedEventObserved.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Task second = Task.Run(() => _manager.InitializeAsync());
+
+        // A caller that bootstraps instead of joining the in-flight operation reaches its own start
+        // attempt here; the loop only bounds how long we look for it, the assertion below is what fails.
+        for (int attempt = 0;
+            attempt < 30 && _events.CountEventsFor(BootstrapProbeServer) < 2;
+            attempt++)
+        {
+
+            await Task.Delay(10);
+
+        }
+
+        parked.Set();
+
+        await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(30));
 
         await _manager.InitializeAsync();
 
         IReadOnlyList<AITool> tools = await _manager.GetAvailableToolsAsync(workingDirectory: null);
 
-        Assert.NotNull(tools);
+        Assert.Equal(1, _events.CountEventsFor(BootstrapProbeServer));
+
+        Assert.Equal(
+            tools.Count,
+            tools.Select(static tool => tool.Name)
+                .Distinct(StringComparer.Ordinal)
+                .Count());
 
     }
 
@@ -593,6 +644,88 @@ public Task RecordResourceLimitBreachAsync(
 
         public void Publish<T>(T @event) where T : notnull
         {
+        }
+
+        public IAsyncEnumerable<T> Subscribe<T>(CancellationToken cancellationToken) where T : notnull =>
+            AsyncEnumerable.Empty<T>();
+
+    }
+
+    /// <summary>
+    /// Counts published <see cref="McpServerEvent"/>s per server so a test can prove how many
+    /// bootstrap start attempts actually happened, and can park the attempts for one probe server so
+    /// a second caller arrives while the shared global bootstrap is still in flight.
+    /// </summary>
+    private sealed class RecordingEventBus : IEventBus
+    {
+
+        private readonly object _gate = new();
+
+        private readonly List<McpServerEvent> _serverEvents = [];
+
+        private string? _parkedServerName;
+
+        private ManualResetEventSlim? _parked;
+
+        public TaskCompletionSource ParkedEventObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void ParkEventsFor(string serverName, ManualResetEventSlim parked)
+        {
+
+            _parkedServerName = serverName;
+
+            _parked = parked;
+
+        }
+
+        public int CountEventsFor(string serverName)
+        {
+
+            lock (_gate)
+            {
+
+                return _serverEvents.Count(
+                    ev => string.Equals(
+                        ev.ServerName,
+                        serverName,
+                        StringComparison.Ordinal));
+
+            }
+
+        }
+
+        public void Publish<T>(T @event) where T : notnull
+        {
+
+            if (@event is not McpServerEvent serverEvent)
+            {
+
+                return;
+
+            }
+
+            lock (_gate)
+            {
+
+                _serverEvents.Add(serverEvent);
+
+            }
+
+            if (!string.Equals(
+                    serverEvent.ServerName,
+                    _parkedServerName,
+                    StringComparison.Ordinal))
+            {
+
+                return;
+
+            }
+
+            _ = ParkedEventObserved.TrySetResult();
+
+            _ = _parked?.Wait(TimeSpan.FromSeconds(30));
+
         }
 
         public IAsyncEnumerable<T> Subscribe<T>(CancellationToken cancellationToken) where T : notnull =>

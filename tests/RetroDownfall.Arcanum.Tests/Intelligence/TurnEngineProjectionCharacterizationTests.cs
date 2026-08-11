@@ -40,6 +40,36 @@ public sealed class TurnEngineProjectionCharacterizationTests
     }
 
     [Fact]
+    public void TurnEngineNamespace_HasNoSeedTypesShadowedByWizardIntelligenceProvider()
+    {
+        // DESIGN §10.7.2's TurnContextSeed / ProviderAttemptContext are the private nested types on
+        // WizardIntelligenceProvider — those are the ones the compiler binds. A same-named copy in
+        // the TurnEngine namespace is unreachable, so edits to it silently do nothing.
+        Assembly api = typeof(TurnEvent).Assembly;
+
+        Assert.Null(api.GetType(
+            "RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.TurnContextSeed",
+            throwOnError: false));
+
+        Assert.Null(api.GetType(
+            "RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.ProviderAttemptContext",
+            throwOnError: false));
+
+        Assert.Null(api.GetType(
+            "RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.ProviderAttemptState",
+            throwOnError: false));
+
+        // The live TurnEngine enums that do have consumers must stay.
+        Assert.NotNull(api.GetType(
+            "RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.TurnResponseMode",
+            throwOnError: false));
+
+        Assert.NotNull(api.GetType(
+            "RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.TurnTerminationReason",
+            throwOnError: false));
+    }
+
+    [Fact]
     public void OpenAiReasoningContracts_HaveOptionalAdditiveFields()
     {
         Assert.Equal(

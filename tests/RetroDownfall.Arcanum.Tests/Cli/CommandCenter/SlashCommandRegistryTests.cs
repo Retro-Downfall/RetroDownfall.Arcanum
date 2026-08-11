@@ -125,4 +125,42 @@ public sealed class SlashCommandRegistryTests
 
     }
 
+    /// <summary>
+    /// <c>/help</c> renders <see cref="SlashCommandDescriptor.Usage"/> verbatim, so every alternative
+    /// spelled out in a <c>a|b|c</c> group has to be one the parser still accepts. Documenting a form
+    /// the grammar denies makes the built-in help the only place teaching a removed command.
+    /// </summary>
+    [Fact]
+    public void Every_documented_alternative_is_accepted_by_the_parser()
+    {
+
+        ShellCommandParser parser = new();
+
+        const string sampleId = "11111111-1111-1111-1111-111111111111";
+
+        foreach (SlashCommandDescriptor descriptor in SlashCommandRegistry.All)
+        {
+
+            if (!SlashUsageExpander.StripOptionalGroups(descriptor.Usage).Contains('|', StringComparison.Ordinal))
+            {
+
+                continue;
+
+            }
+
+            foreach (string form in SlashUsageExpander.Expand(descriptor.Usage, sampleId))
+            {
+
+                ParsedShellCommand parsed = parser.Parse(form);
+
+                Assert.True(
+                    parsed.Kind is not (ShellCommandKind.Denied or ShellCommandKind.Unknown),
+                    $"`{descriptor.Usage}` documents `{form}`, which the parser rejects: {parsed.DenialMessage}");
+
+            }
+
+        }
+
+    }
+
 }

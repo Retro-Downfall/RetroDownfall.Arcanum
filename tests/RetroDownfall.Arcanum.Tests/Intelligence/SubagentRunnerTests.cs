@@ -12,6 +12,33 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class SubagentRunnerTests
 {
     [Fact]
+    public void SubagentRunRequest_CarriesOnlyFieldsTheRunnerConsumes()
+    {
+        // The parent attachment allowlist is enforced at parse time by ArcanumDelegateTaskTool
+        // (FileReadResult.ParentPolicyDenied); the runner has nothing left to filter. The request
+        // contract must not advertise an allowlist enforcement point that does not exist, so this
+        // deconstruction pins its exact arity.
+        SubagentRunRequest request = new(
+            "prompt",
+            "test-model",
+            [new AttachedFileDto("src/A.cs", "sealed class A {}")],
+            MaxTokens: 1_000,
+            MaxCostUsd: 2m);
+
+        (string prompt,
+            string? model,
+            IReadOnlyList<AttachedFileDto> files,
+            long? maxTokens,
+            decimal? maxCostUsd) = request;
+
+        Assert.Equal("prompt", prompt);
+        Assert.Equal("test-model", model);
+        Assert.Single(files);
+        Assert.Equal(1_000, maxTokens);
+        Assert.Equal(2m, maxCostUsd);
+    }
+
+    [Fact]
     public async Task RunAsync_UsesSterileContext_CompletesDurableOperation_AndReturnsOnlySummary()
     {
         CapturingTurnFacade facade = new(

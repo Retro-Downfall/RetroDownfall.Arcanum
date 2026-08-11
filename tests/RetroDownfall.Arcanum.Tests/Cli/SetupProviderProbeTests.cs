@@ -235,6 +235,18 @@ public sealed class SetupProviderProbeTests : IDisposable
     }
 
     [Fact]
+    public async Task Each_probe_disposes_the_egress_handler_it_was_handed()
+    {
+
+        ScriptedHandler handler = new(Json(ModelListJson));
+
+        _ = await Probe(handler, model: "gpt-test");
+
+        Assert.True(handler.Disposed);
+
+    }
+
+    [Fact]
     public void The_probe_timeout_stays_within_the_documented_boundary()
     {
 
@@ -301,6 +313,8 @@ public sealed class SetupProviderProbeTests : IDisposable
 
         public AuthenticationHeaderValue? Authorization { get; private set; }
 
+        public bool Disposed { get; private set; }
+
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
@@ -313,6 +327,15 @@ public sealed class SetupProviderProbeTests : IDisposable
             Authorization = request.Headers.Authorization;
 
             return Task.FromResult(response);
+
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+
+            Disposed = true;
+
+            base.Dispose(disposing);
 
         }
 

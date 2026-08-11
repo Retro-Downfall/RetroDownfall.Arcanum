@@ -138,7 +138,7 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
         try
         {
 
-            await using FileStream stream = File.OpenRead(_filePath);
+            await using FileStream stream = OpenConfigurationForRead(_filePath);
 
             if (stream.Length > MaxConfigurationBytes)
             {
@@ -676,18 +676,31 @@ public sealed class ArcanumConfigurationStore : IArcanumConfigurationStore
 
     }
 
-    private static async Task<string> ReadFingerprintAsync(
-        string path,
-        CancellationToken ct)
+    /// <summary>
+    /// Opens arcanum.json for reading without denying a concurrent writer. Reads never join the
+    /// cross-process configuration mutex, so a share mode that withheld write or delete access would fail
+    /// the host's atomic replace on Windows; the fingerprint guard already catches a file that changed
+    /// underneath an in-flight reader.
+    /// </summary>
+    internal static FileStream OpenConfigurationForRead(string path)
     {
 
-        await using FileStream stream = new(
+        return new FileStream(
             path,
             FileMode.Open,
             FileAccess.Read,
             FileShare.ReadWrite | FileShare.Delete,
             bufferSize: 4096,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+    }
+
+    private static async Task<string> ReadFingerprintAsync(
+        string path,
+        CancellationToken ct)
+    {
+
+        await using FileStream stream = OpenConfigurationForRead(path);
 
         if (stream.Length > MaxConfigurationBytes)
         {

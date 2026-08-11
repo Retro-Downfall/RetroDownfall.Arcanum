@@ -5,11 +5,10 @@ public class TurnLimitIntegrationTests
     [Fact]
     public void TurnLimit_Terminates_On_Repetition_Detected()
     {
-        var detector = new RetroDownfall.Arcanum.Core.Intelligence.RepetitionDetector(
-            maxIdenticalToolCalls: 2);
-        detector.AnalyzeToolCall("t", "{}", "r");
-        var verdict = detector.AnalyzeToolCall("t", "{}", "r");
-        Assert.Equal(RetroDownfall.Arcanum.Core.Intelligence.RepetitionVerdict.IdenticalToolCall, verdict);
+        var detector = new RetroDownfall.Arcanum.Api.Intelligence.ToolLoopProgressDetector();
+        var round = new[] { new RetroDownfall.Arcanum.Api.Intelligence.ToolLoopProgressEntry("t", "{}", "r") };
+        Assert.False(detector.ObserveCompletedRound(round));
+        Assert.True(detector.ObserveCompletedRound(round));
     }
 
     [Fact]

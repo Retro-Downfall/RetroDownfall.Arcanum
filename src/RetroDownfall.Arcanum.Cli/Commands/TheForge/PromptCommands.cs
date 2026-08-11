@@ -164,7 +164,7 @@ public sealed class PromptCommands(
         const int templatePreviewChars = 800;
 
         string template = prompt.Template.Length > templatePreviewChars
-            ? prompt.Template[..templatePreviewChars] + "\u2026"
+            ? prompt.Template[..Utf8Truncation.SafeCharSliceLength(prompt.Template, templatePreviewChars)] + "\u2026"
             : prompt.Template;
 
         table.AddRow(themePalette.MutedMarkup(Markup.Escape("Template:")), themePalette.TextMarkup(Markup.Escape(template)));
@@ -645,7 +645,7 @@ public sealed class PromptCommands(
         const int templatePreviewChars = 200;
 
         string template = prompt.Template.Length > templatePreviewChars
-            ? prompt.Template[..templatePreviewChars] + "\u2026"
+            ? prompt.Template[..Utf8Truncation.SafeCharSliceLength(prompt.Template, templatePreviewChars)] + "\u2026"
             : prompt.Template;
 
         table.AddRow(themePalette.MutedMarkup(Markup.Escape("Template:")), themePalette.TextMarkup(Markup.Escape(template)));

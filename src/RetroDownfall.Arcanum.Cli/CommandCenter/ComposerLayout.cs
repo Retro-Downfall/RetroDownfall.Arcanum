@@ -156,6 +156,15 @@ internal static class ComposerLayout
             return 1;
         }
 
+        // Printable ASCII is one cell per char with no combining marks and no tab expansion, so the
+        // row count is plain arithmetic. Taking it here skips a grapheme walk that would otherwise
+        // allocate a string copy of the line plus one string per cluster — on every layout pass,
+        // and a layout pass follows every composer mutation.
+        if (TerminalCellMetrics.IsSimpleNarrow(line))
+        {
+            return Math.Max(1, (line.Length + width - 1) / width);
+        }
+
         int rows = 1;
         int col = 0;
         var enumerator = StringInfo.GetTextElementEnumerator(line.ToString());

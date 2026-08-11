@@ -427,7 +427,9 @@ internal sealed class BudgetReservationService(
         string budgetPeriod,
         CancellationToken cancellationToken)
     {
-        // Committed spend = billable ops completed on this UTC day + cost adjustments that day.
+        // Committed spend = billable ops completed on this UTC day. Per DESIGN §22.2 the day's spend
+        // authority is BillableOperations plus outstanding BudgetReservations; "CostAdjustments" rows
+        // are deliberately NOT summed here and never move the reservation ceiling.
         string dayStart = budgetPeriod + "T00:00:00.0000000+00:00";
         string dayEnd = DateTimeOffset.Parse(budgetPeriod + "T00:00:00Z", CultureInfo.InvariantCulture)
             .AddDays(1)

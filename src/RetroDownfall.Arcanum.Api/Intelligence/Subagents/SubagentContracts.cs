@@ -13,13 +13,18 @@ public static class SubagentFailureCodes
     public const string Cancelled = "Subagent.Cancelled";
 }
 
+/// <summary>
+/// The delegated child turn. Parent attachment authority is enforced at parse time by
+/// <c>ArcanumDelegateTaskTool</c> — a file naming an attachment id outside the parent turn's
+/// materialized allowlist fails the whole call before the runner is reached — so no allowlist
+/// travels with the request and the runner has nothing left to filter.
+/// </summary>
 public sealed record SubagentRunRequest(
     string Prompt,
     string? Model,
     IReadOnlyList<AttachedFileDto> Files,
     long? MaxTokens,
-    decimal? MaxCostUsd,
-    IReadOnlySet<Guid>? AttachmentAllowlist = null);
+    decimal? MaxCostUsd);
 
 public sealed record SubagentRunResult(
     bool Success,

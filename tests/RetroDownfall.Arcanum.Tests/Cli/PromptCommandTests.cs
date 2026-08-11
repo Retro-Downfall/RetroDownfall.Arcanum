@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.TheForge;
@@ -131,6 +132,90 @@ public sealed class PromptCommandTests
         HttpRequestMessage request = Assert.Single(handler.Requests);
 
         Assert.Equal(HttpMethod.Delete, request.Method);
+
+    }
+
+    /// <summary>
+    /// The template preview is capped at 800 characters for <c>show</c> and 200 for <c>clone</c>.
+    /// An astral-plane character straddling either boundary must be dropped whole, never halved.
+    /// </summary>
+    [Theory]
+    [InlineData("show", 800)]
+    [InlineData("clone", 200)]
+    public void Prompt_template_preview_never_splits_a_surrogate_pair(string verb, int previewChars)
+    {
+
+        // The emoji occupies the char at previewChars - 1 and the char at previewChars, so a raw
+        // slice of previewChars keeps only its high half.
+        string template = new string('a', previewChars - 1) + "\U0001F600" + new string('b', 50);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        PromptDetailDto detail = new(
+            SampleId,
+            CampaignId: null,
+            Name: "greeting",
+            Version: "1",
+            Description: null,
+            Tags: [],
+            Template: template,
+            ParameterSchema: null,
+            DefaultParameters: null,
+            Model: null,
+            Provider: null,
+            Temperature: null,
+            TopP: null,
+            MaxOutputTokens: null,
+            CreatedAt: now,
+            UpdatedAt: now);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<PromptDetailDto>(detail, true, null),
+            ArcanumJsonContext.Default.ApiResponsePromptDetailDto));
+
+        string[] args = verb == "clone"
+            ? ["prompt", "clone", SampleId.ToString(), "--new-name", "greeting-copy", "--new-version", "2"]
+            : ["prompt", "show", SampleId.ToString()];
+
+        CliTestResult result = RunCommand(handler, args);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.False(
+            Utf16Assert.ContainsLoneSurrogate(result.Output),
+            $"The prompt {verb} template preview emitted an unpaired surrogate.");
+
+    }
+
+    /// <summary>
+    /// The tool-call argument preview on the stderr summary is capped at 200 characters and has the
+    /// same surrogate obligation as every other preview.
+    /// </summary>
+    [Fact]
+    public void Prompt_execute_tool_argument_preview_never_splits_a_surrogate_pair()
+    {
+
+        // The emoji occupies chars 199 and 200, so a raw 200-char slice keeps only its high half.
+        string argumentsJson = new string('a', 199) + "\U0001F600" + new string('b', 50);
+
+        PromptResponseDto response = new(
+            "done",
+            null,
+            [new PromptToolCall("call-1", "read_file", argumentsJson)]);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<PromptResponseDto>(response, true, null),
+            ArcanumJsonContext.Default.ApiResponsePromptResponseDto));
+
+        CliTestResult result = RunCommand(
+            handler,
+            ["prompt", "execute", SampleId.ToString(), "--input", "hello"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.False(
+            Utf16Assert.ContainsLoneSurrogate(result.Error),
+            "The tool-call argument preview emitted an unpaired surrogate.");
 
     }
 

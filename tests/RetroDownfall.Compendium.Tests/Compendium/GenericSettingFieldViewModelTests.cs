@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Compendium.Ux.Models;
 using RetroDownfall.Compendium.Ux.ViewModels;
 using Xunit;
@@ -57,6 +58,29 @@ public sealed class GenericSettingFieldViewModelTests
 
         Assert.Contains(nameof(GenericSettingFieldViewModel.NumericValue), notifications);
         Assert.Contains(nameof(GenericSettingFieldViewModel.IsSet), notifications);
+    }
+
+    [Theory]
+    [InlineData(100_000.55)]
+    [InlineData(123_456.78)]
+    [InlineData(250_000.25)]
+    [InlineData(500_000.99)]
+    public void Stepper_edits_to_money_settings_keep_their_decimal_precision(double typed)
+    {
+        SettingDescriptor descriptor = Assert.IsType<SettingDescriptor>(
+            SettingDescriptors.Find("cost.budget.dailyLimitUsd"));
+
+        Assert.Equal(SettingKind.Float, descriptor.Kind);
+
+        GenericSettingFieldViewModel field = new(descriptor, 0m);
+
+        field.NumericValue = typed;
+
+        Assert.False(field.HasError);
+
+        ArcanumSettings applied = GenericSettingsUpdater.ApplyFields(new ArcanumSettings(), [field]);
+
+        Assert.Equal((decimal)typed, applied.Cost.Budget.DailyLimitUsd);
     }
 
     private static SettingDescriptor Descriptor(string key, SettingKind kind) =>

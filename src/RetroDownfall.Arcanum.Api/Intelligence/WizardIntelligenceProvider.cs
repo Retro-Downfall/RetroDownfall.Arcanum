@@ -98,7 +98,6 @@ public sealed partial class WizardIntelligenceProvider(
             modelTokenEstimator,
             modelCallExecutor,
             tokenizerResolver,
-            settings,
             logger);
 
     private IModelTokenEstimator ModelTokenEstimator => _tokenAccounting.Estimator;
@@ -385,10 +384,10 @@ public sealed partial class WizardIntelligenceProvider(
                 case IntelligenceEventType.ToolResult:
                     bool failed = _pendingToolError is not null;
 
-                    // The toolError frame is (Message: tool name, Data: failure description). The
-                    // description is what the client renders, so read Data — Message would send the
-                    // tool name back out in both fields of the re-projected frame.
-                    string? publicError = _pendingToolError?.Data;
+                    // The failure reason rides on Data; Message carries the tool name, so reading it
+                    // first would report "read_file" as the error text. Message stays as the
+                    // fallback for producers that only populate it.
+                    string? publicError = _pendingToolError?.Data ?? _pendingToolError?.Message;
 
                     _pendingToolError = null;
 
@@ -4199,19 +4198,22 @@ public sealed partial class WizardIntelligenceProvider(
             .ConfigureAwait(false);
 
         // Do not emit ToolCall — no waiter was registered, so clients must not try to answer.
+        // toolCall.argumentsJson carries the serialized call arguments on every frame; the denial
+        // text is the human-readable failure and rides on Data, exactly as a tolerated tool failure
+        // does.
         yield return new IntelligenceEvent(
             IntelligenceEventType.ToolError,
             denied.ToolName,
             message,
             null,
-            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ResultText, toolCallIndex));
+            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ArgsSnapshot, toolCallIndex));
 
         yield return new IntelligenceEvent(
             IntelligenceEventType.ToolResult,
             denied.ToolName,
             denied.ResultText,
             null,
-            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ResultText, toolCallIndex));
+            new IntelligenceToolCallEvent(denied.CallId, denied.ToolName, denied.ArgsSnapshot, toolCallIndex));
     }
 
     private async Task<Result<ResolvedSpell?>> ResolveRoutedSpellAsync(
@@ -7534,11 +7536,10 @@ public sealed partial class WizardIntelligenceProvider(
             IModelTokenEstimator? estimator,
             IModelCallExecutor? executor,
             InferenceTokenizerResolver tokenizerResolver,
-            IOptionsSnapshot<ArcanumSettings> settings,
             ILogger logger)
         {
             IModelTokenEstimator resolvedEstimator =
-                estimator ?? new ModelTokenEstimator(tokenizerResolver, settings);
+                estimator ?? new ModelTokenEstimator(tokenizerResolver);
             return new TokenAccountingDependencies(
                 resolvedEstimator,
                 executor ?? new ModelCallExecutor(
