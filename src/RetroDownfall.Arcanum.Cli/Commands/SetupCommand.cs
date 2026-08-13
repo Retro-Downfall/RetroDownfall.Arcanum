@@ -31,6 +31,15 @@ internal sealed record SetupCommandOptions(
     bool? ListenAny = null,
     bool AllowUnreachableProvider = false);
 
+internal interface ISetupCommand
+{
+
+    Task<int> RunAsync(
+        SetupCommandOptions options,
+        CancellationToken cancellationToken);
+
+}
+
 /// <summary>
 /// <c>arcanum setup</c> — the guided, resumable installation workflow (issue #19).
 /// </summary>
@@ -49,7 +58,7 @@ internal sealed class SetupCommand(
     IProviderApiKeyResolver apiKeyResolver,
     ISetupPrompt prompt,
     IConsoleDispatcher console,
-    ICliInvocationContext invocationContext)
+    ICliInvocationContext invocationContext) : ISetupCommand
 {
 
     private const string OpenAiTemplate = "openai";

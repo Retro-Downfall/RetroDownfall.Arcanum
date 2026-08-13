@@ -2,9 +2,12 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
@@ -533,6 +536,84 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         GrimoireDatabaseHostedService svc = new(_scopeFactory, _secretStore, new GrimoireDbPassphraseSource());
 
         await svc.StopAsync(CancellationToken.None);
+
+    }
+
+    [Fact]
+    public async Task StartAsync_refuses_to_open_the_database_when_the_maintenance_lock_is_unavailable()
+    {
+
+        using ArcanumMaintenanceLock? held =
+            ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+        Assert.NotNull(held);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir);
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.StartAsync(CancellationToken.None));
+
+        Assert.Contains(
+            "maintenance lock",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(File.Exists(_dbPath));
+
+    }
+
+    [Fact]
+    public async Task StartAsync_refuses_active_reset_before_acquiring_the_maintenance_lock()
+    {
+
+        using ArcanumMaintenanceLock? held =
+            ArcanumMaintenanceLock.TryAcquire(_tempDir);
+
+        Assert.NotNull(held);
+
+        GrimoireDatabaseHostedService service = new(
+            _scopeFactory,
+            _secretStore,
+            new GrimoireDbPassphraseSource(),
+            _tempDir,
+            new ActiveResetProbe());
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.StartAsync(CancellationToken.None));
+
+        Assert.Contains(
+            "factory reset",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(
+            "maintenance lock",
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.False(File.Exists(_dbPath));
+
+    }
+
+    private sealed class ActiveResetProbe : IInstallationStartupProbe
+    {
+
+        public Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<ActiveInstallationReset?>.Success(
+                new ActiveInstallationReset(
+                    InstallationResetScope.Global,
+                    WorkspaceRoot: null,
+                    PlanId: "active-plan")));
+
+        public Result<bool> IsFreshInstallation() =>
+            Result<bool>.Success(false);
 
     }
 

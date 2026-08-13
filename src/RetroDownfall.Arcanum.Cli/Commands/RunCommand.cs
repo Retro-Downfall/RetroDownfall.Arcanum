@@ -2,6 +2,12 @@ using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
+using RetroDownfall.Arcanum.Cli.UX;
+
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Cli.Commands;
@@ -78,7 +84,13 @@ internal sealed class RunCommand(
 
     CliSessionManager sessionManager,
 
-    IConsoleDispatcher dispatcher)
+    IConsoleDispatcher dispatcher,
+
+    IInstallationStartupProbe startupProbe,
+
+    ISetupCommand setupCommand,
+
+    ICliEnvironment environment)
 {
 
     private const string AttachmentOnlyPrompt =
@@ -92,6 +104,70 @@ internal sealed class RunCommand(
         ArgumentNullException.ThrowIfNull(request);
 
         cancellationToken.ThrowIfCancellationRequested();
+
+        Result<ActiveInstallationReset?> activeRead = await startupProbe
+            .ReadActiveResetAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (activeRead.IsFailure)
+        {
+
+            return Fail(
+                activeRead.Error.Message,
+                CliExitCode.GenericError);
+
+        }
+
+        if (activeRead.Value is { } active)
+        {
+
+            string scope = active.Scope switch
+            {
+                InstallationResetScope.Workspace => "--workspace",
+                InstallationResetScope.Global => "--global",
+                _ => "--all",
+            };
+
+            return Fail(
+                "An installation factory reset is active. Resume it with "
+                + $"'arcanum data factory-reset {scope} --apply'.",
+                CliExitCode.GenericError);
+
+        }
+
+        Result<bool> fresh = startupProbe.IsFreshInstallation();
+
+        if (fresh.IsFailure)
+        {
+
+            return Fail(
+                fresh.Error.Message,
+                CliExitCode.GenericError);
+
+        }
+
+        if (fresh.Value)
+        {
+
+            bool setupIsInteractive = environment.IsInteractive
+                && !request.Unattended
+                && !CliInvocationContext.Current.Json
+                && !CliInvocationContext.Current.Print;
+
+            if (!setupIsInteractive)
+            {
+
+                return Fail(
+                    "Arcanum setup is required. Run 'arcanum setup' interactively before using 'arcanum run'.",
+                    CliExitCode.ConfigurationError);
+
+            }
+
+            return await setupCommand
+                .RunAsync(new SetupCommandOptions(), cancellationToken)
+                .ConfigureAwait(false);
+
+        }
 
         if (request.Research
             && request.Spell is not null)

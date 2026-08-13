@@ -3,7 +3,10 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 namespace RetroDownfall.Arcanum.Cli;
@@ -23,6 +26,129 @@ internal static class Program
         }
 
         AppContext.SetSwitch("Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupportEnabled", false);
+
+        return await RunBeforeConfigurationAsync(
+            args,
+            () => RunConfiguredAsync(args)).ConfigureAwait(false);
+
+    }
+
+    internal static async Task<int> RunBeforeConfigurationAsync(
+        string[] args,
+        Func<Task<int>> continuation,
+        IInstallationStartupProbe? startupProbe = null)
+    {
+
+        ArgumentNullException.ThrowIfNull(args);
+
+        ArgumentNullException.ThrowIfNull(continuation);
+
+        InstallationFactoryResetPreflightResult preflight =
+            InstallationFactoryResetArgvPreflight.Parse(args);
+
+        if (preflight.IsFactoryReset
+            && !preflight.IsValid)
+        {
+
+            Console.Error.WriteLine(preflight.Error);
+
+            return (int)CliExitCode.ConfigurationError;
+
+        }
+
+        if (IsHelpOrVersionRequest(args))
+        {
+
+            return await continuation().ConfigureAwait(false);
+
+        }
+
+        string? command = InstallationFactoryResetArgvPreflight.FindRootCommand(args);
+
+        bool guardedCommand = string.Equals(command, "run", StringComparison.Ordinal)
+            || string.Equals(command, "serve", StringComparison.Ordinal);
+
+        bool resetResume = preflight.IsFactoryReset && preflight.Apply;
+
+        if (!guardedCommand && !resetResume)
+        {
+
+            return await continuation().ConfigureAwait(false);
+
+        }
+
+        startupProbe ??= InstallationStartupProbe.CreateDefault();
+
+        Result<ActiveInstallationReset?> activeRead = await startupProbe
+            .ReadActiveResetAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+
+        if (activeRead.IsFailure)
+        {
+
+            Console.Error.WriteLine(activeRead.Error.Message);
+
+            return (int)CliExitCode.GenericError;
+
+        }
+
+        ActiveInstallationReset? active = activeRead.Value;
+
+        if (active is null
+            || (resetResume && preflight.Scope == active.Scope))
+        {
+
+            return await continuation().ConfigureAwait(false);
+
+        }
+
+        Console.Error.WriteLine(
+            "An installation factory reset is active. Resume it with "
+            + $"'arcanum data factory-reset {FormatScope(active.Scope)} --apply'.");
+
+        return (int)CliExitCode.GenericError;
+
+    }
+
+    private static bool IsHelpOrVersionRequest(string[] args)
+    {
+
+        foreach (string argument in args)
+        {
+
+            if (string.Equals(argument, "--", StringComparison.Ordinal))
+            {
+
+                break;
+
+            }
+
+            if (argument is "--help" or "-h" or "-?" or "/?" or "--version")
+            {
+
+                return true;
+
+            }
+
+        }
+
+        return string.Equals(
+            InstallationFactoryResetArgvPreflight.FindRootCommand(args),
+            "help",
+            StringComparison.Ordinal);
+
+    }
+
+    private static string FormatScope(InstallationResetScope scope) =>
+        scope switch
+        {
+            InstallationResetScope.Workspace => "--workspace",
+            InstallationResetScope.Global => "--global",
+            _ => "--all",
+        };
+
+    private static async Task<int> RunConfiguredAsync(string[] args)
+    {
 
         ServiceCollection services = new();
 
@@ -100,6 +226,16 @@ internal static class CliBootstrapDiagnostics
                 return true;
 
             }
+
+        }
+
+        InstallationFactoryResetPreflightResult reset =
+            InstallationFactoryResetArgvPreflight.Parse(args);
+
+        if (reset.IsFactoryReset && reset.IsValid)
+        {
+
+            return true;
 
         }
 

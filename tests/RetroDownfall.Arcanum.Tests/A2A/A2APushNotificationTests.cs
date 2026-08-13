@@ -398,6 +398,10 @@ public sealed class A2APushNotificationTests : IDisposable
 
         Assert.True(await handler.WaitForRegistrationAsync(Patience), "the client never registered a callback.");
 
+        Assert.True(
+            await handler.WaitForInitialTaskReadAsync(Patience),
+            "the client never completed its initial authoritative task read.");
+
         // The peer finishes and its notification is lost in transit — nothing ever signals this instance.
         agentHandler.Release("an answer nobody was told about");
 
@@ -706,6 +710,8 @@ public sealed class A2APushNotificationTests : IDisposable
 
         private readonly TaskCompletionSource _registered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        private readonly TaskCompletionSource _initialTaskRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public string? ConfigId { get; private set; }
 
         public string? Token { get; private set; }
@@ -716,6 +722,15 @@ public sealed class A2APushNotificationTests : IDisposable
             Task completed = await Task.WhenAny(_registered.Task, Task.Delay(timeout)).ConfigureAwait(false);
 
             return ReferenceEquals(completed, _registered.Task);
+
+        }
+
+        public async Task<bool> WaitForInitialTaskReadAsync(TimeSpan timeout)
+        {
+
+            Task completed = await Task.WhenAny(_initialTaskRead.Task, Task.Delay(timeout)).ConfigureAwait(false);
+
+            return ReferenceEquals(completed, _initialTaskRead.Task);
 
         }
 
@@ -759,6 +774,14 @@ public sealed class A2APushNotificationTests : IDisposable
             }
 
             HttpResponseMessage response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+            if (_registered.Task.IsCompleted
+                && body.Contains("\"GetTask\"", StringComparison.Ordinal))
+            {
+
+                _initialTaskRead.TrySetResult();
+
+            }
 
             if (body.Contains("\"SendMessage\"", StringComparison.Ordinal))
             {

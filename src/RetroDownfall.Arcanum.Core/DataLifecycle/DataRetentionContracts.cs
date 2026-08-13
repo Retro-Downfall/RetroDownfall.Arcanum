@@ -82,6 +82,8 @@ public enum DataRetentionOperation
 
     ResetMemory,
 
+    ResetWorkspace,
+
     FactoryReset,
 
 }
@@ -105,7 +107,13 @@ public enum MemoryResetScope
 public sealed record DataRetentionRequest(
     [property: JsonRequired] DataRetentionOperation Operation = DataRetentionOperation.Prune,
     Guid? TargetId = null,
-    MemoryResetScope? MemoryScope = null);
+    MemoryResetScope? MemoryScope = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionWorkspaceBinding? Workspace = null);
+
+public sealed record DataRetentionWorkspaceBinding(
+    [property: JsonRequired] Guid CampaignId,
+    [property: JsonRequired] string WorkspaceRoot);
 
 public sealed record DataRetentionApplyRequest(
     [property: JsonRequired] DataRetentionRequest Request,

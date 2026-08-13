@@ -150,4 +150,23 @@ public sealed partial class ArcanumApiClient
 
     }
 
+    public Task<Result<DataRetentionPlan>> PlanFactoryResetDataAsync(
+        InstallationResetDataPlanRequest request,
+        CancellationToken cancellationToken = default)
+    {
+
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request,
+            ArcanumJsonContext.Default.InstallationResetDataPlanRequest);
+
+        return SendRequestAsync(
+            HttpMethod.Post,
+            "api/data/factory-reset/plan",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan,
+            cancellationToken);
+
+    }
+
 }

@@ -211,6 +211,7 @@ public sealed class CliOperatorSurfaceTests
     [Theory]
     [InlineData(new[] { "doctor" }, true)]
     [InlineData(new[] { "config", "validate" }, true)]
+    [InlineData(new[] { "data", "factory-reset", "--global", "--dry-run" }, true)]
     [InlineData(new[] { "run", "--help" }, true)]
     [InlineData(new[] { "--version" }, true)]
     [InlineData(new[] { "run", "hello" }, false)]

@@ -1,5 +1,11 @@
 # Arcanum chat loop and attachment continuation ordering
 
+Installation factory-reset apply requests authenticated loopback host shutdown, then acquires the
+maintenance lock before accepted deletion. No chat, watcher, indexing, or Tapestry writer remains
+active across that boundary. A noncompleted or unreported completed reset record blocks the next
+host startup. After a verified global or all reset, `arcanum run` enters the existing setup wizard
+on a fresh interactive invocation instead of recreating Grimoire state implicitly.
+
 This document is the focused companion to `Arcanum.DESIGN.md` §10.7. It describes the one shared
 buffered/streaming model-tool loop and the ordering contract for attachment content.
 

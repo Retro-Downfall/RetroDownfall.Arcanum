@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
@@ -22,6 +23,78 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class ArcanumApiClientTests
 {
+
+    [Fact]
+
+    public async Task PlanFactoryResetDataAsync_posts_the_typed_planning_request()
+    {
+
+        DataRetentionWorkspaceBinding workspace = new(
+            Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            "/workspace");
+
+        InstallationResetDataPlanRequest request = new(
+            InstallationResetDataScope.Workspace,
+            workspace);
+
+        DataRetentionPlan expected = new(
+            "plan-test",
+            new DataRetentionRequest(
+                DataRetentionOperation.ResetWorkspace,
+                Workspace: workspace),
+            new DateTimeOffset(2026, 8, 13, 12, 0, 0, TimeSpan.Zero),
+            [],
+            [],
+            [],
+            Rows: 2,
+            Files: 1,
+            EstimatedBytes: 512,
+            DerivedRecords: 3,
+            CandidateIds: ["candidate"],
+            RequiresConfirmation: true);
+
+        string? sentJson = null;
+
+        RecordingHandler handler = new(requestMessage =>
+        {
+
+            sentJson = requestMessage.Content!
+                .ReadAsStringAsync()
+                .GetAwaiter()
+                .GetResult();
+
+            byte[] payload = JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<DataRetentionPlan>(expected, true, null),
+                ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+
+                Content = new ByteArrayContent(payload),
+
+            };
+
+        });
+
+        ArcanumApiClient client = CreateClient(handler, apiKey: "test-key");
+
+        Result<DataRetentionPlan> result = await client.PlanFactoryResetDataAsync(request);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(expected.PlanId, result.Value?.PlanId);
+
+        HttpRequestMessage sent = Assert.Single(handler.Requests);
+
+        Assert.Equal(HttpMethod.Post, sent.Method);
+
+        Assert.Equal("/api/data/factory-reset/plan", sent.RequestUri!.AbsolutePath);
+
+        Assert.Equal(
+            "{\"scope\":\"Workspace\",\"workspace\":{\"campaignId\":\"44444444-4444-4444-4444-444444444444\",\"workspaceRoot\":\"/workspace\"}}",
+            sentJson);
+
+    }
 
     [Fact]
     public async Task ListLoreAsync_rejects_a_non_advancing_page_instead_of_using_a_total_page_limit()

@@ -24,7 +24,10 @@ internal static partial class CliCommandTree
             "data",
             "Inspect and maintain persisted Arcanum data.");
 
-        AddDataLifecycleCommands(data, retentionHandler);
+        AddDataLifecycleCommands(
+            data,
+            retentionHandler,
+            serviceProvider);
 
         Command encryption = new(
             "encryption",
@@ -71,7 +74,8 @@ internal static partial class CliCommandTree
 
     private static void AddDataLifecycleCommands(
         Command data,
-        DataRetentionCommands handler)
+        DataRetentionCommands handler,
+        IServiceProvider serviceProvider)
     {
 
         Command status = new(
@@ -243,12 +247,74 @@ internal static partial class CliCommandTree
 
         Command factoryReset = new(
             "factory-reset",
-            "Reset data under the configured root; backups and data outside that root remain.");
+            "Preview or apply an installation reset for one workspace, global state, or both.");
+
+        Option<bool> workspaceReset = new("--workspace")
+        {
+
+            Description = "Reset the most-specific registered Campaign containing the current directory.",
+
+        };
+
+        Option<bool> globalReset = new("--global")
+        {
+
+            Description = "Reset installation-wide Arcanum state and credentials.",
+
+        };
+
+        Option<bool> allReset = new("--all")
+        {
+
+            Description = "Reset global state plus the current registered Campaign.",
+
+        };
+
+        Option<bool> factoryDryRun = new("--dry-run")
+        {
+
+            Description = "Preview the exact reset plan without mutation.",
+
+        };
+
+        Option<bool> factoryApply = new("--apply")
+        {
+
+            Description = "Apply or resume the accepted reset plan.",
+
+        };
+
+        Option<bool> factoryForce = new("--force")
+        {
+
+            Description = "Required with global --yes for noninteractive apply.",
+
+        };
+
+        factoryReset.Add(workspaceReset);
+
+        factoryReset.Add(globalReset);
+
+        factoryReset.Add(allReset);
+
+        factoryReset.Add(factoryDryRun);
+
+        factoryReset.Add(factoryApply);
+
+        factoryReset.Add(factoryForce);
 
         factoryReset.SetAction(
-            async (ParseResult _, CancellationToken cancellationToken) =>
-                await handler
-                    .FactoryReset(cancellationToken)
+            async (ParseResult result, CancellationToken cancellationToken) =>
+                await serviceProvider
+                    .GetRequiredService<InstallationFactoryResetCommand>()
+                    .Execute(
+                        result.GetValue(workspaceReset),
+                        result.GetValue(globalReset),
+                        result.GetValue(allReset),
+                        result.GetValue(factoryDryRun),
+                        result.GetValue(factoryApply),
+                        result.GetValue(factoryForce),
+                        cancellationToken)
                     .ConfigureAwait(false));
 
         data.Add(factoryReset);

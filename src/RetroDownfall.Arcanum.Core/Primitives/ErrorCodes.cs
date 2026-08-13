@@ -444,6 +444,20 @@ public static class ErrorCodes
 
         public const string ReconciliationFailed = "Data.ReconciliationFailed";
 
+        public const string InventoryUnavailable = "Data.InventoryUnavailable";
+
+        public const string CredentialInventoryUnavailable = "Data.CredentialInventoryUnavailable";
+
+        public const string ResetInProgress = "Data.ResetInProgress";
+
+        public const string RecoveryRequired = "Data.RecoveryRequired";
+
+        public const string FileLocked = "Data.FileLocked";
+
+        public const string WorkspaceOverlap = "Data.WorkspaceOverlap";
+
+        public const string ControlPathUnavailable = "Data.ControlPathUnavailable";
+
     }
 
     /// <summary>Connection — client transport failures.</summary>

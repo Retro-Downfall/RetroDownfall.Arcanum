@@ -280,6 +280,7 @@ internal static class CliSurfaceExamples
         // Keys
         ["key list"] = ["arcanum key list"],
         ["key provider status"] = ["arcanum key provider status openai"],
+        ["data factory-reset"] = ["arcanum data factory-reset --all --dry-run"],
 
         // Watch
         ["watch session"] = ["arcanum watch session --reconnect"],
@@ -311,7 +312,6 @@ internal static class CliSurfaceExamples
         ["key set"] = "Writes a credential; a paste-ready form invites putting a real key in shell history.",
         ["key provider set"] = "Writes a provider credential from stdin or a secure prompt.",
         ["key provider delete"] = "Destroys a stored credential.",
-        ["data factory-reset"] = "Irreversibly destroys all durable local state.",
         ["data reset-memory"] = "Irreversibly destroys durable memory.",
         ["data prune"] = "Irreversibly deletes durable history.",
         ["data delete-session"] = "Irreversibly deletes a Session and its transcript.",

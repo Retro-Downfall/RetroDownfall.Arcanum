@@ -30,6 +30,8 @@ using RetroDownfall.Arcanum.Cli.UX;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+
 using RetroDownfall.Arcanum.Core.Chronosync;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -216,7 +218,10 @@ public sealed class RunCommandTests
             grimoire,
             serve,
             SessionManager(),
-            console);
+            console,
+            new FakeStartupProbe(active: null, fresh: false),
+            new FakeSetupCommand(),
+            new FakeCliEnvironment(interactive: true));
 
         int exitCode = await command.RunAsync(
             Request(
@@ -404,6 +409,145 @@ public sealed class RunCommandTests
         Assert.Equal(0, serve.CallCount);
 
         Assert.NotEmpty(console.Diagnostics);
+
+    }
+
+    [Fact]
+
+    public async Task RunAsync_reports_active_reset_before_reading_input_or_initializing()
+    {
+
+        FakeRunInputReader input = new(SuccessInput("prompt", null));
+
+        NoopGrimoireInitialization grimoire = new();
+
+        FakeSetupCommand setup = new();
+
+        RunCommand command = CreateCommand(
+            input.Result,
+            SuccessStage([]),
+            input: input,
+            grimoire: grimoire,
+            startupProbe: new FakeStartupProbe(
+                new ActiveInstallationReset(
+                    InstallationResetScope.Global,
+                    WorkspaceRoot: null,
+                    PlanId: "active-plan"),
+                fresh: false),
+            setup: setup);
+
+        int exitCode = await command.RunAsync(
+            Request(),
+            CancellationToken.None);
+
+        Assert.Equal((int)CliExitCode.GenericError, exitCode);
+
+        Assert.Null(input.PositionalInstruction);
+
+        Assert.Equal(0, grimoire.CallCount);
+
+        Assert.Equal(0, setup.CallCount);
+
+    }
+
+    [Fact]
+
+    public async Task RunAsync_hands_a_fresh_interactive_installation_to_setup_only()
+    {
+
+        FakeRunInputReader input = new(SuccessInput("prompt", null));
+
+        NoopGrimoireInitialization grimoire = new();
+
+        FakeRunExecutionDispatcher execution = new();
+
+        FakeSetupCommand setup = new(exitCode: 37);
+
+        RunCommand command = CreateCommand(
+            input.Result,
+            SuccessStage([]),
+            input: input,
+            execution: execution,
+            grimoire: grimoire,
+            startupProbe: new FakeStartupProbe(active: null, fresh: true),
+            setup: setup,
+            environment: new FakeCliEnvironment(interactive: true));
+
+        int exitCode = await command.RunAsync(
+            Request(),
+            CancellationToken.None);
+
+        Assert.Equal(37, exitCode);
+
+        Assert.Equal(1, setup.CallCount);
+
+        Assert.Null(input.PositionalInstruction);
+
+        Assert.Equal(0, grimoire.CallCount);
+
+        Assert.Null(execution.Request);
+
+    }
+
+    [Theory]
+
+    [InlineData("json")]
+
+    [InlineData("print")]
+
+    [InlineData("redirected")]
+
+    [InlineData("unattended")]
+
+    public async Task RunAsync_gives_setup_guidance_for_fresh_noninteractive_modes(
+        string mode)
+    {
+
+        FakeRunInputReader input = new(SuccessInput("prompt", null));
+
+        NoopGrimoireInitialization grimoire = new();
+
+        FakeSetupCommand setup = new();
+
+        RecordingConsole console = new();
+
+        RunCommand command = CreateCommand(
+            input.Result,
+            SuccessStage([]),
+            input: input,
+            grimoire: grimoire,
+            console: console,
+            startupProbe: new FakeStartupProbe(active: null, fresh: true),
+            setup: setup,
+            environment: new FakeCliEnvironment(
+                interactive: !string.Equals(mode, "redirected", StringComparison.Ordinal)));
+
+        using IDisposable invocation = CliInvocationContext.Push(
+            new CliInvocationOptions(
+                Json: string.Equals(mode, "json", StringComparison.Ordinal),
+                Plain: false,
+                Yes: false,
+                Print: string.Equals(mode, "print", StringComparison.Ordinal)));
+
+        int exitCode = await command.RunAsync(
+            Request(
+                unattended: string.Equals(
+                    mode,
+                    "unattended",
+                    StringComparison.Ordinal)),
+            CancellationToken.None);
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, exitCode);
+
+        Assert.Equal(0, setup.CallCount);
+
+        Assert.Null(input.PositionalInstruction);
+
+        Assert.Equal(0, grimoire.CallCount);
+
+        Assert.Contains(
+            console.Diagnostics,
+            static line => line.Contains("arcanum setup", StringComparison.Ordinal));
 
     }
 
@@ -1568,7 +1712,10 @@ public sealed class RunCommandTests
         NoopServeLauncher? serve = null,
         RecordingConsole? console = null,
         Guid? lastSessionId = null,
-        string? contextFilePath = null) =>
+        string? contextFilePath = null,
+        IInstallationStartupProbe? startupProbe = null,
+        ISetupCommand? setup = null,
+        ICliEnvironment? environment = null) =>
         new(
             input ?? new FakeRunInputReader(inputResult),
             new FakeRunAttachmentStager(stageResult),
@@ -1580,7 +1727,10 @@ public sealed class RunCommandTests
             grimoire ?? new NoopGrimoireInitialization(),
             serve ?? new NoopServeLauncher(),
             SessionManager(lastSessionId, contextFilePath),
-            console ?? new RecordingConsole());
+            console ?? new RecordingConsole(),
+            startupProbe ?? new FakeStartupProbe(active: null, fresh: false),
+            setup ?? new FakeSetupCommand(),
+            environment ?? new FakeCliEnvironment(interactive: true));
 
     /// <summary>
     /// Backed by an in-memory context store so <c>--continue</c> resolution never reads or writes a
@@ -1652,7 +1802,8 @@ public sealed class RunCommandTests
         bool continueSession = false,
         bool resume = false,
         string? resumeTarget = null,
-        string[]? attachment = null) =>
+        string[]? attachment = null,
+        bool unattended = false) =>
         new(
             prompt ?? ["prompt"],
             research,
@@ -1663,7 +1814,7 @@ public sealed class RunCommandTests
             ShowContent: false,
             Model: null,
             newSession,
-            Unattended: false,
+            Unattended: unattended,
             continueSession,
             resume,
             resumeTarget,
@@ -1859,6 +2010,50 @@ public sealed class RunCommandTests
                     null));
 
         }
+
+    }
+
+    private sealed class FakeStartupProbe(
+        ActiveInstallationReset? active,
+        bool fresh) : IInstallationStartupProbe
+    {
+
+        public Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<ActiveInstallationReset?>.Success(active));
+
+        public Result<bool> IsFreshInstallation() =>
+            Result<bool>.Success(fresh);
+
+    }
+
+    private sealed class FakeSetupCommand(
+        int exitCode = (int)CliExitCode.Success) : ISetupCommand
+    {
+
+        public int CallCount { get; private set; }
+
+        public Task<int> RunAsync(
+            SetupCommandOptions options,
+            CancellationToken cancellationToken)
+        {
+
+            CallCount++;
+
+            return Task.FromResult(exitCode);
+
+        }
+
+    }
+
+    private sealed class FakeCliEnvironment(bool interactive) : ICliEnvironment
+    {
+
+        public bool IsInteractive => interactive;
+
+        public bool ColorEnabled => interactive;
+
+        public bool ShouldShowManaBar => false;
 
     }
 

@@ -198,6 +198,26 @@ public sealed class CliCommandShapeTests
 
     }
 
+    [Fact]
+
+    public void Factory_reset_has_the_exact_reduced_option_surface()
+    {
+
+        CliSurfaceCommand command = AllCommands()["data factory-reset"];
+
+        Assert.Equal(
+            ["--all", "--apply", "--dry-run", "--force", "--global", "--workspace"],
+            command.Options
+                .Select(static option => option.Name)
+                .Order(StringComparer.Ordinal)
+                .ToArray());
+
+        Assert.Equal(
+            ["arcanum data factory-reset --all --dry-run"],
+            command.Examples);
+
+    }
+
     private static Dictionary<string, CliSurfaceCommand> AllCommands() =>
         CliSurfaceTests
             .Walk(CliSurfaceTests.BuildMap())

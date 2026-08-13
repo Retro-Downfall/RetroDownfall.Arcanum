@@ -1,5 +1,7 @@
 using System.Diagnostics;
 
+using System.Net;
+
 using System.Text.Json.Serialization.Metadata;
 
 using Microsoft.AspNetCore.Builder;
@@ -241,6 +243,72 @@ internal static class DataRetentionEndpoints
             .WithName("ResetDataRetentionMemory");
 
         apiGroup.MapPost(
+            "/data/factory-reset/plan",
+            async (
+                InstallationResetDataPlanRequest? request,
+                IDataRetentionService service,
+                HttpContext httpContext,
+                CancellationToken cancellationToken) =>
+            {
+
+                if (!IsLoopbackPeer(httpContext))
+                {
+
+                    return Failure(
+                        httpContext,
+                        new Error(
+                            ErrorCodes.Data.Blocked,
+                            "Factory reset planning is available only to loopback peers."),
+                        StatusCodes.Status403Forbidden,
+                        ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+                }
+
+                DataRetentionRequest? dataRequest = request switch
+                {
+
+                    { Scope: InstallationResetDataScope.Global, Workspace: null } =>
+                        new DataRetentionRequest(
+                            DataRetentionOperation.FactoryReset),
+
+                    {
+                        Scope: InstallationResetDataScope.Workspace,
+                        Workspace: { } workspace,
+                    } =>
+                        new DataRetentionRequest(
+                            DataRetentionOperation.ResetWorkspace,
+                            Workspace: workspace),
+
+                    _ => null,
+
+                };
+
+                if (dataRequest is null)
+                {
+
+                    return Failure(
+                        httpContext,
+                        new Error(
+                            ErrorCodes.Data.InvalidRequest,
+                            "Global planning forbids a workspace binding, and workspace planning requires one."),
+                        StatusCodes.Status400BadRequest,
+                        ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+                }
+
+                DataRetentionPlan plan = await service
+                    .PlanAsync(dataRequest, cancellationToken)
+                    .ConfigureAwait(false);
+
+                return Success(
+                    httpContext,
+                    plan,
+                    ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+            })
+            .WithName("PlanFactoryResetDataRetention");
+
+        apiGroup.MapPost(
             "/data/factory-reset",
             async (
                 FactoryResetRequest? request,
@@ -278,6 +346,16 @@ internal static class DataRetentionEndpoints
             .WithName("FactoryResetDataRetention");
 
         return apiGroup;
+
+    }
+
+    private static bool IsLoopbackPeer(HttpContext httpContext)
+    {
+
+        IPAddress? remoteAddress = httpContext.Connection.RemoteIpAddress;
+
+        return remoteAddress is not null
+            && IPAddress.IsLoopback(remoteAddress);
 
     }
 

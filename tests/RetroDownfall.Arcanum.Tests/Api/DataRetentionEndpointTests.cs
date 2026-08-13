@@ -4,6 +4,8 @@ using System.Text;
 
 using System.Text.Json;
 
+using Microsoft.AspNetCore.Http;
+
 using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -11,6 +13,8 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Api.Serialization;
+
+using RetroDownfall.Arcanum.Api.Security;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
@@ -62,6 +66,8 @@ public sealed class DataRetentionEndpointTests
 
     [InlineData("POST", "/api/data/factory-reset")]
 
+    [InlineData("POST", "/api/data/factory-reset/plan")]
+
     public async Task Data_lifecycle_routes_require_api_key(
         string method,
         string path)
@@ -93,6 +99,9 @@ public sealed class DataRetentionEndpointTests
 
                 "/api/data/factory-reset" =>
                     "{\"confirmation\":\"factory-reset\"}",
+
+                "/api/data/factory-reset/plan" =>
+                    "{\"scope\":\"Global\"}",
 
                 _ => "{}",
 
@@ -243,6 +252,129 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(
             DataRetentionOperation.FactoryReset,
             service.LastApplyRequest?.Request.Operation);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData(InstallationResetDataScope.Global, DataRetentionOperation.FactoryReset)]
+
+    [InlineData(InstallationResetDataScope.Workspace, DataRetentionOperation.ResetWorkspace)]
+
+    public async Task Factory_reset_planning_maps_the_requested_data_scope(
+        InstallationResetDataScope scope,
+        DataRetentionOperation expectedOperation)
+    {
+
+        RequireSqlCipher();
+
+        FakeDataRetentionService service = new();
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = CreateLoopbackAuthenticatedClient(factory);
+
+        DataRetentionWorkspaceBinding? workspace = scope == InstallationResetDataScope.Workspace
+            ? new DataRetentionWorkspaceBinding(
+                Guid.Parse("44444444-4444-4444-4444-444444444444"),
+                "/workspace")
+            : null;
+
+        InstallationResetDataPlanRequest request = new(scope, workspace);
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/factory-reset/plan",
+            JsonContent(
+                request,
+                ArcanumJsonContext.Default.InstallationResetDataPlanRequest));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<DataRetentionPlan> body = await ReadAsync(
+            response,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan);
+
+        Assert.True(body.IsSuccess);
+
+        Assert.Equal(expectedOperation, service.LastPlanRequest?.Operation);
+
+        Assert.Equal(workspace, service.LastPlanRequest?.Workspace);
+
+    }
+
+    [SkippableTheory]
+
+    [InlineData("null")]
+
+    [InlineData("{\"scope\":\"Workspace\"}")]
+
+    [InlineData("{\"scope\":\"Global\",\"workspace\":{\"campaignId\":\"44444444-4444-4444-4444-444444444444\",\"workspaceRoot\":\"/workspace\"}}")]
+
+    public async Task Factory_reset_planning_rejects_invalid_scope_bindings_before_planning(
+        string json)
+    {
+
+        RequireSqlCipher();
+
+        FakeDataRetentionService service = new();
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        using HttpClient client = CreateLoopbackAuthenticatedClient(factory);
+
+        using StringContent content = new(
+            json,
+            Encoding.UTF8,
+            "application/json");
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/api/data/factory-reset/plan",
+            content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Null(service.LastPlanRequest);
+
+    }
+
+    [SkippableFact]
+
+    public async Task Factory_reset_planning_rejects_a_non_loopback_peer_before_planning()
+    {
+
+        RequireSqlCipher();
+
+        FakeDataRetentionService service = new();
+
+        await using ArcanumWebApplicationFactory factory = CreateFactory(service);
+
+        _ = factory.CreateClient();
+
+        byte[] body = Encoding.UTF8.GetBytes("{\"scope\":\"Global\"}");
+
+        HttpContext context = await factory.Server.SendAsync(requestContext =>
+        {
+
+            requestContext.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.10");
+
+            requestContext.Request.Method = HttpMethod.Post.Method;
+
+            requestContext.Request.Path = "/api/data/factory-reset/plan";
+
+            requestContext.Request.Headers[ArcanumApiHeaders.ApiKey] =
+                ArcanumWebApplicationFactory.TestApiKey;
+
+            requestContext.Request.ContentType = "application/json";
+
+            requestContext.Request.ContentLength = body.Length;
+
+            requestContext.Request.Body = new MemoryStream(body);
+
+        });
+
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+
+        Assert.Null(service.LastPlanRequest);
 
     }
 
@@ -742,6 +874,27 @@ public sealed class DataRetentionEndpointTests
         };
 
         return factory;
+
+    }
+
+    private static HttpClient CreateLoopbackAuthenticatedClient(
+        ArcanumWebApplicationFactory factory)
+    {
+
+        HttpClient client = new(
+            factory.Server.CreateHandler(context =>
+                context.Connection.RemoteIpAddress = IPAddress.Loopback))
+        {
+
+            BaseAddress = new Uri("http://localhost"),
+
+        };
+
+        client.DefaultRequestHeaders.Add(
+            ArcanumApiHeaders.ApiKey,
+            ArcanumWebApplicationFactory.TestApiKey);
+
+        return client;
 
     }
 
