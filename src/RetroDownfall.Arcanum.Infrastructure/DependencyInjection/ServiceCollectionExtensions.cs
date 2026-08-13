@@ -55,6 +55,7 @@ using RetroDownfall.Arcanum.Infrastructure.Theme;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
@@ -94,7 +95,7 @@ public static class ServiceCollectionExtensions
 
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
+            .PersistKeysToFileSystem(new DirectoryInfo(DataProtectionKeyPaths.Directory));
 
         services.TryAddSingleton<IOsCredentialStore>(static _ => new OsCredentialStore());
 
@@ -247,7 +248,7 @@ public static class ServiceCollectionExtensions
     {
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
+            .PersistKeysToFileSystem(new DirectoryInfo(DataProtectionKeyPaths.Directory));
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 
@@ -256,6 +257,50 @@ public static class ServiceCollectionExtensions
         services.AddArcanumGrimoireForCli();
 
         services.AddArcanumBackup();
+
+        return services;
+    }
+
+    public static IServiceCollection AddArcanumInstallationReset(
+        this IServiceCollection services,
+        ArcanumSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        services.TryAddScoped<InstallationResetExistingGrimoire>(provider =>
+            new InstallationResetExistingGrimoire(
+                provider.GetRequiredService<DataProtectionSecretStore>(),
+                settings,
+                provider.GetService<TimeProvider>() ?? TimeProvider.System,
+                provider.GetService<ILoggerFactory>()
+                    ?? LoggerFactory.Create(static _ => { })));
+
+        services.TryAddScoped<IInstallationResetDataService>(provider =>
+            provider.GetRequiredService<InstallationResetExistingGrimoire>());
+
+        services.TryAddScoped<IInstallationResetWorkspaceResolver>(provider =>
+            provider.GetRequiredService<InstallationResetExistingGrimoire>());
+
+        services.TryAddScoped<IInstallationResetActiveStore>(static _ =>
+            new InstallationResetActiveStore(ArcanumPaths.GrimoireDirectory));
+
+        services.TryAddScoped<IInstallationResetCredentialService>(provider =>
+            new InstallationResetCredentialCatalog(
+                provider.GetRequiredService<IOsCredentialStore>(),
+                settings,
+                ArcanumPaths.SecretStoreDirectory));
+
+        services.TryAddScoped<IInstallationResetOfflineCleanup, InstallationResetOfflineCleanup>();
+
+        services.TryAddScoped<IInstallationResetStateRoots>(static _ =>
+            InstallationResetStateRoots.Default);
+
+        services.TryAddScoped<IInstallationResetPreDataMutation, InstallationResetDaemonMutation>();
+
+        services.TryAddScoped(static _ =>
+            new InstallationResetControlPaths(ArcanumPaths.GrimoireDirectory));
+
+        services.TryAddScoped<IInstallationResetService, InstallationResetService>();
 
         return services;
     }
@@ -425,7 +470,7 @@ public static class ServiceCollectionExtensions
 
         services.AddDataProtection()
             .SetApplicationName("ArcanumCore")
-            .PersistKeysToFileSystem(DataProtectionKeyPaths.EnsureDirectory());
+            .PersistKeysToFileSystem(new DirectoryInfo(DataProtectionKeyPaths.Directory));
 
         services.AddSingleton<IApiKeyDigestCache, ApiKeyDigestCache>();
 

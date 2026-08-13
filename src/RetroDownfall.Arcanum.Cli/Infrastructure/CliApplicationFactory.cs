@@ -19,12 +19,14 @@ using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Cli.Services.Setup;
 using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Desktop;
 using RetroDownfall.Arcanum.Core.Hosting;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Infrastructure.Theme;
 using Spectre.Console;
@@ -138,6 +140,11 @@ internal static class CliApplicationFactory
         // CLI Grimoire), owned by Infrastructure so it cannot drift from the host wiring.
         services.AddArcanumCliClientStack();
 
+        services.AddArcanumInstallationReset(settingsSnapshot);
+
+        services.AddSingleton<IInstallationStartupProbe>(static _ =>
+            InstallationStartupProbe.CreateDefault());
+
         services.AddArcanumConfigurationPresets();
 
         services.AddHttpClient(
@@ -221,6 +228,9 @@ internal static class CliApplicationFactory
 
         services.AddTransient<SetupCommand>();
 
+        services.AddTransient<ISetupCommand>(serviceProvider =>
+            serviceProvider.GetRequiredService<SetupCommand>());
+
         services.AddTransient<ServeCommand>();
 
         services.AddTransient<AskCommand>();
@@ -301,6 +311,14 @@ internal static class CliApplicationFactory
         services.AddTransient<DataEncryptionCommands>();
 
         services.AddTransient<DataRetentionCommands>();
+
+        services.AddTransient<InstallationFactoryResetCommand>();
+
+        services.AddSingleton<IInstallationResetConfirmationPrompt, InstallationResetConfirmationPrompt>();
+
+        services.AddScoped<IInstallationResetApplyBoundary, InstallationResetApplyBoundary>();
+
+        services.AddScoped<IInstallationResetOnlinePlanValidator, InstallationResetOnlinePlanValidator>();
 
         services.AddTransient<ContextCommands>();
 

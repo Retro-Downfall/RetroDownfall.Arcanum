@@ -506,7 +506,11 @@ normal loading, resonances, tools, Wards, or Sanctum. Those two route flags are 
 The `attachment list|add|reference|show|versions|refresh|pin|unpin|export|reveal` family is an HTTP
 client for the host-owned attachment lifecycle. Snapshot add may read any client-local path; reference never does. `ask --attachment <guid>` and `chat --attachment <guid>` name bound Session versions directly. Metadata and JSON remain content-free, while export is the explicit atomic plaintext operation.
 
-The `data status`, `data retention show|set`, `data prune`, `data delete-session`,`data delete-attachment`, `data reset-memory`, and `data factory-reset` family is likewise HTTP-only. `prune` requires exactly one of `--dry-run` and`--apply`; every mutation requires an interactive confirmation or recursive `--yes`. Factory reset states its backup/out-of-root boundary before sending the request.
+The ordinary `data status`, retention, prune, item deletion, and memory-reset commands remain
+HTTP-only. Installation factory reset uses HTTP for loopback planning and authenticated shutdown,
+then holds the maintenance lock while a restricted local graph performs the accepted offline reset.
+It requires one explicit scope and mode, exact `RESET` confirmation, or `--yes --force` for
+automation. Its bounded active record blocks host startup and carries interrupted work forward.
 
 Command Center is the terminal-native session workbench. It combines streaming chat, Wards, human
 prompts, attachment state, context telemetry, session mutation, and operator refresh without creating a second backend.

@@ -1,8 +1,10 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
@@ -131,6 +133,40 @@ public sealed class CliSettingsSnapshotTests : IAsyncLifetime
 
         // Composition must survive so `doctor` and `config validate` can name the offending pointer.
         Assert.NotNull(provider.GetRequiredService<IOptions<ArcanumSettings>>().Value);
+
+    }
+
+    [Fact]
+    public void Configuration_loading_does_not_create_an_absent_installation_root()
+    {
+
+        Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory));
+
+        ConfigurationManager configuration = new();
+
+        configuration.AddArcanumConfiguration();
+
+        Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory));
+
+    }
+
+    [Fact]
+    public void Cli_registration_does_not_create_an_absent_installation_root()
+    {
+
+        Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory));
+
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(
+            services,
+            new ConfigurationManager());
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        _ = provider.GetRequiredService<IDataProtectionProvider>();
+
+        Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory));
 
     }
 

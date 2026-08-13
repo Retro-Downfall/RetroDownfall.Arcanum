@@ -35,6 +35,7 @@ test, and documentation citations remain stable.
 | DELETE | `/api/data/attachments/{id}` | Explicit attachment-version deletion including owned bytes and derived indexes (`ApiResponse<DataRetentionApplyResult>`; §8.20). |
 | POST | `/api/data/memory/reset` | Reset exactly one `MemoryResetScope` from `MemoryResetRequest` (`ApiResponse<DataRetentionApplyResult>`; §8.20). |
 | POST | `/api/data/factory-reset` | Reset managed data beneath the selected root from `FactoryResetRequest`; requires exact `confirmation: "factory-reset"` and preserves backups/configuration/security material/out-of-root data (`ApiResponse<DataRetentionApplyResult>`; §8.20). |
+| POST | `/api/data/factory-reset/plan` | Loopback-only data-phase planning for an installation reset. Accepts `Global` with no workspace binding or `Workspace` with an exact registered Campaign binding (`ApiResponse<DataRetentionPlan>`; §8.20). |
 | GET | `/api/config` | Read the latest successfully persisted `ArcanumSettings`; provider endpoints remain redacted, while secret environment-variable references are returned without resolving their values (`ApiResponse<ArcanumSettings>`; §8.12). |
 | PUT | `/api/config` | Validate and write a full settings snapshot to `arcanum.json` (`ApiResponse<bool>`; §8.12). |
 | POST | `/api/config/validate` | Validate settings without writing (`ApiResponse<bool>`; §8.12). |
@@ -686,10 +687,24 @@ substitute for HTTP authentication. Factory reset also requires the exact body t
 {
   "confirmation": "factory-reset"
 }
+
+// POST /api/data/factory-reset/plan
+{
+  "scope": "Workspace",
+  "workspace": {
+    "campaignId": "b43d153c-60bf-4cb9-a3e4-46353abfb9ec",
+    "workspaceRoot": "/absolute/registered/campaign/root"
+  }
+}
 ```
 
+`POST /api/data/factory-reset/plan` is a loopback-only planning seam used by the installation-reset
+coordinator. `Global` forbids a workspace binding. `Workspace` requires the exact registered
+Campaign id and canonical root. The existing `POST /api/data/factory-reset` confirmation contract
+remains available for compatibility and retains its data-only boundary.
+
 `DataRetentionOperation` is emitted as `Prune`, `DeleteSession`, `DeleteAttachment`, `ResetMemory`,
-or `FactoryReset`. The two DELETE routes construct the corresponding target operation from `{id}`;
+`FactoryReset`, or `ResetWorkspace`. The two DELETE routes construct the corresponding target operation from `{id}`;
 callers do not send a body. `MemoryResetScope` is emitted as `Entry`, `Attachments`, `Workspace`,
 `Saga`, or `Lexicon`. Enum input matching is case-insensitive; responses use the canonical casing
 shown here. `RetentionDataClass` response values likewise retain their CLR casing, such as

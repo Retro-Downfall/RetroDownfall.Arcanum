@@ -1,10 +1,13 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.TheForge;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using Serilog;
 
@@ -14,28 +17,81 @@ namespace RetroDownfall.Arcanum.Infrastructure.Hosting;
 public sealed class GrimoireDatabaseHostedService(
     IServiceScopeFactory scopeFactory,
     ISecretStore secretStore,
-    IGrimoireDbPassphraseSource passphraseSource)
+    IGrimoireDbPassphraseSource passphraseSource,
+    IInstallationStartupProbe? startupProbe = null)
     : IHostedService, IDisposable
 {
 
+    private readonly IInstallationStartupProbe _startupProbe =
+        startupProbe ?? InstallationStartupProbe.CreateDefault();
+
     private ArcanumMaintenanceLock? _maintenanceLock;
+
+    private string _maintenanceDirectory = ArcanumPaths.GrimoireDirectory;
+
+    internal GrimoireDatabaseHostedService(
+        IServiceScopeFactory scopeFactory,
+        ISecretStore secretStore,
+        IGrimoireDbPassphraseSource passphraseSource,
+        string maintenanceDirectory,
+        IInstallationStartupProbe? startupProbe = null)
+        : this(scopeFactory, secretStore, passphraseSource, startupProbe)
+    {
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(maintenanceDirectory);
+
+        _maintenanceDirectory = maintenanceDirectory;
+
+    }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        ResolveInterruptedRestores();
+        Result<ActiveInstallationReset?> activeRead = await _startupProbe
+            .ReadActiveResetAsync(cancellationToken)
+            .ConfigureAwait(false);
 
-        // Held for the host's lifetime so `arcanum backup restore` can tell that a live process owns
-        // this installation. Best-effort on purpose: failing to take it must never stop the host,
-        // and a restore refuses on its own when it cannot take the lock itself.
-        _maintenanceLock = ArcanumMaintenanceLock.TryAcquire(ArcanumPaths.GrimoireDirectory);
+        if (activeRead.IsFailure)
+        {
+
+            InvalidOperationException exception = new(
+                "Installation reset recovery state could not be read safely. "
+                + activeRead.Error.Message);
+
+            await MarkFailedAsync(exception).ConfigureAwait(false);
+
+            throw exception;
+
+        }
+
+        if (activeRead.Value is not null)
+        {
+
+            InvalidOperationException exception = new(
+                "An installation factory reset is active. Resume it before starting the host.");
+
+            await MarkFailedAsync(exception).ConfigureAwait(false);
+
+            throw exception;
+
+        }
+
+        // Held for the host's lifetime so installation-wide maintenance cannot overlap hosted
+        // writers. Startup fails closed when another process owns the lock.
+        _maintenanceLock = ArcanumMaintenanceLock.TryAcquire(_maintenanceDirectory);
 
         if (_maintenanceLock is null)
         {
 
-            Log.Warning(
-                "The Arcanum maintenance lock is already held; a restore or another host may be running.");
+            InvalidOperationException exception = new(
+                "The Arcanum maintenance lock is unavailable; a reset, restore, or another host may be running.");
+
+            await MarkFailedAsync(exception).ConfigureAwait(false);
+
+            throw exception;
 
         }
+
+        ResolveInterruptedRestores();
 
         try
         {
@@ -46,9 +102,7 @@ public sealed class GrimoireDatabaseHostedService(
         catch (Exception ex)
         {
             // Ensure WaitUntilReadyAsync cannot hang if bootstrap throws before MarkReady.
-            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-            IGrimoireDbReadiness readiness = scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>();
-            readiness.MarkFailed(ex);
+            await MarkFailedAsync(ex).ConfigureAwait(false);
             throw;
         }
     }
@@ -75,6 +129,18 @@ public sealed class GrimoireDatabaseHostedService(
         _maintenanceLock?.Dispose();
 
         _maintenanceLock = null;
+    }
+
+    private async Task MarkFailedAsync(Exception exception)
+    {
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        IGrimoireDbReadiness readiness =
+            scope.ServiceProvider.GetRequiredService<IGrimoireDbReadiness>();
+
+        readiness.MarkFailed(exception);
+
     }
 
     /// <summary>

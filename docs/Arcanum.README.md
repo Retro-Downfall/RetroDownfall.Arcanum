@@ -928,7 +928,9 @@ arcanum --yes data prune --apply
 arcanum data delete-session <session-guid>
 arcanum data delete-attachment <attachment-guid>
 arcanum data reset-memory --scope entry|attachments|workspace|saga|lexicon
-arcanum data factory-reset
+arcanum data factory-reset --workspace --dry-run
+arcanum data factory-reset --global --dry-run
+arcanum data factory-reset --all --apply
 ```
 
 Dry-run and apply call the same server-owned planner. A plan identifies candidates and reports rows,
@@ -974,17 +976,14 @@ pages/WAL copies, operating-system caches, and independent backups can retain re
 Encryption protects retained bytes but does not make per-record unlinking equivalent to destroying
 all copies.
 
-`arcanum data factory-reset` names this boundary in its confirmation. It clears managed data under
-the configured root only after global conflict checks; it does not silently remove external
-backups, registered workspace content outside that root, `arcanum.json`, or security/credential/key
-material. The Forge-owned local histories are outside this implementation boundary and remain
-untouched; this feature adds no coordinated cleanup integration. Prior terminal durable-operation
-history is cleared in dependency order, while the successful reset necessarily leaves its own
-completed operation marker as the audit/recovery record. The preview counts physical rows once,
-reports dependency/index/provenance rows as derived records, and excludes reference-only batch
-roles. Apply holds an immediate database transaction and daemon-start gate across its final
-conflict check and cleanup; interruption is restart-idempotent. Backups must be selected and
-destroyed separately by the operator.
+Installation reset requires an explicit scope and mode. Workspace scope removes exact-root derived
+rows and the selected registered Campaign's `.arcanum` tree while preserving global daemon state.
+Global scope removes installation-wide state, configured credential identities, and daemon
+registration. All scope captures the current Campaign before running both phases. Dry-run performs
+no writes. Apply prompts for the exact text `RESET`; automation requires both `--yes` and `--force`.
+Recognized `.arcbackup` files and nested registered Campaign roots remain in place. An owner-only
+active record makes interruption resumable, blocks host startup until recovery completes, and is
+retired only after final file, backup, and credential verification succeeds.
 
 This feature uses the existing canonical tables and file layouts. It adds no schema object and
 requires no local/test database recreation. If a later retention change alters a canonical schema,
@@ -1657,7 +1656,7 @@ compression behavior. Existing `@path` text/image staging remains unchanged and 
 | `doctor` | Subsystem diagnostics across paths, permissions, configuration syntax **and semantics**, credential stores and the Data Protection key ring, SQLCipher key material / `quick_check` / `foreign_key_check` / WAL, encrypted blob inventory, durable operations read locally so a crashed host cannot hide them, PID/maintenance-lock/disk residue, MCP config, the tokenizer, and the running host's own per-subsystem verdicts. Each finding carries a stable `subsystem.snake_case` id, a typed outcome (`Skipped`/`Healthy`/`Unavailable`/`Degraded`/`Unhealthy`), and the exact next command. A bare run is strictly read-only; `--only`/`--skip` scope it, `--include-network` adds one non-billable `/models` probe per provider, `--strict` promotes degraded to a nonzero exit, and `--repair <id>` plans a narrow idempotent repair that changes nothing without `--apply`. `--fix-permissions` is the no-prompt alias for the owner-only permission repair. `arcanum doctor list` / `explain <id>` make every id discoverable. An unreachable API stays a non-fatal warning. `--json` emits the structured `DoctorReport` — the pre-existing `healthy`/`name`/`status`/`detail` shape, extended with `id`, `subsystem`, `outcome`, `remedies`, and `repairs` (exit code 0 if healthy, 1 otherwise). Architecture: [DESIGN §4.4.2](Arcanum.DESIGN.md#442-subsystem-diagnostics-and-safe-repairs-arcanum-doctor). |
 | `watch session\|apprentice\|logs\|mcp\|daemons\|health` | Follow the six authenticated live sources with shared UTC/color/heartbeat/`[DONE]`/Ctrl+C/NDJSON behavior. Repeat free-form `--event-type` and `--tool` filters; `watch logs` adds `--level`/`--category`/`--search`; `watch session` adds `--since`; `watch health` adds `--interval` (default 5). `--reconnect` is opt-in, indefinitely retries unexpected SSE disconnects with capped backoff, and always warns of possible gaps/no replay guarantee. |
 | `backup create\|inspect\|verify\|list\|restore\|migrate` | Plan/create an owner-only encrypted `.arcbackup`, read its safe outer header or authenticated manifest, verify every entry and included Grimoire snapshot, or list archive headers without decryption. Create uses typed scopes/components, online SQLite backup, hidden/environment-reference/inherited-descriptor passphrase input, dry-run, and explicit no-clobber/overwrite behavior. `restore` verifies completely, stages a whole generation, migrates schema through the authoritative installer, remaps typed machine-specific roots, rebuilds local secret protection, and commits atomically or rolls the prior installation back; `--dry-run`, three conflict modes, confirmation, and a pre-restore safety backup are part of the contract. `migrate` rewrites a supported archive at the current format into a new file. |
-| `data status\|retention show\|retention set\|prune\|delete-session\|delete-attachment\|reset-memory\|factory-reset` | Inspect typed retained stores, configure per-class policy, preview the exact complete dependency plan, or perform a confirmed server-owned deletion through durable internal checkpoints. `prune` requires exactly one of `--dry-run`/`--apply`; every mutation requires confirmation or `--yes`. Factory reset preserves external backups, configuration, security/key material, and data outside the selected root. |
+| `data status\|retention show\|retention set\|prune\|delete-session\|delete-attachment\|reset-memory\|factory-reset` | Inspect typed retained stores, configure policy, preview deletion plans, or perform confirmed durable deletion. Installation factory reset requires one of `--workspace`/`--global`/`--all` and one of `--dry-run`/`--apply`; noninteractive apply also requires `--yes --force`. Recognized backups and excluded nested Campaign roots are preserved. |
 | `data encryption status\|migrate\|verify\|rotate-key` | Inspect mixed-mode state; resumably encrypt legacy blobs; authenticate/decrypt/hash-check every blob; or create a new key and incrementally rotate before retiring unreferenced old keys. Worker commands accept `--max-concurrency` and `--max-bytes-per-second`; output contains aggregate files/bytes and issue categories, never names or paths. |
 | `key show` | Print the stored master API key from the OS credential store (with `security.dat` fallback) to **stderr**. CLI-only; no HTTP. |
 | `key set` | Store a master API key into the OS credential store (mirrors to `security.dat`). Argument or stdin / interactive secret prompt. |

@@ -1,0 +1,590 @@
+using System.Globalization;
+
+using RetroDownfall.Arcanum.Cli.Infrastructure;
+
+using RetroDownfall.Arcanum.Cli.Services;
+
+using RetroDownfall.Arcanum.Cli.UX;
+
+using RetroDownfall.Arcanum.Core.DataLifecycle;
+
+using RetroDownfall.Arcanum.Core.Primitives;
+
+namespace RetroDownfall.Arcanum.Cli.Commands;
+
+internal interface IInstallationResetConfirmationPrompt
+{
+
+    Task<bool> PromptAsync(
+        InstallationResetPlan plan,
+        CancellationToken cancellationToken);
+
+}
+
+internal interface IInstallationResetApplyBoundary
+{
+
+    Task<Result<InstallationResetResult>> ApplyAsync(
+        InstallationResetApplyRequest request,
+        CancellationToken cancellationToken);
+
+}
+
+internal interface IInstallationResetOnlinePlanValidator
+{
+
+    Task<Result> ValidateAsync(
+        InstallationResetPlan plan,
+        CancellationToken cancellationToken);
+
+}
+
+internal sealed class InstallationResetOnlinePlanValidator(
+    ArcanumApiClient apiClient) : IInstallationResetOnlinePlanValidator
+{
+
+    public async Task<Result> ValidateAsync(
+        InstallationResetPlan plan,
+        CancellationToken cancellationToken)
+    {
+
+        InstallationResetDataPlanRequest request = plan.Scope switch
+        {
+            InstallationResetScope.Workspace => new InstallationResetDataPlanRequest(
+                InstallationResetDataScope.Workspace,
+                plan.Workspace),
+            _ => new InstallationResetDataPlanRequest(InstallationResetDataScope.Global),
+        };
+
+        Result<DataRetentionPlan> online = await apiClient
+            .PlanFactoryResetDataAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (online.IsFailure)
+        {
+
+            return online.Error.Code is ErrorCodes.Connection.Unreachable
+                    or ErrorCodes.Security.MissingApiKey
+                ? Result.Success()
+                : Result.Failure(online.Error);
+
+        }
+
+        string? expectedDataPlanId = plan.AcceptedBinding.DataPlanIds.SingleOrDefault();
+
+        if (expectedDataPlanId is null
+            || !string.Equals(
+                online.Value.PlanId,
+                expectedDataPlanId,
+                StringComparison.Ordinal))
+        {
+
+            return Result.Failure(new Error(
+                ErrorCodes.Data.PlanChanged,
+                "The authenticated host reported a different canonical data reset plan."));
+
+        }
+
+        return Result.Success();
+
+    }
+
+}
+
+internal sealed class InstallationResetConfirmationPrompt(
+    IConsoleDispatcher dispatcher,
+    CliStandardInput standardInput) : IInstallationResetConfirmationPrompt
+{
+
+    public async Task<bool> PromptAsync(
+        InstallationResetPlan plan,
+        CancellationToken cancellationToken)
+    {
+
+        dispatcher.WriteDiagnostic(
+            $"Type RESET to apply installation reset plan {plan.PlanId}:");
+
+        string? response = await standardInput
+            .ConfiguredReader
+            .ReadLineAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return string.Equals(
+            response,
+            "RESET",
+            StringComparison.Ordinal);
+
+    }
+
+}
+
+internal sealed class InstallationFactoryResetCommand(
+    IInstallationResetService resetService,
+    IInstallationStartupProbe startupProbe,
+    IConsoleDispatcher dispatcher,
+    ICliInvocationContext invocationContext,
+    ICliEnvironment environment,
+    IInstallationResetConfirmationPrompt confirmationPrompt,
+    IInstallationResetApplyBoundary applyBoundary,
+    IInstallationResetOnlinePlanValidator onlinePlanValidator)
+{
+
+    public async Task<int> Execute(
+        bool workspace,
+        bool global,
+        bool all,
+        bool dryRun,
+        bool apply,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+
+        string? validationError = ValidateShape(
+            workspace,
+            global,
+            all,
+            dryRun,
+            apply,
+            force,
+            invocationContext.Options.Yes);
+
+        if (validationError is not null)
+        {
+
+            return Fail(
+                validationError,
+                CliExitCode.ConfigurationError);
+
+        }
+
+        InstallationResetPlanRequest request = new(
+            ResolveScope(workspace, global),
+            System.Environment.CurrentDirectory);
+
+        Result<ActiveInstallationReset?> activeRead = await startupProbe
+            .ReadActiveResetAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (activeRead.IsFailure)
+        {
+
+            return Fail(activeRead.Error);
+
+        }
+
+        if (apply && activeRead.Value is { } active)
+        {
+
+            if (active.Scope != request.Scope)
+            {
+
+                return Fail(new Error(
+                    ErrorCodes.Data.ResetInProgress,
+                    "A different installation reset owns the active operation."));
+
+            }
+
+            Result<InstallationResetResult> resumed = await applyBoundary
+                .ApplyAsync(
+                    new InstallationResetApplyRequest(request, active.PlanId),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (resumed.IsFailure)
+            {
+
+                return Fail(resumed.Error);
+
+            }
+
+            WriteResult(resumed.Value);
+
+            if (IsCancellationResult(resumed.Value))
+            {
+
+                return (int)CliExitCode.Cancelled;
+
+            }
+
+            return IsCompleted(resumed.Value)
+                ? (int)CliExitCode.Success
+                : (int)CliExitCode.GenericError;
+
+        }
+
+        Result<InstallationResetPlan> planned = await resetService
+            .PlanAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (planned.IsFailure)
+        {
+
+            return Fail(planned.Error);
+
+        }
+
+        InstallationResetPlan plan = planned.Value;
+
+        Result onlineValidation = await onlinePlanValidator
+            .ValidateAsync(plan, cancellationToken).ConfigureAwait(false);
+
+        if (onlineValidation.IsFailure)
+        {
+
+            return Fail(onlineValidation.Error);
+
+        }
+
+        if (dryRun)
+        {
+
+            WritePlan(plan);
+
+            return (int)CliExitCode.Success;
+
+        }
+
+        bool acknowledgedWithoutPrompt =
+            invocationContext.Options.Yes && force;
+
+        if (!acknowledgedWithoutPrompt)
+        {
+
+            bool promptAvailable = environment.IsInteractive
+                && !invocationContext.Options.Json
+                && !invocationContext.Options.Print;
+
+            if (!promptAvailable)
+            {
+
+                return Fail(
+                    "Confirmation is unavailable in headless mode. Pass --yes and --force together.",
+                    CliExitCode.ConfigurationError);
+
+            }
+
+            WriteHumanPlan(plan);
+
+            bool confirmed = await confirmationPrompt
+                .PromptAsync(plan, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!confirmed)
+            {
+
+                return Fail(
+                    "Installation reset confirmation was not accepted. Type exactly RESET to continue.",
+                    CliExitCode.ConfigurationError);
+
+            }
+
+        }
+
+        Result<InstallationResetResult> applied = await applyBoundary
+            .ApplyAsync(
+                new InstallationResetApplyRequest(request, plan.PlanId),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (applied.IsFailure)
+        {
+
+            return Fail(applied.Error);
+
+        }
+
+        InstallationResetResult result = applied.Value;
+
+        WriteResult(result);
+
+        if (IsCancellationResult(result))
+        {
+
+            return (int)CliExitCode.Cancelled;
+
+        }
+
+        return IsCompleted(result)
+            ? (int)CliExitCode.Success
+            : (int)CliExitCode.GenericError;
+
+    }
+
+    private static string? ValidateShape(
+        bool workspace,
+        bool global,
+        bool all,
+        bool dryRun,
+        bool apply,
+        bool force,
+        bool yes)
+    {
+
+        int scopes = (workspace ? 1 : 0)
+            + (global ? 1 : 0)
+            + (all ? 1 : 0);
+
+        if (scopes != 1)
+        {
+
+            return "Select exactly one reset scope: --workspace, --global, or --all.";
+
+        }
+
+        if (dryRun == apply)
+        {
+
+            return "Select exactly one reset mode: --dry-run or --apply.";
+
+        }
+
+        if (force && !apply)
+        {
+
+            return "--force is valid only with --apply.";
+
+        }
+
+        if (yes != force)
+        {
+
+            return "Noninteractive reset acknowledgement requires --yes and --force together.";
+
+        }
+
+        return null;
+
+    }
+
+    private static InstallationResetScope ResolveScope(
+        bool workspace,
+        bool global)
+    {
+
+        if (workspace)
+        {
+
+            return InstallationResetScope.Workspace;
+
+        }
+
+        return global
+            ? InstallationResetScope.Global
+            : InstallationResetScope.All;
+
+    }
+
+    private void WritePlan(InstallationResetPlan plan)
+    {
+
+        if (invocationContext.Options.Json)
+        {
+
+            dispatcher.WriteJson(
+                plan,
+                CliJsonContext.Default.InstallationResetPlan);
+
+            return;
+
+        }
+
+        WriteHumanPlan(plan);
+
+    }
+
+    private void WriteHumanPlan(InstallationResetPlan plan)
+    {
+
+        dispatcher.WritePayload($"Installation reset plan {plan.PlanId}");
+
+        dispatcher.WritePayload($"Scope: {FormatName(plan.Scope)}");
+
+        dispatcher.WritePayload($"Generated: {plan.GeneratedAt:O}");
+
+        dispatcher.WritePayload(
+            $"Candidates: {FormatCount(plan.Rows)} rows, "
+            + $"{FormatCount(plan.Files)} files, "
+            + $"{FormatCount(plan.EstimatedBytes)} bytes");
+
+        dispatcher.WritePayload(
+            $"Targets: {FormatCount(plan.Targets.Length)}; "
+            + $"credentials: {FormatCount(plan.Credentials.Length)}; "
+            + $"blockers: {FormatCount(plan.Blockers.Length)}");
+
+        dispatcher.WritePayload(
+            $"Data inventory available: {FormatBoolean(plan.DataInventoryAvailable)}; "
+            + $"credential inventory available: {FormatBoolean(plan.CredentialInventoryAvailable)}");
+
+        foreach (InstallationResetTargetDescriptor target in plan.Targets)
+        {
+
+            string authority = target.CanonicalPath
+                ?? target.DatabasePredicate
+                ?? target.ResourceId;
+
+            dispatcher.WritePayload(
+                $"Target [{FormatName(target.Role)}]: {authority}");
+
+        }
+
+        foreach (InstallationResetCredentialSummary credential in plan.Credentials)
+        {
+
+            dispatcher.WritePayload(
+                $"Credential [{FormatName(credential.Status)}]: {credential.Account}");
+
+        }
+
+        foreach (InstallationResetPreservedBackup backup in plan.PreservedBackups)
+        {
+
+            dispatcher.WritePayload(
+                $"Preserved backup: {backup.CanonicalPath}");
+
+        }
+
+        foreach (InstallationResetExclusion exclusion in plan.Exclusions)
+        {
+
+            dispatcher.WritePayload(
+                $"Excluded: {exclusion.ResourceId} ({exclusion.Reason})");
+
+        }
+
+        foreach (InstallationResetIssueSummary blocker in plan.Blockers)
+        {
+
+            dispatcher.WritePayload(
+                $"Blocker [{blocker.Code}]: {blocker.Message}");
+
+        }
+
+    }
+
+    private void WriteResult(InstallationResetResult result)
+    {
+
+        if (invocationContext.Options.Json)
+        {
+
+            dispatcher.WriteJson(
+                result,
+                CliJsonContext.Default.InstallationResetResult);
+
+            return;
+
+        }
+
+        dispatcher.WritePayload("Installation reset result");
+
+        dispatcher.WritePayload($"Operation: {result.OperationId:D}");
+
+        dispatcher.WritePayload($"Plan: {result.PlanId}");
+
+        dispatcher.WritePayload($"Scope: {FormatName(result.Scope)}");
+
+        dispatcher.WritePayload($"Phase: {FormatName(result.Phase)}");
+
+        dispatcher.WritePayload(
+            $"Deleted: {FormatCount(result.RowsDeleted)} rows, "
+            + $"{FormatCount(result.FilesDeleted)} files, "
+            + $"{FormatCount(result.EstimatedBytesDeleted)} bytes");
+
+        dispatcher.WritePayload(
+            $"Verification passed: {FormatBoolean(result.Verification.Succeeded)}; "
+            + $"recovery required: {FormatBoolean(result.ResumeRequired)}");
+
+        if (!string.IsNullOrWhiteSpace(result.ErrorCode))
+        {
+
+            dispatcher.WritePayload($"Error: {result.ErrorCode}");
+
+        }
+
+    }
+
+    private int Fail(Error error)
+    {
+
+        CliExitCode exitCode = error.Code.StartsWith(
+            "Connection.",
+            StringComparison.Ordinal)
+            ? CliExitCode.NetworkError
+            : CliExitCode.GenericError;
+
+        return Fail(
+            $"{error.Code}: {error.Message}",
+            exitCode);
+
+    }
+
+    private int Fail(string message, CliExitCode exitCode)
+    {
+
+        dispatcher.WriteDiagnostic(message);
+
+        if (invocationContext.Options.Json)
+        {
+
+            dispatcher.WriteJson(
+                new CliErrorPayload(message, (int)exitCode),
+                CliJsonContext.Default.CliErrorPayload);
+
+        }
+
+        return (int)exitCode;
+
+    }
+
+    private static bool IsCompleted(InstallationResetResult result) =>
+        result.Phase == InstallationResetPhase.Completed
+        && result.Verification.Succeeded
+        && !result.ResumeRequired
+        && string.IsNullOrWhiteSpace(result.ErrorCode);
+
+    private static bool IsCancellationResult(InstallationResetResult result) =>
+        result.ResumeRequired
+        && result.Verification.RemainingIssues.Any(static issue =>
+            string.Equals(
+                issue.Code,
+                ErrorCodes.Data.RecoveryRequired,
+                StringComparison.Ordinal)
+            && issue.Message.Contains(
+                "cancel",
+                StringComparison.OrdinalIgnoreCase));
+
+    private static string FormatCount(long? value) =>
+        value?.ToString("N0", CultureInfo.InvariantCulture) ?? "unknown";
+
+    private static string FormatBoolean(bool value) =>
+        value ? "yes" : "no";
+
+    private static string FormatName<T>(T value)
+        where T : struct, Enum
+    {
+
+        string name = value.ToString();
+
+        List<char> formatted = new(name.Length + 4);
+
+        for (int index = 0; index < name.Length; index++)
+        {
+
+            char character = name[index];
+
+            if (index > 0 && char.IsUpper(character))
+            {
+
+                formatted.Add('-');
+
+            }
+
+            formatted.Add(char.ToLowerInvariant(character));
+
+        }
+
+        return new string([.. formatted]);
+
+    }
+
+}

@@ -1436,6 +1436,31 @@ restores the captured objects; post-commit cleanup removes them, and factory rec
 the managed roots to discover crash-leftover quarantine and resume the idempotent whole-root reset.
 Backups are never silently targeted.
 
+**Installation reset.** `arcanum data factory-reset` composes the existing data-retention reset
+with offline cleanup through a restricted service graph. Exactly one of workspace, global, or all
+scope and exactly one of dry-run or apply is required. Dry-run performs no lock acquisition and no
+state creation. Apply asks the authenticated local host to stop, takes the installation maintenance
+lock, replans, and publishes one bounded owner-only `active.json` record before daemon, database,
+file, or credential mutation. The record stores the accepted scope, Campaign binding, selected and
+excluded roots, preserved backup identities, configured credential accounts, data plan ids, phase,
+and aggregate outcomes. Phases advance from `Prepared` through data reset, offline cleanup,
+verification, and completion. Recovery replays the closed operations idempotently and never needs a
+per-item journal.
+
+Workspace scope deletes only exact-root derived Grimoire rows and the selected Campaign's
+`.arcanum` tree. It preserves global daemon registration and excludes more-specific registered
+Campaign roots. Global scope uses the existing factory-reset transaction and then removes the
+closed installation-owned filesystem and credential targets. All scope captures the current
+Campaign before global deletion and then applies both accepted target sets. Recognized
+`.arcbackup` files remain at their exact paths and identities. No-follow identity checks, ancestor
+symlink rejection, control-path overlap checks, mandatory host maintenance-lock ownership, and a
+final cleanup and credential recheck prevent a successful result while selected state remains.
+
+Host bootstrap refuses a noncompleted active reset before acquiring the maintenance lock or
+creating Grimoire state. `run` also routes a genuinely fresh installation to interactive setup, or
+returns command-line guidance in headless modes. A completed but unreported result remains in the
+active record until the CLI reports and retires it.
+
 Database deletion and file unlinking are logical deletion, not a promise of physical secure
 erasure. SSD wear leveling, copy-on-write filesystems, filesystem snapshots, SQLCipher free pages
 and WAL copies, OS caches, encrypted-storage replicas, and independent backups can retain copies.

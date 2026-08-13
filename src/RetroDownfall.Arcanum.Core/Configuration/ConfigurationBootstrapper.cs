@@ -16,8 +16,6 @@ public static class ConfigurationBootstrapper
 
         string configPath = ArcanumPaths.GrimoireDirectory;
 
-        Directory.CreateDirectory(configPath);
-
         string jsonPath = Path.Combine(configPath, "arcanum.json");
 
         ValidateArcanumConfigurationFile(jsonPath);

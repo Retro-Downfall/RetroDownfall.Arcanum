@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// </summary>
 /// <remarks>
 /// The lock is advisory only in the sense that it must be *taken*: a process that never asks is
-/// never blocked. The host takes it best-effort at startup and holds it for its lifetime, which is
+/// never blocked. The host requires it at startup and holds it for its lifetime, which is
 /// what lets a restore detect "the host is running" without a heartbeat or a pid registry. A lock
 /// file left behind by a killed process is not a lock — nothing holds the handle, so the next
 /// acquirer takes it. That is deliberate: a stale file must never wedge recovery.

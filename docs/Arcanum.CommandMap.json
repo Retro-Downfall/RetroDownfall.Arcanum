@@ -7126,12 +7126,70 @@
         {
           "path": "data factory-reset",
           "name": "factory-reset",
-          "description": "Reset data under the configured root; backups and data outside that root remain.",
+          "description": "Preview or apply an installation reset for one workspace, global state, or both.",
           "runnable": true,
           "aliases": [],
           "arguments": [],
-          "options": [],
-          "examples": [],
+          "options": [
+            {
+              "name": "--workspace",
+              "aliases": [],
+              "description": "Reset the most-specific registered Campaign containing the current directory.",
+              "recursive": false,
+              "takesValue": false,
+              "repeatable": false,
+              "values": [],
+              "completion": "workspace"
+            },
+            {
+              "name": "--global",
+              "aliases": [],
+              "description": "Reset installation-wide Arcanum state and credentials.",
+              "recursive": false,
+              "takesValue": false,
+              "repeatable": false,
+              "values": []
+            },
+            {
+              "name": "--all",
+              "aliases": [],
+              "description": "Reset global state plus the current registered Campaign.",
+              "recursive": false,
+              "takesValue": false,
+              "repeatable": false,
+              "values": []
+            },
+            {
+              "name": "--dry-run",
+              "aliases": [],
+              "description": "Preview the exact reset plan without mutation.",
+              "recursive": false,
+              "takesValue": false,
+              "repeatable": false,
+              "values": []
+            },
+            {
+              "name": "--apply",
+              "aliases": [],
+              "description": "Apply or resume the accepted reset plan.",
+              "recursive": false,
+              "takesValue": false,
+              "repeatable": false,
+              "values": []
+            },
+            {
+              "name": "--force",
+              "aliases": [],
+              "description": "Required with global --yes for noninteractive apply.",
+              "recursive": false,
+              "takesValue": false,
+              "repeatable": false,
+              "values": []
+            }
+          ],
+          "examples": [
+            "arcanum data factory-reset --all --dry-run"
+          ],
           "commands": []
         },
         {

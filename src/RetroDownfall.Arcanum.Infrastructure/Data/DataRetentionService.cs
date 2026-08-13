@@ -415,6 +415,12 @@ internal sealed partial class DataRetentionService(
             DataRetentionOperation.ResetMemory when request.MemoryScope is not null =>
                 BuildResetMemoryPlanAsync(request, cancellationToken),
 
+            DataRetentionOperation.ResetWorkspace when request.Workspace is not null =>
+                BuildWorkspaceResetPlanAsync(
+                    request,
+                    request.Workspace,
+                    cancellationToken),
+
             DataRetentionOperation.FactoryReset =>
                 BuildFactoryResetPlanAsync(request, cancellationToken),
 
@@ -669,6 +675,13 @@ internal sealed partial class DataRetentionService(
                         operation.Id,
                         current,
                         request.Request.MemoryScope!.Value,
+                        cancellationToken).ConfigureAwait(false),
+
+                DataRetentionOperation.ResetWorkspace =>
+                    await ApplyWorkspaceResetAsync(
+                        operation.Id,
+                        current,
+                        request.Request.Workspace!,
                         cancellationToken).ConfigureAwait(false),
 
                 DataRetentionOperation.FactoryReset =>
@@ -4688,6 +4701,17 @@ internal sealed partial class DataRetentionService(
 
                 break;
 
+            case DataRetentionOperation.ResetWorkspace:
+                subtype = "reset-workspace";
+
+                target = request.Workspace!.CampaignId.ToString("N")
+                    + ":"
+                    + request.Workspace.WorkspaceRoot;
+
+                attachments = [];
+
+                break;
+
             default:
                 throw new InvalidDataException(
                     "The durable mutation journal received an unsupported request subtype.");
@@ -4743,7 +4767,7 @@ internal sealed partial class DataRetentionService(
             checkpointVersion: 2,
             payload,
             checkpointReference: "retention-mutation:" + operation.Id.ToString("N"),
-            "Durable retention mutation request is ready.",
+            operation.PublicSummary,
             timeProvider.GetUtcNow(),
             cancellationToken).ConfigureAwait(false);
 
@@ -4818,6 +4842,7 @@ internal sealed partial class DataRetentionService(
                 "delete-session"
                 or "delete-attachment"
                 or "reset-memory"
+                or "reset-workspace"
                 or "prune-candidate")
             || !int.TryParse(
                 lines[3],
@@ -4947,6 +4972,57 @@ internal sealed partial class DataRetentionService(
         }
 
         return new RetentionMutationJournal(lines[1], target, [.. entries]);
+
+    }
+
+    internal static bool MatchesWorkspaceResetMutation(
+        LongRunningOperation operation,
+        DataRetentionWorkspaceBinding binding)
+    {
+
+        if (!string.Equals(
+                operation.Kind,
+                LongRunningOperationKinds.DataRetentionMutation,
+                StringComparison.Ordinal)
+            || operation.RecoveryPolicy
+                is not LongRunningOperationRecoveryPolicy.ReconcileAndComplete
+            || operation.CheckpointVersion != 2
+            || operation.CheckpointPayload is null
+            || !string.Equals(
+                operation.CheckpointReference,
+                "retention-mutation:" + operation.Id.ToString("N"),
+                StringComparison.Ordinal)
+            || !TryGetCanonicalWorkspaceRoot(binding, out string workspaceRoot))
+        {
+
+            return false;
+
+        }
+
+        RetentionMutationJournal journal;
+
+        try
+        {
+
+            journal = ParseMutationJournal(operation.CheckpointPayload);
+
+        }
+        catch (InvalidDataException)
+        {
+
+            return false;
+
+        }
+
+        return string.Equals(
+                journal.Subtype,
+                "reset-workspace",
+                StringComparison.Ordinal)
+            && journal.Entries.Length == 0
+            && string.Equals(
+                journal.Target,
+                binding.CampaignId.ToString("N") + ":" + workspaceRoot,
+                StringComparison.Ordinal);
 
     }
 
@@ -5555,6 +5631,30 @@ internal sealed partial class DataRetentionService(
             }
 
             return false;
+
+        }
+
+        if (journal.Subtype == "reset-workspace"
+            && journal.Target.Length > 33
+            && journal.Target[32] == ':'
+            && Guid.TryParseExact(
+                journal.Target[..32],
+                "N",
+                out _))
+        {
+
+            string workspaceRoot = journal.Target[33..];
+
+            DbConnection connection = await OpenConnectionAsync(
+                cancellationToken).ConfigureAwait(false);
+
+            WorkspaceResetSnapshot snapshot = await ReadWorkspaceResetSnapshotAsync(
+                connection,
+                transaction: null,
+                workspaceRoot,
+                cancellationToken).ConfigureAwait(false);
+
+            return snapshot.TotalOwnedRows > 0;
 
         }
 

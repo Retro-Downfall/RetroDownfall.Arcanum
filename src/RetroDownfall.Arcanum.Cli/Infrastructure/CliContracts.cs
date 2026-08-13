@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Cli.Services.Setup;
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration.Presets;
+using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 namespace RetroDownfall.Arcanum.Cli.Infrastructure;
 
@@ -885,6 +886,10 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(SetupPlanPayload))]
 
 [JsonSerializable(typeof(SetupResultPayload))]
+
+[JsonSerializable(typeof(InstallationResetPlan))]
+
+[JsonSerializable(typeof(InstallationResetResult))]
 
 [JsonSerializable(typeof(JsonElement))]
 internal sealed partial class CliJsonContext : JsonSerializerContext;

@@ -230,17 +230,6 @@ internal sealed class DataRetentionCommands(
 
     }
 
-    public Task<int> FactoryReset(CancellationToken cancellationToken) =>
-        ConfirmAndApply(
-            "Factory-reset Arcanum data under the configured root? "
-            + "External backups, registered workspace data outside that root, "
-            + "arcanum.json configuration, security credentials, and key material remain.",
-            "Factory reset cancelled.",
-            token => apiClient.FactoryResetDataAsync(
-                new FactoryResetRequest("factory-reset"),
-                token),
-            cancellationToken);
-
     private async Task<int> ConfirmAndApply(
         string question,
         string cancelledMessage,

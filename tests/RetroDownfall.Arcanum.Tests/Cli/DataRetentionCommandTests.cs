@@ -354,36 +354,6 @@ public sealed class DataRetentionCommandTests
 
     [Fact]
 
-    public void Factory_reset_confirmation_names_preserved_configuration_and_key_material()
-    {
-
-        RecordingHandler handler = new(_ => ErrorResponse());
-
-        RecordingConfirmationPrompt prompt = new(confirmed: false);
-
-        CliTestResult result = RunCommand(
-            handler,
-            ["data", "factory-reset"],
-            prompt);
-
-        Assert.Equal(0, result.ExitCode);
-
-        Assert.Empty(handler.Requests);
-
-        Assert.Contains("backups", prompt.Question, StringComparison.OrdinalIgnoreCase);
-
-        Assert.Contains("outside", prompt.Question, StringComparison.OrdinalIgnoreCase);
-
-        Assert.Contains("arcanum.json", prompt.Question, StringComparison.OrdinalIgnoreCase);
-
-        Assert.Contains("security", prompt.Question, StringComparison.OrdinalIgnoreCase);
-
-        Assert.Contains("key material", prompt.Question, StringComparison.OrdinalIgnoreCase);
-
-    }
-
-    [Fact]
-
     public void Retention_disable_omits_days_so_the_server_preserves_the_prior_value()
     {
 
@@ -416,8 +386,6 @@ public sealed class DataRetentionCommandTests
     [InlineData("DELETE", "/api/data/attachments/22222222-2222-2222-2222-222222222222", "--yes data delete-attachment 22222222-2222-2222-2222-222222222222")]
 
     [InlineData("POST", "/api/data/memory/reset", "--yes data reset-memory --scope entry")]
-
-    [InlineData("POST", "/api/data/factory-reset", "--yes data factory-reset")]
 
     public void Confirmed_data_mutations_route_through_authenticated_api(
         string method,
@@ -456,16 +424,6 @@ public sealed class DataRetentionCommandTests
 
         }
 
-        if (path == "/api/data/factory-reset")
-        {
-
-            Assert.Contains(
-                "factory-reset",
-                request.Body,
-                StringComparison.Ordinal);
-
-        }
-
     }
 
     [Theory]
@@ -477,8 +435,6 @@ public sealed class DataRetentionCommandTests
     [InlineData("data delete-attachment 22222222-2222-2222-2222-222222222222")]
 
     [InlineData("data reset-memory --scope entry")]
-
-    [InlineData("data factory-reset")]
 
     public void Data_mutations_require_confirmation_before_http(
         string commandLine)
